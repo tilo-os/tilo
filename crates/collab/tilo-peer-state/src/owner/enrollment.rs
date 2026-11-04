@@ -66,7 +66,7 @@ pub(crate) fn restore(
         record: record.clone(),
     };
     publication::validate(&view)?;
-    view.record.private_direct_conversations.validate()?;
+    view.record.old_direct_conversations.validate()?;
     crate::owner::effect_receipt::validate(&view)?;
     Ok(view)
 }
@@ -436,7 +436,7 @@ impl NativeWorkspaceOwner {
             }),
             vouched: None,
             peer: peer.durable()?,
-            private_direct_conversations: crate::owner::PrivateDirectConversationStore::default(),
+            old_direct_conversations: crate::owner::OldDirectConversations::default(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),

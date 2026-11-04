@@ -642,8 +642,6 @@ pub(crate) enum Outgoing {
         checkpoint: tilo_network_actor::NearbyTransferCheckpoint,
         file: std::fs::File,
     },
-    /// Ask for the lane this device's private texts travel on.
-    PrivateMessages(tokio::sync::oneshot::Sender<tilo_network_actor::private_messages::Transport>),
     /// Ask `ws`'s hosts for the record on `channel`, which they replay a
     /// joining device only once it asks (an on-demand record, or a part of a
     /// chain behind its head).
@@ -1673,19 +1671,6 @@ impl Client {
         self.device_actions.get().cloned()
     }
 
-    /// Ask the peer actor for this device's lane of private texts: the
-    /// messages between people, carried by this endpoint. `None` when the
-    /// actor is gone.
-    #[must_use]
-    pub fn private_messages(
-        &self,
-    ) -> Option<tokio::sync::oneshot::Receiver<tilo_network_actor::private_messages::Transport>>
-    {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        self.outgoing.send(Outgoing::PrivateMessages(reply)).ok()?;
-        Some(answer)
-    }
-
     /// The actions one of the person's devices sent this one since the last
     /// call, for the session's pass to carry out. A Nearby Send is carried
     /// out here instead, by this client's own transfer engine: the offer, the
@@ -2532,10 +2517,6 @@ async fn carry_out(
             .is_ok(),
         // Redeemed beside this loop, which never waits on a host.
         Outgoing::Enroll(_) => true,
-        Outgoing::PrivateMessages(reply) => plane
-            .send(tilo_network_actor::NetCmd::PrivateMessages(reply))
-            .await
-            .is_ok(),
         Outgoing::Stop => return None,
     })
 }

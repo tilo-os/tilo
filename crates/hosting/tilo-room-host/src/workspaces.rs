@@ -49,12 +49,7 @@ mod layout_scope;
 mod listing;
 mod pages;
 mod peer_parts;
-mod private;
-#[cfg(test)]
-mod private_network_tests;
-mod private_store;
 pub(crate) use layout_scope::LAYOUT_REFUSAL;
-pub use private::PrivateProtocol;
 mod publisher;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
@@ -435,13 +430,6 @@ impl GovernedWorkspace {
         .map_err(|error| error.to_string())?;
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
         self.parts.collect(&self.record.peer);
-        Ok(())
-    }
-
-    /// Name the current peer state's parts in the workspace file, unwritten.
-    #[cfg(test)]
-    fn store_peer(&mut self) -> Result<(), String> {
-        self.record.peer = self.parts.stage(&self.peer)?;
         Ok(())
     }
 
@@ -902,8 +890,6 @@ struct WorkspacesInner {
     /// build on history it no longer has
     /// ([`unbuildable_windows::missing_history`]), by workspace.
     unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
-    /// The bounds of the governor's private door, over every carrier.
-    private: private::PrivateBounds,
     /// The workspaces listed as public workspaces, and how lively each is.
     listings: listing::Listings,
     /// Each workspace's layout scope, as its governance says
@@ -1029,7 +1015,6 @@ impl Workspaces {
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
                 unbuildable_windows: std::sync::Mutex::default(),
-                private: private::PrivateBounds::default(),
                 listings,
                 layouts: layout_scope::Layouts::default(),
                 #[cfg(feature = "agents")]

@@ -25,7 +25,6 @@ pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
 mod opened_records;
-pub mod private_messages;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod siblings;
@@ -394,7 +393,6 @@ pub enum NetCmd {
     /// Wake the compositor loop when legacy-window traffic arrives: an idle
     /// headless loop otherwise sleeps until something else wakes it.
     SetWake(LoopWake),
-    PrivateMessages(tokio::sync::oneshot::Sender<crate::private_messages::Transport>),
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
     /// A message for the hosts of topic `ws` ([`NetCmd::JoinHostedTopic`])
@@ -1292,7 +1290,6 @@ struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
-    private_messages: crate::private_messages::Transport,
     native_routes: native_ingress::Routes,
     /// Where the channel traffic of workspaces' host sessions goes while the
     /// collaboration broker's drain runs: straight to it.
@@ -1544,9 +1541,6 @@ impl ActorState {
             self.reachability.wake(why);
         }
         match command {
-            Some(NetCmd::PrivateMessages(reply)) => {
-                let _ = reply.send(self.private_messages.clone());
-            }
             Some(NetCmd::WireTally(reply)) => {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
@@ -3362,8 +3356,6 @@ impl ActorState {
             || !self.held_surface_units.is_empty()
         {
             "a window streamed with a peer"
-        } else if self.private_messages.is_bound() {
-            "a Messages account receives texts"
         } else {
             return None;
         })
@@ -3799,9 +3791,7 @@ async fn run(
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
     let connection_incarnations = Arc::new(AtomicU64::new(1));
-    let private_messages = crate::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
-        .accept(crate::private_messages::ALPN, private_messages.clone())
         .accept(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
@@ -3841,11 +3831,6 @@ async fn run(
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let lanes = workspace_lane::Lanes::new(endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
-        private_messages: crate::private_messages::Transport::new(
-            endpoint.clone(),
-            private_messages,
-            reachability.clone(),
-        ),
         reachability,
         endpoint,
         lookup,

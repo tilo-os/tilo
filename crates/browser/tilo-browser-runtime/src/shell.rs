@@ -75,12 +75,6 @@ pub(crate) enum HostRequest {
     /// (`peer.actions`), and answer it with `desktop_record_action_answer`. The
     /// variant keeps its old name: it is the JSON key the page reads.
     WorkspaceAction(crate::desktop::RecordActionRequest),
-    /// Open Chat's direct conversation with this person, through Chat's own
-    /// action, as following a link to it does (`desktop_run_own_ask`).
-    Message(people::OwnAsk),
-    /// Send a direct message through Chat's own `send-direct-message`
-    /// (`desktop_run_own_ask`), and answer `id` with `desktop_message_answer`.
-    Send(people::OwnAsk),
     /// Keep what the person says they are doing, and how they share it, in
     /// their profile, which each of their devices reads
     /// (`desktop_set_own_status`): set here, it shows there too.
@@ -99,9 +93,6 @@ pub(crate) enum HostRequest {
 const RENAME_ACTION: &str = "set-name";
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
-/// Chat, which holds person-to-person conversations.
-const CHAT_APP: &str = "so.tilo.chat";
-
 /// The popovers the bar opens, one at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarPopover {
@@ -699,14 +690,6 @@ impl BrowserShell {
         let followed = self.pinned.followed().map(str::to_owned);
         self.chrome.here.borrow_mut().set_following(followed);
         let (rows, _) = self.chrome.roster_rows(&people, theme);
-        // Whose device each row is: a row is someone's live publisher, a
-        // conversation is with the person.
-        let persons: Vec<(String, String)> = {
-            let here = self.chrome.here.borrow();
-            rows.iter()
-                .filter_map(|row| Some((row.id.clone(), here.user_of(&row.id)?.to_owned())))
-                .collect()
-        };
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
         let own = Some(own_row(&self.chrome.here.borrow(), theme));
@@ -730,7 +713,6 @@ impl BrowserShell {
                 rect: self.rect,
                 rows: &rows,
                 own: own.as_ref(),
-                persons: &persons,
                 people: &people,
                 tree: &tree,
                 records: &records,
@@ -743,23 +725,11 @@ impl BrowserShell {
                     .fold(0.0, f64::max),
             },
         );
-        if let Some((name, reason)) = self.pinned.take_failed_send() {
-            let title = tilo_desktop_surface::i18n::t_args(
-                "people-overlay-message-failed",
-                &[("name", name.into()), ("reason", reason.into())],
-            );
-            self.chrome
-                .notifications
-                .post(tilo_desktop_surface::notifications::Notification::new(
-                    &title, "",
-                ));
-            (self.chrome.wake)();
-        }
     }
 
     /// The pinned roster's and following's share of `event`: what lands on
-    /// the overlay or the banner, the message box's keys, and the person's
-    /// own input, which takes their view back from whom they follow.
+    /// the overlay or the banner, its keys, and the person's own input,
+    /// which takes their view back from whom they follow.
     /// Returns whether the event was taken.
     fn pinned_people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         let (taken, hit) = self.pinned.key(event, ctx.modifiers);
@@ -800,12 +770,6 @@ impl BrowserShell {
         match hit {
             PeopleHit::ToggleFollow(id) => self.pinned.toggle_follow(&id),
             PeopleHit::Unpin => self.pinned.pin(false),
-            // Through Chat's own action, the one way a direct message goes.
-            PeopleHit::Send { to, text } => {
-                if let Some(outgoing) = self.pinned.send(&to, &text) {
-                    self.requests.borrow_mut().push(HostRequest::Send(outgoing));
-                }
-            }
             // The edge was kept as it moved.
             PeopleHit::Moved(_) => {}
             PeopleHit::ShowPerson { id, anchor } => self.show_person(&id, None, anchor),
@@ -1196,9 +1160,9 @@ impl BrowserShell {
 
     /// The card of the person `who` (their roster id, or their root key):
     /// who they are, what they are doing (their own words, or marked
-    /// automatic), their id that stays theirs, and following them or
-    /// writing to them in Chat. Someone not here now (an author of an old
-    /// message) still has a card: their name, picture and id, and Message.
+    /// automatic), their id that stays theirs, and following them. Someone
+    /// not here now (an author of an old message) still has a card: their
+    /// name, picture and id.
     fn person_model(&self, who: &str, name: Option<&str>) -> Option<ProfileModel> {
         let tree = self.handle.read(Clone::clone);
         let people = self.chrome.people(&tree);
@@ -1223,10 +1187,6 @@ impl BrowserShell {
             .user_of(id)
             .map(str::to_owned)
             .or_else(|| person.user.clone());
-        // Chat holds person-only conversations with people it lists; one
-        // without a known person (a guest before the host's line) has none.
-        let can_message =
-            !person.agent && key.is_some() && crate::desktop::known_application(CHAT_APP).is_some();
         let linked = key
             .as_deref()
             .map(|key| self.chrome.here.borrow().linked_of(key).to_vec())
@@ -1242,7 +1202,6 @@ impl BrowserShell {
                 place: row.activity.clone(),
                 following: self.pinned.followed() == Some(id),
                 can_follow: row.followable && !person.agent,
-                can_message,
                 linked,
             }),
             ..ProfileModel::default()
@@ -1371,11 +1330,6 @@ impl BrowserShell {
                 (self.chrome.wake)();
                 return;
             }
-            ProfileChoice::Message(key) => HostRequest::Message(people::ask_own(
-                &key,
-                "open-direct-conversation",
-                serde_json::Map::new(),
-            )),
             ProfileChoice::Availability(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,
@@ -1843,8 +1797,7 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
 }
 
 /// The card of someone not here now, known by their root key `key` and the
-/// name they were shown by: no status or place, nothing to follow, and
-/// Message where Chat holds person-only conversations.
+/// name they were shown by: no status or place, and nothing to follow.
 fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
     let key = key.to_ascii_lowercase();
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1861,7 +1814,6 @@ fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
             place: None,
             following: false,
             can_follow: false,
-            can_message: crate::desktop::known_application(CHAT_APP).is_some(),
             linked: Vec::new(),
         }),
         key: Some(key),

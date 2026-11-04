@@ -19,7 +19,6 @@
 //! desktops: field and variant order are the wire, so append only.
 
 pub mod govern;
-pub mod private;
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage};

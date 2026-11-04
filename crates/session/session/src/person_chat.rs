@@ -1,6 +1,6 @@
-//! What only the workspaces' owner can say about a person's private
-//! conversations: the old private store their history is imported from once
-//! and then emptied.
+//! What only a device hosting a workspace can say about a person's old
+//! private conversations: the store their history is imported from once and
+//! then emptied.
 //!
 //! A conversation is an ordinary record of the workspace, which the app reads
 //! and writes itself; nothing of it passes this door. What does is decided
@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use tilo_action_broker::services::person_chat::{PersonChatCommand, PersonChatServices};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::caller_authority::CallerAuthority;
-use tilo_peer_state::owner::{DirectConversation, DirectConversationPage, NativeWorkspaceOwner};
+use tilo_peer_state::owner::{NativeWorkspaceOwner, OldConversation, OldConversationPage};
 use tilo_user_identity::DeviceCert;
 
 use crate::engine::Engine;
@@ -65,10 +65,10 @@ impl PersonChatServices for PersonChat {
         };
         let now = SystemTime::now();
         let value = match command {
-            // The old store's conversations are in the pair records: one
+            // The old store's conversations are in their records: one
             // publication empties it, and nothing writes there again.
             PersonChatCommand::Clear => {
-                owner.clear_private_direct_conversations(workspace, &authority, now)?;
+                owner.clear_old_direct_conversations(workspace, &authority, now)?;
                 serde_json::json!({})
             }
             // One page of a conversation still in the old private store, so
@@ -78,25 +78,22 @@ impl PersonChatServices for PersonChat {
                 public_key,
                 after_sequence,
             } => {
-                let page = DirectConversationPage {
+                let page = OldConversationPage {
                     after_sequence,
                     limit: PAGE,
                 };
                 // The door names people as the workspace does; the old store
                 // that kept their conversations spells them by their hash.
                 let stored = tilo_peer_state::owner::person_store_key(peer_key(&public_key)?);
-                let read =
-                    owner.read_direct_conversation(workspace, &stored, &authority, page, now);
+                let read = owner.old_direct_conversation(workspace, &stored, &authority, page, now);
                 match read {
-                    Ok(value) => import_page(&public_key, value),
-                    Err(error) if error == PRIVATE_CONVERSATION_NOT_OPENED => {
-                        serde_json::json!({
-                            "peer": public_key,
-                            "messages": [],
-                            "has_more": false,
-                            "next_sequence": after_sequence,
-                        })
-                    }
+                    Ok(Some(value)) => import_page(&public_key, value),
+                    Ok(None) => serde_json::json!({
+                        "peer": public_key,
+                        "messages": [],
+                        "has_more": false,
+                        "next_sequence": after_sequence,
+                    }),
                     Err(error) => return Err(error),
                 }
             }
@@ -134,15 +131,13 @@ fn peer_key(public_key: &str) -> Result<[u8; 32], String> {
     <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| "invalid conversation peer".into())
 }
 
-/// What the owner says when the person has no conversation with this peer.
-const PRIVATE_CONVERSATION_NOT_OPENED: &str = "private conversation not opened";
 /// How much text one import page carries, so a page of long messages stays
 /// well inside the reply bound once JSON escapes it.
 const IMPORT_TEXT_BYTES: usize = 128 * 1024;
 
 /// One import page as Chat reads it: the stored messages it carries, and
 /// where the next page starts.
-fn import_page(peer: &str, value: DirectConversation) -> serde_json::Value {
+fn import_page(peer: &str, value: OldConversation) -> serde_json::Value {
     let mut carried = 0usize;
     let mut next_sequence = value.next_sequence;
     let mut has_more = value.has_more;

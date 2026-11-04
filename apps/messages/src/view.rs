@@ -23,16 +23,62 @@ struct CapturePeople {
     accounts: PersonAccounts,
 }
 
+/// A person of the workspace: the key their conversation keeps them under
+/// and the name the workspace calls them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WorkspacePerson {
+    /// Their root public key, as the workspace names them.
+    pub root: String,
+    /// The key their conversation keeps them under.
+    pub key: String,
+    pub name: String,
+}
+
 #[derive(Clone)]
 pub(crate) struct Sources {
     directory: Option<PersonRecord<ContactDirectory>>,
     accounts: Option<PersonRecord<PersonAccounts>>,
     /// The Messages record itself, whose conversations are listed first.
     record: Option<Live<Messages>>,
+    /// The conversations with the workspace's people: ordinary records of the
+    /// workspace, the same ones Chat reads and writes.
+    pub(crate) direct: Option<Rc<ui::direct::Records>>,
+    /// The workspace's people as they were when this view was built.
+    people: Vec<WorkspacePerson>,
     fixture: Rc<CapturePeople>,
 }
 
 impl Sources {
+    /// The person a Tilo conversation is with, by the key it keeps them
+    /// under: `None` for anyone the workspace does not name.
+    pub(crate) fn workspace_person(&self, key: &str) -> Option<&WorkspacePerson> {
+        self.people.iter().find(|person| person.key == key)
+    }
+
+    /// Whether `person` is someone this window can write to, whether the
+    /// workspace names them or Contacts does.
+    fn known_person(&self, person: &str) -> bool {
+        self.workspace_person(person).is_some()
+            || self
+                .contacts()
+                .people
+                .get(&Id::from_raw(person))
+                .is_some_and(|person| !person.removed)
+    }
+
+    /// What `person` is called: the workspace's name for one of its people,
+    /// else the name Contacts keeps.
+    pub(crate) fn person_name(&self, person: &str) -> Option<String> {
+        if let Some(person) = self.workspace_person(person) {
+            return Some(person.name.clone());
+        }
+        self.contacts()
+            .people
+            .get(&Id::from_raw(person))
+            .filter(|person| !person.removed)
+            .map(|person| person.label.clone())
+    }
+
     pub(crate) fn contacts(&self) -> Rc<ContactDirectory> {
         self.directory.as_ref().map_or_else(
             || Rc::new(self.fixture.directory.clone()),
@@ -84,10 +130,13 @@ impl Choice {
         serde_json::to_string(self).unwrap_or_default()
     }
     pub(crate) fn label(&self, sources: &Sources) -> String {
+        // A Tilo conversation is the workspace's own record of it, between
+        // two people: there is no service account to name.
+        if self.service == "tilo" {
+            return CATALOG.t("messages-tilo");
+        }
         let account = if self.account.is_empty() {
             CATALOG.t("messages-no-account")
-        } else if self.service == "tilo" {
-            CATALOG.t("messages-native-account")
         } else {
             sources
                 .accounts()
@@ -124,6 +173,21 @@ impl Choice {
 }
 
 pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
+    // A person the workspace names is written to as the workspace's own
+    // record of the conversation between you: one route, through no service.
+    if let Some(workspace_person) = sources.workspace_person(person) {
+        let Some(direct) = &sources.direct else {
+            return Vec::new();
+        };
+        return vec![Choice {
+            service: "tilo".into(),
+            account: direct.person().to_owned(),
+            recipient: workspace_person.key.clone(),
+            association: String::new(),
+            scope: String::new(),
+            revision: String::new(),
+        }];
+    }
     let contacts = sources.contacts();
     let person = Id::from_raw(person);
     if contacts
@@ -135,7 +199,7 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
     }
     let accounts = sources.accounts();
     let mut result = Vec::new();
-    for service in ["tilo", "whatsapp", "signal", "sms"] {
+    for service in ["whatsapp", "signal", "sms"] {
         let senders: Vec<_> = accounts
             .accounts
             .iter()
@@ -188,6 +252,33 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
     result
 }
 
+/// Whom this window can write to: the workspace's people first, then the
+/// address book's. Someone the workspace names is listed once, by the
+/// workspace's name for them, whichever of their keys Contacts also keeps.
+fn who(sources: &Sources) -> Vec<serde_json::Value> {
+    let members: Vec<&str> = sources
+        .people
+        .iter()
+        .map(|person| person.root.as_str())
+        .collect();
+    sources
+        .people
+        .iter()
+        .map(|person| serde_json::json!({"person":person.key, "label":person.name}))
+        .chain(
+            sources
+                .contacts()
+                .people
+                .iter()
+                .filter(|(_, person)| !person.removed)
+                .filter(|(id, _)| !members.contains(&id.as_str()))
+                .map(
+                    |(id, person)| serde_json::json!({"person":id.as_str(), "label":person.label}),
+                ),
+        )
+        .collect()
+}
+
 fn answer(
     sources: &Sources,
     state: &LocalState<Selection>,
@@ -195,25 +286,13 @@ fn answer(
 ) -> ui::framework::EffectAnswer {
     match effect {
         MessagesEffect::ListPeople => {
-            let people: Vec<_> = sources
-                .contacts()
-                .people
-                .iter()
-                .filter(|(_, person)| !person.removed)
-                .map(|(id, person)| serde_json::json!({"person":id.as_str(), "label":person.label}))
-                .collect();
-            return Ok(Effected::value(people));
+            return Ok(Effected::value(who(sources)));
         }
         MessagesEffect::ListRoutes { person } => {
             return Ok(Effected::value(choices(sources, &person)));
         }
         MessagesEffect::OpenPerson { person } => {
-            if sources
-                .contacts()
-                .people
-                .get(&Id::from_raw(&person))
-                .is_none_or(|person| person.removed)
-            {
+            if !sources.known_person(&person) {
                 return Err(CATALOG.t("messages-contact-missing"));
             }
             if state.get().person != person {
@@ -233,7 +312,11 @@ fn answer(
             else {
                 return Err(CATALOG.t("messages-contact-missing"));
             };
-            if !valid.recipient.is_empty()
+            // A Tilo route is the workspace's own record of the
+            // conversation: there is no service account to resolve it
+            // against.
+            if valid.service != "tilo"
+                && !valid.recipient.is_empty()
                 && sources.contacts().resolve_account(
                     &valid.service,
                     &valid.scope,
@@ -344,20 +427,67 @@ fn confirm_account(
 }
 
 fn sources(cx: &ViewCx<Messages>) -> Sources {
+    let live = cx.mode().is_live() && !cx.is_past();
+    let people = if live {
+        workspace_people(cx)
+    } else {
+        Vec::new()
+    };
+    let direct = if live { direct(cx, &people) } else { None };
     Sources {
-        directory: if cx.mode().is_live() && !cx.is_past() {
+        directory: if live {
             cx.shared_person::<ContactDirectory>()
         } else {
             None
         },
-        accounts: if cx.mode().is_live() && !cx.is_past() {
+        accounts: if live {
             cx.shared_person::<PersonAccounts>()
         } else {
             None
         },
         record: Some(cx.live().clone()),
+        direct,
+        people,
         fixture: cx.fixture::<CapturePeople>().unwrap_or_default(),
     }
+}
+
+/// The workspace's people as the Tilo lane offers them: everyone the
+/// workspace names but this window's own person and its agents.
+fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
+    cx.people()
+        .members()
+        .into_iter()
+        .filter(|member| {
+            member.kind == ui::presence::ParticipantKind::Person
+                && !member.is_self
+                && member.id.len() == 64
+                && member.id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .map(|member| WorkspacePerson {
+            key: ui::person_chat::person_key(&member.id),
+            root: member.id,
+            name: member.name,
+        })
+        .collect()
+}
+
+/// The conversations with the workspace's people, in the records the
+/// workspace holds them in: what Chat reads and writes too.
+fn direct(cx: &ViewCx<Messages>, people: &[WorkspacePerson]) -> Option<Rc<ui::direct::Records>> {
+    let (handle, workspace, me) = (cx.workspace_handle()?, cx.workspace()?, cx.me()?);
+    let records = ui::direct::Records::new(handle, workspace, me);
+    records.set_people(
+        people
+            .iter()
+            .map(|person| ui::direct::Person {
+                root: person.root.clone(),
+                key: person.key.clone(),
+                name: person.name.clone(),
+            })
+            .collect(),
+    );
+    Some(records)
 }
 
 pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
@@ -366,12 +496,13 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let live = cx.mode().is_live() && !cx.is_past();
     // What the person is writing is theirs: the live draft and the record it
     // is kept in, made together so a send can clear it where it was kept.
-    let (sending, held_drafts) = sending_and_drafts(cx, live);
+    let (sending, held_drafts) = sending_and_drafts(cx, live, sources.direct.is_some());
     let history = crate::history::HistoryView::new(
         sending
             .history()
             .or_else(|| live.then(|| cx.take_lent()).flatten()),
         cx.me(),
+        sources.direct.is_some(),
     );
     if !cx.mode().is_live()
         && let Some(capture) = cx.fixture::<crate::history::CaptureHistory>()
@@ -482,6 +613,7 @@ fn enrollment(cx: &ViewCx<Messages>) -> Option<tilo_messaging::EnrollmentClient>
 fn sending_and_drafts(
     cx: &ViewCx<Messages>,
     live: bool,
+    direct: bool,
 ) -> (
     crate::sending::Sending,
     Option<PersonRecord<crate::drafts::MessageDrafts>>,
@@ -495,6 +627,7 @@ fn sending_and_drafts(
         .flatten(),
         cx.me(),
         drafts.clone(),
+        direct,
     );
     (sending, drafts)
 }
@@ -591,11 +724,12 @@ fn draft_for(
 
 /// Whether there is nobody to message: every person removed, or none.
 fn nobody_listed(sources: &Sources) -> bool {
-    sources
-        .contacts()
-        .people
-        .iter()
-        .all(|(_, person)| person.removed)
+    sources.people.is_empty()
+        && sources
+            .contacts()
+            .people
+            .iter()
+            .all(|(_, person)| person.removed)
 }
 
 fn discard_invalid_route(
@@ -695,7 +829,7 @@ fn register_effects(
         if matches!(effect, MessagesEffect::OpenPerson { .. } | MessagesEffect::OpenConversation { .. } | MessagesEffect::Back) { effect_setup.close(); effect_groups.close(); }
 
         if matches!(effect, MessagesEffect::ListAccountStates) {
-            let values: Vec<_> = effect_sources.accounts().accounts.iter().filter(|(_, account)| matches!(account.type_id.as_str(), "tilo" | "whatsapp" | "signal" | "sms")).map(|(id, account)| {
+            let values: Vec<_> = effect_sources.accounts().accounts.iter().filter(|(_, account)| matches!(account.type_id.as_str(), "whatsapp" | "signal" | "sms")).map(|(id, account)| {
                 let choice = Choice {service: account.type_id.clone(), account: id.as_str().into(), recipient: String::new(), association: String::new(), scope: String::new(), revision: String::new()};
                 serde_json::json!({"service": choice.service, "account": choice.account, "enabled": account.enabled, "state": effect_sending.account_state(&choice).as_str()})
             }).collect();
@@ -822,6 +956,12 @@ fn overview(
     let entries: Vec<_> = held(&sources.record())
         .into_iter()
         .map(Entry::Held)
+        .chain(
+            sources
+                .people
+                .iter()
+                .map(|person| Entry::Person(Id::from_raw(&person.key), person.name.clone())),
+        )
         .chain(
             sources
                 .contacts()
@@ -958,18 +1098,9 @@ fn detail(
         }
         return empty("messages-choose-heading", "messages-choose-hint");
     }
-    let contacts = sources.contacts();
-    let Some(_person) = contacts
-        .people
-        .get(&Id::from_raw(&selected.person))
-        .filter(|person| !person.removed)
-    else {
+    let Some(who) = sources.person_name(&selected.person) else {
         return empty("messages-contact-missing", "messages-choose-hint");
     };
-    let who = contacts
-        .people
-        .get(&Id::from_raw(&selected.person))
-        .map_or_else(String::new, |person| person.label.clone());
     let options = choices(sources, &selected.person);
     let chosen = options
         .iter()
@@ -1291,6 +1422,8 @@ mod route_tests {
             directory: Some(directory),
             accounts: None,
             record: None,
+            direct: None,
+            people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
                 accounts,
@@ -1350,6 +1483,8 @@ mod route_tests {
             directory: Some(directory.clone()),
             accounts: None,
             record: None,
+            direct: None,
+            people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
                 accounts,
@@ -1437,6 +1572,8 @@ mod route_tests {
             directory: Some(directory),
             accounts: None,
             record: None,
+            direct: None,
+            people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
                 accounts,

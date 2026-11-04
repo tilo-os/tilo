@@ -320,7 +320,10 @@ impl ResourceApp for MessagesShell {
         Some(&CATALOG)
     }
     fn view(cx: &mut ViewCx<Messages>) -> Element {
-        view::build(cx)
+        // The workspace's people are the Tilo lane's people: the view is
+        // built again as the roster names someone else.
+        let people = cx.people();
+        cx.switch(&people.revision(), move |cx, _| view::build(cx))
     }
     /// Open Contacts, where the people you message are added.
     fn local_operations() -> Vec<ui::tilo_actions::ActionSpec> {

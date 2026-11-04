@@ -12,6 +12,9 @@ use ui::{
 #[derive(Clone)]
 pub(crate) struct Sending {
     client: Option<MessagingClient>,
+    /// The conversations with the workspace's people are written where they
+    /// are kept: the workspace's own records, which this window holds.
+    direct: bool,
     pub(crate) draft: LocalState<String>,
     pub(crate) operation: LocalState<String>,
     generation: LocalState<u64>,
@@ -25,9 +28,11 @@ impl Sending {
         client: Option<MessagingClient>,
         principal: Option<&str>,
         drafts: Option<PersonRecord<crate::drafts::MessageDrafts>>,
+        direct: bool,
     ) -> Self {
         Self {
             client: client.filter(|c| principal == Some(c.principal())),
+            direct,
             draft: LocalState::new(String::new()),
             operation: LocalState::new(uuid::Uuid::new_v4().to_string()),
             generation: LocalState::new(0),
@@ -132,14 +137,22 @@ impl Sending {
         self.operation.set(uuid::Uuid::new_v4().to_string());
     }
     pub(crate) fn available(&self) -> bool {
-        self.client.is_some()
+        self.client.is_some() || self.direct
     }
     pub(crate) fn supports(&self, route: &tilo_contact_directory::routing::Route) -> bool {
+        if route.service == "tilo" {
+            return self.direct;
+        }
         self.client
             .as_ref()
             .is_some_and(|client| client.supports(route))
     }
     pub(crate) fn account_state(&self, choice: &Choice) -> tilo_messaging::AccountState {
+        // A Tilo conversation needs no service account: the workspace holds
+        // it.
+        if choice.service == "tilo" {
+            return tilo_messaging::AccountState::Ready;
+        }
         self.client
             .as_ref()
             .map_or(tilo_messaging::AccountState::Unavailable, |client| {
@@ -179,12 +192,15 @@ impl Sending {
         else {
             return Err(CATALOG.t("messages-transport-unavailable"));
         };
+        let choice: Choice =
+            serde_json::from_str(&choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
+        if choice.service == "tilo" {
+            return self.send_direct(sources, selection, history, &choice, &operation, &text);
+        }
         let client = self
             .client
             .clone()
             .ok_or_else(|| CATALOG.t("messages-transport-unavailable"))?;
-        let choice: Choice =
-            serde_json::from_str(&choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
         let route = crate::history::current_route(sources, &selection.get(), &choice)?;
         let sent_route = route.clone();
         let sent_operation = operation.clone();
@@ -233,5 +249,40 @@ impl Sending {
                 },
             }
         }))
+    }
+
+    /// Send `text` into the conversation with one of the workspace's people:
+    /// the record the two of them share, written where it is kept.
+    fn send_direct(
+        &self,
+        sources: &Sources,
+        selection: &LocalState<Selection>,
+        history: &crate::history::HistoryView,
+        choice: &Choice,
+        operation: &str,
+        text: &str,
+    ) -> EffectAnswer {
+        let direct = sources
+            .direct
+            .clone()
+            .ok_or_else(|| CATALOG.t("messages-transport-unavailable"))?;
+        // The words are the message: an attempt that is asked for twice is
+        // the same message, under the operation it was asked with.
+        let invocation = uuid::Uuid::parse_str(operation).map_or_else(
+            |_| ui::tilo_actions::InvocationId::new(),
+            ui::tilo_actions::InvocationId,
+        );
+        direct.send(&choice.recipient, text, invocation)?;
+        let page = crate::history::direct_page(sources, selection, choice)?;
+        history.publish(page);
+        if self.draft.get() == text {
+            self.draft.set(String::new());
+            self.operation.set(uuid::Uuid::new_v4().to_string());
+            self.sent_draft(&self.open.get(), text);
+        }
+        Ok(Effected::value(serde_json::json!({
+            "operation": operation,
+            "status": "submitted",
+        })))
     }
 }

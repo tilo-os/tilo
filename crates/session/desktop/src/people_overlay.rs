@@ -20,15 +20,12 @@
 //! Resting the pointer on a row (about a quarter second, so passing over
 //! the list opens nothing) opens a peek beside the panel (`peek`): a
 //! picture of their screen built from what their presence says, never a
-//! stream of it, with Follow. Beside it a message box (`composer`) sends
-//! them a direct message through Chat and shows the last few lines.
+//! stream of it, with Follow.
 //!
 //! The host supplies the rows (the roster's own, already filtered by what
-//! each person lets others see), each person's screen and recent messages,
-//! and applies the [`PeopleHit`]s: following goes through the host's one
-//! follow mechanism, a message through Chat's own action.
+//! each person lets others see) and each person's screen, and applies the
+//! [`PeopleHit`]s: following goes through the host's one follow mechanism.
 
-mod composer;
 mod dock;
 mod own_status;
 mod peek;
@@ -99,22 +96,6 @@ impl PeerWindow {
     }
 }
 
-/// The last lines of a direct conversation with someone.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerMessages {
-    /// The roster id of the person.
-    pub id: String,
-    pub lines: Vec<MessageLine>,
-}
-
-/// One line of a direct conversation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MessageLine {
-    /// This person wrote it.
-    pub mine: bool,
-    pub text: String,
-}
-
 /// What a peek showed of a window's live picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pictured {
@@ -172,12 +153,8 @@ pub struct PeopleOverlayModel<'a> {
     /// The roster's rows, as the dropdown has them.
     pub rows: &'a [RosterRow],
     pub screens: &'a [PeerScreen],
-    pub messages: &'a [PeerMessages],
     /// Whom this person follows, by roster id.
     pub followed_id: Option<&'a str>,
-    /// Why a direct message cannot be sent from here, when it cannot; the
-    /// message box says so instead of offering to send.
-    pub messaging_unavailable: Option<&'a str>,
     /// This person, as everyone here reads them (their status their own
     /// words, or what is said of them automatically): their row leads the
     /// list, with a field to say what they are doing. `None` lists only
@@ -190,8 +167,6 @@ pub struct PeopleOverlayModel<'a> {
 pub enum PeopleHit {
     /// Follow the person with this roster id, or stop following them.
     ToggleFollow(String),
-    /// Send `text` to the person with this roster id as a direct message.
-    Send { to: String, text: String },
     /// Close the overlay: the roster goes back to the bar.
     Unpin,
     /// The panel was dragged to another edge; keep it where the desk
@@ -224,12 +199,11 @@ pub struct PeopleOverlay {
     /// The person the pointer rests on, and since when.
     hover: Option<(String, Instant)>,
     peek: peek::Peek,
-    composer: composer::Composer,
     /// The person's own row: where it is, and the field saying what they
     /// are doing.
     own_row: Rect,
     own_status: own_status::OwnStatus,
-    /// When the pointer left the row, peek and message box.
+    /// When the pointer left the row and peek.
     left_at: Option<Instant>,
     cursor: Option<Point>,
     /// The overlay arriving and leaving.
@@ -334,7 +308,6 @@ impl PeopleOverlay {
             headings: Vec::new(),
             hover: None,
             peek: peek::Peek::default(),
-            composer: composer::Composer::default(),
             own_row: Rect::ZERO,
             own_status: own_status::OwnStatus::default(),
             left_at: None,
@@ -386,27 +359,22 @@ impl PeopleOverlay {
         self.shown.is_visible(ui::motion::frame_now())
     }
 
-    /// The person whose peek is open, by roster id: the host reads their
-    /// recent messages for the message box.
+    /// The person whose peek is open, by roster id.
     #[must_use]
     pub fn peeked(&self) -> Option<&str> {
         self.peek.person()
     }
 
-    /// Whether the message box or the field of what this person is doing
-    /// holds the keyboard.
+    /// Whether the field of what this person is doing holds the keyboard.
     #[must_use]
     pub fn composing(&self) -> bool {
-        self.composer.is_focused() || self.own_status.is_focused()
+        self.own_status.is_focused()
     }
 
-    /// Whether `point` is on the overlay, its peek or its message box.
+    /// Whether `point` is on the overlay or its peek.
     #[must_use]
     pub fn contains(&self, point: Point) -> bool {
-        self.is_visible()
-            && (self.panel.contains(point)
-                || self.peek.covers(point)
-                || self.composer.covers(point))
+        self.is_visible() && (self.panel.contains(point) || self.peek.covers(point))
     }
 
     pub fn wants_pointer_capture(&self) -> bool {
@@ -440,7 +408,6 @@ impl PeopleOverlay {
             close_at,
             self.dock.settles_at(),
             self.peek.settles_at(),
-            self.composer.next_wake_deadline(),
             self.own_status.next_wake_deadline(),
         ]
         .into_iter()
@@ -450,7 +417,6 @@ impl PeopleOverlay {
 
     fn close_peek(&mut self) {
         self.peek.close(self.motion);
-        self.composer.blur();
         self.hover = None;
         self.left_at = None;
     }
@@ -509,14 +475,9 @@ impl PeopleOverlay {
         if let (Some(id), Some(anchor)) = (self.peek.person().map(str::to_owned), anchor) {
             let row = model.rows.iter().find(|row| row.id == id);
             let screen = model.screens.iter().find(|screen| screen.id == id);
-            let messages = model
-                .messages
-                .iter()
-                .find(|messages| messages.id == id)
-                .map_or(&[][..], |messages| messages.lines.as_slice());
             if let Some(row) = row {
                 let following = model.followed_id == Some(id.as_str());
-                let card = self.peek.draw(
+                self.peek.draw(
                     scene,
                     transform,
                     text,
@@ -532,21 +493,6 @@ impl PeopleOverlay {
                         cursor: self.cursor,
                     },
                     pictures,
-                );
-                self.composer.draw(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    &composer::ComposerModel {
-                        host: model.host,
-                        peek: card,
-                        opening: self.peek.openness(now),
-                        name: &row.label,
-                        lines: messages,
-                        unavailable: model.messaging_unavailable,
-                        cursor: self.cursor,
-                    },
                 );
             }
         } else if self.peek.person().is_some() {
@@ -572,7 +518,6 @@ impl PeopleOverlay {
         }
         if let Some(left) = self.left_at
             && now.saturating_duration_since(left) >= LEAVE_GRACE
-            && !self.composer.holds_peek()
         {
             self.close_peek();
         }
@@ -580,9 +525,6 @@ impl PeopleOverlay {
 
     fn open_peek(&mut self, id: &str) {
         let now = ui::time::now();
-        if self.peek.person() != Some(id) {
-            self.composer.reset_for(id);
-        }
         self.peek.open(id, self.motion, now);
         self.left_at = None;
     }
@@ -1049,59 +991,36 @@ impl PeopleOverlay {
                 self.targets
                     .target(format!("peek-{target}:{id}"), rect, name);
             }
-            if let Some(rect) = self.composer.send_rect() {
-                self.targets
-                    .target(format!("send:{id}"), rect, t("people-overlay-send"));
-            }
         }
         self.targets.end_frame();
     }
 
-    /// Text an input method committed while the message box holds the
-    /// keyboard.
+    /// Text an input method committed while the field of what this person
+    /// is doing holds the keyboard.
     pub fn commit_text(&mut self, text: &str) -> bool {
-        self.own_status.commit_text(text) || self.composer.commit_text(text)
+        self.own_status.commit_text(text)
     }
 
-    /// A key while the message box holds the keyboard. Escape closes the
-    /// peek; Enter sends. `None` when the key is not the overlay's.
+    /// A key while the field of what this person is doing holds the
+    /// keyboard. `None` when the key is not the overlay's.
     pub fn key(
         &mut self,
         key: &Key,
         mods: winit::keyboard::ModifiersState,
     ) -> Option<Option<PeopleHit>> {
-        if self.own_status.is_focused() {
-            return match self.own_status.key(key, mods) {
-                own_status::Keyed::Ignored => None,
-                own_status::Keyed::Consumed | own_status::Keyed::Cancel => Some(None),
-                own_status::Keyed::Save(words) => Some(Some(PeopleHit::SetStatus(words))),
-            };
-        }
-        if !self.composer.is_focused() {
+        if !self.own_status.is_focused() {
             return None;
         }
-        match self.composer.key(key, mods) {
-            composer::Keyed::Ignored => None,
-            composer::Keyed::Consumed => Some(None),
-            composer::Keyed::Cancel => {
-                self.close_peek();
-                Some(None)
-            }
-            composer::Keyed::Send(text) => {
-                let to = self.peek.person()?.to_owned();
-                Some(Some(PeopleHit::Send { to, text }))
-            }
+        match self.own_status.key(key, mods) {
+            own_status::Keyed::Ignored => None,
+            own_status::Keyed::Consumed | own_status::Keyed::Cancel => Some(None),
+            own_status::Keyed::Save(words) => Some(Some(PeopleHit::SetStatus(words))),
         }
-    }
-
-    /// The message went: clear the box, keep it open for the next one.
-    pub fn sent(&mut self) {
-        self.composer.clear();
     }
 
     /// Route `event` (in logical points through `scale`). Marks it handled
     /// when the pointer is over the overlay; never takes the keyboard
-    /// unless the message box was pressed.
+    /// unless the status field was pressed.
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -1121,7 +1040,7 @@ impl PeopleOverlay {
                     if self.dock.drag(point) {
                         self.targets.cancel_pointer_press();
                         self.hover = None;
-                        if self.peek.person().is_some() && !self.composer.holds_peek() {
+                        if self.peek.person().is_some() {
                             self.close_peek();
                         }
                     }
@@ -1134,7 +1053,7 @@ impl PeopleOverlay {
                 self.cursor = None;
                 self.dock.cancel();
                 self.hover = None;
-                if self.peek.person().is_some() && !self.composer.holds_peek() {
+                if self.peek.person().is_some() {
                     self.left_at.get_or_insert(now);
                 }
             }
@@ -1184,12 +1103,11 @@ impl PeopleOverlay {
         hit
     }
 
-    /// A press at `point`: on the message box it takes the keyboard; on the
-    /// panel it may start a drag; anywhere else it lets go of the message
-    /// box (and with it the peek, unless the pointer is on it).
+    /// A press at `point`: on the status field it takes the keyboard; on the
+    /// panel it may start a drag; anywhere else it lets go of the field and
+    /// the peek, unless the pointer is on it.
     fn press(&mut self, point: Point, handled: &mut bool) -> Option<PeopleHit> {
         if self.own_row.area() > 0.0 && self.own_status.field_contains(point) {
-            self.composer.blur();
             self.own_status.focus();
             *handled = true;
             return None;
@@ -1203,11 +1121,6 @@ impl PeopleOverlay {
         {
             self.own_status.cancel();
         }
-        if self.composer.field_contains(point) {
-            self.composer.focus();
-            *handled = true;
-            return None;
-        }
         if self.panel.contains(point) {
             let on_control = self.unpin.contains(point)
                 || self.own_row.contains(point)
@@ -1218,7 +1131,7 @@ impl PeopleOverlay {
             *handled = true;
             return None;
         }
-        if self.peek.covers(point) || self.composer.covers(point) {
+        if self.peek.covers(point) {
             *handled = true;
             return None;
         }
@@ -1230,14 +1143,14 @@ impl PeopleOverlay {
     }
 
     /// The pointer moved to `point`: the row it rests on starts its hover
-    /// intent; leaving the row, peek and message box starts the grace.
+    /// intent; leaving the row and peek starts the grace.
     fn track_hover(&mut self, point: Point, now: Instant) {
         let over_row = self
             .rows
             .iter()
             .find(|row| row.rect.contains(point))
             .map(|row| row.id.clone());
-        let on_peek = self.peek.covers(point) || self.composer.covers(point);
+        let on_peek = self.peek.covers(point);
         match &over_row {
             Some(id) => {
                 if self.hover.as_ref().is_none_or(|(hovered, _)| hovered != id) {
@@ -1254,7 +1167,7 @@ impl PeopleOverlay {
             .is_some_and(|id| self.peek.person() == Some(id));
         if on_peek || near_peeked || over_row.is_some() {
             self.left_at = None;
-        } else if self.peek.person().is_some() && !self.composer.holds_peek() {
+        } else if self.peek.person().is_some() {
             self.left_at.get_or_insert(now);
         }
     }
@@ -1270,7 +1183,6 @@ impl PeopleOverlay {
                 return Some(PeopleHit::SetStatus(String::new()));
             }
             if id == "own-status" {
-                self.composer.blur();
                 self.own_status.focus();
                 continue;
             }
@@ -1294,14 +1206,6 @@ impl PeopleOverlay {
                 }
                 return Some(PeopleHit::ShowPerson { id: person, anchor });
             }
-            if let Some(person) = id.strip_prefix("send:")
-                && let Some(text) = self.composer.text_to_send()
-            {
-                return Some(PeopleHit::Send {
-                    to: person.to_owned(),
-                    text,
-                });
-            }
         }
         None
     }
@@ -1309,9 +1213,7 @@ impl PeopleOverlay {
     /// The painted targets, for assistive technology.
     #[must_use]
     pub fn accessibility_children(&self) -> Vec<ui::a11y::AccessNode> {
-        let mut children = self.targets.accessibility_children();
-        children.extend(self.composer.accessibility());
-        children
+        self.targets.accessibility_children()
     }
 
     /// Carry out what assistive technology asked of one of

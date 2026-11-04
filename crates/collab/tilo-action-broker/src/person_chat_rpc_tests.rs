@@ -21,37 +21,40 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
                 public_key,
                 after_sequence,
             } => {
-                let page = tilo_peer_state::owner::DirectConversationPage {
+                let page = tilo_peer_state::owner::OldConversationPage {
                     after_sequence,
                     limit: 50,
                 };
-                let (peer, has_more, next_sequence, messages) = match self
+                // The door names people as the workspace does; the old store
+                // that kept their conversations spells them by their hash.
+                let stored = tilo_peer_state::owner::person_store_key(
+                    hex::decode(&public_key)
+                        .ok()
+                        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                        .ok_or("invalid conversation peer")?,
+                );
+                let conversation = match self
                     .0
-                    .read_direct_conversation(workspace, &public_key, &authority, page, now)
+                    .old_direct_conversation(workspace, &stored, &authority, page, now)
                 {
-                    Ok(conversation) => (
-                        conversation.peer,
-                        conversation.has_more,
-                        conversation.next_sequence,
-                        conversation.messages,
-                    ),
-                    // A person with no old conversation has nothing to import.
-                    Err(error) if error == "private conversation not opened" => {
-                        return serde_json::to_vec(&serde_json::json!({
-                            "peer": public_key,
-                            "has_more": false,
-                            "next_sequence": after_sequence,
-                            "messages": [],
-                        }))
-                        .map_err(|error| error.to_string());
-                    }
+                    Ok(conversation) => conversation,
                     Err(error) => return Err(error),
                 };
+                // A person with no old conversation has nothing to import.
+                let Some(conversation) = conversation else {
+                    return serde_json::to_vec(&serde_json::json!({
+                        "peer": public_key,
+                        "has_more": false,
+                        "next_sequence": after_sequence,
+                        "messages": [],
+                    }))
+                    .map_err(|error| error.to_string());
+                };
                 serde_json::json!({
-                    "peer": peer,
-                    "has_more": has_more,
-                    "next_sequence": next_sequence,
-                    "messages": messages.into_iter().map(|message| serde_json::json!({
+                    "peer": public_key,
+                    "has_more": conversation.has_more,
+                    "next_sequence": conversation.next_sequence,
+                    "messages": conversation.messages.into_iter().map(|message| serde_json::json!({
                         "id": message.id,
                         "author": message.sender,
                         "text": message.text,
@@ -61,7 +64,7 @@ impl crate::services::person_chat::PersonChatServices for PrivatePersonOwner {
             }
             PersonChatCommand::Clear => {
                 self.0
-                    .clear_private_direct_conversations(workspace, &authority, now)?;
+                    .clear_old_direct_conversations(workspace, &authority, now)?;
                 serde_json::json!({})
             }
         };
@@ -235,22 +238,7 @@ fn enroll_contact(
             )
             .unwrap();
     }
-    let peer = hex::encode(certificate.user_public_key);
-    assert!(
-        owner
-            .direct_contacts(
-                workspace,
-                &tilo_peer_state::caller_authority::CallerAuthority::Person {
-                    caller: governor.workspace_host().clone(),
-                },
-                now,
-            )
-            .unwrap()
-            .iter()
-            .any(|contact| contact.public_key == peer),
-        "the joined contact is the person's conversation peer"
-    );
-    peer
+    hex::encode(certificate.user_public_key)
 }
 
 /// Everything the workspace publishes about `owner`'s state, as peers can read it.
@@ -305,19 +293,7 @@ async fn person_rpc_imports_the_old_store_and_empties_it() {
             };
             let now = std::time::SystemTime::now();
             owner
-                .open_direct_conversation(workspace_id, &peer, &authority, now)
-                .unwrap();
-            owner
-                .send_direct_message(
-                    workspace_id,
-                    &peer,
-                    &authority,
-                    tilo_peer_state::owner::DirectMessageSend {
-                        invocation: uuid::Uuid::new_v4(),
-                        text: marker.into(),
-                    },
-                    now,
-                )
+                .seed_old_direct_conversations(workspace_id, &peer, &[marker], &[], now)
                 .unwrap();
             env.route.app_id = "so.tilo.chat".into();
             env.route.cluster_id = workspace_id.to_string();
@@ -379,7 +355,8 @@ async fn person_rpc_imports_the_old_store_and_empties_it() {
             assert_eq!(imported["messages"][0]["text"], marker);
             assert_eq!(
                 imported["messages"][0]["author"],
-                hex::encode(env.cert.user_public_key)
+                tilo_peer_state::owner::person_store_key(env.cert.user_public_key),
+                "the message says the person wrote it"
             );
             assert_eq!(
                 public_owner_bytes(&owner, workspace_id),
@@ -431,14 +408,20 @@ async fn person_rpc_imports_the_old_store_and_empties_it() {
             let reopened = tilo_peer_state::owner::open_file(&path).unwrap();
             assert!(
                 reopened
-                    .read_direct_conversation(
+                    .old_direct_conversation(
                         workspace_id,
-                        &peer,
+                        &tilo_peer_state::owner::person_store_key(
+                            hex::decode(&peer)
+                                .ok()
+                                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                                .unwrap(),
+                        ),
                         &authority,
-                        tilo_peer_state::owner::DirectConversationPage::default(),
+                        tilo_peer_state::owner::OldConversationPage::default(),
                         std::time::SystemTime::now(),
                     )
-                    .is_err(),
+                    .unwrap()
+                    .is_none(),
                 "the emptying passed the owner's store barrier"
             );
         })

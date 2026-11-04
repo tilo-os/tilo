@@ -154,9 +154,6 @@ pub struct OtherPerson {
     pub following: bool,
     /// The host can follow them (bring forward what they are in).
     pub can_follow: bool,
-    /// The host can open a direct conversation with them in Chat: their
-    /// root key is known and Chat holds person-only conversations here.
-    pub can_message: bool,
     /// Their accounts elsewhere, as their profile names them.
     pub linked: Vec<tilo_app::linked_accounts::ProfileLink>,
 }
@@ -243,19 +240,13 @@ pub enum ProfileChoice {
     ControlHints(bool),
     /// Follow this person (roster id), or stop following them.
     Follow(String),
-    /// Open a direct conversation in Chat with this person (root key, hex):
-    /// person to person, never through a bridge.
-    Message(String),
 }
 
 impl ProfileChoice {
     /// Whether the card closes on it: a linked account's choice keeps it
     /// open to show what came of it.
     fn closes(&self) -> bool {
-        matches!(
-            self,
-            Self::Rename(_) | Self::Action(_) | Self::Follow(_) | Self::Message(_)
-        )
+        matches!(self, Self::Rename(_) | Self::Action(_) | Self::Follow(_))
         // The rest are settings the card goes on showing.
     }
 }
@@ -509,20 +500,6 @@ impl ProfileCard {
             .no_wrap()
             .with_align_items(taffy::AlignItems::Center);
         let mut any = false;
-        if other.can_message
-            && let Some(key) = model.key.clone()
-        {
-            let chosen = Rc::clone(&self.chosen);
-            actions = actions.push(Box::new(
-                Button::new("profile-message", &t("profile-message"))
-                    .with_icon(Icon::MessageCircle)
-                    .role(ButtonRole::Primary)
-                    .on_own_device_effect(move || {
-                        *chosen.borrow_mut() = Some(ProfileChoice::Message(key.clone()));
-                    }),
-            ));
-            any = true;
-        }
         if other.can_follow {
             let chosen = Rc::clone(&self.chosen);
             let id = other.id.clone();
@@ -2155,7 +2132,7 @@ mod tests {
         ui::i18n::I18nManager::init("en-US");
         let mut card = ProfileCard::new();
         card.toggle(
-            &ada(true, crate::collaborators::LineSource::Generated),
+            &ada(crate::collaborators::LineSource::Generated),
             Rect::new(600.0, 300.0, 602.0, 302.0),
             Rect::new(0.0, 0.0, 1280.0, 720.0),
         );
@@ -2291,7 +2268,7 @@ mod tests {
 
     const ADA_KEY: &str = "a6d40c19e7b25f83c1d9e0a4b7f26c58d3e1a9b0c7f4e2d6a8b5c3e1f0d9a7c2";
 
-    fn ada(can_message: bool, status: crate::collaborators::LineSource) -> ProfileModel {
+    fn ada(status: crate::collaborators::LineSource) -> ProfileModel {
         ProfileModel {
             name: "Ada".into(),
             identity: "ada-device".into(),
@@ -2305,7 +2282,6 @@ mod tests {
                 place: None,
                 following: false,
                 can_follow: true,
-                can_message,
                 linked: Vec::new(),
             }),
             ..ProfileModel::default()
@@ -2324,27 +2300,14 @@ mod tests {
     }
 
     #[test]
-    fn someone_elses_card_says_who_they_are_and_offers_writing_and_following() {
-        let mut frame = framed_model(&ada(true, crate::collaborators::LineSource::Generated));
+    fn someone_elses_card_says_who_they_are_and_offers_following() {
+        let mut frame = framed_model(&ada(crate::collaborators::LineSource::Generated));
         let said = says(&mut frame);
         assert!(said.contains("Ada’s profile"), "{said}");
         assert!(said.contains("a6d40c19…a7c2"), "the id, short: {said}");
         assert!(said.contains("Written automatically"), "{said}");
         // Nothing of the person's own card: no name field, no identity.
         assert!(!said.contains("Your name"), "{said}");
-        click(&mut frame, "profile-message");
-        assert_eq!(
-            frame.take_choice(),
-            Some(ProfileChoice::Message(ADA_KEY.into()))
-        );
-
-        let mut frame = framed_model(&ada(false, crate::collaborators::LineSource::Written));
-        let said = says(&mut frame);
-        assert!(said.contains("In their own words"), "{said}");
-        assert!(
-            !said.contains("\"Message\""),
-            "no conversation to open: {said}"
-        );
         click(&mut frame, "profile-follow");
         assert_eq!(
             frame.take_choice(),
@@ -2379,7 +2342,7 @@ mod tests {
 
     #[test]
     fn someone_elses_card_names_their_linked_accounts() {
-        let mut model = ada(true, crate::collaborators::LineSource::Written);
+        let mut model = ada(crate::collaborators::LineSource::Written);
         let mut frame = framed_model(&model);
         assert!(!says(&mut frame).contains("Linked to"));
         if let Some(other) = &mut model.other {

@@ -174,7 +174,7 @@ def apps_rs(apps: list[dict]) -> str:
             "    }\n"
             "\n"
             "    fn open() -> Loading {\n"
-            "        Box::pin(crate::split::definition(APP, load, definition))\n"
+            "        Box::pin(crate::split::definition(load, definition))\n"
             "    }\n"
             "\n"
             "    pub(super) fn register() {\n"

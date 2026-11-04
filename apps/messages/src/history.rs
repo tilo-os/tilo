@@ -36,13 +36,20 @@ struct Projection {
 #[derive(Clone)]
 pub(crate) struct HistoryView {
     client: Option<HistoryClient>,
+    /// The conversations with the workspace's people are read where they
+    /// are kept: the workspace's own records, which this window holds.
+    direct: bool,
     state: LocalState<Projection>,
     changes: LocalState<u64>,
     _subscription: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl HistoryView {
-    pub(crate) fn new(client: Option<HistoryClient>, principal: Option<&str>) -> Self {
+    pub(crate) fn new(
+        client: Option<HistoryClient>,
+        principal: Option<&str>,
+        direct: bool,
+    ) -> Self {
         let client = client.filter(|client| {
             principal.is_some_and(|person| !person.is_empty() && person == client.principal())
         });
@@ -58,6 +65,7 @@ impl HistoryView {
             .map(std::sync::Arc::from);
         Self {
             client,
+            direct,
             state: LocalState::new(Projection::default()),
             changes,
             _subscription: subscription,
@@ -91,7 +99,7 @@ impl HistoryView {
     }
 
     pub(crate) fn available(&self) -> bool {
-        self.client.is_some()
+        self.client.is_some() || self.direct
     }
 
     pub(crate) fn clear(&self) {
@@ -103,7 +111,7 @@ impl HistoryView {
     }
 
     pub(crate) fn status(&self) -> Vec<EffectStatus> {
-        if self.client.is_some() {
+        if self.available() {
             return Vec::new();
         }
         vec![EffectStatus::unavailable(
@@ -120,13 +128,16 @@ impl HistoryView {
         choice: &str,
         cx: &mut EffectCx<Messages>,
     ) -> EffectAnswer {
+        let requested: Choice =
+            serde_json::from_str(choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
+        if requested.service == "tilo" {
+            return read_direct(sources, selection, &requested, self);
+        }
         let client = self
             .client
             .clone()
             .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
         let selected = selection.get();
-        let requested: Choice =
-            serde_json::from_str(choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
         let route = current_route(sources, &selected, &requested)?;
         let generation = self
             .state
@@ -196,6 +207,10 @@ impl HistoryView {
         let selected = selection.get();
         let requested: Choice =
             serde_json::from_str(choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
+        if requested.service == "tilo" {
+            // A record holds the whole conversation it always held.
+            return Ok(Effected::done());
+        }
         let route = current_route(sources, &selected, &requested)?;
         let projection = self.state.get();
         if projection.loading
@@ -334,6 +349,62 @@ impl HistoryView {
             },
         ))
     }
+}
+
+/// The conversation with one of the workspace's people, read where it is
+/// kept: the record the two of them share, the same one Chat shows.
+///
+/// A record holds every message of the conversation it always held, so the
+/// page is the whole of it and there is none before it. Reading it is what
+/// opening the conversation does, so it marks what came in as read.
+fn read_direct(
+    sources: &Sources,
+    selection: &LocalState<Selection>,
+    requested: &Choice,
+    view: &HistoryView,
+) -> EffectAnswer {
+    let page = direct_page(sources, selection, requested)?;
+    view.publish(page);
+    Ok(Effected::done())
+}
+
+/// The conversation with one of the workspace's people, as a page: the
+/// record opened, its messages as the list draws them, and what came in
+/// marked read.
+pub(crate) fn direct_page(
+    sources: &Sources,
+    selection: &LocalState<Selection>,
+    requested: &Choice,
+) -> Result<HistoryPage, String> {
+    let direct = sources
+        .direct
+        .clone()
+        .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
+    let selected = selection.get();
+    let route = current_route(sources, &selected, requested)?;
+    let conversation = direct.open(&selected.person)?;
+    direct.mark_read(&selected.person);
+    let messages = conversation
+        .messages
+        .iter()
+        .map(|message| tilo_messaging::Message {
+            id: message.id.clone(),
+            text: message.text.clone().into(),
+            direction: if message.author == direct.person() {
+                Direction::Outgoing
+            } else {
+                Direction::Incoming
+            },
+            timestamp_ms: u64::try_from(message.at).unwrap_or(0),
+            // Nothing stands between the two of them and the record.
+            delivery: None,
+        })
+        .collect();
+    Ok(HistoryPage {
+        route,
+        messages,
+        more: false,
+    })
 }
 
 /// Older messages lead the conversation, so the way back to them stands

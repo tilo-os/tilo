@@ -115,9 +115,6 @@ impl EnrollmentView {
             }
             MessagesEffect::ListSmsSims => self.sims(client, cx),
             MessagesEffect::SelectSmsSim { selection } => self.select_sim(client, selection, cx),
-            MessagesEffect::BeginFirstEnrollment { service } if service == "tilo" => {
-                self.prepare(client, service, cx)
-            }
             MessagesEffect::BeginFirstEnrollment { service } => self.begin(client, service, cx),
             MessagesEffect::CompleteFirstEnrollment {
                 service,
@@ -403,13 +400,6 @@ impl EnrollmentView {
                 "messages-first-signal",
                 "messages-first-signal-hint",
                 Icon::Lock,
-            ),
-            (
-                "messages.first-tilo",
-                "tilo",
-                "messages-first-tilo",
-                "messages-first-tilo-hint",
-                Icon::User,
             ),
         ] {
             rows.push(Box::new(

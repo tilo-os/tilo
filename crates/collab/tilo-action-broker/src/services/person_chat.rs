@@ -17,13 +17,14 @@ pub trait PersonChatServices: Send + Sync {
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum PersonChatCommand {
     /// One page of a conversation still held in the person's old private
-    /// store, read so that pair records can import it. Never a write.
+    /// store, read so that the conversations they belong to can import it.
+    /// Never a write.
     Import {
         public_key: String,
         after_sequence: u64,
     },
     /// Empty the person's old private store: the conversations it held are in
-    /// the pair records, and nothing reads or writes it again.
+    /// their records, and nothing reads or writes it again.
     Clear,
 }
 // An internally tagged unit variant accepts extra fields even with

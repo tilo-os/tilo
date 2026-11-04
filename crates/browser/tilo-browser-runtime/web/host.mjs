@@ -14,10 +14,7 @@ import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
 import {createHere} from './here.mjs';
-/** Chat, which holds person-to-person conversations. */
-const CHAT_APP='so.tilo.chat';
 import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs';
-import {focusedApp,untilSnapshot} from './open-target.mjs';
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 export {createPanorama} from './panorama.mjs';
@@ -213,48 +210,6 @@ export async function mountDesktop(target,options={}) {
   function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
   // The pictures people chose for their profiles, worn by their avatars here.
   async function showPhoto(user,url){const pixels=url?await photoPixels(url):null;if(active()&&runtime.desktop_set_person_photo)runtime.desktop_set_person_photo(id,user,pixels?.width??0,pixels?.height??0,pixels?.rgba??new Uint8Array());}
-  // Chat's window to run its actions in: one already open (left where it
-  // is), else Chat opened, as invoking an action shows its view.
-  async function chatWindow(){
-    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
-    const snapshot=nav.getSnapshot();
-    if(focusedApp(snapshot)===CHAT_APP)return snapshot.active.tab;
-    const open=snapshot.entries?.find(entry=>entry.app===CHAT_APP);
-    if(open)return open.route.tab;
-    await nav.dispatch({effect:'show-app',args:{app:CHAT_APP}});
-    const shown=await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
-    return shown.active.tab;
-  }
-  // Run what the person asked of Chat on its conversation with `ask.to`
-  // (root key, hex), as their own act: Chat offers it once the workspace's list
-  // of people has them.
-  async function runOwnAsk(ask){
-    const window=await chatWindow();
-    for(let waited=0;;waited+=100){
-      const offered=active()&&JSON.parse(runtime.component_actions(id,undefined,window)).find(entry=>entry.address?.action===ask.action&&String(entry.address.resource??'').endsWith(`chat.person:${ask.to}`));
-      if(offered)return runtime.desktop_run_own_ask(id,ask.id,offered.address.resource,window);
-      if(waited>=10_000)throw Error('Chat has no conversation with this person');
-      await new Promise(done=>setTimeout(done,100));
-    }
-  }
-  // Chat's direct conversation with someone, opened as following a link to it does.
-  async function messagePerson(ask){
-    const nav=navigation?.controller;if(!nav)throw Error('This desktop cannot open Chat');
-    const snapshot=nav.getSnapshot();
-    if(focusedApp(snapshot)!==CHAT_APP){
-      await nav.dispatch({effect:'show-app',args:{app:CHAT_APP}});
-      await untilSnapshot(nav,next=>focusedApp(next)===CHAT_APP,{frames:()=>lastState?.frames??Infinity});
-    }
-    await runOwnAsk(ask);
-  }
-  // A message written to `to` in the people overlay, sent by Chat's own
-  // `send-direct-message`, the one way a direct message goes; the overlay
-  // hears whether Chat took it.
-  async function sendToPerson(ask){
-    let refusal=null;
-    try{await runOwnAsk(ask);}catch(error){refusal=String(error?.message??error);}
-    if(active()&&runtime.desktop_message_answer)runtime.desktop_message_answer(id,ask.id,refusal??undefined);
-  }
   // What the person says they are doing and how they share it, as their
   // profile keeps it: set on another of their devices, it shows here too.
   function ownStatus(profile){
@@ -289,7 +244,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.message)void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.send)void sendToPerson(request.send);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(typeof request?.message==='string')void messagePerson(request.message).catch(error=>report({messageError:String(error)}));else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
     // This person's latest wave, which the one it is for shows once.

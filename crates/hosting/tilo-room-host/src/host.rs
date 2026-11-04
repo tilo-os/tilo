@@ -133,10 +133,9 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace host answers on.
-const HOST_ALPNS: [&[u8]; 4] = [
+const HOST_ALPNS: [&[u8]; 3] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-    tilo_relay_session::workspaces::private::PRIVATE_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
 ];
 
@@ -456,10 +455,6 @@ fn host_handlers(
                     workspaces.join_service(),
                 ),
             ),
-        ),
-        (
-            tilo_relay_session::workspaces::private::PRIVATE_ALPN,
-            Arc::new(crate::workspaces::PrivateProtocol::new(workspaces.clone())),
         ),
         // The host's own device answers a workspace's member devices here, as
         // the members answer each other: an offer is answered by the host as

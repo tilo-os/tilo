@@ -3,7 +3,7 @@
 //!
 //! The conversation itself is an ordinary record of the workspace, which Chat
 //! reads and writes as the app's own resource and which never passes this door
-//! (`apps/chat/src/direct/acceptance.rs`). The people of this workspace are
+//! (`apps/chat/src/direct.rs`). The people of this workspace are
 //! the person whose device runs the session, another device of theirs, and
 //! someone else the workspace certified; the app reaches the door as the
 //! certificate the broker attested on its connection.
@@ -31,7 +31,6 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::caller_authority::CallerAuthority;
 use tilo_peer_state::owner::{self, testing};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Lists, Options, SearchOptions, Session};
@@ -67,19 +66,6 @@ struct Keys {
     /// and their certificate.
     peer: ed25519_dalek::SigningKey,
     peer_cert: DeviceCert,
-}
-
-impl Keys {
-    /// The other person, as the workspace and the conversation name a person.
-    fn peer_key(&self) -> String {
-        person(self.peer_cert.user_public_key)
-    }
-}
-
-/// A person's public root, as their conversations name them: the owner's own
-/// spelling of a person, which is what Chat lists and sends to.
-fn person(root: [u8; 32]) -> String {
-    blake3::Hash::from_bytes(root).to_hex().to_string()
 }
 
 /// A person, their identity provisioned where this test's session reads it,
@@ -243,47 +229,20 @@ fn hold_workspace(state: &Path, keys: &Keys, old_conversation: bool) {
             )
             .expect("the host admits the workspace's people");
     }
-    let people = owner
-        .direct_contacts(
-            workspace,
-            &CallerAuthority::Person {
-                caller: keys.cert.clone(),
-            },
-            std::time::SystemTime::now(),
-        )
-        .expect("the owner lists the workspace's people");
-    assert!(
-        people
-            .iter()
-            .any(|contact| contact.public_key == keys.peer_key()),
-        "the other person is a contact before the session starts: {people:?}"
-    );
     if !old_conversation {
         return;
     }
     // The conversation the old private store holds, before Chat moved to the
     // pair's record: what a person's history imports from.
-    let now = std::time::SystemTime::now();
-    let authority = CallerAuthority::Person {
-        caller: keys.cert.clone(),
-    };
     owner
-        .open_direct_conversation(workspace, &keys.peer_key(), &authority, now)
-        .expect("the old store opens the conversation");
-    for text in ["before the records", "and one more"] {
-        owner
-            .send_direct_message(
-                workspace,
-                &keys.peer_key(),
-                &authority,
-                tilo_peer_state::owner::DirectMessageSend {
-                    invocation: uuid::Uuid::new_v4(),
-                    text: text.to_owned(),
-                },
-                now,
-            )
-            .expect("the old store keeps the message");
-    }
+        .seed_old_direct_conversations(
+            workspace,
+            &hex::encode(keys.peer_cert.user_public_key),
+            &["before the records", "and one more"],
+            &[],
+            std::time::SystemTime::now(),
+        )
+        .expect("the old store keeps the conversation");
 }
 
 /// The person `root` certifies, as a workspace names its owner.

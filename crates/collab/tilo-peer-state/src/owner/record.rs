@@ -107,9 +107,10 @@ pub(crate) struct StoredWorkspace {
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
-    /// Two-person private text; never included in public workspace or task state.
+    /// Two-person text an older build kept here, read once by the import into
+    /// the conversation's own record and then emptied. Never written.
     #[serde(default, rename = "privateDirectConversations")]
-    pub private_direct_conversations: crate::owner::PrivateDirectConversationStore,
+    pub old_direct_conversations: crate::owner::OldDirectConversations,
     pub generation: u64,
     pub continuity: u64,
     /// Outgoing publication state; required on every committed workspace record.

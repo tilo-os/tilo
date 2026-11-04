@@ -1035,41 +1035,6 @@ async fn route(
             }
             Ok(encoded(&reply))
         }
-        tilo_relay_protocol::workspaces::private::PRIVATE_PATH => {
-            use tilo_relay_protocol::workspaces::private::{MAX_REQUEST_BYTES, PrivateCall};
-            let session = authed()?;
-            // The governor's private door, the one a native device reaches
-            // over iroh, within the same bounds.
-            let door = web
-                .workspaces
-                .clone()
-                .map(crate::workspaces::PrivateProtocol::new)
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            if bytes.len() > MAX_REQUEST_BYTES {
-                return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
-            }
-            let call: PrivateCall = decode(&bytes)?;
-            let device = session.peer.device_public_key;
-            let _admitted = door
-                .admit(device)
-                .ok_or_else(|| status(StatusCode::SERVICE_UNAVAILABLE, "busy"))?;
-            // A watch is a long-poll, held as long as `/events` holds one.
-            let poll = async {
-                tokio::time::sleep(wait(MAX_POLL_MS)).await;
-                Ok(())
-            };
-            let reply = door
-                .serve(
-                    &session.peer.cert,
-                    &device,
-                    &call.workspace,
-                    call.operation,
-                    poll,
-                )
-                .await;
-            drop(door);
-            Ok(encoded(&reply))
-        }
         "/rooms" => {
             let session = authed()?;
             let workspaces = web

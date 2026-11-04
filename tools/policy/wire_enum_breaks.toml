@@ -137,3 +137,28 @@ reason = "one JSON request per call over the socket between an app and the runti
 file = "crates/collab/tilo-action-broker/src/services/person_chat.rs"
 enum = "ClosedPersonChatCommand"
 reason = "the decoder of `PersonChatCommand`: the same JSON, by name, on the same one-build socket, so the operations that went with the pair's own record take their names with them and no stored byte points at a position"
+
+[[break]]
+file = "crates/browser/tilo-browser-runtime/src/shell.rs"
+enum = "HostRequest"
+reason = "write-only: the desktop hands its embedded page a JSON list of requests, tagged by name (`rename_all = kebab-case`), and nothing deserializes it back, so the requests that opened and sent a Chat message take their names with them and their places carry no bytes"
+
+[[break]]
+file = "crates/collab/collaboration/src/person_chat.rs"
+enum = "Request"
+reason = "write-only: one JSON request per call from an app to the host that serves its workspace, tagged by its `operation` name, and the host decodes it as `PersonChatCommand` on the same one-build socket; the operations that carried a conversation's body and its pair list are gone, by name, and no stored byte points at a position"
+
+[[break]]
+file = "crates/session/messaging-service/src/door.rs"
+enum = "Call"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the calls that carried private Tilo texts went with that lane, and no byte of the door is kept"
+
+[[break]]
+file = "crates/session/messaging-service/src/door.rs"
+enum = "Reply"
+reason = "one JSON frame over the standard input and output between the messaging service and the compositor that starts it from the same image, tagged by name; the reply carrying a device certificate went with the private Tilo lane, and no byte of the door is kept"
+
+[[break]]
+file = "crates/session/messaging-service/src/door.rs"
+enum = "PublicationKind"
+reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image door; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"

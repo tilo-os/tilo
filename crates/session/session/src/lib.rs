@@ -101,7 +101,6 @@ mod lock_screen;
 mod lock_service;
 pub mod logging;
 mod membership;
-pub mod messages;
 pub mod mount;
 pub mod nearby_transfer;
 mod network;
@@ -1281,8 +1280,6 @@ impl Session {
         if let Some(sync) = &sync {
             sync.attach_desk(handle.clone());
         }
-        // The person's private messages, carried by that same endpoint.
-        let _messages = mount::services::mount_messages(&mut options, sync.as_deref());
         // The person's own workspaces, which their other devices hold with
         // them: kept beside the desk, and opened when this computer knows
         // whose they are.

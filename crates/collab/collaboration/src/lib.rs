@@ -113,9 +113,9 @@ pub mod portable_storage;
 pub mod record;
 pub mod state;
 
-// The clock, background work, wake routing and host inputs, under the paths
-// the toolkit names them by (`ui::time`, `ui::background`, `ui::wake`,
-// `ui::host`), without the toolkit's host services.
+// The clock, wake routing and host inputs, under the paths the toolkit
+// names them by (`ui::time`, `ui::wake`, `ui::host`), without the toolkit's
+// host services.
 pub(crate) mod time {
     // The broker's tests stamp records with it.
     #[cfg(all(test, feature = "broker-transport"))]
@@ -125,8 +125,6 @@ pub(crate) mod time {
     #[cfg(feature = "broker-transport")]
     pub use tilo_clock::wall;
 }
-#[cfg(feature = "broker-transport")]
-pub(crate) use tilo_rt::background;
 pub(crate) use tilo_rt::wake;
 pub(crate) use wake::WakeHandle;
 #[cfg(test)]

@@ -1866,10 +1866,7 @@ impl WasmPeer {
                 store,
             )
             .map_err(js_error)?;
-            // The workspace the page replicates is the one its person talks in
-            // privately.
             if crate::page_person::speaks(self.id) {
-                crate::person_chat::install(self.handle.clone(), workspace);
                 if let Some(identity) = ui::local_identity::load() {
                     set_member_name(&self.handle, workspace, &identity.display_name);
                 }
@@ -2716,7 +2713,6 @@ impl WasmPeer {
         self.handle.close();
         crate::replication::close(self.id);
         if crate::page_person::release(self.id) {
-            crate::person_chat::uninstall();
             ui::local_identity::install_source(None);
         }
     }

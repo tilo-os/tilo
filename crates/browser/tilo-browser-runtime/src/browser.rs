@@ -1301,7 +1301,6 @@ fn present_component(
     ));
     crate::person_records::provide(&mut context, dyn_store).map_err(error)?;
     config.lend_provider_admin(&mut context)?;
-    crate::app_loans::lend(&mut context);
     let loaders = Rc::new(RefCell::new(Vec::new()));
     let image_owners = crate::page_content::ImageOwners::default();
     crate::page_content::serve_window(&context.wake_handle(), &loaders, &image_owners);

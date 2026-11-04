@@ -674,7 +674,6 @@ impl BrokerTransport {
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
         {
-            crate::person_chat::invalidate();
             *bridge = Some(self.outbound_tx.downgrade());
             self.command_bridge_registered = true;
         }
@@ -3724,9 +3723,7 @@ async fn drive_shovel(
 ) {
     struct PrivatePersonSnapshotLifetime;
     impl Drop for PrivatePersonSnapshotLifetime {
-        fn drop(&mut self) {
-            crate::person_chat::invalidate();
-        }
+        fn drop(&mut self) {}
     }
     let _private_person_snapshot_lifetime = PrivatePersonSnapshotLifetime;
     let LocalSdkJoinIdentity {
@@ -3882,7 +3879,6 @@ async fn drive_shovel(
                 };
                 inbound_tx.state.set_join_hold(None);
                 primary_result = joined.map(|()| spec);
-                crate::person_chat::invalidate();
                 primary = primary_result.is_ok().then_some(key);
                 // The startup file splits the owner's wait for `PrimaryReady`.
                 tilo_startup_metrics::startup_mark("collab-route-joined");
@@ -4756,9 +4752,7 @@ async fn spawn_context_stream(
         tokio::task::spawn_local(async move {
             struct PrivateContextLifetime;
             impl Drop for PrivateContextLifetime {
-                fn drop(&mut self) {
-                    crate::person_chat::invalidate();
-                }
+                fn drop(&mut self) {}
             }
             let _private_context_lifetime = PrivateContextLifetime;
             let mut private_person_basis = None;
@@ -4843,7 +4837,6 @@ async fn spawn_context_stream(
                 permissions.compact_sort();
                 let basis = (people, permissions);
                 if private_person_basis.as_ref() != Some(&basis) {
-                    crate::person_chat::invalidate();
                     private_person_basis = Some(basis);
                 }
                 if !tx

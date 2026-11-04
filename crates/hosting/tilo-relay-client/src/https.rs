@@ -226,35 +226,6 @@ pub async fn live(
     .await
 }
 
-/// Ask the room's governor for a private operation as this session's
-/// device ([`tilo_relay_protocol::workspaces::private`]): the same door a native
-/// device reaches over iroh. A watch is held by the host up to its poll
-/// bound.
-///
-/// # Errors
-///
-/// Returns [`LinkError::Refused`] when the session is gone, and
-/// [`LinkError::Malformed`] for an answer past the reply bound. A refused
-/// operation answers [`PrivateReply::Refused`](tilo_relay_protocol::workspaces::private::PrivateReply::Refused).
-pub async fn private(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::workspaces::private::PrivateCall,
-) -> Result<tilo_relay_protocol::workspaces::private::PrivateReply, LinkError> {
-    use tilo_relay_protocol::workspaces::private::{
-        MAX_REPLY_BYTES, MAX_REQUEST_BYTES, PRIVATE_PATH,
-    };
-    let body = encode(request)?;
-    if body.len() > MAX_REQUEST_BYTES {
-        return Err(LinkError::Malformed("private request exceeds bound".into()));
-    }
-    let bytes = call_raw(client, PRIVATE_PATH, Some(session), body).await?;
-    if bytes.len() > MAX_REPLY_BYTES {
-        return Err(LinkError::Malformed("private reply exceeds bound".into()));
-    }
-    postcard::from_bytes(&bytes).map_err(|_| LinkError::Malformed("private reply".into()))
-}
-
 /// Administer the host's workspaces as this session's device (`/rooms`).
 pub async fn workspaces(
     client: &dyn HttpClient,
