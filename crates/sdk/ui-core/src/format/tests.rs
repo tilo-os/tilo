@@ -481,6 +481,36 @@ fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     );
 }
 
+/// A day something was done on reads as the day it happened: today, yesterday, the weekday
+/// within the week gone by, the month and day of this year and the date of another. It is
+/// history, so no day of it reads as overdue.
+#[test]
+fn a_done_day_reads_as_the_day_it_happened_in_english_and_german() {
+    let today = day(2026, 6, 30); // a Tuesday
+    speak("en-US");
+    for (when, english, _) in [
+        (day(2026, 6, 30), "Today", "Heute"),
+        (day(2026, 6, 29), "Yesterday", "Gestern"),
+        (day(2026, 6, 24), "Wednesday", "Mittwoch"),
+        (day(2026, 6, 20), "Jun 20", "20. Juni"),
+        (day(2026, 1, 5), "Jan 5", "5. Jan."),
+        (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
+    ] {
+        assert_eq!(H24.day_done(when, today), english, "{when:?}");
+    }
+    speak("de-DE");
+    for (when, _, german) in [
+        (day(2026, 6, 30), "Today", "Heute"),
+        (day(2026, 6, 29), "Yesterday", "Gestern"),
+        (day(2026, 6, 24), "Wednesday", "Mittwoch"),
+        (day(2026, 6, 20), "Jun 20", "20. Juni"),
+        (day(2026, 1, 5), "Jan 5", "5. Jan."),
+        (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
+    ] {
+        assert_eq!(H24.day_done(when, today), german, "{when:?}");
+    }
+}
+
 /// A day and the time of it are one fact: today's time stands with "Today", the week ahead's
 /// with its weekday, and a day gone by keeps its own name under the overdue tone.
 #[test]
