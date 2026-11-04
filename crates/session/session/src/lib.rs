@@ -746,9 +746,10 @@ impl Shared {
         {
             door.follow(&self.handle, &self.person);
         }
+        self.tell_agent_bindings_lost();
         self.asker.follow();
         self.shortcut_guide.follow();
-        self.app_sheets.follow();
+        self.app_sheets.follow(self.downloaded_apps().as_ref());
     }
 }
 

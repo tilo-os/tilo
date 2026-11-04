@@ -691,20 +691,7 @@ impl DesktopPolicy {
     /// what the person sees where the window would be, and closes when they
     /// are done with it. False when the tab is gone or holds no app.
     pub fn note_in_tab(&mut self, tab: TabId, note: &str) -> bool {
-        let mut tree = self.handle.read(Clone::clone);
-        let Some(found) = tabs_mut(&mut tree).find(|found| found.id == tab) else {
-            return false;
-        };
-        let TileContent::LocalApp { note: said, .. } = &mut found.tile else {
-            return false;
-        };
-        if said == note {
-            return false;
-        }
-        note.clone_into(said);
-        self.handle.replace_tree(tree);
-        self.handle.rebuild(tab);
-        true
+        self.handle.note_in_tab(tab, note)
     }
 
     /// Whether `tab` still waits for the window of a saved app: what the

@@ -501,3 +501,66 @@ fn an_uninstall_that_cannot_trash_the_file_says_so() {
         "the question is taken down"
     );
 }
+
+/// A registry of the person's apps that publishes a reading this build does
+/// not read: what a registry a newer build wrote reads like here.
+struct NotReadBack;
+
+impl tilo_service::Service for NotReadBack {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        Vec::new()
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == tilo_app_launch::downloaded::RESOURCE)
+            .then(|| serde_json::json!({"apps": "kept by a newer build"}))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        Err(tilo_actions::DoorError::Unavailable {
+            code: "not-read-back".to_owned(),
+            reason: format!("{resource}:{action} is not read by this build"),
+        })
+    }
+}
+
+#[test]
+fn a_registry_that_does_not_read_back_says_nothing_was_removed() {
+    let _settled = ui::motion::testing::settled();
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    // A registry of theirs this build cannot read: their apps would simply
+    // be gone from the launcher, so they are told once instead.
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            services: vec![Box::new(NotReadBack)],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the notice", |session| {
+        !notices(session).is_empty()
+    });
+    assert_eq!(
+        notices(&session),
+        [(
+            "Your downloaded apps could not be read".to_owned(),
+            "This computer could not read the list of programs you added to \
+             your apps, so they are not listed now. Nothing was removed: they \
+             are still on this computer."
+                .to_owned()
+        )]
+    );
+    // Told once: the registry is read again every pass of the session's loop.
+    for _ in 0..50 {
+        session.step(Duration::from_millis(10)).expect("a pass");
+    }
+    assert_eq!(notices(&session).len(), 1, "said once");
+}

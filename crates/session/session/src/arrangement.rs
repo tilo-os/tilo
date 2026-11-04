@@ -34,6 +34,8 @@ use tilo_surface_host::Published;
 use ui::automerge::{AutoCommit, ChangeHash};
 use ui::state::UndoLog;
 
+use crate::i18n::t;
+
 /// The size a place made from a resource takes on the canvas when the
 /// caller names none: the framed canvas's window, in canvas pixels.
 const DEFAULT_WIDTH: i64 = 720;
@@ -354,6 +356,12 @@ impl ArrangementAction {
     }
 }
 
+/// What a tab says when the person's record kept a window state this build
+/// cannot read: the window is not here, and closing the tab is the end of it.
+fn not_read() -> String {
+    t("desk-place-not-read")
+}
+
 /// What the person is in the middle of, as shell.md §1's one fixed rule
 /// reads it: nothing moves under a gesture or while they type.
 pub use tilo_compositor::Underway as Busy;
@@ -424,10 +432,15 @@ impl Arrangement {
                 }
                 let tile = match serde_json::from_value::<TileContent>(place.state.clone()) {
                     Ok(tile) => tile,
+                    // A live window this build cannot read opens nothing, and
+                    // the place stays exactly as the record keeps it: its tab
+                    // says why ([`Self::place`]), the person closes it when
+                    // they are done, and a build that reads the state opens
+                    // the window it kept. Removing it here would take the
+                    // place off their other devices too.
                     Err(error) => {
-                        // A live window this build cannot read opens nothing.
                         tracing::warn!(%error, "a saved place does not read back; its window is not restored");
-                        changed = true;
+                        strip.places.push(place);
                         continue;
                     }
                 };
@@ -1052,6 +1065,13 @@ impl Arrangement {
             tree.outputs = outputs;
         }
         self.handle.replace_tree(tree);
+        // A place whose window state this build cannot read has its tab all
+        // the same, saying why its window is not here: the person closes it
+        // when they are done, and the place the record keeps is opened by a
+        // build that reads it.
+        for place in strips.places().filter(|place| !place.reads_back()) {
+            self.handle.note_in_tab(place.id, &not_read());
+        }
         // What the desk shows now is the record's: it is not the desk doing
         // something of its own.
         *self.seen.borrow_mut() = Some(self.strips());

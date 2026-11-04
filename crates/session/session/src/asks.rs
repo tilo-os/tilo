@@ -247,19 +247,16 @@ impl Shared {
                     workspace,
                     *route,
                 ),
-                mount::tools::Ask::Uninstall { app, .. } => self.ask_uninstall(app),
+                mount::tools::Ask::Uninstall { app, .. } => {
+                    if self.ask_uninstall(app) {
+                        Ok(())
+                    } else {
+                        Err("this session shows no uninstall question".to_owned())
+                    }
+                }
             };
             ask.answer(answered);
         }
-    }
-
-    /// Leave `app` for the uninstall sheet, when this session shows one.
-    fn ask_uninstall(&self, app: &str) -> Result<(), String> {
-        if self.app_sheets.uninstall().is_none() {
-            return Err("this session shows no uninstall question".to_owned());
-        }
-        self.app_sheets.ask_uninstall(app);
-        Ok(())
     }
 
     /// What workspace settings feeds its panes from.

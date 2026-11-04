@@ -298,3 +298,72 @@ fn an_admitted_agents_control_connection_is_served_as_its_own_seat() {
         "an ended agent's program has no seat: {refused}"
     );
 }
+
+/// What the desk says to the person now: the titles and bodies of its notices.
+fn said(session: &Session) -> Vec<(String, String)> {
+    session
+        .notifications()
+        .log()
+        .active()
+        .iter()
+        .map(|notice| (notice.title.clone(), notice.body.clone()))
+        .collect()
+}
+
+/// An answer this build cannot read costs the agent that answer — it is asked
+/// about again — and the person is told once, naming it, instead of the agent
+/// silently losing what it was allowed.
+#[test]
+fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    // What an older build kept: the client and the agent it asked, in a row
+    // this one does not read (no program of theirs named).
+    std::fs::write(
+        root.path().join("agent-door-bindings.json"),
+        br#"{"bindings": [{"agent": "claude-code", "client": "Claude Code"}]}"#,
+    )
+    .expect("the answers kept");
+    let socket = root.path().join("agent.sock");
+    let questions = Questions::new();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            questions: Some(questions),
+            collab: false,
+            state: Some(root.path().to_path_buf()),
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(socket),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+
+    pump(&mut session, |session| {
+        said(session)
+            .iter()
+            .any(|(title, _)| title == "claude-code is asked again")
+    });
+    let about = |session: &Session| {
+        said(session)
+            .into_iter()
+            .filter(|(title, _)| title == "claude-code is asked again")
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        about(&session),
+        [(
+            "claude-code is asked again".to_owned(),
+            "This computer could not read that you let claude-code work here, so it \
+             asks you again the next time claude-code connects. Nothing else was \
+             removed."
+                .to_owned()
+        )]
+    );
+    // Told once, though the session's loop looks at the door every pass.
+    for _ in 0..50 {
+        session.step(Duration::from_millis(2)).expect("step");
+    }
+    assert_eq!(about(&session).len(), 1, "said once");
+}

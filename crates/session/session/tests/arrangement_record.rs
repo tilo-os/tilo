@@ -812,3 +812,76 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
         "and closed no other place"
     );
 }
+
+// (4) A place whose saved window state this build cannot read: the window
+// does not come back, and its tab says why, where the person can close it —
+// the place itself stays in their record for a build that reads it.
+#[test]
+fn a_place_that_does_not_read_back_keeps_its_tab_saying_why() {
+    let _settled = ui::motion::testing::settled();
+    let state = tempfile::tempdir().expect("a state directory");
+    // The place as this build's desk and record hold it.
+    let mut first = session_in(Some(state.path().to_path_buf()));
+    step(&mut first);
+    let tab = open_window(&mut first, "org.example.Notes");
+    step(&mut first);
+    assert!(
+        arrangement(&first).strip_of(tab).is_some(),
+        "the record holds the place"
+    );
+    first
+        .arrangement()
+        .borrow_mut()
+        .save(state.path())
+        .expect("the record is kept");
+    drop(first);
+
+    // The state a newer build wrote for that place, as this one reads it: a
+    // live window it cannot open again.
+    let kept = tilo_session::arrangement::load_at(state.path()).expect("the record");
+    let mut doc = ui::automerge::AutoCommit::load(&kept).expect("the record reads");
+    let mut strips = own_arrangement::read(&doc);
+    assert!(
+        strips.place(tab).is_some(),
+        "the record kept the place the desk held"
+    );
+    for strip in &mut strips.strips {
+        for place in &mut strip.places {
+            if place.id == tab {
+                place.state = serde_json::json!({"Foreign": {"label": "Notes"}});
+            }
+        }
+    }
+    own_arrangement::write(&mut doc, &strips).expect("the record");
+    tilo_session::arrangement::save_at(state.path(), &mut doc).expect("kept");
+
+    let mut session = session_in(Some(state.path().to_path_buf()));
+    step(&mut session);
+    step(&mut session);
+
+    // The place is still theirs: a build that reads the state opens the
+    // window it kept, and closing the tab is the end of it here.
+    assert!(
+        arrangement(&session).strip_of(tab).is_some(),
+        "the place stays in their record"
+    );
+
+    // Where the window would be, its tab says why it is not here.
+    let tile = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|found| found.id == tab)
+            .map(|found| found.tile.clone())
+    });
+    let Some(tilo_desktop_model::TileContent::LocalApp { note, .. }) = tile else {
+        panic!("the place has its tab: {tile:?}");
+    };
+    assert_eq!(
+        note,
+        "Its saved window could not be read, so it is not here. Close this tab \
+         when you are done with it; the app opens again next time you sign in."
+    );
+}

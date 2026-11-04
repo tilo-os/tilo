@@ -13,7 +13,11 @@
 //!
 //! Two more say what this computer could not read of the person's own state —
 //! the list of their workspaces, and how far its last update got — so a list
-//! that starts empty or an update that does nothing is not unexplained.
+//! that starts empty or an update that does nothing is not unexplained. The
+//! same goes for what it kept of the agents they let work here, and of the
+//! programs they added to their apps: each is asked about again, or missing
+//! from the launcher, and they are told once why. Each of these keeps its
+//! operator's own warning in the log beside the person's notice.
 //!
 //! They are the whole machine's news, so they are shown on every display
 //! ([`Notification::machine_wide`]).
@@ -625,6 +629,54 @@ pub(crate) fn workspaces_notice() -> Notice {
         urgency: 1,
         title: t("workspaces-unreadable-title"),
         body: t("workspaces-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice that the "Always allow" answers this computer kept for the
+/// agents at its door do not read back: `agent` is the one the answer was
+/// given to, as far as the kept file still says, and `None` when it does not
+/// say even that. Raised by the door's own mount
+/// ([`crate::agent_door::mount_named`]), which keeps the warning for
+/// operators; each answer is asked for again the next time its agent
+/// connects.
+pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {
+    let (title, body) = match agent {
+        Some(agent) => (
+            t_args("agent-bindings-lost-title", &[("agent", agent.into())]),
+            t_args("agent-bindings-lost-body", &[("agent", agent.into())]),
+        ),
+        None => (
+            t("agent-bindings-unreadable-title"),
+            t("agent-bindings-unreadable-body"),
+        ),
+    };
+    Notice {
+        app: t("agent-bindings-app-name"),
+        urgency: 1,
+        title,
+        body,
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice that the registry of the programs the person downloaded does
+/// not read back: none of their apps is listed until it does, so it says why
+/// rather than letting them look gone. Raised once, by the pass that reads it
+/// ([`crate::Shared::downloaded_apps`]), which keeps the warning for
+/// operators.
+pub(crate) fn downloaded_apps_notice() -> Notice {
+    Notice {
+        app: t("downloaded-apps-app-name"),
+        urgency: 1,
+        title: t("downloaded-apps-unreadable-title"),
+        body: t("downloaded-apps-unreadable-body"),
         actions: Vec::new(),
         expires_after: None,
         machine_wide: true,

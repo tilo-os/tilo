@@ -77,6 +77,25 @@ desk-window-not-installed = { $app } is not installed on this machine
 desk-window-would-not-start = { $app } could not be started: { $why }
 desk-window-did-not-open = { $app } started but did not open a window
 
+## A window the person's record kept whose saved state this version cannot
+## read: its tab says why the window is not here instead of the place being
+## dropped.
+desk-place-not-read = Its saved window could not be read, so it is not here. Close this tab when you are done with it; the app opens again next time you sign in.
+
+## The "Always allow" answers this computer kept for the agents at its door,
+## which could not be read: each agent whose answer it was is asked again.
+agent-bindings-app-name = Agents
+agent-bindings-lost-title = { $agent } is asked again
+agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
+agent-bindings-unreadable-title = Your answers about agents could not be read
+agent-bindings-unreadable-body = This computer could not read which agents you let work here, so it asks you again the next time each one connects. Nothing else was removed.
+
+## The registry of the programs the person downloaded does not read back: none
+## of their apps is listed until it does, and none is gone.
+downloaded-apps-app-name = Downloaded apps
+downloaded-apps-unreadable-title = Your downloaded apps could not be read
+downloaded-apps-unreadable-body = This computer could not read the list of programs you added to your apps, so they are not listed now. Nothing was removed: they are still on this computer.
+
 ## A display tool tried to put back a layout the person had just reverted.
 display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
 display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted

@@ -78,6 +78,26 @@ desk-window-not-installed = { $app } ist auf diesem Rechner nicht installiert
 desk-window-would-not-start = { $app } konnte nicht gestartet werden: { $why }
 desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöffnet
 
+## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
+## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
+## sagt, warum das Fenster nicht hier ist, statt dass der Platz verschwindet.
+desk-place-not-read = Sein gespeichertes Fenster ließ sich nicht lesen, deshalb ist es nicht hier. Schließe diesen Tab, wenn du damit fertig bist; bei der nächsten Anmeldung öffnet sich die App wieder.
+
+## Die „Immer erlauben“-Antworten, die dieser Rechner für die Agenten an seiner
+## Tür aufbewahrt hat und nicht lesen konnte: jeder Agent, dessen Antwort es
+## war, wird erneut gefragt.
+agent-bindings-app-name = Agenten
+agent-bindings-lost-title = { $agent } wird erneut gefragt
+agent-bindings-lost-body = Dieser Rechner konnte nicht lesen, dass du { $agent } hier arbeiten lässt, deshalb fragt er dich erneut, wenn sich { $agent } das nächste Mal verbindet. Sonst wurde nichts entfernt.
+agent-bindings-unreadable-title = Deine Antworten zu Agenten ließen sich nicht lesen
+agent-bindings-unreadable-body = Dieser Rechner konnte nicht lesen, welchen Agenten du hier das Arbeiten erlaubt hast, deshalb fragt er dich erneut, wenn sich der nächste Agent verbindet. Sonst wurde nichts entfernt.
+
+## Die Registratur der Programme, die die Person heruntergeladen hat, lässt sich
+## nicht lesen: keine ihrer Apps wird aufgelistet, und keine ist fort.
+downloaded-apps-app-name = Heruntergeladene Apps
+downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
+downloaded-apps-unreadable-body = Dieser Rechner konnte die Liste der Programme, die du zu deinen Apps hinzugefügt hast, nicht lesen, deshalb werden sie jetzt nicht aufgelistet. Nichts wurde entfernt: sie sind weiterhin auf diesem Computer.
+
 ## Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die die
 ## Person gerade zurückgesetzt hatte.
 display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast

@@ -23,7 +23,8 @@ use tilo_sort::CompactSort as _;
 use shown::ShownTabs;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, WindowWidth, Workspace,
+    DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent, WindowWidth,
+    Workspace,
 };
 use ui::automerge::{AutoCommit, ObjId};
 use ui::collaboration::PresencePayload;
@@ -524,6 +525,34 @@ impl DesktopHandle {
         if !shared.rebuild.contains(&tab) {
             shared.rebuild.push(tab);
         }
+    }
+
+    /// `tab` stands in for the app whose window did not come, saying why:
+    /// what the person sees where the window would be, and closes when they
+    /// are done with it. False when the tab is gone, or holds a live window
+    /// rather than an app this desk opened.
+    pub fn note_in_tab(&self, tab: TabId, note: &str) -> bool {
+        let mut tree = self.read(Clone::clone);
+        let Some(found) = tree
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| &mut workspace.strips)
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+            .find(|found| found.id == tab)
+        else {
+            return false;
+        };
+        let TileContent::LocalApp { note: said, .. } = &mut found.tile else {
+            return false;
+        };
+        if said == note {
+            return false;
+        }
+        note.clone_into(said);
+        self.replace_tree(tree);
+        self.rebuild(tab);
+        true
     }
 
     /// A fresh id from the tree's id space.

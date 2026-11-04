@@ -25,6 +25,7 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::add_app::{AddAppEffect, AddSeat, Offer};
 use tilo_sheets::uninstall::{App, Going, Removal, UninstallEffect, UninstallSeat};
 
+use crate::Shared;
 use crate::i18n::{t, t_args};
 use ui::i18n::ArgValue;
 
@@ -52,6 +53,9 @@ pub(crate) struct AppSheets {
     /// The last failure the person was told of: the registry's failures are
     /// said once, in the order they happened.
     reported: Cell<u64>,
+    /// Whether the person was told that their apps' registry does not read
+    /// back here, which takes their apps off the launcher: said once.
+    told: Cell<bool>,
 }
 
 /// An app the person said to uninstall, and what the sheet said would go.
@@ -79,6 +83,7 @@ impl AppSheets {
             wanted: RefCell::new(VecDeque::new()),
             uninstalling: RefCell::new(Vec::new()),
             reported: Cell::new(0),
+            told: Cell::new(false),
         }
     }
 
@@ -97,10 +102,8 @@ impl AppSheets {
     /// by the name they know it by: the question stands on the uninstall
     /// sheet until they answer it. Asked about its id, so the same app asked
     /// about twice is asked once.
-    pub(crate) fn ask_uninstall(&self, app: &str) {
-        let reading = self.reading();
+    pub(crate) fn ask_uninstall(&self, app: &str, reading: Option<&DownloadedApps>) {
         let asked = reading
-            .as_ref()
             .and_then(|reading| app_named(reading, app))
             .map_or_else(|| app.trim().to_owned(), |app| app.desktop_id.clone());
         let mut wanted = self.wanted.borrow_mut();
@@ -112,26 +115,10 @@ impl AppSheets {
     /// Carry out what the person answered on either sheet, ask the next
     /// question, and say what a finished uninstall did — or why one did not
     /// happen.
-    pub(crate) fn follow(&self) {
-        let reading = self.reading();
-        self.follow_add(reading.as_ref());
-        self.follow_uninstall(reading.as_ref());
-        self.follow_failures(reading.as_ref());
-    }
-
-    /// The registry's reading now: the apps the person has and the programs
-    /// running with no entry; `None` when the session publishes no registry.
-    fn reading(&self) -> Option<DownloadedApps> {
-        self.services
-            .borrow()
-            .read(downloaded::RESOURCE)
-            .and_then(|reading| {
-                serde_json::from_value(reading)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "the downloaded apps registry does not read back");
-                    })
-                    .ok()
-            })
+    pub(crate) fn follow(&self, reading: Option<&DownloadedApps>) {
+        self.follow_add(reading);
+        self.follow_uninstall(reading);
+        self.follow_failures(reading);
     }
 
     /// Whether a question about the person's apps is up: they are asked one
@@ -345,6 +332,42 @@ impl AppSheets {
     }
 }
 
+impl Shared {
+    /// The registry's reading now: the apps the person has and the programs
+    /// running with no entry; `None` when the session publishes no registry,
+    /// or when what this computer kept does not read back — which the person
+    /// is told once, because their apps are gone from the launcher until it
+    /// does.
+    pub(crate) fn downloaded_apps(&self) -> Option<DownloadedApps> {
+        let reading = self.services.borrow().read(downloaded::RESOURCE)?;
+        match serde_json::from_value(reading) {
+            Ok(apps) => Some(apps),
+            Err(error) => {
+                // Said once: the registry is read on every pass of the
+                // session's loop, and a log that repeats it says nothing new.
+                if !self.app_sheets.told.replace(true) {
+                    tracing::warn!(%error, "the downloaded apps registry does not read back");
+                    self.notifications
+                        .borrow()
+                        .tell(crate::notices::downloaded_apps_notice());
+                }
+                None
+            }
+        }
+    }
+
+    /// Ask the person whether to uninstall `app`, as the registry reads now;
+    /// false when this session shows no uninstall question.
+    pub(crate) fn ask_uninstall(&self, app: &str) -> bool {
+        if self.app_sheets.uninstall().is_none() {
+            return false;
+        }
+        let reading = self.downloaded_apps();
+        self.app_sheets.ask_uninstall(app, reading.as_ref());
+        true
+    }
+}
+
 /// What the uninstall sheet is asked: the app `asked` names, and every copy
 /// of it that would go to the Trash.
 fn question(reading: Option<&DownloadedApps>, asked: &str) -> Option<App> {
@@ -522,7 +545,8 @@ mod tests {
             for _ in 0..4 {
                 self.services.borrow_mut().settle();
                 self.services.borrow_mut().poll();
-                self.sheets.follow();
+                let reading = self.reading();
+                self.sheets.follow(reading.as_ref());
             }
         }
 
@@ -719,7 +743,8 @@ mod tests {
         });
 
         // The question lists every copy that goes, and where they are.
-        desk.sheets.ask_uninstall(&desktop_id);
+        let reading = desk.reading();
+        desk.sheets.ask_uninstall(&desktop_id, reading.as_ref());
         desk.until("the question about the app", || {
             desk.uninstall.app().is_some()
         });
@@ -763,7 +788,8 @@ mod tests {
             std::slice::from_ref(&file),
         );
         desk.until("the app", || !desk.apps().is_empty());
-        desk.sheets.ask_uninstall(&desktop_id);
+        let reading = desk.reading();
+        desk.sheets.ask_uninstall(&desktop_id, reading.as_ref());
         desk.until("the question about the app", || {
             desk.uninstall.app().is_some()
         });
@@ -782,7 +808,9 @@ mod tests {
     fn asking_about_an_app_the_person_has_not_got_says_so() {
         let desk = desk(&[], &[]);
         desk.settle();
-        desk.sheets.ask_uninstall("tilo-downloaded-not-here");
+        let reading = desk.reading();
+        desk.sheets
+            .ask_uninstall("tilo-downloaded-not-here", reading.as_ref());
         desk.until("the notice", || !desk.notices().is_empty());
         assert!(
             !desk.uninstall.presentation().is_drawn(),

@@ -69,6 +69,7 @@ use tilo_runtime::session_door::{Consent, Hello, SESSION_PROVIDER};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
+use crate::Shared;
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::plane::DeskAuthority;
@@ -211,6 +212,92 @@ struct StoredBinding {
     #[serde(flatten)]
     key: BindingKey,
     agent: String,
+}
+
+/// What this computer kept of the person's "Always allow" answers and this
+/// build could not read: each agent whose answer is asked again, and whether
+/// something was lost without the file saying whose answer it was. The person
+/// is told once, because an agent they let work here would otherwise simply be
+/// asked about again.
+#[derive(Default)]
+pub(crate) struct Lost {
+    agents: Vec<String>,
+    unnamed: bool,
+}
+
+impl Lost {
+    /// A file nothing could be read from: no answer of it is left, and none
+    /// of them can be named.
+    fn unreadable() -> Self {
+        Self {
+            agents: Vec::new(),
+            unnamed: true,
+        }
+    }
+
+    /// Each answer this build could not read: the agent it was for, or `None`
+    /// for a loss the file does not name.
+    pub(crate) fn answers(&self) -> impl Iterator<Item = Option<&str>> {
+        self.agents
+            .iter()
+            .map(|agent| Some(agent.as_str()))
+            .chain(self.unnamed.then_some(None))
+    }
+}
+
+/// The answers kept at `path`, and what in it this build could not read: a
+/// row it cannot read costs only that answer, so the person is asked about
+/// that agent again and keeps every other answer their file holds.
+fn read_bindings(path: &Path) -> (HashMap<BindingKey, String>, Lost) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        // No bindings file yet: nobody chose "Always allow" on this device.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (HashMap::new(), Lost::default());
+        }
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "stored agent bindings could not be read");
+            return (HashMap::new(), Lost::unreadable());
+        }
+    };
+    let stored: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(stored) => stored,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "stored agent bindings do not read back");
+            return (HashMap::new(), Lost::unreadable());
+        }
+    };
+    let Some(rows) = stored.get("bindings").and_then(serde_json::Value::as_array) else {
+        tracing::warn!(
+            path = %path.display(),
+            "stored agent bindings do not read back: no list of answers"
+        );
+        return (HashMap::new(), Lost::unreadable());
+    };
+    let mut answers = HashMap::new();
+    let mut lost = Lost::default();
+    for row in rows {
+        match serde_json::from_value::<StoredBinding>(row.clone()) {
+            Ok(binding) => {
+                answers.insert(binding.key, binding.agent);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    path = %path.display(),
+                    "a stored agent binding does not read back; that answer is asked again"
+                );
+                match row.get("agent").and_then(serde_json::Value::as_str) {
+                    Some(agent) if !lost.agents.iter().any(|lost| lost.as_str() == agent) => {
+                        lost.agents.push(agent.to_owned());
+                    }
+                    Some(_) => {}
+                    None => lost.unnamed = true,
+                }
+            }
+        }
+    }
+    (answers, lost)
 }
 
 /// The agents the person admitted at this door, as their desk seats them: one
@@ -416,6 +503,9 @@ pub(crate) struct Loop {
     waiting: Vec<Waiting>,
     session: HashMap<BindingKey, String>,
     always: HashMap<BindingKey, String>,
+    /// The answers about agents this computer kept and this build could not
+    /// read, until the session's pass tells the person once.
+    lost: Vec<Option<String>>,
     /// Where "Always allow" is kept; `None` keeps it for this session.
     bindings_path: Option<PathBuf>,
     launches: Arc<Launches>,
@@ -531,28 +621,9 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
     let listener = bind_private(path)?;
     listener.set_nonblocking(true)?;
     let bindings_path = state.map(|directory| directory.join(BINDINGS_FILE));
-    let always: HashMap<BindingKey, String> = match bindings_path.as_deref() {
-        None => HashMap::new(),
-        Some(path) => match std::fs::read(path) {
-            // No bindings file yet: nobody chose "Always allow" on this device.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
-            Err(error) => {
-                tracing::warn!(%error, path = %path.display(), "stored agent bindings could not be read");
-                HashMap::new()
-            }
-            Ok(bytes) => match serde_json::from_slice::<StoredBindings>(&bytes) {
-                Ok(stored) => stored
-                    .bindings
-                    .into_iter()
-                    .map(|binding| (binding.key, binding.agent))
-                    .collect(),
-                Err(error) => {
-                    tracing::warn!(%error, path = %path.display(), "stored agent bindings do not read back");
-                    HashMap::new()
-                }
-            },
-        },
-    };
+    let (always, lost) = bindings_path
+        .as_deref()
+        .map_or_else(|| (HashMap::new(), Lost::default()), read_bindings);
     let (requests, asked) = std::sync::mpsc::channel();
     // A program named by a path that does not resolve is admitted by none.
     let admits = admits
@@ -575,6 +646,10 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         waiting: Vec::new(),
         session: HashMap::new(),
         always,
+        lost: lost
+            .answers()
+            .map(|agent| agent.map(str::to_owned))
+            .collect(),
         bindings_path,
         launches,
         wake,
@@ -591,6 +666,24 @@ pub(crate) fn mount(doorway: Doorway<'_>) -> io::Result<Mounted> {
         seats,
     };
     Ok(Mounted { door })
+}
+
+impl Shared {
+    /// Tell the person once about the answers this computer kept and this
+    /// build could not read: an agent they let work here is asked about
+    /// again, and they are told why rather than losing the answer in
+    /// silence.
+    pub(crate) fn tell_agent_bindings_lost(&self) {
+        let mut door = self.agent_door.borrow_mut();
+        let Some(door) = door.as_mut() else {
+            return;
+        };
+        for agent in door.lost.drain(..) {
+            self.notifications
+                .borrow()
+                .tell(crate::notices::agent_bindings_notice(agent.as_deref()));
+        }
+    }
 }
 
 impl Loop {

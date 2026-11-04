@@ -74,18 +74,9 @@ impl Shared {
         self.record_places(&tabs);
         let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
         // The downloaded programs, as their registry publishes them: search
-        // lists them from the one registry the app sheets read too.
-        let downloaded = self
-            .services
-            .borrow()
-            .read(tilo_app_launch::downloaded::RESOURCE)
-            .and_then(|reading| {
-                serde_json::from_value(reading)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "the downloaded programs registry does not read back");
-                    })
-                    .ok()
-            });
+        // lists them from the one registry the app sheets read too, so a
+        // registry that does not read back is said once, in one place.
+        let downloaded = self.downloaded_apps();
         let resources = self.doors.resources();
         // What a place made from a resource reads its app and views from:
         // the same tree search and the palette read.

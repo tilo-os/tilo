@@ -103,6 +103,14 @@ impl Place {
     pub fn is_ours(&self) -> bool {
         self.shell.is_empty() || self.shell == SHELL
     }
+
+    /// Whether the window state the record kept reads back here: one this
+    /// build cannot read opens nothing, so its tab says why instead of the
+    /// place being dropped from the person's record.
+    #[must_use]
+    pub fn reads_back(&self) -> bool {
+        tile_of(self).is_some()
+    }
 }
 
 /// A strip: a column of places, with a width, in a row of a workspace.
@@ -543,12 +551,10 @@ fn place_of(tab: &Tab, records: &BTreeMap<TabId, String>) -> Place {
 
 /// The tab `place` shows.
 fn tab_of(place: &Place) -> Tab {
-    let tile = serde_json::from_value::<TileContent>(place.state.clone()).unwrap_or_else(|_| {
-        TileContent::LocalApp {
-            app_id: place.shows.clone(),
-            label: place.title.clone(),
-            note: String::new(),
-        }
+    let tile = tile_of(place).unwrap_or_else(|| TileContent::LocalApp {
+        app_id: place.shows.clone(),
+        label: place.title.clone(),
+        note: String::new(),
     });
     Tab {
         id: place.id,
@@ -556,6 +562,11 @@ fn tab_of(place: &Place) -> Tab {
         tile,
         app_title: None,
     }
+}
+
+/// The window state the record kept for `place`, when this build reads it.
+fn tile_of(place: &Place) -> Option<TileContent> {
+    serde_json::from_value::<TileContent>(place.state.clone()).ok()
 }
 
 // ---------------------------------------------------------------------------
