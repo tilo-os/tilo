@@ -483,3 +483,65 @@ fn a_shell_on_a_scaled_display_draws_at_that_scale() {
         session.shell_parts()
     );
 }
+
+/// The shell's bar sits at the top of the display at every scale: its band
+/// starts at the display's very top and covers the same logical height at 2
+/// as at 1, rather than being a band drawn at one scale and stretched over
+/// twice the area (which puts its edge where the panel's pixels say not).
+#[test]
+fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
+    let _settled = ui::motion::testing::settled();
+    let mut bands = Vec::new();
+    for scale in [1.0, 2.0] {
+        let mut session = Session::headless(
+            Options {
+                presentation: ui::headless::fixture_runner_inputs,
+                person: "Pat".to_owned(),
+                shell: true,
+                ..Options::default()
+            },
+            &[OutputConfig::new(
+                "HEADLESS-1",
+                i32::try_from((WIDTH as f64 * scale) as u32).unwrap(),
+                i32::try_from((HEIGHT as f64 * scale) as u32).unwrap(),
+            )
+            .with_scale(scale)],
+        )
+        .expect("session");
+        for _ in 0..400 {
+            session.settle_services();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+        session.compositor().render().unwrap();
+        let shot = session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .expect("a frame");
+        let x = u32::try_from(shot.width * 3 / 4).unwrap();
+        let ground = shot.pixel(x, 4).expect("a pixel of the bar");
+        let (mut first, mut last) = (None, 0);
+        for y in 0..shot.height.min(600) {
+            if shot.pixel(x, y) == Some(ground) {
+                first.get_or_insert(y);
+                last = y;
+            }
+        }
+        let first = first.unwrap_or(0);
+        bands.push((f64::from(first) / scale, f64::from(last + 1) / scale));
+    }
+    let (first_1, end_1) = bands[0];
+    let (first_2, end_2) = bands[1];
+    assert!(
+        (first_2 - first_1).abs() <= 0.5,
+        "the shell's bar starts at the same logical row at 1 and 2: {first_1} then {first_2}"
+    );
+    assert!(
+        (end_2 - end_1).abs() <= 1.0,
+        "the shell's bar covers the same logical height at 1 and 2: {end_1} then {end_2}"
+    );
+    assert!(
+        first_1 <= 0.0 && first_2 <= 0.0,
+        "the shell's bar ground reaches the display's very top edge, with no rule \
+         a pixel inside it: it begins at logical {first_1} at 1 and {first_2} at 2"
+    );
+}

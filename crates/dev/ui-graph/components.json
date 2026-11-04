@@ -1025,7 +1025,7 @@
         },
         {
           "name": "edge",
-          "doc": "The screen edge the body stands on, where a square body draws its rule.",
+          "doc": "The screen edge the body stands on. A square body casts no rule at it: a bar edge to edge with the screen has no line to mark, and a hairline a pixel inside its body would start its ground below the display's own edge.",
           "type": {
             "option": {
               "choice": {
