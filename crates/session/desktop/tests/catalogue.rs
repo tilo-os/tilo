@@ -150,3 +150,32 @@ fn every_row_offers_a_verb_of_the_desktop() {
         }
     }
 }
+
+#[test]
+fn the_launchpad_cards_are_its_controls_and_never_palette_rows() {
+    // A card submits the launchpad verb for what the empty desk shows. What
+    // a card starts, search already lists by its own name, so a palette
+    // offering the cards puts "Notes" there twice, once as a way to pick a
+    // card.
+    let launchpad = launchpad_resource();
+    assert!(
+        !launchpad.children.is_empty(),
+        "the launchpad has its cards"
+    );
+    for card in &launchpad.children {
+        for action in &card.actions {
+            assert!(
+                !action.reaches_people(),
+                "{} ({}) is listed for people",
+                card.id.as_str(),
+                action.id
+            );
+            assert!(
+                action.reaches_agents(),
+                "{} ({}) stays a control scripts can run",
+                card.id.as_str(),
+                action.id
+            );
+        }
+    }
+}

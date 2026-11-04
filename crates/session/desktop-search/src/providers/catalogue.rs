@@ -46,7 +46,13 @@ pub fn store_page(id: &str) -> Option<String> {
         && id
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'));
-    valid.then(|| format!("tilo-store:app/{id}"))
+    valid.then(|| format!("{}{id}", crate::model::STORE_PAGE_PREFIX))
+}
+
+/// The glyph the app's own rows wear: its own by name, else its
+/// category's, so a row offering an app looks like that app.
+fn glyph(entry: &CatalogueEntry) -> ui::icons::Icon {
+    ui::icons::app_glyph(&entry.id, entry.category.as_deref())
 }
 
 enum Row {
@@ -116,15 +122,16 @@ impl StoreCatalogue {
             .min(MAX_PROVIDER_SCORE)
             .saturating_sub(CATALOGUE_STEP)
             .max(1);
-        let (id, title, subtitle, facts, kind, target) = match *row {
+        let (id, title, subtitle, facts, kind, outcome, icon, target) = match *row {
             Row::App(at) => {
                 let entry = self.entries.get(at)?;
-                let (facts, target) = match &entry.source {
+                let (facts, outcome, target) = match &entry.source {
                     Origin::Tilo { registry } => (
                         vec![crate::i18n::t_args(
                             "search-catalogue-from",
                             &[("registry", registry.as_str().into())],
                         )],
+                        None,
                         Target::Launch {
                             app: entry.id.clone(),
                         },
@@ -136,6 +143,7 @@ impl StoreCatalogue {
                         }
                         (
                             facts,
+                            Some(crate::i18n::t("search-catalogue-open-store")),
                             Target::Open {
                                 uri: store_page(&entry.id)?,
                                 fallback: None,
@@ -149,6 +157,8 @@ impl StoreCatalogue {
                     (!entry.tagline.is_empty()).then(|| entry.tagline.clone()),
                     facts,
                     store_kind(),
+                    outcome,
+                    Some(glyph(entry)),
                     target,
                 )
             }
@@ -161,6 +171,8 @@ impl StoreCatalogue {
                     Some(entry.name.clone()),
                     Vec::new(),
                     store_kind(),
+                    None,
+                    Some(glyph(entry)),
                     Target::Launch {
                         app: entry.id.clone(),
                     },
@@ -178,6 +190,8 @@ impl StoreCatalogue {
                         .or_else(|| Some(entry.name.clone())),
                     Vec::new(),
                     ResourceKind::Action,
+                    None,
+                    Some(glyph(entry)),
                     Target::Invoke(Box::new(InvokeTarget::action(
                         &entry.id,
                         &self.workspace,
@@ -191,7 +205,7 @@ impl StoreCatalogue {
             row: None,
             preview: None,
             faces: Vec::new(),
-            outcome: None,
+            outcome,
             kind,
             provider: self.id().into(),
             id,
@@ -199,7 +213,10 @@ impl StoreCatalogue {
             subtitle,
             facts,
             score,
-            icon: None,
+            // The app's own glyph, from its category: a row offering an app
+            // looks like all of that app's own rows do, not like everything
+            // else on offer.
+            icon,
             target,
         })
     }
@@ -299,6 +316,11 @@ mod tests {
             store_kind(),
             "an app to get is the Store's, not one the person has"
         );
+        assert_eq!(
+            app.icon,
+            Some(ui::icons::app_glyph("so.tilo.sheets", None)),
+            "the row wears the app's own glyph"
+        );
         let workbook = catalogue.query("workbook");
         assert_eq!(workbook[0].subtitle.as_deref(), Some("Sheets"));
         assert_eq!(workbook[0].kind, store_kind(), "nor is its document");
@@ -327,7 +349,24 @@ mod tests {
                 fallback: None
             }
         );
-        assert_eq!(hits[0].facts.len(), 2, "says it is not for this device");
+        assert_eq!(
+            hits[0].facts,
+            [
+                crate::i18n::t("search-catalogue-flathub"),
+                crate::i18n::t("search-catalogue-not-for-device")
+            ],
+            "where it comes from, and that it is not for this device"
+        );
+        assert_eq!(
+            hits[0].outcome.as_deref(),
+            Some(crate::i18n::t("search-catalogue-open-store").as_str()),
+            "choosing it opens its Store page, it does not install"
+        );
+        assert_eq!(
+            hits[0].icon,
+            Some(ui::icons::app_glyph("com.valvesoftware.Steam", None)),
+            "the row wears the app's glyph, whoever offers it"
+        );
         assert!(catalogue.intent(&hits[0]) < 0.0);
         assert_eq!(store_page("bad id"), None);
     }

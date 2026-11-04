@@ -1587,6 +1587,44 @@ mod tests {
     }
 
     #[test]
+    fn an_apps_name_opens_the_app_before_any_action_named_the_same() {
+        // An action can carry an app's name (the empty desk's cards did):
+        // a person typing a name wants the app, and Enter on the top row
+        // must start it.
+        let mut desk = ResourceSpec::new("desktop:desk", "desktop", "Desk");
+        desk.actions
+            .push(tilo_actions::ActionSpec::immediate_encoded(
+                "notes",
+                "Notes",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                tilo_actions::EncodedAction {
+                    type_id: "desk.action".into(),
+                    payload: Vec::new(),
+                },
+            ));
+        let mut search = DesktopSearch::new();
+        search.open(SearchData {
+            published: vec![PublishedActions::of("shell", "workspace", &[desk])],
+            ..data()
+        });
+        settled(&mut search);
+        search.set_query("notes");
+        settled(&mut search);
+        let first = search.results()[0].clone();
+        assert_eq!(
+            (first.provider.as_str(), first.title.as_str()),
+            ("applications", "Notes"),
+            "the app leads the action of the same name"
+        );
+        assert_eq!(
+            first.target,
+            Target::Launch {
+                app: "so.tilo.notes".into()
+            }
+        );
+    }
+
+    #[test]
     fn a_published_switch_shows_its_state_and_stays_open_on_it() {
         let mut search = DesktopSearch::new();
         search.open(SearchData {

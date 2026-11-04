@@ -246,7 +246,9 @@ pub struct Hit {
 pub enum Thing {
     /// The item an anchor names: a document, a page, a folder, a video.
     Resource(String),
-    /// An application.
+    /// An application, by [`app_identity`]: the same app is one row however
+    /// a source starts it (the session's own package, the machine's desktop
+    /// entry, the Store page that installs it).
     App(String),
     /// A window, by its tab.
     Window(u64),
@@ -270,7 +272,7 @@ impl Hit {
     pub fn thing(&self) -> Thing {
         match &self.target {
             Target::Launch { app } if self.kind == ResourceKind::Application => {
-                Thing::App(app.clone())
+                Thing::App(app_identity(app))
             }
             // The window row itself is the window; a row that only goes to
             // a window when chosen (a note shown in it, a place the person
@@ -304,14 +306,46 @@ impl Hit {
                     },
                 }
             }
+            // A Store page is the app it installs, not a page of its own: a
+            // person who has the app gets their app's row instead of the
+            // same app again as something to get.
+            Target::Open { uri, .. } => match store_page_app(uri) {
+                Some(app) => Thing::App(app_identity(app)),
+                None => Thing::Row(self.provider.clone(), self.id.clone()),
+            },
             Target::Copy { .. }
-            | Target::Open { .. }
             | Target::Cancel { .. }
             | Target::Prefer { .. }
             | Target::Launch { .. }
             | Target::Window { .. } => Thing::Row(self.provider.clone(), self.id.clone()),
         }
     }
+}
+
+/// The prefix of a link to an app's page in the Store.
+pub const STORE_PAGE_PREFIX: &str = "tilo-store:app/";
+
+/// The app the Store link `uri` opens, when it opens one.
+#[must_use]
+pub fn store_page_app(uri: &str) -> Option<&str> {
+    uri.strip_prefix(STORE_PAGE_PREFIX)
+        .filter(|id| !id.is_empty())
+}
+
+/// The identity of the application `app` is started by: its package id, or
+/// the machine's desktop entry (a row of the desktop's apps names it
+/// `host:<entry>`), without the `.desktop` a launch adds and in one case,
+/// so the app is one [`Thing::App`] whichever row starts it and whichever
+/// source names it.
+#[must_use]
+pub fn app_identity(app: &str) -> String {
+    let app = app.trim();
+    let app = app
+        .strip_prefix(crate::providers::host_apps::HOST_APP_PREFIX)
+        .unwrap_or(app);
+    app.strip_suffix(".desktop")
+        .unwrap_or(app)
+        .to_ascii_lowercase()
 }
 
 /// The anchor `action` shows, when it is the app's `open` of one item.
@@ -1253,6 +1287,80 @@ mod tests {
                 "query {query:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_app_the_person_has_is_one_row_and_its_store_page_gives_way() {
+        // The machine's Notes, as its desktop entry starts it, and the same
+        // app as the Store would install it: one app, one row, the one the
+        // person already has.
+        let had = fixed(
+            "desktop-applications",
+            BROWSE_RANK_APPS,
+            vec![hit(
+                "desktop-applications",
+                "host:org.gnome.Notes.desktop",
+                "Notes",
+                ResourceKind::Application,
+                100,
+                Target::Launch {
+                    app: "host:org.gnome.Notes.desktop".into(),
+                },
+            )],
+        );
+        let store = fixed(
+            "store-catalogue",
+            BROWSE_RANK_LATER,
+            vec![Hit {
+                row: None,
+                preview: None,
+                faces: Vec::new(),
+                outcome: Some("In the Store".into()),
+                kind: ResourceKind::Custom("Store".into()),
+                provider: "store-catalogue".into(),
+                id: "app:org.gnome.Notes".into(),
+                title: "Notes".into(),
+                subtitle: None,
+                facts: vec!["Flathub".into()],
+                score: 97,
+                icon: None,
+                target: Target::Open {
+                    uri: "tilo-store:app/org.gnome.Notes".into(),
+                    fallback: None,
+                },
+            }],
+        );
+        assert_eq!(
+            rows(&search("notes", &[&had, &store], 0, &|_| 0.0)),
+            ["desktop-applications:Notes"],
+            "the app is listed once, as the app the person has"
+        );
+        assert_eq!(
+            rows(&search("notes", &[&store], 0, &|_| 0.0)),
+            ["store-catalogue:Notes"],
+            "an app the person does not have is still offered"
+        );
+    }
+
+    #[test]
+    fn an_app_identity_is_one_however_its_rows_start_it() {
+        for id in [
+            "so.tilo.notes",
+            " host:so.tilo.notes.desktop ",
+            "SO.TILO.NOTES.desktop",
+        ] {
+            assert_eq!(app_identity(id), "so.tilo.notes", "{id}");
+        }
+    }
+
+    #[test]
+    fn a_store_link_names_the_app_it_installs() {
+        assert_eq!(
+            store_page_app("tilo-store:app/org.gnome.Notes"),
+            Some("org.gnome.Notes")
+        );
+        assert_eq!(store_page_app("https://example.com"), None);
+        assert_eq!(store_page_app("tilo-store:app/"), None);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 //! its address: the verbs are the desk's ([`DeskEffect`]) and the chrome's
 //! ([`ChromeEffect`]), published through [`offer`] as every service's are.
 
-use tilo_actions::{ActionSpec, ResourcePresentation, ResourceSpec};
+use tilo_actions::{ActionSpec, Audience, ResourcePresentation, ResourceSpec};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use tilo_resource::{Effect, offer};
 
@@ -163,6 +163,11 @@ pub fn desk_resource(
 
 /// The launchpad's resource: each card a resource of its own that offers
 /// the desk's launchpad verb, bound to the card it stands for.
+///
+/// The cards are the launchpad's own controls: they submit their verb, and
+/// what a card starts is a thing search already lists by its own name. So
+/// they are listed for agents and scripts, never as palette rows — "Notes"
+/// in search opens Notes, and never asks which launchpad card to choose.
 #[must_use]
 pub fn launchpad_resource() -> ResourceSpec {
     let cards = crate::launchpad::LaunchpadAction::ALL
@@ -170,9 +175,12 @@ pub fn launchpad_resource() -> ResourceSpec {
         .map(|card| (card.slug(), card.label()))
         .chain([("apps", t("launchpad-open-app"))]);
     let rows = cards.map(|(slug, label)| {
-        ResourceSpec::new(launchpad_card_id(slug), LAUNCHPAD_CARD_KIND, label.clone()).with_action(
-            bound(&DeskEffect::Launchpad { card: slug.into() }, Some(label)),
-        )
+        let mut card = bound(
+            &DeskEffect::Launchpad { card: slug.into() },
+            Some(label.clone()),
+        );
+        card.type_mut().contract.set_audience(Audience::Agents);
+        ResourceSpec::new(launchpad_card_id(slug), LAUNCHPAD_CARD_KIND, label).with_action(card)
     });
     ResourceSpec::new(
         LAUNCHPAD_RESOURCE,
