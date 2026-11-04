@@ -837,7 +837,7 @@ scenario "a busy week" -> Task {
             title: "Call the landlord about the boiler",
             notes: RichText("Ask whether Tuesday morning works for the engineer."),
             due: 2026-06-30,
-            at: 2026-06-30T09:00Z,
+            at: 2026-06-30T09,
             priority: .high,
         ),
     )

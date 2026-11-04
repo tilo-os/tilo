@@ -52,6 +52,10 @@ impl Core {
                     self.instant_of(wall),
                 )))
             }
+            Imp::WallClock => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(self.wall_clock(&text)?))
+            }
             Imp::RepeatLabel => {
                 let held = self.text(a.h(0)?)?;
                 let repeat = Self::repeat(&held)?;
@@ -129,6 +133,19 @@ impl Core {
 
     fn now_seconds(&self) -> i64 {
         tilolang::calendar::instant(&self.clock_now()).unwrap_or(0)
+    }
+
+    /// The instant a wall-clock time names for the person: `2026-06-30T09:00`, read in their
+    /// zone, as the instant it is (`2026-06-30T16:00:00Z` where their clock is six hours behind
+    /// UTC). A time that is no time of day traps: the checker admits only well-formed ones.
+    fn wall_clock(&self, text: &str) -> HResult<String> {
+        let wall = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"]
+            .into_iter()
+            .find_map(|shape| NaiveDateTime::parse_from_str(text, shape).ok());
+        let Some(wall) = wall else {
+            return trap(format!("`{text}` is not a wall-clock time"));
+        };
+        Ok(tilolang::calendar::time_text(self.instant_of(wall)))
     }
 
     /// The person's zone as its IANA name, when the host named one this build knows.

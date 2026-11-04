@@ -331,8 +331,8 @@ impl Core {
             StrSlice, StrToInt, TimeShift, Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI,
             TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor, UiBind,
             UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic, Unseen,
-            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, Withdraw, Word,
-            WorkspaceMembers,
+            UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock, Withdraw,
+            Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -364,9 +364,8 @@ impl Core {
                 let part = self.ident_part(a.h(0)?, a.h(1)?)?;
                 self.ret_h(part)
             }
-            RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | Today => {
-                self.recurrence_import(imp, a)
-            }
+            RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | Today
+            | WallClock => self.recurrence_import(imp, a),
             RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),

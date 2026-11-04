@@ -113,6 +113,10 @@ impl Checker<'_> {
             ExprKind::Calendar(text) => match text.len() {
                 10 => Ex::str(text).typed(Ty::Date),
                 20 => Ex::str(text).typed(Ty::Time),
+                // A time of no zone is the person's own time of day: the instant it names is
+                // read in their zone where the value is built, so seed data says 09:00 and
+                // shows 09:00 wherever it runs.
+                19 => Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time),
                 _ => {
                     self.err("E105", e.span, format!("a month is the value of a filter (`query(T, due: {text})`); a day is written `{text}-01`"));
                     Ex::error()

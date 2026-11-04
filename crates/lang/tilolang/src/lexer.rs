@@ -51,8 +51,9 @@ pub enum Tok {
     /// A whole number of a unit of time: `7d`, `5m` (search.md, "Types, references and paths").
     Duration(i64, &'static str),
     /// A calendar literal (search.md, "Types, references and paths"): a day `2026-06-29`, a
-    /// month `2026-08`, or an instant `2026-06-29T07:02Z`, held in its canonical ISO text
-    /// (`2026-06-29T07:02:00Z`).
+    /// month `2026-08`, an instant `2026-06-29T07:02Z`, or a wall-clock time
+    /// `2026-06-29T07:02` of no zone, held in its canonical ISO text
+    /// (`2026-06-29T07:02:00Z`, `2026-06-29T07:02:00`).
     Calendar(String),
     Str(Vec<StrPiece>),
     Ref(RefLit),
@@ -523,7 +524,8 @@ impl Lexer<'_> {
     }
 
     /// A calendar literal at `start`: four digits, `-` and two digits make a month; `-` and two
-    /// more a day; `T`, `HH:MM`, optional `:SS` and `Z` an instant. Anything else is a number.
+    /// more a day; `T`, `HH:MM` and optional `:SS` a wall-clock time, which `Z` on its end makes
+    /// an instant. Anything else is a number.
     fn calendar(&mut self, start: usize) -> bool {
         let digits = |lx: &Self, at: usize, n: usize| {
             (0..n).all(|i| lx.at(at + i).is_some_and(|b| b.is_ascii_digit()))
@@ -544,23 +546,10 @@ impl Lexer<'_> {
                 if self.at(16) == Some(b':') && digits(self, 17, 2) {
                     len = 19;
                 }
+                // No `Z` says no zone: the time is the person's own time of day, resolved to
+                // the instant it names where the value is used.
                 if self.at(len) == Some(b'Z') {
                     len += 1;
-                } else {
-                    let end = len;
-                    self.pos += end;
-                    self.error(
-                        "E004",
-                        start,
-                        self.pos,
-                        format!(
-                            "`{}` needs its time zone: write the time in UTC with `Z`, such as `{}Z`",
-                            self.slice(start, self.pos),
-                            self.slice(start, self.pos)
-                        ),
-                    );
-                    self.push(Tok::Calendar(String::new()), start);
-                    return true;
                 }
             }
         }
@@ -569,15 +558,21 @@ impl Lexer<'_> {
         }
         let written = self.slice(start, start + len).to_string();
         self.pos += len;
-        let text = match len {
-            7 => format!("{written}-01"),
-            17 => format!("{}:00Z", written.trim_end_matches('Z')),
-            _ => written.clone(),
+        // A time of no zone is the person's own time of day, resolved where it runs; its
+        // canonical text keeps the seconds, so the one shape reaches the checker.
+        let (text, zone) = match len {
+            7 => (format!("{written}-01"), true),
+            17 => (format!("{}:00Z", written.trim_end_matches('Z')), true),
+            16 => (format!("{written}:00"), false),
+            19 | 20 => (written.clone(), len == 20),
+            _ => (written.clone(), true),
         };
         let checked = if len <= 10 {
             crate::types::check_date(&text)
-        } else {
+        } else if zone {
             crate::types::check_time(&text)
+        } else {
+            crate::types::check_wall_clock(&text)
         };
         if let Err(e) = checked {
             self.error("E004", start, self.pos, e);

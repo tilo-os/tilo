@@ -426,8 +426,12 @@ fn bind_text(b: &crate::ast::LetBind, col: usize, level: usize, ctx: &mut Ctx) -
 
 /// A calendar literal as written: an instant without its seconds when they are zero.
 fn calendar_text(text: &str) -> String {
-    match text.strip_suffix(":00Z") {
-        Some(minutes) if text.len() == 20 => format!("{minutes}Z"),
+    match text {
+        // The canonical text carries the seconds a time may be written without.
+        _ if text.len() == 20 && text.ends_with(":00Z") => {
+            format!("{}Z", text.trim_end_matches(":00Z"))
+        }
+        _ if text.len() == 19 && text.ends_with(":00") => text.trim_end_matches(":00").to_owned(),
         _ => text.to_owned(),
     }
 }

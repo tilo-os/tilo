@@ -91,6 +91,16 @@ impl Platform for Packages {
             .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 
+    /// The person's zone, as a window knows it: a seed's wall-clock time and every day the
+    /// window shows are read in it, so the layout is the one a person in their zone sees.
+    fn zone(&self) -> i64 {
+        ui::clock::local_now().offset().local_minus_utc()
+    }
+
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         Arc::new(|| {})
     }

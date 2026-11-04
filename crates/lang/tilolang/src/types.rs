@@ -476,27 +476,52 @@ pub fn check_date(text: &str) -> Result<(), String> {
 
 /// Why `text` is not an ISO-8601 UTC instant `YYYY-MM-DDTHH:MM:SSZ`, or nothing when it is one.
 pub fn check_time(text: &str) -> Result<(), String> {
-    let shape = || {
-        format!(
+    clock(text, Zone::Utc)
+}
+
+/// Why `text` is not a wall-clock time `YYYY-MM-DDTHH:MM[:SS]`, or nothing when it is one: a time
+/// of day of no zone, read in the person's own where a value is built from it.
+pub fn check_wall_clock(text: &str) -> Result<(), String> {
+    clock(text, Zone::Person)
+}
+
+/// Whether a time text carries its zone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Zone {
+    /// The instant itself, in UTC (`2026-10-21T09:30:00Z`).
+    Utc,
+    /// The person's own time of day (`2026-10-21T09:30`).
+    Person,
+}
+
+fn clock(text: &str, zone: Zone) -> Result<(), String> {
+    let shape = || match zone {
+        Zone::Utc => format!(
             "`{text}` is not a time: write it in UTC as `YYYY-MM-DDTHH:MM:SSZ`, such as `2026-10-21T09:30:00Z`"
-        )
+        ),
+        Zone::Person => format!(
+            "`{text}` is not a wall-clock time: write it as `YYYY-MM-DDTHH:MM[:SS]`, such as `2026-10-21T09:30`"
+        ),
     };
     let (Some(date), Some(clock)) = (text.get(..10), text.get(10..)) else {
         return Err(shape());
     };
     let b = clock.as_bytes();
-    let ok = b.len() == 10
-        && b.first() == Some(&b'T')
+    let ok = b.first() == Some(&b'T')
         && b.get(3) == Some(&b':')
         && b.get(6) == Some(&b':')
-        && b.get(9) == Some(&b'Z');
+        && match zone {
+            Zone::Utc => b.len() == 10 && b.get(9) == Some(&b'Z'),
+            Zone::Person => matches!(b.len(), 6 | 9),
+        };
     let part = |r: std::ops::Range<usize>| -> Option<u32> {
         let p = clock.get(r)?;
         p.bytes()
             .all(|c| c.is_ascii_digit())
             .then(|| p.parse().ok())?
     };
-    let (Some(h), Some(m), Some(sec)) = (part(1..3), part(4..6), part(7..9)) else {
+    let sec = if b.len() == 9 { part(7..9) } else { Some(0) };
+    let (Some(h), Some(m), Some(sec)) = (part(1..3), part(4..6), sec) else {
         return Err(shape());
     };
     if !ok {

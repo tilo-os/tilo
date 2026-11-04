@@ -38,8 +38,11 @@ fn calendar_literals_are_dates_times_and_months() {
         "E105",
         "fn f(c: C) -> Bool {\n    c.due == .some(2026-08)\n}",
     );
+    // A time of no zone is a wall-clock time: the person's own time of day, resolved where it
+    // runs.
+    ok("fn f() -> Time {\n    2026-06-29T07:02\n}");
+    ok("fn f() -> Time {\n    2026-06-29T07:02:05\n}");
     expect("E004", "fn f() -> Date {\n    2026-02-30\n}");
-    expect("E004", "fn f() -> Time {\n    2026-06-29T07:02\n}");
     expect("E020", "fn f() -> Date {\n    2026-06-29T07:02Z\n}");
     let src = format!("app t.x \"X\"\n{C}fn f() -> Time {{\n    2026-06-29T07:02Z\n}}\n");
     let printed = tilolang::print_module(&tilolang::parse(&src).expect("parses"));

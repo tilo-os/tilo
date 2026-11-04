@@ -526,8 +526,10 @@ print(xs, fields: [.title, .due])
   pure, as the presentation is (it is checked in the action's presentation view):
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
 - `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
-  with the ordering operators; `2026-10` is a month, a filter's value. `Date("2026-10-24")` and
-  `Time(...)` read the same from text. `ui.DateField(bind: t.due)` edits one. In an action, `now` is the
+  with the ordering operators; `2026-10` is a month, a filter's value.
+  `2026-10-24T09:30` is a Time too, of no zone: the person's own time of day, read in their
+  zone where the value is made, which is how seed data says 09:00 and shows 09:00.
+  `Date("2026-10-24")` and `Time(...)` read the same from text. `ui.DateField(bind: t.due)` edits one. In an action, `now` is the
   invocation's Time, recorded with the change.
 - A scenario names people with `let mia = person("Mia")`. Inside
   `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
