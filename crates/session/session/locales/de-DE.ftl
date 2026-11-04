@@ -104,6 +104,9 @@ agent-bindings-unreadable-body = Dieser Rechner konnte nicht lesen, welchen Agen
 
 ## Die Registratur der Programme, die die Person heruntergeladen hat, lässt sich
 ## nicht lesen: keine ihrer Apps wird aufgelistet, und keine ist fort.
+refused-write-app = Änderungen
+refused-write-title = { $device } nimmt deine Änderung nicht an
+refused-write-body = Deine Änderung bleibt auf den Geräten, die sie angenommen haben: { $reason }.
 downloaded-apps-app-name = Heruntergeladene Apps
 downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
 downloaded-apps-unreadable-body = Dieser Rechner konnte die Liste der Programme, die du zu deinen Apps hinzugefügt hast, nicht lesen, deshalb werden sie jetzt nicht aufgelistet. Nichts wurde entfernt: sie sind weiterhin auf diesem Computer.

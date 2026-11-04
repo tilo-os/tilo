@@ -473,6 +473,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
+                    None,
                     now,
                 )
                 .expect("this device takes the workspace as its governor has it");
@@ -579,6 +580,7 @@ mod tests {
                             a_cert.device_public_key,
                         ),
                         message.clone(),
+                        None,
                         now,
                     )
                     .expect("a device takes the workspace as its host has it");
@@ -641,6 +643,7 @@ mod tests {
                         desks.owner_cert.device_public_key,
                     ),
                     message,
+                    None,
                     desks.now,
                 )
                 .expect("this desk takes the change");
@@ -1462,6 +1465,7 @@ mod tests {
                             cert.device_public_key,
                         ),
                         postcard::from_bytes(bytes).expect("a workspace change"),
+                        None,
                         now,
                     )
                     .expect("this device takes the workspace's change");
@@ -1647,6 +1651,7 @@ mod tests {
                             cert.device_public_key,
                         ),
                         postcard::from_bytes(bytes).expect("a workspace change"),
+                        None,
                         now,
                     )
                     .expect("the workspace's change is taken");
@@ -1681,6 +1686,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
+                    None,
                     now,
                 )
                 .expect("the workspace's change is taken");
@@ -1775,6 +1781,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     message,
+                    None,
                     now,
                 )
                 .expect("her device takes the workspace's change");
@@ -1993,6 +2000,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
+                    None,
                     now,
                 )
                 .expect("this device takes the workspace's change");

@@ -49,6 +49,7 @@ use crate::activity_provider::ActivityWire;
 use crate::desk_doc::{DeskDoc, Kept};
 use crate::lists::Lists;
 use crate::unlock_history::UnlockHistory;
+use tilo_actions::remote::workspace_activity as wire;
 
 /// What this device keeps of its own view of the workspaces' activity: the
 /// changes it has seen, when it left a workspace, and the morning sources it
@@ -105,6 +106,9 @@ struct Inner {
     /// The revision the model last served its reads at, as the apps
     /// following them were last told.
     served: Cell<Option<u64>>,
+    /// The lasting refusals of this device's writes it has already told the
+    /// person about: one notice per verdict, never one per pass.
+    told_refusals: RefCell<BTreeSet<(String, String, String, u64, [u8; 32])>>,
     /// What the desk's history says its changes were, as a model answered it.
     describer: RefCell<Describer>,
     /// Answers the model gave, waiting for the desk's thread to write them.
@@ -148,6 +152,7 @@ impl Activity {
                 person: person.clone(),
                 maps: HistoryMaps::load(state),
                 lists,
+                engine: RefCell::default(),
             }),
             person,
             records: RefCell::default(),
@@ -159,6 +164,7 @@ impl Activity {
             woken,
             wire: RefCell::default(),
             served: Cell::default(),
+            told_refusals: RefCell::default(),
             describer: RefCell::default(),
             described: Arc::default(),
             describing: Arc::default(),
@@ -166,6 +172,58 @@ impl Activity {
             looked_for_model: Cell::default(),
             wake,
         }))
+    }
+
+    /// Show where a workspace's writes were refused from `engine`, the
+    /// workspaces this device holds: the history rows read the verdicts this
+    /// device recorded, and the one place the person hears of a lasting one.
+    fn attach_engine(&self, engine: Arc<crate::engine::Engine>) {
+        *self.0.host.engine.borrow_mut() = Some(engine);
+    }
+
+    /// Tell the person about the refusals of this device's writes that waiting
+    /// cannot change, once each: a device that will not take the write says
+    /// why, because the change is not arriving there.
+    fn tell_refusals(&self, notifications: &crate::notifications::SessionNotifications) {
+        let Some(engine) = self.0.host.engine.borrow().as_ref().map(Arc::clone) else {
+            return;
+        };
+        let mut told = self.0.told_refusals.borrow_mut();
+        for (workspace, refusal) in engine.lasting_refusals() {
+            let key = (
+                workspace.clone(),
+                refusal.app.clone(),
+                refusal.record.clone(),
+                refusal.seq,
+                refusal.by,
+            );
+            if !told.insert(key) {
+                continue;
+            }
+            let label = engine
+                .device_labels(&workspace)
+                .get(&refusal.by)
+                .filter(|label| !label.is_empty())
+                .cloned()
+                .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
+            notifications.tell(crate::notices::refused_write_notice(
+                &label,
+                refusal.reason.describe(),
+            ));
+        }
+    }
+
+    /// Open this device's workspaces and show them in the activity: what
+    /// refused one of the history's writes, and what the devices call
+    /// themselves.
+    pub(crate) fn open_engine(
+        &self,
+        options: &crate::Options,
+        handle: &crate::DesktopHandle,
+    ) -> Option<Arc<crate::engine::Engine>> {
+        let engine = crate::options::open_engine(options, handle)?;
+        self.attach_engine(Arc::clone(&engine));
+        Some(engine)
     }
 
     /// The desk this device left, as its document holds it: what the session
@@ -199,18 +257,19 @@ impl Activity {
         self.0.unlock.absorb();
     }
 
-    /// Tell the apps following the activity that what they read may have
-    /// moved: once the model served its reads at a revision they have not
-    /// been told of.
-    pub(crate) fn tell_followers(&self) {
+    /// Serve what the activity holds on this pass: tell the apps following it
+    /// that what they read may have moved — once the model served its reads at
+    /// a revision they have not been told of — and tell the person about the
+    /// refusals of this device's writes that will not change on their own.
+    pub(crate) fn serve(&self, notifications: &crate::notifications::SessionNotifications) {
         let served = self.0.requests.served_revision();
-        if served == self.0.served.get() {
-            return;
+        if served != self.0.served.get() {
+            self.0.served.set(served);
+            if let Some(wire) = self.0.wire.borrow().as_ref() {
+                wire.changed();
+            }
         }
-        self.0.served.set(served);
-        if let Some(wire) = self.0.wire.borrow().as_ref() {
-            wire.changed();
-        }
+        self.tell_refusals(notifications);
     }
 
     /// Record the desk as `tree` holds it, at `time` (seconds since the
@@ -595,6 +654,10 @@ struct NativeActivityHost {
     person: String,
     maps: HistoryMaps,
     lists: Lists,
+    /// The workspaces this device holds, once the session opened them: what
+    /// refused one of the history's writes, and what the devices call
+    /// themselves.
+    engine: RefCell<Option<Arc<crate::engine::Engine>>>,
 }
 
 impl ActivityHost for NativeActivityHost {
@@ -651,6 +714,39 @@ impl ActivityHost for NativeActivityHost {
             .iter()
             .find(|entry| entry.id == app)
             .map(|entry| entry.title.clone())
+    }
+
+    /// Each write this device refused in `workspace`, once per change it would
+    /// have brought: the history row of that change reads where it is not.
+    fn refusals(&self, workspace: &str) -> Vec<wire::Refusal> {
+        let Some(engine) = self.engine.borrow().as_ref().map(Arc::clone) else {
+            return Vec::new();
+        };
+        let labels = engine.device_labels(workspace);
+        engine
+            .write_refusals(workspace)
+            .into_iter()
+            .flat_map(|refusal| {
+                let label = labels
+                    .get(&refusal.by)
+                    .filter(|label| !label.is_empty())
+                    .cloned()
+                    .unwrap_or_else(|| hex::encode(&refusal.by[..4]));
+                let reason = refusal.reason.describe().to_owned();
+                let permanent = refusal.reason.permanent();
+                refusal
+                    .changes
+                    .into_iter()
+                    .map(|change| wire::Refusal {
+                        change: wire::change_hex(&change),
+                        device: hex::encode(refusal.by),
+                        label: label.clone(),
+                        reason: reason.clone(),
+                        permanent,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 }
 

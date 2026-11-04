@@ -726,6 +726,23 @@ pub(crate) fn downloaded_apps_notice() -> Notice {
     }
 }
 
+/// The notice that a device stopped taking one of this device's writes, and
+/// why: waiting changes nothing, so the change stays on the devices that took
+/// it and the person hears it once. Raised by the pass that serves the
+/// activity ([`crate::Shared::serve_activity`]).
+pub(crate) fn refused_write_notice(device: &str, reason: &str) -> Notice {
+    Notice {
+        app: t("refused-write-app"),
+        urgency: 2,
+        title: t_args("refused-write-title", &[("device", device.into())]),
+        body: t_args("refused-write-body", &[("reason", reason.into())]),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
 /// Tell the person what the crash records in `dir` say happened before this
 /// start: a session that stopped responding, one that panicked, a computer
 /// that stopped. The records decide it, so nothing is said twice.

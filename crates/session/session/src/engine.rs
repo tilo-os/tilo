@@ -455,6 +455,46 @@ impl Engine {
         })
     }
 
+    /// The verdicts `workspace` holds on writes: this device's own, and the
+    /// ones other devices recorded on its writes. Each names the changes the
+    /// refused write would have brought, so a history row reads where it is
+    /// not.
+    #[must_use]
+    pub fn write_refusals(&self, workspace: &str) -> Vec<neighbour_wire::WriteRefusal> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return Vec::new();
+        };
+        self.owner.write_refusals(workspace)
+    }
+
+    /// The verdicts other devices recorded on this device's writes, with the
+    /// workspace each was filed in, where waiting changes nothing: what the
+    /// person hears once per verdict, because their writes stop arriving.
+    #[must_use]
+    pub fn lasting_refusals(&self) -> Vec<(String, neighbour_wire::WriteRefusal)> {
+        let mine = self.identity.device_cert.device_public_key;
+        self.workspaces()
+            .into_iter()
+            .flat_map(|workspace| {
+                let name = workspace.to_string();
+                self.owner
+                    .write_refusals(workspace)
+                    .into_iter()
+                    .filter(|refusal| refusal.author == mine && refusal.reason.permanent())
+                    .map(move |refusal| (name.clone(), refusal))
+            })
+            .collect()
+    }
+
+    /// What each device of `workspace` calls itself, by its key.
+    #[must_use]
+    pub fn device_labels(&self, workspace: &str) -> std::collections::BTreeMap<[u8; 32], String> {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return std::collections::BTreeMap::new();
+        };
+        self.owner.device_labels(workspace)
+    }
+
     /// The engine's owner, for what holds the workspace's session.
     pub(crate) fn owner(&self) -> &NativeWorkspaceOwner {
         &self.owner

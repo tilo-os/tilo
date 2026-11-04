@@ -101,6 +101,9 @@ agent-bindings-unreadable-body = This computer could not read which agents you l
 
 ## The registry of the programs the person downloaded does not read back: none
 ## of their apps is listed until it does, and none is gone.
+refused-write-app = Changes
+refused-write-title = { $device } will not take your change
+refused-write-body = Your change stays on the devices that took it: { $reason }.
 downloaded-apps-app-name = Downloaded apps
 downloaded-apps-unreadable-title = Your downloaded apps could not be read
 downloaded-apps-unreadable-body = This computer could not read the list of programs you added to your apps, so they are not listed now. Nothing was removed: they are still on this computer.

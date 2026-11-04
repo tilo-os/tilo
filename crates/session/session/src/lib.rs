@@ -206,8 +206,8 @@ pub use lists::{AppLists, Lists};
 pub use mount::vpn::Vpn;
 pub use mount::wake::{Seams as WakeSeams, WakeInterfaces};
 pub use notifications::RESOURCE as NOTIFICATIONS_RESOURCE;
+use options::start_collaboration;
 pub use options::{ActionPlane, Machine, Options, no_session_actions};
-use options::{open_engine, start_collaboration};
 pub use records::Records;
 pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
@@ -595,7 +595,7 @@ impl Shared {
             self.open_from_history(&workspace, &target);
         }
         self.activity.keep_unlock();
-        self.activity.tell_followers();
+        self.activity.serve(&self.notifications.borrow());
         // What the history says its changes were, and the names over the runs
         // of them, are written into the desk's document as models answer; the
         // desk draws a frame to read them.
@@ -1263,7 +1263,7 @@ impl Session {
         doors.add(Rc::clone(&desk_door));
         // The chrome above the windows: its own tree, beside the desk's.
         let intents = Rc::new(RefCell::new(Vec::new()));
-        let engine = open_engine(&options, &handle);
+        let engine = activity.open_engine(&options, &handle);
         // This device's channels of its workspaces' sealed records: its keys,
         // and the devices each one admits, which its window streams carry
         // between. The broker the apps reach is the one the channel service
