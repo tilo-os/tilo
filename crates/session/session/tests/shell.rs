@@ -2569,8 +2569,7 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
             |session| {
                 bar_band_controls(session)
                     .into_iter()
-                    .filter(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
-                    .next()
+                    .find(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
                     .is_none()
                     .then_some(())
             },
@@ -2639,16 +2638,16 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
                         ),
                         |session| {
                             let band = bar_band(session);
-                            let over: Vec<_> = bar_band_controls(session)
+                            bar_band_controls(session)
                                 .into_iter()
-                                .filter(|(_, (x, y, w, h))| {
+                                .find(|(_, (x, y, w, h))| {
                                     *x < -0.5
                                         || x + w > f64::from(width) + 0.5
                                         || *y < band.1 - 0.5
                                         || y + h > band.1 + band.3 + 0.5
                                 })
-                                .collect();
-                            over.is_empty().then_some(())
+                                .is_none()
+                                .then_some(())
                         },
                     );
                 }
