@@ -4985,6 +4985,11 @@ impl FrameHarness {
     /// The full accessibility tree the AccessKit bridge exports for the
     /// current frame — the exact `(NodeId, Node)` list that reaches AT-SPI2 /
     /// Orca and the built-in screen reader, with the driver's focus marked.
+    /// The accessibility nodes with their bounds in the tree's **logical**
+    /// pixels (scale 1.0): a widget lays itself out in logical pixels, so its
+    /// node stands there too, whatever device scale the frame is drawn at.
+    /// A host that draws at a device scale converts them to the screen with
+    /// the rest of its layout, and never divides them by that scale again.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);

@@ -2635,3 +2635,81 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
         }
     }
 }
+
+/// The panel's own tile works at the display's scale: at 2 a press at the
+/// centre of "Dark mode" turns the published appearance, as it does at 1.
+/// A control reported at half its size put a press at its centre past it, so
+/// a click did nothing.
+#[test]
+fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    for scale in [1.0, 2.0] {
+        let mut session = Session::headless(
+            Options {
+                services: vec![
+                    Box::new(tilo_settings_service::SettingsService::new()),
+                    Box::new(speaker()),
+                ],
+                collab: false,
+                ..options()
+            },
+            &[OutputConfig::new(
+                "HEADLESS-1",
+                i32::try_from((WIDTH as f64 * scale) as u32).unwrap(),
+                i32::try_from((HEIGHT as f64 * scale) as u32).unwrap(),
+            )
+            .with_scale(scale)],
+        )
+        .expect("session");
+        until_settled(&mut session, |session| says(session, &desk(session).clock));
+        session
+            .invoke(
+                tilo_surface_host::shell_part::CHROME_RESOURCE,
+                "quick-settings",
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        until_settled(&mut session, |session| says(session, "Dark mode"));
+        // The tile as the session publishes it, in the desk's logical pixels:
+        // a press at its centre is the one the person makes.
+        until_settled(&mut session, |session| {
+            session
+                .controls()
+                .iter()
+                .any(|(name, _)| name == "Dark mode")
+        });
+        let (x, y, w, h) = session
+            .controls()
+            .into_iter()
+            .find(|(name, _)| name == "Dark mode")
+            .map(|(_, rect)| rect)
+            .expect("the panel shows its Dark mode tile");
+        let dark = serde_json::json!("dark");
+        let was = appearance_mode(&session) == dark;
+        let (x, y) = (x + w / 2.0, y + h / 2.0);
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion { x, y })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::PointerButton {
+                    button: BTN_LEFT,
+                    pressed,
+                })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+        until_settled(&mut session, |session| {
+            (appearance_mode(session) == dark) != was
+        });
+        assert!(
+            (appearance_mode(&session) == dark) != was,
+            "at {scale} a press at the Dark mode tile turns the appearance: it shows at {:?}",
+            session.controls()
+        );
+    }
+}
