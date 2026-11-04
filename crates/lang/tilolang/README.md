@@ -108,7 +108,9 @@ view counter(c: Counter) {
 ```
 
 `root Counter` makes `Counter` a root type: one resource of it per room, which the launcher
-opens through the type's default view (`default view counter for Counter`).
+opens through the type's default view (`default view counter for Counter`). A type whose window
+switches between views names them (`views project_list, project_board for Project`), its default
+view first; a view it does not name is a helper its own views place.
 
 `use other.app as other` imports another package. Imports are found among the package's sibling
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
@@ -515,13 +517,13 @@ print(xs, fields: [.title, .due])
   modifiers in any order, then one key. The command modifier is the platform's own, so
   `Ctrl+Enter` is Command+Enter on a Mac. Where the action is offered its key runs it: an
   action on an item while that item has the keyboard, an action on the app's root window-wide.
-  `std`'s menus and buttons show it, and so does the palette. The key is checked when the app
+  The host's bar and menus show it, and so does the palette. The key is checked when the app
   compiles, and two actions of one subject cannot answer the same keys.
 - A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
-  on its subject. Where it would be offered on the subject (`actions(r)`: `std`'s headers and
-  menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
+  on its subject. Where it would be offered on the subject (`actions(r)`: the host's bar and a
+  window's menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
   refused with the reason before anything changes. A condition reads only the subject and is
   pure, as the presentation is (it is checked in the action's presentation view):
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.

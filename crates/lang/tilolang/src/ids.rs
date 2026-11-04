@@ -283,7 +283,11 @@ pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &m.items {
         match item {
-            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Use(_)
+            | Item::Root(_)
+            | Item::DefaultView(_)
+            | Item::RowView(_)
+            | Item::Views(_) => {}
             Item::Scenario(s) => out.push(scenario_key(&s.name)),
             Item::Alias(a) => {
                 out.push(a.name.name.clone());

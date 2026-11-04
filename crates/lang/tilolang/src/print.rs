@@ -1043,6 +1043,15 @@ impl Printer<'_> {
                 d.view.name,
                 print_type(&d.ty)
             )),
+            Item::Views(d) => {
+                let views = d
+                    .views
+                    .iter()
+                    .map(|view| view.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.line(&format!("views {views} for {}", print_type(&d.ty)));
+            }
             Item::Scenario(sc) => {
                 let result = sc
                     .result

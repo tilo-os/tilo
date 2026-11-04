@@ -336,6 +336,10 @@ fn e046_calling_a_flow() {
 #[test]
 fn e047_builtin_in_the_wrong_form() {
     expect("E047", "action a() {\n    model_call(\"k\", \"x\")\n}");
+    expect(
+        "E047",
+        "type C {\n    items: Collection<C>\n}\n/// Adds one.\nprimary action add(c: C) (icon: .plus) {\n    c.items.insert(C())\n}\nview list(c: C) {\n    let offered = actions(c)\n    text(\"{offered.len()}\")\n}",
+    );
 }
 
 #[test]

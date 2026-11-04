@@ -338,6 +338,161 @@ fn row_views_are_in_the_metadata() {
     assert_eq!(c.meta.row_view(&id("Notebook")), None);
 }
 
+/// A type whose window switches between views names them, in the order the bar shows them; a
+/// view it does not name is a helper its own views place and no window offers.
+#[test]
+fn the_views_a_window_switches_between_are_declared() {
+    let c = crate::common::compile_body(
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}
+
+view notebook_helper(nb: Notebook) {
+    std.header()
+}
+
+views note_cards, note_board for Notebook"#,
+    );
+    let id = |n: &str| c.ids.get(n).expect("id").to_string();
+    assert_eq!(
+        c.meta.views_of(&id("Notebook")),
+        vec![id("note_cards"), id("note_board")],
+        "in the order declared, the default view first"
+    );
+    // Without the declaration, the type's views are all helpers and no bar switches them.
+    let plain = crate::common::compile_body(
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}"#,
+    );
+    assert!(plain.meta.views_of.is_empty(), "no views are declared");
+}
+
+#[test]
+fn a_views_declaration_names_the_types_own_views_and_its_default_one() {
+    // A view of another type is no view of this one.
+    expect(
+        "E018",
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet")
+}
+
+view note_page(n: Note) {
+    std.document(n) {
+        text(n.title)
+    }
+}
+
+views note_cards, note_page for Notebook"#,
+    );
+    // The default view is the one a window opens on, so the switch names it.
+    expect(
+        "E018",
+        r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}
+
+views note_board for Notebook"#,
+    );
+    ok(r#"type Note {
+    title: Text (title)
+}
+
+root Notebook
+
+type Notebook {
+    notes: Collection<Note>
+}
+
+default view note_cards for Notebook
+
+view note_cards(nb: Notebook) {
+    std.list(nb, nb.notes, empty: "No notes yet") { n ->
+        row(n.title)
+    }
+}
+
+view note_board(nb: Notebook) {
+    std.page(nb) {
+        text("Board")
+    }
+}
+
+views note_cards, note_board for Notebook"#);
+}
+
 // USER REQUIREMENT (2026-10-20): "A package declares scenarios:
 // named seed data for screenshots, tests and benchmarks ... They never touch a person's data."
 #[test]

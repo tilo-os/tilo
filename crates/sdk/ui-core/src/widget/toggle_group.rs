@@ -430,6 +430,9 @@ pub struct ToggleGroup {
     menu: crate::widget::ContextMenu,
     /// The host viewport from the latest paint, for the menu to stay in.
     viewport: Option<Rect>,
+    /// How the window is used: a strip a finger chooses from stands as tall as the finger's
+    /// target, as a button's face does.
+    interaction: crate::interaction::InteractionEnvironment,
 }
 
 impl ToggleGroup {
@@ -498,6 +501,7 @@ impl ToggleGroup {
             last_thumb: None,
             folded: false,
             menu: Self::fold_menu(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
             viewport: None,
         }
     }
@@ -938,7 +942,7 @@ impl ToggleGroup {
                 vec![false; self.segments.len()],
             )
         } else if self.chosen.is_some() && measured {
-            let (rects, rows) = flow(rect, &self.naturals, self.metrics.height, self.metrics.gap);
+            let (rects, rows) = flow(rect, &self.naturals, self.face_height(), self.metrics.gap);
             self.rows = rows;
             (rects, vec![false; self.segments.len()])
         } else if self.style == SegmentedStyle::Tabs && measured {
@@ -1031,9 +1035,21 @@ impl ToggleGroup {
     fn strip_height(&self) -> f64 {
         if self.chosen.is_some() {
             let rows = f64_of_usize(self.rows.max(1));
-            rows * self.metrics.height + (rows - 1.0) * self.metrics.gap
+            rows * self.face_height() + (rows - 1.0) * self.metrics.gap
         } else {
+            self.face_height()
+        }
+    }
+
+    /// One segment's height: its size's, and a finger's target where the window is used by one,
+    /// as a button's face grows to its target.
+    fn face_height(&self) -> f64 {
+        if self.interaction.supports_hover() {
             self.metrics.height
+        } else {
+            self.metrics
+                .height
+                .max(f64::from(self.interaction.minimum_target()))
         }
     }
 }
@@ -2191,6 +2207,18 @@ impl Widget for ToggleGroup {
         }
     }
 
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            // Speaking of a finger instead of a mouse changes the strip's height.
+            self.layout_dirty = true;
+            self.cache_dirty = true;
+        }
+    }
+
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         // An icon segment shows no label, so its label is its tooltip.
         let index = self
@@ -2215,8 +2243,7 @@ impl Widget for ToggleGroup {
         if self.orientation == Orientation::Vertical {
             // Square segments a pointer target high, one tight step apart.
             let side = self
-                .metrics
-                .height
+                .face_height()
                 .max(f64::from(theme.tokens.metrics.min_pointer_target));
             let gap = f64::from(theme.tokens.spacing.s1);
             self.stacked = (side, gap);
@@ -2291,9 +2318,9 @@ impl Widget for ToggleGroup {
                 _ => intrinsic,
             });
             let (_, rows) = flow(
-                Rect::new(0.0, 0.0, f64::from(width), self.metrics.height),
+                Rect::new(0.0, 0.0, f64::from(width), self.face_height()),
                 &self.naturals,
-                self.metrics.height,
+                self.face_height(),
                 self.metrics.gap,
             );
             self.rows = rows;

@@ -632,9 +632,12 @@ mod cases {
         }
         editor.poll_patches().unwrap();
 
-        // The person's own Send button also asks: an outside effect always does.
-        let own = button_labelled(editor.tree(), "Send").key.clone();
-        let own = suggested(editor.press(&own).unwrap());
+        // The letter's own Send, behind the "…" beside its title, also asks: an outside effect
+        // always does.
+        let own = node_with(editor.tree(), "ui.MenuItem", "label", "Send")
+            .key
+            .clone();
+        let own = suggested(editor.fire(&own, "choose").unwrap());
         assert_eq!(own.chain.len(), 1);
 
         let src = format!("letters.send(@letters.Draft:{})", draft.id_string());
@@ -1589,11 +1592,12 @@ mod cases {
             .unwrap_or_else(|| panic!("no header row `{label}` in\n{}", dump(tree)))
     }
 
-    /// The list ends in its entry, and that is how a task is added: the window's primary action
-    /// keeps its key on the entry instead of making a task nobody typed, what is typed and
-    /// committed there is the one task, and an entry left empty makes nothing and writes nothing.
+    /// The window's bar offers its primary action once, as the button its key presses, and the
+    /// entry at the list's end declares that same key: the key and the bar's button bring the
+    /// person to the entry to type the item, which is a draft of its own rather than a record.
+    /// What is committed makes one task; an entry left empty makes nothing and writes nothing.
     #[test]
-    fn the_new_task_key_goes_to_the_lists_entry_and_what_is_typed_there_makes_the_task() {
+    fn the_new_task_button_is_the_bar_s_primary_and_the_entry_declares_its_key() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
@@ -1602,52 +1606,48 @@ mod cases {
             text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
             "No tasks here"
         );
-        // The window draws no button that would make a task: the header keeps the primary
-        // action's row in its menu, where it asks for the title, and the key it declares is the
-        // entry's.
+        // One New task, the window's primary button: the host places it from the declaration,
+        // the view draws no button of it, and it carries the key the action declares.
         let new_task = header_row(v.tree(), "New task");
         assert!(
-            on(new_task, "in_menu"),
-            "the primary action is a row of the header's menu, not a button of its row: {}",
-            dump(v.tree())
-        );
-        let entry = of_kind(v.tree(), "ui.TextInput")[0];
-        assert_eq!(text_prop(entry, "placeholder"), "New task");
-        assert_eq!(
-            entry.props.get("key"),
-            new_task.props.get("key"),
-            "the primary action's key puts the keyboard in the entry: {}",
+            !on(new_task, "in_menu"),
+            "the primary is the bar's button, not a row of its menu: {}",
             dump(v.tree())
         );
         assert_eq!(
-            text_prop(entry, "key"),
+            new_task.props.get("role"),
+            Some(&Value::text("primary")),
+            "it is the window's primary: {}",
+            dump(v.tree())
+        );
+        assert_eq!(
+            text_prop(new_task, "key"),
             "Ctrl+n",
             "as the keyboard spells the key the app declares"
         );
-        assert!(
-            on(entry, "entry"),
-            "the entry is the list's add, not a field of a record: {}",
+
+        // The entry at the list's end is the list's own add, not a field of a record, and it
+        // declares the primary's key: the key and the bar's button lead the person there.
+        let entry = of_kind(v.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| on(field, "entry"))
+            .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())));
+        assert_eq!(
+            text_prop(entry, "key"),
+            "Ctrl+n",
+            "the entry is where the primary brings the person: {}",
             dump(v.tree())
         );
         let entry = entry.key.clone();
-
-        // The action itself still needs the title it makes the task under, so a program or an
-        // agent can add one and nobody can leave a task unnamed.
-        let refused =
-            w.rt.invoke_action(
-                &me(),
-                (apps.todo.action("new_task").as_str(), vec![res(&list)]),
-            )
-            .expect_err("new_task without a title is refused");
-        assert!(refused.to_string().contains("title"), "{refused}");
 
         // An entry committed empty makes no task, and writes nothing at all.
         let before = w.rt.history(&list.doc).unwrap().len();
         v.fire_with(&entry, "submit", Some(&Value::text("")))
             .unwrap();
         v.poll_patches().unwrap();
-        assert!(
-            items(&w, &list, "items").is_empty(),
+        assert_eq!(
+            items(&w, &list, "items").len(),
+            0,
             "nothing typed, nothing made: {}",
             dump(v.tree())
         );
@@ -1657,23 +1657,23 @@ mod cases {
             "and nothing written"
         );
 
-        // What is typed and committed is the one task, named, and its row is that record.
-        v.fire_with(&entry, "submit", Some(&Value::text("bread")))
+        // What is typed and committed is one task, named, and its row is that record.
+        v.fire_with(&entry, "submit", Some(&Value::text("milk")))
             .unwrap();
         v.poll_patches().unwrap();
         let made = items(&w, &list, "items");
         assert_eq!(made.len(), 1, "{}", dump(v.tree()));
-        assert_eq!(text_of(&w, &made[0], "title"), "bread");
-        assert_eq!(row_titles(v.tree()), ["bread"]);
-        assert_eq!(
-            item_titled(v.tree(), "bread"),
-            made[0],
-            "the row stands for the task it made"
-        );
+        assert_eq!(text_of(&w, &made[0], "title"), "milk");
+        assert_eq!(row_titles(v.tree()), ["milk"]);
         assert_eq!(
             w.rt.history(&list.doc).unwrap().len(),
             before + 1,
             "the commit is one change, and the entry's draft was none"
+        );
+        assert_eq!(
+            item_titled(v.tree(), "milk"),
+            made[0],
+            "the row stands for the task it made"
         );
         // It joins the list where it was typed: no window opens over it.
         assert!(

@@ -90,8 +90,6 @@ type Project {
     name: Text (title)
     /// What it is for, and anything worth remembering about it.
     notes: RichText (body)
-    /// Whether its window shows its tasks as a board, a lane per section, or as a list.
-    board: Bool = false
 }
 
 /// A section of a project: one lane of its board, such as "Doing".
@@ -119,7 +117,11 @@ default view home for Tasks
 
 default view task_page for Task
 
-default view project_page for Project
+default view project_list for Project
+
+/// A project's window opens on its tasks and switches to its board, the same tasks as a lane
+/// per section.
+views project_list, project_board for Project
 
 row view task_summary for Task
 
@@ -171,7 +173,7 @@ internal action quick_add(
 
 /// Adds a task under the title a program or an agent gives it: no task stands without one. A
 /// person adds one by typing it in the entry at the end of the list, which is what this
-/// action's key and its menu row bring them to.
+/// action's key and the bar's button bring them to.
 primary action new_task(tasks: Tasks, title: Text) -> Task (
     icon: .plus,
     label: "New task",
@@ -401,17 +403,6 @@ destructive action remove_project(tasks: Tasks, p: Project) (
     tasks.projects.remove(p)
 }
 
-/// Shows a project's tasks as a board, a lane per section, or as a list again. It is a switch a
-/// project's window keeps beside its New task, not a command reached for occasionally.
-action show_board(p: Project, on: Bool = not p.board) (
-    label: "Board",
-    icon: .layout_grid,
-    on: p.board,
-    frequent: true,
-) {
-    p.board = on
-}
-
 /// Adds a section at the end of a project's board.
 action new_section(p: Project) -> Section (icon: .plus, label: "New section") {
     tasks.sections.insert(Section(name: "New section", project: p))
@@ -550,9 +541,6 @@ view home(t: Tasks) {
     let count = if chosen?.counts ?? false { chosen?.count ?? 0 } else { shown.len() }
     // A project's place adds to that project, in the place's own list.
     let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
-    // The window's primary action is the one whose key puts the keyboard in the entry at the
-    // list's end, so it is handed to the rows the entry stands under.
-    let primary = actions(t).find(a -> a.primary and a.available)
     // The entry says where what is typed will go.
     let entry_placeholder = if let p = project {
         "New task in {p.name}"
@@ -568,14 +556,10 @@ view home(t: Tasks) {
         sidebar: {
             std.sidebar(side, place)
         }
-        overview_actions: {
-            std.header(actions(t), entry: true)
-        }
         overview: {
             std.rows(
                 shown,
                 "No tasks here",
-                primary,
                 .some("list-checks"),
                 group: .due,
                 closed: .folded,
@@ -597,29 +581,15 @@ view home(t: Tasks) {
     }
 }
 
-/// A project's window: its tasks, in order, with the entry that adds to it at their foot; or,
-/// shown as a board (its Board toggle), the same tasks as a lane per section.
-view project_page(p: Project) {
-    if p.board {
-        project_board(p)
-    } else {
-        project_list(p)
-    }
-}
-
-/// A project's tasks as a list, with the entry that adds to it at their foot.
+/// A project's window: its tasks, in order, with the entry that adds to it at their foot. The
+/// bar switches it to the project's board, the same tasks as a lane per section.
 view project_list(p: Project) {
     let shown = tasks_of(p)
-    let primary = actions(p).find(a -> a.primary and a.available)
     ui.NavShell(content_kind: .document, overview_title: p.name, overview_count: shown.len()) {
-        overview_actions: {
-            std.header(actions(p), entry: true)
-        }
         overview: {
             std.rows(
                 shown,
                 "No tasks yet",
-                primary,
                 .some("folder"),
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
@@ -641,16 +611,14 @@ view project_list(p: Project) {
 /// its menu, which also holds its actions, and opens in a window of its own.
 view project_board(p: Project) {
     let sections = sections_of(p)
-    // A lane adds at its foot, in its own place: typing there puts the task in that lane.
-    let primary = actions(p).find(a -> a.primary and a.available)
-    std.page(p, canvas: true, fill: true, entry: true) {
+    std.page(p, canvas: true, fill: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
                 let loose = lane_of(p, .none)
                 ui.BoardLane(title: "No section", count: loose.count()) {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
-                        std.add_entry(primary, "New task", text -> quick_add(tasks, text, .some(p)))
+                        std.add_entry("New task", text -> quick_add(tasks, text, .some(p)))
                     }
                     for t in loose {
                         task_card(t, sections)
@@ -662,7 +630,6 @@ view project_board(p: Project) {
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         foot: {
                             std.add_entry(
-                                primary,
                                 "New task",
                                 text -> quick_add(tasks, text, .some(p), false, .some(s)),
                             )
@@ -678,7 +645,7 @@ view project_board(p: Project) {
 }
 
 /// A task on a board: its row. It opens in a window of its own, and its menu moves it to
-/// another lane or runs its actions.
+/// another lane; the host appends what its type declares after the moves.
 view task_card(t: Task, sections: List<Section>) {
     ui.BoardCard(t) {
         on activate: open(t)
@@ -693,19 +660,6 @@ view task_card(t: Task, sections: List<Section>) {
                     ui.MenuItem("Move to {s.name}", icon: .arrow_right) {
                         on choose: place(t, .some(s), 0)
                     }
-                }
-            }
-            for a in actions(t).filter(a -> a.applies) {
-                ui.MenuItem(
-                    a.label,
-                    icon: a.icon,
-                    destructive: a.destructive,
-                    key: a.key,
-                    disabled: not a.available,
-                    reason: if a.available { .none } else { .some(a.reason) },
-                    group: if a.frequent { .none } else { a.group },
-                ) {
-                    on choose: a.run
                 }
             }
         }
@@ -806,18 +760,6 @@ view task_page(t: Task) {
                     for p in tasks.projects {
                         ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
                             on choose: file(t, p)
-                        }
-                    }
-                }
-                ui.MenuButton(t.priority.label(), icon: .flag) {
-                    for a in actions(t).filter(a -> a.group == .some("Priority")) {
-                        ui.MenuItem(
-                            a.label,
-                            icon: a.icon,
-                            disabled: not a.available,
-                            reason: if a.available { .none } else { .some(a.reason) },
-                        ) {
-                            on choose: a.run
                         }
                     }
                 }
@@ -995,7 +937,7 @@ scenario "a task that is late" -> Task {
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.
 scenario "a project board" -> Project {
     let flat = tasks.projects.insert(
-        Project(name: "Move flat", notes: RichText("Keys on the 15th."), board: true),
+        Project(name: "Move flat", notes: RichText("Keys on the 15th.")),
     )
     let packing = tasks.sections.insert(Section(name: "Packing", project: flat))
     let booked = tasks.sections.insert(Section(name: "Booked", project: flat))

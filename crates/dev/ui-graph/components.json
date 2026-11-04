@@ -1278,6 +1278,13 @@
           "type": {
             "list": "action"
           }
+        },
+        {
+          "name": "subject",
+          "doc": "The resource whose published actions this menu lists, which the host fills: a bar that lists the window in front's commands names the window and leaves the commands to it.",
+          "type": {
+            "option": "resource"
+          }
         }
       ],
       "slots": [
@@ -6905,6 +6912,13 @@
           }
         },
         {
+          "name": "above",
+          "doc": "The node the view shows just over this one under the same parent: the place the actions offered on it take when one reads a place (`above`). None for a first child.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
           "name": "branch",
           "doc": "Whether it opens to show the nodes under it. A node with children says so unless it says otherwise.",
           "type": "bool"
@@ -7027,6 +7041,13 @@
           "name": "tail",
           "doc": "The row is one of the items done with: they stand after every group, under the list's tail title, closed until the person opens them.",
           "type": "bool"
+        },
+        {
+          "name": "above",
+          "doc": "The item the view shows just over this one in its group: the place the actions offered on the row take when one reads a place (`above`). None for the first of a group.",
+          "type": {
+            "option": "resource"
+          }
         },
         {
           "name": "removed",

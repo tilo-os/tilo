@@ -454,10 +454,21 @@ impl Walk<'_> {
     /// A row stretched over the column it stands in: the page drawn as one row, its line
     /// floating at the column's middle where a page around it would hold it. A row is as tall
     /// as its line wherever it stands — a list's row, a result in a page, a notice's — so a row
-    /// taking half the window's height is the page itself.
+    /// taking half the window's height with its line floating in it is the page itself. A row
+    /// its content fills to the same height holds what it draws (a message in a conversation,
+    /// whose body is long): that is the content's height, not the column's.
     fn bare_row(&mut self, node: &InspectionNode, keys: &[String], own: Rect) {
         let window = self.viewport.height();
         if !is_row(node) || window <= 0.0 || own.height() < window * 0.5 {
+            return;
+        }
+        let held = node
+            .children
+            .iter()
+            .filter(|child| !floats(&child.widget))
+            .map(|child| rect(child.rect).height())
+            .fold(0.0_f64, f64::max);
+        if held >= own.height() * 0.5 {
             return;
         }
         self.push(
@@ -887,6 +898,33 @@ mod tests {
         assert!(
             lost(&lane(600.0)).is_empty(),
             "given the room of a pane, the same cards are there to scroll through"
+        );
+    }
+
+    /// A row taking half the window is the page itself, and caught — unless its content is as
+    /// tall as it is: a conversation's message fills its row whatever the row's height, and a
+    /// row that tall is no page stretched around one line.
+    #[test]
+    fn a_tall_row_is_caught_only_when_its_line_floats_in_it() {
+        let bare_rows = |content: InspectionNode| {
+            let mut row = node("SwipeRow", "row", [0.0, 0.0, 400.0, 200.0], None);
+            row.children.push(content);
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+            shell.children.push(row);
+            inspect(&shell, (400, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::BareRow)
+                .count()
+        };
+        assert_eq!(
+            bare_rows(node("Row", "line", [0.0, 88.0, 400.0, 24.0], None)),
+            1,
+            "a line floating in the row's middle is the page drawn as one row"
+        );
+        assert_eq!(
+            bare_rows(node("Row", "body", [0.0, 0.0, 400.0, 200.0], None)),
+            0,
+            "a row as tall as what it holds is as tall as its content"
         );
     }
 

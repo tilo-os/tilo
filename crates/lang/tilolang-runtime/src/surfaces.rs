@@ -1,0 +1,823 @@
+//! The surfaces the host owns for a window's actions: the bar over its columns, the menu an
+//! item's right-click, long press or Menu key opens, and the "…" beside the title an item's
+//! page edits.
+//!
+//! A view says what a person can do with what it shows by declaring actions on the type and by
+//! placing the typed affordances of the thing itself (a checkbox that completes, an entry that
+//! adds, a drag); it never reads `actions(r)` back to build chrome. The host reads those
+//! declarations where a view rendered them — the resource its boundary was opened on, and each
+//! item a row, card or tree node stands for — and puts them where every window keeps them, in
+//! the same order and shape: the primary action once in the window's bar, the frequent ones
+//! beside it, the rest behind the bar's own door, and on an item its actions in its menu.
+
+use std::collections::BTreeMap;
+
+use crate::core::Core;
+use crate::error::RuntimeError;
+use crate::handles::ViewState;
+use crate::host_ui::{SET_ACTION, VIEW_STATE};
+use crate::value::{ActionRef, RefValue, Value};
+use crate::view::{BindTarget, NodeBuild};
+use crate::view_state::StateKey;
+
+/// A node whose `item` gets the host's menu: what a person right-clicks, long-presses, or picks
+/// out of with the Menu key.
+const MEMBERS: [&str; 3] = ["ui.ListItem", "ui.TreeViewNode", "ui.BoardCard"];
+/// The row of a list: the one member that swipes, too.
+const LIST_ITEM: &str = "ui.ListItem";
+/// The window's shell: the columns whose one bar the host fills.
+const SHELL: &str = "ui.NavShell";
+/// The menu a view opens onto a resource, its commands filled here.
+const MENU_BUTTON: &str = "ui.MenuButton";
+/// The slot a menu's commands go in.
+const ITEMS: &str = "items";
+/// The control that edits a title as a page's large title.
+const TEXT_INPUT: &str = "ui.TextInput";
+/// A slot of a component, named by its `name` property.
+const SLOT: &str = "slot";
+
+const MENU: &str = "menu";
+const SWIPE: &str = "swipe";
+const OVERVIEW: &str = "overview";
+const OVERVIEW_ACTIONS: &str = "overview_actions";
+const ACTIONS: &str = "actions";
+
+/// The word a "…" is named by: the one the shell gives its own More button.
+const MORE: &str = "window-toolbar-more";
+
+/// Where each field of a `host.Action` stands, as [`crate::platform`] offers it.
+const LABEL: usize = 0;
+const ICON: usize = 1;
+const PRIMARY: usize = 3;
+const DESTRUCTIVE: usize = 4;
+const ON: usize = 5;
+const KEY: usize = 6;
+const RUN: usize = 8;
+const GROUP: usize = 9;
+const FREQUENT: usize = 10;
+const AVAILABLE: usize = 11;
+const REASON: usize = 12;
+const APPLIES: usize = 13;
+const ID: usize = 14;
+
+impl Core {
+    /// The host's surfaces for the tree a boundary rendered: each item's menu, and the window's
+    /// own bar, or for the page of one item the "…" beside its title. `args` are the boundary's,
+    /// so the window's subject is the resource the view was opened on.
+    ///
+    /// # Errors
+    ///
+    /// An action whose presentation view traps, or a tree the arena does not hold.
+    pub(crate) fn surfaces(&self, root: usize, args: &[Value]) -> Result<(), RuntimeError> {
+        let subject = match args.first() {
+            Some(Value::Ref(subject)) => Some(subject.clone()),
+            _ => None,
+        };
+        self.item_surfaces(root)?;
+        self.subject_menus(root)?;
+        let Some(subject) = subject else {
+            return Ok(());
+        };
+        // The window's shell, wherever the view's own frames put it: a window that draws itself
+        // through `std.page` or `std.list` keeps its shell one boundary down.
+        let Some(shell) = self.find_shell(root)? else {
+            return Ok(());
+        };
+        // Only what the window's own place offers: an action that reads a row over it has
+        // none on a window's page.
+        let acted: Vec<Value> = self
+            .actions_on(&subject, &Value::none())
+            .map_err(trapped)?
+            .into_iter()
+            .filter(|action| flag(action, APPLIES))
+            .collect();
+        let listed = self
+            .props(shell)?
+            .get("content_kind")
+            .and_then(Value::as_text)
+            .is_some_and(|kind| kind == "list");
+        let overview = self.slot(shell, OVERVIEW)?.is_some();
+        let entry = self.declare_entry_key(shell, &acted)?;
+        if overview {
+            if let Some(switch) = self.view_switch(&subject)? {
+                self.put_at_in_slot(shell, OVERVIEW_ACTIONS, switch)?;
+            }
+            self.fill_bar(shell, OVERVIEW_ACTIONS, listed, &acted, entry.as_deref())?;
+        } else if self.has_title(shell, &subject) {
+            let switch = self.view_switch(&subject)?;
+            self.put_under_title(shell, &subject, &acted, switch)?;
+        } else {
+            if let Some(switch) = self.view_switch(&subject)? {
+                self.put_at_in_slot(shell, ACTIONS, switch)?;
+            }
+            self.fill_bar(shell, ACTIONS, listed, &acted, entry.as_deref())?;
+        }
+        Ok(())
+    }
+
+    /// The window's shell in the tree: the first one met, a view's own frame included.
+    fn find_shell(&self, at: usize) -> Result<Option<usize>, RuntimeError> {
+        if self.kind(at)? == SHELL {
+            return Ok(Some(at));
+        }
+        for child in self.children(at)? {
+            if let Some(found) = self.find_shell(child)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Each node standing for an item gets that item's actions in its menu, and the row's
+    /// destructive action (or its first) as its swipe: what a view attached to it stays first.
+    ///
+    /// An action that reads a place gets the item the view says it shows over the row
+    /// (`above`), which a row of a list or a node of an outline states because only the view
+    /// knows what it shows: a row's own frame holds no other row. A first of its group states
+    /// none, so a move that needs a row over it is not offered there.
+    fn item_surfaces(&self, at: usize) -> Result<(), RuntimeError> {
+        let kind = self.kind(at)?;
+        if MEMBERS.contains(&kind.as_str()) {
+            let props = self.props(at)?;
+            if let Some(item) = ref_prop(&props, "item") {
+                let above = ref_prop(&props, "above")
+                    .map_or_else(Value::none, |over| Value::some(Value::Ref(over)));
+                self.item_actions(at, &kind, &item, &above)?;
+            }
+        }
+        for child in self.children(at)? {
+            self.item_surfaces(child)?;
+        }
+        Ok(())
+    }
+
+    /// The actions of `item` on the node `at` of `kind`: each in its menu, and the row's
+    /// destructive one (or its first) as its swipe, offered where `above` stands over it.
+    fn item_actions(
+        &self,
+        at: usize,
+        kind: &str,
+        item: &RefValue,
+        above: &Value,
+    ) -> Result<(), RuntimeError> {
+        let taken: Vec<Value> = self
+            .actions_on(item, above)
+            .map_err(trapped)?
+            .into_iter()
+            .filter(|action| flag(action, APPLIES))
+            .collect();
+        if taken.is_empty() {
+            return Ok(());
+        }
+        let key = self.key(at)?;
+        for (index, action) in taken.iter().enumerate() {
+            let item = self.menu_item(action, &format!("{key}~action-{index}"));
+            self.put_in_slot(at, MENU, item)?;
+        }
+        if kind == LIST_ITEM && self.slot(at, SWIPE)?.is_none() {
+            let swipe = taken
+                .iter()
+                .filter(|action| flag(action, AVAILABLE))
+                .find(|action| flag(action, DESTRUCTIVE))
+                .or_else(|| taken.iter().find(|action| flag(action, AVAILABLE)));
+            if let Some(action) = swipe {
+                let node = self.swipe_action(action, &format!("{key}~swipe"));
+                self.put_in_slot(at, SWIPE, node)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Each menu a view opened onto a resource gets that resource's actions: a bar naming the
+    /// window in front draws the commands the window's own menu would, without the view reading
+    /// them back.
+    fn subject_menus(&self, at: usize) -> Result<(), RuntimeError> {
+        let subject = if self.kind(at)? == MENU_BUTTON {
+            match self.props(at)?.get("subject").cloned() {
+                Some(Value::Ref(subject)) => Some(subject),
+                Some(Value::Opt(Some(held))) => match *held {
+                    Value::Ref(subject) => Some(subject),
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(subject) = subject {
+            let acted = self
+                .actions_on(&subject, &Value::none())
+                .map_err(trapped)?
+                .into_iter()
+                .filter(|action| flag(action, APPLIES));
+            let key = self.key(at)?;
+            for (index, action) in acted.enumerate() {
+                let item = self.menu_item(&action, &format!("{key}~item-{index}"));
+                self.put_in_slot(at, ITEMS, item)?;
+            }
+        }
+        self.each_child(at, |child| self.subject_menus(child))
+    }
+
+    /// Visit each child of `at`, in order.
+    fn each_child(
+        &self,
+        at: usize,
+        mut visit: impl FnMut(usize) -> Result<(), RuntimeError>,
+    ) -> Result<(), RuntimeError> {
+        for child in self.children(at)? {
+            visit(child)?;
+        }
+        Ok(())
+    }
+
+    /// The switch over the views of the resource the window shows, when its type offers more
+    /// than one view that draws it whole: a labelled tab per view, the one the window shows
+    /// chosen, and a press choosing another for the window, which
+    /// [`render`](crate::render) reads where it draws the resource. `None` for a type with one
+    /// view, which stands as the window itself.
+    fn view_switch(&self, subject: &RefValue) -> Result<Option<usize>, RuntimeError> {
+        let views = { self.registry.borrow().views_of_type(&subject.target.ty) };
+        if views.len() < 2 {
+            return Ok(None);
+        }
+        let window = self
+            .with_view(|vs| Ok(vs.window.clone()))
+            .map_err(trapped)?;
+        let state = format!("{VIEW_STATE}{}", subject.target.id_string());
+        let chosen = self.chosen_index(&window, &state, &subject.target.ty, &views);
+        let base = format!("{window}~views");
+        let mut tabs = empty("ui.ViewTabs", &base);
+        tabs.props.insert(
+            "selected".to_owned(),
+            Value::Opt(Some(Box::new(Value::Int(chosen)))),
+        );
+        if let Some(label) = self.type_label(&subject.target.ty) {
+            tabs.props.insert("label".to_owned(), Value::text(&label));
+        }
+        tabs.events.insert(
+            "change".to_owned(),
+            Value::Action(ActionRef::new(
+                SET_ACTION,
+                vec![
+                    Value::text(&window),
+                    Value::text(""),
+                    Value::text(&state),
+                    Value::Event,
+                ],
+            )),
+        );
+        let at = self.push(tabs)?;
+        for (index, (id, name)) in views.iter().enumerate() {
+            let label = self.words.borrow().word(
+                &tilolang::messages::key_of(id),
+                &[],
+                &tilolang::messages::label(name),
+            );
+            let mut segment = empty("ui.Segment", &format!("{base}~view-{index}"));
+            segment
+                .props
+                .insert("label".to_owned(), Value::text(&label));
+            let child = self.push(segment)?;
+            self.insert(at, usize::MAX, child)?;
+        }
+        Ok(Some(at))
+    }
+
+    /// Which of `views` the window shows `ty`'s resource through, as the person chose: their
+    /// choice, else the type's default view, else the first. The choice is read from the
+    /// window's state, so the bar runs again when another tab is chosen.
+    fn chosen_index(&self, window: &str, state: &str, ty: &str, views: &[(String, String)]) -> i64 {
+        let key = StateKey {
+            window: window.to_owned(),
+            principal: None,
+            state: state.to_owned(),
+        };
+        let (held, generation) = {
+            let states = self.view_states.borrow();
+            (states.get(&key).cloned(), states.generation(&key))
+        };
+        let seen = held.clone().unwrap_or_else(Value::none);
+        self.note_state_read(key, generation, &seen);
+        if let Some(Value::Int(index)) = held
+            && let Ok(index) = usize::try_from(index)
+            && index < views.len()
+        {
+            return i64::try_from(index).unwrap_or_default();
+        }
+        let default = { self.registry.borrow().default_view(ty) };
+        if let Some(default) = default
+            && let Some(index) = views.iter().position(|(id, _)| *id == default)
+        {
+            return i64::try_from(index).unwrap_or_default();
+        }
+        0
+    }
+
+    /// What the type `ty` is called, in the app's words: the name of the group of views the
+    /// switch chooses between.
+    fn type_label(&self, ty: &str) -> Option<String> {
+        let (id, name) = {
+            let registry = self.registry.borrow();
+            let (_, info) = registry.type_info(ty)?;
+            (info.id.clone(), info.name.clone())
+        };
+        Some(self.words.borrow().word(
+            &tilolang::messages::key_of(&id),
+            &[],
+            &tilolang::messages::label(&name),
+        ))
+    }
+
+    /// The window's bar's controls: what the shell searches with, then the primary action, the
+    /// frequent ones, and the rest where the bar's own door lists them.
+    fn fill_bar(
+        &self,
+        shell: usize,
+        slot: &str,
+        listed: bool,
+        acted: &[Value],
+        entry: Option<&str>,
+    ) -> Result<(), RuntimeError> {
+        let key = self.key(shell)?;
+        let mut by_place: [Vec<Value>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for action in acted {
+            let place = if flag(action, PRIMARY) {
+                0
+            } else if flag(action, FREQUENT) {
+                1
+            } else {
+                2
+            };
+            if let Some(actions) = by_place.get_mut(place) {
+                actions.push(action.clone());
+            }
+        }
+        if listed || slot == OVERVIEW_ACTIONS {
+            self.put_in_slot(
+                shell,
+                slot,
+                empty("ui.SearchButton", &format!("{key}~{slot}~search")),
+            )?;
+        }
+        for (index, action) in by_place.into_iter().flatten().enumerate() {
+            let node = self.action_button(&action, &format!("{key}~{slot}~action-{index}"), entry);
+            self.put_in_slot(shell, slot, node)?;
+        }
+        Ok(())
+    }
+
+    /// The entry at a list's foot declares the window's primary action's key, so that the key
+    /// and the bar's Primary bring the person there to type the item, rather than making one
+    /// nobody typed: the entry is its own draft, and the item exists once it is committed. The
+    /// key the entry declares is the answer. A key the field declares itself stands.
+    fn declare_entry_key(
+        &self,
+        at: usize,
+        acted: &[Value],
+    ) -> Result<Option<String>, RuntimeError> {
+        let Some(primary) = acted.iter().find(|action| flag(action, PRIMARY)) else {
+            return Ok(None);
+        };
+        let Some(shortcut) = opt_text(primary, KEY) else {
+            return Ok(None);
+        };
+        if self.put_entry_key(at, shortcut)? {
+            return Ok(Some(shortcut.to_owned()));
+        }
+        Ok(None)
+    }
+
+    /// Give the entry at `at` or under it the key `shortcut`, unless a key already stands there.
+    /// Whether there is such an entry.
+    fn put_entry_key(&self, at: usize, shortcut: &str) -> Result<bool, RuntimeError> {
+        let props = self.props(at)?;
+        let entry = self.kind(at)? == TEXT_INPUT && flag_prop(&props, "entry");
+        if entry {
+            if !props.contains_key("key") {
+                self.put_prop(at, "key", Value::text(shortcut))?;
+            }
+            return Ok(true);
+        }
+        for child in self.children(at)? {
+            if self.put_entry_key(child, shortcut)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether the content under `shell` edits the title of `subject` as its large title.
+    fn has_title(&self, shell: usize, subject: &RefValue) -> bool {
+        self.finds_title(shell, &subject.target.id_string())
+            .is_some()
+    }
+
+    /// The "…" beside the title: the item's actions, the ones its context menu holds; the view
+    /// switch `switch` before it, for a resource whose type offers more than one view.
+    fn put_under_title(
+        &self,
+        shell: usize,
+        subject: &RefValue,
+        acted: &[Value],
+        switch: Option<usize>,
+    ) -> Result<(), RuntimeError> {
+        let Some((parent, index, key)) = self.finds_title(shell, &subject.target.id_string())
+        else {
+            return Ok(());
+        };
+        let mut menu = empty("ui.MenuButton", &format!("{key}~more"));
+        let label = self.words.borrow().word(MORE, &[], "More actions");
+        menu.props.insert("label".to_owned(), Value::text(&label));
+        menu.props
+            .insert("icon".to_owned(), Value::text("more-horizontal"));
+        menu.props.insert("icon_only".to_owned(), on_off(true));
+        let at = self.push(menu)?;
+        for (index, action) in acted.iter().enumerate() {
+            let item = self.menu_item(action, &format!("{key}~more-{index}"));
+            let child = self.push(item)?;
+            self.insert(at, usize::MAX, child)?;
+        }
+        let after = index.saturating_add(1);
+        self.insert(parent, after, at)?;
+        if let Some(switch) = switch {
+            self.insert(parent, after, switch)?;
+        }
+        Ok(())
+    }
+
+    /// The control under `shell` that edits `subject`'s title: its parent, its place among the
+    /// parent's children, and its key.
+    fn finds_title(&self, at: usize, resource: &str) -> Option<(usize, usize, String)> {
+        for (index, child) in self.children(at).ok()?.into_iter().enumerate() {
+            if let Some(found) = self.finds_title(child, resource) {
+                return Some(found);
+            }
+            let kind = self.kind(child).ok()?;
+            if kind == TEXT_INPUT
+                && self.edits_title(child, resource)
+                && let Ok(key) = self.key(child)
+            {
+                return Some((at, index, key));
+            }
+        }
+        None
+    }
+
+    fn binding_of(&self, at: usize) -> Option<crate::view::Binding> {
+        self.arena(|view| Ok(view.nodes.get(at).and_then(|node| node.binding.clone())))
+            .ok()
+            .flatten()
+    }
+
+    /// Whether `at` edits the field `resource`'s type names it by.
+    fn edits_title(&self, at: usize, resource: &str) -> bool {
+        self.binding_of(at).is_some_and(|binding| {
+            let BindTarget::Field { target, field } = &binding.target else {
+                return false;
+            };
+            target.id_string() == resource
+                && self.title_field(&target.ty).is_some_and(|id| &id == field)
+        })
+    }
+
+    /// The field `ty` names its records by: the one its declaration marks `(title)`.
+    fn title_field(&self, ty: &str) -> Option<String> {
+        let registry = self.registry.borrow();
+        let (pkg, info) = registry.type_info(ty)?;
+        let ty = pkg.meta.types.iter().find(|t| t.id == info.id)?;
+        let field = ty.fields.iter().find(|field| {
+            field
+                .role
+                .as_ref()
+                .is_some_and(crate::meta::FieldRole::is_title)
+        })?;
+        Some(field.id.clone())
+    }
+
+    // ----- the arena --------------------------------------------------------------------
+
+    fn props(&self, at: usize) -> Result<BTreeMap<String, Value>, RuntimeError> {
+        self.arena(|view| {
+            view.nodes
+                .get(at)
+                .map(|node| node.props.clone())
+                .ok_or_else(|| "unknown ui node".to_owned())
+        })
+    }
+
+    /// Set a prop of `at`.
+    fn put_prop(&self, at: usize, name: &str, value: Value) -> Result<(), RuntimeError> {
+        self.arena(|view| {
+            let node = view
+                .nodes
+                .get_mut(at)
+                .ok_or_else(|| "unknown ui node".to_owned())?;
+            node.props.insert(name.to_owned(), value);
+            Ok(())
+        })
+    }
+
+    fn kind(&self, at: usize) -> Result<String, RuntimeError> {
+        self.arena(|view| {
+            view.nodes
+                .get(at)
+                .map(|node| node.kind.clone())
+                .ok_or_else(|| "unknown ui node".to_owned())
+        })
+    }
+
+    fn children(&self, at: usize) -> Result<Vec<usize>, RuntimeError> {
+        self.arena(|view| {
+            view.nodes
+                .get(at)
+                .map(|node| node.children.clone())
+                .ok_or_else(|| "unknown ui node".to_owned())
+        })
+    }
+
+    fn key(&self, at: usize) -> Result<String, RuntimeError> {
+        self.arena(|view| {
+            view.nodes
+                .get(at)
+                .map(|node| node.key.clone())
+                .ok_or_else(|| "unknown ui node".to_owned())
+        })
+    }
+
+    /// `child` as a node of the tree, in the arena.
+    fn push(&self, node: NodeBuild) -> Result<usize, RuntimeError> {
+        self.arena(|view| {
+            view.nodes.push(node);
+            Ok(view.nodes.len().saturating_sub(1))
+        })
+    }
+
+    /// Put `child` among `parent`'s children at `index` (the end for [`usize::MAX`]).
+    fn insert(&self, parent: usize, index: usize, child: usize) -> Result<(), RuntimeError> {
+        self.arena(|view| {
+            let node = view
+                .nodes
+                .get_mut(parent)
+                .ok_or_else(|| "unknown ui node".to_owned())?;
+            let index = index.min(node.children.len());
+            node.children.insert(index, child);
+            Ok(())
+        })
+    }
+
+    /// The slot `name` of `at`, when it has one.
+    fn slot(&self, at: usize, name: &str) -> Result<Option<usize>, RuntimeError> {
+        for child in self.children(at)? {
+            let found = self.arena(|view| {
+                let node = view
+                    .nodes
+                    .get(child)
+                    .ok_or_else(|| "unknown ui node".to_owned())?;
+                Ok((
+                    node.kind.clone(),
+                    node.props
+                        .get("name")
+                        .and_then(Value::as_text)
+                        .map(str::to_owned),
+                ))
+            })?;
+            if found.0 == SLOT && found.1.as_deref() == Some(name) {
+                return Ok(Some(child));
+            }
+        }
+        Ok(None)
+    }
+
+    /// `node` at the end of `at`'s slot `name`, the slot made when it has none.
+    fn put_in_slot(&self, at: usize, name: &str, node: NodeBuild) -> Result<(), RuntimeError> {
+        let child = self.push(node)?;
+        self.put_at_in_slot(at, name, child)
+    }
+
+    /// The node `child` (one of the arena's) at the end of `at`'s slot `name`, the slot made
+    /// when it has none.
+    fn put_at_in_slot(&self, at: usize, name: &str, child: usize) -> Result<(), RuntimeError> {
+        let key = self.key(at)?;
+        let slot = if let Some(slot) = self.slot(at, name)? {
+            slot
+        } else {
+            let mut props = BTreeMap::new();
+            props.insert("name".to_owned(), Value::text(name));
+            let mut slot = empty(SLOT, &format!("{key}~slot-{name}"));
+            slot.props = props;
+            let slot = self.push(slot)?;
+            self.insert(at, usize::MAX, slot)?;
+            slot
+        };
+        self.insert(slot, usize::MAX, child)
+    }
+
+    /// One action as a menu row: what choosing it runs, in its words.
+    fn menu_item(&self, action: &Value, key: &str) -> NodeBuild {
+        let mut node = empty("ui.MenuItem", key);
+        node.props
+            .insert("label".to_owned(), Value::text(self.action_name(action)));
+        if let Some(icon) = opt_text(action, ICON) {
+            node.props.insert("icon".to_owned(), Value::text(icon));
+        }
+        if flag(action, DESTRUCTIVE) {
+            node.props.insert("destructive".to_owned(), on_off(true));
+        }
+        if let Some(on) = opt_flag(action, ON) {
+            node.props.insert("checked".to_owned(), on_off(on));
+        }
+        if let Some(shortcut) = opt_text(action, KEY) {
+            node.props.insert("key".to_owned(), Value::text(shortcut));
+        }
+        if let Some(group) = opt_text(action, GROUP) {
+            node.props.insert("group".to_owned(), Value::text(group));
+        }
+        if !flag(action, AVAILABLE) {
+            node.props.insert("disabled".to_owned(), on_off(true));
+            if let Some(reason) = opt_text(action, REASON) {
+                node.props.insert("reason".to_owned(), Value::text(reason));
+            }
+        }
+        if let Some(Value::Action(run)) = action_field(action, RUN) {
+            node.events
+                .insert("choose".to_owned(), Value::Action(run.clone()));
+        }
+        node
+    }
+
+    /// One action as a swipe: what a row offers when dragged, undone rather than confirmed.
+    fn swipe_action(&self, action: &Value, key: &str) -> NodeBuild {
+        let mut node = empty("ui.SwipeAction", key);
+        node.props
+            .insert("label".to_owned(), Value::text(self.action_name(action)));
+        if let Some(icon) = opt_text(action, ICON) {
+            node.props.insert("icon".to_owned(), Value::text(icon));
+        }
+        if flag(action, DESTRUCTIVE) {
+            node.props.insert("destructive".to_owned(), on_off(true));
+        }
+        if let Some(Value::Action(run)) = action_field(action, RUN) {
+            node.events
+                .insert("swipe".to_owned(), Value::Action(run.clone()));
+        }
+        node
+    }
+
+    /// One action as a bar's control, as the standard library's header placed it: the primary
+    /// labelled, a frequent command a button of its own, all the rest behind the bar's door.
+    /// `entry` is the key the list's entry declares, when the window has one: the primary it
+    /// stands for is answered there, so it names the addition plainly rather than a form to
+    /// fill in.
+    fn action_button(&self, action: &Value, key: &str, entry: Option<&str>) -> NodeBuild {
+        let primary = flag(action, PRIMARY);
+        let frequent = flag(action, FREQUENT);
+        let icon = opt_text(action, ICON).map(str::to_owned);
+        let mut name = self.action_name(action);
+        if primary && entry.is_some() && entry == opt_text(action, KEY) {
+            name = name.trim_end_matches('…').to_owned();
+        }
+        let mut node = empty("ui.Button", key);
+        node.props.insert("label".to_owned(), Value::text(&name));
+        if let Some(icon) = &icon {
+            node.props.insert("icon".to_owned(), Value::text(icon));
+        }
+        if primary {
+            node.props.insert("role".to_owned(), Value::text("primary"));
+        } else if frequent && icon.is_some() {
+            node.props.insert("icon_only".to_owned(), on_off(true));
+        }
+        if !primary && !frequent {
+            node.props.insert("in_menu".to_owned(), on_off(true));
+            if let Some(group) = opt_text(action, GROUP) {
+                node.props.insert("group".to_owned(), Value::text(group));
+            }
+        }
+        if let Some(on) = opt_flag(action, ON) {
+            node.props.insert("toggled".to_owned(), on_off(on));
+        }
+        if let Some(shortcut) = opt_text(action, KEY) {
+            node.props.insert("key".to_owned(), Value::text(shortcut));
+        }
+        node.props
+            .insert("enabled".to_owned(), on_off(flag(action, AVAILABLE)));
+        if let Some(reason) = opt_text(action, REASON) {
+            node.props
+                .insert("description".to_owned(), Value::text(reason));
+        }
+        if let Some(Value::Action(run)) = action_field(action, RUN) {
+            node.events
+                .insert("press".to_owned(), Value::Action(run.clone()));
+        }
+        node
+    }
+
+    /// What an action is called: the word its id names, as the app's declarations wrote it.
+    fn action_name(&self, action: &Value) -> String {
+        let id = text_of(action_field(action, ID)).unwrap_or_default();
+        let label = text_of(action_field(action, LABEL)).unwrap_or_default();
+        self.words
+            .borrow()
+            .word(&tilolang::messages::key_of(id), &[], label)
+    }
+
+    fn arena<T>(
+        &self,
+        f: impl FnOnce(&mut ViewState) -> Result<T, String>,
+    ) -> Result<T, RuntimeError> {
+        self.with_view(f).map_err(trapped)
+    }
+}
+
+/// Why an import the host ran failed, as the view's own failure.
+fn trapped(fail: crate::engine::HostFail) -> RuntimeError {
+    match fail {
+        crate::engine::HostFail::Trap(why) => RuntimeError::Package(why),
+        crate::engine::HostFail::Suspend => {
+            RuntimeError::Package("a view building its surfaces was suspended".to_owned())
+        }
+    }
+}
+
+/// A node of the tree, as the arena builds it.
+fn empty(kind: &str, key: &str) -> NodeBuild {
+    NodeBuild {
+        kind: kind.to_owned(),
+        key: key.to_owned(),
+        props: BTreeMap::new(),
+        children: Vec::new(),
+        binding: None,
+        events: BTreeMap::new(),
+        anchor: None,
+    }
+}
+
+fn action_field(action: &Value, at: usize) -> Option<&Value> {
+    match action {
+        Value::Tuple(fields) => fields.get(at),
+        _ => None,
+    }
+}
+
+fn text_of(value: Option<&Value>) -> Option<&str> {
+    match value {
+        Some(Value::Text(text)) => Some(text.as_str()),
+        _ => None,
+    }
+}
+
+/// A boolean prop as a tree holds it: a `Bool` prop a view writes is `1` or `0`.
+fn on_off(yes: bool) -> Value {
+    Value::Int(i64::from(yes))
+}
+
+/// A boolean prop as a node holds it, off when it is not there.
+fn flag_prop(props: &BTreeMap<String, Value>, name: &str) -> bool {
+    match props.get(name) {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Int(n)) => *n != 0,
+        Some(Value::Opt(Some(held))) => matches!(**held, Value::Bool(true)),
+        _ => false,
+    }
+}
+
+/// The resource a node's prop `name` names, and none for anything else.
+fn ref_prop(props: &BTreeMap<String, Value>, name: &str) -> Option<RefValue> {
+    match props.get(name) {
+        Some(Value::Ref(item)) => Some(item.clone()),
+        Some(Value::Opt(Some(held))) => match &**held {
+            Value::Ref(item) => Some(item.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn flag(action: &Value, at: usize) -> bool {
+    match action_field(action, at) {
+        Some(Value::Bool(flag)) => *flag,
+        Some(Value::Int(n)) => *n != 0,
+        Some(Value::Opt(Some(held))) => matches!(**held, Value::Bool(true)),
+        _ => false,
+    }
+}
+
+fn opt_flag(action: &Value, at: usize) -> Option<bool> {
+    match action_field(action, at) {
+        Some(Value::Opt(Some(held))) => match &**held {
+            Value::Bool(flag) => Some(*flag),
+            Value::Int(n) => Some(*n != 0),
+            _ => None,
+        },
+        Some(Value::Bool(flag)) => Some(*flag),
+        _ => None,
+    }
+}
+
+fn opt_text(action: &Value, at: usize) -> Option<&str> {
+    match action_field(action, at) {
+        Some(Value::Opt(Some(held))) => text_of(Some(held)),
+        value => text_of(value),
+    }
+    .filter(|text| !text.is_empty())
+}

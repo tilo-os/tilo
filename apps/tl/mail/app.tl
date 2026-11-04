@@ -656,9 +656,6 @@ view unified(m: Mail) {
                     }
                 }
             }
-            overview_actions: {
-                std.header(actions(m))
-            }
             overview: {
                 if shown.is_empty() {
                     ui.EmptyState("Nothing here", icon: .inbox)
@@ -667,19 +664,7 @@ view unified(m: Mail) {
                         on select(x: Thread): open(x, front: false).then(mark_read(x, false))
                         on activate(x: Thread): open(x).then(mark_read(x, false))
                         for x in shown {
-                            let offered = actions(x).filter(o -> o.available)
                             ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                                menu: {
-                                    for o in offered {
-                                        ui.MenuItem(
-                                            o.label,
-                                            icon: o.icon,
-                                            destructive: o.destructive,
-                                        ) {
-                                            on choose: o.run
-                                        }
-                                    }
-                                }
                                 thread_row(x)
                             }
                         }
@@ -742,9 +727,6 @@ view mailboxes(a: Account) {
                 }
             }
         }
-        overview_actions: {
-            std.header(actions(a))
-        }
         overview: {
             thread_list(shown, fill)
         }
@@ -788,22 +770,7 @@ view thread_list(shown: List<Thread>) {
             on select(x: Thread): open(x, front: false).then(mark_read(x, false))
             on activate(x: Thread): open(x).then(mark_read(x, false))
             for x in shown {
-                let offered = actions(x).filter(o -> o.available)
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                    menu: {
-                        for o in offered {
-                            ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
-                                on choose: o.run
-                            }
-                        }
-                    }
-                    swipe: {
-                        if let o = offered.find(.destructive) {
-                            ui.SwipeAction(o.label, icon: o.icon, destructive: true) {
-                                on swipe: o.run
-                            }
-                        }
-                    }
                     thread_row(x)
                 }
             }
@@ -861,9 +828,6 @@ fn can_undo(d: Draft) -> Bool {
 view conversation(t: Thread) {
     lens draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
-        actions: {
-            std.header(actions(t))
-        }
         content: {
             ui.Docked {
                 foot: {

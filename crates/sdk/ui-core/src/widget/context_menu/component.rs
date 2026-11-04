@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, OfferedAction, SlotType, Source};
+use crate::component::{Component, Described, Event, OfferedAction, ResourceId, SlotType, Source};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, MenuEntry};
 
@@ -166,6 +166,9 @@ pub struct MenuButtonProps {
     pub role: Option<ButtonRole>,
     /// Actions offered on something (`actions(r)`), each a command after `items`.
     pub actions: Vec<OfferedAction>,
+    /// The resource whose published actions this menu lists, which the host fills: a bar that
+    /// lists the window in front's commands names the window and leaves the commands to it.
+    pub subject: Option<ResourceId>,
     /// The commands, in order.
     #[component(slot(default))]
     pub items: Vec<MenuItemProps>,
@@ -181,6 +184,7 @@ impl Described for MenuButton {
             icon_only,
             role,
             actions,
+            subject: _,
             items,
         } = props;
         let button = match icon {

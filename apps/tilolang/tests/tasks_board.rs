@@ -28,19 +28,52 @@ mod history_window;
 mod support;
 
 use tilolang_app::app::TlApp;
+use ui::a11y::Role;
 use ui::framework::testing::TestApp;
 use ui::headless::InspectionNode;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
 
-/// The project board scenario staged: a lane of no section and two sections with tasks.
+/// The project board scenario staged, and the project's bar switched to its board: a lane of no
+/// section and two sections with tasks.
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
     support::installed("tasks");
     let mut app = TestApp::<TlApp>::capture_at(Some("a project board"), viewport)
         .expect("the scenario stages");
     settle(&mut app);
+    show_board(&mut app);
     app
+}
+
+/// Switches the project's window from its list to its board, as a person does: the bar's switch
+/// offers the views its type declares, the board the second.
+fn show_board(app: &mut TestApp<TlApp>) {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let bar = all
+        .iter()
+        .filter_map(|node| node.semantics.as_ref())
+        .find(|access| access.role == Role::TabBar && access.name.as_deref() == Some("Project"))
+        .unwrap_or_else(|| panic!("the bar offers the views of the project: {snapshot:#?}"));
+    let board = bar
+        .children
+        .iter()
+        .find(|tab| {
+            tab.role == Role::Tab
+                && tab
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("board"))
+        })
+        .and_then(|tab| tab.bounds)
+        .unwrap_or_else(|| panic!("the bar offers the board: {snapshot:#?}"));
+    app.harness().click_at(
+        f64::midpoint(board.x0, board.x1),
+        f64::midpoint(board.y0, board.y1),
+    );
+    settle(app);
 }
 
 fn settle(app: &mut TestApp<TlApp>) {
@@ -191,10 +224,35 @@ fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
             "the lane at {x} ends in its entry, under its cards: {found:?}"
         );
     }
-    let heading = accessible(&mut app).into_iter().any(|node| {
-        node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("New task")
-    });
-    assert!(!heading, "a lane's heading carries no add of its own");
+    // The window's bar carries the one add of the window, above the board: no lane's heading
+    // carries one of its own.
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let adds: Vec<[f64; 4]> = all
+        .into_iter()
+        .filter(|node| node.widget == "Button")
+        .filter(|node| {
+            node.semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.as_deref())
+                == Some("New task")
+        })
+        .map(|node| node.rect)
+        .collect();
+    assert_eq!(
+        adds.len(),
+        1,
+        "the window has one add, in its bar: {adds:?}"
+    );
+    let top = cards(&mut app)
+        .into_iter()
+        .map(|(_, rect)| rect[1])
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        adds[0][1] + adds[0][3] <= top,
+        "the add is the window's, above the board rather than in a lane: {adds:?}"
+    );
 
     // Typed into the Packing lane's entry, the card lands in Packing.
     let entry = found

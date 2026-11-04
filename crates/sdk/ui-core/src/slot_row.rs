@@ -767,20 +767,37 @@ impl SlotRow {
     }
 
     /// The row as assistive technology and automation reach it: the app's
-    /// slots, the window's History in the row's menu, and the search.
+    /// slots, the window's History in the row's menu, the search, and the
+    /// window's own controls in their pill.
     pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
         if self.shown.is_none() {
             return Vec::new();
         }
         let mut nodes = self.row.accessibility();
         nodes.extend(self.search.accessibility());
+        for (control, rect) in self.controls.iter() {
+            nodes.push(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_name(crate::i18n::I18nManager::lookup_plain(
+                        control.name_key(self.controls_state.maximized),
+                    ))
+                    .with_action_target(control.target())
+                    .with_bounds(rect)
+                    .with_state(crate::a11y::AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
         nodes
     }
 
     /// Perform `action` on the part of the row `target` names (a
-    /// `window-toolbar-*` slot or a `window-search-*` part), as assistive
-    /// technology and automation do; what it runs reaches the app as a
-    /// press does. Returns whether the row took it.
+    /// `window-toolbar-*` slot, a `window-search-*` part, or one of the
+    /// window's own controls), as assistive technology and automation do;
+    /// what it runs reaches the app as a press does, and a control's press
+    /// reaches the host as the window's own. Returns whether the row took
+    /// it.
     pub(crate) fn perform(
         &mut self,
         host: &mut dyn SlotRowHost,
@@ -789,6 +806,18 @@ impl SlotRow {
     ) -> bool {
         if self.shown.is_none() {
             return false;
+        }
+        if let Some(control) = WindowControl::of_target(target) {
+            if !matches!(action, crate::a11y::Action::Activate) {
+                return false;
+            }
+            self.window_actions.push(match control {
+                WindowControl::Minimize => WindowAction::Minimize,
+                WindowControl::Maximize => WindowAction::ToggleMaximize,
+                WindowControl::Close => WindowAction::Close,
+            });
+            self.repaint = true;
+            return true;
         }
         if target.starts_with("window-search-") {
             let root = automerge::ROOT;

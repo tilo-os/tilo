@@ -77,6 +77,9 @@ pub struct TreeViewNodeProps {
     pub label: String,
     /// The resource of the node it stands under; without one it is a top-level node.
     pub parent: Option<ResourceId>,
+    /// The node the view shows just over this one under the same parent: the place the actions
+    /// offered on it take when one reads a place (`above`). None for a first child.
+    pub above: Option<ResourceId>,
     /// Whether it opens to show the nodes under it. A node with children says so unless it
     /// says otherwise.
     pub branch: bool,

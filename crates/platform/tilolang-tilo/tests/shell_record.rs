@@ -366,7 +366,7 @@ fn choosing_a_preset_changes_the_layout_the_person_sees() {
     );
 
     // The macOS-like one: a bar with the app's menus and a dock, both translucent (the menus
-    // themselves: `the_macos_bar_carries_the_focused_windows_own_menus`).
+    // themselves: `the_macos_bar_carries_the_focused_windows_own_commands`).
     use_preset(&mut r, "macos");
     assert!(is(&r, "bar_finish", "Finish", "translucent"));
     assert!(is(&r, "dock_showing", "Showing", "no_overlap"));
@@ -496,11 +496,11 @@ fn a_charging_pack_shows_the_charging_battery() {
     );
 }
 
-/// The macOS bar's menus are the focused window's own: its resource's actions in the runs the
-/// app declared (the notes app's "Note" and "Tags"), each item running the app's action, never
-/// a menu the shell made up.
+/// The macOS bar carries the focused window's own commands: one menu named by the window, the
+/// actions its resource publishes in it (the notes app's "Delete" and "Tag…"), each item running
+/// the app's action, and never a menu the shell made up.
 #[test]
-fn the_macos_bar_carries_the_focused_windows_own_menus() {
+fn the_macos_bar_carries_the_focused_windows_own_commands() {
     fn under<'a>(node: &'a tilolang_runtime::UiNode, out: &mut Vec<&'a tilolang_runtime::UiNode>) {
         for child in &node.children {
             out.push(child);
@@ -530,28 +530,36 @@ fn the_macos_bar_carries_the_focused_windows_own_menus() {
         .runtime()
         .open_view(&Principal::new("ada"), &desk, vec![arrangement])
         .unwrap();
-    // A desktop's output: 1280 by 800, where the bar has room for the window's menus.
+    // A desktop's output: 1280 by 800, where the bar has room for the window's commands.
     macos.set_space("", tilolang_runtime::Space::from_rem(80.0, 50.0));
     macos.poll_patches().unwrap();
     let card = |view: &tilolang_runtime::ViewInstance| format!("{:?}", view.tree());
-    let menus = nodes(&macos, "ui.MenuButton");
-    let menu = |label: &str| {
-        menus
-            .iter()
-            .find(|m| m.props.get("label") == Some(&Value::Text(label.to_owned())))
-            .unwrap_or_else(|| panic!("the macOS bar has the {label} menu: {}", card(&macos)))
-    };
-    for (run, item) in [("Note", "Delete"), ("Tags", "Tag…")] {
-        let mut items = Vec::new();
-        under(menu(run), &mut items);
+    // The menu the bar names the window in front by: a button of the bar that holds commands.
+    let bar: Vec<tilolang_runtime::UiNode> = nodes(&macos, "ui.MenuButton")
+        .into_iter()
+        .filter(|menu| menu.props.get("role") == Some(&Value::Text("bar".to_owned())))
+        .collect();
+    assert_eq!(
+        bar.len(),
+        1,
+        "the bar holds the window's one menu: {}",
+        card(&macos)
+    );
+    let mut items = Vec::new();
+    under(bar.last().unwrap(), &mut items);
+    let commands: Vec<String> = items
+        .iter()
+        .filter(|i| i.kind == "ui.MenuItem" && i.events.contains_key("choose"))
+        .filter_map(|i| i.props.get("label").cloned())
+        .filter_map(|label| match label {
+            Value::Text(label) => Some(label),
+            _ => None,
+        })
+        .collect();
+    for command in ["Delete", "Tag…"] {
         assert!(
-            items.iter().any(|i| {
-                i.kind == "ui.MenuItem"
-                    && i.props.get("label") == Some(&Value::Text(item.to_owned()))
-                    && i.events.contains_key("choose")
-            }),
-            "the {run} menu runs the app's {item}: {:#?}",
-            menu(run)
+            commands.iter().any(|label| label == command),
+            "the window's menu runs the app's {command}: {commands:?}",
         );
     }
     assert!(

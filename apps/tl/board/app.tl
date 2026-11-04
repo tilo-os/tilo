@@ -81,7 +81,7 @@ view board(b: Board) {
                     ui.BoardLane(col, title: col.title, count: col.cards.len()) {
                         on drop(moved: Card): move_to(moved, col)
                         foot: {
-                            std.add_entry(.none, "New card", title -> new_card(col, title))
+                            std.add_entry("New card", title -> new_card(col, title))
                         }
                         for card in col.cards {
                             card_tile(b, col, card)
@@ -105,11 +105,6 @@ view card_tile(b: Board, col: Column, card: Card) {
                     ui.MenuItem("Move to {other.title}", icon: .arrow_right) {
                         on choose: move_to(card, other)
                     }
-                }
-            }
-            for a in actions(card).filter(a -> a.available) {
-                ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
-                    on choose: a.run
                 }
             }
         }

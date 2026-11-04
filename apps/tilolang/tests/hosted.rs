@@ -1612,8 +1612,8 @@ fn entry_key(session: &mut Session) -> String {
     .clone()
 }
 
-/// A task is a row once its title is committed: the bar offers no "New task" button where
-/// the list ends in its own entry, and pressing there leaves the entry, not a nameless row.
+/// A task is a row once its title is committed: the window's bar offers one "New task", and
+/// pressing it leaves the person in the list's entry rather than making a nameless row.
 #[test]
 fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
     let mut session = Session::tasks();
@@ -1622,13 +1622,19 @@ fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
         .view()
         .and_then(tilo_ui_host::AppWindow::root_tree)
         .expect("the window has a tree");
+    let adds = buttons_named(&tree, "New task");
+    assert_eq!(
+        adds.len(),
+        1,
+        "the window's bar holds the one New task: {adds:?}"
+    );
+    // Pressing it there leaves the person in the list's entry, which is how a task is added.
+    let (x, y) = shown_at(&mut session, "New task");
+    session.window.click_at(x, y);
+    session.settle();
     assert!(
-        find(&tree, &|node| {
-            node.kind == "ui.Button"
-                && matches!(node.props.get("label"), Some(tilo_ui_host::Value::Text(label)) if label == "New task")
-        })
-        .is_none(),
-        "the list's entry is how a task is added, so the bar keeps no button for it"
+        session.titles().is_empty(),
+        "nothing is made for a task nobody has named"
     );
 
     let mut found = Vec::new();
@@ -1641,6 +1647,21 @@ fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
         "nothing is made for a task nobody has named"
     );
 }
+
+/// The keys of the buttons named `label` in `node` and under it.
+fn buttons_named(node: &tilo_ui_host::UiNode, label: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    if node.kind == "ui.Button"
+        && matches!(node.props.get("label"), Some(tilo_ui_host::Value::Text(name)) if name == label)
+    {
+        found.push(node.key.clone());
+    }
+    for child in &node.children {
+        found.extend(buttons_named(child, label));
+    }
+    found
+}
+
 /// What the list's entry shows: what is typed there, until it commits or is cleared.
 fn entry(session: &mut Session) -> String {
     let key = entry_key(session);
@@ -2296,11 +2317,24 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
         Some(&tilo_ui_host::Value::Text("Nothing is done yet".to_owned())),
         "and it says why"
     );
-    let new_task = buttons.iter().find(|button| {
-        button.props.get("label") == Some(&tilo_ui_host::Value::Text("New task".to_owned()))
-    });
+    let new_task = buttons
+        .iter()
+        .find(|button| {
+            button.props.get("label") == Some(&tilo_ui_host::Value::Text("New task".to_owned()))
+        })
+        .expect("the bar holds the window's primary, New task");
+    assert_eq!(
+        new_task.props.get("role"),
+        Some(&tilo_ui_host::Value::Text("primary".to_owned())),
+        "the window's primary action, drawn once in its bar"
+    );
+    // Pressed with nothing typed, it leaves the person in the list's entry rather than making
+    // a task nobody named.
+    let (x, y) = shown_at(&mut session, "New task");
+    session.window.click_at(x, y);
+    session.settle();
     assert!(
-        new_task.is_none(),
-        "the list's entry is the one add, so the header draws no New task button"
+        session.titles().is_empty(),
+        "the bar's New task makes no task nobody typed"
     );
 }

@@ -710,16 +710,16 @@ d-poagvor7 = The traditional desktop: frames on a floating desk, the focused win
     .doc = The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
 d-q7rxwd72 = Bar room
-    .doc = How much room the top bar has for the focused window's commands.
+    .doc = How much room the top bar has: for the focused window's menu, and for its parts.
 
-d-w3dorpbd = The frequent commands as controls, every run as a menu
-    .doc = The frequent commands as controls, every run as a menu.
+d-w3dorpbd = The most: the menu by its window's name, the tasks and who is here too
+    .doc = The most: the menu by its window's name, the tasks and who is here too.
 
-d-qqg4smi5 = Every run as a menu; the frequent commands within them
-    .doc = Every run as a menu; the frequent commands within them.
+d-qqg4smi5 = The menu by its window's name, but not the tasks and who is here
+    .doc = The menu by its window's name, but not the tasks and who is here.
 
-d-7caakb5b = One menu, named by the window, with every run in it
-    .doc = One menu, named by the window, with every run in it.
+d-7caakb5b = The least: the menu stands as the window's icon, and only what a phone keeps stays
+    .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
 
 d-jpu3iwft = Show as
     .doc = Shows the desk through `shown` (§6): the scrolling strips, the framed canvas or the spaces canvas.
@@ -1195,10 +1195,6 @@ d-efc4bnyi = Frame buttons
 
 d-u55srubm = Action bar
 
-d-ysqdgpzc = Action run
-
-d-35o7co3i = Action control
-
 d-cijhlzxf = Window commands
     .w-close = Close
 
@@ -1273,16 +1269,6 @@ d-4hp326dv-row1-row0 = Traditional desktop for p
 d-4hp326dv-row1 = Traditional desktop for s
 
 d-efc4bnyi-row0 = Frame buttons for r
-
-d-ysqdgpzc-row0 = Action run for c
-
-d-ysqdgpzc-row1 = Action run for c
-
-d-ysqdgpzc-row2 = Action run for c
-
-d-ysqdgpzc-row3-row0 = Action run for b
-
-d-ysqdgpzc-row3 = Action run for c
 
 d-cijhlzxf-row0 = Window commands for r
 

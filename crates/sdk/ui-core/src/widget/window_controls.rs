@@ -100,6 +100,36 @@ impl WindowControl {
             WindowControl::Minimize => 2,
         }
     }
+
+    /// The control's name in the window's locale: what a screen reader says
+    /// and an agent presses it by.
+    #[must_use]
+    pub fn name_key(self, maximized: bool) -> &'static str {
+        match self {
+            WindowControl::Minimize => "host-window-minimize",
+            WindowControl::Maximize if maximized => "host-window-restore",
+            WindowControl::Maximize => "host-window-maximize",
+            WindowControl::Close => "host-window-close",
+        }
+    }
+
+    /// The target assistive technology and automation press it by.
+    #[must_use]
+    pub fn target(self) -> &'static str {
+        match self {
+            WindowControl::Minimize => "window-control-minimize",
+            WindowControl::Maximize => "window-control-maximize",
+            WindowControl::Close => "window-control-close",
+        }
+    }
+
+    /// The control the accessibility target `target` names.
+    #[must_use]
+    pub fn of_target(target: &str) -> Option<Self> {
+        [Self::Minimize, Self::Maximize, Self::Close]
+            .into_iter()
+            .find(|control| control.target() == target)
+    }
 }
 
 impl WindowControls {

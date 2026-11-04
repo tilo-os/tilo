@@ -499,7 +499,7 @@ fn a_primitive_a_component_draws_takes_the_components_events() {
 #[test]
 fn a_version_and_an_offered_action_are_asked_for_by_the_action_itself() {
     let (m, lock) = lower(
-        "type Note {\n    title: Text\n}\n/// Renames it.\naction rename(n: Note, title: Text = n.title) (label: \"Edit\") {\n    n.title = title\n}\nview note(n: Note) {\n    stack {\n        if history(n).any(v -> v.is(rename)) {\n            text(\"edited\")\n        }\n        if actions(n).any(a -> a.is(rename)) {\n            text(\"editable\")\n        }\n    }\n}",
+        "type Note {\n    title: Text\n}\n/// Renames it.\naction rename(n: Note, title: Text = n.title) (label: \"Edit\") {\n    n.title = title\n}\nfn editable(n: Note) -> Bool {\n    actions(n).any(a -> a.is(rename))\n}\nview note(n: Note) {\n    stack {\n        if history(n).any(v -> v.is(rename)) {\n            text(\"edited\")\n        }\n        if editable(n) {\n            text(\"editable\")\n        }\n    }\n}",
     );
     let f = func(&m, "note");
     let id = lock.get("rename").expect("rename's id").to_owned();
@@ -687,13 +687,12 @@ fn std_list_is_a_shell_over_a_virtual_list_whose_rows_render_as_shown() {
         at(&row, "node ui.ListItem") < at(&row, "node ui.ListRow"),
         "{row:#?}"
     );
+    // A row is its own affordances only: the host puts the item's menu and swipe on it.
     for want in [
         "prop title",
         "prop secondary",
         "prop mark",
         "bind",
-        "node ui.MenuItem",
-        "node ui.SwipeAction",
         "prop presence",
     ] {
         assert!(has(&row, want), "{want} in {row:#?}");
@@ -857,30 +856,23 @@ fn an_event_that_carries_its_value_passes_it_to_the_action_as_it_is() {
 }
 
 #[test]
-fn actions_lenses_and_meta_are_values_a_view_reads() {
+fn lenses_and_meta_are_values_a_view_reads() {
     let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n}\n/// Pins it.\naction pin(n: Note) (icon: .pin) {\n    n.title = n.title\n}\nview note(n: Note) {\n    let offered = actions(n)\n    let here = lenses(n)\n    stack {\n        text(meta(n).title)\n        text(meta(Note).noun)\n        for a in offered {\n            ui.Button(a.label, icon: a.icon, role: .primary) {\n                on press: a.run\n            }\n        }\n        text(\"{here.len()}\")\n    }\n}",
+        "type Note {\n    title: Text (title)\n}\nview note(n: Note) {\n    let here = lenses(n)\n    stack {\n        text(meta(n).title)\n        text(meta(Note).noun)\n        text(\"{here.len()}\")\n    }\n}",
     );
     let mut imports = Vec::new();
     for f in &m.funcs {
         visit(f, &mut |e| {
             if let Ek::Host(imp, _) = &e.kind
-                && matches!(
-                    imp,
-                    Imp::Actions | Imp::Lenses | Imp::MetaOf | Imp::TupleGetH
-                )
+                && matches!(imp, Imp::Lenses | Imp::MetaOf | Imp::TupleGetH)
             {
                 imports.push(*imp);
             }
         });
     }
-    for want in [Imp::Actions, Imp::Lenses, Imp::MetaOf, Imp::TupleGetH] {
+    for want in [Imp::Lenses, Imp::MetaOf, Imp::TupleGetH] {
         assert!(imports.contains(&want), "{want:?} in {imports:?}");
     }
-    let wrong = diagnostics(
-        "type Note {\n    title: Text\n}\nview note(n: Note) {\n    text(actions(n).first().unwrap().nothing)\n}",
-    );
-    assert!(!wrong.is_empty(), "a host value has the fields it declares");
 }
 
 /// The host imports `f` calls.

@@ -483,23 +483,57 @@ impl Registry {
         }
     }
 
+    /// The views a window of `ty` switches between, in the order the package declares them
+    /// (`views a, b for T`), each with the name it is declared by: empty when the type declares
+    /// none, whose views are then the app's own helpers.
+    pub fn views_of_type(&self, ty: &str) -> Vec<(ViewId, String)> {
+        let Some(ty) = self.type_id(ty) else {
+            return Vec::new();
+        };
+        let Some(pkg) = self.types.get(&ty).and_then(|hash| self.package(hash)) else {
+            return Vec::new();
+        };
+        pkg.meta
+            .views_of(&ty)
+            .into_iter()
+            .filter_map(|id| {
+                let view = pkg.meta.views.iter().find(|view| view.id == id)?;
+                Some((view.id.clone(), view.name.clone()))
+            })
+            .collect()
+    }
+
+    /// The views of `ty` a person or an agent can apply or name (`shown_as`), whether or not a
+    /// window switches between them: a declared view of one resource and nothing else, but not a
+    /// row. A view no declaration names is the app's own helper, which the app places itself and
+    /// no window offers.
+    pub fn offered_views_of_type(&self, ty: &str) -> Vec<(ViewId, String)> {
+        let Some(ty) = self.type_id(ty) else {
+            return Vec::new();
+        };
+        let Some(pkg) = self.types.get(&ty).and_then(|hash| self.package(hash)) else {
+            return Vec::new();
+        };
+        let Some(name) = pkg.type_by_id(&ty).map(|info| info.name.clone()) else {
+            return Vec::new();
+        };
+        pkg.meta
+            .views_showing(&name)
+            .into_iter()
+            // A row draws one item of a list, not a resource whole, so a window cannot show
+            // the resource through it.
+            .filter(|v| !pkg.meta.row_views.iter().any(|row| row.view == v.id))
+            .map(|v| (v.id.clone(), v.name.clone()))
+            .collect()
+    }
+
     /// The offered view `view` (its id or name) of the package declaring `ty` that takes a
     /// resource of `ty` and nothing else: what a place names as `shown_as`.
     pub fn view_of_type(&self, ty: &str, view: &str) -> Option<ViewId> {
-        let ty = self.type_id(ty)?;
-        let pkg = self.package(self.types.get(&ty)?)?;
-        let name = &pkg.type_by_id(&ty)?.name;
-        pkg.meta
-            .offered_views()
-            .filter(|v| v.id == view || v.name == view)
-            .find(|v| match v.params.as_slice() {
-                [param] => matches!(
-                    crate::meta::parse_ty(&param.ty, &pkg.meta.app),
-                    Ok(Ty::Record(key)) if key.app == pkg.meta.app && &key.name == name
-                ),
-                _ => false,
-            })
-            .map(|v| v.id.clone())
+        self.offered_views_of_type(ty)
+            .into_iter()
+            .find(|(id, name)| id == view || name == view)
+            .map(|(id, _)| id)
     }
 
     /// What a new resource of this type starts out with.

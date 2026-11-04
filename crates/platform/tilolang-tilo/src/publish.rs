@@ -364,8 +364,9 @@ impl ActionTypes {
     }
 }
 
-/// The views a resource of `type_name` is shown through: the package's offered views that take
-/// such a resource and nothing else, so opening one needs only the resource (`open(r, with: v)`).
+/// The views a resource of `type_name` is shown through: the views a declaration attaches to its
+/// type ([`Meta::views_showing`]), each taking the resource and nothing else, so opening one needs
+/// only the resource (`open(r, with: v)`).
 ///
 /// A view and the action that opens it name each other one to one: the door projects a view
 /// onto its open action's descriptor, and a caller opens the view by invoking that action. The
@@ -382,15 +383,8 @@ fn views_of(
         return Vec::new();
     };
     let primary = meta.default_view(&declared.id);
-    let of_type = |ty: &str| {
-        matches!(
-            tilolang_runtime::meta::parse_ty(ty, &meta.app),
-            Ok(tilolang_runtime::meta::Ty::Record(key))
-                if key.app == meta.app && key.name == type_name
-        )
-    };
-    meta.offered_views()
-        .filter(|view| matches!(&view.params[..], [only] if of_type(&only.ty)))
+    meta.views_showing(type_name)
+        .into_iter()
         .map(|view| {
             let label = if view.name.is_empty() {
                 view.id.clone()

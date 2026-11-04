@@ -1123,6 +1123,15 @@ impl AppWindow {
             self.out.push(ToApp::Back);
             return;
         }
+        // A control pressed where a field declares its same key leads the person to the field,
+        // as the key does: the window's Primary brings them to a list's entry to type the item,
+        // rather than making one nobody typed.
+        if let UiEvent::Press(key) | UiEvent::Fire(key, _, None) = &event
+            && let Some(field) = self.press_leads_a_field(key)
+        {
+            self.focus_request = Some(field);
+            return;
+        }
         if matches!(event, UiEvent::Press(_) | UiEvent::Fire(..)) {
             self.fired = self.fired.saturating_add(1);
         }
@@ -1496,6 +1505,14 @@ impl AppWindow {
         self.act(UiEvent::Fire(node_key, event, None));
         self.take_events();
         true
+    }
+
+    /// The field a press on the control `key` leads the person to: one whose declared key is
+    /// the shortcut that control names, when there is one. See [`focus_field`].
+    fn press_leads_a_field(&self, key: &str) -> Option<String> {
+        let built = self.built.as_ref()?;
+        let declared = shortcut_declared(built, key)?;
+        focus_field(built, &declared)
     }
 
     /// Run the action the app declared the shortcut `key` for, as pressing it does: the event
@@ -2096,6 +2113,22 @@ fn shortcut_action_declared(
     wanted: &ui::platform::Shortcut,
 ) -> Option<(String, String)> {
     shortcut_action_where(node, &|declared| declared.same_press(wanted))
+}
+
+/// The shortcut the control `key` declares in its `key` prop, as pressing it names one: a
+/// button's press or a menu row's choose.
+fn shortcut_declared(node: &UiNode, key: &str) -> Option<ui::platform::Shortcut> {
+    let control = node.kind == crate::adapter::kind("Button")
+        || node.kind == crate::adapter::kind("MenuItem");
+    if control
+        && node.key == key
+        && let Some(Value::Text(declared)) = node.props.get("key")
+    {
+        return Some(ui::platform::Shortcut::from(declared.as_str()));
+    }
+    node.children
+        .iter()
+        .find_map(|child| shortcut_declared(child, key))
 }
 
 /// The node key of the text field in `node`'s tree that declares the press `wanted`: the entry

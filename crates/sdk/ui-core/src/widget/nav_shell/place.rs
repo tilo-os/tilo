@@ -142,7 +142,35 @@ fn place_header(
     let m = &inputs.metrics;
     let cy = header.center().y;
     let lead = g.lead_end(column, m);
-    let trail = g.trail_start(column, m).max(lead);
+    let mut trail = g.trail_start(column, m).max(lead);
+    // The window has one bar over its columns: a section takes the room of the columns after
+    // it while they have nothing to say (no title, no controls, no actions), so that the bar's
+    // actions stand at the window's end rather than at a column edge nothing follows.
+    let quiet = |other: Column| {
+        !inputs.titled.get(other.index()).copied().unwrap_or(false)
+            && inputs.actions.get(other.index()).copied().unwrap_or(0) == 0
+            && !inputs.leading.get(other.index()).copied().unwrap_or(false)
+    };
+    if matches!(column, Column::Overview | Column::Content) {
+        let after_quiet = Column::ALL
+            .into_iter()
+            .skip(ci + 1)
+            .filter(|other| *other != Column::Inspector || g.header(*other) != Rect::ZERO)
+            .all(&quiet);
+        if after_quiet {
+            let mut end = if g.window_controls.width() > 0.0 {
+                g.window_controls.x0 - m.gap + m.inset
+            } else {
+                g.size.x - m.inset
+            };
+            for button in [g.inspector_toggle, g.history] {
+                if button.width() > 0.0 {
+                    end = end.min(button.x0 - m.gap);
+                }
+            }
+            trail = trail.max(end.max(lead));
+        }
+    }
     let avail = trail - lead;
     let gap = m.gap;
     let centred = |x0: f64, w: f64, h: f64| -> Rect {
@@ -213,8 +241,8 @@ fn place_header(
     let band = (trail - start).max(0.0);
 
     // Labels, icons, or the More menu. Where the host lists the window's
-    // actions, what does not fit gives way with no door: the person reaches
-    // it where the host lists it.
+    // actions, the row keeps none of them and has no door either: the
+    // person reaches them where the host lists them.
     let more = index_of(Part::More(column));
     let door = more.filter(|_| !inputs.actions_listed);
     let (use_compact, shown) = if run(&full) <= band {
@@ -235,7 +263,13 @@ fn place_header(
         )
     };
     // The row shows its everyday actions and its menu holds the rest, whatever room it has.
-    let shown = fit.menu_from.map_or(shown, |from| shown.min(from));
+    // Where the host lists the window's actions, the row keeps none of them: each stands once,
+    // where the host lists it, not twice.
+    let shown = if inputs.actions_listed {
+        0
+    } else {
+        fit.menu_from.map_or(shown, |from| shown.min(from))
+    };
     fit.compact = use_compact;
     fit.shown = Some(shown);
     let widths = if use_compact { &compact } else { &full };

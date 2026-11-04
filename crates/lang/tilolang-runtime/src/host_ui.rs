@@ -22,6 +22,11 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
+/// The prefix of the window state slot that names the view a window shows a resource through,
+/// the resource's id after it: what the bar's view switch sets. Empty until a person picks a
+/// view, so the resource's type's default view shows until then.
+pub const VIEW_STATE: &str = "$view:";
+
 /// The action of a change mark (`ui.ChangeMark`, and those the host places): show what the
 /// task run that made the change did. Its arguments are the run (its group) and the resource.
 pub const REVIEW_ACTION: &str = "$review";
@@ -32,7 +37,10 @@ pub const REVIEW_ACTION: &str = "$review";
 pub const UNDO_ACTION: &str = "$undo";
 
 impl Core {
-    fn with_view<R>(&self, f: impl FnOnce(&mut ViewState) -> Result<R, String>) -> HResult<R> {
+    pub(crate) fn with_view<R>(
+        &self,
+        f: impl FnOnce(&mut ViewState) -> Result<R, String>,
+    ) -> HResult<R> {
         let mut frames = self.frames.borrow_mut();
         match &mut frames.top_mut()?.kind {
             FrameKind::View(vs) => Ok(f(vs)?),

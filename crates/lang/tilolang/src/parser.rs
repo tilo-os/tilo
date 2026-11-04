@@ -9,7 +9,7 @@ use crate::ast::{
     FnDecl, Ident, Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
     Place, Proposal, RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl,
     StateLayer, Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind,
-    UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl,
+    UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
@@ -563,6 +563,13 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_at(1), Tok::Kw("view"))
     }
 
+    /// `views a, b for T` at the start of an item: the views a window of the type switches
+    /// between.
+    fn at_views(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "views")
+            && matches!(self.peek_at(1), Tok::Ident(_) | Tok::Kw("view"))
+    }
+
     /// `scenario "name" { ... }` at the start of an item.
     fn at_scenario(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "scenario")
@@ -800,6 +807,23 @@ impl<'a> Parser<'a> {
             return Ok(Item::RowView(DefaultViewDecl {
                 node,
                 view,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
+        if self.at_views() {
+            self.bump();
+            let node = self.node();
+            let mut views = vec![self.ident("the name of a view")?];
+            while self.eat(&Tok::Comma) {
+                views.push(self.ident("the name of a view")?);
+            }
+            self.expect_kw("for")?;
+            let ty = self.type_expr()?;
+            return Ok(Item::Views(ViewsDecl {
+                node,
+                doc,
+                views,
                 ty,
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));

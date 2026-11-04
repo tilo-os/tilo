@@ -8,11 +8,12 @@ use crate::colls::{CollSeen, merge_seen};
 use crate::core::Core;
 use crate::error::RuntimeError;
 use crate::handles::{FrameKind, Retained, ViewState};
-use crate::ids::{ModuleHash, Principal};
+use crate::host_ui::VIEW_STATE;
+use crate::ids::{ModuleHash, Principal, ViewId};
 use crate::meta::ParamMeta;
 use crate::registry::Package;
 use crate::space::Space;
-use crate::value::Value;
+use crate::value::{RefValue, Value};
 use crate::view::{LIST_LEN, NodeBuild, PREVIEW, UiNode};
 use crate::view_state::StateKey;
 
@@ -268,6 +269,15 @@ impl Core {
                 "views are nested more than {MAX_VIEW_DEPTH} deep"
             )));
         }
+        // The window's own view: the one its bar switched the resource to, when its type
+        // offers more than one. The state is read here and noted in the frame once it is
+        // popped, so choosing another view in the bar runs the window again.
+        let (chosen, chosen_state) = if depth == 0 {
+            self.window_view(target, args, offer.window)
+        } else {
+            (None, None)
+        };
+        let target = chosen.as_ref().unwrap_or(target);
         let pkg = self
             .registry
             .borrow()
@@ -289,6 +299,12 @@ impl Core {
             }),
         );
         let root = self.call_in_frame(&pkg, &target.export, &target.params, args, Some("View"));
+        // The host's surfaces are read while the view's frame still stands: the actions they
+        // show are the declarations of what it rendered, presented as the view presents them.
+        let surfaced = match &root {
+            Ok(Value::Node(root)) => self.surfaces(*root, args),
+            _ => Ok(()),
+        };
         let frame = self.frames.borrow_mut().pop();
         let Some(FrameKind::View(state)) = frame.map(|f| f.kind) else {
             return Err(RuntimeError::Package("the view frame vanished".into()));
@@ -296,6 +312,7 @@ impl Core {
         let Value::Node(root) = root? else {
             return Err(RuntimeError::Package("a view must return a ui node".into()));
         };
+        surfaced?;
         let mut acc = Acc {
             reads: state.reads,
             colls: state.colls,
@@ -305,6 +322,10 @@ impl Core {
             state_seen: state.state_seen,
             changes_at: state.changes_at,
         };
+        if let Some((key, generation, seen)) = chosen_state {
+            acc.state_reads.push((key.clone(), generation));
+            acc.state_seen.push((key, seen));
+        }
         let cx = Build {
             nodes: &state.nodes,
             offer,
@@ -439,7 +460,7 @@ impl Core {
         // A call of another package's view: its boundary renders it where it stands, and this
         // node is the fragment the boundary's tree goes in.
         if let Some(boundaries) = hook.as_deref_mut()
-            && let Some(call) = self.view_call(&n.kind, &n.props)
+            && let Some(call) = self.view_call(&n.kind, &n.props, cx.offer, acc)
         {
             return Self::foreign_view(cx, n, key, events, call?, walk, boundaries);
         }
@@ -483,7 +504,7 @@ impl Core {
             anchor: n.anchor.clone(),
             children,
         };
-        if let Some(call) = self.view_call(&n.kind, &node.props) {
+        if let Some(call) = self.view_call(&n.kind, &node.props, cx.offer, acc) {
             self.resolve_foreign(cx, call?, &mut node, acc)?;
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
@@ -762,22 +783,27 @@ impl Core {
         &self,
         kind: &str,
         props: &std::collections::BTreeMap<String, Value>,
+        offer: Offer<'_>,
+        acc: &mut Acc,
     ) -> Option<Result<(ViewTarget, Vec<Value>), RuntimeError>> {
         if let Some(target) = kind.strip_prefix(FOREIGN_VIEW) {
             return Some(self.call_of(target, props));
         }
-        (kind == SHOW).then(|| self.shown_view(props))
+        (kind == SHOW).then(|| self.shown_view(props, offer, acc))
     }
 
     /// The view a `show` node draws its resource through, called on it: the one its `view`
     /// names (an offered view of the resource's package that takes the resource alone, by id or
-    /// name), or its type's default view when it names none. A type without a default view is
-    /// an error: a shell asks `meta(r).opens` before it shows a resource. The view is its own
-    /// package's code wherever it is drawn, another app's (`Runtime::load_foreign_package`)
-    /// included.
+    /// name); else the view the person chose for it in the window's bar
+    /// ([`chosen_view`](Self::chosen_view)); else its type's default view. A type without a
+    /// default view is an error: a shell asks `meta(r).opens` before it shows a resource. The
+    /// view is its own package's code wherever it is drawn, another app's
+    /// (`Runtime::load_foreign_package`) included.
     fn shown_view(
         &self,
         props: &std::collections::BTreeMap<String, Value>,
+        offer: Offer<'_>,
+        acc: &mut Acc,
     ) -> Result<(ViewTarget, Vec<Value>), RuntimeError> {
         let Some(Value::Ref(shown)) = props.get(SHOWN) else {
             return Err(RuntimeError::Package(
@@ -789,6 +815,10 @@ impl Core {
             Some(Value::Text(view)) if !view.is_empty() => Some(view.as_str()),
             _ => None,
         };
+        let chosen = match named {
+            Some(_) => None,
+            None => self.chosen_view(shown, offer, acc),
+        };
         let view = {
             let registry = self.registry.borrow();
             match named {
@@ -797,11 +827,14 @@ impl Core {
                         "`show`: `{ty}` has no view `{view}` that takes it alone"
                     ))
                 })?,
-                None => registry.default_view(ty).ok_or_else(|| {
-                    RuntimeError::Package(format!(
-                        "`show`: the type `{ty}` has no default view to draw it with"
-                    ))
-                })?,
+                None => match chosen {
+                    Some(view) => view,
+                    None => registry.default_view(ty).ok_or_else(|| {
+                        RuntimeError::Package(format!(
+                            "`show`: the type `{ty}` has no default view to draw it with"
+                        ))
+                    })?,
+                },
             }
         };
         let vt = self.view_target(&view)?;
@@ -812,6 +845,79 @@ impl Core {
             )));
         }
         Ok((vt, vec![Value::Ref(shown.clone())]))
+    }
+
+    /// The view a window's own boundary shows its resource through, and the state it read to
+    /// know: the one the bar's view switch chose among the views of the resource's type, when
+    /// there is one and it is not the view the window opened on. `None` when the type offers a
+    /// single view or the person chose none; the state is still returned for such a type, so
+    /// that choosing one runs the window again.
+    fn window_view(
+        &self,
+        target: &ViewTarget,
+        args: &[Value],
+        window: &str,
+    ) -> (
+        Option<ViewTarget>,
+        Option<(crate::view_state::StateKey, u64, Value)>,
+    ) {
+        let Some(Value::Ref(resource)) = args.first() else {
+            return (None, None);
+        };
+        let views = {
+            let registry = self.registry.borrow();
+            registry.views_of_type(&resource.target.ty)
+        };
+        if views.len() < 2 {
+            return (None, None);
+        }
+        let key = crate::view_state::StateKey {
+            window: window.to_owned(),
+            principal: None,
+            state: format!("{VIEW_STATE}{}", resource.target.id_string()),
+        };
+        let (held, generation) = {
+            let states = self.view_states.borrow();
+            (states.get(&key).cloned(), states.generation(&key))
+        };
+        let seen = held.clone().unwrap_or_else(Value::none);
+        let chosen = if let Some(Value::Int(index)) = held
+            && let Ok(index) = usize::try_from(index)
+            && let Some((id, _)) = views.get(index)
+            && *id != target.export
+        {
+            self.view_target(id).ok()
+        } else {
+            None
+        };
+        (chosen, Some((key, generation, seen)))
+    }
+
+    /// The view a `show` node draws its resource through: the one a person chose in the bar's
+    /// view switch (the tab of [`surfaces`](Core::surfaces), kept in the window state slot
+    /// [`VIEW_STATE`] names for the resource, read here so the window runs again when it
+    /// changes). `None` while nobody chose, or the choice names a view the resource's type does
+    /// not offer any more.
+    fn chosen_view(&self, resource: &RefValue, offer: Offer<'_>, acc: &mut Acc) -> Option<ViewId> {
+        let key = StateKey {
+            window: offer.window.to_owned(),
+            principal: None,
+            state: format!("{VIEW_STATE}{}", resource.target.id_string()),
+        };
+        let held = {
+            let states = self.view_states.borrow();
+            let held = states.get(&key).cloned();
+            acc.state_reads.push((key.clone(), states.generation(&key)));
+            acc.state_seen
+                .push((key, held.clone().unwrap_or_else(Value::none)));
+            held
+        };
+        let Some(Value::Int(index)) = held else {
+            return None;
+        };
+        let index = usize::try_from(index).ok()?;
+        let views = { self.registry.borrow().views_of_type(&resource.target.ty) };
+        views.get(index).map(|(id, _)| id.clone())
     }
 
     /// The view a `view:<app>:<view id>` node applies and its arguments, from the node's

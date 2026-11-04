@@ -117,36 +117,22 @@ fn moving(app: &mut TestApp<TlApp>) -> bool {
     app.harness().frame_schedule().needs_animation_frame
 }
 
-/// The rect of the widget the window shows under the semantics name `name`: a control on
-/// screen, not a menu item the window keeps for a menu that is closed.
-fn named(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
+/// The rect of the text field the window shows under the semantics name `name`: the entry at a
+/// list's foot, which the window also offers as a button of its own.
+fn field(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let viewport = snapshot.viewport;
     let mut all = Vec::new();
     walk(&snapshot.root, &mut all);
-    let named: Vec<&InspectionNode> = all
-        .into_iter()
-        .filter(|node| {
-            node.semantics
-                .as_ref()
-                .and_then(|semantics| semantics.name.as_deref())
-                == Some(name)
-        })
-        .collect();
-    named
-        .iter()
-        .copied()
+    all.into_iter()
         .find(|node| {
-            node.widget == "Button"
-                && node.rect[2] > 0.0
-                && node.rect[3] > 0.0
-                && node.rect[0] >= 0.0
-                && node.rect[1] >= 0.0
-                && node.rect[0] < f64::from(viewport[0])
-                && node.rect[1] < f64::from(viewport[1])
+            node.widget == "TextInput"
+                && node
+                    .semantics
+                    .as_ref()
+                    .and_then(|semantics| semantics.name.as_deref())
+                    == Some(name)
         })
-        .or_else(|| named.first().copied())
-        .unwrap_or_else(|| panic!("the window shows {name}"))
+        .unwrap_or_else(|| panic!("the window shows a field named {name}"))
         .rect
 }
 
@@ -174,13 +160,19 @@ fn shown_button(app: &mut TestApp<TlApp>, name: &str) -> Option<[f64; 4]> {
         .map(|node| node.rect)
 }
 
-/// Bring the window's Delete command within reach: the header's own button, or the row of the
-/// header's menu, opened here so that only the press that follows is what the frames measure.
+/// Bring the window's Delete command within reach: a button of its own, or the row of the "…"
+/// beside the item's title, opened here so that only the press that follows is what the frames
+/// measure.
 fn reach_delete(app: &mut TestApp<TlApp>) -> Delete {
     if let Some(rect) = shown_button(app, "Delete") {
         return Delete::Button(rect);
     }
-    let more = app.harness().targets()["nav-shell-more-content"].center();
+    let targets = app.harness().targets();
+    let (_, more) = targets
+        .iter()
+        .find(|(id, _)| id.ends_with("~more"))
+        .expect("the item's commands are behind the \"…\" beside its title");
+    let more = more.center();
     with_monotonic_time(ui::time::Instant::now(), || {
         app.harness().click_at(more.x, more.y);
     });
@@ -193,7 +185,7 @@ fn reach_delete(app: &mut TestApp<TlApp>) -> Delete {
             node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Delete")
         })
         .and_then(|(_, node)| node.bounds())
-        .expect("the header's menu offers the command the bar keeps there");
+        .expect("the \"…\" offers the command the bar keeps there");
     Delete::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
 }
 
@@ -414,7 +406,7 @@ fn a_task_a_person_adds_lands_in_the_list() {
     // The entry at the list's foot, as a person adds a task: a title typed, then Enter. What is
     // typed names no day, so the row lands under the list's "No date" heading, below the rows
     // the band reaches.
-    let [x, y, w, h] = named(&mut app, "New task");
+    let [x, y, w, h] = field(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
@@ -849,7 +841,7 @@ fn the_frames_a_person_sees() {
     let mut app = staged("a busy week");
     let start = ui::time::Instant::now();
     let _ = frame_at(&mut app, start);
-    let [x, y, w, h] = named(&mut app, "New task");
+    let [x, y, w, h] = field(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);

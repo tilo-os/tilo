@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 
 mod derived;
 mod model;
+mod views;
 
 pub use model::*;
 
@@ -59,6 +60,9 @@ pub struct Env {
     pub states: Vec<StateInfo>,
     /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
+    /// `views a, b for T`: the type, the views' names in the order written, and where the
+    /// declaration stands.
+    pub views_of: Vec<(TypeKey, Vec<String>, Span)>,
     /// The functions of action parameters' defaults, numbered after the presentation views.
     pub defaults: Vec<DefaultFn>,
     /// The toolkit's components, the package `ui`.
@@ -1921,6 +1925,7 @@ impl Resolver<'_> {
                 | Item::Root(_)
                 | Item::DefaultView(_)
                 | Item::RowView(_)
+                | Item::Views(_)
                 | Item::Scenario(_) => continue,
             };
             let index = func;
@@ -2455,8 +2460,29 @@ impl Resolver<'_> {
                         None => self.err("E018", d.view.span, format!("`{}` is not a view of this package", d.view.name)),
                     }
                 }
+                Item::Views(d) => self.views_decl(d),
                 _ => {}
             }
+        }
+        let unnamed: Vec<(Span, String)> = self
+            .env
+            .views_of
+            .iter()
+            .filter_map(|(key, views, span)| {
+                let (_, default) = self.env.default_views.iter().find(|(k, _)| k == key)?;
+                (!views.contains(default)).then(|| {
+                    (
+                        *span,
+                        format!(
+                            "the views of `{}` leave out its default view `{default}`, the one a window opens on",
+                            key.name
+                        ),
+                    )
+                })
+            })
+            .collect();
+        for (span, what) in unnamed {
+            self.err("E018", span, what);
         }
         let missing: Vec<TypeKey> = self
             .env
@@ -2475,42 +2501,6 @@ impl Resolver<'_> {
                 })
                 .unwrap_or_default();
             self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
-        }
-    }
-
-    /// `row view v for T`: a view of one `T` whose body is one list row, `row(title, ...)`.
-    fn row_view_decl(&mut self, d: &ast::DefaultViewDecl) {
-        let Some(key) = self.own_record(&d.ty, "row view") else {
-            return;
-        };
-        if self.env.row_views.iter().any(|(k, _)| *k == key) {
-            self.err(
-                "E093",
-                d.span,
-                format!("`{}` has two row views; a type has one", key.name),
-            );
-            return;
-        }
-        let fits = self
-            .env
-            .own_callable(&d.view.name)
-            .filter(|c| c.kind == CKind::View)
-            .map(|c| matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone())));
-        match fits {
-            Some(true) => self.env.row_views.push((key, d.view.name.clone())),
-            Some(false) => self.err(
-                "E093",
-                d.view.span,
-                format!(
-                    "the row view of `{}` takes the item and nothing else: `view {}(x: {})`",
-                    key.name, d.view.name, key.name
-                ),
-            ),
-            None => self.err(
-                "E093",
-                d.view.span,
-                format!("`{}` is not a view of this package", d.view.name),
-            ),
         }
     }
 

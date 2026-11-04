@@ -150,10 +150,9 @@ view dock_ground(s: Shell, d: Desk, edge: Edge) {
 }
 
 /// What stands between the bar and the dock when the desk shows the arrangement: the places as
-/// the preset the person picked lays them out, from the bar's edge down, so nothing stands
-/// between a window and the bar. The preset itself is the bar's own menu (`preset_menu`), on a
-/// phone as on a wide output. The traditional desktop shows the window in front alone here, as a
-/// compact display does, its header's actions giving way when the bar lists them (`lists`).
+/// the preset the person picked lays them out, under the switch between the presets, as
+/// `desk_view` shows them. The traditional desktop shows the window in front alone here, as a
+/// compact display does, its bar's actions giving way when the desk's bar lists them (`lists`).
 view shown_preset(a: Arrangement, lists: Bool) {
     let v = viewing
     if v.showing == .desktop {

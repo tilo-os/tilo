@@ -72,9 +72,6 @@ d-sgnau7vd = Name
 d-c5pgzhqt = Notes
     .doc = What it is for, and anything worth remembering about it.
 
-d-kfahmlf3 = Board
-    .doc = Whether its window shows its tasks as a board, a lane per section, or as a list.
-
 d-5wdrqcpl = Section
     .doc = A section of a project: one lane of its board, such as "Doing".
     .noun = { $count ->
@@ -208,9 +205,6 @@ d-rjpcv6es = Clear done
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
 
-d-anbqzqxx = Board
-    .doc = Shows a project's tasks as a board, a lane per section, or as a list again.
-
 d-2pra5lmb = New section
     .doc = Adds a section at the end of a project's board.
 
@@ -258,13 +252,9 @@ d-mg3c777a = Move to~present
 
 d-tpvjqy5m = Clear done~present
 
-d-swaiyhcf = Show board~present
-
 d-i2mhsb3h = Home
     .w-tasks = Tasks
     .w-no-task-selected = No task selected
-
-d-asnonvwl = Project page
 
 d-7froalwb = Project list
     .w-no-task-selected = No task selected
@@ -317,12 +307,10 @@ d-mtmufg3w-row0 = Task page for x
 
 d-mtmufg3w-row1 = Task page for p
 
-d-mtmufg3w-row2 = Task page for a
+d-mtmufg3w-row2-row0 = Task page for c
 
-d-mtmufg3w-row3-row0 = Task page for c
+d-mtmufg3w-row2-row1-row0 = Task page for c
 
-d-mtmufg3w-row3-row1-row0 = Task page for c
+d-mtmufg3w-row2-row1 = Task page for v
 
-d-mtmufg3w-row3-row1 = Task page for v
-
-d-mtmufg3w-row3 = Task page for s
+d-mtmufg3w-row2 = Task page for s

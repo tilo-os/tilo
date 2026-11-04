@@ -1291,7 +1291,7 @@ impl Core {
     /// resource holding it that take it as their second argument — in the order their packages
     /// declare them, the primary one first, each a `host.Action`. An app declares its actions in
     /// the order a person reads them, so a menu of one item lists them as it wrote them.
-    fn actions_on(&self, subject: &RefValue, above: &Value) -> HResult<Vec<Value>> {
+    pub(crate) fn actions_on(&self, subject: &RefValue, above: &Value) -> HResult<Vec<Value>> {
         let target = &subject.target;
         let packages = self.registry.borrow().packages();
         let rank = |pkg: &Rc<Package>| {

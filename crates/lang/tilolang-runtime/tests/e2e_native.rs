@@ -162,15 +162,19 @@ view detail(n: Note) {
         let row = of_kind(&items[0], "ui.ListRow")[0];
         assert_eq!(view.bound_value(&row.key), Some(Value::Bool(true)));
 
-        // A notebook with nothing in it says so. Its primary action takes a title the empty
-        // state has none of: it offers it as its form, which asks for the title.
+        // A notebook with nothing in it says so, and its primary action takes a title the
+        // person has none of to give: the bar offers it as its form, which asks for the title.
         let empty = rt.create("Notebook").unwrap();
         let view = rt
             .open_view(&me(), &app.view("notebook"), vec![Value::resource(&empty)])
             .unwrap();
         let state = of_kind(view.tree(), "ui.EmptyState")[0];
         assert_eq!(text_prop(state, "title"), "No notes yet");
-        assert_eq!(text_prop(state, "action"), "Add…", "{}", dump(state));
+        let add = of_kind(view.tree(), "ui.Button")
+            .into_iter()
+            .find(|button| button.props.get("label") == Some(&Value::text("Add…")))
+            .unwrap_or_else(|| panic!("the bar offers the primary: {}", dump(view.tree())));
+        assert_eq!(add.props.get("role"), Some(&Value::text("primary")));
     }
 
     #[test]

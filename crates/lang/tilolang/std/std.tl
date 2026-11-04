@@ -1,22 +1,23 @@
 /// The window frames every tilolang app gets: a list of resources, a document, a page and a
 /// transcript, each the native one. They are written over the toolkit's components with the
-/// same language any app has (action reflection, lenses, resource metadata, enum cases and
-/// events that carry their value), so an app that wants something else composes `ui.*`
-/// itself and loses nothing native.
+/// same language any app has (lenses, resource metadata, enum cases and events that carry
+/// their value), so an app that wants something else composes `ui.*` itself and loses nothing
+/// native.
 ///
-/// A window that lists resources: the header holds its owner's actions, the primary one as
-/// the Primary button; each item is a row whose actions are on its context menu and its swipe,
-/// a destructive one undone rather than confirmed, and both offer the commands that have a
-/// place on that row; a command the app marked `frequent` a row of its own, as it is in the
-/// header, never folded into a run; with no items it says `empty` and offers the primary
-/// action. The places in the sidebar are the item type's filters that are on or off
-/// (`filters(T)`), after all of the items, each with how many it holds where its role makes a
-/// count people read; the one chosen is the window's query, as people type it in search
-/// (`is:done`), so everyone looking sees the same list; a window starts on `place` (all of the
-/// items when empty). The place of all of the items is called `everything`, "All" and the item
-/// type's plural noun unless the app says. A `sort` view state is the header's sort menu.
-/// Items whose type has a window of their own open in the next column; the list follows which
-/// one is open.
+/// A window that lists resources: its bar's actions are the ones its owner's type declares,
+/// which the host places there — the primary one as the Primary button, the rest behind the
+/// bar's one menu; the primary's key is the entry's at the list's end, so the key and the
+/// button lead the person there to type the item; each item is a row whose actions the host
+/// puts on its context menu and its swipe, a destructive one undone rather than confirmed; a
+/// command the app marked `frequent` a button of its own, never folded into a run; with no
+/// items it says `empty` and the bar keeps the type's actions. The places in the sidebar are
+/// the item type's filters that are on or off (`filters(T)`), after all of the items, each with
+/// how many it holds where its role makes a count people read; the one chosen is the window's
+/// query, as people type it in search (`is:done`), so everyone looking sees the same list; a
+/// window starts on `place` (all of the items when empty). The place of all of the items is
+/// called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view
+/// state is the bar's sort menu. Items whose type has a window of their own open in the next
+/// column; the list follows which one is open.
 view list<R, T, S>(
     of: R,
     items: List<T>,
@@ -30,19 +31,10 @@ view list<R, T, S>(
 ) {
     window query: Text = place
     let kind = meta(T)
-    let offered = actions(of)
     let places = filters(T).filter(f -> f.toggle)
     let shown = items.matching(query)
     let chosen = places.find(p -> p.query == query)
     let title = chosen?.label ?? if places.is_empty() { meta(of).title } else { everything }
-    // A view with an entry adds there: its primary action stands in the header's menu, not as
-    // the header's button, so the list keeps the one way to make an item.
-    let adding = if let commit = entry { true } else { false }
-    // An empty list offers the primary action while nothing was made yet: on the place a
-    // window starts on, or on all of the items. One another filter emptied says only that.
-    let primary = if query == "" or query == place {
-        offered.find(a -> a.primary and a.available)
-    } else { .none }
     ui.NavShell(
         content_kind: if kind.opens { .document } else { .list },
         sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },
@@ -74,12 +66,12 @@ view list<R, T, S>(
         }
         overview_actions: {
             if kind.opens {
-                std.header(offered, sort: sort, entry: adding)
+                std.header(sort: sort)
             }
         }
         actions: {
             if not kind.opens {
-                std.header(offered, sort: sort, entry: adding)
+                std.header(sort: sort)
             }
         }
         overview: {
@@ -87,7 +79,6 @@ view list<R, T, S>(
                 std.rows(
                     shown,
                     empty,
-                    primary,
                     kind.icon,
                     role: chosen?.role ?? "",
                     place: query,
@@ -105,7 +96,6 @@ view list<R, T, S>(
                 std.rows(
                     shown,
                     empty,
-                    primary,
                     kind.icon,
                     role: chosen?.role ?? "",
                     place: query,
@@ -139,7 +129,6 @@ view list<R, T, S>(
 view rows<T>(
     items: List<T>,
     empty: Text,
-    primary: Option<host.Action>,
     icon: Option<Text>,
     group: Option<(T) -> Option<Date>> = .none,
     closed: Option<(T) -> Bool> = .none,
@@ -156,9 +145,9 @@ view rows<T>(
 ) {
     // A list that is no place's is grouped by the caller, and folds what it leaves done.
     let all_done = all_done and role == "" and not items.is_empty()
-    // The entry at the list's end is its one way to add: the view's primary action keeps its
-    // key there instead of making an item nobody typed, an empty list says nothing over it,
-    // and what is typed is what the list gains.
+    // The entry at the list's end is the list's own way to add: the host gives it the window's
+    // primary action's key, so the key and the bar's button lead the person there, and what is
+    // typed is what the list gains.
     if let commit = entry {
         ui.Docked {
             foot: {
@@ -181,7 +170,7 @@ view rows<T>(
                             row(x, under)
                         }
                     }
-                    std.add_entry(primary, entry_placeholder, commit)
+                    std.add_entry(entry_placeholder, commit)
                 }
             }
             if all_done {
@@ -206,13 +195,7 @@ view rows<T>(
             }
         }
     } else if items.is_empty() {
-        if let a = primary {
-            ui.EmptyState(empty, icon: icon, action: a.label) {
-                on act: a.run
-            }
-        } else {
-            ui.EmptyState(empty, icon: icon)
-        }
+        ui.EmptyState(empty, icon: icon)
     } else if all_done {
         // Everything here is done with: say so calmly, over the foot that folds it away.
         ui.Docked {
@@ -253,12 +236,10 @@ view rows<T>(
 }
 
 /// The entry at a list's end: what is typed and Entered there — or left there with — makes an
-/// item of it, through `commit`; nothing typed makes nothing, and Escape leaves none. Its
-/// `primary` is the type's create action: its key puts the keyboard in this entry (the window's
-/// primary surface presses it) instead of making an item nobody typed.
-view add_entry(primary: Option<host.Action>, placeholder: Text, commit: (Text) -> Action) {
-    let key: Option<Text> = if let a = primary { a.key } else { .none }
-    ui.TextInput(placeholder: placeholder, entry: true, key: key) {
+/// item of it, through `commit`; nothing typed makes nothing, and Escape leaves none. The host
+/// gives it the window's primary action's key, so the key and the bar's button come here.
+view add_entry(placeholder: Text, commit: (Text) -> Action) {
+    ui.TextInput(placeholder: placeholder, entry: true) {
         on submit(title: Text): commit(title)
     }
 }
@@ -327,7 +308,6 @@ view rows_list<T>(
                 let same_side = if let c = closed { c(p) == tail } else { true }
                 if same_heading and same_side { .some(p) } else { .none }
             } else { .none }
-            let offered = actions(x, above)
             let under: Option<T> = if let p = parent { p(x) } else { .none }
             let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
             let count: Option<Text> = if let c = progress { c(x) } else { .none }
@@ -337,38 +317,11 @@ view rows_list<T>(
                 group: heading,
                 group_done: role == "logbook",
                 tail: tail,
+                above: above,
                 parent: under,
                 parent_title: belongs,
                 progress: count,
             ) {
-                menu: {
-                    for a in offered {
-                        if a.applies {
-                            ui.MenuItem(
-                                a.label,
-                                icon: a.icon,
-                                destructive: a.destructive,
-                                key: a.key,
-                                disabled: not a.available,
-                                reason: if a.available { .none } else { .some(a.reason) },
-                                group: if a.frequent { .none } else { a.group },
-                            ) {
-                                on choose: a.run
-                            }
-                        }
-                    }
-                }
-                swipe: {
-                    if let a = offered.find(a -> a.applies and a.available and a.destructive) {
-                        ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
-                            on swipe: a.run
-                        }
-                    } else if let a = offered.find(a -> a.applies and a.available) {
-                        ui.SwipeAction(a.label, icon: a.icon) {
-                            on swipe: a.run
-                        }
-                    }
-                }
                 row(x, under)
             }
         }
@@ -419,28 +372,10 @@ view outline<T>(
                     .filter(y -> parent(y) == parent(x))
                     .last()
                 let count: Option<Text> = if let c = progress { c(x) } else { .none }
-                let offered = actions(x, above)
-                ui.TreeViewNode(x, label(x), parent: parent(x), progress: count) {
+                ui.TreeViewNode(x, label(x), parent: parent(x), above: above, progress: count) {
                     on drop(moved: T): place(moved, .none, .some(x))
                     on into(moved: T): place(moved, .some(x), .none)
                     on check: toggled(x)
-                    menu: {
-                        for a in offered {
-                            if a.applies {
-                                ui.MenuItem(
-                                    a.label,
-                                    icon: a.icon,
-                                    destructive: a.destructive,
-                                    key: a.key,
-                                    disabled: not a.available,
-                                    reason: if a.available { .none } else { .some(a.reason) },
-                                    group: if a.frequent { .none } else { a.group },
-                                ) {
-                                    on choose: a.run
-                                }
-                            }
-                        }
-                    }
                     row: {
                         row(x, parent(x))
                     }
@@ -450,22 +385,12 @@ view outline<T>(
     }
 }
 
-/// A header's controls, as native headers place them: the sort menu and search first, then
-/// `extra`, then the window's actions — its primary action as the labelled Primary button, a
-/// command the app marked `frequent` as a button of its own, and all the rest behind the
-/// header's one menu, as a desktop bar holds them. The primary action comes first among
-/// them so that a narrow window gives way with the menus, never with the one main thing to
-/// do. A view with an `entry` at its list's end adds there, so its primary action is not a
-/// button of the header: it stands first in the header's menu, and its key puts the keyboard in
-/// the entry. The window's header lays them out: what does not fit gives way to where the system
-/// lists the window's actions (the desktop bar's window menu), else behind the header's own
-/// door, so every action stays reachable at every width.
-view header<S>(
-    offered: List<host.Action>,
-    sort: Option<State<S>> = .none,
-    entry: Bool = false,
-    extra: View,
-) {
+/// A window's own controls, before the actions the host puts in the bar: the sort menu, and
+/// `extra`, a page's controls. The window's actions come from what its type declares, and the
+/// host places them after these: its primary action as the labelled Primary button, a command
+/// the app marked `frequent` as a button of its own, and all the rest behind the bar's one
+/// menu, so every action stays reachable at every width without the view having read them.
+view header<S>(sort: Option<State<S>> = .none, extra: View) {
     if let s = sort {
         ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
             for c in cases(S) {
@@ -475,79 +400,14 @@ view header<S>(
             }
         }
     }
-    ui.SearchButton()
     extra
-    // What this window cannot do to what it shows — no place to offer it in — is not among its
-    // commands: a command that would only say why it cannot run here is not one. The view with an
-    // entry at its list's end adds there: the primary action keeps its key on that entry, so the
-    // header does not press it, and stays in the menu where its label shows.
-    for a in offered {
-        if a.applies and a.primary and not entry {
-            ui.Button(
-                a.label,
-                icon: a.icon,
-                role: .primary,
-                key: a.key,
-                enabled: a.available,
-                description: a.reason,
-            ) {
-                on press: a.run
-            }
-        }
-    }
-    for a in offered {
-        if a.applies and a.frequent and not a.primary {
-            if a.icon != .none {
-                ui.Button(
-                    a.label,
-                    icon: a.icon,
-                    icon_only: true,
-                    toggled: a.on,
-                    key: a.key,
-                    enabled: a.available,
-                    description: a.reason,
-                ) {
-                    on press: a.run
-                }
-            } else {
-                ui.Button(
-                    a.label,
-                    toggled: a.on,
-                    key: a.key,
-                    enabled: a.available,
-                    description: a.reason,
-                ) {
-                    on press: a.run
-                }
-            }
-        }
-    }
-    for a in offered {
-        if a.applies and (not a.primary or entry) and not a.frequent {
-            ui.Button(
-                a.label,
-                icon: a.icon,
-                role: if a.destructive { .destructive } else { .secondary },
-                toggled: a.on,
-                key: a.key,
-                in_menu: true,
-                group: a.group,
-                enabled: a.available,
-                description: a.reason,
-            ) {
-                on press: a.run
-            }
-        }
-    }
 }
 
-/// A window that is a document of `of`: its content at the readable measure, scrolling under a
-/// header of `of`'s actions. A document edits its title as its large title.
+/// A window that is a document of `of`: its content at the readable measure. A document edits
+/// its title as its large title, and the host puts what can be done with it behind the "…"
+/// beside that title.
 view document<R>(of: R, content: View) {
     ui.NavShell(content_kind: .document, title: meta(of).title) {
-        actions: {
-            std.header(actions(of))
-        }
         content: {
             ui.Scroll {
                 page {
@@ -571,41 +431,27 @@ view body(content: View) {
 }
 
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
-/// the window's full width, scrolling under a header of `of`'s actions and `header`, the
-/// page's own controls. A `fill` page is exactly the window's height and scrolls inside its
-/// own parts, which is what a board's lanes need; a page that grows with what it holds (a grid
-/// of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so and offers
-/// its primary action, unless an `entry` in its parts adds instead.
+/// the window's full width, under `header`, the page's own controls, and the actions the host
+/// puts in the bar with them. A `fill` page is exactly the window's height and scrolls inside
+/// its own parts, which is what a board's lanes need; a page that grows with what it holds (a
+/// grid of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so.
 view page<R>(
     of: R,
     canvas: Bool = false,
     fill: Bool = false,
     empty: Bool = false,
-    entry: Bool = false,
     header: View,
     content: View,
 ) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
-            std.header(actions(of), entry: entry) {
+            std.header {
                 header
             }
         }
         content: {
             if empty {
-                // A page whose lanes or parts hold their own entry adds there, not here.
-                let primary: Option<host.Action> = if entry {
-                    .none
-                } else {
-                    actions(of).find(a -> a.primary and a.available)
-                }
-                if let a = primary {
-                    ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon, action: a.label) {
-                        on act: a.run
-                    }
-                } else {
-                    ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon)
-                }
+                ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon)
             } else {
                 ui.Scroll {
                     if canvas {
@@ -632,8 +478,9 @@ view page<R>(
 /// and when come from the log (`created`), and the list draws them as every conversation does:
 /// the author's avatar and name over each run of their messages, the time beside the name, and
 /// a divider where the day changes; the `row` then shows only what the item says. Each item's
-/// menu offers its actions, after whatever menu the `row` attaches (`ui.ContextMenu`), so every
-/// action stays reachable; the row's hover toolbar and swipe are its own.
+/// menu is whatever menu the `row` attaches (`ui.ContextMenu`), and after it the host puts the
+/// actions the item's type declares, so every action stays reachable; the row's hover toolbar
+/// and swipe are its own.
 ///
 /// `unread` names the first item the person has not seen (`first_unseen(of)`, or `.none`): the
 /// list draws the "New messages" divider over it, keeps the reader where they are as items
@@ -646,9 +493,6 @@ view transcript<R, T>(
     row: (T) -> View,
 ) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
-        actions: {
-            std.header(actions(of))
-        }
         content: {
             ui.Docked {
                 foot: {
@@ -659,27 +503,7 @@ view transcript<R, T>(
                 ui.VirtualList(transcript: true, unread: unread) {
                     for m in items {
                         let made = created(m)
-                        let offered = actions(m)
                         ui.ListItem(item: m, author: made?.who, time: made?.at) {
-                            menu: {
-                                for a in offered {
-                                    if a.applies {
-                                        ui.MenuItem(
-                                            a.label,
-                                            icon: a.icon,
-                                            destructive: a.destructive,
-                                            key: a.key,
-                                            disabled: not a.available,
-                                            reason: if a.available {
-                                                .none
-                                            } else { .some(a.reason) },
-                                            group: if a.frequent { .none } else { a.group },
-                                        ) {
-                                            on choose: a.run
-                                        }
-                                    }
-                                }
-                            }
                             row(m)
                         }
                     }

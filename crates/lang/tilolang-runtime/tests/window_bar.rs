@@ -1,0 +1,362 @@
+//! The surfaces the host owns for a window's actions: one bar over the window's columns, the
+//! actions a type declares placed there once, each item's actions in the item's own menu, and
+//! for the page of an item them behind the "…" beside its title. The bar also holds the switch
+//! between the views a type declares, which the window remembers.
+
+#[cfg(test)]
+#[path = "common/mod.rs"]
+mod common;
+
+#[cfg(test)]
+mod cases {
+    use super::common::*;
+    use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
+
+    const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+
+    struct Tasks {
+        rt: Runtime,
+        app: App,
+        me: Principal,
+        /// Held for the run: the platform trusts the module for as long as it stands.
+        _auth: TestAuthority,
+    }
+
+    fn tasks() -> Tasks {
+        let store = AmStore::new();
+        let auth = TestAuthority::new();
+        let rt = Runtime::new(store, auth.clone()).unwrap();
+        let app = App::compile(TASKS, &[]);
+        // Installed packages are code the platform trusts, as it does every installed app.
+        auth.trust(&app.load(&rt));
+        Tasks {
+            rt,
+            app,
+            me: me(),
+            _auth: auth,
+        }
+    }
+
+    impl Tasks {
+        /// The app's root resource, as installing it makes one: the window every other
+        /// resource of the app stands beside.
+        fn root(&self) -> ResourceRef {
+            self.rt.create_root("Tasks").unwrap()
+        }
+
+        fn call(&self, action: &str, args: Vec<Value>) -> tilolang_runtime::InvokeOutcome {
+            let id = self.app.action(action);
+            self.rt
+                .invoke_action(&self.me, (id.as_str(), args))
+                .unwrap()
+        }
+
+        fn task(&self, root: &ResourceRef, title: &str) -> ResourceRef {
+            returned_ref(self.call("new_task", vec![Value::resource(root), Value::text(title)]))
+        }
+
+        fn project(&self, root: &ResourceRef, name: &str) -> ResourceRef {
+            let project = returned_ref(self.call("new_project", vec![Value::resource(root)]));
+            self.call("rename", vec![Value::resource(&project), Value::text(name)]);
+            project
+        }
+
+        /// The window of `view` on `resource`, every row of its lists rendered: these checks
+        /// read the whole tree, as a host that draws every row does.
+        fn window(&self, view: &str, resource: &ResourceRef) -> ViewInstance {
+            let mut window = self
+                .rt
+                .open_view(
+                    &self.me,
+                    &self.app.view(view),
+                    vec![Value::resource(resource)],
+                )
+                .unwrap_or_else(|e| panic!("{view}: {e}"));
+            window.set_lazy_rows(false).unwrap();
+            window
+        }
+    }
+
+    /// The nodes of a tree of the given kind whose property `prop` is the text `value`.
+    fn nodes_with<'a>(tree: &'a UiNode, kind: &str, prop: &str, value: &str) -> Vec<&'a UiNode> {
+        of_kind(tree, kind)
+            .into_iter()
+            .filter(|node| node.props.get(prop) == Some(&Value::text(value)))
+            .collect()
+    }
+
+    /// The text of a node's property.
+    fn text_of(node: &UiNode, prop: &str) -> String {
+        node.props
+            .get(prop)
+            .and_then(Value::as_text)
+            .unwrap_or_else(|| panic!("{} has no text {prop}: {node:?}", node.kind))
+            .to_owned()
+    }
+
+    /// The children of the slot `name` of `node`, in order.
+    fn slot<'a>(node: &'a UiNode, name: &str) -> Vec<&'a UiNode> {
+        node.children
+            .iter()
+            .filter(|child| {
+                child.kind == "slot" && child.props.get("name") == Some(&Value::text(name))
+            })
+            .flat_map(|slot| slot.children.iter())
+            .collect()
+    }
+
+    /// `node` and the child holding `key` at every step down to it.
+    fn path_to<'a>(tree: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {
+        if tree.key == key {
+            return Some(vec![tree]);
+        }
+        for child in &tree.children {
+            if let Some(mut path) = path_to(child, key) {
+                path.insert(0, tree);
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// The window's bar: the shell that spans its columns, which every window has one of.
+    fn one_bar(tree: &UiNode) {
+        let shells = of_kind(tree, "ui.NavShell");
+        assert_eq!(
+            shells.len(),
+            1,
+            "a window has one bar over its columns:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// The Tasks window places the type's primary action in its bar, once, and reads nothing
+    /// of the actions on what it shows into chrome of its own: each task's actions are in the
+    /// menu the host gives the row that stands for it.
+    #[test]
+    fn the_tasks_window_has_one_bar_with_its_primary_action_once() {
+        let w = tasks();
+        let root = w.root();
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        one_bar(tree);
+        let new_task = nodes_with(tree, "ui.Button", "label", "New task");
+        assert_eq!(
+            new_task.len(),
+            1,
+            "one New task, in the bar:\n{}",
+            dump(tree)
+        );
+        assert_eq!(
+            new_task[0].props.get("role"),
+            Some(&Value::text("primary")),
+            "it is the window's primary"
+        );
+        // The bar the host filled is the one over the window's columns, not a row of the
+        // view's: the shell holds the button, in the slot its overview's actions go in.
+        let shell = of_kind(tree, "ui.NavShell")[0];
+        assert!(
+            slot(shell, "overview_actions")
+                .iter()
+                .any(|node| node.key == new_task[0].key),
+            "the primary stands in the window's bar:\n{}",
+            dump(tree)
+        );
+        // The entry at the list's end declares the primary's key: the key and the bar's button
+        // lead the person there to type the item, and the button names it plainly.
+        let entry = of_kind(tree, "ui.TextInput")
+            .into_iter()
+            .find(|field| field.props.get("entry") == Some(&Value::Int(1)))
+            .unwrap_or_else(|| panic!("the list ends in its entry:\n{}", dump(tree)));
+        assert_eq!(
+            entry.props.get("key"),
+            Some(&Value::text("Ctrl+n")),
+            "the entry where the primary's key leads:\n{}",
+            dump(tree)
+        );
+        // The row the view drew says what a task is; the host put what can be done with it on
+        // the row itself.
+        let row = &of_kind(tree, "ui.ListItem")[0];
+        let menu = slot(row, "menu");
+        assert!(
+            !menu.is_empty() && menu.iter().all(|item| item.kind == "ui.MenuItem"),
+            "the row's menu holds one row per action on it:\n{}",
+            dump(tree)
+        );
+        assert!(
+            slot(row, "swipe")
+                .iter()
+                .all(|node| node.kind == "ui.SwipeAction"),
+            "the row swipes its actions too:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// A task's page edits its title, and what can be done with the task stands behind the "…"
+    /// beside that title: the page has no bar of its own, and no button of the task's actions.
+    #[test]
+    fn a_tasks_page_keeps_its_actions_behind_the_dots_beside_its_title() {
+        let w = tasks();
+        let root = w.root();
+        let task = w.task(&root, "milk");
+        let window = w.window("task_page", &task);
+        let tree = window.tree();
+        one_bar(tree);
+        let title = nodes_with(tree, "ui.TextInput", "placeholder", "Title");
+        assert_eq!(title.len(), 1, "the page edits its title:\n{}", dump(tree));
+        let path = path_to(tree, &title[0].key).expect("the title stands in the tree");
+        let parent = path[path.len() - 2];
+        let at = parent
+            .children
+            .iter()
+            .position(|child| child.key == title[0].key)
+            .expect("the title is its parent's child");
+        let more = parent
+            .children
+            .iter()
+            .skip(at + 1)
+            .find(|child| child.kind == "ui.MenuButton" && child.key.ends_with("~more"))
+            .unwrap_or_else(|| panic!("a \"…\" follows the title:\n{}", dump(tree)));
+        let commands: Vec<&UiNode> = more
+            .children
+            .iter()
+            .filter(|child| child.kind == "ui.MenuItem")
+            .collect();
+        assert!(
+            !commands.is_empty() && commands.iter().all(|c| c.events.contains_key("choose")),
+            "the \"…\" holds the actions on the task:\n{}",
+            dump(tree)
+        );
+        assert!(
+            of_kind(tree, "ui.ViewTabs").is_empty(),
+            "the task has one view to show it through:\n{}",
+            dump(tree)
+        );
+        assert!(
+            of_kind(tree, "ui.Button")
+                .iter()
+                .all(|button| button.props.get("role") != Some(&Value::text("primary"))),
+            "no primary button of the task's actions:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// A project's window offers the views its type declares as labelled tabs in its bar, the
+    /// one the window opens on chosen; choosing another shows the project through it, and the
+    /// window keeps it.
+    #[test]
+    fn a_projects_bar_switches_between_the_views_its_type_declares() {
+        let w = tasks();
+        let root = w.root();
+        let project = w.project(&root, "Move flat");
+        w.call(
+            "add_to",
+            vec![Value::resource(&project), Value::text("Pack the flat")],
+        );
+        let mut window = w.window("project_list", &project);
+        let tabs = {
+            let tree = window.tree();
+            let tabs = of_kind(tree, "ui.ViewTabs");
+            assert_eq!(tabs.len(), 1, "the bar switches views:\n{}", dump(tree));
+            tabs[0].clone()
+        };
+        let labels: Vec<String> = tabs
+            .children
+            .iter()
+            .filter(|child| child.kind == "ui.Segment")
+            .map(|segment| text_of(segment, "label"))
+            .collect();
+        assert_eq!(labels, ["Project list", "Project board"]);
+        assert_eq!(
+            tabs.props.get("selected"),
+            Some(&Value::Opt(Some(Box::new(Value::Int(0))))),
+            "the window opens on the list"
+        );
+        // Choosing the board shows the project through it: a lane per section, and no row.
+        window
+            .fire_with(&tabs.key, "change", Some(&Value::Int(1)))
+            .unwrap();
+        window.poll_patches().unwrap();
+        let tree = window.tree();
+        assert_eq!(
+            of_kind(tree, "ui.Board").len(),
+            1,
+            "the board is shown:\n{}",
+            dump(tree)
+        );
+        assert!(
+            of_kind(tree, "ui.ListItem").is_empty(),
+            "the list is gone:\n{}",
+            dump(tree)
+        );
+        let tabs = &of_kind(tree, "ui.ViewTabs")[0];
+        assert_eq!(
+            tabs.props.get("selected"),
+            Some(&Value::Opt(Some(Box::new(Value::Int(1))))),
+            "the bar shows which view the window is in"
+        );
+        // The same window again, as the shell opens it when the window comes back in front.
+        let reopened = w.window("project_list", &project);
+        assert_eq!(
+            of_kind(reopened.tree(), "ui.Board").len(),
+            1,
+            "the window keeps the view it was left in:\n{}",
+            dump(reopened.tree())
+        );
+    }
+
+    /// No app's views read the actions on what they show back to build chrome of their own: the
+    /// host places them where every window keeps them, and a view that read them would draw a
+    /// second set beside the bar's.
+    #[test]
+    fn no_app_view_reads_the_actions_of_what_it_shows() {
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("apps/tl reads") {
+                let path = entry.expect("apps/tl reads").path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "tl") {
+                    out.push(path);
+                }
+            }
+        }
+        // A call of the builtin `actions(r)`: the word alone, not the end of a longer name
+        // (`bar_lists_actions`), a component's (`ui.Reactions`) or a comment's.
+        fn call_at(line: &str) -> Option<usize> {
+            line.match_indices("actions(")
+                .map(|(at, _)| at)
+                .find(|&at| {
+                    let before = line.get(..at).and_then(|before| before.chars().next_back());
+                    !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+                })
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
+        let mut files = Vec::new();
+        sources(&root, &mut files);
+        assert!(files.len() >= 8, "every app in apps/tl is read");
+        let mut offenders = Vec::new();
+        for file in &files {
+            let source = std::fs::read_to_string(file).expect("an app's source reads");
+            for (number, line) in source.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                if call_at(line).is_some() {
+                    offenders.push(format!(
+                        "{}:{}: {}",
+                        file.strip_prefix(&root).unwrap().display(),
+                        number + 1,
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "views draw no chrome of their own from the actions on what they show; the host \
+             places them:\n{}",
+            offenders.join("\n")
+        );
+    }
+}

@@ -123,19 +123,30 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **A role says what an action is; only `internal` and `scenario` keep it from being listed.**
   `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
   skips the `scenario` actions and those with a hiding role, so a gesture-only action
-  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in an
-  item's menu, in a `std` header or menu, or in an agent's choices, while the app can still name
-  it where the gesture wants it. Where an offered action shows is a separate question that
-  `frequent` answers alone, so hiding an action from the header by marking it `internal` is a
-  bug: it disappears from the menus too.
-- **A window's header shows its primary action and the commands the app marks `frequent` as
-  buttons, and every other action in the header's one menu.** `std.header` builds them that
-  way: a button per primary and per `frequent` action, and a `ui.Button(..., in_menu: true)`
-  per remaining action, which the shell's own More button holds whatever room the row has.
-  Which commands earn a place in the row is the app's judgement (`frequent: true`), not the
-  window's width, so a narrow window gives way with the menu, never with the one main thing to
-  do; a host that lists a window's actions elsewhere (`WindowBar::lists_actions`) hides the
-  menu's door instead, and nothing is offered twice.
+  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in
+  the host's bar or a window's menus, or in an agent's choices, while the app can still name it
+  where the gesture wants it.
+- **A window's bar shows its primary action and the commands the app marks `frequent` as
+  buttons, and every other action behind the bar's one menu.** The host builds them that way
+  from the declarations of the type the window shows: a button per primary and per `frequent`
+  action, and the remaining actions in the menu, which the shell's own More button holds
+  whatever room the bar has. A view never reads the actions back to draw them: it says what
+  can be done by declaring actions on the type and by placing the typed affordances of the
+  thing itself (a checkbox that completes, an entry that adds, a drag). `actions(r)` is
+  therefore an error in a view (E047); it stays readable to the host, which places the
+  declarations, and to an agent, which chooses among them. Which commands earn a
+  place in the bar is the app's judgement (`frequent: true`), not the window's width, so a
+  narrow window gives way with the menu, never with the one main thing to do.
+- **A window switches only between the views its type declares.** `views project_list,
+  project_board for Project` names them, in the order the bar shows them, its default view
+  first: the host draws them as the bar's labelled switch and opens the one the person last
+  chose in that window. A view of a type that is not named is the app's own helper (a row body,
+  a piece a page places), so it is never a window of its own.
+- **An item's actions are on the item.** A row, card or tree node standing for a resource
+  carries its type's actions in its context menu (right-click, long press, Menu key) and, for
+  a list row, as its swipe; the page of one item carries them behind the "…" beside its title.
+  The host places them there from the declarations, once, and the view places no menu of its
+  own.
 - **A row is drawn by the view that knows what the place around it says.** `row(title, ...)`
   stands in a list's item block, as a row view's body, or as the whole body of a view of one
   item (first parameter a record, body one row after its `let`s). The extra parameters are what

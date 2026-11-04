@@ -533,11 +533,10 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     };
     let mut view = ada.host.open_resource(&at.target, None).unwrap();
     view.poll_patches().unwrap();
-    // The window opens as the project's list; its Board button switches it to the board.
-    let board = key_of(&view, "ui.Button", &|b| {
-        b.props.get("label") == Some(&Value::text("Board"))
-    });
-    view.press(&board).unwrap();
+    // The project's window opens as its list and switches to the board from the bar's tabs.
+    let tabs = key_of(&view, "ui.ViewTabs", &|_| true);
+    view.fire_with(&tabs, "change", Some(&Value::Int(1)))
+        .unwrap();
     view.poll_patches().unwrap();
     let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
     assert_eq!(
@@ -647,10 +646,10 @@ fn a_lanes_header_counts_the_cards_it_holds() {
     };
     let mut view = ada.host.open_resource(&at.target, None).unwrap();
     view.poll_patches().unwrap();
-    let board = key_of(&view, "ui.Button", &|b| {
-        b.props.get("label") == Some(&Value::text("Board"))
-    });
-    view.press(&board).unwrap();
+    // The project's window switches to its board from the bar's labelled tabs.
+    let tabs = key_of(&view, "ui.ViewTabs", &|_| true);
+    view.fire_with(&tabs, "change", Some(&Value::Int(1)))
+        .unwrap();
     view.poll_patches().unwrap();
     let ids = |ts: &[&Value]| ts.iter().map(|t| target(t)).collect::<Vec<_>>();
     assert_eq!(
@@ -1933,18 +1932,6 @@ fn menu_command(node: &UiNode) -> Command {
     }
 }
 
-/// A header command drawn behind the `...` door as a command.
-fn button_command(node: &UiNode) -> Command {
-    Command {
-        label: text_of(node, "label").unwrap_or_default(),
-        key: text_of(node, "key"),
-        group: text_of(node, "group"),
-        reason: text_of(node, "description"),
-        enabled: flag(node, "enabled"),
-        destructive: text_of(node, "role").as_deref() == Some("destructive"),
-    }
-}
-
 /// The commands a task's menus offer, in the order a person reads them: every command, and of
 /// the two moves only the one this task's place allows. This is a task with nothing over it in
 /// its group standing at the top level: neither move has a place, so neither is offered.
@@ -2049,10 +2036,18 @@ fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String
 
 /// The commands a page offers behind its `...` door.
 fn page_commands(view: &ViewInstance) -> Vec<Command> {
-    all(view.tree(), "ui.Button")
+    let more = all(view.tree(), "ui.MenuButton")
         .into_iter()
-        .filter(|button| flag(button, "in_menu"))
-        .map(button_command)
+        .find(|button| button.key.ends_with("~more"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the page keeps its commands behind a \"…\": {:#?}",
+                view.tree()
+            )
+        });
+    all(more, "ui.MenuItem")
+        .into_iter()
+        .map(menu_command)
         .collect()
 }
 

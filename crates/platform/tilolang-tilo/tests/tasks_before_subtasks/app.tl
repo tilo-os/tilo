@@ -336,7 +336,7 @@ view home(t: Tasks) {
             }
         }
         overview_actions: {
-            std.header(actions(t))
+            std.header()
         }
         overview: {
             ui.Docked {
@@ -354,7 +354,7 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks here", .none, .some("list-checks")) { (x, under) ->
+                std.rows(shown, "No tasks here", .some("list-checks")) { (x, under) ->
                     task_row(x)
                 }
             }
@@ -381,7 +381,7 @@ view project_list(p: Project, draft: State<Text>) {
     let shown = tasks_of(p)
     ui.NavShell(content_kind: .document, overview_title: p.name, overview_count: shown.len()) {
         overview_actions: {
-            std.header(actions(p))
+            std.header()
         }
         overview: {
             ui.Docked {
@@ -392,7 +392,7 @@ view project_list(p: Project, draft: State<Text>) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks yet", .none, .some("folder")) { (x, under) ->
+                std.rows(shown, "No tasks yet", .some("folder")) { (x, under) ->
                     task_row(x)
                 }
             }
@@ -450,11 +450,6 @@ view task_card(t: Task, sections: List<Section>) {
                     ui.MenuItem("Move to {s.name}", icon: .arrow_right) {
                         on choose: place(t, .some(s), 0)
                     }
-                }
-            }
-            for a in actions(t) {
-                ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
-                    on choose: a.run
                 }
             }
         }

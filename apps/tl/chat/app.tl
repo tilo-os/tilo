@@ -314,17 +314,6 @@ view sidebar(all: Channels) {
                 }
             }
         }
-        actions: {
-            // One primary affordance: with no channels the empty state below is where a new
-            // one is made, so the header leaves its primary button to it rather than showing
-            // the same button twice on one page. With channels there is no such empty state,
-            // so the header keeps it.
-            if all.is_empty() {
-                std.header(actions(all).filter(a -> not a.primary))
-            } else {
-                std.header(actions(all))
-            }
-        }
         content: {
             if all.is_empty() {
                 ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
@@ -524,7 +513,7 @@ view thread_typing_here(of: Thread) {
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if actions(m).any(a -> a.is(edit) and a.available) {
+    if created(m)?.who == .some(workspace.me) and not m.body.is_empty() {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }

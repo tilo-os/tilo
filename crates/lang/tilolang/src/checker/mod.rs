@@ -282,7 +282,8 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             | Item::Enum(_)
             | Item::Root(_)
             | Item::DefaultView(_)
-            | Item::RowView(_) => {
+            | Item::RowView(_)
+            | Item::Views(_) => {
                 continue;
             }
         };

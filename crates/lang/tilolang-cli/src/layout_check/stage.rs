@@ -415,6 +415,17 @@ impl Staged {
         self.settle()
     }
 
+    /// Press the action the control `id` publishes as a semantic child, as assistive technology
+    /// activates it: a control a widget paints itself (an empty state's action) has no node of
+    /// its own to tap, and the widget's own node is not where the action is.
+    pub fn press_action(&mut self, id: &str) -> Result<(), String> {
+        self.harness
+            .perform_named(id, &ui::a11y::Action::Activate)
+            .map_err(|error| format!("pressing {id:?}: {error}"))?;
+        self.exchange();
+        self.settle()
+    }
+
     /// Run the toolkit's clock until nothing in the window moves.
     fn settle(&mut self) -> Result<(), String> {
         // A widget that took a layout switch after its parts were placed asks for the frame

@@ -58,6 +58,13 @@ window or a place.
 - **List and detail are two windows.** Pressing a note in a notebook opens the note's window
   next to it. The notebook keeps no "selected note". On a phone, one window shows at a time and
   back returns to the previous one.
+- **A window that shows a list, or the switch between views, takes the window over.** A
+  notebook's list is the window's list; opening its project shows the project's list where the
+  notebook's stood, with the project's title, its view switch and its controls in the one bar,
+  and the sidebar keeps the places to go back by. A view that offers neither (a page) opens
+  beside the list it came from. Which views a window switches between is the app's
+  declaration (`views list, board for Project`); a view it does not name is a helper its own
+  views place, never a window.
 - **Closing** removes it from your arrangement; it never touches the resource and nobody
   else's arrangement. Windows nobody has looked at for a while shrink into a compact entry at the end of
   their strip.

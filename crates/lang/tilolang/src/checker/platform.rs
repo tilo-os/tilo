@@ -2,12 +2,11 @@
 //! it is called, an enum's cases, and the platform's own phrases. Each is a value of the
 //! language, so a view composes headers, menus and presence from them as `std` does.
 
-use super::{Checker, Ex};
+use super::{CKind, Checker, Ctx, Ex};
 use crate::abi::Imp;
 use crate::ast;
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
-use crate::resolve::CKind;
 use crate::types::{Ty, TypeKey};
 
 /// A value type of the host: `host.Action`.
@@ -61,8 +60,19 @@ impl Checker<'_> {
     /// `actions(r, above)` offers them where the view shows `r` under `above`: the item just
     /// above it in its group, or `.none` for the first of its group. An action that reads a
     /// place (`above: Option<T> (above)`) is offered with it, and one whose `applies` does not
-    /// hold there is left out.
+    /// hold there is left out. Only the host draws them: a view that read them back would be
+    /// reflecting over the declarations the host already places (E047).
     pub(super) fn builtin_actions(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx == Ctx::View {
+            self.err(
+                "E047",
+                span,
+                "a view never reads a resource's actions back to draw them: declare them on its \
+                 type, place the affordances of the thing itself, and the host puts the rest in \
+                 the window's bar and on the item's menu",
+            );
+            return Ex::error();
+        }
         let Some(r) = self.resource_arg("actions", args.get(..1).unwrap_or_default(), span) else {
             return Ex::error();
         };

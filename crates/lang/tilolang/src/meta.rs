@@ -101,6 +101,10 @@ pub struct PackageMeta {
     /// The row a list of each type shows per item (`row view v for T`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_views: Vec<DefaultViewMeta>,
+    /// The views a window of each type switches between (`views a, b for T`), in order. A type
+    /// not named here has no switch: its views are helpers the app places itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views_of: Vec<ViewsMeta>,
     /// Named seed data (`scenario "name" { ... }`), each run by its hidden action.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scenarios: Vec<ScenarioMeta>,
@@ -109,6 +113,17 @@ pub struct PackageMeta {
     /// as it is then. Each is exported as `e_<id>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub at_event: Vec<FnMeta>,
+}
+
+/// The views a window of a type switches between: the type's id and the views' ids, in the
+/// order the declaration names them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewsMeta {
+    /// The type id.
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// The views' ids.
+    pub views: Vec<String>,
 }
 
 /// A named root: its name and its type's id.
@@ -741,6 +756,17 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
+    /// The views a window of the type `ty` (an id) switches between, in the order declared;
+    /// empty when the type declares none.
+    #[must_use]
+    pub fn views_of(&self, ty: &str) -> Vec<&str> {
+        self.views_of
+            .iter()
+            .find(|v| v.ty == ty)
+            .map(|v| v.views.iter().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
     /// The id of the row view of the type `ty` (an id), when the package declares one.
     pub fn row_view(&self, ty: &str) -> Option<&str> {
         self.row_views
@@ -774,12 +800,42 @@ impl PackageMeta {
         self.actions.iter().filter(|a| a.is_migration())
     }
 
+    /// Whether a declaration attaches the view `id` to a type: the type's default view, its row
+    /// view, or one of the views a window of it switches between. A view no declaration names is
+    /// the app's own helper, which the app places itself and no window offers.
+    #[must_use]
+    pub fn is_declared_view(&self, id: &str) -> bool {
+        self.default_views.iter().any(|d| d.view == id)
+            || self.row_views.iter().any(|d| d.view == id)
+            || self
+                .views_of
+                .iter()
+                .any(|v| v.views.iter().any(|view| view == id))
+    }
+
     /// The views a person or an agent can open or apply: every view but the hidden ones that
     /// present an action's state or are the rows of a loop.
     pub fn offered_views(&self) -> impl Iterator<Item = &ViewMeta> {
         self.views
             .iter()
             .filter(|v| v.presents.is_none() && v.row_of.is_none())
+    }
+
+    /// The views a person or an agent can open a resource of the type `ty` (an id) through: the
+    /// declared views that take such a resource and nothing else. An app's helpers are not among
+    /// them: they belong to the views that place them.
+    #[must_use]
+    pub fn views_showing(&self, ty: &str) -> Vec<&ViewMeta> {
+        let of_type = |param: &ParamMeta| {
+            matches!(
+                crate::types::Ty::parse_meta(&param.ty, &self.app),
+                Some(crate::types::Ty::Record(key)) if key.app == self.app && key.name == ty
+            )
+        };
+        self.offered_views()
+            .filter(|view| self.is_declared_view(&view.id))
+            .filter(|view| matches!(&view.params[..], [only] if of_type(only)))
+            .collect()
     }
 
     /// The JSON bytes embedded in the `tilolang.meta` section.

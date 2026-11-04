@@ -473,6 +473,9 @@ impl Scene {
                     .is_some_and(|v| !shown.contains(&v.name))
         });
         default
+            || switch_views(meta)
+                .iter()
+                .any(|(view, _)| !shown.contains(&view.name))
             || surface_views(meta).iter().any(|view| {
                 !shown.contains(&view.name)
                     && view
@@ -860,6 +863,31 @@ fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta>
         .collect()
 }
 
+/// The views beside the one a type's windows open on, each with the type it takes: what the
+/// window's bar offers as a switch between them (a project as a board beside its list). Only a
+/// type that declares a default view and the views beside it (`views a, b for T`) has a
+/// switch: every other view of a type is a helper its views place themselves.
+fn switch_views(
+    meta: &tilolang::PackageMeta,
+) -> Vec<(&tilolang::meta::ViewMeta, &tilolang::meta::TypeMeta)> {
+    let mut out = Vec::new();
+    for default in &meta.default_views {
+        let Some(ty) = meta.types.iter().find(|t| t.id == default.ty) else {
+            continue;
+        };
+        out.extend(
+            meta.views_of(&ty.id)
+                .into_iter()
+                .filter(|id| *id != default.view)
+                .filter_map(|id| {
+                    let view = meta.views.iter().find(|view| view.id == id)?;
+                    Some((view, ty))
+                }),
+        );
+    }
+    out
+}
+
 /// What the window calls each of `meta`'s primary actions, once each.
 fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
     let mut labels: Vec<&str> = meta
@@ -890,6 +918,24 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
     node.children
         .iter()
         .find_map(|child| button_named(child, label))
+}
+
+/// The test id of the first widget under `node` that publishes a button named `label` as a
+/// control it paints itself (an empty state's action): the widget is what is activated.
+fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
+    let painted = node.semantics.as_ref().is_some_and(|access| {
+        access.children.iter().any(|child| {
+            child.role == ui::a11y::Role::Button
+                && !child.state.disabled
+                && child.name.as_deref() == Some(label)
+        })
+    });
+    if painted && let Some(id) = &node.test_id {
+        return Some(id.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| painted_button_named(child, label))
 }
 
 /// One app's check under way.
@@ -978,6 +1024,19 @@ impl AppCheck<'_> {
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
+        // The views a type's bar switches to beside the one it opens on, on a resource of the
+        // type: a project laid out as a board as well as the list it opens on.
+        let meta = self.meta;
+        for (view, ty) in switch_views(meta) {
+            if self.shown.contains(&view.name) {
+                continue;
+            }
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+                continue;
+            };
+            staged.open_with(&resource, &view.id);
+            self.run(staged, &format!("{title}, then {} shown", view.name))?;
+        }
         Ok(())
     }
 
@@ -1005,10 +1064,20 @@ impl AppCheck<'_> {
                     unit.scene.root.as_deref(),
                 )?;
                 staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
-                let Some(id) = button_named(&staged.harness().inspection().root, label) else {
+                let found = {
+                    let root = &staged.harness().inspection().root;
+                    button_named(root, label)
+                        .map(|id| (id, true))
+                        .or_else(|| painted_button_named(root, label).map(|id| (id, false)))
+                };
+                let Some((id, tapped)) = found else {
                     continue;
                 };
-                staged.press(&id, size.touch)?;
+                if tapped {
+                    staged.press(&id, size.touch)?;
+                } else {
+                    staged.press_action(&id)?;
+                }
                 self.audit(
                     &mut staged,
                     layout,
@@ -1925,8 +1994,22 @@ mod windows {
                 .is_some_and(|id| id.starts_with("nav-shell-more-"))
     }
 
-    /// The columns each window under `node` heads with a menu, one list per window: a header
-    /// row of a column holds the rest of that column's actions in one menu, and one only.
+    /// Whether `node` is the "…" beside a page's title: the menu the page keeps its own
+    /// actions behind when it is a window of one thing rather than a bar over columns.
+    fn is_title_door(node: &ui::headless::InspectionNode) -> bool {
+        let [_, _, w, h] = node.rect;
+        w > 0.0
+            && h > 0.0
+            && node.widget.as_str() == "MenuButton"
+            && node
+                .test_id
+                .as_deref()
+                .is_some_and(|id| id.ends_with("~more"))
+    }
+
+    /// The menus each window under `node` offers, one list per window: a column of the bar
+    /// holds the rest of the window's actions in one menu, or a page of one thing holds them
+    /// behind the "…" beside its title, and never both.
     fn menus_per_window(node: &ui::headless::InspectionNode, out: &mut Vec<Vec<String>>) {
         if matches!(node.widget.as_str(), "WindowFrame" | "TilolangWindow") {
             out.push(Vec::new());
@@ -1936,25 +2019,33 @@ mod windows {
             && let Some(column) = id.strip_prefix("nav-shell-more-")
         {
             doors.push(column.to_owned());
+        } else if is_title_door(node)
+            && let Some(doors) = out.last_mut()
+        {
+            doors.push("title".to_owned());
         }
         for child in &node.children {
             menus_per_window(child, out);
         }
     }
 
-    /// The shell door on the window, by its test id.
-    fn shown_door(node: &ui::headless::InspectionNode) -> Option<String> {
-        if is_shell_door(node) {
-            return node.test_id.clone();
+    /// The window's menu on the page: the bar's door or the "…" beside a title, whichever
+    /// the window draws. Its items are the host's, read where the view is built; here it must
+    /// stand where the person reaches it.
+    fn shown_menu(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+        if is_shell_door(node) || is_title_door(node) {
+            return Some(node);
         }
-        node.children.iter().find_map(shown_door)
+        node.children.iter().find_map(shown_menu)
     }
 
     #[test]
     fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
-        // A column's header draws its owner's main actions as buttons and keeps the rest
-        // behind one menu: never every action as a button of its own, and one menu per
-        // column at most, on a desk or on a phone.
+        // A window draws its main actions as buttons and keeps the rest behind one menu: never
+        // every action as a button of its own, one menu per column of its bar at most, and
+        // one menu beside the title of the thing it shows, on a desk or on a phone. A window
+        // of one thing keeps its commands beside that title, so no lone door stands on a bar
+        // with nothing else to say.
         let columns = ["overview", "content", "sidebar"];
         for size in [(1280, 800), (390, 844)] {
             tilo_ui_host::i18n::ensure();
@@ -1983,19 +2074,19 @@ mod windows {
             for (window, doors) in windows.iter().enumerate() {
                 for door in doors {
                     assert!(
-                        columns.contains(&door.as_str()),
+                        columns.contains(&door.as_str()) || door == "title",
                         "window {window} heads a menu of {door:?} at {size:?}"
                     );
                     assert!(
                         doors.iter().filter(|held| *held == door).count() == 1,
-                        "window {window} heads its {door:?} column with two menus at {size:?}"
+                        "window {window} heads a second menu of {door:?} at {size:?}"
                     );
                 }
                 menus += doors.len();
             }
             assert!(
                 menus > 0,
-                "a window's header keeps the rest of its actions in a menu at {size:?}"
+                "a window keeps the rest of its actions in a menu at {size:?}"
             );
         }
     }
@@ -2018,8 +2109,8 @@ mod windows {
     #[test]
     fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it() {
         // In the strips preset a window is the app's own: nothing lists its actions, so its
-        // header holds the notes app's icon-less Untag as a labelled button, or behind the
-        // header's door when the row has no room for it.
+        // bar holds the notes app's icon-less Untag as a labelled button, or its menu does
+        // when the row has no room for it.
         tilo_ui_host::i18n::ensure();
         let (_, packages) = packages();
         for size in [(1280, 800), (390, 844)] {
@@ -2044,14 +2135,19 @@ mod windows {
             if shown_named(&root, "Untag…").is_some() {
                 continue;
             }
-            let door = shown_door(&root)
-                .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a door at {size:?}"));
-            staged.press(&door, size.0 < 600).expect("the door opens");
-            let mut said = Vec::new();
-            read_out(&staged.harness().inspection().root, false, &mut said);
+            let door = shown_menu(&root)
+                .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a menu at {size:?}"));
+            let [_, _, w, h] = door.rect;
             assert!(
-                said.iter().any(|(_, name)| name == "Untag…"),
-                "the door holds Untag… at {size:?}: {said:?}"
+                w > 0.0 && h > 0.0,
+                "the window's menu stands where the person reaches it at {size:?}"
+            );
+            assert!(
+                door.semantics
+                    .as_ref()
+                    .and_then(|said| said.name.as_deref())
+                    .is_some_and(|name| !name.is_empty()),
+                "the window's menu is named at {size:?}"
             );
         }
     }

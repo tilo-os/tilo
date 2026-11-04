@@ -656,14 +656,19 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 0);
-    // An empty notebook offers its primary action and says one sentence.
+    // An empty notebook says one sentence, and its primary action stands once, in the window's
+    // bar: the empty state has no button of its own.
     let empty = slot_of(&workspace.composed(), "overview")
         .into_iter()
         .find(|node| node.kind == "ui.EmptyState")
         .cloned()
         .expect("the empty notebook says so");
     assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
-    assert_eq!(empty.props.get("action"), Some(&Value::text("New note")));
+    assert_eq!(
+        header_labels(&workspace.composed(), "overview_actions"),
+        ["Sort", "search", "New note"],
+        "the bar offers the primary once"
+    );
     workspace.header_action("New note");
     assert_eq!(
         workspace.items_of("so.tilo.lang.notes", "items"),
@@ -1115,13 +1120,13 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
         .expect("the letter opened");
     let host = workspace.window.current_host().unwrap();
     let to = rt_text(&host.runtime().read(&draft, "to").unwrap());
-    let send = node_with(&workspace.composed(), "ui.Button", "label", "Send")
-        .expect("the letter's Send button")
+    let send = node_with(&workspace.composed(), "ui.MenuItem", "label", "Send")
+        .expect("the letter's Send command, behind the \"…\" beside its title")
         .key
         .clone();
     workspace
         .window
-        .act(UiEvent::Fire(send, "press".to_owned(), None));
+        .act(UiEvent::Fire(send, "choose".to_owned(), None));
     workspace.settle();
     assert!(
         workspace.window.view().asks().is_some(),
@@ -1511,31 +1516,64 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
     let _ = target;
     assert_eq!(
         header_labels(&workspace.composed(), "actions"),
-        ["search"],
-        "the counter's buttons are its content's"
+        Vec::<String>::new(),
+        "the counter's buttons are its content's, and a page searches nothing: {:#?}",
+        workspace.composed()
     );
 }
 
-// One control per action: an item's "Done" switch in its window is how it is checked there, so
-// the header does not offer "Check" beside it. The action stays the item's, on the door and in
-// its row's menu.
+// An item's actions are on the item: the page shows the task's Done switch, and what can be
+// done with the task, "Complete" among it, stands behind the "…" beside its title. The window's
+// bar does not repeat them.
 #[test]
-fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
+fn a_control_bound_to_the_state_an_action_toggles_stands_for_that_state_beside_the_title() {
     let mut workspace = Workspace::seeded("tasks");
     assert!(
         workspace.window.detail_target().is_some(),
         "the scenario's item is shown"
     );
-    let header = header_labels(&workspace.composed(), "actions");
+    let composed = workspace.composed();
+    let more = node_with(&composed, "ui.MenuButton", "label", "More actions")
+        .unwrap_or_else(|| panic!("the page has a \"…\": {composed:#?}"));
+    let commands: Vec<String> = more
+        .children
+        .iter()
+        .filter(|child| child.kind == "ui.MenuItem")
+        .filter_map(|item| match item.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect();
+    let toggled: Vec<Option<bool>> = more
+        .children
+        .iter()
+        .filter(|child| child.kind == "ui.MenuItem")
+        .filter(|item| {
+            matches!(
+                item.props.get("label"),
+                Some(Value::Text(label)) if label == "Complete" || label == "Reopen"
+            )
+        })
+        .map(|item| match item.props.get("checked") {
+            Some(Value::Bool(on)) => Some(*on),
+            Some(Value::Int(n)) => Some(*n != 0),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !toggled.is_empty() && toggled.iter().all(Option::is_some),
+        "the page's \"…\" holds the item's actions, the one that toggles a state saying which way it stands: {toggled:?}"
+    );
+    assert!(
+        commands.iter().any(|label| label == "Delete"),
+        "and the one that takes it away: {commands:?}"
+    );
+    let header = header_labels(&composed, "overview_actions");
     assert!(
         !header
             .iter()
-            .any(|label| label == "Complete" || label == "Reopen"),
-        "the Done switch stands for Complete: {header:?}"
-    );
-    assert!(
-        header.iter().any(|label| label == "Delete"),
-        "the rest of the item's actions stay: {header:?}"
+            .any(|label| label == "Complete" || label == "Reopen" || label == "Delete"),
+        "the bar does not repeat the item's actions: {header:?}"
     );
     let menus: Vec<String> = workspace
         .items()
@@ -2059,8 +2097,8 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
         .collect();
     assert_eq!(
         menu,
-        ["Remove", "Mark read"],
-        "the book's actions and the shelf's on it"
+        ["Mark read", "Remove"],
+        "the book's actions and the shelf's on it, in the order the app declares them"
     );
     let swipe = first.swipe.as_ref().expect("a swipe takes the book off");
     assert!(swipe.destructive);

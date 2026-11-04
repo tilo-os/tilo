@@ -90,6 +90,9 @@ pub struct ListItemProps {
     /// The row is one of the items done with: they stand after every group, under the list's
     /// tail title, closed until the person opens them.
     pub tail: bool,
+    /// The item the view shows just over this one in its group: the place the actions offered
+    /// on the row take when one reads a place (`above`). None for the first of a group.
+    pub above: Option<ResourceId>,
     /// The item was removed and the person has not seen it go: the row stands in for it, its
     /// title struck through, at the row's own height. The UI host places such rows.
     pub removed: bool,
@@ -448,6 +451,7 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         group_done: item.group_done,
         group_tone: item.group_tone,
         tail: item.tail,
+        above: item.above.clone(),
         removed: item.removed,
         parent: item.parent.clone(),
         parent_title: item.parent_title.clone(),

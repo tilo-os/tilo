@@ -52,6 +52,8 @@ pub enum Item {
     DefaultView(DefaultViewDecl),
     /// `row view v for T`: the row a list of `T`s shows for each item.
     RowView(DefaultViewDecl),
+    /// `views a, b for T`: the views a window of a `T` switches between, in the order written.
+    Views(ViewsDecl),
     /// `scenario "name" { ... }`: named seed data, run as a hidden action.
     Scenario(ScenarioDecl),
     Action(ActionDecl),
@@ -74,6 +76,7 @@ impl Item {
             Self::View(d) => &d.doc,
             Self::Fn(d) => &d.doc,
             Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
+            Self::Views(d) => &d.doc,
         }
     }
 
@@ -86,6 +89,7 @@ impl Item {
             Self::Enum(d) => d.span,
             Self::Root(d) => d.span,
             Self::DefaultView(d) | Self::RowView(d) => d.span,
+            Self::Views(d) => d.span,
             Self::Scenario(d) => d.span,
             Self::Action(d) => d.span,
             Self::Flow(d) => d.span,
@@ -221,6 +225,17 @@ pub struct RootDecl {
 pub struct DefaultViewDecl {
     pub node: NodeId,
     pub view: Ident,
+    pub ty: TypeExpr,
+    pub span: Span,
+}
+
+/// `views project_list, project_board for Project`: what a window of the type switches between.
+/// Only views named here are a window's; any other view of the type is the app's own helper.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewsDecl {
+    pub node: NodeId,
+    pub doc: Vec<String>,
+    pub views: Vec<Ident>,
     pub ty: TypeExpr,
     pub span: Span,
 }

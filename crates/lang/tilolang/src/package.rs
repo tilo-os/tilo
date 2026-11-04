@@ -431,6 +431,18 @@ fn build_meta(
     };
     meta.default_views = views_meta(&env.default_views);
     meta.row_views = views_meta(&env.row_views);
+    meta.views_of = env
+        .views_of
+        .iter()
+        .filter(|(key, _, _)| key.app == app)
+        .map(|(key, views, _)| crate::meta::ViewsMeta {
+            ty: type_id(key),
+            views: views
+                .iter()
+                .filter_map(|view| Some(env.own_callable(view)?.id.clone()))
+                .collect(),
+        })
+        .collect();
     let class_of = |idx: usize| {
         fx.class
             .get(idx)
@@ -439,7 +451,11 @@ fn build_meta(
     };
     for item in &module.items {
         match item {
-            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Use(_)
+            | Item::Root(_)
+            | Item::DefaultView(_)
+            | Item::RowView(_)
+            | Item::Views(_) => {}
             Item::Alias(a) => {
                 let key = crate::types::TypeKey {
                     app: app.to_string(),

@@ -84,8 +84,10 @@ fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
 }
 
 /// A declared name as a label: in words, its first letter upper case (`NoteOrder` is
-/// `Note order`).
-fn label(name: &str) -> String {
+/// `Note order`). It is the words a declaration is called by when nothing names it otherwise,
+/// and the message catalogue's source for it, which a translation replaces.
+#[must_use]
+pub fn label(name: &str) -> String {
     let words = in_words(name);
     let mut chars = words.chars();
     match chars.next() {

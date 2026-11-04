@@ -1,6 +1,7 @@
 //! The window's tests: what a person and an app see of one window.
 
 use super::*;
+use crate::adapter::{SLOT, kind};
 
 #[test]
 fn a_splice_is_where_the_texts_differ() {
@@ -519,13 +520,14 @@ fn the_windows_catalogue_keeps_what_an_action_takes_and_whether_it_can_run() {
 /// A view whose header offers `Archive` as a button declaring `key`, as `std.header` builds
 /// it for an action with that shortcut: the `key` prop and the button's `press`.
 fn keyed_menu(key: &str) -> Vec<ToUi> {
-    use wire::Event;
     let mut button = UiNode::empty("ui.Button", "archive");
     button
         .props
         .insert("label".to_owned(), Value::text("Archive"));
     button.props.insert("key".to_owned(), Value::text(key));
-    button.events.insert("press".to_owned(), Event::default());
+    button
+        .events
+        .insert("press".to_owned(), wire::Event::default());
     let mut shell = UiNode::empty("ui.NavShell", "shell");
     let mut actions = UiNode::empty("slot", "actions");
     actions
@@ -661,8 +663,8 @@ fn a_plain_declared_key_runs_it_alone() {
 
 /// The window's primary action is where a person comes to add a list's next item: run from the
 /// bar with nothing typed, it puts the keyboard in the list's entry, which declares the action's
-/// key, rather than making an item nobody typed — even though the header's menu row names the
-/// same key.
+/// key, rather than making an item nobody typed — whether it is chosen from the window's
+/// catalogue or pressed where it stands.
 #[test]
 fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
     use wire::Event;
@@ -675,35 +677,53 @@ fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
         ],
         Value::text(""),
     );
-    // The primary action's row in the header's menu, as `std.header` draws it with an entry.
-    let mut row = UiNode::empty("ui.Button", "menu");
-    row.props
+    // The window's bar, with the primary action's button in it.
+    let mut button = UiNode::empty("ui.Button", "bar");
+    button
+        .props
         .insert("label".to_owned(), Value::text("New task"));
-    row.props.insert("key".to_owned(), Value::text("Ctrl+n"));
-    row.events.insert("press".to_owned(), Event::default());
+    button.props.insert("key".to_owned(), Value::text("Ctrl+n"));
+    button
+        .props
+        .insert("role".to_owned(), Value::text("primary"));
+    button.events.insert("press".to_owned(), Event::default());
     if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
-        tree.children.insert(0, row);
+        tree.children.insert(0, button);
     }
     page.push(ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
         "New task",
         Some("Ctrl+n"),
     ))));
     let (mut app, mut harness) = drawn(&page);
+    let made = |app: &mut _| -> Vec<ToApp> {
+        told(app)
+            .into_iter()
+            .filter(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. }))
+            .collect()
+    };
     let address = tilo_actions::ActionAddress::new("tasks:1", "new");
     drawn_window(&mut harness).invoke_action(address, None);
-    let made: Vec<ToApp> = told(&mut app)
-        .into_iter()
-        .filter(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. }))
-        .collect();
-    assert!(
-        made.is_empty(),
-        "nothing is made until it is typed: {made:?}"
-    );
+    let ran = made(&mut app);
+    assert!(ran.is_empty(), "nothing is made until it is typed: {ran:?}");
     harness.relayout();
     assert_eq!(
         drawn_window(&mut harness).focused_field().as_deref(),
         Some("field"),
         "the keyboard is in the entry, where the item is typed"
+    );
+    // Pressed where it stands, the bar's button leads the person there too.
+    drawn_window(&mut harness).act(UiEvent::Press("bar".to_owned()));
+    drawn_window(&mut harness).flush();
+    let ran = made(&mut app);
+    assert!(
+        ran.is_empty(),
+        "the press makes no item nobody typed: {ran:?}"
+    );
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field"),
+        "and it leaves the keyboard in the entry"
     );
 }
 
@@ -885,7 +905,7 @@ fn a_bound_control_shows_the_value_the_app_bound() {
 }
 
 /// A day picked in the calendar reaches the app as the value the field now holds, not as a
-/// splice of the text it reads as.
+/// splice of the text it reads as. A field its app gives no label reads as the day it holds.
 #[test]
 fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
     at_capture_day(|| {
@@ -1084,4 +1104,136 @@ fn the_row_of_the_view_beside_the_list_is_selected_once_the_rows_arrive() {
         "the row of the view shown is the selected one"
     );
     assert!(!selection.is_selected(&"notes/b".to_owned()), "only it is");
+}
+
+/// A shell node with `slots`, each `(name, children)`, as a view's tree is.
+fn shell_node(key: &str, props: &[(&str, Value)], slots: Vec<(&str, Vec<UiNode>)>) -> UiNode {
+    let mut shell = UiNode::empty(&kind("NavShell"), key);
+    for (name, value) in props {
+        shell.props.insert((*name).to_owned(), value.clone());
+    }
+    for (name, children) in slots {
+        let mut slot = UiNode::empty(SLOT, &format!("{key}#{name}"));
+        slot.props.insert("name".to_owned(), Value::text(name));
+        slot.children = children;
+        shell.children.push(slot);
+    }
+    shell
+}
+
+/// A button node of a header.
+fn header_button(key: &str, label: &str, role: &str) -> UiNode {
+    let mut button = UiNode::empty(&kind("Button"), key);
+    button.props.insert("label".to_owned(), Value::text(label));
+    if !role.is_empty() {
+        button
+            .props
+            .insert("role".to_owned(), Value::some(Value::text(role)));
+    }
+    button
+        .events
+        .insert("press".to_owned(), wire::Event::default());
+    button
+}
+
+/// A list node, as a view draws the column of what it shows.
+fn list_node(key: &str) -> UiNode {
+    UiNode::empty(&kind("VirtualList"), key)
+}
+
+/// Where the thing a person sees as `name` is drawn, in window coordinates.
+fn bounds_named(harness: &ui::headless::FrameHarness, name: &str) -> ui::kurbo::Rect {
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some(name))
+                .then(|| {
+                    node.bounds()
+                        .map(|b| ui::kurbo::Rect::new(b.x0, b.y0, b.x1, b.y1))
+                })
+                .flatten()
+        })
+        .unwrap_or_else(|| {
+            let drawn: Vec<String> = harness
+                .a11y_nodes()
+                .into_iter()
+                .filter_map(|(_, node)| node.label().map(str::to_owned))
+                .collect();
+            panic!("{name:?} is drawn: {drawn:?}")
+        })
+}
+
+/// The window after the root's that draws a list of its own moves the window there: its list's
+/// actions stand in the window's one bar from the frame that shows them, placed where a person
+/// presses them, and the list's title is the window's.
+#[test]
+fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
+    let root = shell_node(
+        "shell",
+        &[("overview_title", Value::text("Inbox"))],
+        vec![
+            ("overview", vec![list_node("inbox")]),
+            (
+                "overview_actions",
+                vec![
+                    header_button("new-task", "New task", "primary"),
+                    header_button("new-project", "New project", ""),
+                ],
+            ),
+            ("content", vec![UiNode::empty("stack", "none")]),
+        ],
+    );
+    let (mut app, mut harness) = drawn(&[ToUi::Open {
+        lane: Lane::Root,
+        target: doc(),
+        tree: root,
+        front: None,
+    }]);
+    assert!(
+        drawn_window(&mut harness).failed().is_none(),
+        "the window opened: {:?}",
+        drawn_window(&mut harness).failed()
+    );
+    assert!(
+        bounds_named(&harness, "New task").width() > 0.0,
+        "the window's own primary stands in its bar"
+    );
+    // The app opens a project beside the list: its view draws a list of its own.
+    let project = shell_node(
+        "project",
+        &[("overview_title", Value::text("Move flat"))],
+        vec![
+            ("overview", vec![list_node("tasks")]),
+            (
+                "overview_actions",
+                vec![
+                    header_button("add", "Add task", "primary"),
+                    header_button("section", "New section", ""),
+                ],
+            ),
+            ("content", vec![UiNode::empty("stack", "none")]),
+        ],
+    );
+    send(
+        &mut app,
+        &[ToUi::Open {
+            lane: Lane::Detail,
+            target: note("p"),
+            tree: project,
+            front: None,
+        }],
+    );
+    drawn_window(&mut harness).receive();
+    harness.relayout();
+    let added = bounds_named(&harness, "Add task");
+    assert!(
+        added.width() > 0.0 && added.y0 < 56.0,
+        "the project's primary stands in the window's bar, placed: {added:?}"
+    );
+    let section = bounds_named(&harness, "New section");
+    assert!(
+        section.width() > 0.0 && section.y0 < 56.0,
+        "the project's other action stands in the bar, placed: {section:?}"
+    );
 }

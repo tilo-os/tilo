@@ -54,6 +54,7 @@ pub mod seen;
 mod settle;
 pub mod space;
 pub mod store;
+mod surfaces;
 pub mod textdiff;
 pub mod value;
 pub mod view;

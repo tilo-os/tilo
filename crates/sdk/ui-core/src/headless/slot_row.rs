@@ -19,6 +19,8 @@ use winit::event::WindowEvent;
 use super::{FrameHarness, InspectionNode};
 use crate::host_core::KeyHost as _;
 use crate::search::SearchRequest;
+#[cfg(test)]
+use crate::slot_row::WindowAction;
 use crate::slot_row::{RowInput, RowPlace, SlotRow, SlotRowHost};
 use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOffer, SearchOpening, ToolbarEvent};
@@ -330,6 +332,14 @@ impl FrameHarness {
         })
     }
 
+    /// The window's own actions pressed through the row's semantics since
+    /// the last call. The frame stands for no window, so a test reads them.
+    #[cfg(test)]
+    pub(super) fn take_slot_row_window_actions(&mut self) -> Vec<WindowAction> {
+        self.with_slot_row(|row, _| row.take_window_actions())
+            .unwrap_or_default()
+    }
+
     /// Perform `action` on the row's part `target` (a `window-toolbar-*`
     /// slot or a `window-search-*` part), as assistive technology and
     /// automation do, and show what the app made of it, as a press on the
@@ -553,6 +563,40 @@ mod tests {
         assert_eq!(
             slot(&harness, MUTE).and_then(|mute| mute.name).as_deref(),
             Some("Mute")
+        );
+    }
+
+    // The window's own controls are named for a reader, and a reader's press
+    // on one reaches the window as a pointer's does.
+    #[test]
+    fn the_windows_controls_are_named_and_run_for_a_reader() {
+        let (mut harness, _) = call_app();
+        harness.host_window_controls();
+        for (target, name) in [
+            ("window-control-minimize", "Minimize"),
+            ("window-control-maximize", "Maximize"),
+            ("window-control-close", "Close"),
+        ] {
+            let control = slot(&harness, target).expect("the control is reachable");
+            assert_eq!(control.name.as_deref(), Some(name), "{target}");
+            assert!(control.state.focusable, "{target} takes focus");
+            let bounds = control.bounds.expect("the control says where it stands");
+            assert!(
+                bounds.y1 <= TOOLBAR_ROW_HEIGHT && bounds.x1 > bounds.x0,
+                "{target} stands in the bar: {bounds:?}"
+            );
+        }
+        harness
+            .perform_semantic_named(
+                WINDOW_SLOTS,
+                Some("window-control-close"),
+                &crate::a11y::Action::Activate,
+            )
+            .expect("the control runs");
+        assert_eq!(
+            harness.take_slot_row_window_actions(),
+            [WindowAction::Close],
+            "the press reaches the window"
         );
     }
 }
