@@ -35,6 +35,11 @@ use tilo_lock::MutexRecover as _;
 
 use super::{ActionHost, Addressed, McpServer, OneCall, Reply, app_names};
 
+/// How long a program waits for an action it invoked to settle before it gives up on the
+/// action's outcome: as long as any caller of an invoke may ask. A program cannot poll and a trap
+/// loses the step it was taking, so it holds on to the action's own answer instead.
+const PROGRAM_WAIT_MS: u64 = super::super::MAX_WAIT_MS;
+
 /// Where a door starts the tilolang host of a task: the session, which launches it as every
 /// tilolang host is launched, its author the task.
 pub trait TaskHosts: Send + Sync {
@@ -1145,7 +1150,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             action: action.to_owned(),
             arguments,
             invocation_id: None,
-            wait_ms: None,
+            wait_ms: Some(PROGRAM_WAIT_MS),
         }))
         .await;
         match value {
@@ -1403,7 +1408,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 action: "undo".to_owned(),
                 arguments,
                 invocation_id: None,
-                wait_ms: None,
+                wait_ms: Some(PROGRAM_WAIT_MS),
             }))
             .await
             .map_err(|why| format!("in {name}: {why}"))?;

@@ -12,19 +12,24 @@ fn a_settled_desk_asks_for_no_frame() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     settle(&mut session, 300);
+    // What the desk asks for is the property; the frames above are only how far it was stepped.
+    // A pass it still owes (the last of what it drew, a change it carried) comes due a moment
+    // after them, so wait for the desk to say it rests before reading its answer.
+    let rests = |ask: Option<Duration>| ask.is_none_or(|ask| ask >= Duration::from_secs(1));
+    let _ = crate::common::wait_maybe(&mut session, |session| {
+        (rests(session.compositor().next_wait()) && rests(wait_for(session))).then_some(())
+    });
     let wait = session.compositor().next_wait();
-    assert!(
-        wait.is_none_or(|wait| wait >= Duration::from_secs(1)),
-        "an idle desk waits for the person or a minute of its own, not for a frame: {wait:?}"
-    );
     // What the session itself needs a pass for is minutes apart, not a poll
     // per quarter second: a clock, a presence beat, a look for a model.
     let left = session
         .next_deadline()
         .map(|due| due.saturating_duration_since(Instant::now()));
     assert!(
-        left.is_none_or(|left| left >= Duration::from_secs(1)),
-        "an idle session waits for the person or a minute of its own, not for a tick: {left:?}"
+        rests(wait) && rests(left),
+        "an idle desk waits for the person or a minute of its own, not for a frame: a frame in \
+         {wait:?}, a pass in {left:?} after {:?} of stepping it",
+        tilo_test_env::hang_bound()
     );
 }
 

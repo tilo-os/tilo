@@ -2486,8 +2486,13 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     let from = people.0.min(plain_people.0);
     // The two frames are of two sessions, kept seconds apart: the clock may
     // turn its minute between them, and its digits are not the charge.
-    let clock = bar_control(&taking, &desk(&taking).clock).expect("the time");
-    let plain_clock = bar_control(&draining, &desk(&draining).clock).expect("the time, draining");
+    //
+    // The reading is the minute's, and the pass that draws it comes after the
+    // minute the desk now says: wait for the bar to show it rather than take
+    // the minute the last frame drew.
+    let drawn_clock = |session: &mut Session| bar_control(session, &desk(session).clock);
+    let clock = common::wait_for(&mut taking, "the bar's clock", drawn_clock);
+    let plain_clock = common::wait_for(&mut draining, "the bar's clock, draining", drawn_clock);
     let left = clock.0.min(plain_clock.0);
     let right = (clock.0 + clock.2).max(plain_clock.0 + plain_clock.2);
     let allowed = [

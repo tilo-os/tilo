@@ -254,6 +254,12 @@ impl Publisher {
         true
     }
 
+    /// Whether the newest list handed over did not reach the daemon: nothing
+    /// of what the desk decided then is enforced until one does.
+    pub(crate) fn unpublished(&self) -> bool {
+        self.inner.state.lock_recover().last_error.is_some()
+    }
+
     /// Wait until every list handed over so far is in force or has failed,
     /// returning the last error when one did.
     ///
@@ -293,7 +299,10 @@ fn work(inner: &Inner) {
         loop {
             match write_and_publish(inner, &bytes) {
                 Ok(()) => {
-                    inner.state.lock_recover().in_force = Some(bytes);
+                    let mut state = inner.state.lock_recover();
+                    state.in_force = Some(bytes);
+                    state.last_error = None;
+                    drop(state);
                     inner.published.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
@@ -705,11 +714,19 @@ mod tests {
         tilo_test_env::wait_until("the daemon refusing the first attempt", || {
             seen.join("refused").is_file()
         });
+        assert!(
+            publisher.unpublished(),
+            "a list nothing took is not in force"
+        );
         std::fs::write(&gate, b"").unwrap();
         publisher
             .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published once the daemon served");
         assert_eq!(published_count(&seen), 1);
+        assert!(
+            !publisher.unpublished(),
+            "the list the daemon took is in force"
+        );
         assert_eq!(
             std::fs::metadata(dir.path().join("config/fs-capabilities.json"))
                 .unwrap()
