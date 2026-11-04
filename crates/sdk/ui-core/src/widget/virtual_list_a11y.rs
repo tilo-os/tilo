@@ -25,16 +25,27 @@ impl<M: ListModel> VirtualList<M> {
             .as_ref()
             .and_then(|node| node.name.clone())
             .or_else(|| first_descendant_accessible_name(row.widget.as_ref()));
-        let mut item = AccessNode::new(Role::ListItem)
-            .with_optional_name(name)
-            .with_position(row.index.saturating_add(1), count)
-            .with_state(
-                AccessState::new()
-                    .focusable(true)
-                    .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
-                    .selected(self.selection.is_selected(&row.key))
-                    .disabled(!enabled),
-            );
+        let mut item = AccessNode::new(if self.tree.is_some() {
+            Role::TreeItem
+        } else {
+            Role::ListItem
+        })
+        .with_optional_name(name)
+        .with_position(row.index.saturating_add(1), count)
+        .with_state(
+            AccessState::new()
+                .focusable(true)
+                .focused(self.is_focused && self.focused_key.as_ref() == Some(&row.key))
+                .selected(self.selection.is_selected(&row.key))
+                .disabled(!enabled),
+        );
+        // A tree row says how deep it stands and, where it has subtasks, whether they show.
+        if let Some(marks) = &self.tree {
+            item = item.with_level(marks.depth(&row.key).saturating_add(1) as usize);
+            if marks.is_branch(&row.key) {
+                item.state.expanded = Some(!marks.is_folded(&row.key));
+            }
+        }
         match &row.state {
             MountedRowState::Ready => {}
             MountedRowState::Pending => item.state.busy = true,
@@ -56,6 +67,73 @@ impl<M: ListModel> VirtualList<M> {
             item = item.with_children(vec![child]);
         }
         item
+    }
+
+    pub(super) fn perform_a11y_action(
+        &mut self,
+        target: &str,
+        action: &crate::a11y::Action,
+    ) -> bool {
+        use crate::a11y::Action;
+
+        // A heading's group, as its node in the accessibility tree names it: read, folded and
+        // unfolded by something that is not the keyboard.
+        if let Some(heading) = target.strip_prefix(super::groups::HEADING_TARGET) {
+            let heading = heading.to_owned();
+            return match action {
+                Action::Focus => self.focus_heading(&heading),
+                Action::Activate => self.focus_heading(&heading) && self.toggle_heading(&heading),
+                Action::Expand => self.set_heading_open(&heading, true),
+                Action::Collapse => self.set_heading_open(&heading, false),
+                Action::ScrollIntoView => self.heading_start(&heading).is_some_and(|index| {
+                    self.scroll_to_index(index);
+                    true
+                }),
+                _ => false,
+            };
+        }
+        let Some(key) = self.key_for_semantic_target(target) else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&key) else {
+            return false;
+        };
+        match action {
+            Action::Focus => {
+                self.focus_row(key.clone());
+                self.select_focused(key, false);
+                self.scroll_to_index(index);
+                true
+            }
+            Action::Activate => {
+                if !matches!(
+                    self.model.row_state(index),
+                    crate::arriving::Arrival::Ready(())
+                ) {
+                    return false;
+                }
+                self.focus_row(key.clone());
+                self.apply_selection(key.clone(), false, false);
+                self.activate_key(key);
+                true
+            }
+            Action::ScrollIntoView => {
+                self.scroll_to_index(index);
+                true
+            }
+            // A tree row folds what stands under it, as its disclosure does.
+            Action::Expand | Action::Collapse if self.tree.is_some() => {
+                self.fold_row(&key, matches!(action, Action::Collapse))
+            }
+            Action::ShowContextMenu if self.on_context.is_some() => {
+                let point = self
+                    .row_box(index)
+                    .map_or(self.rect.center(), |row| row.center());
+                self.open_context(index, key, point);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The accessibility children the list carries, in reading order: each group's heading

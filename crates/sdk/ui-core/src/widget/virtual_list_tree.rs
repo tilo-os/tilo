@@ -336,4 +336,47 @@ impl<M: ListModel> VirtualList<M> {
             self.press_row_at(index, key, modifiers);
         }
     }
+
+    /// A fold step of the keyboard, as the disclosure makes it under the pointer: `open` (the
+    /// right key) opens the focused branch, or steps into the row that stands under it; `!open`
+    /// (the left key) folds the focused branch away, or steps out to the row it stands under.
+    /// Whether it folded or moved; `false` where the key has no place: no tree, no focused row,
+    /// or a leaf with nothing to step into.
+    pub(super) fn fold_step(&mut self, open: bool) -> bool {
+        let Some(marks) = self.tree.clone() else {
+            return false;
+        };
+        let Some(key) = self.focused_key.clone() else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&key) else {
+            return false;
+        };
+        let depth = marks.depth(&key);
+        if open {
+            if marks.is_branch(&key) && marks.is_folded(&key) {
+                return self.fold_row(&key, false);
+            }
+            // What stands under the row follows it, one depth deeper; a row of its own depth
+            // follows a leaf, and the key leaves the keyboard where it is.
+            let under = index
+                .checked_add(1)
+                .and_then(|below| self.model.key_at(below))
+                .is_some_and(|below| marks.depth(&below) == depth + 1);
+            under && self.focus_index(index + 1, false)
+        } else {
+            if marks.is_branch(&key) && !marks.is_folded(&key) {
+                return self.fold_row(&key, true);
+            }
+            let parent = self.tree_facts(&key).and_then(|facts| facts.parent);
+            let Some(at) = parent
+                .as_ref()
+                .and_then(|parent| self.model.index_of(parent))
+                .filter(|_| depth > 0)
+            else {
+                return false;
+            };
+            self.focus_index(at, false)
+        }
+    }
 }

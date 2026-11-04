@@ -1743,6 +1743,16 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(RowStep::Page(forward)) = super::rows::row_step(key, current, count) {
             return self.page_focus(forward, extend);
         }
+        // Left and right fold a tree row as its disclosure does under the pointer: right opens
+        // the focused branch or steps into what is under it, left folds it away or steps out to
+        // the row it stands under.
+        if !toggle && !extend {
+            match key {
+                Key::Named(NamedKey::ArrowRight) => return self.fold_step(true),
+                Key::Named(NamedKey::ArrowLeft) => return self.fold_step(false),
+                _ => {}
+            }
+        }
         match key {
             // A heading holding the keyboard folds and unfolds its group, as its band does
             // under the pointer.
@@ -2880,8 +2890,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        // A list whose rows stand as a tree reads as one, each row at its own depth.
+        let role = if self.tree.is_some() {
+            Role::Tree
+        } else {
+            Role::List
+        };
         Some(
-            AccessNode::new(Role::List)
+            AccessNode::new(role)
                 .with_optional_name(
                     self.accessible_name
                         .as_deref()
@@ -2906,59 +2922,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-
-        // A heading's group, as its node in the accessibility tree names it: read, folded and
-        // unfolded by something that is not the keyboard.
-        if let Some(heading) = target.strip_prefix(groups::HEADING_TARGET) {
-            let heading = heading.to_owned();
-            return match action {
-                Action::Focus => self.focus_heading(&heading),
-                Action::Activate => self.focus_heading(&heading) && self.toggle_heading(&heading),
-                Action::Expand => self.set_heading_open(&heading, true),
-                Action::Collapse => self.set_heading_open(&heading, false),
-                Action::ScrollIntoView => self.heading_start(&heading).is_some_and(|index| {
-                    self.scroll_to_index(index);
-                    true
-                }),
-                _ => false,
-            };
-        }
-        let Some(key) = self.key_for_semantic_target(target) else {
-            return false;
-        };
-        let Some(index) = self.model.index_of(&key) else {
-            return false;
-        };
-        match action {
-            Action::Focus => {
-                self.focus_row(key.clone());
-                self.select_focused(key, false);
-                self.scroll_to_index(index);
-                true
-            }
-            Action::Activate => {
-                if !matches!(self.model.row_state(index), Arrival::Ready(())) {
-                    return false;
-                }
-                self.focus_row(key.clone());
-                self.apply_selection(key.clone(), false, false);
-                self.activate_key(key);
-                true
-            }
-            Action::ScrollIntoView => {
-                self.scroll_to_index(index);
-                true
-            }
-            Action::ShowContextMenu if self.on_context.is_some() => {
-                let point = self
-                    .row_box(index)
-                    .map_or(self.rect.center(), |row| row.center());
-                self.open_context(index, key, point);
-                true
-            }
-            _ => false,
-        }
+        self.perform_a11y_action(target, action)
     }
 }
 

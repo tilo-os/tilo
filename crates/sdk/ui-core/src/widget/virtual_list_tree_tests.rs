@@ -136,6 +136,92 @@ fn a_list_indents_a_row_under_the_row_it_names_and_folds_it_away() {
     assert!((list.viewport.content_extent() - 4.0 * row).abs() < 0.5);
 }
 
+/// A tree reads as a tree: the list says what it is, each row says how deep it stands, and a
+/// row with subtasks says whether they show.
+#[test]
+fn a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands() {
+    use crate::a11y::Role;
+
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = nested().with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let semantics = list.accessibility().expect("the list has a node");
+    assert_eq!(semantics.role, Role::Tree);
+    let rows: Vec<_> = semantics.children.iter().collect();
+    assert!(
+        rows.iter().all(|row| row.role == Role::TreeItem),
+        "each row is a tree item"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.level.expect("every row says its depth"))
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3, 1, 1],
+        "one level deeper for each step under a row"
+    );
+    assert_eq!(
+        rows[0].state.expanded,
+        Some(true),
+        "it shows what is under it"
+    );
+    assert_eq!(rows[1].state.expanded, Some(true));
+    assert_eq!(
+        rows[2].state.expanded, None,
+        "a row with nothing under it has no disclosure"
+    );
+
+    // Folded away, the branch says so, and the rows under it leave the tree with their rows.
+    assert!(list.fold_row(&0, true));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let semantics = list.accessibility().expect("the list has a node");
+    assert_eq!(
+        semantics.children.len(),
+        3,
+        "only the rows that show stand in the tree"
+    );
+    assert_eq!(semantics.children[0].state.expanded, Some(false));
+}
+
+/// The left and right keys fold a branch as its disclosure does under the pointer, and step in
+/// and out of what it holds.
+#[test]
+fn the_left_and_right_keys_fold_a_branch_and_step_in_and_out_of_it() {
+    let marks = Rc::new(TreeMarks::default());
+    let mut list = nested().with_tree(Rc::clone(&marks));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let key = |named| Key::Named(named);
+    assert!(list.on_key(&key(NamedKey::ArrowDown), false, false));
+    assert_eq!(
+        list.focused_key,
+        Some(0),
+        "the keyboard starts on the first row"
+    );
+
+    // Right steps into the row that stands under it, and into the row under that.
+    assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
+    assert_eq!(list.focused_key, Some(1));
+    assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
+    assert_eq!(list.focused_key, Some(2));
+    assert!(
+        !list.on_key(&key(NamedKey::ArrowRight), false, false),
+        "a row with nothing under it has nowhere to step"
+    );
+
+    // Left steps back out to the row it stands under; on a branch that shows its subtasks it
+    // folds them away, as the chevron does, and right shows them again.
+    assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
+    assert_eq!(list.focused_key, Some(1));
+    assert!(list.on_key(&key(NamedKey::ArrowLeft), false, false));
+    assert!(list.row_folded(&1), "the branch folded its subtask away");
+    assert_eq!(
+        list.focused_key,
+        Some(1),
+        "the folded row keeps the keyboard"
+    );
+    assert!(list.on_key(&key(NamedKey::ArrowRight), false, false));
+    assert!(!list.row_folded(&1), "right shows what it folded away");
+}
+
 /// A tree whose rows stand under a group heading, as a project page's first task and its
 /// subtask do.
 struct Headed {
