@@ -690,6 +690,11 @@ impl Scrollable {
         self.content_h > self.effective_viewport_h() + FIT_EPS
     }
 
+    /// Whether the content is wider than the viewport shows, so it scrolls sideways.
+    pub fn horizontal_overflows(&self) -> bool {
+        self.content_w > self.viewport_w + FIT_EPS
+    }
+
     /// For a manually-driven (child-less) Scrollable, when the caller paints
     /// content itself rather than through this widget's `draw`. Pair with
     /// [`Scrollable::set_content_size`].
@@ -1899,6 +1904,10 @@ impl Widget for Scrollable {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

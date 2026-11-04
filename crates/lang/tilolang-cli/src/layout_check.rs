@@ -2340,11 +2340,50 @@ mod board_lane {
         );
     }
 
-    /// The pane is a board's whole width, and the lanes keep a gutter at each end of it: in a
-    /// window no wider than three card measures and the gaps between them, all three lanes
-    /// stand whole, so no lane's heading is cut by the view that scrolls the board.
+    /// The board's sideways scroller under `root`: the lane strip it scrolls, the part of that
+    /// strip the pane shows, and the lanes on the strip in lane order.
+    fn across(root: &dyn Widget) -> (&ui::widget::Scrollable, Rect, Rect, Vec<Rect>) {
+        let mut scrolls = Vec::new();
+        named(root, "Scrollable", &mut scrolls);
+        let pane = scrolls
+            .into_iter()
+            .find_map(|scroll| {
+                let scroll = scroll.as_any()?.downcast_ref::<ui::widget::Scrollable>()?;
+                matches!(
+                    scroll.layout_info(),
+                    Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                        direction: ui::widget::ScrollDirection::Horizontal,
+                    }))
+                )
+                .then_some(scroll)
+            })
+            .expect("the board scrolls across");
+        let viewed = pane.child_clip_rect().unwrap_or_else(|| pane.get_rect());
+        let strip = pane
+            .children()
+            .first()
+            .map(|content| content.get_rect())
+            .expect("the board's lanes stand on a strip");
+        let lanes = pane
+            .children()
+            .iter()
+            .flat_map(|content| content.children())
+            .map(Widget::get_rect)
+            .collect();
+        (pane, viewed, strip, lanes)
+    }
+
+    /// The width a lane reads at, which every board gives it (`metrics.board_lane_width`).
+    fn lane_measure() -> f64 {
+        f64::from(ui::Theme::light().tokens.metrics.board_lane_width)
+    }
+
+    /// A pane narrower than a board's lanes scrolls them sideways instead of cutting them off:
+    /// each lane keeps its measure and stands whole on the strip, the strip keeps the same
+    /// gutter at each end, every lane the viewport shows is whole from its heading to its foot,
+    /// and the last lane comes whole into view at the end of the scroll.
     #[test]
-    fn every_lane_of_a_board_stands_inside_the_pane() {
+    fn a_narrow_board_scrolls_its_lanes_whole_across_the_pane() {
         tilo_ui_host::i18n::ensure();
         let packages = packages();
         let staged = stage::Staged::over(
@@ -2357,44 +2396,105 @@ mod board_lane {
         )
         .expect("the board stages");
         let root = staged.harness().root_widget();
-        let mut scrolls = Vec::new();
-        named(root, "Scrollable", &mut scrolls);
-        let across = scrolls
-            .into_iter()
-            .find(|scroll| {
-                matches!(
-                    scroll.layout_info(),
-                    Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
-                        direction: ui::widget::ScrollDirection::Horizontal,
-                    }))
-                )
-            })
-            .expect("the board scrolls across");
-        let pane = across
-            .child_clip_rect()
-            .unwrap_or_else(|| across.get_rect());
-        let lanes: Vec<ui::kurbo::Rect> = across
-            .children()
-            .iter()
-            .flat_map(|content| content.children())
-            .map(Widget::get_rect)
-            .collect();
+        let (pane, viewed, strip, lanes) = across(root);
         assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        assert!(
+            pane.horizontal_overflows(),
+            "three lanes of {measure} outrun the 864 pane, so it scrolls them: {strip:?} in {viewed:?}",
+            measure = lane_measure()
+        );
         for lane in &lanes {
             assert!(
-                inside(pane, *lane),
-                "a lane stands whole in the pane at rest: {lane:?} in {pane:?}"
+                (lane.width() - lane_measure()).abs() < 1.0,
+                "a lane keeps its measure: {lane:?} at {measure}",
+                measure = lane_measure()
+            );
+            assert!(
+                inside(strip, *lane),
+                "a lane stands whole on the strip: {lane:?} in {strip:?}"
             );
         }
-        let start = lanes[0].x0 - pane.x0;
-        let end = pane.x1 - lanes[2].x1;
+        let start = lanes[0].x0 - strip.x0;
+        let end = strip.x1 - lanes[2].x1;
         assert!(
             start > 1.0,
-            "the first lane keeps clear of the pane's edge: {pane:?}"
+            "the first lane keeps clear of the strip's edge: {strip:?}"
         );
         assert!(
             (start - end).abs() < 1.0,
-            "the lanes keep the same gutter at both ends of the pane: {start} before, {end} after"
+            "the lanes keep the same gutter at both ends of the strip: {start} before, {end} after"
         );
+        // The strip is the pane's whole width and height: it stands inside the page it is
+        // shown in, so nothing but the lanes' scroll moves it.
+        let mut pages = Vec::new();
+        named(root, "Page", &mut pages);
+        assert_eq!(pages.len(), 1, "the board is one page");
+        assert!(
+            inside(pages[0].get_rect(), pane.get_rect()),
+            "the view that scrolls the board stands inside the page: {:?} in {:?}",
+            pane.get_rect(),
+            pages[0].get_rect()
+        );
+        // Every lane the pane shows now is whole from its heading to its foot: only the lanes
+        // scrolled out of view are out of reach until the person scrolls to them.
+        let shown: Vec<Rect> = lanes
+            .iter()
+            .copied()
+            .filter(|lane| lane.x1 > viewed.x0 && lane.x0 < viewed.x1)
+            .collect();
+        assert!(!shown.is_empty(), "the pane shows lanes: {viewed:?}");
+        for lane in &shown {
+            assert!(
+                lane.height() > 1.0 && lane.y0 >= viewed.y0 - 1.0 && lane.y1 <= viewed.y1 + 1.0,
+                "a lane the pane shows is whole, heading to foot: {lane:?} in {viewed:?}"
+            );
+        }
+        // The end of the scroll brings the last lane whole into view, less the gutter after it.
+        let shift = strip.width() - viewed.width();
+        let reached = Rect::new(viewed.x0 + shift, viewed.y0, viewed.x1 + shift, viewed.y1);
+        assert!(
+            inside(reached, lanes[2]),
+            "the last lane comes whole into view at the end of the scroll: {:?} in {reached:?}",
+            lanes[2]
+        );
+    }
+
+    /// A pane wide enough for a board's lanes shows them all at rest and offers no sideways
+    /// scroll: each keeps its measure, the strip ends inside the pane, and the room the wider
+    /// pane leaves open stays beside the lanes rather than stretching them.
+    #[test]
+    fn a_board_with_room_for_its_lanes_offers_no_sideways_scroll() {
+        tilo_ui_host::i18n::ensure();
+        let packages = packages();
+        let staged = stage::Staged::over(
+            BOARD,
+            &packages,
+            "a board",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the board stages");
+        let root = staged.harness().root_widget();
+        let (pane, viewed, strip, lanes) = across(root);
+        assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        assert!(
+            !pane.horizontal_overflows(),
+            "the lanes fit the pane, so it scrolls across nothing: {strip:?} in {viewed:?}"
+        );
+        assert!(
+            strip.x1 <= viewed.x1 + 1.0,
+            "the strip ends inside the pane: {strip:?} in {viewed:?}"
+        );
+        for lane in &lanes {
+            assert!(
+                (lane.width() - lane_measure()).abs() < 1.0,
+                "a lane keeps its measure where the pane has room to spare: {lane:?}"
+            );
+            assert!(
+                inside(viewed, *lane),
+                "every lane stands whole in a pane wide enough for it: {lane:?} in {viewed:?}"
+            );
+        }
     }
 }
