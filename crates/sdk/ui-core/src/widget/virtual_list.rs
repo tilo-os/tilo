@@ -213,6 +213,7 @@ impl std::error::Error for DuplicateListKey {}
 type RowBuilder<M> = Box<dyn FnMut(&M, usize, &<M as ListModel>::Key, RowSelection) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
 type ContextCallback<K> = Box<dyn FnMut(K, Point, Rect)>;
+type FoldCallback<K> = Box<dyn FnMut(&K, bool)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
 type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
 type ReorderValidator<M> =
@@ -341,6 +342,8 @@ pub struct VirtualList<M: ListModel> {
     /// ([`VirtualList::on_activate_view`]).
     opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
     on_activate: Option<KeyCallback<M::Key>>,
+    /// Told a row's subtasks folded or opened ([`VirtualList::on_fold`]).
+    on_fold: Option<FoldCallback<M::Key>>,
     on_context: Option<ContextCallback<M::Key>>,
     /// The last row a click landed on and when, for a double click.
     clicks: super::rows::Clicks<M::Key>,
@@ -533,6 +536,7 @@ impl<M: ListModel> VirtualList<M> {
             view: None,
             opens: None,
             on_activate: None,
+            on_fold: None,
             on_context: None,
             clicks: super::rows::Clicks::default(),
             semantic_key: None,
@@ -798,6 +802,15 @@ impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn on_activate(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
         self.on_activate = Some(Box::new(callback));
+        self
+    }
+
+    /// Told when a row's subtasks fold away or open, which way it went, however they were
+    /// folded: its disclosure, the keyboard, or assistive technology. A host keeping the
+    /// person's folding (a session's open folders) hears it here.
+    #[must_use]
+    pub fn on_fold(mut self, callback: impl FnMut(&M::Key, bool) + 'static) -> Self {
+        self.on_fold = Some(Box::new(callback));
         self
     }
 
@@ -1630,6 +1643,20 @@ impl<M: ListModel> VirtualList<M> {
             |index| model.key_at(index),
         );
         self.emit_selection(key);
+    }
+
+    /// Move the selection onto `key` without reporting the choice: an action that opens
+    /// the row moves it there on the way, and the opening is what the host hears.
+    fn choose_quietly(&mut self, key: M::Key) {
+        let model = &self.model;
+        super::rows::choose(
+            &mut self.selection,
+            key,
+            (false, false),
+            self.multi_select,
+            |key| model.index_of(key),
+            |index| model.key_at(index),
+        );
     }
 
     fn emit_selection(&mut self, key: M::Key) {

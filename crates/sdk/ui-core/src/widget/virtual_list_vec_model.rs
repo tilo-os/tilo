@@ -1,10 +1,10 @@
 //! The list model for items held whole in memory: [`VecListModel`], which answers a list's
 //! rows from a vector keyed once at build.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
-use super::{DuplicateListKey, ListModel};
+use super::{DuplicateListKey, ListModel, TreeRow};
 
 /// Convenient fully-resident model. Database and paged sources generally
 /// implement [`ListModel`] directly instead.
@@ -12,6 +12,13 @@ pub struct VecListModel<T, K> {
     items: Vec<T>,
     keys: Vec<K>,
     index: HashMap<K, usize>,
+    /// The item each row stands under, when its rows stand as a tree
+    /// ([`Self::with_parents`]): a model whose rows stand on their own has
+    /// none.
+    parents: Option<HashMap<K, K>>,
+    /// The rows that take subtasks ([`ListModel::accepts_children`]) whether or not any
+    /// stands under them yet ([`Self::with_branches`]): a folder read when it opens.
+    branches: Option<HashSet<K>>,
 }
 
 impl<T, K> VecListModel<T, K>
@@ -30,7 +37,57 @@ where
         if index.len() != keys.len() {
             return Err(DuplicateListKey);
         }
-        Ok(Self { items, keys, index })
+        Ok(Self {
+            items,
+            keys,
+            index,
+            parents: None,
+            branches: None,
+        })
+    }
+
+    /// No rows, for a host that shows its list before the first rows are read
+    /// ([`Self::push`] fills it).
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            items: Vec::new(),
+            keys: Vec::new(),
+            index: HashMap::new(),
+            parents: None,
+            branches: None,
+        }
+    }
+
+    /// The rows stand as a tree: each under the row of the item `parent`
+    /// names, which stands over it in the same list
+    /// ([`VirtualList::with_tree`](super::VirtualList::with_tree)). A row
+    /// outside the tree names no parent, as does one pushed later.
+    #[must_use]
+    pub fn with_parents(mut self, mut parent: impl FnMut(&T) -> Option<K>) -> Self {
+        self.parents = Some(
+            self.items
+                .iter()
+                .zip(&self.keys)
+                .filter_map(|(item, key)| Some((key.clone(), parent(item)?)))
+                .collect(),
+        );
+        self
+    }
+
+    /// The rows that take subtasks: a folder is one before its contents are read, so it
+    /// shows the disclosure that opens it. Read when set, as [`Self::with_parents`] does.
+    #[must_use]
+    pub fn with_branches(mut self, mut branch: impl FnMut(&T) -> bool) -> Self {
+        self.branches = Some(
+            self.items
+                .iter()
+                .zip(&self.keys)
+                .filter(|(item, _)| branch(item))
+                .map(|(_, key)| key.clone())
+                .collect(),
+        );
+        self
     }
 
     #[must_use]
@@ -58,7 +115,10 @@ where
         if index >= self.items.len() {
             return None;
         }
-        self.keys.remove(index);
+        let key = self.keys.remove(index);
+        if let Some(parents) = &mut self.parents {
+            parents.remove(&key);
+        }
         let item = self.items.remove(index);
         self.rebuild_index();
         Some(item)
@@ -104,5 +164,21 @@ where
 
     fn index_of(&self, key: &Self::Key) -> Option<usize> {
         self.index.get(key).copied()
+    }
+
+    fn accepts_children(&self, index: usize) -> bool {
+        let Some(branches) = &self.branches else {
+            return false;
+        };
+        self.keys
+            .get(index)
+            .is_some_and(|key| branches.contains(key))
+    }
+
+    fn tree_at(&self, index: usize) -> Option<TreeRow<Self::Key>> {
+        let parents = self.parents.as_ref()?;
+        Some(TreeRow {
+            parent: self.keys.get(index).and_then(|key| parents.get(key)).cloned(),
+        })
     }
 }

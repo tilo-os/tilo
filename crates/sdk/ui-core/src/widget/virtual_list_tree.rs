@@ -233,6 +233,9 @@ impl<M: ListModel> VirtualList<M> {
             return false;
         }
         marks.fold(key, folded);
+        if let Some(callback) = &mut self.on_fold {
+            callback(key, folded);
+        }
         // The row draws the disclosure the other way round.
         self.invalidated.insert(key.clone());
         self.visible_window_changed();

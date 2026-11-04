@@ -27,8 +27,16 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Open `key` as Enter or a second click does: through the published view
-    /// action when the host bound one, else the activation callback.
+    /// action when the host bound one, else the activation callback. A list whose
+    /// rows open nothing chooses the row instead, as its click does.
     pub(super) fn activate_key(&mut self, key: M::Key) {
+        if self.opens.is_none() && self.on_activate.is_none() {
+            self.apply_selection(key, false, false);
+            return;
+        }
+        // Opening the row is one act: the selection it moves onto the way is not
+        // reported as a choice of its own.
+        self.choose_quietly(key.clone());
         if let Some((_, handler)) = &mut self.opens {
             handler(key);
         } else if let Some(callback) = &mut self.on_activate {

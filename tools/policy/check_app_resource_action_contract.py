@@ -154,6 +154,8 @@ NOT_CONTROL_CALLBACKS = {
     "on_dismiss": "a dialog's or popover's close control, published as a native view action; "
     "a banner's follows its published dismiss button",
     "on_expand": "folds or unfolds a row: what this window shows, no edit",
+    "on_fold": "reports a row's subtasks folded or opened, however they were folded: what "
+    "this window shows, no edit",
     "on_open_toggle": "folds or unfolds a disclosure: what this window shows, no edit",
     "on_header_click": "sorts a table by a column: what this window shows, no edit",
     "on_edit_requested": "turns a breadcrumb into its editable field: what this window shows",

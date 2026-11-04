@@ -365,6 +365,42 @@ fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
     }
 
     {
+        // A list whose rows open when chosen reports the opening alone: the
+        // activation selects the row on its way there, which is no choice of
+        // its own to report.
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let chosen = Rc::new(RefCell::new(Vec::new()));
+        let (opens, chooses) = (Rc::clone(&opened), Rc::clone(&chosen));
+        let model = VecListModel::new(vec![10_u64, 20], |key| *key).unwrap();
+        let mut list = VirtualList::new(model, 24.0, |_, _, key| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                24.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(100.0)
+        .with_semantic_key(u64::to_string)
+        .on_select(move |key, _| chooses.borrow_mut().push(key))
+        .on_activate(move |key| opens.borrow_mut().push(key));
+        let _ = lay_out(&mut list, 300.0);
+        assert!(Widget::perform_semantic_action(
+            &mut list,
+            "key:20",
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
+        assert!(list.selection().is_selected(&20));
+        assert_eq!(&*opened.borrow(), &[20], "the row opens once");
+        assert!(
+            chosen.borrow().is_empty(),
+            "and choosing it is not reported again"
+        );
+    }
+
+    {
         let model = VecListModel::new(vec![1_u64, 2, 3], |key| *key).unwrap();
         let mut list = VirtualList::new(model, 24.0, |_, _, key| {
             Box::new(ProbeRow::new(
@@ -802,6 +838,33 @@ fn ctrl_arrows_move_the_focused_row_through_the_reorder_commit() {
     assert!(send(&mut fixed, NamedKey::ArrowDown, ctrl, (&taffy, node)));
     assert_eq!(fixed.focused_key(), Some(&1));
     assert_eq!(fixed.model().items(), &[0, 1, 2]);
+}
+
+/// Enter on a list whose rows open nothing chooses the row, as a click does, and says so
+/// once: the app's published view action reaches the keyboard too.
+#[test]
+fn enter_chooses_a_row_that_opens_nothing() {
+    let chosen = Rc::new(RefCell::new(Vec::new()));
+    let choosing = Rc::clone(&chosen);
+    let mut list = plain_rows(3).on_select(move |key, selected| {
+        if selected {
+            choosing.borrow_mut().push(key);
+        }
+    });
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    list.set_focus(true);
+    assert!(list.reveal(&1));
+    assert!(
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(
+                &mut list,
+                &crate::synthetic_input::named_key(NamedKey::Enter)
+            )
+            .handled
+    );
+    assert!(list.selection().is_selected(&1));
+    assert_eq!(&*chosen.borrow(), &[1], "chosen once");
 }
 
 fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {

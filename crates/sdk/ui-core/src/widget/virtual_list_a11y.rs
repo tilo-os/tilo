@@ -126,7 +126,6 @@ impl<M: ListModel> VirtualList<M> {
                     return false;
                 }
                 self.focus_row(key.clone());
-                self.apply_selection(key.clone(), false, false);
                 self.activate_key(key);
                 true
             }
