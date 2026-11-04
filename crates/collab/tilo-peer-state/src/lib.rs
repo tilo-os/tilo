@@ -7,6 +7,7 @@ pub mod join_ledger;
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
 use neighbour_wire::NeighbourMsg;
+pub use neighbour_wire::{RefusalReason, WriteRefusal};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]

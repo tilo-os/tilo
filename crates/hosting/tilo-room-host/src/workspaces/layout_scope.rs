@@ -339,6 +339,29 @@ impl Workspaces {
         Ok(())
     }
 
+    /// File this device's verdict on `body`, a write it refused while taking
+    /// it in ([`Self::decide_layout_write`]), and publish it as the
+    /// workspace's next governance: its author reads it live, and every
+    /// member keeps it.
+    ///
+    /// # Errors
+    /// Why the verdict was not filed, or `body` is not a message.
+    pub(crate) async fn file_layout_refusal(
+        &self,
+        workspace: &str,
+        body: &[u8],
+        reason: &str,
+    ) -> Result<(), String> {
+        let message: neighbour_wire::NeighbourMsg =
+            postcard::from_bytes(body).map_err(|error| error.to_string())?;
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        self.file_refusal(&mut governed, &message, reason).await
+    }
+
     /// Decide `author`'s write `body` (a retained message) to `workspace`'s
     /// shared layout: in a workspace whose layout is personal a member's change
     /// to the workspace's topology or shared desktop is refused, and a desktop

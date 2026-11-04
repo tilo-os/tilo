@@ -176,6 +176,7 @@ impl StoreSession {
                         workspace,
                         TransportOrigin::RetainedRelayDelta(author),
                         message.clone(),
+                        None,
                         now,
                     )
                     .map_err(StoreLinkError::Replica)?;

@@ -105,6 +105,10 @@ pub enum WorkspaceRefusal {
     /// The batch records an effect receipt, or anchors archived ones,
     /// outside its writer's own slice ([`super::effect_slices_kept`]).
     ReceiptWriter,
+    /// The batch keeps, rewrites or clears a write refusal outside its
+    /// writer's own device's slice, or one no such device signed
+    /// ([`super::refusal_slices_kept`]).
+    RefusalWriter,
     Coverage(String),
     /// The batch rewinds a durable receipt.
     Durability(String),
@@ -128,6 +132,7 @@ impl std::fmt::Display for WorkspaceRefusal {
             Self::GovernanceWriter => f.write_str("governance writer is not the owner's device"),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::ReceiptWriter => f.write_str("effect receipt is not its writer's own"),
+            Self::RefusalWriter => f.write_str("write refusal is not its recorder's own"),
             Self::Media(error) => write!(f, "{error}"),
             Self::ShortcutAuthorship(shortcut) => write!(
                 f,
@@ -293,6 +298,16 @@ fn checked(
         // records only their own.
         if !super::effect_slices_kept(before, candidate, source.person()) {
             return Err(WorkspaceRefusal::ReceiptWriter);
+        }
+        // A device's verdicts on other devices' writes are its own to keep
+        // and clear, as its receipts are.
+        // ignored-failure: a key that is not a device key keeps no slice of
+        // its own, so every refusal it writes is refused rather than trusted.
+        let sender = hex::decode(source.key)
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key.as_slice()).ok());
+        if !super::refusal_slices_kept(before, candidate, source.person(), sender.as_ref()) {
+            return Err(WorkspaceRefusal::RefusalWriter);
         }
     }
     // Every writer, the owner's devices included: it relays and merges what members

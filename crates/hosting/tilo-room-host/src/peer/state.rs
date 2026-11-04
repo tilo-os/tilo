@@ -646,11 +646,19 @@ pub(super) async fn desktop_refusal(
         return None;
     }
     let authority = ws.lock().await.workspace_authority.clone()?;
-    let reason = authority
-        .workspaces()?
+    let workspaces = authority.workspaces()?;
+    let reason = workspaces
         .decide_layout_write(authority.workspace(), author, &body)
         .await
         .err()?;
+    // Neither kept nor forwarded: what this device refused is filed in its
+    // own workspace slice, the one place the write's author reads it.
+    if let Err(error) = workspaces
+        .file_layout_refusal(authority.workspace(), &body, &reason)
+        .await
+    {
+        tracing::warn!(%error, %reason, "the workspace did not file its refusal of a layout write");
+    }
     if reason == crate::workspaces::LAYOUT_REFUSAL {
         tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
     } else {

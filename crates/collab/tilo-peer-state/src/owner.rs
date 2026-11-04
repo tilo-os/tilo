@@ -66,6 +66,7 @@ pub use record::{
 };
 
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
+use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use parking_lot::{Mutex, RwLock};
 use std::{
@@ -461,6 +462,32 @@ impl NativeWorkspaceOwner {
                 .ok_or("workspace has no committed native enrollment")?,
         )
     }
+    /// The verdicts this device recorded on writes in `workspace`, each with
+    /// the changes of the write it refused: what its author reads to see where
+    /// its write is not. Nothing outside this device's own slice is returned:
+    /// another device's verdict is that device's to show.
+    #[must_use]
+    pub fn write_refusals(&self, workspace: WorkspaceId) -> Vec<neighbour_wire::WriteRefusal> {
+        self.with_current(workspace, |view| {
+            Ok(view.peer().workspace().write_refusals())
+        })
+        .unwrap_or_default()
+    }
+
+    /// The name each device the workspace's roster certifies gave itself, by
+    /// its key: what a person reads where a refusal says a device's name.
+    pub fn device_labels(&self, workspace: WorkspaceId) -> BTreeMap<[u8; 32], String> {
+        self.with_current(workspace, |view| {
+            Ok(view
+                .peer()
+                .certificates()
+                .into_iter()
+                .map(|certificate| (certificate.device_public_key, certificate.device_label))
+                .collect())
+        })
+        .unwrap_or_default()
+    }
+
     pub fn observe_fences(
         &self,
         observer: Arc<dyn NativeFenceObserver>,
@@ -493,9 +520,10 @@ impl NativeWorkspaceOwner {
         workspace: WorkspaceId,
         origin: TransportOrigin,
         message: NeighbourMsg,
+        key: Option<&SigningKey>,
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
-        self.receive_batch(workspace, vec![(origin, message)], now)?
+        self.receive_batch(workspace, vec![(origin, message)], key, now)?
             .pop()
             .ok_or_else(|| "native owner admitted no input".to_owned())?
     }
@@ -514,25 +542,53 @@ impl NativeWorkspaceOwner {
         &self,
         workspace: WorkspaceId,
         inputs: Vec<(TransportOrigin, NeighbourMsg)>,
+        key: Option<&SigningKey>,
         now: SystemTime,
     ) -> Result<Vec<Result<AdmissionReport, String>>, String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         let previous_publication = candidate.record.publication.clone();
+        let device = candidate.device().clone();
         let mut reports = Vec::with_capacity(inputs.len());
         let mut governed = BTreeSet::new();
+        let mut verdicts = false;
         for (origin, message) in inputs {
             let received = Self::received_changes(origin, &message);
-            let report = Self::admit_input(&mut candidate, workspace, origin, message, now);
+            let report = Self::admit_input(&mut candidate, workspace, origin, message.clone(), now);
             if report.is_ok()
                 && let Some(changes) = received
             {
                 governed.extend(changes);
             }
+            // A refused write reaches its author: this device's verdict on it
+            // is kept in its own slice of the workspace, which the next sync
+            // carries back, and an admitted write clears the verdict it lands
+            // on. One carrier, the workspace document itself.
+            if let Some(key) = key
+                && matches!(message, NeighbourMsg::AppDocument { .. })
+            {
+                let verdict = match &report {
+                    Ok(_) => candidate
+                        .peer
+                        .workspace_mut()
+                        .clear_landed_write(&device, &message, key, now),
+                    Err(reason) => candidate
+                        .peer
+                        .workspace_mut()
+                        .refuse_write(&device, &message, reason, key, now),
+                };
+                match verdict {
+                    Ok(filed) => verdicts |= filed,
+                    Err(error) => {
+                        tracing::warn!(%error, "a document write's verdict was not kept");
+                    }
+                }
+            }
             reports.push(report);
         }
-        if reports.iter().all(Result::is_err) {
-            // Every input was refused: nothing changed to commit.
+        if reports.iter().all(Result::is_err) && !verdicts {
+            // Every input was refused and every verdict was already kept:
+            // nothing changed to commit.
             return Ok(reports);
         }
         publication::retire(&mut candidate)?;

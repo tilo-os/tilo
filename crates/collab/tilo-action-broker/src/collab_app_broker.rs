@@ -9529,17 +9529,25 @@ impl AppBrokerState {
     /// Nothing about the workspace joins or their rosters is involved — a
     /// record of that scope has no workspace — and a record of any other
     /// route is none of the store's.
-    pub(crate) fn keep_personally(&self, route: &CrdtRoute, envelope: &SignedOp) {
+    pub(crate) fn keep_personally(
+        &self,
+        route: &CrdtRoute,
+        envelope: &SignedOp,
+    ) -> Result<(), BrokerError> {
         let Some(personal) = self.services.personal.as_ref() else {
-            return;
+            return Ok(());
         };
         if personal.read(tilo_peer_state::PersonalStore::store_key) != route.cluster_id {
-            return;
+            return Ok(());
         }
-        if let Err(error) = personal.admit_local(&route.app_id, &route.record_id, envelope.clone())
-        {
-            tracing::warn!(%error, "a record of the person's own was not kept");
-        }
+        personal
+            .admit_local(&route.app_id, &route.record_id, envelope.clone())
+            .map(|_| ())
+            .map_err(|error| {
+                BrokerError::failed(format!(
+                    "send: the person's own store did not keep the record: {error}"
+                ))
+            })
     }
 }
 

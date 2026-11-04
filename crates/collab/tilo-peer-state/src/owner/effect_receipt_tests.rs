@@ -305,6 +305,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
                     publisher: fixture.certificate.device_public_key,
                 },
                 postcard::from_bytes(&frame).unwrap(),
+                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -329,6 +330,7 @@ fn effect_archived_signed_history_admits_and_reopens_remote_member_without_gover
                 workspace,
                 crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key),
                 postcard::from_bytes(&frame).unwrap(),
+                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();

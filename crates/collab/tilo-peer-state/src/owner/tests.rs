@@ -59,6 +59,7 @@ fn enrolled() -> Enrolled {
                 workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
+                Some(&crate::owner::testing::member_key()),
                 now,
             )
             .unwrap();
@@ -148,7 +149,7 @@ fn edit_from_view(
         APP,
         "",
         chat.save_after(&before),
-        &member(),
+        &crate::owner::testing::member_key(),
         now,
     )?;
     let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -296,6 +297,7 @@ fn with_pending_original(joined: &Enrolled) {
                 joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 message,
+                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();
@@ -358,7 +360,11 @@ fn dense_snapshot_sequence_is_stale_after_an_intervening_recovery_projection() {
     assert_eq!(projections(&joined), 0);
     joined
         .owner
-        .reconcile_outgoing(joined.workspace, &member(), joined.now)
+        .reconcile_outgoing(
+            joined.workspace,
+            &crate::owner::testing::member_key(),
+            joined.now,
+        )
         .unwrap();
     assert_eq!(
         projections(&joined),
@@ -379,7 +385,11 @@ fn unordered_sequence_survives_an_intervening_recovery_projection() {
     assert_eq!(projections(&joined), 0);
     joined
         .owner
-        .reconcile_outgoing(joined.workspace, &member(), joined.now)
+        .reconcile_outgoing(
+            joined.workspace,
+            &crate::owner::testing::member_key(),
+            joined.now,
+        )
         .unwrap();
     assert_eq!(
         projections(&joined),
@@ -542,6 +552,7 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
                 joined.workspace,
                 TransportOrigin::RelayDelta(governor_key.verifying_key().to_bytes()),
                 frame,
+                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();
@@ -836,7 +847,7 @@ fn a_member_with_no_sealed_history_past_its_bound_compacts_nothing() {
         .owner
         .compact_outgoing(
             joined.workspace,
-            &member(),
+            &crate::owner::testing::member_key(),
             &mut |_| {
                 opened += 1;
                 Err("no history is due".to_owned())
@@ -869,7 +880,7 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
         .owner
         .renew_outgoing(
             joined.workspace,
-            &member(),
+            &crate::owner::testing::member_key(),
             &mut |op| {
                 asked += 1;
                 let metadata = op.encryption.ok_or("not sealed")?;
@@ -948,7 +959,7 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
         .owner
         .renew_outgoing(
             joined.workspace,
-            &member(),
+            &crate::owner::testing::member_key(),
             &mut |_| Err("this device holds no current key".into()),
             later,
         )
@@ -1231,6 +1242,7 @@ fn retained_replay_reuses_exact_committed_publication() {
             joined.workspace,
             TransportOrigin::RetainedRelayDelta(governor),
             message,
+            Some(&crate::owner::testing::member_key()),
             joined.now,
         )
         .unwrap();

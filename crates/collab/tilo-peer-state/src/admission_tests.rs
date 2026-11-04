@@ -2469,6 +2469,8 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
 pub(crate) mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;
+#[path = "workspace_refusal_tests.rs"]
+mod refusal;
 #[path = "selective_publication_tests.rs"]
 mod selective_publication;
 
@@ -2635,4 +2637,81 @@ fn admission_records_when_a_member_joined_and_a_role_change_keeps_it() {
             .unwrap()
     );
     assert_eq!(joined(&peer), None);
+}
+
+/// A record the workspace covers as empty is held by the replica the
+/// governance reaches, though no one can send it: an empty record carries no
+/// change to replay. The coverage row names exactly that empty checkpoint, so
+/// the replica holds the record and a member's write builds on it.
+#[test]
+fn a_record_covered_as_empty_is_held_from_its_coverage() {
+    let (mut native, a_key, b_key, b_cert, now) = seeded();
+    let empty = AutoCommit::new().save();
+    // The governor checkpoints an empty record: the coverage row it writes
+    // names the route with no heads and the hash of that empty snapshot.
+    native
+        .publication_mut()
+        .publish_document("test.app", "tab:2", empty.clone(), &a_key, now)
+        .unwrap();
+    let messages = native
+        .publication_mut()
+        .bootstrap_messages(&a_key, now)
+        .unwrap();
+    let NeighbourMsg::SyncResp { changes, room } = messages[0].clone() else {
+        panic!("unexpected fixture shape")
+    };
+    let mut joiner = StatePeer::new(
+        &room,
+        native.owner_certificates()[0].clone(),
+        vec![b_cert],
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    // Only the governance arrives.
+    joiner
+        .receive_from(
+            TransportOrigin::RelayDelta(a_key.verifying_key().to_bytes()),
+            NeighbourMsg::SyncResp { changes, room },
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        joiner.document("test.app", "tab:2").as_deref(),
+        Some(empty.as_slice()),
+        "the replica holds the empty record the governance covers"
+    );
+    assert!(
+        joiner
+            .document_heads("test.app", "tab:2")
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!joiner.checkpoint_pending("test.app", "tab:2"));
+    assert!(
+        joiner.fresh_checkpoint_for("test.app", "tab:2", now),
+        "the coverage is the record's current checkpoint"
+    );
+    assert_eq!(
+        joiner.document("test.app", "tab:1"),
+        None,
+        "a covered record with changes is not made up"
+    );
+    // Held, not carved in stone: the member's write builds on it.
+    let mut doc = AutoCommit::load(&joiner.document("test.app", "tab:2").unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        b_key.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    doc.put(ROOT, "note", "mine").unwrap();
+    doc.commit_edit("fixture", "note");
+    joiner
+        .publication_mut()
+        .publish_incremental("test.app", "tab:2", doc.save_after(&heads), &b_key, now)
+        .unwrap();
+    assert_eq!(
+        joiner.document_heads("test.app", "tab:2").unwrap().len(),
+        1,
+        "the member's write lands on the record"
+    );
 }

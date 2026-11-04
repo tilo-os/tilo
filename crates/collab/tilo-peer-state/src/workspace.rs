@@ -330,6 +330,9 @@ fn settings_of(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)> {
 const EFFECT_RECEIPTS: &str = tilo_desktop_model::projection::WORKSPACE_EFFECT_RECEIPTS_KEY;
 /// The key anchoring archived receipts: `{person → {device → root}}`.
 const EFFECT_HISTORY: &str = tilo_desktop_model::projection::WORKSPACE_EFFECT_HISTORY_KEY;
+/// The key holding write refusals:
+/// `{person → {device → {route and author → postcard refusal}}}`.
+const WRITE_REFUSALS: &str = tilo_desktop_model::projection::WORKSPACE_WRITE_REFUSALS_KEY;
 #[cfg(test)]
 thread_local! { pub(crate) static RECEIPT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
@@ -451,10 +454,118 @@ pub fn effect_slices_kept(
         .all(|(slice, _)| own(slice))
 }
 
+/// Whether every write refusal `after` adds, replaces or clears against
+/// `before` is `person`'s own device `device`'s: in that device's slice of the
+/// key, and each verdict it writes there signed by it. A refusal is its
+/// recorder's verdict; no other device keeps, rewrites or clears it.
+#[must_use]
+pub fn refusal_slices_kept(
+    before: Option<&AutoCommit>,
+    after: &AutoCommit,
+    person: Option<&[u8; 32]>,
+    device: Option<&[u8; 32]>,
+) -> bool {
+    use automerge::patches::PatchAction;
+    use automerge::{Prop, Value as Plain};
+    let mut after = after.clone();
+    let from = before
+        .map(|doc| doc.clone().get_heads())
+        .unwrap_or_default();
+    let to = after.get_heads();
+    for patch in after.diff(&from, &to) {
+        let mut keys: Vec<String> = Vec::new();
+        let mut nested = true;
+        for (_, prop) in &patch.path {
+            match prop {
+                Prop::Map(key) => keys.push(key.clone()),
+                Prop::Seq(_) => {
+                    nested = false;
+                    break;
+                }
+            }
+        }
+        let value = match &patch.action {
+            PatchAction::PutMap { key, value, .. } => {
+                keys.push(key.clone());
+                Some(&value.0)
+            }
+            PatchAction::DeleteMap { key } => {
+                keys.push(key.clone());
+                None
+            }
+            PatchAction::Conflict { prop } | PatchAction::Increment { prop, .. } => match prop {
+                Prop::Map(key) => {
+                    keys.push(key.clone());
+                    None
+                }
+                Prop::Seq(_) => {
+                    nested = false;
+                    None
+                }
+            },
+            _ => {
+                nested = false;
+                None
+            }
+        };
+        if keys.first().map(String::as_str) != Some(WRITE_REFUSALS) {
+            // Some other key: other rules decide it. A change to this key's
+            // own shape never leaves it, so `nested` false here means it was
+            // never this key.
+            continue;
+        }
+        if !nested {
+            return false;
+        }
+        if keys.len() == 1 {
+            // The map under the key: every refuser makes it, no one takes it
+            // away.
+            if !matches!(value, Some(Plain::Object(_))) {
+                return false;
+            }
+            continue;
+        }
+        let (Some(person), Some(device)) = (person, device) else {
+            // A sender the receiver cannot name as a person files no verdict.
+            return false;
+        };
+        if keys.get(1) != Some(&hex::encode(person)) {
+            return false;
+        }
+        if keys.len() >= 3 && keys.get(2) != Some(&hex::encode(device)) {
+            return false;
+        }
+        match keys.len() {
+            // The person's own slice, or the device's own within it.
+            2 | 3 => {}
+            // One verdict, kept or cleared in the device's own slice: a kept
+            // one is that device's, over exactly its bytes.
+            4 => {
+                let Some(Plain::Scalar(value)) = value else {
+                    return false;
+                };
+                let ScalarValue::Bytes(bytes) = value.as_ref() else {
+                    return false;
+                };
+                let Ok(refusal) = postcard::from_bytes::<neighbour_wire::WriteRefusal>(bytes)
+                else {
+                    return false;
+                };
+                if refusal.by != *device || !refusal.signed_by(device) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// What one who only reads a workspace may still change in it: their own effect
-/// receipts and history anchors ([`effect_slices_kept`]), and its grants,
-/// as the shares they give ([`share`], decided as membership).
-const READER_WRITES: [&str; 3] = [EFFECT_RECEIPTS, EFFECT_HISTORY, "grants"];
+/// receipts and history anchors ([`effect_slices_kept`]), their own write
+/// refusals ([`refusal_slices_kept`]), and its grants, as the shares they give
+/// ([`share`], decided as membership).
+const READER_WRITES: [&str; 4] = [EFFECT_RECEIPTS, EFFECT_HISTORY, WRITE_REFUSALS, "grants"];
 
 /// Whether `after` differs from `before` only in what one who only reads
 /// the workspace may change in it ([`READER_WRITES`]).

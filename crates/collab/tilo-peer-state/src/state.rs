@@ -32,6 +32,7 @@ pub(crate) mod json_resource_tests;
 use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
+mod covered_records;
 mod member_records;
 use member_records::empty_genesis;
 mod facades;
@@ -57,6 +58,7 @@ mod owner_membership;
 mod workspace_delta;
 mod workspace_effects;
 mod workspace_membership;
+mod workspace_refusals;
 mod workspace_shortcuts;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod held;
@@ -1958,6 +1960,10 @@ impl StatePeer {
         let mut metadata_changed = self.import_governed_certificates(&candidate, now)?;
         self.core.receipts = receipts;
         self.core.workspace_doc = Some(candidate.into());
+        // The governance may name a record this replica holds nothing of and
+        // that no one can send it: an empty one. Held before the writes
+        // waiting on it are tried, so the first one builds on the record.
+        covered_records::hold_covered_empty_records(self, now)?;
         let pending = std::mem::take(&mut self.core.pending);
         self.core.pending_bytes = 0;
         let mut applied = changed;

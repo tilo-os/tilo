@@ -607,6 +607,7 @@ impl Input {
         first.scope.connect.owner.receive_batch(
             first.workspace(),
             batch,
+            Some(&identity.device_signing_key),
             std::time::SystemTime::now(),
         )
     }

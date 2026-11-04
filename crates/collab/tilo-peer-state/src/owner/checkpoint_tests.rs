@@ -124,6 +124,7 @@ fn publish_peer_change(
                     publisher: fixture.certificate.device_public_key,
                 },
                 message,
+                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -184,6 +185,7 @@ fn checkpoint_member(fixture: &mut Fixture) -> tilo_user_identity::DeviceCert {
                     publisher: fixture.certificate.device_public_key,
                 },
                 postcard::from_bytes(&frame).unwrap(),
+                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -1031,6 +1033,7 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
                 publisher: fixture.certificate.device_public_key,
             },
             postcard::from_bytes(&bytes).unwrap(),
+            Some(&fixture.key),
             fixture.now,
         );
         assert_eq!(

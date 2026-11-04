@@ -434,7 +434,7 @@ impl JoinedChannel {
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        state.keep_personally(&route, &envelope);
+        state.keep_personally(&route, &envelope)?;
         handle_authorized_signed_op_send(
             state,
             self.connection_id,

@@ -197,6 +197,23 @@ pub struct Target {
     pub label: String,
 }
 
+/// A device that refused one of a change's writes, and why.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Refusal {
+    /// The change it refused, by its history id.
+    pub change: String,
+    /// The refusing device, by its key.
+    pub device: String,
+    /// What the person calls that device.
+    pub label: String,
+    /// Why the write is not there, as the refusing device put it.
+    pub reason: String,
+    /// Whether waiting will change nothing: the device will not take the
+    /// write, whatever the person does short of what the reason names.
+    pub permanent: bool,
+}
+
 /// One change.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -221,6 +238,9 @@ pub struct Entry {
     pub group: Option<String>,
     /// Whether its content was redacted.
     pub redacted: bool,
+    /// The devices that refused it, so its author reads where it is not.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<Refusal>,
 }
 
 /// A named run of changes.
@@ -704,6 +724,12 @@ pub fn entry_id(hex: &str) -> Option<[u8; 16]> {
 #[must_use]
 pub fn entry_hex(bytes: &[u8; 16]) -> String {
     hex::encode(bytes)
+}
+
+/// The history id of a change, as [`Entry::id`] spells it.
+#[must_use]
+pub fn change_hex(change: &[u8; 32]) -> String {
+    hex::encode(&change[..16])
 }
 
 #[cfg(test)]

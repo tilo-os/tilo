@@ -412,6 +412,7 @@ async fn a_store_admits_the_workspaces_members_and_no_one_else() {
                 workspace_id,
                 TransportOrigin::RetainedRelayDelta(a_key.verifying_key().to_bytes()),
                 message,
+                None,
                 now,
             )
             .unwrap();

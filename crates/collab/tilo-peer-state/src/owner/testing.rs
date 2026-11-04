@@ -150,6 +150,12 @@ pub fn raw_fixture() -> (
 ) {
     raw_fixture_at(SystemTime::now())
 }
+/// The joining device's own key the raw fixture enrolls.
+#[must_use]
+pub fn member_key() -> SigningKey {
+    SigningKey::from_bytes(&[63; 32])
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one linear signed-enrollment fixture; splitting it would scatter the protocol \
@@ -176,7 +182,7 @@ pub fn raw_fixture_at(
         &governor_key,
         "Governor",
     );
-    let device_key = SigningKey::from_bytes(&[63; 32]);
+    let device_key = member_key();
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
     let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {

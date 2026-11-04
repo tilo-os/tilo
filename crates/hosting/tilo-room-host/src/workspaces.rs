@@ -166,13 +166,15 @@ enum Change {
 }
 
 /// What taking a member's write into the governor's copy did.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Followed {
     /// The copy changed.
     changed: bool,
     /// A write the copy let go earlier waited for something that has landed
     /// since: replaying what the relay retains brings it in.
     replay_wanted: bool,
+    /// Admission refused the write, and why: the author is owed a verdict.
+    refused: Option<String>,
 }
 
 /// A workspace this relay governs.
@@ -475,7 +477,9 @@ impl GovernedWorkspace {
     }
 
     /// Take a member's write to a record the governor has into its copy,
-    /// in memory: [`Self::keep_followed`] writes it through.
+    /// in memory: [`Self::keep_followed`] writes it through. What admission
+    /// refused, it names with why in [`Followed::refused`], for the governor to
+    /// file as its verdict in the workspace document.
     fn follow(&mut self, author: [u8; 32], message: neighbour_wire::NeighbourMsg) -> Followed {
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id, record_id, ..
@@ -494,9 +498,41 @@ impl GovernedWorkspace {
             Ok(outcome) => Followed {
                 changed: outcome.changed || outcome.metadata_changed,
                 replay_wanted: outcome.replay_wanted,
+                refused: None,
+            },
+            Err(error) => Followed {
+                refused: Some(error),
+                ..Followed::default()
+            },
+        }
+    }
+
+    /// File this device's verdict on the write admission refused because
+    /// `reason`, in the governor's copy, for [`Self::keep_followed`] to write
+    /// through: the write's author reads why it is not here.
+    fn refused(
+        &mut self,
+        caller: &DeviceCert,
+        key: &SigningKey,
+        message: &neighbour_wire::NeighbourMsg,
+        reason: &str,
+    ) -> Followed {
+        let filed =
+            self.peer
+                .workspace_mut()
+                .refuse_write(caller, message, reason, key, SystemTime::now());
+        match filed {
+            Ok(filed) => Followed {
+                changed: filed,
+                ..Followed::default()
             },
             Err(error) => {
-                tracing::debug!(workspace = %self.record.workspace, %error, "governor did not take in a record write");
+                tracing::warn!(
+                    workspace = %self.record.workspace,
+                    %reason,
+                    %error,
+                    "the governor did not file a refusal of a record write"
+                );
                 Followed::default()
             }
         }
@@ -2132,14 +2168,8 @@ impl Workspaces {
     /// Take `message`, `author`'s write to the record `(app, record)` the
     /// governor holds, into its copy, compact the workspace's sealed histories
     /// before one is full (past its bound the copy would stop following
-    /// the record), and tell whoever follows the workspace's records.
-    #[cfg_attr(
-        not(any(feature = "agents", feature = "web")),
-        expect(
-            clippy::unused_async,
-            reason = "only a relay that takes part in channels compacts what it follows"
-        )
-    )]
+    /// the record), tell whoever follows the workspace's records, and file its
+    /// verdict on a write admission refused.
     async fn follow_write(
         &self,
         workspace: &mut GovernedWorkspace,
@@ -2148,12 +2178,20 @@ impl Workspaces {
         (app, record): (String, String),
     ) {
         let following = crate::timing::start();
-        let followed = workspace.follow(author, message);
+        let followed = workspace.follow(author, message.clone());
         if followed.changed {
             self.keep_soon(workspace);
+            if self.landed(workspace, &message) {
+                self.keep_soon(workspace);
+            }
         }
         if followed.replay_wanted {
             self.replay_soon(workspace.workspace().to_owned());
+        }
+        if let Some(reason) = followed.refused
+            && let Err(error) = self.file_refusal(workspace, &message, &reason).await
+        {
+            tracing::warn!(workspace = %workspace.workspace(), %reason, %error, "the governor did not publish a refusal of a record write");
         }
         crate::timing::window("room.follow", following);
         #[cfg(any(feature = "agents", feature = "web"))]
@@ -2169,6 +2207,58 @@ impl Workspaces {
             app,
             record,
         });
+    }
+
+    /// File this device's verdict on the write `message` carried, which
+    /// admission refused because `reason`, and publish it as the workspace's
+    /// next governance: its author reads it live, and every member keeps it.
+    /// Answers nothing about the write: that it did not land is the verdict.
+    async fn file_refusal(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        message: &neighbour_wire::NeighbourMsg,
+        reason: &str,
+    ) -> Result<(), String> {
+        let host = &self.inner.host;
+        let now = SystemTime::now();
+        let mut candidate = workspace.peer().clone();
+        let filed = candidate
+            .workspace_mut()
+            .refuse_write(&host.cert, message, reason, &host.key, now)?;
+        if !filed {
+            return Ok(());
+        }
+        workspace.commit(candidate, &host.key, now, |record, _| {
+            Ok(record.collaboration.clone())
+        })?;
+        self.settle(workspace).await
+    }
+
+    /// Forget this device's verdicts on the writes of `message`'s route up to
+    /// its sequence: a write of that author landed after all, so what its
+    /// device refused is not missing. Answers whether the workspace changed.
+    fn landed(
+        &self,
+        workspace: &mut GovernedWorkspace,
+        message: &neighbour_wire::NeighbourMsg,
+    ) -> bool {
+        let cleared = workspace.peer.workspace_mut().clear_landed_write(
+            &self.inner.host.cert,
+            message,
+            &self.inner.host.key,
+            SystemTime::now(),
+        );
+        match cleared {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!(
+                    workspace = %workspace.workspace(),
+                    %error,
+                    "the governor did not clear a verdict on a write that landed"
+                );
+                false
+            }
+        }
     }
 
     /// Write the members' writes `workspace` took in through to its workspace file
@@ -2265,9 +2355,25 @@ impl Workspaces {
                 }
             };
             if self.recalls(workspace, &message) {
-                let followed = workspace.follow(retained.author, message);
-                changed |= followed.changed;
-                again |= followed.replay_wanted;
+                let followed = workspace.follow(retained.author, message.clone());
+                let Followed {
+                    changed: took,
+                    replay_wanted,
+                    refused,
+                } = followed;
+                changed |= took;
+                again |= replay_wanted;
+                if let Some(reason) = refused {
+                    let filed = workspace.refused(
+                        &self.inner.host.cert,
+                        &self.inner.host.key,
+                        &message,
+                        &reason,
+                    );
+                    changed |= filed.changed;
+                } else if took && self.landed(workspace, &message) {
+                    changed = true;
+                }
             }
         }
         if changed {

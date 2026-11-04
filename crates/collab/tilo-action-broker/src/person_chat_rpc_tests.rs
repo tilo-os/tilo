@@ -234,6 +234,7 @@ fn enroll_contact(
                     governor.workspace_host().device_public_key,
                 ),
                 message,
+                Some(&key),
                 now,
             )
             .unwrap();

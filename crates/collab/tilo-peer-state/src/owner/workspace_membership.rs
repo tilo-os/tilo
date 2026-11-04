@@ -407,6 +407,7 @@ mod tests {
                     workspace,
                     TransportOrigin::RetainedRelayDelta(governor),
                     postcard::from_bytes(bytes).unwrap(),
+                    Some(&fixture.key),
                     fixture.now,
                 )
                 .unwrap();
