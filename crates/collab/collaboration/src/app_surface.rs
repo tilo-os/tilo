@@ -153,8 +153,9 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 }
 
 /// The person-record kinds `app_id`'s surface declares (its
-/// `ResourceApp::records`): the records it may keep in, or read from, the
-/// person's own workspace. Empty when this process holds no surface for it.
+/// `ResourceApp::PERSON_RECORDS`): the records it may keep in, or read from,
+/// the person's own workspace. Empty when this process holds no surface for
+/// it.
 #[must_use]
 pub fn person_record_kinds(app_id: &str) -> Vec<String> {
     bytes_of(app_id)
