@@ -96,7 +96,7 @@ fn press(session: &mut Session, effect: &str, args: Value) {
 fn door_client(socket: &Path, answers: &mpsc::Sender<Vec<Value>>) {
     let stream = UnixStream::connect(socket).expect("the agent door's socket");
     stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("the client waits for the person");
     let mut writer = stream.try_clone().expect("a second handle on the door");
     let mut reader = BufReader::new(stream);
@@ -161,7 +161,7 @@ fn a_notification_handed_to_a_live_agent_becomes_its_task() {
     press(&mut session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(&mut session, PortalEffect::CONFIRM.id, json!({}));
     let read = received
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the program at the door is served");
     client.join().expect("the program's thread");
     assert!(

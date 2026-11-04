@@ -130,7 +130,7 @@ fn the_session_answers_add_folders_on_the_socket_named_for_its_display() {
     assert!(!session.setup_up(), "this session runs no setup");
     let mut client = UnixStream::connect(&socket).expect("the session answers");
     client
-        .set_read_timeout(Some(Duration::from_secs(5)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("a bounded wait");
     session.step(Duration::from_millis(1)).expect("step");
     let mut answer = [0; 21];

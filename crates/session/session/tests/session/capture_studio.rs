@@ -359,7 +359,7 @@ fn answered(
     let started = std::time::Instant::now();
     while !asking.is_finished() {
         assert!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the screenshot was never answered"
         );
         session.step(Duration::from_millis(5)).expect("step");

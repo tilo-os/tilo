@@ -853,7 +853,7 @@ fn find_row(session: &mut Session, query: &str, title: &str) -> ResourceSpec {
         if let Some(row) = row(session, title) {
             return row;
         }
-        if started.elapsed() > Duration::from_secs(10) {
+        if started.elapsed() > tilo_test_env::hang_bound() {
             let labels: Vec<String> = rows(session).into_iter().map(|row| row.label).collect();
             panic!("no row {title:?} for {query:?} among {labels:?}");
         }

@@ -152,8 +152,21 @@ fn band_colours(shot: &tilo_compositor::Screenshot) -> usize {
 
 /// Press the bar's control named `name` with the pointer.
 fn press(session: &mut Session, name: &str) {
+    // The click lands where the control is drawn: the shell's views run while
+    // the person's press comes, and a surface still arriving moves its
+    // controls from one frame to the next. So the place the press uses is one
+    // that stood still across the frames before it.
     let (x, y, w, h) = common::wait_for(session, format!("the bar's {name}"), |session| {
-        session.shell_control(name)
+        let mut place = session.shell_control(name)?;
+        for _ in 0..2 {
+            session.step(Duration::from_millis(16)).expect("step");
+            let next = session.shell_control(name)?;
+            if next != place {
+                return None;
+            }
+            place = next;
+        }
+        Some(place)
     });
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     let compositor = session.compositor();
@@ -775,11 +788,11 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
         )
         .unwrap();
     until(&mut session, |session| here(session) == "launcher");
-    assert!(
-        says(&session, "Overview") && says(&session, "Notifications"),
-        "the launcher shows the desk's doors: {:?}",
-        session.accessible_labels()
-    );
+    // The launcher's doors are what it draws: the surface being up says where
+    // the desk is, and its labels are the doors a person sees.
+    common::wait_for(&mut session, "the launcher's doors", |session| {
+        (says(session, "Overview") && says(session, "Notifications")).then_some(())
+    });
     keep(&mut session, "shell-launcher");
     // Closing it from the desk's reading puts the desk back at rest.
     session
@@ -1856,7 +1869,6 @@ fn window_menu(session: &mut Session, item: &str) {
     until(session, |session| {
         session.shell_control("This window").is_some()
     });
-    eprintln!("PROBE windows={:#?}", desk(session).windows);
     press(session, "This window");
     until(session, |session| session.shell_control(item).is_some());
 }
@@ -1977,7 +1989,6 @@ fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     until(&mut session, |session| {
         session.shell_control("This window").is_some()
     });
-    eprintln!("PROBE windows={:#?}", desk(&session).windows);
     press(&mut session, "This window");
     until(&mut session, |session| {
         ["Move to Main", "Move to Research"]
@@ -2552,18 +2563,18 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
                 |session| (!says(session, words)).then_some(()),
             );
         }
-        let over = common::wait_for(
+        common::wait_for(
             &mut session,
             format!("the bar to stand inside {width}'s edge"),
             |session| {
-                let over: Vec<_> = bar_band_controls(session)
+                bar_band_controls(session)
                     .into_iter()
                     .filter(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
-                    .collect();
-                over.is_empty().then_some(over)
+                    .next()
+                    .is_none()
+                    .then_some(())
             },
         );
-        let _ = over;
         // The trailing group ends inside the bar's band, not over its edge.
         let (_, y, _, h) = bar_control(&session, PERSON).expect("the person's face");
         let band = bar_band(&session);

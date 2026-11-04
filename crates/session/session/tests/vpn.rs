@@ -64,8 +64,6 @@ const PROFILE: &str = "9b1c6f42-7c0a-4b0f-9a1c-2d3e4f5a6b7c";
 const HOME: &str = "192.168.1.0/24";
 const WIDTH: i32 = 1024;
 const HEIGHT: i32 = 700;
-/// How long a step of the test waits for what it waits for.
-const DEADLINE: Duration = Duration::from_secs(40);
 
 /// The helper as a test knows it: the requests it was asked, in order, and
 /// this device's end of each tunnel it opened.
@@ -211,7 +209,8 @@ impl Helper {
     /// The next packet the stack the helper opened received through it.
     fn received(&self) -> Vec<u8> {
         let tun = self.tun();
-        tun.set_read_timeout(Some(DEADLINE)).expect("a timeout");
+        tun.set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .expect("a timeout");
         let mut packet = vec![0_u8; 4096];
         let length = tun.recv(&mut packet).expect("the packet reaches the stack");
         packet.truncate(length);
@@ -391,15 +390,19 @@ impl ExitFixture {
     fn delivered(&mut self, rt: &tokio::runtime::Runtime) -> Vec<u8> {
         if self.stack.is_none() {
             self.stack = Some(
-                rt.block_on(async { tokio::time::timeout(DEADLINE, self.stacks.recv()).await })
-                    .expect("the other device opens its tunnel")
-                    .expect("the other device opened its tunnel"),
+                rt.block_on(async {
+                    tokio::time::timeout(tilo_test_env::hang_bound(), self.stacks.recv()).await
+                })
+                .expect("the other device opens its tunnel")
+                .expect("the other device opened its tunnel"),
             );
         }
         let stack = self.stack.as_mut().expect("the other device's stack");
-        rt.block_on(async { tokio::time::timeout(DEADLINE, stack.delivered()).await })
-            .expect("the packet reaches the other device")
-            .expect("the other device keeps its stack")
+        rt.block_on(async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), stack.delivered()).await
+        })
+        .expect("the packet reaches the other device")
+        .expect("the other device keeps its stack")
     }
 }
 
@@ -964,7 +967,13 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         })
     });
     let ended = rt
-        .block_on(async { tokio::time::timeout(DEADLINE, phone_tunnel.connection.closed()).await })
+        .block_on(async {
+            tokio::time::timeout(
+                tilo_test_env::hang_bound(),
+                phone_tunnel.connection.closed(),
+            )
+            .await
+        })
         .expect("the phone's tunnel ends");
     assert_eq!(
         Ended::of(&ended),

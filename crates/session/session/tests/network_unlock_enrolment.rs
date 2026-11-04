@@ -88,7 +88,7 @@ fn a_boot_key_enrols_through_the_sessions_socket() {
     let reply = loop {
         if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) {
             stream
-                .set_read_timeout(Some(Duration::from_secs(30)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("a read timeout");
             stream.write_all(&frame).expect("the request is written");
             let mut prefix = [0_u8; 4];

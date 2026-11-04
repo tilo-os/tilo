@@ -1083,7 +1083,7 @@ fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
 fn door_client(socket: &std::path::Path, answers: &std::sync::mpsc::Sender<Vec<Value>>) {
     let stream = UnixStream::connect(socket).expect("the agent door's socket");
     stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("the client waits for the person");
     let mut writer = stream.try_clone().expect("a second handle on the door");
     let mut reader = BufReader::new(stream);
@@ -1131,7 +1131,7 @@ fn door_answers(
 ) -> Vec<Value> {
     pump(session, |_| questions.pending().is_empty());
     let read = answers
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the program at the door is served");
     client.join().expect("the program's thread");
     read

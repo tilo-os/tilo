@@ -64,7 +64,7 @@ impl Program {
         let ended = std::thread::spawn(move || {
             let stream = UnixStream::connect(&socket).expect("the agent door's socket");
             stream
-                .set_read_timeout(Some(Duration::from_secs(30)))
+                .set_read_timeout(Some(tilo_test_env::hang_bound()))
                 .expect("the program waits for the person");
             let mut writer = stream.try_clone().expect("a second handle on the door");
             let mut reader = BufReader::new(stream);
@@ -85,7 +85,7 @@ impl Program {
             reader.read_line(&mut line).expect("an answer");
             let answer: Value = serde_json::from_str(&line).expect("a JSON-RPC answer");
             let _ = served.send(answer);
-            let _ = staying.recv_timeout(Duration::from_secs(30));
+            let _ = staying.recv_timeout(tilo_test_env::hang_bound());
         });
         Self {
             served: answered,

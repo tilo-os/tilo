@@ -160,7 +160,7 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     let (sent, received) = std::sync::mpsc::channel();
     let ordinary = std::thread::spawn(move || app(&app_socket, APP, &app_room, &sent));
     let app_seen = received
-        .recv_timeout(Duration::from_secs(60))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the app's calls are answered before the session's loop runs a pass");
     ordinary.join().expect("the app's thread");
 
