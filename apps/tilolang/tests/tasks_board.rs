@@ -91,25 +91,19 @@ fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
     }
 }
 
-/// The cards on the board, `(title, [x, y, width, height])`, in the order they are drawn: each
-/// card's rect, named by the row it holds.
+/// The cards on the board, `(title, [x, y, width, height])`, in the order they are drawn: a
+/// card is its row, which says what the card stands for.
 fn cards(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
     let snapshot = app.harness().inspection();
     let mut all = Vec::new();
     walk(&snapshot.root, &mut all);
-    let mut out = Vec::new();
-    let mut card = None;
-    for node in all {
-        if node.widget == "Card" {
-            card = Some(node.rect);
-        } else if node.widget == "ListRow"
-            && let Some(rect) = card.take()
-            && let Some(name) = node.semantics.as_ref().and_then(|s| s.name.clone())
-        {
-            out.push((name, rect));
-        }
-    }
-    out
+    all.into_iter()
+        .filter(|node| node.widget == "ListRow")
+        .filter_map(|node| {
+            let name = node.semantics.as_ref()?.name.clone()?;
+            Some((name, node.rect))
+        })
+        .collect()
 }
 
 /// The titles of the cards whose left edge is at `x`, top to bottom: one lane.
@@ -374,12 +368,12 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         .unwrap();
     settle(&mut app);
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
-    // Every row the run touched is marked, the one it checked off too, and the one it removed
+    // Every row the run touched that the inbox still holds is marked: the one it removed
     // stays as a struck row, all at the row's own height, with the agent's face on its
-    // trailing edge.
+    // trailing edge. The one it checked off left the inbox for Done.
     let listed = change_marks::rows(&mut app);
     assert!(
-        listed.len() == 3 && listed.iter().all(|(_, _, marked)| *marked),
+        listed.len() == 2 && listed.iter().all(|(_, _, marked)| *marked),
         "{listed:?}"
     );
     assert_eq!(
@@ -400,6 +394,15 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     }
     // The header counts them, once.
     assert_eq!(marks(&mut app).len(), 1);
+    // What the run checked off is read where it went, marked there too.
+    change_marks::choose(&mut app, "Done");
+    let done = change_marks::rows(&mut app);
+    let (_, _, marked) = done
+        .iter()
+        .find(|(name, _, _)| name == "Water the plants")
+        .unwrap_or_else(|| panic!("Done lists the task the run checked off: {done:?}"));
+    assert!(marked, "the row it checked off is marked in Done: {done:?}");
+    change_marks::choose(&mut app, "Inbox");
     if let Some(dir) = change_marks::shots_dir() {
         for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
             app.harness().set_theme(theme);
@@ -433,6 +436,12 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     app.invoke(None, None, &tasks, &add, &titled, false)
         .unwrap();
     settle(&mut app);
+    // The row opens the task's page, which stays open while the days it waits at move it out
+    // of the inbox, into Today and on to Upcoming.
+    let row = named(&mut app, "SwipeRow", "Call the landlord");
+    app.harness()
+        .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
+    settle(&mut app);
     let task = published_with(&mut app, &tasks, "Pick date…");
     let schedule = action_id(&mut app, &task, "Pick date…");
     let due = |day: &str| {
@@ -458,10 +467,6 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     let done = ui::time::SystemTime::now();
     settle(&mut app);
     ui::time::testing::with_wall(after(done, 1), || {
-        let row = named(&mut app, "SwipeRow", "Call the landlord");
-        app.harness()
-            .click_at(row[0] + row[2] / 4.0, row[1] + row[3] / 2.0);
-        settle(&mut app);
         assert_eq!(
             times(&mut app).len(),
             2,
@@ -555,43 +560,78 @@ fn click_item(app: &mut TestApp<TlApp>, label: &str) {
     };
     app.harness()
         .click_at(f64::midpoint(b.x0, b.x1), f64::midpoint(b.y0, b.y1));
+    settle(app);
 }
 
 #[test]
 fn the_home_list_shows_the_inbox_tasks_of_a_busy_week() {
     let _settled = ui::motion::testing::settled();
-    support::installed("tasks");
-    let mut app =
-        TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP).expect("the scenario stages");
-    settle(&mut app);
-    let names: Vec<Option<String>> = accessible(&mut app)
-        .into_iter()
-        .map(|node| node.name)
-        .collect();
-    // An inbox task with a step under it is finished once that step is, so it stands in the
-    // list's Done tail rather than among the open ones.
-    for title in [
-        "Call the landlord about the boiler",
-        "Book a haircut",
-        "Reply to Mia about Sunday lunch",
-    ] {
+    // A day into the week the scenario stages: what is due before it is overdue and waits in
+    // Today, what is due after it in Upcoming.
+    ui::time::testing::with_wall(local(7, 1, (9, 0, 0)), || {
+        support::installed("tasks");
+        let mut app = TestApp::<TlApp>::capture_at(Some("a busy week"), DESKTOP)
+            .expect("the scenario stages");
+        settle(&mut app);
+        let names: Vec<Option<String>> = accessible(&mut app)
+            .into_iter()
+            .map(|node| node.name)
+            .collect();
+        // The inbox is what no one has sorted yet: no project, no day.
         assert!(
-            shows(&mut app, title),
-            "the inbox lists `{title}`: {names:?}"
+            shows(&mut app, "Sort the paper mail"),
+            "the inbox lists what no day and no project sorts: {names:?}"
         );
-    }
-    assert!(
-        !shows(&mut app, "No tasks here"),
-        "the inbox has tasks in it: {names:?}"
-    );
-    assert!(
-        !shows(&mut app, "Buy oat milk and eggs"),
-        "a task whose one step is done is finished with it: {names:?}"
-    );
-    assert!(
-        !shows(&mut app, "Order boxes and tape"),
-        "a task filed in a project is not in the inbox: {names:?}"
-    );
+        assert!(
+            !shows(&mut app, "No tasks here"),
+            "the inbox has tasks in it: {names:?}"
+        );
+        for title in [
+            "Call the landlord about the boiler",
+            "Book a haircut",
+            "Reply to Mia about Sunday lunch",
+        ] {
+            assert!(
+                !shows(&mut app, title),
+                "a task due a day waits in Today, not the inbox: `{title}`: {names:?}"
+            );
+        }
+        assert!(
+            !shows(&mut app, "Order boxes and tape"),
+            "a task filed in a project is not in the inbox: {names:?}"
+        );
+        // What the inbox leaves out is what Today holds: every task due today or earlier.
+        click_item(&mut app, "Today");
+        let names: Vec<Option<String>> = accessible(&mut app)
+            .into_iter()
+            .map(|node| node.name)
+            .collect();
+        for title in [
+            "Call the landlord about the boiler",
+            "Book a haircut",
+            "Reply to Mia about Sunday lunch",
+        ] {
+            assert!(shows(&mut app, title), "Today lists `{title}`: {names:?}");
+        }
+        assert!(
+            !shows(&mut app, "Sort the paper mail"),
+            "a task with no day waits in the inbox: {names:?}"
+        );
+        // What is due after today waits in Upcoming, whichever project it is of.
+        click_item(&mut app, "Upcoming");
+        let names: Vec<Option<String>> = accessible(&mut app)
+            .into_iter()
+            .map(|node| node.name)
+            .collect();
+        assert!(
+            shows(&mut app, "Order boxes and tape"),
+            "Upcoming lists what is due later: {names:?}"
+        );
+        assert!(
+            !shows(&mut app, "Call the landlord about the boiler"),
+            "a task due today is not in Upcoming: {names:?}"
+        );
+    });
 }
 
 /// The row the keyboard is on, as the list publishes it, and the open menu's box.

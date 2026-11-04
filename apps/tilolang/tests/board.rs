@@ -73,14 +73,15 @@ fn stale_bindings(app: &mut TestApp<TlApp>) -> Vec<String> {
         .collect()
 }
 
-/// Where the card titled `title` is drawn, `[x, y, width, height]`.
+/// Where the card titled `title` is drawn, `[x, y, width, height]`: a card is its row, which
+/// says what the card stands for.
 fn card_rect(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
     let mut all = Vec::new();
     walk(&snapshot.root, &mut all);
     all.iter()
         .find(|node| {
-            node.widget == "Card"
+            node.widget == "ListRow"
                 && node
                     .semantics
                     .as_ref()

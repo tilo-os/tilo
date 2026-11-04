@@ -4,7 +4,7 @@
 //! platform plays the change.
 //!
 //! The frames are read one at a time: each frame the harness draws is rasterised, and a band of
-//! it compared with the frame before, so a motion is a series of values rather than a single
+//! it compared with another frame, so a motion is a series of values rather than a single
 //! before and after. `the_frames_a_person_sees` writes those frames as PNGs; it is ignored by
 //! default because it is there to look at, not to gate.
 
@@ -78,6 +78,36 @@ fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
             Some((name, node.rect))
         })
         .collect()
+}
+
+/// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
+/// Today, and the inbox holds only what no day and no project sorts.
+fn open_place(app: &mut TestApp<TlApp>, label: &str) {
+    fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
+        if node.role == ui::a11y::Role::TreeItem
+            && node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with(label))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| place(child, label))
+    }
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let bounds = all
+        .iter()
+        .filter_map(|node| node.semantics.as_ref())
+        .find_map(|access| place(access, label))
+        .and_then(|access| access.bounds)
+        .unwrap_or_else(|| panic!("the sidebar offers {label}"));
+    app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    settle(app);
 }
 
 /// The space the leading checkbox of the row titled `title` takes: the start of the row, as
@@ -342,9 +372,8 @@ fn page_box(app: &mut TestApp<TlApp>) -> ([f64; 4], bool) {
 #[test]
 fn checking_a_task_off_fills_its_box_over_frames() {
     let mut app = staged("a busy week");
-    // A task still open in the list: one whose step is done is finished with it, and folds
-    // away into the Done tail.
-    let title = "Book a haircut";
+    // A task nothing sorts into a project or a day: the inbox keeps it open in the list.
+    let title = "Sort the paper mail";
     assert!(!marked(&mut app, title), "the task starts open");
     open_task(&mut app, title);
     let (band, held) = page_box(&mut app);
@@ -452,6 +481,7 @@ fn a_task_a_person_adds_lands_in_the_list() {
 #[test]
 fn the_rows_a_person_removes_leave_the_list() {
     let mut app = staged("a busy week");
+    open_place(&mut app, "Today");
     let before_rows = rows(&mut app).len();
     assert!(before_rows > 2, "the place holds tasks");
 
@@ -479,12 +509,29 @@ fn the_rows_a_person_removes_leave_the_list() {
     let pressed = start + ui::time::Duration::from_millis(100);
     press_delete(&mut app, &remove, pressed);
 
-    let mut series = Vec::new();
+    let mut frames = Vec::new();
     for step in 1..=14 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let (_, pixels) = frame_at(&mut app, at);
-        series.push(difference(&mut app, &pixels, &before, band));
+        frames.push(pixels);
     }
+
+    // Where the rows the removal leaves come to rest. They make way by about their own height,
+    // so the frame before the press is a poor ruler for the move: it differs from the last
+    // frame as much as any frame on the way does. The last frame is the one they end on, so
+    // every frame read against it says how far the rows still are from where they land.
+    let last = frames.last().expect("frames were read");
+    let held = pixels_in(&mut app, last, band);
+    let moved = apart(&before, &held);
+    assert!(
+        moved > 3.0,
+        "the rows the removal leaves are drawn elsewhere: {moved}"
+    );
+    let mut series = Vec::new();
+    for pixels in &frames {
+        series.push(difference(&mut app, pixels, &held, band));
+    }
+    println!("removal frames: {series:?}");
 
     settle(&mut app);
     assert_eq!(

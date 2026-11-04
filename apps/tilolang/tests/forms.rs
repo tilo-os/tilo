@@ -39,6 +39,27 @@ fn settle(app: &mut TestApp<TlApp>) {
     }
 }
 
+/// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
+/// Today, and the inbox holds only what no day and no project sorts.
+fn open_place(app: &mut TestApp<TlApp>, label: &str) {
+    let bounds = accessible(app)
+        .into_iter()
+        .find(|node| {
+            node.role == ui::a11y::Role::TreeItem
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with(label))
+        })
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("the sidebar offers {label}: {:?}", all_names(app)));
+    app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    settle(app);
+}
+
 fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
     out.push(node);
     for child in &node.children {
@@ -190,6 +211,7 @@ fn field(app: &mut TestApp<TlApp>, label: &str) {
 fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
+    open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     right_click(&mut app, row.center());
     let items = menu_items(&mut app);
@@ -204,6 +226,7 @@ fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
 fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
+    open_place(&mut app, "Today");
     choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
     assert!(
         reads(&mut app, "Pick date…"),
@@ -277,6 +300,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
 fn the_task_pages_assignee_opens_the_people_to_pick_from() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
+    open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     click(&mut app, row.center());
     // The page keeps one person field for who does the task, showing nobody yet.

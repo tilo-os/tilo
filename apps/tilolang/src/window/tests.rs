@@ -1741,6 +1741,11 @@ fn a_change_to_an_item_reaches_its_shown_row() {
 #[test]
 fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
     let mut workspace = Workspace::staged("tasks", "a busy week");
+    // A project's place holds what is done with beside what is not: the inbox holds only what
+    // nothing sorts, and never what is done.
+    let flat = workspace.key_of("ui.NavItem", "label", "Move flat");
+    workspace.fire(&flat, "select", None);
+    workspace.settle();
     let checked: Vec<bool> = workspace
         .items()
         .into_iter()

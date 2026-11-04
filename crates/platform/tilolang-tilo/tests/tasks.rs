@@ -2839,8 +2839,9 @@ fn a_place_whose_tasks_are_all_done_says_so() {
 }
 
 /// A workspace that names who a task belongs to offers the place of what the person looking
-/// holds, as its sidebar's first place, once someone else is in it; on their own, nothing is
-/// anyone's but theirs and the place would say what a list of everything does.
+/// holds once someone else is in it, after the places that are open and before what is done
+/// with, so the place a window opens on does not move; on their own, nothing is anyone's but
+/// theirs and the place would say what a list of everything does.
 #[test]
 fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
     use tilolang_runtime::members::Member;
@@ -2872,11 +2873,20 @@ fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
         .unwrap();
     ada.commit();
     view.poll_patches().unwrap();
+    let all = places(&view);
     assert_eq!(
-        places(&view).first(),
+        all.iter()
+            .take(5)
+            .map(|(label, _)| label.as_str())
+            .collect::<Vec<_>>(),
+        ["Inbox", "Today", "Upcoming", "Assigned to me", "Done"],
+        "the place of what the person looking holds comes after the places that are open, so the \
+         one a window opens on does not move: {all:?}"
+    );
+    assert_eq!(
+        all.get(3),
         Some(&("Assigned to me".to_owned(), Some(1))),
-        "the place leads, and counts the one open task the person looking holds: {:?}",
-        places(&view)
+        "and counts the one open task the person looking holds: {all:?}"
     );
     // The workspace narrows to the person looking alone: the place goes.
     ada.host
