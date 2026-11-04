@@ -17926,7 +17926,6 @@ dependencies = [
 name = "tilo-capture-studio"
 version = "0.1.0"
 dependencies = [
- "bounded-command",
  "tempfile",
  "tilo-app",
  "tilo-callstream",
@@ -19514,6 +19513,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]

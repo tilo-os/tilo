@@ -121,13 +121,14 @@ pub struct Replay {
 
 /// Bytes one track of the replay keeps: its own half minute, bounded so a
 /// recorder left running never grows.
-const AUDIO_KEPT_BYTES: usize =
-    REPLAY_SECONDS as usize * crate::audio::SAMPLE_RATE * crate::audio::SAMPLE_FRAME_BYTES;
+const AUDIO_KEPT_BYTES: usize = REPLAY_SECONDS as usize
+    * crate::audio::FORMAT.rate as usize
+    * crate::audio::FORMAT.frame_bytes();
 
 /// What one video frame of a clip carries of each track: the muxer
 /// interleaves its sound at the replay's own rate.
 const AUDIO_BYTES_PER_VIDEO_FRAME: usize =
-    (crate::audio::SAMPLE_RATE / REPLAY_FPS as usize) * crate::audio::SAMPLE_FRAME_BYTES;
+    (crate::audio::FORMAT.rate as usize / REPLAY_FPS as usize) * crate::audio::FORMAT.frame_bytes();
 
 impl Replay {
     fn new(max_frames: usize, max_bytes: usize, audio_tracks: usize) -> Self {
