@@ -1710,6 +1710,14 @@ pub trait Widget {
         None
     }
 
+    /// Offsets along `axis` that this widget, as a scroll view's content,
+    /// offers it to settle on, measured from its own leading edge: a board's
+    /// lanes ([`crate::widget::Board`]). None leaves a scroller stopping
+    /// wherever the hand left it.
+    fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
+        let _ = (axis, out);
+    }
+
     /// One-shot request to open the host's action palette directly at a typed
     /// resource action. Parameter collection and permission checks remain host
     /// policy; widgets only name an address already present in `resources()`.

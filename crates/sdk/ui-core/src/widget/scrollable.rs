@@ -20,6 +20,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 mod bars;
 #[path = "scrollable_input.rs"]
 mod input;
+#[path = "scrollable_snap.rs"]
+mod snap;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ScrollAxis {
@@ -257,6 +259,12 @@ pub struct Scrollable {
     placed_scale: Option<f32>,
     /// See [`Scrollable::following_end`].
     follow_end: bool,
+    /// The offsets along each axis the detents its content offers sit at
+    /// ([`Widget::snap_points`]), in content coordinates and ascending: a
+    /// board's lanes, a page each. Empty where the content offers none, and
+    /// the view scrolls freely.
+    snap_x: Vec<f32>,
+    snap_y: Vec<f32>,
 }
 
 /// Where a frame shows the content: its offset, the clip it paints into,
@@ -368,6 +376,8 @@ impl Scrollable {
             shown: crate::scroll_copy::ShownFrames::default(),
             placed_scale: None,
             follow_end: false,
+            snap_x: Vec::new(),
+            snap_y: Vec::new(),
         }
     }
     pub fn new_vertical() -> Self {
@@ -978,7 +988,8 @@ impl Scrollable {
     }
 
     /// The offset that shows the content rect at `x`, `y`, `w` by `h`,
-    /// moving the least from where the content is going.
+    /// moving the least from where the content is going, and landing on a
+    /// detent where the content offers them.
     fn offset_showing(&self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
         let (mut ox, mut oy) = self
             .scroll_to
@@ -996,6 +1007,9 @@ impl Scrollable {
         } else if x + w > ox + self.viewport_w {
             ox = (x + w - self.viewport_w).max(0.0);
         }
+        let viewport_h = self.effective_viewport_h();
+        let oy = self.snap_showing(&self.snap_y, oy, viewport_h, y, h);
+        let ox = self.snap_showing(&self.snap_x, ox, self.viewport_w, x, w);
         let max_x = (self.content_w - self.viewport_w).max(0.0);
         (ox.clamp(0.0, max_x), oy.clamp(0.0, self.max_offset_y()))
     }
@@ -1449,6 +1463,9 @@ impl Widget for Scrollable {
                 c.apply_layout(taffy, child_node, origin);
             });
         }
+        // Where the content's detents stand at this layout's offsets, for the
+        // release, the key and the reveal that settle on one.
+        self.collect_snap_points();
         // Flash the overlay bar the first frame content overflows.
         // Placed again, focus is where it was and stands revealed.
         if self.reveal_focus && !placing_again {
@@ -1612,7 +1629,13 @@ impl Widget for Scrollable {
                 ..
             } => {
                 let had_hold = self.hold.take().is_some();
+                let dragged = self.vbar.is_dragging() || self.hbar.is_dragging();
                 if self.vbar.release() || self.hbar.release() || had_hold {
+                    // A bar dragged and let go settles on a detent like a
+                    // finger does.
+                    if dragged && self.snaps() {
+                        self.settle_snap((0.0, 0.0), crate::tokens::MotionSource::Pointer);
+                    }
                     self.scroll_dirty = true;
                     *ctx.handled = true;
                     return;
@@ -1990,6 +2013,10 @@ mod tests;
 #[cfg(test)]
 #[path = "scrollable_lane_tests.rs"]
 mod lane_tests;
+
+#[cfg(test)]
+#[path = "scrollable_snap_tests.rs"]
+mod snap_tests;
 
 mod component;
 pub use component::ScrollProps;

@@ -85,6 +85,9 @@ pub struct Board {
     theme: Option<Theme>,
     /// The width the lanes were last given.
     sized: Option<f32>,
+    /// The width the pane showing the board was last laid out at: what a lane is judged
+    /// compact against ([`Board::snap_points`]).
+    pane: Option<f64>,
 }
 
 impl Default for Board {
@@ -114,6 +117,7 @@ impl Board {
             name: None,
             theme: None,
             sized: None,
+            pane: None,
         }
     }
 
@@ -490,6 +494,29 @@ impl crate::widget::Decorator for Board {
             .map(|name| AccessNode::new(Role::Group).with_optional_name(Some(name.clone())))
     }
 
+    /// A lane a page at a time where the pane is too narrow to show two lanes side by side: the
+    /// board offers each lane's leading edge, less the air it keeps before the first, so the
+    /// view showing it settles a lane at a time. A pane wide enough for its lanes shows them
+    /// side by side and offers none: it scrolls freely.
+    fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
+        if !matches!(axis, crate::widget::ScrollAxis::Horizontal) {
+            return;
+        }
+        let (Some(theme), Some(pane), Some(lane)) = (&self.theme, self.pane, self.sized) else {
+            return;
+        };
+        if f64::from(lane) * 2.0 <= pane {
+            return;
+        }
+        let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let leading = Widget::get_rect(self).x0;
+        out.extend(
+            Widget::children(&self.row)
+                .iter()
+                .map(|lane| crate::num::f32_of_f64(Widget::get_rect(*lane).x0 - leading - gutter)),
+        );
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -526,6 +553,7 @@ impl crate::widget::Decorator for Board {
         {
             width = width.min(f64::from(pane.size.width));
         }
+        self.pane = Some(width);
         self.size_lanes(taffy, node, &theme, width)
     }
 
