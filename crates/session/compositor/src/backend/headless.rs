@@ -11,7 +11,7 @@
 //! shows it, and the blank after a frame is one refresh on, so a session on
 //! this backend draws at its mode's rate and no faster (a test that wants a
 //! frame after one it just drew waits the same way the session's loop does,
-//! [`Compositor::next_wait`](crate::Compositor::next_wait)).
+//! [`Compositor::draw_frame`](crate::Compositor::draw_frame)).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};

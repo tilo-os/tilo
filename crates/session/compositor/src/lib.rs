@@ -505,9 +505,9 @@ impl Compositor {
         Ok(self.owes_frame())
     }
 
-    /// When the displays next show a frame: the blank an output that owes
-    /// one is waiting for. `None` while every output shows what it owes now
-    /// (the next [`Compositor::render`] draws it), or owes nothing.
+    /// When the displays next show a frame they owe: the blank the backend
+    /// holds it for. `None` when no output owes one, so the loop waits for an
+    /// event.
     #[must_use]
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.data.backend.next_deadline(&self.data.state)
