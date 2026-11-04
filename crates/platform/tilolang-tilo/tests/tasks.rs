@@ -255,13 +255,18 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
     let view = ada.view(APP);
     assert_eq!(
         count(&view, "Inbox"),
-        4,
-        "all but the filed one, done or not: {:?}",
+        3,
+        "all but the filed one, counting what is still open: {:?}",
         places(&view)
     );
     assert_eq!(count(&view, "Today"), 2, "late and today, not what is done");
     assert_eq!(count(&view, "Upcoming"), 1);
-    assert_eq!(count(&view, "Done"), 1);
+    assert_eq!(
+        count(&view, "Done"),
+        0,
+        "the place of what is done with leaves nothing open: {:?}",
+        places(&view)
+    );
     // A day later, what was upcoming is today's: the window opened then asks for that day.
     ada.host
         .runtime()
@@ -1946,4 +1951,268 @@ fn the_offered_actions_are_the_person_facing_ones() {
             "{gesture} runs from the app's own gestures alone: {offered:?}"
         );
     }
+}
+
+/// The places under each heading of the sidebar, in order: a group's title and its places as
+/// label and count.
+fn sections(view: &ViewInstance) -> Vec<(String, Vec<(String, i64)>)> {
+    fn places_in(node: &UiNode, out: &mut Vec<(String, i64)>) {
+        if node.kind == "ui.NavItem"
+            && let (Some(Value::Text(label)), Some(Value::Int(count))) =
+                (node.props.get("label"), node.props.get("count"))
+        {
+            out.push((label.clone(), *count));
+        }
+        for child in &node.children {
+            places_in(child, out);
+        }
+    }
+    fn walk(node: &UiNode, out: &mut Vec<(String, Vec<(String, i64)>)>) {
+        if node.kind == "ui.NavSection" {
+            let title = match node.props.get("title") {
+                Some(Value::Text(title)) => title.clone(),
+                other => panic!("a section is headed: {other:?}"),
+            };
+            let mut places = Vec::new();
+            places_in(node, &mut places);
+            out.push((title, places));
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(view.tree(), &mut out);
+    out
+}
+
+/// The sidebar the schema draws: the type's own switch places in its order, what is done with
+/// folded under the list rather than offered as a place, and a group per type the root holds a
+/// collection of, its heading adding one of them.
+#[test]
+fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Groceries")],
+    );
+    let milk = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Buy oat milk")],
+    );
+    call(&ada, "file", vec![milk, project.clone()]);
+    let done = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Take the bins out")],
+    );
+    call(&ada, "check", vec![done]);
+    ada.commit();
+    let view = ada.view(APP);
+    let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
+    assert_eq!(
+        &labels[..4],
+        ["Inbox", "Today", "Upcoming", "Done"],
+        "the type's own places: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label == "Priority"),
+        "a priority is searched, not chosen as a place: {labels:?}"
+    );
+    assert_eq!(
+        count(&view, "Inbox"),
+        0,
+        "the inbox's own task: {:?}",
+        places(&view)
+    );
+    assert_eq!(
+        count(&view, "Done"),
+        0,
+        "what is done with leaves nothing open: {:?}",
+        places(&view)
+    );
+    let groups = sections(&view);
+    assert_eq!(
+        groups,
+        vec![("Projects".to_owned(), vec![("Groceries".to_owned(), 1)]),],
+        "the root's projects, each its own place"
+    );
+    // The heading's add is the action that makes another project on the root.
+    let section = key_of(&view, "ui.NavSection", &|node| {
+        node.props.get("title") == Some(&Value::text("Projects"))
+    });
+    let add = node_of(view.tree(), &section)
+        .and_then(|node| node.props.get("add"))
+        .unwrap_or_else(|| panic!("the group offers an add"));
+    let Value::Offered(add) = add else {
+        panic!("an offered action: {add:?}");
+    };
+    assert_eq!(add.label, "New project");
+    assert!(
+        node_of(view.tree(), &section).is_some_and(|node| node.events.contains_key("add.0")),
+        "pressing it runs the action"
+    );
+    assert_eq!(add.icon.as_deref(), Some("folder-plus"));
+}
+
+/// A project's place shows that project's tasks in the same window, and the entry at the
+/// list's foot adds into it: choosing a place navigates in place, never away.
+#[test]
+fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Groceries")],
+    );
+    let milk = call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Buy oat milk")],
+    );
+    call(&ada, "file", vec![milk.clone(), project.clone()]);
+    call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Book a haircut")],
+    );
+    ada.commit();
+    let mut view = ada.view(APP);
+    assert_eq!(home_list_rows(&mut view).len(), 1, "the inbox first");
+    go_to(&mut view, "Groceries");
+    let listed: Vec<String> = home_list_rows(&mut view)
+        .into_iter()
+        .map(|(_, _, of, _)| of)
+        .collect();
+    assert_eq!(listed, vec![target(&milk).unwrap()], "the project's tasks");
+    let want = Value::text(&format!("project:{}", target(&project).unwrap()));
+    let nav = key_of(&view, "ui.NavList", &|node| {
+        node.props.get("selected") == Some(&want)
+    });
+    assert!(
+        node_of(view.tree(), &nav).is_some(),
+        "the window's place is the project's"
+    );
+    let shells = all(view.tree(), "ui.NavShell");
+    let shell = shells.first().expect("the window");
+    assert_eq!(
+        shell.props.get("overview_title"),
+        Some(&Value::text("Groceries")),
+        "and the window's page is titled after it"
+    );
+    let entry = key_of(&view, "ui.TextInput", &|node| {
+        node.props.get("placeholder") == Some(&Value::text("New task in Groceries"))
+    });
+    view.edit(&entry, &Value::text("Buy bread")).unwrap();
+    view.fire(&entry, "submit").unwrap();
+    view.poll_patches().unwrap();
+    let bread = task(&ada, "Buy bread");
+    assert_eq!(
+        target(&read(&ada, &bread, "project")),
+        target(&project),
+        "added into the place's project"
+    );
+    let listed: Vec<String> = home_list_rows(&mut view)
+        .into_iter()
+        .map(|(_, _, of, _)| of)
+        .collect();
+    assert!(
+        listed.contains(&target(&bread).unwrap()),
+        "the list shows it at once: {listed:?}"
+    );
+}
+
+/// Every place of the sidebar leads to a page of its own: a list, or the list's own empty
+/// state. None lands on the window of nothing chosen.
+#[test]
+fn every_place_leads_to_a_list_not_to_the_nothing_chosen_page() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    call(
+        &ada,
+        "rename",
+        vec![project.clone(), Value::text("Groceries")],
+    );
+    call(
+        &ada,
+        "new_task",
+        vec![root.clone(), Value::text("Book a haircut")],
+    );
+    ada.commit();
+    let mut view = ada.view(APP);
+    let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
+    for place in labels {
+        go_to(&mut view, &place);
+        let shells = all(view.tree(), "ui.NavShell");
+        let shell = shells.first().expect("the window");
+        assert_eq!(
+            shell.props.get("overview_title"),
+            Some(&Value::text(&place)),
+            "{place} is the page the window shows"
+        );
+        let shown = !all(view.tree(), "ui.VirtualList").is_empty()
+            || all(view.tree(), "ui.EmptyState").into_iter().any(|node| {
+                node.props
+                    .get("title")
+                    .is_some_and(|title| *title != Value::text("No task selected"))
+            });
+        assert!(shown, "{place} lands on the nothing-chosen page");
+    }
+}
+
+/// With every task in the place done, its count is nothing and the list says so calmly, over
+/// the foot that folds what is done away.
+#[test]
+fn a_place_whose_tasks_are_all_done_says_so() {
+    let (mut ada, root) = workspace();
+    let mut made = Vec::new();
+    for title in ["Buy oat milk", "Take the bins out", "Book a haircut"] {
+        let task = call(&ada, "new_task", vec![root.clone(), Value::text(title)]);
+        made.push(task);
+    }
+    ada.commit();
+    for task in &made {
+        call(&ada, "check", vec![task.clone()]);
+    }
+    ada.commit();
+    let mut view = ada.view(APP);
+    assert_eq!(
+        count(&view, "Inbox"),
+        0,
+        "nothing is open: {:?}",
+        places(&view)
+    );
+    let inline: Vec<&UiNode> = all(view.tree(), "ui.EmptyState")
+        .into_iter()
+        .filter(|node| {
+            matches!(
+                node.props.get("inline"),
+                Some(Value::Bool(true) | Value::Int(1))
+            )
+        })
+        .collect();
+    assert_eq!(inline.len(), 1, "one calm all-done state, above the fold");
+    // The words are the window's, which the test host hands back as the phrase's id.
+    let Some(Value::Text(title)) = inline[0].props.get("title") else {
+        panic!("the all-done state is titled");
+    };
+    let title = title.clone();
+    assert!(
+        title == "All done" || title == "tilolang-all-done",
+        "a calm all-done state, not the empty list's: got {title:?}"
+    );
+    assert_eq!(
+        home_list_rows(&mut view).len(),
+        3,
+        "and what is done with folds under it"
+    );
+    assert_eq!(
+        count(&view, "Today"),
+        0,
+        "and the day's place counts nothing open either"
+    );
 }

@@ -18,7 +18,7 @@ const TASKS: &str = r#"app so.tilo.tasks "Tasks"
 /// Something to do.
 type Task {
     title: Text (title)
-    done: Bool = false
+    done: Bool (done) = false
     due: Option<Date> = .none
     status: Status
     effort: Int
@@ -182,7 +182,7 @@ impl Workspace {
 
     /// The titles of the board's tasks the typed search `q` holds of, as the store lists them
     /// from its index.
-    fn listed(&self, q: &str) -> Vec<String> {
+    fn listing(&self, q: &str) -> Rc<tilolang_runtime::store::Listing> {
         let task = self.ty("Task");
         let resolved = resolve(
             &find(q).unwrap(),
@@ -208,10 +208,23 @@ impl Workspace {
                 resolved.order.as_ref(),
             )
             .unwrap()
+    }
+
+    /// The titles of the board's tasks the typed search `q` holds of, as the store lists them
+    /// from its index.
+    fn listed(&self, q: &str) -> Vec<String> {
+        let task = self.ty("Task");
+        self.listing(q)
             .ids()
             .into_iter()
             .map(|id| self.title(&self.board.item(&id, task.id.clone())))
             .collect()
+    }
+
+    /// The length the store answers `q` with, and whether it is exact.
+    fn counted(&self, q: &str) -> (usize, bool) {
+        let listing = self.listing(q);
+        (listing.len(), listing.len_is_exact())
     }
 
     /// The same, every task read and checked one by one, in the collection's order and then

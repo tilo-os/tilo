@@ -265,6 +265,7 @@ d-swaiyhcf = Show board~present
 d-i2mhsb3h = Home
     .w-tasks = Tasks
     .w-new-task-for-today = New task for today
+    .w-new-task-in = New task in { $name }
     .w-new-task = New task
     .w-no-task-selected = No task selected
 
@@ -298,11 +299,17 @@ d-mtmufg3w = Task page
 
 d-i2mhsb3h-row0 = Home for p
 
-d-i2mhsb3h-row1 = Home for p
+d-i2mhsb3h-row1-row0 = Home for p
+
+d-i2mhsb3h-row1 = Home for g
 
 d-i2mhsb3h-row2 = Home for x
 
+d-i2mhsb3h-row3 = Home for x
+
 d-asnonvwl-row0 = Project page for x
+
+d-asnonvwl-row1 = Project page for x
 
 d-gu3twlv2-row0 = Project board for s
     .w-new-task = New task

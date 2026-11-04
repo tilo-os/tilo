@@ -298,7 +298,10 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
     );
     let ty = printed(&w.run("describe(Task)"));
     assert!(ty.contains("type tasks.Task {"), "{ty}");
-    assert!(ty.contains("    done: Bool\n"), "{ty}");
+    assert!(
+        ty.contains("    done: Bool (done)\n"),
+        "the declaration says the field is the one that is finished: {ty}"
+    );
     assert!(
         ty.contains("filters: inbox, today, upcoming, done, due, project, priority"),
         "{ty}"

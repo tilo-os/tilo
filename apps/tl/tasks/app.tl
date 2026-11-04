@@ -31,7 +31,7 @@ enum RowPlace {
 /// Something to do: what, by when, by whom, and in which project.
 type Task {
     title: Text (title)
-    done: Bool = false
+    done: Bool (done) = false
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
@@ -520,40 +520,30 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
 }
 
 /// The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name
-/// holds of, and the projects, each opening in a window of its own. The place chosen is the
+/// holds of, and the projects, each showing its tasks where they are. The place chosen is the
 /// window's, so everyone looking sees the same list; what is typed in the entry at its foot is
 /// each person's own until Enter adds it.
 view home(t: Tasks) {
     window place: Text = "is:inbox"
     lens draft: Text
-    // The named filters are the places; a priority is picked in search.
-    let places = filters(Task).filter(f -> f.toggle and f.key != "priority")
+    // The sidebar's places are the schema's: this type's filters that are on or off, and a
+    // place per project. A priority is picked in search, not chosen as a place.
+    let side = places(Task, in: t)
+    let chosen = side.places.find(p -> p.key == place)
     let shown = t.items.matching(place).sort_by(.due)
-    let title = places.find(p -> p.query == place)?.label ?? "Tasks"
+    let title = chosen?.label ?? "Tasks"
+    // A project's place adds to that project, in the place's own list.
+    let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
     ui.NavShell(
         content_kind: .document,
         sidebar_title: "Tasks",
         overview_title: title,
-        overview_count: shown.len(),
+        overview_count: chosen?.count ?? shown.len(),
     ) {
+        // What the place leaves open, as its sidebar says it: the rows of what is done with
+        // fold under the list, not into its count.
         sidebar: {
-            ui.NavList(selected: place) {
-                for p in places {
-                    ui.NavItem(
-                        p.query,
-                        p.label,
-                        icon: p.icon,
-                        count: t.items.matching(p.query).len(),
-                    ) {
-                        on select: set(place, p.query)
-                    }
-                }
-                for p in t.projects {
-                    ui.NavItem("project {p.name}", p.name, icon: .folder) {
-                        on select: open(p)
-                    }
-                }
-            }
+            std.sidebar(side, place)
         }
         overview_actions: {
             std.header(actions(t))
@@ -566,6 +556,10 @@ view home(t: Tasks) {
                         if place == "is:today" {
                             ui.TextInput(value: draft, placeholder: "New task for today") {
                                 on submit: quick_add(t, draft, .none, true).then(set(draft, ""))
+                            }
+                        } else if let p = project {
+                            ui.TextInput(value: draft, placeholder: "New task in {p.name}") {
+                                on submit: quick_add(t, draft, project).then(set(draft, ""))
                             }
                         } else {
                             ui.TextInput(value: draft, placeholder: "New task") {
@@ -584,6 +578,7 @@ view home(t: Tasks) {
                     parent: .parent,
                     parent_title: x -> x.parent?.title,
                     progress: x -> subtask_count(x),
+                    all_done: if let c = chosen { c.count == 0 } else { false },
                 ) { x ->
                     if x.title == "" {
                         titled_row(x)

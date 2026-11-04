@@ -1163,7 +1163,9 @@ mod cases {
                 &node_with(tree, "ui.NavItem", "key", "is:today").props["count"],
                 &node_with(tree, "ui.NavItem", "key", "is:done").props["count"]
             ),
-            (&Value::Int(2), &Value::Int(0), &Value::Int(1))
+            // What each place leaves open: the task done with counts nowhere, and is the
+            // whole of the Done place, which says it is all done.
+            (&Value::Int(1), &Value::Int(0), &Value::Int(0))
         );
 
         assert_eq!(
