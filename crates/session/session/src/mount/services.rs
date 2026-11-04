@@ -10,6 +10,8 @@ use tilo_service::Started;
 use tilo_surface_host::{Doors, Published};
 use ui::host_operation::ResourceOperationStart;
 
+use tilo_action_broker::collab_broker::FanoutState;
+
 use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
 use crate::{
     ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
@@ -111,6 +113,10 @@ pub(crate) struct Collaboration<'a> {
     /// written through, whatever the session's collaboration plane.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub sealed: Sealed,
+    /// What the broker hands the apps that have a record open: the one this
+    /// session hands a sibling's writes to, so those reach the apps on the
+    /// route this device's own writes do.
+    pub fanout: std::sync::Arc<FanoutState>,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
     /// The programs agents write in this session's tasks, run by its door.
@@ -231,6 +237,7 @@ pub(crate) fn start_action_plane(
         sync,
         engine,
         sealed,
+        fanout,
         content,
         task_programs,
         nearby,
@@ -273,10 +280,6 @@ pub(crate) fn start_action_plane(
     let personal = sync
         .and_then(crate::sync::Client::personal)
         .map(|personal| personal.sync().clone());
-    // What the broker hands the apps that have a record open, shared with
-    // that store: a write of a sibling's reaches an app here on the route
-    // this device's own writes do.
-    let fanout = std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
     let channels = std::sync::Arc::clone(&sealed.broker);
     let broker = plane::serve(
         path.clone(),

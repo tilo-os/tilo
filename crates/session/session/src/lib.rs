@@ -1608,10 +1608,10 @@ impl Session {
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: plane::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
-                    fanout: std::sync::Arc::clone(&channels_fanout),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
                 content: Some(std::sync::Arc::clone(&record_content)),
+                fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
