@@ -17,6 +17,8 @@
     reason = "test fixtures shared by the session's test binaries: a helper a binary does not use is not an error, and a failed step is the assertion"
 )]
 
+pub mod people;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -176,7 +178,7 @@ pub fn type_text(session: &mut Session, text: &str) {
 /// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows
 /// ("Showing Strips", "Showing Frames", …). Which one it names depends on the desk a test
 /// starts from, so a test asks for the menu rather than for a name.
-pub fn preset_menu(session: &mut Session) -> Option<String> {
+pub fn preset_menu(session: &Session) -> Option<String> {
     session
         .accessible_labels()
         .into_iter()

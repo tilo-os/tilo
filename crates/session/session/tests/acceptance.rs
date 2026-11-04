@@ -74,7 +74,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
 
     // The preset switch: the bar's own menu, saying the preset the desk shows, offering the
     // ways of showing the same places.
-    let menu = preset_menu(&mut session).expect("the desk's preset menu");
+    let menu = preset_menu(&session).expect("the desk's preset menu");
     press(&mut session, &menu);
     for preset in ["Strips", "Frames", "Spaces", "Desktop"] {
         assert!(
@@ -505,7 +505,7 @@ fn step_9_a_theme_switch_changes_looks_only() {
     }
 
     // Where the desk's own parts stand, and what the screen looks like.
-    let menu = preset_menu(&mut session).expect("the desk's preset menu");
+    let menu = preset_menu(&session).expect("the desk's preset menu");
     let controls = [menu.as_str(), "Notifications", "Launcher"];
     let before: Vec<(String, (f64, f64, f64, f64))> = controls
         .iter()
