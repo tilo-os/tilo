@@ -1,14 +1,17 @@
-//! Page DMs on the pair's record: two people's pages announce the pair they
-//! share through the host's workspace door, learn it from the workspace's
-//! governance, and then read and change the record it names. The host records
-//! the proof and carries the record, and the conversation never goes to the
-//! host's old private store.
+//! Page DMs on the pair's record: a page announces the pair its person shares
+//! through the host's workspace door, learns it from the workspace's
+//! governance, and then talks to the pair's other person in the record it
+//! names. The pair's desktop (a native device of the other person) admits the
+//! page to the record's channel and opens what it wrote, live; the page opens
+//! what the desktop writes back. The host carries ciphertext only, and the
+//! page's import door, the old plaintext store, holds nothing.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     clippy::items_after_statements,
+    clippy::too_many_lines,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
@@ -17,17 +20,26 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
-use collab_types::DocumentMutation;
+use std::collections::BTreeSet;
+
+use channel_crypto::{ChannelPeer, VaultKey};
+use collab_types::{
+    ContentRetention, DocumentFrame, DocumentMutation, Ed25519PublicKey, MlsGovernanceFrame,
+    OpKind, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
+};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::PeerHandle;
+use neighbour_wire::NeighbourMsg;
+use tilo_browser_peer::PeerEvent;
+use tilo_browser_peer::invite::guest_certificate;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_user_identity::{DeviceCapabilities, guest_certificate};
+use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, UserIdentity};
 
-use support::{door, enrol, enter, next_document_on, start_workspace_host, wait_for};
+use support::{door, enrol, enter, redeem, start_workspace_host, wait_for};
 
 /// A device certificate for `root`'s page, as the person's own root signs it.
-async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, tilo_user_identity::DeviceCert) {
+async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, DeviceCert) {
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let cert = guest_certificate(
         root,
@@ -40,12 +52,35 @@ async fn page_cert(root: &SigningKey, label: &str) -> (SigningKey, tilo_user_ide
     (key, cert)
 }
 
+/// Publish `message` through the host the way a shell's session does.
+fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
+    let (channel, retention) = neighbour_wire::retention(message, false).unwrap();
+    let body = postcard::to_allocvec(message).unwrap();
+    match retention {
+        neighbour_wire::Retention::Checkpoint => session.publish_checkpoint(channel, body),
+        neighbour_wire::Retention::Delta => session.publish_retained_delta(channel, body),
+    }
+    .unwrap();
+}
+
+/// What `peer` queued to publish, taken.
+fn take(peer: &mut ChannelPeer, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
+    let frames = peer.outbox().to_vec();
+    peer.published(vault).unwrap();
+    frames
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pages_announce_their_pair_and_talk_in_its_record() {
-    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
-    let host_device = enrol(&owner, "owner-home", DeviceCapabilities::host());
+async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
+    // Alice runs the host her workspace lives on, and her desktop is another
+    // device of hers; Bob takes part through the workspace's door.
+    let (alice_root, _) = UserIdentity::generate("Alice", 1);
+    let alice_root_key = alice_root.verifying_key().to_bytes();
+    let bob_root = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let bob_root_key = bob_root.verifying_key().to_bytes();
+    let host_device = enrol(&alice_root, "alice-home", DeviceCapabilities::host());
     let state = tempfile::tempdir().unwrap();
-    let host = start_workspace_host(&owner, &host_device, state.path(), false).await;
+    let host = start_workspace_host(&alice_root, &host_device, state.path(), false).await;
     let workspace = host
         .relay
         .workspaces()
@@ -54,34 +89,13 @@ async fn pages_announce_their_pair_and_talk_in_its_record() {
         .await
         .unwrap();
 
-    // Two people's pages, each let in through the workspace's door.
-    let alice_root = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let alice_root_key = alice_root.verifying_key().to_bytes();
-    let (alice_key, alice_cert) = page_cert(&alice_root, "Alice's page").await;
-    let alice = enter(
-        &host,
-        door(
-            &host,
-            &owner,
-            &host_device,
-            &workspace.workspace,
-            alice_root_key,
-        )
-        .await,
-        &alice_cert,
-        &alice_key,
-        &host_device.cert,
-        workspace.workspace_id,
-    )
-    .await;
-    let bob_root = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let bob_root_key = bob_root.verifying_key().to_bytes();
+    // Bob's page, let in through the workspace's door: a browser of bob's.
     let (bob_key, bob_cert) = page_cert(&bob_root, "Bob's page").await;
     let bob = enter(
         &host,
         door(
             &host,
-            &owner,
+            &alice_root,
             &host_device,
             &workspace.workspace,
             bob_root_key,
@@ -94,77 +108,244 @@ async fn pages_announce_their_pair_and_talk_in_its_record() {
     )
     .await;
 
-    // Each page announces the pair its person shares; the workspace holds it
-    // once, and both pages learn it from the governance they follow.
-    let announce = |peer: &PeerHandle, other: [u8; 32]| {
-        let (done, answer) = tokio::sync::oneshot::channel();
-        peer.announce_pair_then(
-            workspace.workspace_id,
-            other,
-            Box::new(move |result| {
-                let _ = done.send(result);
-            }),
+    // Alice's desktop: a native device of hers, let in the same way.
+    let alice = enrol(&alice_root, "alice-desktop", DeviceCapabilities::primary());
+    redeem(
+        &host,
+        door(
+            &host,
+            &alice_root,
+            &host_device,
+            &workspace.workspace,
+            alice_root_key,
         )
-        .unwrap();
-        async move { answer.await.unwrap() }
-    };
-    announce(&alice, bob_root_key).await.unwrap();
-    announce(&bob, alice_root_key)
-        .await
-        .expect("the workspace already holds the pair, so the second is answered");
-    let pairs = |peer: &PeerHandle| {
+        .await,
+        &alice.cert,
+        &alice.key,
+    )
+    .await;
+
+    // Bob's page announces the pair its person shares; the workspace proves it
+    // and hands the page the pairs it is in, as it hands them to every device.
+    let (done, answer) = tokio::sync::oneshot::channel();
+    bob.announce_pair_then(
+        workspace.workspace_id,
+        alice_root_key,
+        Box::new(move |result| {
+            let _ = done.send(result);
+        }),
+    )
+    .unwrap();
+    answer.await.unwrap().unwrap();
+    let mut people = [hex::encode(bob_root_key), hex::encode(alice_root_key)];
+    people.sort_unstable();
+    let pair = collab_types::direct_pair_id(&workspace.workspace, &people[0], &people[1]).unwrap();
+    let wanted = pair.clone();
+    let held = wait_for("the workspace to prove the pair", || {
         let (done, answer) = tokio::sync::oneshot::channel();
-        peer.pairs_then(
+        bob.pairs_then(
             workspace.workspace_id,
             Box::new(move |pairs| {
                 let _ = done.send(pairs);
             }),
         )
         .unwrap();
-        async move { answer.await.unwrap() }
-    };
-    let mut people = [hex::encode(alice_root_key), hex::encode(bob_root_key)];
-    people.sort_unstable();
-    let pair = collab_types::direct_pair_id(&workspace.workspace, &people[0], &people[1]).unwrap();
-    for peer in [&alice, &bob] {
-        let held = wait_for("the workspace to prove the pair", || {
-            let pairs = pairs(peer);
-            async move { pairs.await.ok().and_then(|pairs| pairs.get(&pair).cloned()) }
-        })
-        .await;
-        assert_eq!(held, people, "both pages learn the pair they are in");
-    }
+        let wanted = wanted.clone();
+        async move {
+            answer
+                .await
+                .ok()
+                .and_then(|pairs| pairs.ok())
+                .and_then(|pairs| pairs.get(&wanted).cloned())
+        }
+    })
+    .await;
+    assert_eq!(held, people, "the page learns the pair it is in");
 
-    // The conversation is that record: one page writes, the other reads it
-    // without asking again.
+    // Alice's desktop holds the pair's record channel, as a pair's own device
+    // does; the page opens the record and writes its message, which waits for
+    // the keys the desktop has to hand out.
     let route = DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: workspace.workspace.clone(),
         record: collab_types::direct_record(&pair),
-        ..support::route()
     };
-    alice
-        .open_record(workspace.workspace_id, route.clone())
+    let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
+    let vault = VaultKey::new([7; 32]);
+    let desktop_dir = tempfile::tempdir().unwrap();
+    let mut desktop_channel = ChannelPeer::create_now(
+        Some(desktop_dir.path()),
+        channel,
+        Box::new(alice.key.clone()),
+        &vault,
+    )
+    .unwrap();
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
         .unwrap();
+    let client = RelayClient::connect(
+        endpoint,
+        host.relay.node_addr(),
+        alice_root_key,
+        alice.cert.clone(),
+        alice.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let alice_device = alice.key.verifying_key().to_bytes();
+    let desktop = RelayCoeditSession::join(client, workspace.workspace_id, alice_device).unwrap();
+    publish(
+        &desktop,
+        &NeighbourMsg::IdentityHello {
+            protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+            cert: Box::new(alice.cert.clone()),
+            revocations: Vec::new(),
+        },
+    );
+    for (index, frame) in take(&mut desktop_channel, &vault).into_iter().enumerate() {
+        publish(
+            &desktop,
+            &NeighbourMsg::MlsGovernance {
+                workspace: workspace.workspace.clone(),
+                frame: Box::new(frame),
+                delivery: 1 + u64::try_from(index).unwrap(),
+            },
+        );
+    }
+    // The record's channel is the pair's: the desktop's own device and the
+    // requiring person's devices, exactly as the workspace's governance names
+    // its readers.
+    let bob_device = Ed25519PublicKey::from_bytes(bob_cert.device_public_key);
+
     bob.open_record(workspace.workspace_id, route.clone())
         .unwrap();
-    let written = DocumentMutation::Incremental(b"a message from Alice's page".to_vec());
-    alice.publish(route.clone(), &written).unwrap();
-    let mut pending = Vec::new();
-    assert_eq!(
-        next_document_on(&bob, &mut pending, &route).await,
-        written,
-        "Bob's page reads what Alice's page wrote in the pair's record"
+    bob.open_route(route.clone()).unwrap();
+    let message = DocumentMutation::Incremental(b"a message from Bob's page".to_vec());
+    bob.publish(route.clone(), &message).unwrap();
+
+    // The desktop admits the page to the record's channel when it asks, then
+    // opens what the page sealed in it: the message arrives live.
+    let mut admitted = false;
+    let mut opened = None;
+    let mut delivery = 2_u64;
+    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    while opened.is_none() {
+        let inbound = tokio::time::timeout_at(deadline, desktop.recv())
+            .await
+            .expect("the page's message to reach the desktop")
+            .expect("the desktop's session open");
+        let Inbound::Delta { data, .. } = inbound else {
+            continue;
+        };
+        match postcard::from_bytes::<NeighbourMsg>(&data) {
+            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, route, .. })
+                if request.channel == channel =>
+            {
+                assert_eq!(request.device, bob_device, "the page asks, not the host");
+                assert_eq!(route.record, collab_types::direct_record(&pair));
+                request.verify().expect("signed by the page's device key");
+                desktop_channel.learn_request(*request, &vault).unwrap();
+                let allowed =
+                    BTreeSet::from([Ed25519PublicKey::from_bytes(alice_device), bob_device]);
+                desktop_channel.reconcile_now(&allowed, &vault).unwrap();
+                for frame in take(&mut desktop_channel, &vault) {
+                    publish(
+                        &desktop,
+                        &NeighbourMsg::MlsGovernance {
+                            workspace: workspace.workspace.clone(),
+                            frame: Box::new(frame),
+                            delivery,
+                        },
+                    );
+                    delivery = delivery.checked_add(1).unwrap();
+                }
+                admitted = true;
+            }
+            Ok(NeighbourMsg::AppDocument {
+                envelope,
+                record_id,
+                ..
+            }) if record_id == route.record => {
+                assert_eq!(envelope.author, bob_device, "what the page wrote");
+                let metadata = envelope
+                    .encryption
+                    .expect("the page never writes the pair's record in the clear");
+                let clear = desktop_channel
+                    .content_keys()
+                    .unwrap()
+                    .open_content(artifact, &metadata, &envelope.payload)
+                    .unwrap();
+                opened = Some(DocumentFrame::decode(&clear).unwrap());
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        admitted,
+        "the desktop admitted the page to the pair's record"
     );
-    let reply = DocumentMutation::Incremental(b"and one back from Bob's page".to_vec());
-    bob.publish(route.clone(), &reply).unwrap();
     assert_eq!(
-        next_document_on(&alice, &mut pending, &route).await,
-        reply,
-        "and Alice's page reads his"
+        opened,
+        Some(DocumentFrame::Whole(message)),
+        "the desktop reads what the page wrote, live"
     );
 
-    for peer in [&alice, &bob] {
-        peer.close();
-    }
+    // The desktop writes back, sealed the same way; the page reads it live.
+    let frame = DocumentMutation::Incremental(b"and one back from Alice's desktop".to_vec())
+        .encode()
+        .unwrap();
+    let (metadata, sealed) = desktop_channel
+        .content_keys()
+        .unwrap()
+        .seal_content(artifact, ContentRetention::Delta, &frame)
+        .unwrap();
+    let mut op = SignedOp::new_unsigned_with_encryption(
+        sealed,
+        artifact,
+        Ed25519PublicKey::from_bytes(alice_device),
+        document_attestation_id(&route.app_id, &route.cluster_id, &route.record),
+        OpKind::Change,
+        std::time::SystemTime::now(),
+        2,
+        metadata,
+    );
+    collab_types::sign_op(&mut op, &alice.key).unwrap();
+    publish(
+        &desktop,
+        &NeighbourMsg::AppDocument {
+            peer: neighbour_wire::peer_handle(&alice_device),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            record_id: route.record.clone(),
+            envelope: Box::new(op),
+        },
+    );
+    let reader = bob.clone();
+    let reply = wait_for("the desktop's message on the pair's record", || {
+        let (reader, route) = (reader.clone(), route.clone());
+        async move {
+            reader.drain().into_iter().find_map(|event| match event {
+                PeerEvent::Document(document)
+                    if document.route == route && document.author == alice_device =>
+                {
+                    document.mutation()
+                }
+                _ => None,
+            })
+        }
+    })
+    .await;
+    assert_eq!(
+        reply,
+        DocumentMutation::Incremental(b"and one back from Alice's desktop".to_vec()),
+        "the page reads what the desktop wrote"
+    );
+
+    desktop.close().await;
+    bob.close();
     drop(host.web);
     host.relay.shutdown().await;
 }
