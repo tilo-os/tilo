@@ -356,7 +356,7 @@ d-mfyylqsl = Key
 d-6ehy2qwa = Label
 
 d-qhf2pyze = Arrangement
-    .doc = The person's own arrangement: what is open where (docs/designs/app-language/shell.md §2, workspace-model.md §9).
+    .doc = The person's arrangement: what is open where (docs/designs/app-language/shell.md §2, workspace-model.md §9).
     .noun = { $count ->
         [one] arrangement
        *[other] arrangements
