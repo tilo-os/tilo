@@ -294,19 +294,32 @@ impl CaptureStudio {
                         feeding.audio.retain(|audio| audio.mux() != track);
                     }
                 }
-                Note::Stopped {
-                    result, dropped, ..
-                } => match result {
+                Note::Stopped { ended, dropped, .. } => match ended {
                     Ok(Some(path)) => {
                         tracing::info!(path = %path.display(), dropped, "a recording was finished");
                         // The receipt says what the file is missing.
                         self.finished = Some(Finished {
-                            path,
+                            path: Some(path),
                             skipped: dropped,
+                            failure: None,
                         });
                     }
                     Ok(None) => {}
-                    Err(error) => tracing::warn!(%error, dropped, "a recording was not finished"),
+                    Err(unfinished) => {
+                        // What was written is kept rather than left behind,
+                        // and the receipt says why it is not whole.
+                        tracing::warn!(
+                            %unfinished.error,
+                            path = ?unfinished.path,
+                            dropped,
+                            "a recording was not finished"
+                        );
+                        self.finished = Some(Finished {
+                            path: unfinished.path,
+                            skipped: dropped,
+                            failure: Some(unfinished.error),
+                        });
+                    }
                 },
             }
         }
@@ -1069,5 +1082,107 @@ fn preview(frame: &Frame) -> CapturePreview {
         columns,
         rows,
         pixels,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::{Sender, channel};
+
+    use tilo_capture_studio::Unfinished;
+    use tilo_compositor::{Compositor, OutputConfig, StackPolicy};
+
+    use super::*;
+
+    /// The studio over a headless compositor, keeping its captures in
+    /// `pictures`, and where what became of the recorder is said: the
+    /// worker's own notes go nowhere, so a test says what a failing encoder
+    /// says.
+    fn studio(pictures: &Path) -> (CaptureStudio, Compositor, Sender<Note>) {
+        let options = Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            pictures: Some(pictures.to_path_buf()),
+            ..Options::default()
+        };
+        let mut compositor =
+            Compositor::headless(Box::new(StackPolicy)).expect("an in-process compositor");
+        compositor
+            .add_output(&OutputConfig::new("HEADLESS-1", 1280, 800))
+            .expect("a display");
+        let mut doors = Doors::default();
+        let (io, worker_notes) = CaptureIo::new(options.wake.handle());
+        let (said, notes) = channel();
+        let studio = mount(&mut compositor, &mut doors, &options, None, io, notes)
+            .expect("the studio mounts");
+        drop(worker_notes);
+        (studio, compositor, said)
+    }
+
+    /// A recording the person started and stopped, and the file it asked for.
+    fn stopped_recording(studio: &mut CaptureStudio) -> (u64, PathBuf) {
+        studio.start(Take::default());
+        let recording = studio.recording.clone().expect("the recording runs");
+        let run = studio.run;
+        studio.stop();
+        (run, recording.path)
+    }
+
+    /// A recording whose file the encoder could not finish is said on the
+    /// studio it was started from, with the file it kept or that it kept
+    /// none: the person sees what became of it rather than nothing.
+    #[test]
+    fn a_recording_the_encoder_could_not_finish_says_so_and_what_it_kept() {
+        let pictures = tempfile::tempdir().expect("a folder");
+        let (mut studio, mut compositor, said) = studio(pictures.path());
+
+        // What the encoder left: half a file, and why it stopped there.
+        let (run, path) = stopped_recording(&mut studio);
+        std::fs::write(&path, b"half a recording").expect("what was written");
+        said.send(Note::Stopped {
+            run,
+            ended: Err(Unfinished {
+                path: Some(path.clone()),
+                error: "the muxer failed: Internal data stream error".to_owned(),
+            }),
+            dropped: 4,
+        })
+        .expect("the worker says what became of the recording");
+        studio.serve(&mut compositor);
+        assert_eq!(
+            studio.seat.link().scene().finished,
+            Some(Finished {
+                path: Some(path),
+                skipped: 4,
+                failure: Some("the muxer failed: Internal data stream error".to_owned()),
+            }),
+            "the studio is handed the file it kept and what went wrong"
+        );
+        assert!(
+            studio.seat.link().scene().recording.is_none(),
+            "nothing is recording any more"
+        );
+
+        // A recording that wrote nothing: the same receipt, without a file.
+        let (run, path) = stopped_recording(&mut studio);
+        said.send(Note::Stopped {
+            run,
+            ended: Err(Unfinished {
+                path: None,
+                error: "no frame was written to the file".to_owned(),
+            }),
+            dropped: 0,
+        })
+        .expect("the worker says what became of the recording");
+        studio.serve(&mut compositor);
+        assert_eq!(
+            studio.seat.link().scene().finished,
+            Some(Finished {
+                path: None,
+                skipped: 0,
+                failure: Some("no frame was written to the file".to_owned()),
+            }),
+            "a failure that kept no file says so"
+        );
+        assert!(!path.exists(), "nothing was written there");
     }
 }

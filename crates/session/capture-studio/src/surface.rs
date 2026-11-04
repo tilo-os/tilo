@@ -44,7 +44,9 @@ pub struct StudioSurface {
     /// The scene shown, and the generation it was published with.
     scene: Scene,
     shown: u64,
-    /// The recording that ended, while its receipt offers to play or show it.
+    /// The file of the recording that ended, while its receipt offers to
+    /// play or show it: a recording that could not be finished leaves
+    /// nothing to play.
     finished: Option<std::path::PathBuf>,
     /// Whether the person sent the last screenshot somewhere the session is
     /// still delivering it: the bar went down with the picker, and the studio
@@ -262,7 +264,8 @@ impl StudioSurface {
     }
 
     /// Show the recording that runs, and what became of the one that ended:
-    /// the frames it had to skip, and the receipt that plays or shows it.
+    /// the frames it had to skip, or why its file could not be finished, and
+    /// the receipt that plays or shows it.
     fn show_recording(&mut self, scene: &Scene) {
         let was = self.scene.recording.is_some();
         match &scene.recording {
@@ -279,8 +282,13 @@ impl StudioSurface {
         }
         match &scene.finished {
             Some(finished) => {
-                self.finished = Some(finished.path.clone());
-                self.widget.set_recording_finished(finished.skipped);
+                self.finished.clone_from(&finished.path);
+                match &finished.failure {
+                    Some(reason) => self
+                        .widget
+                        .set_recording_failed(reason.clone(), finished.path.is_some()),
+                    None => self.widget.set_recording_finished(finished.skipped),
+                }
             }
             None => self.finished = None,
         }

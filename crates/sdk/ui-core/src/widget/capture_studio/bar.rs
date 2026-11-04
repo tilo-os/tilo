@@ -4,6 +4,7 @@
 //! and the status form a recording, a countdown or the kept last 30 seconds
 //! shows — and one shutter at its centre.
 
+use super::receipt::ReceiptAction;
 use super::{
     Button, ButtonFace, CaptureButtonFace, CaptureKind, CaptureMode, CaptureStudio, ControlSize,
     Icon, IconButton, OUTPUTS, PaintCtx, PipLayout, Point, RecordingCommand, Rect, ReplayCommand,
@@ -73,6 +74,17 @@ pub(super) fn studio_text(key: &str) -> String {
 /// What a recording skipped, said in words.
 pub(super) fn skipped_sentence(skipped: u64) -> String {
     crate::i18n::widget_format("widget-recording-skipped", &[("count", skipped.into())])
+}
+
+/// Why a recording's file could not be finished, said in words, and whether
+/// what was written stays: a file without its trailer is not whole.
+pub(super) fn failed_sentence(reason: &str, kept: bool) -> String {
+    let key = if kept {
+        "widget-recording-incomplete"
+    } else {
+        "widget-recording-not-saved"
+    };
+    crate::i18n::widget_format(key, &[("reason", reason.into())])
 }
 
 pub(super) fn output_key(mode: CaptureMode) -> &'static str {
@@ -291,14 +303,31 @@ impl CaptureStudio {
         self.shows_status() && !self.replay_active && self.recording_skipped > 0
     }
 
-    /// What became of the last recording: the frames it skipped, or that it
-    /// is saved.
+    /// What became of the last recording: why its file could not be
+    /// finished, the frames it skipped, or that it is saved.
     pub(super) fn recording_status(&self) -> String {
+        if let Some(reason) = &self.recording_failure {
+            return failed_sentence(reason, self.recording_kept);
+        }
         if self.recording_skipped > 0 {
             skipped_sentence(self.recording_skipped)
         } else {
             studio_text("widget-recording-saved")
         }
+    }
+
+    /// What the receipt of the recording that ended offers: a whole file
+    /// plays and shows in Files; one that was not finished only shows, and
+    /// only while what was written is there.
+    pub(super) fn recording_actions(&self) -> Vec<ReceiptAction> {
+        if self.recording_failure.is_some() {
+            return self
+                .recording_kept
+                .then_some(ReceiptAction::Reveal)
+                .into_iter()
+                .collect();
+        }
+        vec![ReceiptAction::Play, ReceiptAction::Reveal]
     }
 
     /// The bar shows its status form: a recording, its start, a countdown,

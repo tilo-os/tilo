@@ -81,11 +81,15 @@ pub struct Recording {
 /// A recording that ended, while its receipt says what it made.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Finished {
-    /// The file it was written to.
-    pub path: PathBuf,
+    /// The file it wrote, while one is there to open: a recording that could
+    /// not be finished leaves what it wrote, unless it wrote nothing.
+    pub path: Option<PathBuf>,
     /// Frames the encoder was too far behind to take: what the file is
     /// missing.
     pub skipped: u64,
+    /// Why the file could not be finished, when it could not: it carries no
+    /// trailer, so it is not whole.
+    pub failure: Option<String>,
 }
 
 /// What became of sending the last screenshot: to one of the person's other
@@ -218,7 +222,9 @@ pub struct Scene {
     pub sent: Option<Sent>,
     /// The recording that runs, and whether it is paused.
     pub recording: Option<Recording>,
-    /// The recording that ended, while its receipt says what it made of it.
+    /// The recording that ended, while its receipt says what it made of it:
+    /// where its file is, and why it could not be finished when it could
+    /// not.
     pub finished: Option<Finished>,
     /// Seconds of the last half minute kept ready to clip, while that runs.
     pub replay: Option<u8>,

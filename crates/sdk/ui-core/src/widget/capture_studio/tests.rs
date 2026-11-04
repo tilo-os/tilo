@@ -1,4 +1,4 @@
-use super::bar::skipped_sentence;
+use super::bar::{failed_sentence, skipped_sentence};
 use super::*;
 
 const SCREEN: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
@@ -526,4 +526,76 @@ fn a_recording_that_skipped_frames_says_so_while_it_runs_and_after() {
     s.set_recording_active(true);
     s.set_recording_finished(0);
     assert_eq!(s.recording_status(), studio_text("widget-recording-saved"));
+}
+
+/// A recording whose file could not be finished says why in place of what it
+/// skipped, and offers only to show what was written: a file without its
+/// trailer does not play, and one that was never written is not shown.
+#[test]
+fn a_recording_that_could_not_be_finished_says_why_and_shows_what_it_kept() {
+    let mut s = studio();
+    s.set_recording_active(true);
+    s.set_recording_skipped(4);
+    let reason = "the muxer failed: Internal data stream error";
+    s.set_recording_failed(reason.to_owned(), true);
+    assert_eq!(
+        s.recording_status(),
+        failed_sentence(reason, true),
+        "the receipt says what went wrong and that the file is kept"
+    );
+    assert!(
+        s.recording_status().contains(reason),
+        "in the stack's words"
+    );
+    let shown = names(&s);
+    assert!(
+        !shown.contains(&"capture.play-recording".to_owned()),
+        "a file that was not finished is not played: {shown:?}"
+    );
+    assert!(
+        shown.contains(&"capture.show-recording".to_owned()),
+        "what was written is shown in Files: {shown:?}"
+    );
+
+    // Nothing was written: the receipt still says why, and there is nothing
+    // to open.
+    s.set_recording_active(true);
+    s.set_recording_failed(reason.to_owned(), false);
+    assert_eq!(s.recording_status(), failed_sentence(reason, false));
+    assert!(
+        !names(&s).contains(&"capture.show-recording".to_owned()),
+        "there is no file to show: {:?}",
+        names(&s)
+    );
+
+    // A recording that follows is about itself, not the one that failed.
+    s.set_recording_active(true);
+    s.set_recording_finished(0);
+    assert_eq!(s.recording_status(), studio_text("widget-recording-saved"));
+}
+
+/// A saved recording's receipt is carried out after a few seconds; the word
+/// of one that could not be finished stays, whole, until the person puts it
+/// away.
+#[test]
+fn a_recording_that_could_not_be_finished_stays_until_it_is_put_away() {
+    let long_ago = crate::time::now() - crate::time::Duration::from_secs(30);
+    let mut s = studio();
+    s.set_recording_active(true);
+    s.set_recording_finished(0);
+    s.recording_finished_at = Some(long_ago);
+    assert!(
+        s.recording_receipt_over(),
+        "a saved recording's receipt goes by itself"
+    );
+    assert_eq!(s.recording_receipt_alpha(false), 0.0, "and has faded out");
+
+    s.set_recording_active(true);
+    s.set_recording_failed("the muxer failed".to_owned(), true);
+    s.recording_finished_at = Some(long_ago);
+    assert!(
+        !s.recording_receipt_over(),
+        "the word of the failure and the way to the file stay"
+    );
+    assert_eq!(s.recording_receipt_alpha(false), 1.0, "and stay readable");
 }

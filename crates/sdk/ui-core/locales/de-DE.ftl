@@ -815,6 +815,8 @@ widget-recording-skipped = { $count ->
     [one] 1 Bild wurde übersprungen: die Festplatte war zu langsam
    *[other] { $count } Bilder wurden übersprungen: die Festplatte war zu langsam
 }
+widget-recording-incomplete = Aufnahme unvollständig: { $reason }
+widget-recording-not-saved = Aufnahme nicht gespeichert: { $reason }
 widget-recording-play = Abspielen
 widget-replay-save = Letzte 30 s speichern
 widget-replay-stop = Letzte 30 s nicht mehr behalten

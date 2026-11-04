@@ -469,6 +469,12 @@ pub struct CaptureStudio {
     recording_finished_at: Option<Instant>,
     /// Frames the recording that ended had to skip, while its receipt shows.
     recording_skipped: u64,
+    /// Why the recording that ended could not be finished, while its
+    /// receipt says so.
+    recording_failure: Option<String>,
+    /// Whether the recording that ended left a file: one that was not
+    /// finished leaves what was written, unless it wrote nothing.
+    recording_kept: bool,
     replay_active: bool,
     replay_buffered_seconds: u8,
     replay_audio: AudioCaptureMode,
@@ -529,6 +535,8 @@ impl Default for CaptureStudio {
             take: RecordingTake::default(),
             recording_finished_at: None,
             recording_skipped: 0,
+            recording_failure: None,
+            recording_kept: true,
             replay_active: false,
             replay_buffered_seconds: 0,
             replay_audio: AudioCaptureMode::None,
@@ -808,16 +816,31 @@ impl CaptureStudio {
     fn end_recording_receipt(&mut self) {
         self.recording_finished_at = None;
         self.recording_skipped = 0;
+        self.recording_failure = None;
+        self.recording_kept = true;
     }
 
     /// The compositor flushed the recording: the bar gives way to a receipt
-    /// that plays it or shows it in Files. Failures use
-    /// `set_recording_active(false)` instead, so a receipt never shows for an
-    /// incomplete file.
+    /// that plays it or shows it in Files.
     pub fn set_recording_finished(&mut self, skipped: u64) {
         self.dirty = true;
         self.take = RecordingTake::default();
         self.recording_skipped = skipped;
+        self.recording_finished_at = Some(crate::time::now());
+        self.open = true;
+        if !self.replay_active {
+            self.scope = None;
+        }
+    }
+
+    /// The recording's file could not be finished: the same receipt says
+    /// why, and keeps what was written rather than playing a file that is
+    /// not whole. `kept` says whether a file is there to show.
+    pub fn set_recording_failed(&mut self, reason: String, kept: bool) {
+        self.dirty = true;
+        self.take = RecordingTake::default();
+        self.recording_failure = Some(reason);
+        self.recording_kept = kept;
         self.recording_finished_at = Some(crate::time::now());
         self.open = true;
         if !self.replay_active {
@@ -2217,9 +2240,9 @@ impl Widget for CaptureStudio {
                 crate::time::now().saturating_duration_since(receipt.shown_at)
                     < SCREENSHOT_RECEIPT_DURATION
             })
-            || self.recording_finished_at.is_some_and(|at| {
-                crate::time::now().saturating_duration_since(at) < RECORDING_RECEIPT_DURATION
-            })
+            // Frames carry a saved recording's receipt out; one that could not
+            // be finished stays as it is until it is put away.
+            || (self.recording_finished_at.is_some() && self.recording_failure.is_none())
             || (self.open
                 && self.opened_at.is_some_and(|at| {
                     crate::time::now().saturating_duration_since(at)

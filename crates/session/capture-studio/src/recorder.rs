@@ -220,6 +220,16 @@ impl Replay {
     }
 }
 
+/// What a recording left behind when its file could not be finished.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unfinished {
+    /// The file it was writing, while what was written is still there to
+    /// keep: a file without its trailer may still hold the frames it took.
+    pub path: Option<PathBuf>,
+    /// What went wrong, in the media stack's words.
+    pub error: String,
+}
+
 /// Records the desktop: one encoder, the file being written if any, and the
 /// replay buffer that always fills.
 pub struct Recorder {
@@ -419,8 +429,9 @@ impl Recorder {
     ///
     /// # Errors
     ///
-    /// When the file cannot be finished.
-    pub fn stop(&mut self) -> Result<Option<PathBuf>, String> {
+    /// When the file cannot be finished: what went wrong, and the file it
+    /// left when it is still there.
+    pub fn stop(&mut self) -> Result<Option<PathBuf>, Unfinished> {
         let (State::Recording | State::Paused) = self.state else {
             return Ok(None);
         };
@@ -428,8 +439,13 @@ impl Recorder {
         let Some((path, recording)) = self.recording.take() else {
             return Ok(None);
         };
-        recording.finish()?;
-        Ok(Some(path))
+        match recording.finish() {
+            Ok(()) => Ok(Some(path)),
+            Err(error) => Err(Unfinished {
+                path: path.exists().then_some(path),
+                error,
+            }),
+        }
     }
 
     /// Write what the replay buffer holds to `path` as its own clip, and

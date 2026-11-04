@@ -821,6 +821,8 @@ widget-recording-skipped = { $count ->
     [one] 1 frame was skipped: the disk was too slow
    *[other] { $count } frames were skipped: the disk was too slow
 }
+widget-recording-incomplete = Recording incomplete: { $reason }
+widget-recording-not-saved = Recording not saved: { $reason }
 widget-recording-play = Play
 widget-replay-save = Save last 30 s
 widget-replay-stop = Stop keeping the last 30 s

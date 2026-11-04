@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use tilo_capture_studio::{Frame, Recorder, Settings};
+use tilo_capture_studio::{Frame, Recorder, Settings, Unfinished};
 use tilo_service::Wake;
 
 /// Frames the encoder may hold before the loop keeps one back. One frame is
@@ -48,11 +48,14 @@ pub(crate) enum Note {
     /// A track's sound ended or could not be written, by its recorder
     /// number.
     SoundLost { run: u64, track: usize },
-    /// The recording's file was finished, or why it was not, and how many
-    /// frames the encoder was too far behind to take.
+    /// The recording's file was finished, or why it was not and what it
+    /// left behind, and how many frames the encoder was too far behind to
+    /// take.
     Stopped {
         run: u64,
-        result: Result<Option<PathBuf>, String>,
+        /// The file it finished, or why it could not be finished and the
+        /// file it left. `Ok(None)`: only the replay buffer ran.
+        ended: Result<Option<PathBuf>, Unfinished>,
         dropped: u64,
     },
 }
@@ -214,7 +217,10 @@ impl CaptureIo {
         if !self.submit(Job::Stop { dropped }) {
             let _ = self.notes.send(Note::Stopped {
                 run: self.run.get(),
-                result: Err(NO_WORKER.to_owned()),
+                ended: Err(Unfinished {
+                    path: None,
+                    error: NO_WORKER.to_owned(),
+                }),
                 dropped,
             });
         }
@@ -397,8 +403,12 @@ impl Worker {
                 self.buffered.store(0, Ordering::Release);
             }
             Job::SaveReplay { path, done } => {
+                // The media stack says what went wrong; the caller names the
+                // file it was writing, which the stack no longer does.
                 let answer = match self.recorder.as_mut() {
-                    Some(open) => open.save_replay(path),
+                    Some(open) => open
+                        .save_replay(path.clone())
+                        .map_err(|error| format!("{}: {error}", path.display())),
                     None => Err("no replay buffer is kept".to_owned()),
                 };
                 let _ = done.send(answer);
@@ -515,14 +525,14 @@ impl Worker {
         // A recording whose encoder was never built wrote nothing: its first
         // frame never came.
         self.opening = None;
-        let result = match self.recorder.take() {
+        let ended = match self.recorder.take() {
             Some(mut open) => open.stop(),
             None => Ok(None),
         };
         self.buffered.store(0, Ordering::Release);
         let _ = self.notes.send(Note::Stopped {
             run: self.run,
-            result,
+            ended,
             dropped,
         });
         self.wake();
@@ -731,7 +741,7 @@ mod tests {
             .expect("the stop is said");
         let Note::Stopped {
             run,
-            result,
+            ended,
             dropped,
         } = stopped
         else {
@@ -740,11 +750,70 @@ mod tests {
         assert_eq!(run, 1);
         assert_eq!(dropped, 0, "nothing was dropped");
         assert_eq!(
-            result,
+            ended,
             Ok(Some(path.clone())),
             "the file was finished where it was started"
         );
         let bytes = std::fs::read(&path).expect("the recording is on disk");
         assert!(!bytes.is_empty(), "the file is written");
+    }
+
+    /// A recording the encoder could not finish says what went wrong, and
+    /// whether a file was left: a file it never wrote is not one to keep.
+    #[test]
+    fn a_recording_that_could_not_be_finished_says_so_and_what_it_left() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let (io, notes) = CaptureIo::new(Arc::new(|| {}));
+        let path = folder.path().join("recording.mp4");
+        io.open(1, Some(path.clone()), Vec::new());
+        // Held before its first frame and stopped: the encoder is built for a
+        // file that never takes a frame, so finishing it fails.
+        io.paused(true);
+        assert!(
+            io.feed(frame(1280, 800), Vec::new()),
+            "the first frame goes"
+        );
+        io.stop();
+        let mut heard = Vec::new();
+        loop {
+            let note = notes
+                .recv_timeout(Duration::from_secs(20))
+                .expect("the worker says what became of the recording");
+            let stopped = matches!(note, Note::Stopped { .. });
+            heard.push(note);
+            if stopped {
+                break;
+            }
+        }
+        if heard
+            .iter()
+            .any(|note| matches!(note, Note::Opened { result: Err(_), .. }))
+        {
+            // No encoder on this machine takes the frame: the start said why,
+            // and no file was opened to fail on.
+            return;
+        }
+        let Some(Note::Stopped {
+            run,
+            ended,
+            dropped,
+        }) = heard.last()
+        else {
+            panic!("the stop is said");
+        };
+        assert_eq!(
+            *run, 1,
+            "the note is about the recording the person stopped"
+        );
+        assert_eq!(*dropped, 0, "nothing was dropped");
+        let Err(Unfinished { path: left, error }) = ended else {
+            panic!("a file that never took a frame is not finished: {ended:?}");
+        };
+        assert!(!error.is_empty(), "a failure says why");
+        assert_eq!(*left, None, "the encoder wrote no file to keep");
+        assert!(
+            !path.exists(),
+            "the file a finished stop would have written is not there"
+        );
     }
 }

@@ -28,7 +28,7 @@ mod recorder;
 
 pub use recorder::{
     Frame, REPLAY_BYTES, REPLAY_FPS, REPLAY_FRAMES, REPLAY_SECONDS, Recorder, Settings, State,
-    extension,
+    Unfinished, extension,
 };
 
 pub mod link;
@@ -282,8 +282,9 @@ mod tests {
         // says what the file is missing and plays it.
         seat.link().publish(Scene {
             finished: Some(Finished {
-                path: recording.clone(),
+                path: Some(recording.clone()),
                 skipped: 12,
+                failure: None,
             }),
             ..Scene::default()
         });
@@ -346,8 +347,9 @@ mod tests {
         // What the file is missing is still said: the receipt comes back up.
         seat.link().publish(Scene {
             finished: Some(Finished {
-                path: recording,
+                path: Some(recording),
                 skipped: 3,
+                failure: None,
             }),
             ..Scene::default()
         });
@@ -369,6 +371,108 @@ mod tests {
         assert!(
             !has(&frame, step(8), "capture.play-recording"),
             "a studio the shell took down stays down"
+        );
+    }
+
+    /// A recording the encoder could not finish says why, and keeps what it
+    /// wrote: the receipt comes back up, shows the file, and does not offer
+    /// to play a file that carries no trailer.
+    #[test]
+    fn a_recording_that_could_not_be_finished_says_so_and_shows_its_file() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let recording = folder.path().join("Recording 1.mp4");
+        std::fs::write(&recording, b"half a recording").expect("a recording");
+        let seat = Studio::new();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(seat.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        let start = ui::time::now();
+        let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
+        seat.presentation().open(false);
+        poll_at(&mut frame, step(1), "the bar comes up");
+        seat.link().publish(Scene {
+            recording: Some(Recording {
+                path: recording.clone(),
+                paused: false,
+                skipped: 0,
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(2), "the recording shows");
+        assert!(
+            has(&frame, step(2), "capture.stop"),
+            "the bar shows the recording that runs"
+        );
+
+        // The person stops, the bar puts itself away, and the encoder fails
+        // to finish the file.
+        seat.link().publish(Scene::default());
+        poll_at(&mut frame, step(3), "the take is down");
+        poll_at(&mut frame, step(4), "the bar put itself away");
+        assert!(
+            !seat.presentation().is_drawn(),
+            "the studio is down while the file is finished"
+        );
+        seat.link().publish(Scene {
+            finished: Some(Finished {
+                path: Some(recording.clone()),
+                skipped: 0,
+                failure: Some("the muxer failed: Internal data stream error".to_owned()),
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(5), "the failure comes back");
+        poll_at(&mut frame, step(6), "the failure stays");
+        assert!(
+            seat.presentation().is_open(),
+            "the shell shows the studio again, saying what became of the recording"
+        );
+        assert!(
+            !has(&frame, step(6), "capture.play-recording"),
+            "a file that was not finished is not played"
+        );
+        press(&mut frame, step(7), "capture.show-recording");
+        assert_eq!(
+            seat.link().take_asks(),
+            [Ask::Reveal(recording)],
+            "the receipt shows what was written in Files"
+        );
+    }
+
+    /// A recording that kept no file says so too, and offers nothing to open.
+    #[test]
+    fn a_recording_that_kept_no_file_says_so_and_offers_nothing() {
+        let seat = Studio::new();
+        let mut frame = ui::headless::FrameHarness::for_root(
+            ui::state::State::new(),
+            StudioSurface::new(Some(seat.clone())),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        );
+        let start = ui::time::now();
+        let step = |frames: u64| start + ui::time::Duration::from_millis(frames * 250);
+        seat.presentation().open(false);
+        poll_at(&mut frame, step(1), "the bar comes up");
+        seat.link().publish(Scene {
+            finished: Some(Finished {
+                path: None,
+                skipped: 0,
+                failure: Some("no frame was written to the file".to_owned()),
+            }),
+            ..Scene::default()
+        });
+        poll_at(&mut frame, step(2), "the failure shows");
+        assert!(
+            seat.presentation().is_open(),
+            "the studio says what became of the recording"
+        );
+        assert!(
+            !has(&frame, step(2), "capture.show-recording")
+                && !has(&frame, step(2), "capture.play-recording"),
+            "there is no file to open"
         );
     }
 }
