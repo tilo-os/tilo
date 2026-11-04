@@ -1013,15 +1013,13 @@ impl Device {
     /// The manifest is the app's own (`apps/chat/tilo-app.toml`), except for
     /// the runtime bundle it names: an app of this build runs on the machine
     /// it was built on, and the bundle an installed desktop carries is not
-    /// here.
+    /// here. The runtime host is the build's own, beside the app, as
+    /// `runtime_portal::native` looks for it before the installed one.
     pub fn install_chat(&self) {
-        let binary = tilo_test_env::sibling_binary("chat", "chat");
-        let store = self.store();
-        let payload = store.join("payload/so.tilo.chat");
-        std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
-        std::fs::copy(&binary, payload.join("bin/chat")).expect("the app this run built");
+        let payload = chat_payload().to_path_buf();
         let manifest = payload.join("manifest.toml");
-        std::fs::write(&manifest, chat_manifest()).expect("the app's manifest");
+        let store = self.store();
+        std::fs::create_dir_all(&store).expect("the device's store");
         std::fs::write(
             store.join("registry.toml"),
             format!(
@@ -1385,6 +1383,27 @@ impl Chat<'_> {
         }
     }
 
+    /// Wait until Chat counts `wanted` messages of `peer` as unread here.
+    pub fn wait_for_unread(&self, peer: &str, wanted: u64) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let count = self.unread(peer);
+            if count == wanted {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "{DIAG}{} counts {count} unread from {peer} instead of {wanted}\n\
+                     what the session warned and failed at:\n{}",
+                    self.device.label,
+                    self.device.warnings(),
+                    DIAG = self.device.diagnostic()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
     /// Whether the app answered a read of the conversation with `peer`: it
     /// refuses one with someone it does not know in the workspace.
     fn reads(&self, peer: &str) -> bool {
@@ -1405,6 +1424,29 @@ impl Drop for Device {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// The payload every device of this test installs Chat from: the app and the
+/// runtime host the run built, beside each other as an installed payload keeps
+/// them, with Chat's manifest. Staged once per test process, in the build's own
+/// directory, so the two programs are hardlinks of what the run built and no
+/// device pays for a copy of a debug binary.
+fn chat_payload() -> &'static Path {
+    static PAYLOAD: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PAYLOAD.get_or_init(|| {
+        let binary = tilo_test_env::sibling_binary("chat", "chat");
+        let host = tilo_test_env::sibling_binary("tilo-runtime", "tilo-runtime");
+        let build = binary.parent().expect("the build's own directory");
+        let payload = build.join(format!("chat-payload-{}", std::process::id()));
+        std::fs::create_dir_all(payload.join("bin")).expect("the package's payload");
+        for (from, name) in [(binary, "chat"), (host, "tilo-runtime")] {
+            let to = payload.join("bin").join(name);
+            let _ = std::fs::remove_file(&to);
+            std::fs::hard_link(&from, &to).expect("the program this run built");
+        }
+        std::fs::write(payload.join("manifest.toml"), chat_manifest()).expect("the app's manifest");
+        payload
+    })
 }
 
 /// Chat's manifest as one of this machine's stores installs it: the app's own

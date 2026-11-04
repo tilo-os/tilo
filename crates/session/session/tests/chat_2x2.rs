@@ -148,6 +148,31 @@ fn a_message_reaches_both_people_on_both_of_their_devices_live() {
     }
 }
 
+/// Two desktops talk to each other: what one writes arrives in the other's
+/// open conversation, and its answer comes back the same way.
+#[test]
+fn two_desktops_message_each_other() {
+    let studio = Studio::start();
+    let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
+    studio.ada_laptop.chat().open(&bob_key);
+    studio.bob_laptop.chat().open(&ada_key);
+    studio.ada_laptop.chat().send(&bob_key, "hello Bob");
+    studio
+        .bob_laptop
+        .chat()
+        .wait_for_texts(&ada_key, &["hello Bob"]);
+    studio.bob_laptop.chat().send(&ada_key, "hello Ada");
+    studio
+        .ada_laptop
+        .chat()
+        .wait_for_texts(&bob_key, &["hello Bob", "hello Ada"]);
+    assert_eq!(
+        message_ids(&studio.ada_laptop, &bob_key),
+        message_ids(&studio.bob_laptop, &ada_key),
+        "both desktops read the conversation as one"
+    );
+}
+
 /// The ids of the messages the conversation with `peer` shows, in the app's
 /// order.
 fn message_ids(device: &Device, peer: &str) -> Vec<String> {
@@ -270,18 +295,18 @@ fn one_read_mark_advances_once_and_both_of_a_persons_devices_agree() {
     }
     // Bob has read none of Ada's on either device.
     for device in [&studio.bob_laptop, &studio.bob_phone] {
-        tilo_test_env::wait_until(format!("{} counts three unread", device.label), || {
-            device.chat().unread(&ada_key) == 3
-        });
+        device.chat().wait_for_unread(&ada_key, 3);
     }
     // Reading them on his laptop marks them read for his phone too.
     studio.bob_laptop.chat().open(&ada_key);
-    tilo_test_env::wait_until("Bob's laptop reads them all", || {
-        studio.bob_laptop.chat().unread(&ada_key) == 0
-    });
-    tilo_test_env::wait_until("Bob's phone agrees", || {
-        studio.bob_phone.chat().unread(&ada_key) == 0
-    });
+    studio.bob_laptop.chat().wait_for_unread(&ada_key, 0);
+    studio.bob_phone.chat().wait_for_unread(&ada_key, 0);
+    // Read is not gone: both of his devices still show what Ada wrote.
+    for device in [&studio.bob_laptop, &studio.bob_phone] {
+        device
+            .chat()
+            .wait_for_texts(&ada_key, &["one", "two", "three"]);
+    }
     // Ada's own messages are hers: nothing of Bob's is unread for her, and
     // nothing of hers is unread for herself.
     assert_eq!(studio.ada_laptop.chat().unread(&bob_key), 0);

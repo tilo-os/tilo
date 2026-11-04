@@ -67,13 +67,13 @@ platform = { host = 'cfg(target_os = "linux")' }
 filter = "package(tilo-session) or package(tilo-quick-settings)"
 setup = "session-siblings"
 
-# Chat's acceptance drives the app itself, as a desktop starts it: the app and
-# the launcher that starts it are packages of other crates, which Cargo builds
-# for no test of the session's.
+# Chat's acceptance drives the app itself, as a desktop starts it: the app, the
+# launcher that starts it and the runtime host the app runs on are packages of
+# other crates, which Cargo builds for no test of the session's.
 [scripts.setup.chat-siblings]
 command = [
     "bash", "tools/build-sibling-binaries.sh",
-    "chat:chat", "launcher:tilo-launcher",
+    "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime",
 ]
 
 [[profile.default.scripts]]

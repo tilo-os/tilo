@@ -143,11 +143,13 @@ class TestEnvironmentSetupTests(unittest.TestCase):
                 expected,
                 f"the {profile} profile builds the session's siblings for its tests",
             )
-        # Chat's acceptance starts the app and the launcher that starts it, so
-        # the run that drives it builds the two packages of other crates first.
+        # Chat's acceptance starts the app, the launcher that starts it and the
+        # runtime host the app runs on, so the run that drives it builds the
+        # three packages of other crates first.
         chat = scripts.pop("chat-siblings")
         self.assertEqual(chat["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
-        self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher"])
+        self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher",
+                                               "tilo-runtime:tilo-runtime"])
         for profile in ("default", "ci"):
             rules = [rule for rule in config["profile"][profile]["scripts"]
                      if rule["setup"] == "chat-siblings"]
