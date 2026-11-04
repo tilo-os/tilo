@@ -371,7 +371,7 @@ fn a_slot_of_a_component_takes_a_view_that_is_that_component() {
     let base =
         "type Card {\n    title: Text (title)\n}\ntype B {\n    cards: Collection<Card>\n}\n";
     let good = format!(
-        "{base}view tile(c: Card) {{\n    ui.BoardCard(c, title: c.title)\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
+        "{base}view tile(c: Card) {{\n    ui.BoardCard(c) {{\n        row(c.title)\n    }}\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
     );
     assert!(codes(&good).is_empty(), "{:?}", codes(&good));
     let bad = format!(

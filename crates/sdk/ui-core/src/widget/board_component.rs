@@ -67,14 +67,11 @@ pub struct BoardLaneProps {
     pub drop: Event,
 }
 
-/// One card of a lane: a summary of the resource it stands for, which a press opens.
+/// One card of a lane: a summary of the resource it stands for, which a press opens. The card is
+/// its body: a row given as its body is shown as a card — the row paints the surface, wraps its
+/// title and stands its facts under it — so what the card says is written once.
 #[derive(Component, Default)]
-#[component(
-    name = "BoardCard",
-    role = "ListItem",
-    label = "title",
-    presents = "item"
-)]
+#[component(name = "BoardCard", role = "ListItem", presents = "item")]
 pub struct BoardCardProps {
     /// The card's stable key.
     #[component(key)]
@@ -82,8 +79,6 @@ pub struct BoardCardProps {
     /// The resource the card stands for: what a drop carries when it is the card dropped.
     #[component(positional)]
     pub item: Option<ResourceId>,
-    /// What the card is called, in its head; without one the body speaks for it.
-    pub title: Option<String>,
     /// Whether it is the selected one.
     pub selected: bool,
     /// The commands of its context menu: a right-click, the Menu key or a long press opens it.
@@ -218,33 +213,58 @@ fn card(props: BoardCardProps) -> (String, Element, Option<ResourceId>, Event) {
     let BoardCardProps {
         key,
         item,
-        title,
         selected,
         menu,
         body,
         activate,
         drop,
     } = props;
-    let widget = Card::from_props(
-        &key,
-        CardProps {
-            title,
-            count: None,
-            item: item.clone(),
-            selected,
-            body,
-            activate,
-        },
-    );
+    let widget = card_body(&key, body, item.clone(), selected, activate);
     let widget: Element = if menu.is_empty() {
-        Box::new(widget)
+        widget
     } else {
         let commands: Vec<Command> = menu.into_iter().map(Command::of).collect();
-        Box::new(ContextMenuArea::new(Box::new(widget), move |_| {
+        Box::new(ContextMenuArea::new(widget, move |_| {
             commands.iter().map(Command::entry).collect()
         }))
     };
     (key, widget, item, drop)
+}
+
+/// A card's own widget: a body that is one row is the card, since a row already knows how to
+/// stand its facts and its leading column; anything else — a note, a picture — stands inside
+/// the card's chrome, where the card is the chrome around a body of its own.
+fn card_body(
+    key: &str,
+    mut body: Vec<Element>,
+    item: Option<ResourceId>,
+    selected: bool,
+    activate: Event,
+) -> Element {
+    if body.len() == 1 {
+        let mut element = body.remove(0);
+        if let Some(row) = element
+            .as_any_mut()
+            .and_then(|widget| widget.downcast_mut::<crate::widget::ListRow>())
+        {
+            row.set_card();
+            row.set_selected(selected);
+            row.set_activate(activate);
+            return element;
+        }
+        body.push(element);
+    }
+    Box::new(Card::from_props(
+        key,
+        CardProps {
+            title: None,
+            count: None,
+            item,
+            selected,
+            body,
+            activate,
+        },
+    ))
 }
 
 impl Described for Board {
@@ -271,10 +291,18 @@ impl Described for Board {
                 act,
                 drop,
             } = lane;
-            let heading = SectionHeader::group(title.unwrap_or_default());
-            let heading = match count {
-                Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
-                None => heading,
+            // A lane nobody named heads nothing: the lane that holds what is in no section keeps
+            // a heading's height, so its cards line up with the lanes that have one, and says
+            // nothing over them.
+            let heading = match title {
+                Some(title) => {
+                    let heading = SectionHeader::group(title);
+                    match count {
+                        Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
+                        None => heading,
+                    }
+                }
+                None => SectionHeader::group(""),
             };
             // The one add stands at the lane's foot, where the cards end, not in its heading:
             // a lane gives its own entry there, or the label of its adding action.
@@ -353,7 +381,6 @@ mod tests {
         BoardCardProps {
             key: key.into(),
             item: Some(ResourceId(format!("res-{key}"))),
-            title: Some(key.to_uppercase()),
             body: vec![Box::new(Text::new("body"))],
             drop: Event::View(Intent::new(queue, key, "drop")),
             ..BoardCardProps::default()

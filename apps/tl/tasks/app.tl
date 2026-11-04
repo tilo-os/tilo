@@ -627,7 +627,9 @@ view project_board(p: Project) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
                 let loose = lane_of(p, .none)
-                ui.BoardLane(title: "No section", count: loose.count()) {
+                // The tasks in no section stand first, in the lane nobody named: it keeps a
+                // heading's height and says nothing, so its cards line up with the named lanes.
+                ui.BoardLane {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
                         std.add_entry("New task", text -> quick_add(tasks, text, .some(p)))

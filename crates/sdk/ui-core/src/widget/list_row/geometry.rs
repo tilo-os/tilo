@@ -52,7 +52,7 @@ impl ListRowFace<'_> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<vello::kurbo::Point> {
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
         let geo = self.geometry(row, &m, text, theme);
         let x = geo.dot_x?;
         let block = self.text_block(text, &m);
@@ -116,7 +116,10 @@ impl ListRowFace<'_> {
 
     /// The row's height at this text scale.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
+        if self.card {
+            return self.card_height(text, &m, theme);
+        }
         let (_, leading_h) = self.leading_extent(&m, text, theme);
         let fact_avatar = self.fact_avatar(theme).unwrap_or(0.0);
         let value = match self.value {
@@ -148,6 +151,83 @@ impl ListRowFace<'_> {
             .ceil()
     }
 
+    /// A card's height: its title's lines and what follows them, the facts on their own line
+    /// under that, and the card's own padding around both.
+    fn card_height(&self, text: &mut TextRenderer, m: &RowMetrics, theme: &Theme) -> f64 {
+        let (_, leading_h) = self.leading_extent(m, text, theme);
+        let facts = self.facts_height(text, m, theme);
+        let gap = if facts > 0.0 {
+            f64::from(theme.tokens.spacing.rhythm.tight)
+        } else {
+            0.0
+        };
+        (self.text_block(text, m) + gap + facts + 2.0 * m.pad_y)
+            .max(leading_h + 2.0 * m.pad_y)
+            .max(self.min_target)
+            .ceil()
+    }
+
+    /// Whether the card has facts to stand under its title: a day, who, how far, how important.
+    fn has_facts(&self) -> bool {
+        self.meta.is_some()
+            || !self.meta_spans.is_empty()
+            || self.avatar.is_some()
+            || self.avatar_room
+            || self.count.is_some()
+            || self.marks.iter().flatten().next().is_some()
+            || self.value.is_some()
+    }
+
+    /// The height of the line the facts stand on: the tallest of them, nothing when the card
+    /// holds none.
+    fn facts_height(&self, text: &mut TextRenderer, m: &RowMetrics, theme: &Theme) -> f64 {
+        if !self.has_facts() {
+            return 0.0;
+        }
+        let value = self.value.map_or(0.0, |(value, size)| {
+            let style = match size {
+                RowValue::Body => &m.value_body,
+                RowValue::Title => &m.value_title,
+            };
+            f64::from(text.measure_style(value, None, style).1)
+        });
+        let count = self
+            .count_label()
+            .map_or(0.0, |_| f64::from(BadgeFace::height(theme)));
+        RowMetrics::line(text, &m.meta)
+            .max(self.fact_avatar(theme).unwrap_or(0.0))
+            .max(count)
+            .max(m.mark)
+            .max(value)
+    }
+
+    /// How many lines the title wraps to in a card `width` wide, up to [`CARD_TITLE_LINES`]:
+    /// a card is as tall as its title needs, and never cuts a title that fits.
+    pub(super) fn card_title_lines(
+        &self,
+        width: f64,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> u8 {
+        let m = RowMetrics::card(theme);
+        let left = m.bleed;
+        let (lead_w, _) = self.leading_extent(&m, text, theme);
+        let text_x = if lead_w > 0.0 {
+            left + lead_w + m.column_gap
+        } else {
+            left
+        };
+        let room = (width - m.bleed - text_x).max(0.0);
+        let lines = text.clamp_to_lines(
+            self.title,
+            &self.title_style(&m),
+            crate::num::f32_of_f64(room),
+            usize::from(super::CARD_TITLE_LINES),
+        );
+        let lines = u8::try_from(lines.len()).unwrap_or(1);
+        lines.clamp(1, super::CARD_TITLE_LINES)
+    }
+
     pub(super) fn shows_actions(&self) -> bool {
         !self.actions.is_empty()
             && !self.interaction.disabled
@@ -168,10 +248,11 @@ impl ListRowFace<'_> {
         self.count.map(|count| count.to_string())
     }
 
-    /// The side of the avatar in the facts column, where the row shows one.
+    /// The side of the avatar in the facts column, where the row shows one. A card's facts
+    /// stand on one line of their own, so its avatar is the inline size there.
     pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
         (self.avatar.is_some() || self.avatar_room)
-            .then(|| RowMetrics::avatar(theme, self.extra_lines() > 0))
+            .then(|| RowMetrics::avatar(theme, !self.card && self.extra_lines() > 0))
     }
 
     /// The width of the marks' run, the gaps between them included.
@@ -218,6 +299,9 @@ impl ListRowFace<'_> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> RowGeometry {
+        if self.card {
+            return self.card_geometry(rect, m, text, theme);
+        }
         // A nested row indents its content one step per depth, its lift still filling the row:
         // the list paints the chevron its depth hangs in the gutter left of here.
         let left = rect.x0 + m.bleed + f64::from(self.depth) * m.nest;
@@ -324,6 +408,114 @@ impl ListRowFace<'_> {
         geo
     }
 
+    /// Lay a card out in `rect`, its own surface: the checkbox hangs on the title's first line,
+    /// the text takes the rest of the card's width, and the facts stand on one line under the
+    /// text, read left to right in the order a row keeps them — the day, who, how far, how
+    /// important — so they sit together under the title rather than spread across it.
+    fn card_geometry(
+        &self,
+        rect: Rect,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> RowGeometry {
+        let left = rect.x0 + m.bleed;
+        let right = (rect.x1 - m.bleed).max(left);
+        let (lead_w, lead_h) = self.leading_extent(m, text, theme);
+        let title_line = RowMetrics::line(text, &self.title_style(m));
+        let first_cy = rect.y0 + m.pad_y + title_line / 2.0;
+        let mut geo = RowGeometry {
+            leading: Rect::new(
+                left,
+                first_cy - lead_h / 2.0,
+                left + lead_w,
+                first_cy + lead_h / 2.0,
+            ),
+            text_x: if lead_w > 0.0 {
+                left + lead_w + m.column_gap
+            } else {
+                left
+            },
+            ..RowGeometry::default()
+        };
+        geo.text_right = right;
+        geo.title_right = right;
+        geo.second_right = right;
+        let block = self.text_block(text, m);
+        let facts = self.facts_height(text, m, theme);
+        if facts <= 0.0 {
+            return geo;
+        }
+        // The hover actions take the facts' place, on the facts line's trailing edge.
+        if self.shows_actions() {
+            geo.meta_right = right;
+            geo.meta_left = right;
+            geo.facts_cy = rect.y0
+                + m.pad_y
+                + block
+                + f64::from(theme.tokens.spacing.rhythm.tight)
+                + facts / 2.0;
+            return geo;
+        }
+        let gap = f64::from(theme.tokens.spacing.rhythm.tight);
+        let mut cy = rect.y0 + m.pad_y + block + gap + facts / 2.0;
+        // A card is as tall as its facts line; the facts centre on it.
+        cy = cy
+            .min(rect.y1 - m.pad_y - facts / 2.0)
+            .max(rect.y0 + m.pad_y + facts / 2.0);
+        geo.facts_cy = cy;
+        let avatar = self.fact_avatar(theme);
+        let count = self
+            .count_label()
+            .map(|label| BadgeFace::intrinsic_width(&label, text, theme));
+        let marks = self.marks_width(m);
+        let mut tail = 0.0;
+        let mut tail_items: i32 = 0;
+        if let Some(side) = avatar {
+            tail += side;
+            tail_items += 1;
+        }
+        if let Some(width) = count {
+            tail += width;
+            tail_items += 1;
+        }
+        if marks > 0.0 {
+            tail += marks;
+            tail_items += 1;
+        }
+        let has_meta = self.meta.is_some() || !self.meta_spans.is_empty();
+        let gaps = if has_meta {
+            f64::from(tail_items + 1) * m.tag_gap
+        } else {
+            f64::from(tail_items.saturating_sub(1)) * m.tag_gap
+        };
+        let mut x = geo.text_x;
+        let meta = self.meta_width(m, text, (right - x - tail - gaps).max(0.0));
+        if meta > 0.0 {
+            geo.meta_left = x;
+            geo.meta_right = x + meta;
+            x += meta + m.tag_gap;
+        }
+        if let Some(side) = avatar {
+            if self.avatar.is_some() {
+                geo.avatar = Some(Rect::new(x, cy - side / 2.0, x + side, cy + side / 2.0));
+            }
+            x += side + m.tag_gap;
+        }
+        if let Some(width) = count {
+            geo.count_right = Some(x + width);
+            x += width + m.tag_gap;
+        }
+        if marks > 0.0 {
+            geo.marks_right = Some(x + marks);
+        }
+        // A value of the row's own keeps the card's trailing edge.
+        if self.value.is_some() {
+            geo.value_right = right;
+        }
+        geo
+    }
+
     /// The meta's painted width, capped at `cap`.
     pub(super) fn meta_width(&self, m: &RowMetrics, text: &mut TextRenderer, cap: f64) -> f64 {
         if !self.meta_spans.is_empty() {
@@ -346,7 +538,7 @@ impl ListRowFace<'_> {
     /// row is hovered, focused or revealing its actions.
     pub fn action_rects(&self, rect: Rect, theme: &Theme) -> Vec<Rect> {
         crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-            self.action_rects_with(rect, &RowMetrics::new(theme), text, theme)
+            self.action_rects_with(rect, &self.metrics(theme), text, theme)
         })
     }
 
@@ -360,8 +552,13 @@ impl ListRowFace<'_> {
         if !self.shows_actions() {
             return Vec::new();
         }
-        let mut right = self.geometry(rect, m, text, theme).meta_right;
-        let cy = rect.center().y;
+        let geo = self.geometry(rect, m, text, theme);
+        let mut right = geo.meta_right;
+        let cy = if self.card {
+            geo.facts_cy
+        } else {
+            rect.center().y
+        };
         let mut rects: Vec<Rect> = self
             .actions
             .iter()
@@ -389,14 +586,14 @@ impl ListRowFace<'_> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> Option<Rect> {
-        self.geometry(rect, &RowMetrics::new(theme), text, theme)
+        self.geometry(rect, &self.metrics(theme), text, theme)
             .trailing
     }
 
     /// The leading column's rect in `rect`: the checkbox's hit target, or
     /// the badge a tooltip explains.
     pub fn leading_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Rect {
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
         match self.leading {
             Some(RowLeading::Checkbox { .. }) => {

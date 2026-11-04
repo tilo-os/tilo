@@ -34,7 +34,9 @@ view board(b: Board) {
                         action: "New card",
                     ) {
                         for card in col.cards {
-                            ui.BoardCard(card, title: card.title)
+                            ui.BoardCard(card) {
+                                row(card.title)
+                            }
                         }
                     }
                 }

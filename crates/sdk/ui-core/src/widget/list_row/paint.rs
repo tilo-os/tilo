@@ -89,7 +89,7 @@ impl ListRowFace<'_> {
     )]
     fn paint_enabled(&self, ctx: &mut PaintCtx<'_>, rect: Rect, frame: Rect) {
         let theme = ctx.theme;
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
         let colors = &theme.tokens.colors;
         let ground = colors.surfaces.content;
 
@@ -110,49 +110,76 @@ impl ListRowFace<'_> {
                 .fill(Fill::NonZero, ctx.transform, ground, None, &frame_row);
         }
 
-        // Someone else's change the person has not seen: their colour, faintly, under the row.
-        let ground = match self.change {
-            Some(change) => {
-                let wash = crate::tokens::colors::mix8(ground, change.colour(theme), CHANGE_WASH);
-                ctx.scene.fill(
-                    Fill::NonZero,
-                    ctx.transform,
-                    wash,
-                    None,
-                    &RoundedRect::from_rect(frame_row, f64::from(theme.tokens.radii.control)),
-                );
-                wash
-            }
-            None => ground,
-        };
-
-        let lifted = self.selected || self.interaction.pressed;
-        let hovered = self.interaction.hovered && !self.interaction.disabled;
-        // Selected takes the accent's tint; a press is the neutral lift.
-        let pressed = self.interaction.pressed && !self.selected;
-        paint_row_selection_joined(
-            ctx.scene,
-            ctx.transform,
-            frame_row,
-            SelectionState::new(self.selected, hovered, pressed),
-            ground,
-            theme,
-            if self.selected {
-                self.join
+        let (ground, under) = if self.card {
+            // A card is its own quiet surface over the board's ground: half a lift under the
+            // pointer, a whole one pressed, the accent's edge when it is the chosen one. What
+            // it holds reads against that surface.
+            crate::widget::card::paint_surface(
+                ctx,
+                frame_row,
+                None,
+                self.interaction,
+                true,
+                self.selected,
+            );
+            let raised = colors.surfaces.raised;
+            let under = if self.interaction.disabled {
+                raised
+            } else if self.interaction.pressed {
+                colors.lift_on(raised, 1.0)
+            } else if self.interaction.hovered {
+                colors.lift_on(raised, 0.5)
             } else {
-                RowJoin::NONE
-            },
-        );
-        let lift = crate::chrome::selection_tier_on(
-            theme,
-            SelectionState::new(lifted, hovered, false),
-            ground,
-        )
-        .fill;
-        let under = if lifted || hovered {
-            crate::tokens::colors::composite(lift, ground)
+                raised
+            };
+            (raised, under)
         } else {
-            ground
+            // Someone else's change the person has not seen: their colour, faintly, under the row.
+            let ground = match self.change {
+                Some(change) => {
+                    let wash =
+                        crate::tokens::colors::mix8(ground, change.colour(theme), CHANGE_WASH);
+                    ctx.scene.fill(
+                        Fill::NonZero,
+                        ctx.transform,
+                        wash,
+                        None,
+                        &RoundedRect::from_rect(frame_row, f64::from(theme.tokens.radii.control)),
+                    );
+                    wash
+                }
+                None => ground,
+            };
+
+            let lifted = self.selected || self.interaction.pressed;
+            let hovered = self.interaction.hovered && !self.interaction.disabled;
+            // Selected takes the accent's tint; a press is the neutral lift.
+            let pressed = self.interaction.pressed && !self.selected;
+            paint_row_selection_joined(
+                ctx.scene,
+                ctx.transform,
+                frame_row,
+                SelectionState::new(self.selected, hovered, pressed),
+                ground,
+                theme,
+                if self.selected {
+                    self.join
+                } else {
+                    RowJoin::NONE
+                },
+            );
+            let lift = crate::chrome::selection_tier_on(
+                theme,
+                SelectionState::new(lifted, hovered, false),
+                ground,
+            )
+            .fill;
+            let under = if lifted || hovered {
+                crate::tokens::colors::composite(lift, ground)
+            } else {
+                ground
+            };
+            (ground, under)
         };
 
         let geo = self.geometry(row, &m, ctx.text, theme);
@@ -170,8 +197,21 @@ impl ListRowFace<'_> {
         let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
         let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
         let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
-        let text_top = row.center().y - block / 2.0;
+        // A card's text starts under its own padding; a row's is centred in it beside the
+        // leading column.
+        let text_top = if self.card {
+            row.y0 + m.pad_y
+        } else {
+            row.center().y - block / 2.0
+        };
         let title_cy = text_top + title_line / 2.0;
+        let facts_cy = if self.card {
+            geo.facts_cy
+        } else if extra {
+            title_cy
+        } else {
+            row.center().y
+        };
 
         self.paint_leading(ctx, &m, geo.leading, under);
 
@@ -233,7 +273,6 @@ impl ListRowFace<'_> {
                     .draw(ctx.scene, ctx.transform, glyph, theme.text_primary);
             }
         } else {
-            let facts_cy = if extra { title_cy } else { row.center().y };
             if let (Some(slot), Some(avatar)) = (geo.avatar, &self.avatar) {
                 avatar.paint(ctx, slot);
             }
@@ -260,7 +299,7 @@ impl ListRowFace<'_> {
                     None,
                 );
             }
-            self.paint_meta(ctx, &m, &geo, row, title_cy, extra, &[ground, under]);
+            self.paint_meta(ctx, &m, &geo, facts_cy, &[ground, under]);
             self.paint_marks(ctx, &m, &geo, facts_cy);
         }
 
@@ -369,7 +408,11 @@ impl ListRowFace<'_> {
             );
         }
 
-        if self.interaction.focused && !self.interaction.disabled && self.hovered_action.is_none() {
+        if self.interaction.focused
+            && !self.interaction.disabled
+            && self.hovered_action.is_none()
+            && !self.card
+        {
             // Inside the row: rows stack edge to edge, so a ring outside one
             // would sit on its neighbours.
             crate::widget::activation::paint_focus_ring(
@@ -445,7 +488,7 @@ impl ListRowFace<'_> {
         if self.title.is_empty() {
             return false;
         }
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
         let room = self.title_room(&geo, text, theme, &m);
         let lines = text.clamp_to_lines(
@@ -471,16 +514,13 @@ impl ListRowFace<'_> {
         ctx: &mut PaintCtx<'_>,
         m: &RowMetrics,
         geo: &RowGeometry,
-        row: Rect,
-        title_cy: f64,
-        extra: bool,
+        line_cy: f64,
         grounds: &[Color],
     ) {
         let theme = ctx.theme;
         // The room the layout gave the meta: what the text claims from here is its own, so a
         // long fact elides rather than reaching into the title.
         let cap = (geo.meta_right - geo.meta_left).max(0.0);
-        let line_cy = if extra { title_cy } else { row.center().y };
         if !self.meta_spans.is_empty() {
             let mut x = geo.meta_left;
             for (span, tone) in self.meta_spans {

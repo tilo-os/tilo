@@ -77,6 +77,11 @@ pub struct Board {
     drops: Option<crate::widget::ActionEmitter<BoardDrop>>,
     /// What the board is, for assistive technology.
     pub(crate) name: Option<String>,
+    /// The theme the lanes were last sized in: a lane's width follows the pane the board is
+    /// given, which is known only once it is laid out (`Board::size_lanes`).
+    theme: Option<Theme>,
+    /// The width the lanes were last given.
+    sized: Option<f32>,
 }
 
 impl Default for Board {
@@ -105,6 +110,8 @@ impl Board {
             on_drop: None,
             drops: None,
             name: None,
+            theme: None,
+            sized: None,
         }
     }
 
@@ -122,7 +129,7 @@ impl Board {
         let mut cards_column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_rhythm(Rhythm::Related);
+            .with_rhythm(Rhythm::Sibling);
         let mut keys = Vec::with_capacity(cards.len());
         for (card, widget) in cards {
             keys.push(card);
@@ -278,11 +285,33 @@ impl Board {
         Some((lane, before))
     }
 
-    /// Give every lane a regular card's measure under `theme`, so lanes
-    /// follow the text size the cards in them are set in.
-    fn size_lanes(&mut self, theme: &Theme) {
+    /// The width a lane takes in a board `width` wide: lanes share the pane, so whole lanes fill
+    /// it — as many whole lanes as it holds at a card's comfortable measure, each as wide as
+    /// what is left over shares out to, never narrower than that measure. A board narrower than
+    /// two lanes therefore shows one whole lane per page rather than one lane and a sliver of
+    /// the next, and a wide one shows four whole lanes instead of three and a sliver.
+    fn lane_width(theme: &Theme, width: f64) -> f32 {
+        let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
+        let least = f64::from(CardWidth::Regular.min_width(theme));
+        let room = (width - 2.0 * gutter).max(least);
+        let fit = ((room + gap) / (least + gap)).floor().max(1.0);
+        let width = ((room - (fit - 1.0) * gap) / fit).max(least);
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
-        let width = CardWidth::Regular.min_width(theme) as f32;
+        {
+            width as f32
+        }
+    }
+
+    /// Give every lane the width a board this wide shares out under `theme`. Narrowing a lane
+    /// is a change the layout settles on: the board is as wide as its pane or as its lanes,
+    /// and either way the lanes that fit whole fill it.
+    fn size_lanes(&mut self, theme: &Theme, width: f64) -> bool {
+        let width = Self::lane_width(theme, width);
+        if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
+            return false;
+        }
+        self.sized = Some(width);
         for lane in self.row.children_mut() {
             if let Some(lane) = lane
                 .as_any_mut()
@@ -291,6 +320,7 @@ impl Board {
                 lane.set_width(width);
             }
         }
+        true
     }
 
     /// Where the insertion line goes for `target`, across its lane.
@@ -433,8 +463,26 @@ impl crate::widget::Decorator for Board {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.size_lanes(theme);
+        self.theme = Some(theme.clone());
+        // A first measure, at the width a board too narrow for its lanes keeps; the pane the
+        // board is given settles it (`adjust_layout_style`).
+        self.size_lanes(theme, f64::from(CardWidth::Regular.min_width(theme)));
         Widget::build_layout(&mut self.row, taffy, theme, node_map)
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
+        let Some(theme) = self.theme.clone() else {
+            return false;
+        };
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        self.size_lanes(&theme, f64::from(layout.size.width))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {

@@ -262,6 +262,16 @@ impl RowMetrics {
         }
     }
 
+    /// The metrics of a row shown as a card: the row is its own surface, so nothing of it
+    /// bleeds past its box, and the padding inside that surface is its own — compact enough
+    /// that a card of one title line and its facts stands under a control's height.
+    fn card(theme: &Theme) -> Self {
+        let mut m = Self::new(theme);
+        m.bleed = f64::from(theme.tokens.spacing.rhythm.sibling);
+        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight);
+        m
+    }
+
     fn line(text: &mut TextRenderer, style: &TextStyle) -> f64 {
         f64::from(text.measure_style("Ag", None, style).1)
     }
@@ -350,10 +360,17 @@ struct RowGeometry {
     meta_right: f64,
     /// Where the meta's room starts: what lies left of it is the text's.
     meta_left: f64,
+    /// Where the facts' line stands in a card, which puts them under the text; a row stands
+    /// them beside it, on the title's line.
+    facts_cy: f64,
 }
 
 /// How many marks [`ListRowFace::mark`] keeps on a row's edge.
 pub const MAX_MARKS: usize = 3;
+
+/// How many lines a card's title may take before it is cut with an ellipsis: a card is a small
+/// document, and its title says what it is without being opened.
+pub const CARD_TITLE_LINES: u8 = 3;
 
 /// One mark on a row's edge: an icon in tertiary ink or the row's tone, or a swatch in a
 /// colour that belongs to the item (a task's project, a calendar).
@@ -430,6 +447,9 @@ pub struct ListRowFace<'a> {
     /// Where the leading checkbox is on its way at this frame, from the row's
     /// [`crate::widget::checkbox::CheckMotion`]; at rest on its value when unset.
     check_pose: Option<crate::widget::checkbox::CheckPose>,
+    /// The row as a card: its own surface, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it.
+    card: bool,
 }
 
 impl<'a> ListRowFace<'a> {
@@ -477,6 +497,33 @@ impl<'a> ListRowFace<'a> {
             frame: None,
             min_target: 0.0,
             check_pose: None,
+            card: false,
+        }
+    }
+
+    /// The row as a card: a surface of its own, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines with the facts on a line under the text, in the order they
+    /// read in a row.
+    #[must_use]
+    pub fn card(mut self) -> Self {
+        self.card = true;
+        self
+    }
+
+    /// How many lines the title may take: [`Self::two_line_title`] sets two, a card sets what
+    /// its title wraps to.
+    #[must_use]
+    pub fn title_lines(mut self, lines: u8) -> Self {
+        self.title_lines = lines.clamp(1, CARD_TITLE_LINES);
+        self
+    }
+
+    /// The metrics this face lays out with: a card's, where it is one.
+    fn metrics(&self, theme: &Theme) -> RowMetrics {
+        if self.card {
+            RowMetrics::card(theme)
+        } else {
+            RowMetrics::new(theme)
         }
     }
 
@@ -688,7 +735,7 @@ impl<'a> ListRowFace<'a> {
     /// Where the face of an unseen change sits in `rect`, when the row shows one.
     #[must_use]
     pub fn change_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
-        self.geometry(rect, &RowMetrics::new(theme), text, theme)
+        self.geometry(rect, &self.metrics(theme), text, theme)
             .change
     }
 
@@ -1172,6 +1219,12 @@ pub struct ListRow {
     /// A host that builds the row anew for what it shows now: the one built
     /// in its place goes on from its mark (`motion::keep`).
     hand_on: crate::motion::HandOn<KeptRow>,
+    /// The row is a card ([`ListRowFace::card`]): its own surface, its facts on a line under
+    /// its text.
+    card: bool,
+    /// How many lines the title wraps to in a card at the width it was last measured in: a
+    /// card is as tall as its title needs, so its height is measured, not fixed.
+    card_lines: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1249,7 +1302,41 @@ impl ListRow {
             check: crate::widget::checkbox::CheckMotion::default(),
             check_pose: None,
             hand_on: crate::motion::HandOn::default(),
+            card: false,
+            card_lines: 1,
         }
+    }
+
+    /// The metrics the row lays out with: a card's, where it is one.
+    fn metrics(&self, theme: &Theme) -> RowMetrics {
+        if self.card {
+            RowMetrics::card(theme)
+        } else {
+            RowMetrics::new(theme)
+        }
+    }
+
+    /// Show the row as a card: a surface of its own, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it
+    /// (a board's card).
+    #[must_use]
+    pub fn card(mut self) -> Self {
+        self.set_card();
+        self
+    }
+
+    /// [`Self::card`], for a row a host has already built.
+    pub fn set_card(&mut self) {
+        self.card = true;
+        self.dirty = true;
+    }
+
+    /// Have a press on the row (or Enter or Space while it has the keyboard) report `event`:
+    /// what a component's card does when it opens what it stands for.
+    pub fn set_activate(&mut self, event: crate::component::Event) {
+        let label = self.title.clone();
+        self.activation.set_event(event, &label);
+        self.dirty = true;
     }
 
     /// The commands the row's menu offers with the keys they declare: pressing one while the
@@ -1798,7 +1885,7 @@ impl ListRow {
         if self.trailing.is_none() {
             return 0.0;
         }
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
         self.with_face(|face| face.marks_after_trailing(&m))
     }
 
@@ -1954,7 +2041,7 @@ impl ListRow {
         };
         let fill = (wrapped && !keeps_its_face_size(trailing.element.as_ref())).then(|| {
             let band_rect = Rect::new(-bleed, 0.0, row_width + bleed, band_height);
-            let m = RowMetrics::new(&theme);
+            let m = self.metrics(&theme);
             let text_edge = self.with_face(|face| face.text_x(band_rect, &m, text, &theme));
             crate::num::f32_of_f64((row_width - text_edge.max(0.0)).max(0.0))
         });
@@ -1983,6 +2070,10 @@ impl ListRow {
     }
 
     fn outer(&self) -> Rect {
+        if self.card {
+            // A card is its own surface: nothing of it paints past its box.
+            return self.rect;
+        }
         let bleed = self.metrics.as_ref().map_or(0.0, |m| m.bleed);
         self.rect.inflate(bleed, 0.0)
     }
@@ -2047,7 +2138,9 @@ impl ListRow {
         if let Some(pose) = self.check_pose {
             face = face.check_pose(pose);
         }
-        if self.two_line_title {
+        if self.card {
+            face = face.card().title_lines(self.card_lines);
+        } else if self.two_line_title {
             face = face.two_line_title();
         }
         if let Some(family) = &self.title_family {
@@ -2390,7 +2483,7 @@ impl Widget for ListRow {
         if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
             self.take_up(kept);
         }
-        let metrics = RowMetrics::new(theme);
+        let metrics = self.metrics(theme);
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
         let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
@@ -2520,14 +2613,21 @@ impl Widget for ListRow {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let Some(theme) = &self.theme else {
+        let Some(theme) = self.theme.clone() else {
             return taffy::Size::ZERO;
         };
-        let height = self.with_face(|face| face.height(text_renderer, theme));
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 0.0,
         });
+        // A card's title wraps at the width it is offered, so its height follows the lines it
+        // takes here rather than a count fixed when the row was built.
+        if self.card {
+            let lines = self
+                .with_face(|face| face.card_title_lines(f64::from(width), text_renderer, &theme));
+            self.card_lines = lines;
+        }
+        let height = self.with_face(|face| face.height(text_renderer, &theme));
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(height),
@@ -2565,7 +2665,7 @@ impl Widget for ListRow {
             // keeps inside the row.
             let shift = theme.map_or(0.0, |theme| {
                 let band_rect = self.text_band();
-                let m = RowMetrics::new(&theme);
+                let m = self.metrics(&theme);
                 crate::text_render::with_layout_renderer(theme.text_scale, |text| {
                     self.with_face(|face| face.text_x(band_rect, &m, text, &theme))
                 }) - self.rect.x0

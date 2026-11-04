@@ -97,8 +97,9 @@ impl CardMetrics {
 }
 
 /// Paint a card's surface (and stripe, hover lift and focus ring) over
-/// `rect`.
-fn paint_surface(
+/// `rect`: the one card chrome a [`super::Card`] and a row shown as a card
+/// ([`super::ListRowFace::card`]) share.
+pub(crate) fn paint_surface(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
     stripe: Option<Tone>,

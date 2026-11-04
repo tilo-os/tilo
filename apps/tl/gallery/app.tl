@@ -276,8 +276,8 @@ view release_board(r: Release) {
                         action: .some("New item"),
                     ) {
                         for x in cards {
-                            ui.BoardCard(x, title: .some(x.title)) {
-                                ui.Text(x.stage, role: .caption, secondary: true)
+                            ui.BoardCard(x) {
+                                row(x.title, secondary: x.stage)
                             }
                         }
                     }

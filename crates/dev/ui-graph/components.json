@@ -5728,7 +5728,7 @@
     },
     {
       "name": "BoardCard",
-      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens.",
+      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens. The card is its body: a row given as its body is shown as a card — the row paints the surface, wraps its title and stands its facts under it — so what the card says is written once.",
       "props": [
         {
           "name": "item",
@@ -5737,13 +5737,6 @@
             "option": "resource"
           },
           "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What the card is called, in its head; without one the body speaks for it.",
-          "type": {
-            "option": "text"
-          }
         },
         {
           "name": "selected",
@@ -5781,7 +5774,6 @@
       ],
       "semantics": {
         "role": "ListItem",
-        "label": "title",
         "presents": "item"
       }
     },

@@ -93,10 +93,11 @@ view board(b: Board) {
     }
 }
 
-/// A card on the board: its title and the start of its notes. It opens in a page, takes a card
-/// dropped on it to just above it, and its menu moves it to another column or runs its actions.
+/// A card on the board: its title and the start of its notes, as a row. It opens in a page,
+/// takes a card dropped on it to just above it, and its menu moves it to another column or runs
+/// its actions.
 view card_tile(b: Board, col: Column, card: Card) {
-    ui.BoardCard(card, title: card.title) {
+    ui.BoardCard(card) {
         on activate: open(card)
         on drop(moved: Card): move_before(col, moved, card)
         menu: {
@@ -108,9 +109,7 @@ view card_tile(b: Board, col: Column, card: Card) {
                 }
             }
         }
-        if card.notes != "" {
-            text(card.notes, role: .caption)
-        }
+        row(card.title, secondary: card.notes)
     }
 }
 
