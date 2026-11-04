@@ -34,7 +34,9 @@ pub fn shown(node: &UiNode, name: &str) -> Option<String> {
 /// The prop `name` of `node` as a list row reads it: the day fact (`Overdue`, `Today`,
 /// `Thursday`, `Jun 29`), with the time of day paired with it where the view names one
 /// (`Today 09:00`); a time is [`ui::format::list_date`], as native lists show when a message
-/// came.
+/// came. The day something was done on (`<name>_done`) reads as the day it happened
+/// (`Yesterday`, `Sunday`, `Jun 21`): what a heading over finished work says, never a day gone
+/// by.
 #[must_use]
 pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
     let value = node.props.get(name)?;
@@ -42,13 +44,21 @@ pub fn shown_brief(node: &UiNode, name: &str) -> Option<String> {
     let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
         return Some(text);
     };
+    let done = done_day(node, name);
     Some(match kind.as_str() {
+        "date" if done => day_of(&text).map_or(text, ui::format::day_done_today),
         "date" => day_of(&text).map_or(text, |day| {
             ui::format::day_fact_today(day, paired_time(node, name)).text
         }),
         "time" => moment_of(&text).map_or(text, |at| ui::format::list_date(&at)),
         _ => text,
     })
+}
+
+/// Whether the prop `name` of `node` is the day the item was done on, as the view says with
+/// its `<name>_done` companion: the day it happened, not a day it is due by.
+fn done_day(node: &UiNode, name: &str) -> bool {
+    crate::reconcile::flag(node, &format!("{name}_done"))
 }
 
 /// The tone the prop `name` of `node` reads in, when it reads in one: a day gone by is overdue
@@ -58,7 +68,8 @@ pub fn shown_tone(node: &UiNode, name: &str) -> Option<Tone> {
     let Some(Value::Text(kind)) = node.props.get(&format!("{name}:as")) else {
         return None;
     };
-    if kind != "date" {
+    // A day something was done on is history: it is never overdue.
+    if kind != "date" || done_day(node, name) {
         return None;
     }
     let day = day_of(&display(node.props.get(name)?))?;
@@ -237,6 +248,26 @@ mod tests {
 
         let today_node = node(&[("value", &today.to_string()), ("value:as", "date")]);
         assert_eq!(shown_tone(&today_node, "value"), None, "today is not late");
+    }
+
+    #[test]
+    fn a_done_day_reads_as_the_day_it_happened_and_is_never_overdue() {
+        let today = ui::clock::today();
+        let done = today - chrono::Days::new(40);
+        let day = done.format("%Y-%m-%d").to_string();
+        let mut row = node(&[("group", &day), ("group:as", "date")]);
+        // The runtime lowers a flag prop as a whole number, as the view's `true` reaches a node.
+        row.props.insert("group_done".to_owned(), Value::Int(1));
+        assert_eq!(
+            shown_brief(&row, "group"),
+            Some(ui::format::day_done_today(done)),
+            "a heading over finished work says the day it happened"
+        );
+        assert_eq!(
+            shown_tone(&row, "group"),
+            None,
+            "what was finished is history, not late"
+        );
     }
 
     #[test]

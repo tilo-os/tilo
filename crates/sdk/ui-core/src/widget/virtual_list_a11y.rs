@@ -123,7 +123,7 @@ impl<M: ListModel> VirtualList<M> {
         let tail = self.tail_title.as_deref();
         let same = |index: usize| {
             super::groups::group_of(&self.model, index, tail)
-                .is_some_and(|group: Group| group.0 == band.heading)
+                .is_some_and(|group: Group| group.heading == band.heading)
         };
         let mut start = band.index.min(len);
         while start > 0 && same(start - 1) {

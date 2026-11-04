@@ -49,7 +49,7 @@ impl ListModel for Grouped {
 }
 
 fn heading(name: &str) -> Option<RowGroup> {
-    Some(RowGroup::Heading(name.to_owned()))
+    Some(RowGroup::heading(name.to_owned()))
 }
 
 const ROW: f32 = 40.0;

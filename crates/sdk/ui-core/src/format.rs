@@ -727,6 +727,19 @@ pub fn day_fact_today(day: NaiveDate, time: Option<NaiveTime>) -> DayFact {
     day_fact(day, time, crate::clock::today())
 }
 
+/// [`Formats::day_done`] against `today`: the heading over what was done on `day`, in the
+/// person's formats and the desktop's language.
+#[must_use]
+pub fn day_done(day: NaiveDate, today: NaiveDate) -> String {
+    Formats::current().day_done(day, today)
+}
+
+/// [`day_done`] against the person's own today ([`crate::clock::today`]).
+#[must_use]
+pub fn day_done_today(day: NaiveDate) -> String {
+    day_done(day, crate::clock::today())
+}
+
 /// Abbreviate a large count to at most one fractional digit: `1.2K`, `3.4M`,
 /// `1.1B`. Exact tenths omit the redundant `.0` (`12K`, not `12.0K`) and a
 /// value that rounds into the next unit is promoted (`999_999` becomes `1M`,

@@ -186,9 +186,9 @@ fn a_first_row_under_a_heading_draws_its_chevron_on_its_own_row() {
         // The first row of the list is a parent: its subtask follows it.
         parents: HashMap::from([(1, 0)]),
         groups: vec![
-            Some(RowGroup::Heading("Jun 30".to_owned())),
-            Some(RowGroup::Heading("Jun 30".to_owned())),
-            Some(RowGroup::Heading("Jun 30".to_owned())),
+            Some(RowGroup::heading("Jun 30".to_owned())),
+            Some(RowGroup::heading("Jun 30".to_owned())),
+            Some(RowGroup::heading("Jun 30".to_owned())),
         ],
     };
     let mut list = VirtualList::new(model, 20.0, |_, _, key| {

@@ -58,6 +58,22 @@ impl Formats {
         }
     }
 
+    /// The **day it happened** style: a day something was done on, as the heading over what
+    /// was done that day reads it. It is the day fact's words without its judgement of the
+    /// day's direction: `Today`, `Yesterday`, the weekday within the past week (`Sunday`),
+    /// this year the month and day (`Jun 21`), other years the full date (`Jun 21, 2025`). A
+    /// day gone by is never `Overdue` here: what was finished is history, not a problem.
+    #[must_use]
+    pub fn day_done(&self, day: NaiveDate, today: NaiveDate) -> String {
+        let days = day.signed_duration_since(today).num_days();
+        match days {
+            0 | -1 => super::near_day(days).unwrap_or_default(),
+            -6..=-2 => self.weekday_name(day.weekday()),
+            _ if day.year() == today.year() => self.month_day(day),
+            _ => self.month_day_year(day),
+        }
+    }
+
     /// The **list** style: as compact as a list column allows, by how far
     /// `at` is from `now`. Today shows the time (`16:02`), the days next to
     /// today their name (`Yesterday`, `Tomorrow`), the rest of the past week

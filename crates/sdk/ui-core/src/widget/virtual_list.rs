@@ -55,6 +55,9 @@ mod tree;
 pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeRow};
 #[path = "virtual_list_press.rs"]
 mod press;
+#[path = "virtual_list_row_group.rs"]
+mod row_group;
+pub use row_group::RowGroup;
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// How near its end a list that follows its end still counts as at it, in logical pixels.
@@ -182,18 +185,6 @@ pub trait ListModel {
     fn discloses(&self) -> bool {
         false
     }
-}
-
-/// The row's place in a group of the list ([`ListModel::group_at`]): the heading the run of
-/// rows stands under, and the tail of items done with.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RowGroup {
-    /// Rows whose group reads this heading stand together under it, in the order they come.
-    Heading(String),
-    /// The items done with: the model stands them last, after every heading group, and the
-    /// list draws them under its tail title ([`VirtualList::with_tail_title`]), closed until
-    /// the person opens them.
-    Tail,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -448,7 +439,7 @@ pub struct VirtualList<M: ListModel> {
     tail_title: Option<String>,
     /// What each row is grouped by, by key: the model is asked once for a row while its props
     /// stand as they were.
-    row_groups: HashMap<M::Key, Option<(String, bool)>>,
+    row_groups: HashMap<M::Key, Option<groups::Group>>,
     /// The rows are a tree ([`Self::with_tree`]): each under the row of the item it names as
     /// its parent, its subtasks folded away where the person folded them.
     tree: Option<Rc<TreeMarks<M::Key>>>,
@@ -873,7 +864,7 @@ impl<M: ListModel> VirtualList<M> {
         // A heading the rows moved away from lets the keyboard go.
         self.focused_group = self.focused_group.take().filter(|(heading, index)| {
             groups::group_of(&self.model, *index, self.tail_title.as_deref())
-                .is_some_and(|group| group.0 == *heading)
+                .is_some_and(|group| group.heading == *heading)
         });
         self.request_dirty = true;
         self.keep_end();

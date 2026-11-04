@@ -663,11 +663,11 @@ fn rows_that_name_no_group_stand_under_their_own_heading() {
     let model = list.list().expect("the list").model();
     assert_eq!(
         crate::widget::ListModel::group_at(model, 0),
-        Some(RowGroup::Heading("Jul 1".into()))
+        Some(RowGroup::heading("Jul 1"))
     );
     assert_eq!(
         crate::widget::ListModel::group_at(model, 1),
-        Some(RowGroup::Heading("No date".into())),
+        Some(RowGroup::heading("No date")),
         "a row whose item names no group is not the last group's"
     );
     // A list given no heading for them leaves those rows among the others, as before.

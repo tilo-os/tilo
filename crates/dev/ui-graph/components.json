@@ -7001,6 +7001,29 @@
           }
         },
         {
+          "name": "group_done",
+          "doc": "The group's day is the day the item was done on, not the day it is due: it reads as the day it happened (`Yesterday`, `Sunday`, `Jun 21`), never as a day gone by, and in no tone of its own.",
+          "type": "bool"
+        },
+        {
+          "name": "group_tone",
+          "doc": "How the group's heading and its count read: left to the platform, it reads the tone the date the heading holds asks for (a day gone by is overdue), unless the view names one.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
           "name": "tail",
           "doc": "The row is one of the items done with: they stand after every group, under the list's tail title, closed until the person opens them.",
           "type": "bool"

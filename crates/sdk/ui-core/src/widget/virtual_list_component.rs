@@ -25,7 +25,7 @@ use crate::widget::conversation::list::RUN_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, DayDivider};
 use crate::widget::{
     Attachments, Avatar, ContextMenuArea, Decorator, Element, ListRow, ListRowProps, MenuEntry,
-    MenuPart, Spacer, SwipeActionProps, Text, Widget,
+    MenuPart, Spacer, SwipeActionProps, Text, Tone, Widget,
 };
 
 use super::{ListModel, ListModelChange, TREE_INDENT, TreeMarks, VirtualList};
@@ -80,6 +80,13 @@ pub struct ListItemProps {
     /// The group the row is in, as the platform reads it over the group's first row: a day
     /// for a date. Rows of one group stand together under its heading, in the order they come.
     pub group: Option<String>,
+    /// The group's day is the day the item was done on, not the day it is due: it reads as the
+    /// day it happened (`Yesterday`, `Sunday`, `Jun 21`), never as a day gone by, and in no
+    /// tone of its own.
+    pub group_done: bool,
+    /// How the group's heading and its count read: left to the platform, it reads the tone the
+    /// date the heading holds asks for (a day gone by is overdue), unless the view names one.
+    pub group_tone: Option<Tone>,
     /// The row is one of the items done with: they stand after every group, under the list's
     /// tail title, closed until the person opens them.
     pub tail: bool,
@@ -438,6 +445,8 @@ fn reusable(item: &ListItemProps) -> Option<ListItemProps> {
         },
         change: item.change.as_ref().map(ChangeMarkProps::again),
         group: item.group.clone(),
+        group_done: item.group_done,
+        group_tone: item.group_tone,
         tail: item.tail,
         removed: item.removed,
         parent: item.parent.clone(),
@@ -525,9 +534,18 @@ impl ListModel for DescribedRows {
             if item.tail {
                 return Some(super::RowGroup::Tail);
             }
+            let ungrouped = || {
+                self.ungrouped.clone().map(|text| super::RowGroup::Heading {
+                    text,
+                    tone: Tone::Neutral,
+                })
+            };
             match item.group.as_deref().filter(|heading| !heading.is_empty()) {
-                Some(heading) => Some(super::RowGroup::Heading(heading.to_owned())),
-                None => self.ungrouped.clone().map(super::RowGroup::Heading),
+                Some(heading) => Some(super::RowGroup::Heading {
+                    text: heading.to_owned(),
+                    tone: item.group_tone.unwrap_or(Tone::Neutral),
+                }),
+                None => ungrouped(),
             }
         })
         .flatten()

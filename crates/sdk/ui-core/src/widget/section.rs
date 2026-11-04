@@ -54,7 +54,7 @@ use crate::tokens::TextRole;
 use crate::widget::list_row::RowStatus;
 use crate::widget::{
     AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, Element, Interaction, TaffyTreeExt,
-    Text, Widget,
+    Text, Tone, Widget,
 };
 
 /// How prominent a section's title is.
@@ -301,6 +301,9 @@ pub struct SectionHeaderFace<'a> {
     /// Whether the header shows a chevron, and which way it points: a header a person presses
     /// to fold what stands under it.
     disclosure: Option<bool>,
+    /// How a group's heading and its count read, when it reads in a tone: a day gone by is
+    /// overdue in the danger tone. The neutral tone is the quiet heading every group has.
+    tone: Option<Tone>,
 }
 
 impl<'a> SectionHeaderFace<'a> {
@@ -313,6 +316,7 @@ impl<'a> SectionHeaderFace<'a> {
             trailing_count: None,
             action: None,
             disclosure: None,
+            tone: None,
         }
     }
 
@@ -351,6 +355,14 @@ impl<'a> SectionHeaderFace<'a> {
     #[must_use]
     pub fn disclosure(mut self, open: bool) -> Self {
         self.disclosure = Some(open);
+        self
+    }
+
+    /// The tone a group's heading and its count read in ([`Tone::Danger`] for what is
+    /// overdue). The neutral tone is the quiet heading a group has by default.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = (!matches!(tone, Tone::Neutral)).then_some(tone);
         self
     }
 
@@ -444,12 +456,19 @@ impl<'a> SectionHeaderFace<'a> {
             } else {
                 Icon::ChevronRight
             };
-            icon.draw(ctx.scene, ctx.transform, chevron, theme.text_dim);
+            icon.draw(
+                ctx.scene,
+                ctx.transform,
+                chevron,
+                self.tone.map_or(theme.text_dim, |tone| tone.colour(theme)),
+            );
         }
-        let ink = match self.level {
-            // A group's heading names what the rows under it hold, more quietly than they do.
-            Level::Group => theme.text_dim,
-            Level::Section => theme.text_primary,
+        // How a group's heading reads: its tone's colour, the quiet dim of a heading that
+        // names the rows under it, or the section's own ink.
+        let ink = match (self.level, self.tone) {
+            (_, Some(tone)) => tone.colour(theme),
+            (Level::Group, None) => theme.text_dim,
+            (Level::Section, None) => theme.text_primary,
         };
         ctx.text(
             self.title,
@@ -472,7 +491,7 @@ impl<'a> SectionHeaderFace<'a> {
             ctx.text(
                 &label,
                 &m.count,
-                theme.text_dim,
+                self.tone.map_or(theme.text_dim, |tone| tone.colour(theme)),
                 Point::new(x, cy - f64::from(h) / 2.0),
                 None,
             );
