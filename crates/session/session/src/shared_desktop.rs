@@ -272,7 +272,7 @@ impl SharedDesktops {
                 }
                 false
             }
-            Ok(true) => self.publish(engine, room, &person, candidate, &heads, own),
+            Ok(true) => self.publish(engine, room, &person, candidate, &heads, own, notes),
         }
     }
 
@@ -288,6 +288,7 @@ impl SharedDesktops {
         mut candidate: automerge::AutoCommit,
         heads: &[ChangeHash],
         own: u64,
+        notes: Vec<(u64, String)>,
     ) -> bool {
         // Every change a device signs says what it is and who made
         // it: the edit of the record this person just made here.
