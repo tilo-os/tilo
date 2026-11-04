@@ -64,7 +64,6 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-relay-shell = { path = "../tilo-relay-shell" }
 tilo-relay-store = { path = "../tilo-relay-store" }
 sha2.workspace = true
-tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 tilo-secrets = { path = "../../platform/tilo-secrets", optional = true }
 chat = { path = "../../../apps/chat", optional = true, default-features = false }
