@@ -65,7 +65,7 @@ fn show_board(app: &mut TestApp<TlApp>) {
                 && tab
                     .name
                     .as_deref()
-                    .is_some_and(|name| name.ends_with("board"))
+                    .is_some_and(|name| name.eq_ignore_ascii_case("board"))
         })
         .and_then(|tab| tab.bounds)
         .unwrap_or_else(|| panic!("the bar offers the board: {snapshot:#?}"));
