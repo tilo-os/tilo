@@ -282,16 +282,16 @@ fn arg_text(a: &Arg, col: usize, level: usize, ctx: &mut Ctx) -> String {
 
 fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     let ty = print_type(&p.ty);
-    let head = format!("{}: {ty}", p.name.name);
+    let mut head = format!("{}: {ty}", p.name.name);
+    if let Some(place) = &p.place {
+        head = format!("{head} ({})", place.name);
+    }
     match &p.default {
         Some(default) => {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);
             format!("{head} = {value}")
         }
-        None => match &p.place {
-            Some(place) => format!("{head} ({})", place.name),
-            None => head,
-        },
+        None => head,
     }
 }
 

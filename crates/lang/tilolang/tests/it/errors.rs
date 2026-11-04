@@ -628,3 +628,49 @@ fn two_commands_that_write_one_field_from_a_value_they_ask_for_are_one_command()
         ["E120"]
     );
 }
+
+#[test]
+fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
+    let task = "type Task {\n    title: Text (title)\n}\n";
+    let places = |param: &str| {
+        crate::common::codes(&format!(
+            "{task}action move_under(t: Task, {param}) {{\n    t.title = \"x\"\n}}\n"
+        ))
+    };
+    assert_eq!(places("above: Option<Task> (above)"), Vec::<String>::new());
+    assert_eq!(places("above: Option<Task> (below)"), ["E054"]);
+    assert_eq!(places("above: Task (above)"), ["E055"]);
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}action move_under(t: Task, x: Text, above: Option<Task> (above)) {{\n    x = \"x\"\n}}\n"
+        )),
+        ["E053"],
+        "a place follows the subject it is offered on"
+    );
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}view show_task(t: Task (above)) {{\n    ui.Text(t.title)\n}}\n"
+        )),
+        ["E052"],
+        "only an action is offered on an item, so only its parameters have places"
+    );
+    assert_eq!(
+        places("above: Option<Task> (above) = .none"),
+        ["E056"],
+        "a place is written after the type and takes no default"
+    );
+    let misplaced = crate::common::compile_with(
+        &format!("app t.x \"X\"\n{task}action move_under(t: Task, above: Option<Task> = .none (above)) {{\n    t.title = \"x\"\n}}\n"),
+        &[],
+    )
+    .err()
+    .and_then(|d| d.into_iter().find(|d| d.code == "E003"))
+    .map_or_else(
+        || panic!("a place after a default says where it goes"),
+        |d| d.message,
+    );
+    assert!(
+        misplaced.contains("right after the parameter's type"),
+        "the error says where a place is written: {misplaced}"
+    );
+}

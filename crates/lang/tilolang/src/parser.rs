@@ -1340,16 +1340,37 @@ impl<'a> Parser<'a> {
             let name = self.ident("a parameter name")?;
             self.expect(&Tok::Colon)?;
             let ty = self.type_expr()?;
-            let default = if self.eat(&Tok::Assign) {
-                Some(self.expr()?)
-            } else {
-                None
-            };
-            // `above: Option<Task> (above)`: the place the view offering the action supplies.
-            let place = if self.eat(&Tok::LParen) {
+            // `above: Option<Task> (above)`: the place the view offering the action supplies,
+            // written as part of what the parameter is. No caller gives it, so it has no default.
+            let place = if self.is(&Tok::LParen) {
+                self.bump();
                 let place = self.ident("a place a view supplies (`above`)")?;
                 self.expect(&Tok::RParen)?;
                 Some(place)
+            } else {
+                None
+            };
+            let default = if self.eat(&Tok::Assign) {
+                let default = self.expr()?;
+                // `above: Option<Task> = .none (above)` reads as the variant `.none` given
+                // `above`; it is a place written after a default instead, which no place takes.
+                let written_as_a_place = matches!(
+                    &default.kind,
+                    ExprKind::Variant { args: Some(args), .. }
+                        if args.len() == 1
+                            && matches!(&args[0].value.kind, ExprKind::Ident(read) if *read == name.name)
+                );
+                if self.is(&Tok::LParen) || written_as_a_place {
+                    let at = Span::new(self.prev_end(), self.prev_end());
+                    return self.fail(
+                        at,
+                        format!(
+                            "a place a view supplies comes right after the parameter's type, as `{}: Type ({})`; it takes no default",
+                            name.name, name.name
+                        ),
+                    );
+                }
+                Some(default)
             } else {
                 None
             };

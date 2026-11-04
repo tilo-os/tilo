@@ -1840,12 +1840,12 @@ impl Resolver<'_> {
                 }
                 continue;
             };
-            if i == 0 {
-                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
-                continue;
-            }
             if kind != CKind::Action {
                 self.err("E052", p.name.span, format!("`{}` is a parameter of the {}; only an action takes a place a view supplies (`(above)`)", p.name.name, kind.word()));
+                continue;
+            }
+            if i == 0 {
+                self.err("E053", place.span, format!("`{}` is a place a view supplies: it follows the action's subject directly, as `{}: Option<T> (above)`", p.name.name, p.name.name));
                 continue;
             }
             if place.name != "above" {
