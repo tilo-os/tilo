@@ -54,13 +54,18 @@ pub(crate) fn sync_filesystem(receiving: &File) -> io::Result<()> {
     {
         rustix::fs::syncfs(receiving).map_err(io::Error::from)
     }
-    #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+    #[cfg(all(
+        unix,
+        not(any(target_os = "linux", target_os = "android", target_os = "redox"))
+    ))]
     {
         let _ = receiving;
         rustix::fs::sync();
         Ok(())
     }
-    #[cfg(not(unix))]
+    // Redox is a unix whose filesystem offers no commit of every filesystem,
+    // so there it is the file's own writes, as it is off unix.
+    #[cfg(any(not(unix), target_os = "redox"))]
     {
         receiving.sync_all()
     }
