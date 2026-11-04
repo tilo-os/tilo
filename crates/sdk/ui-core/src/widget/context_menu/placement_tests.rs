@@ -80,6 +80,36 @@ fn a_menu_opened_past_the_windows_corner_stays_inside_it() {
     );
 }
 
+/// Taller than the room it has, a menu scrolls its rows and ends with the last one it shows
+/// whole: a row cut to a sliver at its edge is a target a person sees but cannot aim at.
+#[test]
+fn a_menu_that_scrolls_cuts_no_row_in_half() {
+    let _settled = crate::motion::testing::settled();
+    let mut m = ContextMenu::with_items(
+        (0..12)
+            .map(|i| MenuItem::action(format!("Row {i}"), || {}))
+            .collect(),
+    );
+    let window = Rect::new(0.0, 0.0, 400.0, 200.0);
+    m.open_anchored(Rect::new(10.0, 10.0, 300.0, 30.0), window);
+    assert!(
+        m.scroll.overflows_vertically(),
+        "the rest scrolls into view"
+    );
+    assert!(m.get_rect().y1 <= window.y1 + 0.5, "{:?}", m.get_rect());
+    let mut shown = 0;
+    for index in 0..12 {
+        if let Some(item) = m.item_rect(index) {
+            shown += 1;
+            assert!(
+                (item.height() - m.row_height()).abs() < 0.5,
+                "row {index} is cut at the panel's edge: {item:?}"
+            );
+        }
+    }
+    assert!(shown >= 1, "the menu shows rows");
+}
+
 /// A menu a row opens follows the row it stands against: the same call that
 /// opens it places it again wherever the row is now.
 #[test]
