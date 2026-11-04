@@ -15,7 +15,8 @@ use winit::window::Window;
 use super::super::App;
 use super::super::host_commands::HostCommandsKey;
 use crate::host_chrome::HostChrome;
-use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
+use crate::host_chrome::frame::app_draws_frame;
+use crate::host_chrome::header_bar::{HeaderBar, HeaderRequest, resize_edge};
 use crate::widget::Widget;
 
 pub(super) enum Decorations {

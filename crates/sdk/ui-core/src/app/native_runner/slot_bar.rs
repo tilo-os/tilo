@@ -160,7 +160,7 @@ impl SlotBar {
     /// Whether the app draws the window's frame itself: the one case the row
     /// carries the window's controls, since the desktop draws none.
     fn decorates_itself(&self, app: &App, window: &Window) -> bool {
-        crate::host_chrome::header_bar::app_draws_frame(
+        crate::host_chrome::frame::app_draws_frame(
             crate::host_chrome::HostChrome::current(app.input.platform),
             tilo_presentation::desktop_draws_frame(window),
         ) == Some(true)
