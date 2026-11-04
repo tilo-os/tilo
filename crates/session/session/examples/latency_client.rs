@@ -4,12 +4,13 @@
 //! one cell of a text grid. Its buffers are `wl_shm` (`--buffers shm`, the
 //! default) or LINEAR `XRGB8888` dma-bufs allocated with GBM on the render node
 //! (`--buffers dmabuf`), which the compositor draws from without a CPU copy;
-//! a dma-buf is brought up to date by drawing only the cells it lacks. With `--damage full` (the default) the commit damages
-//! the whole surface, as a client that redraws its grid would; with
-//! `--damage line` it damages only the text line the cell is on, as a terminal
-//! or a text editor reports a typed character. It draws at once, without waiting
-//! for a frame callback, so the compositor's own scheduling is what the harness
-//! measures. With `--scale N` it draws N buffer pixels per surface pixel
+//! a dma-buf is brought up to date by drawing only the cells it lacks. With
+//! `--damage full` (the default) the commit damages the whole surface, as a
+//! client that redraws its grid would; with `--damage line` it damages only
+//! the text line the cell is on, as a terminal or a text editor reports a
+//! typed character. It draws at once, without waiting for a frame callback,
+//! so the compositor's own scheduling is what the harness measures. With
+//! `--scale N` it draws N buffer pixels per surface pixel
 //! (`wl_surface.set_buffer_scale`), as a client on a 200 % panel does, so its
 //! buffer can match the display pixel for pixel. It prints
 //! `READY <width>x<height>` once its first frame is committed and exits when
