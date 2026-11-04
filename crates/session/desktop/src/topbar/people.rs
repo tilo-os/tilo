@@ -107,13 +107,14 @@ impl TopBarChrome {
         let name = t("topbar-show-collaborators");
         let chip = BarChipFace::new(&name, &[])
             .icons(USERS_GLYPH)
+            .at_height(BAR_CONTROL_PX)
             .hovered(hovered)
             .focused(
                 self.focus_ring_visible()
                     && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
             );
         let width = chip.width(text_renderer, theme);
-        let pill = BarChipFace::place(right_x - width, center_y, width, theme);
+        let pill = BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
         let _ = chip.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             pill,
@@ -148,13 +149,14 @@ impl TopBarChrome {
         let name = t("topbar-invite");
         let chip = BarChipFace::new(&name, &[])
             .icons(INVITE_GLYPH)
+            .at_height(BAR_CONTROL_PX)
             .hovered(hovered)
             .focused(
                 self.focus_ring_visible()
                     && self.focused_control.as_deref() == Some(Self::CONTROL_INVITE),
             );
         let width = chip.width(text_renderer, theme);
-        let pill = BarChipFace::place(right_x - width, center_y, width, theme);
+        let pill = BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
         let _ = chip.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             pill,
@@ -237,13 +239,15 @@ impl TopBarChrome {
             && self.last_cursor.is_some_and(|point| point.x <= right_x);
         let chip = ui::widget::BarChipFace::new(&label, &[])
             .label(&label)
+            .at_height(BAR_CONTROL_PX)
             .hovered(hovered)
             .focused(
                 self.focus_ring_visible()
                     && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
             );
         let width = chip.width(text_renderer, theme);
-        let pill = ui::widget::BarChipFace::place(right_x - width, center_y, width, theme);
+        let pill =
+            ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
         let _ = chip.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             pill,

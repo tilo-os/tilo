@@ -90,20 +90,21 @@ impl TopBarChrome {
         let pad_x = f64::from(tokens.spacing.s3);
         let rx = self.rect.x1 - pad_x;
         let slots = self.tray_slots();
-        let status = StatusCluster::new().battery(
-            self.status.battery_percent().unwrap_or(0),
-            self.status.battery_is_charging(),
-        );
+        // The battery's percentage is drawn only where the machine has a
+        // reading: an unknown battery contributes nothing, not a zero.
+        let status = match self.status.battery_percent() {
+            Some(percent) => {
+                StatusCluster::new().battery(percent, self.status.battery_is_charging())
+            }
+            None => StatusCluster::new(),
+        };
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_QUICK_SETTINGS);
-        let face = StatusClusterFace::new(&slots, status).hovered(hovered);
+        let face = StatusClusterFace::new(&slots, status)
+            .hovered(hovered)
+            .at_height(BAR_CONTROL_PX);
         let tray_w = face.width(text_renderer, theme);
-        let tray_h = StatusClusterFace::height(theme);
-        self.tray_pill_rect = Rect::new(
-            rx - tray_w,
-            center_y - tray_h / 2.0,
-            rx,
-            center_y + tray_h / 2.0,
-        );
+        self.tray_pill_rect =
+            StatusClusterFace::place_at(rx - tray_w, center_y, tray_w, BAR_CONTROL_PX);
         self.tray_hit_rect = Rect::new(
             self.tray_pill_rect.x0,
             self.rect.y0,
@@ -192,7 +193,9 @@ impl TopBarChrome {
         };
         let name = labels.first().copied().unwrap_or_default();
         let live = colors.semantic.success;
-        let mut chip = BarChipFace::new(name, &[]).icons(&glyphs);
+        let mut chip = BarChipFace::new(name, &[])
+            .icons(&glyphs)
+            .at_height(BAR_CONTROL_PX);
         if !label.is_empty() {
             chip = chip.label(&label);
         }
@@ -200,13 +203,8 @@ impl TopBarChrome {
             chip = chip.tone(live);
         }
         let width = chip.width(text_renderer, theme);
-        let height = BarChipFace::height(theme);
-        self.media_indicator_rect = Rect::new(
-            rx - width,
-            center_y - height / 2.0,
-            rx,
-            center_y + height / 2.0,
-        );
+        self.media_indicator_rect =
+            BarChipFace::place_at(rx - width, center_y, width, BAR_CONTROL_PX);
         let _ = chip.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.media_indicator_rect,

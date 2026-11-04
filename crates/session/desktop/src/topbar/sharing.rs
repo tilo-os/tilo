@@ -415,6 +415,7 @@ impl TopBarChrome {
             .label(&label)
             .label_width(f64::from(available))
             .tone(color)
+            .at_height(BAR_CONTROL_PX)
             .hovered(false)
             .focused(
                 self.focus_ring_visible()
@@ -422,7 +423,7 @@ impl TopBarChrome {
             );
         let width = chip.width(text_renderer, theme);
         self.sharing_indicator_rect =
-            ui::widget::BarChipFace::place(right_x - width, center_y, width, theme);
+            ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
         let _ = chip.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.sharing_indicator_rect,

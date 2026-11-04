@@ -44,6 +44,8 @@ pub struct BarChipFace<'a> {
     focused: bool,
     /// The label may grow to this width before it elides; `None`: as wide as the room the chip is given.
     label_width: Option<f64>,
+    /// The chip's height; `None` uses the theme's bar control height.
+    height: Option<f64>,
 }
 
 /// Where a [`BarChipFace`] painted its parts.
@@ -76,7 +78,21 @@ impl<'a> BarChipFace<'a> {
             pressed: false,
             focused: false,
             label_width: None,
+            height: None,
         }
+    }
+
+    /// Paint and measure at `height` rather than the theme's bar control
+    /// height: a bar whose own controls are a little shorter than the
+    /// toolkit's default keeps one top and bottom edge across every control.
+    #[must_use]
+    pub fn at_height(mut self, height: f64) -> Self {
+        self.height = Some(height.max(1.0));
+        self
+    }
+
+    fn height_of(&self, theme: &Theme) -> f64 {
+        self.height.unwrap_or_else(|| Self::height(theme))
     }
 
     /// The words beside the faces. An empty string shows none; a chip with
@@ -184,9 +200,18 @@ impl<'a> BarChipFace<'a> {
     /// label, and a trailing glyph, each a gap apart.
     #[must_use]
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let h = Self::height(theme);
+        let h = self.height_of(theme);
         let gap = Self::gap(theme);
         let icon = Self::icon_size(theme);
+        // A chip that is one glyph alone is a square, as any bar control of
+        // an icon is: the seat it takes, not its glyph and its pad.
+        if self.label.is_empty()
+            && self.faces.is_empty()
+            && self.overflow == 0
+            && self.trailing.is_none()
+        {
+            return h;
+        }
         let mut w = 2.0 * Self::pad(theme);
         w += f64::from(u32::try_from(self.icons.len()).unwrap_or(u32::MAX)) * (icon + gap);
         let stack = self.stack_width(theme);
@@ -208,7 +233,7 @@ impl<'a> BarChipFace<'a> {
     }
 
     fn stack_width(&self, theme: &Theme) -> f64 {
-        FaceStack::in_face(Self::height(theme)).width(self.faces.len() + self.overflow)
+        FaceStack::in_face(self.height_of(theme)).width(self.faces.len() + self.overflow)
     }
 
     /// Paint the chip in `rect` (its width from [`Self::width`], its height
@@ -258,16 +283,32 @@ impl<'a> BarChipFace<'a> {
         let gap = Self::gap(theme);
         let icon = Self::icon_size(theme);
         let cy = rect.center().y;
-        let mut x = rect.x0 + Self::pad(theme);
         let mut layout = BarChipLayout {
             chip: rect,
             ..BarChipLayout::default()
         };
+        // A chip that is one glyph alone centres it in its square seat, as
+        // any bar control of an icon does.
+        let alone = self.label.is_empty()
+            && self.faces.is_empty()
+            && self.overflow == 0
+            && self.trailing.is_none()
+            && self.icons.len() == 1;
+        let mut x = if alone {
+            rect.x0
+        } else {
+            rect.x0 + Self::pad(theme)
+        };
         for glyph in self.icons {
+            let centre = if alone {
+                rect.center()
+            } else {
+                Point::new(x + icon / 2.0, cy)
+            };
             glyph.draw_with_stroke(
                 ctx.scene,
                 ctx.transform,
-                Rect::from_center_size(Point::new(x + icon / 2.0, cy), (icon, icon)),
+                Rect::from_center_size(centre, (icon, icon)),
                 ink,
                 crate::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
@@ -276,7 +317,7 @@ impl<'a> BarChipFace<'a> {
         let stack = self.stack_width(theme);
         if stack > 0.0 {
             let right = x + stack;
-            let (rects, badge) = FaceStack::in_face(Self::height(theme)).paint(
+            let (rects, badge) = FaceStack::in_face(self.height_of(theme)).paint(
                 ctx,
                 (right, cy),
                 (self.faces, self.overflow),
@@ -346,8 +387,13 @@ impl<'a> BarChipFace<'a> {
     /// whose middle line is `cy`.
     #[must_use]
     pub fn place(x: f64, cy: f64, width: f64, theme: &Theme) -> Rect {
-        let h = Self::height(theme);
-        Rect::new(x, cy - h / 2.0, x + width, cy + h / 2.0)
+        Self::place_at(x, cy, width, Self::height(theme))
+    }
+
+    /// [`Self::place`] at `height` rather than the theme's bar control height.
+    #[must_use]
+    pub fn place_at(x: f64, cy: f64, width: f64, height: f64) -> Rect {
+        Rect::new(x, cy - height / 2.0, x + width, cy + height / 2.0)
     }
 }
 

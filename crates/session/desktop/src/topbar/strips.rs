@@ -6,7 +6,10 @@
 //!
 //! The workspace's new name, asked for in the workspace menu, is typed in
 //! place of its name here.
-use super::{Affine, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome, t};
+use super::{
+    Affine, BAR_CONTROL_PX, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome,
+    t,
+};
 /// The strip's separator: the chevron that opens the strip switcher.
 static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
@@ -133,6 +136,7 @@ impl TopBarChrome {
             .icons(STRIP_GLYPH)
             .label(&name)
             .label_width((x1 - x0 - gap - STRIP_CHEVRON_PX - gap).max(0.0))
+            .at_height(BAR_CONTROL_PX)
             .hovered(self.hovered_control().as_deref() == Some(Self::CONTROL_STRIP_NAME))
             .focused(
                 self.focus_ring_visible()
@@ -142,7 +146,7 @@ impl TopBarChrome {
         if x1 - x0 < width {
             return;
         }
-        self.ws_strip_rect = ui::widget::BarChipFace::place(x0, center_y, width, theme);
+        self.ws_strip_rect = ui::widget::BarChipFace::place_at(x0, center_y, width, BAR_CONTROL_PX);
         let _ = chip.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.ws_strip_rect,

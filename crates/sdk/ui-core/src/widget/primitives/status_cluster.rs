@@ -99,6 +99,8 @@ pub struct StatusClusterFace<'a> {
     hovered: bool,
     pressed: bool,
     focused: bool,
+    /// The control's height; `None` uses the theme's bar control height.
+    height: Option<f64>,
 }
 
 /// Where a painted cluster put its parts, for hit-testing and for the
@@ -128,7 +130,18 @@ impl<'a> StatusClusterFace<'a> {
             hovered: false,
             pressed: false,
             focused: false,
+            height: None,
         }
+    }
+
+    /// Paint and measure at `height` rather than the theme's bar control
+    /// height: a bar whose own controls are a little shorter than the
+    /// toolkit's default (the desktop's is 24) keeps one top and bottom
+    /// edge across every control.
+    #[must_use]
+    pub fn at_height(mut self, height: f64) -> Self {
+        self.height = Some(height.max(1.0));
+        self
     }
 
     #[must_use]
@@ -162,8 +175,8 @@ impl<'a> StatusClusterFace<'a> {
         BarControlFace::height(theme)
     }
 
-    fn slot(theme: &Theme) -> f64 {
-        Self::height(theme)
+    fn slot(&self, theme: &Theme) -> f64 {
+        self.height.unwrap_or_else(|| Self::height(theme))
     }
 
     fn pad(theme: &Theme) -> f64 {
@@ -190,13 +203,13 @@ impl<'a> StatusClusterFace<'a> {
     pub fn width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let slots = self.slots_shown();
         let mut w = 2.0 * Self::pad(theme)
-            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * Self::slot(theme);
+            + f64::from(u32::try_from(slots).unwrap_or(u32::MAX)) * self.slot(theme);
         if let Some(percent) = self.battery {
             let label = format!("{percent}%");
             let (label_w, _) = text.measure_style(&label, None, &Self::percentage_style(theme));
             w += f64::from(theme.tokens.spacing.rhythm.tight) + f64::from(label_w);
         }
-        w.ceil().max(Self::height(theme))
+        w.ceil().max(self.slot(theme))
     }
 
     /// Whether the whole control should wear the danger wash: the battery is
@@ -246,7 +259,7 @@ impl<'a> StatusClusterFace<'a> {
         let bright = colors.ink_on(ground, colors.text_primary, 4.5);
         let low = colors.semantic.warning;
         let danger = colors.semantic.danger;
-        let slot = Self::slot(theme);
+        let slot = self.slot(theme);
         let glyph = Self::glyph(theme);
         let cy = rect.center().y;
         let mut layout = StatusClusterLayout {
@@ -274,8 +287,11 @@ impl<'a> StatusClusterFace<'a> {
                         let style = Self::percentage_style(theme);
                         let (label_w, label_h) = ctx.text.measure_style(&label, None, &style);
                         let (width, height) = badge_size(label_w, label_h, theme);
+                        // The count sits on the bell's shoulder, nudged down
+                        // into the control's own band so a tall one is never
+                        // cut at the bar's top edge.
                         let right = square.x1 + height / 2.0;
-                        let top = square.y0 - height / 2.0;
+                        let top = (square.y0 - height / 2.0).max(rect.y0);
                         let badge = Rect::new(right - width, top, right, top + height);
                         layout.badge = badge;
                         // A count is a capsule in the danger hue, its ink measured on it.
@@ -431,8 +447,13 @@ impl<'a> StatusClusterFace<'a> {
     /// bar whose middle line is `cy`.
     #[must_use]
     pub fn place(x: f64, cy: f64, width: f64, theme: &Theme) -> Rect {
-        let h = Self::height(theme);
-        Rect::new(x, cy - h / 2.0, x + width, cy + h / 2.0)
+        Self::place_at(x, cy, width, Self::height(theme))
+    }
+
+    /// [`Self::place`] at `height` rather than the theme's bar control height.
+    #[must_use]
+    pub fn place_at(x: f64, cy: f64, width: f64, height: f64) -> Rect {
+        Rect::new(x, cy - height / 2.0, x + width, cy + height / 2.0)
     }
 }
 
