@@ -33,6 +33,8 @@ tilolang-empty = Nothing here yet
 tilolang-done = Done
 # The heading over the items of a list that name no group of their own.
 tilolang-no-date = No date
+# Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
+tilolang-all-done = All done
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected

@@ -65,6 +65,10 @@ pub struct Metrics {
     pub drawer_width: f32,
     /// The overview column of an overview + detail pair (HIG §1b).
     pub overview_width: f32,
+    /// The widest the overview column grows to fit what it lists: a row's
+    /// title beside its facts, whole. Past it the title elides, and the
+    /// detail keeps the room.
+    pub overview_max_width: f32,
     /// A generic "wide window" width for painted apps that pick a compact
     /// chrome by width: `sidebar_width` plus [`Metrics::content_min_width`].
     /// `NavShell` and `SidebarDrawer` dock by the content's real minimum
@@ -237,6 +241,7 @@ impl Metrics {
         sidebar_width: 280.0,
         drawer_width: 320.0,
         overview_width: 340.0,
+        overview_max_width: 460.0,
         compact_breakpoint: 840.0,
         nav_row_height: 32.0,
         header_height: 56.0,
@@ -363,6 +368,7 @@ impl Metrics {
             sidebar_width: self.sidebar_width * factor,
             drawer_width: self.drawer_width * factor,
             overview_width: self.overview_width * factor,
+            overview_max_width: self.overview_max_width * factor,
             compact_breakpoint: self.compact_breakpoint * factor,
             nav_row_height: self.nav_row_height * factor,
             header_height: self.header_height * factor,

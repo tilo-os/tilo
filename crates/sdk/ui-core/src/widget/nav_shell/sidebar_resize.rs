@@ -19,10 +19,6 @@ use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
 #[derive(Debug, Default)]
 pub(super) struct Edge {
     pub(super) touch: Option<u64>,
-    /// Which form the sidebar started in, settled the first time the
-    /// window showed it: the rule never runs again in this window's life,
-    /// whatever arrives in the list later. Only the person's drag moves it.
-    started_as_rail: Option<bool>,
     memory: Option<crate::storage::Settings<super::memory::NavShellMemory>>,
 }
 
@@ -235,30 +231,14 @@ impl NavShell {
     pub(super) fn sidebar_metrics(&mut self, theme: &Theme) -> (Metrics, Option<AdaptiveSidebar>) {
         self.recall_sidebar_width();
         let mut metrics = Metrics::resolve(theme).for_input(theme, self.interaction);
-        let (docked_rail, header_actions) = {
-            let inputs = self.inputs.borrow();
-            let actions = inputs.actions.get(super::Column::Sidebar.index());
-            (
-                inputs.mode == NavMode::Docked,
-                actions.is_some_and(|n| *n > 0),
-            )
-        };
+        let docked_rail = self.inputs.borrow().mode == NavMode::Docked;
         let adaptive = if docked_rail {
             None
         } else {
             self.sidebar
                 .as_deref()
                 .and_then(crate::widget::nav_list::adaptive)
-                .map(|nav| {
-                    let mut adaptive = adaptive_sidebar(nav, theme, &metrics);
-                    // The sidebar's own header actions ("Add subscription")
-                    // need the list's width to stand in its header.
-                    adaptive.rail_default &= !header_actions;
-                    if let Some(settled) = self.edge.started_as_rail {
-                        adaptive.rail_default = settled;
-                    }
-                    adaptive
-                })
+                .map(|nav| adaptive_sidebar(nav, theme, &metrics))
         };
         let fitted = [
             self.rail.as_deref(),
@@ -278,15 +258,7 @@ impl NavShell {
     /// has (`width`); a hidden sidebar keeps the form it had.
     pub(super) fn follow_sidebar_width(&mut self, width: f64) {
         if width > 0.0 {
-            let (rail, adaptive) = {
-                let inputs = self.inputs.borrow();
-                (inputs.sidebar_reads_as_rail(width), inputs.adaptive)
-            };
-            if let Some(adaptive) = adaptive {
-                self.edge
-                    .started_as_rail
-                    .get_or_insert(adaptive.rail_default);
-            }
+            let rail = self.inputs.borrow().sidebar_reads_as_rail(width);
             self.set_sidebar_rail(rail);
         }
     }
@@ -363,19 +335,18 @@ pub(super) struct AdaptiveSidebar {
     /// The width from which it is a list: where every label stands whole
     /// beside its icon, never past the sidebar's own minimum.
     pub(super) list_from: f64,
-    /// It starts as a rail (a short, flat set of places); else as a list
-    /// at the sidebar's width.
-    pub(super) rail_default: bool,
+    /// The width it starts at: the sidebar's, or as much more as its labels
+    /// need to stand whole, up to the sidebar's maximum.
+    pub(super) default: f64,
 }
 
 impl Inputs {
-    /// The sidebar's width before the person drags it: a rail-shaped
-    /// navigation list starts as its rail, every other sidebar at its width.
+    /// The sidebar's width before the person drags it: a navigation list
+    /// starts as a list, wide enough for its labels; every other sidebar at
+    /// its width. The window narrows it toward its rail.
     pub(super) fn sidebar_default(&self) -> f64 {
-        match self.adaptive {
-            Some(adaptive) if adaptive.rail_default => adaptive.rail,
-            _ => self.metrics.sidebar,
-        }
+        self.adaptive
+            .map_or(self.metrics.sidebar, |adaptive| adaptive.default)
     }
 
     /// The narrowest a person can drag the docked sidebar before it hides:
@@ -411,6 +382,8 @@ pub(super) fn adaptive_sidebar(
     AdaptiveSidebar {
         rail,
         list_from,
-        rail_default: nav.rail_by_default(theme),
+        default: nav
+            .list_fit(theme)
+            .clamp(m.sidebar, m.sidebar_max.max(m.sidebar)),
     }
 }

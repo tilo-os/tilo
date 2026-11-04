@@ -121,6 +121,9 @@ pub enum FieldRole {
     /// The record's substance, for a record the person does not name by a word of its own (a
     /// message, an article): search shows its first line where a title would stand.
     Body,
+    /// The flag saying the record is finished (`done: Bool (done)`): the items a place leaves
+    /// out of its count and folds into its foot.
+    Done,
     /// The field holds a repeat, counting from the field `date` (a `Date` or `Option<Date>`).
     Repeats { date: String },
     /// The field holds a reminder of the day `date`, at the time of day `time` where the type
@@ -185,6 +188,13 @@ impl FieldSchema {
     #[must_use]
     pub fn bodied(mut self) -> Self {
         self.role = FieldRole::Body;
+        self
+    }
+
+    /// The field says the record is finished (`done: Bool (done)`).
+    #[must_use]
+    pub fn finished(mut self) -> Self {
+        self.role = FieldRole::Done;
         self
     }
 
@@ -354,6 +364,16 @@ impl TypeSchema {
         self.columns
             .iter()
             .find(|column| column.field.as_deref() == Some(id))
+    }
+
+    /// The field saying its records are finished, by id (`done: Bool (done)`), when it declares
+    /// one: what a place leaves out of its count and folds into its foot.
+    #[must_use]
+    pub fn done(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.role == FieldRole::Done)
+            .map(|field| field.id.as_str())
     }
 
     /// What the type publishes for its repeat, when it declares one: the rule's field and the

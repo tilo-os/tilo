@@ -201,6 +201,7 @@ imports! {
     CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
+    Places = "places" ([H, H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);
@@ -218,6 +219,7 @@ imports! {
     EventPart = "event_part" ([I32] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);
+    UiAction = "ui_action" ([H, H, H] -> []);
 
     SpaceI = "space_i" ([H] -> [I64]);
     SpaceF = "space_f" ([H] -> [F64]);

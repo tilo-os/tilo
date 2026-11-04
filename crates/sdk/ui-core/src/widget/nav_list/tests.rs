@@ -1324,13 +1324,13 @@ fn a_row_is_found_by_its_search_terms_and_says_which() {
     assert!(super::narrow(&items, "zzz").is_empty());
 }
 
-/// Which form a navigation sidebar starts in follows its places: a short,
-/// flat set of places, each with an icon and a label that stands whole in a
-/// tile, starts as a rail; headings, a "New" action, nesting, second lines,
-/// many places or a label too long for a tile start it as a list. Switching
-/// the form keeps the selection.
+/// The two widths a navigation sidebar needs follow its places: the
+/// rail's holds the longest word of a caption, the list's every label whole
+/// beside its icon, and a list is wider than its rail. The form is the
+/// shell's call, from the width it gives the sidebar; switching it keeps
+/// what is chosen.
 #[test]
-fn a_short_flat_set_of_places_starts_as_a_rail_and_anything_more_as_a_list() {
+fn a_place_sets_the_widths_its_rail_and_its_list_need() {
     use super::AdaptiveNav as _;
     let theme = Theme::dark();
     let place = |id: &str, label: &str| NavItem::new(id, label).icon(Icon::Home);
@@ -1346,40 +1346,12 @@ fn a_short_flat_set_of_places_starts_as_a_rail_and_anything_more_as_a_list() {
     .iter()
     .map(|label| place(&label.to_lowercase(), label))
     .collect();
-    assert!(
-        flat(six.clone()).rail_by_default(&theme),
-        "Tube's six places"
-    );
 
-    let many: Vec<NavItem> = (0..8).map(|i| place(&format!("p{i}"), "Place")).collect();
-    assert!(
-        !flat(many).rail_by_default(&theme),
-        "more than seven places"
-    );
-    let headed = NavList::new(vec![NavSection::new("p", "Library", six.clone())]);
-    assert!(!headed.rail_by_default(&theme), "a heading");
-    assert!(
-        !flat(six.clone()).with_headings().rail_by_default(&theme),
-        "a sidebar that can hold headings, before any has loaded"
-    );
-    let mut iconless = six.clone();
-    iconless[0] = NavItem::new("home", "Home");
-    assert!(
-        !flat(iconless).rail_by_default(&theme),
-        "a place without an icon"
-    );
-    let mut nested = six.clone();
-    nested[0] = place("home", "Home").children(vec![place("a", "A")]);
-    assert!(!flat(nested).rail_by_default(&theme), "nesting");
     let mut long = six.clone();
     long[0] = place("long", "Keyboard shortcuts and input methods");
     assert!(
-        !flat(long).rail_by_default(&theme),
-        "a label too long for a tile"
-    );
-    assert!(
-        !NavList::new(mailboxes()).rail_by_default(&theme),
-        "mailboxes"
+        flat(long).list_fit(&theme) > flat(six.clone()).list_fit(&theme),
+        "a longer label needs a wider list"
     );
 
     // A list is wider than its rail, and the switch keeps what is chosen.
@@ -2057,14 +2029,28 @@ fn a_described_list_holds_places_and_sections_under_their_headings_in_order() {
         icon: Some(Icon::Hash),
         ..NavItemProps::default()
     };
+    // A section's add runs when a person presses it, and a place's count is what it holds.
+    let queue = crate::Intents::default();
+    let add = crate::component::OfferedAction {
+        label: "New channel".into(),
+        icon: Some(Icon::Plus),
+        run: crate::component::Event::View(crate::component::Intent::new(
+            &queue, "channels", "add",
+        )),
+        ..crate::component::OfferedAction::default()
+    };
     let list = NavList::from_props(
         "channels",
         NavListProps {
             items: vec![
-                NavEntry::Item(place("/general", "general")),
+                NavEntry::Item(NavItemProps {
+                    count: Some(3),
+                    ..place("/general", "general")
+                }),
                 NavEntry::Section(NavSectionProps {
                     title: "Team".into(),
                     collapsible: true,
+                    add: Some(add),
                     items: vec![
                         place("Team/design", "design"),
                         place("Team/release", "release"),
@@ -2094,6 +2080,17 @@ fn a_described_list_holds_places_and_sections_under_their_headings_in_order() {
             ("", false, vec!["random"]),
         ]
     );
+    assert_eq!(
+        list.sections[0].items[0].count,
+        Some(crate::chrome::NavCount::Neutral(3)),
+        "a place shows what it holds"
+    );
+    let trailing = list.sections[1]
+        .trailing_action
+        .as_ref()
+        .expect("the section heads an add");
+    assert_eq!(trailing.label, "New channel");
+    assert_eq!(trailing.icon, Icon::Plus);
 }
 
 /// A test action taking the gesture's input as its one `value`.

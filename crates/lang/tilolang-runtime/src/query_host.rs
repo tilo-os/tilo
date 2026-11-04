@@ -4,11 +4,18 @@
 use std::rc::Rc;
 
 use tilolang::meta::{FilterKind, TypeMeta};
+use tilolang::pred::{CmpOp, Lit as LangLit, Operand, Pred as LangPred};
 
-use crate::core::{Core, HResult, trap};
+use crate::abi::Imp;
+use crate::colls::field_reads;
+use crate::core::{Args, Core, HResult, trap};
+use crate::engine::Wasm;
+use crate::ids::ModuleHash;
+use crate::meta::{EnumMeta, FieldMeta, FieldRole, Meta, Ty, parse_ty};
 use crate::query::{Clock, Query, Term, find, resolve};
+use crate::registry::TypeInfo;
 use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
-use crate::value::{RefValue, Value};
+use crate::value::{CollRef, RefValue, Value};
 
 impl Core {
     /// The clock queries are read against: the host's, to the minute, so a view that asks
@@ -257,6 +264,16 @@ impl Core {
         Ok(Value::List(filters_of(declared, &pkg.meta.enums)))
     }
 
+    /// The schema's catalogue of a type, as a view asks for it: `filters(T)`, or the
+    /// `places(T, in: root)` a window's sidebar offers.
+    pub(crate) fn catalogue_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let found = match imp {
+            Imp::Filters => self.filters_import(a.h(0)?)?,
+            _ => self.places_import(a.h(0)?, a.h(1)?)?,
+        };
+        self.ret_h(found)
+    }
+
     /// `ident_part(id, 0)` is an identifier's scheme, `ident_part(id, 1)` its value.
     pub(crate) fn ident_part(&self, id: i32, part: i32) -> HResult<Value> {
         let held = self.text(id)?;
@@ -321,4 +338,381 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
         }
     }
     out
+}
+
+/// How a place's kind is written for `place_value`: the filters a sidebar shows a place for.
+fn place_value(
+    key: &str,
+    label: &str,
+    icon: Option<&str>,
+    count: usize,
+    group: Option<&str>,
+) -> Value {
+    let some = |text: Option<&str>| {
+        text.map_or_else(Value::none, |t| Value::some(Value::Text(t.to_owned())))
+    };
+    Value::Tuple(vec![
+        Value::Text(key.to_owned()),
+        Value::Text(label.to_owned()),
+        some(icon),
+        Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
+        some(group),
+    ])
+}
+
+/// Whether `pred` holds only items whose `field` is true (`is:done`, or a filter that says
+/// it): what such a place holds is done with, and leaves nothing open.
+fn requires_true(pred: &LangPred<String>, field: &str) -> bool {
+    match pred {
+        LangPred::Cmp(CmpOp::Eq, Operand::Field(held), Operand::Lit(LangLit::Bool(true))) => {
+            held == field
+        }
+        LangPred::And(parts) => parts.iter().any(|part| requires_true(part, field)),
+        _ => false,
+    }
+}
+
+/// A field's name as a heading over what it holds: `projects` as "Projects".
+fn heading(field: &str) -> String {
+    let named = field.replace('_', " ");
+    let mut chars = named.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+impl Core {
+    /// `places(T, in: root)`: what a window of the root's items offers in its sidebar, derived
+    /// from the schema, as a `host.Sidebar`: a place for each of the item type's filters that is
+    /// on or off, in the order the type declares them, and a group for each type the items name
+    /// a resource of through an option field while the root holds a collection of it
+    /// (`Task.project: Option<Project>` with `Tasks.projects`: a place per project, under
+    /// "Projects", its add the action that makes another).
+    ///
+    /// A place counts the items it holds that are open — the index's answer, never a scan.
+    pub(crate) fn places_import(&self, ty: i32, root: i32) -> HResult<Value> {
+        let ty = self.text(ty)?;
+        let root = self.ref_arg(root)?;
+        let (pkg, info) = self
+            .registry
+            .borrow()
+            .type_info(&ty)
+            .ok_or_else(|| format!("places: `{ty}` is no type a loaded package declares"))?;
+        let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
+            return trap(format!("places: `{ty}` is not declared"));
+        };
+        let (root_pkg, _) = self
+            .registry
+            .borrow()
+            .type_info(&root.target.ty)
+            .ok_or_else(|| {
+                format!(
+                    "places: the root `{}` is of `{}`, no type a loaded package declares",
+                    root.target.id_string(),
+                    root.target.ty
+                )
+            })?;
+        let Some(root_declared) = root_pkg.meta.types.iter().find(|t| t.id == root.target.ty)
+        else {
+            return trap(format!("places: `{}` is not declared", root.target.ty));
+        };
+        let author = Some(self.module_of_frame()?);
+        let Some((items, _)) = self.holding(&root, root_declared, &ty, author.clone()) else {
+            return trap(format!(
+                "places: the root `{}` holds no collection of `{}`",
+                root.target.id_string(),
+                declared.name
+            ));
+        };
+        // The flag saying an item is finished is the role the count leaves out, so the place
+        // of what is done with counts nothing open: the list says it is all done.
+        let done = declared
+            .fields
+            .iter()
+            .find(|field| field.role.as_ref().is_some_and(FieldRole::is_done));
+        Places {
+            core: self,
+            pkg: &pkg.meta,
+            declared,
+            info: &info,
+            root: &root,
+            root_pkg: &root_pkg.meta,
+            root_declared,
+            items,
+            done,
+            author,
+        }
+        .build()
+    }
+
+    /// The places the type's own filters make: one for each filter that is on or off, holding
+    /// the items it says, counted as what they leave open.
+    fn filter_places(
+        &self,
+        declared: &TypeMeta,
+        items: &Rc<CollRef>,
+        info: &TypeInfo,
+        enums: &[EnumMeta],
+        done: Option<&FieldMeta>,
+    ) -> HResult<Vec<Value>> {
+        let mut places = Vec::new();
+        for filter in &declared.search.filters {
+            if !matches!(filter.kind, FilterKind::Bool | FilterKind::Predicate) {
+                continue;
+            }
+            let query = format!("is:{}", filter.key);
+            let count = self.place_count(items, declared, info, enums, &query, done)?;
+            places.push(place_value(
+                &query,
+                &filter.label,
+                filter.icon.as_deref(),
+                count,
+                None,
+            ));
+        }
+        Ok(places)
+    }
+
+    /// The root's collection of the type `ty`, with the root's field holding it, when the root
+    /// declares one.
+    fn holding(
+        &self,
+        at: &RefValue,
+        holder: &TypeMeta,
+        ty: &str,
+        author: Option<ModuleHash>,
+    ) -> Option<(Rc<CollRef>, FieldMeta)> {
+        for field in &holder.fields {
+            let Ok((_, f)) = self.lookup_field(&at.target, &field.id) else {
+                continue;
+            };
+            let Ok(item) = self.item_type(&f.ty) else {
+                continue;
+            };
+            if item.id != ty {
+                continue;
+            }
+            let held = Rc::new(CollRef {
+                target: Rc::clone(&at.target),
+                field: f.id,
+                item: item.id.clone(),
+                author,
+                filter: None,
+                order: None,
+            });
+            return Some((held, field.clone()));
+        }
+        None
+    }
+
+    /// The action that makes another of the type `target` on the root, when its package
+    /// declares one.
+    fn creator(&self, root: &RefValue, meta: &Meta, target: &str) -> HResult<Value> {
+        for action in meta.offered_actions() {
+            // A result names the type; a place asks for its id.
+            let makes_target = |result: &str| {
+                result == target
+                    || self
+                        .registry
+                        .borrow()
+                        .type_for(&tilolang::types::TypeKey {
+                            app: meta.app.clone(),
+                            name: result.to_owned(),
+                        })
+                        .as_deref()
+                        == Some(target)
+            };
+            if !action.result.as_deref().is_some_and(&makes_target) {
+                continue;
+            }
+            let [first, rest @ ..] = action.params.as_slice() else {
+                continue;
+            };
+            if !crate::platform::names_type(meta, &first.ty, &root.target.ty)
+                || !crate::platform::all_asked(meta, rest)
+            {
+                continue;
+            }
+            let shown = crate::platform::Offered {
+                action,
+                args: vec![Value::Ref(root.clone())],
+                rest,
+                present: false,
+            };
+            if let Some(value) = self.action_value(&shown, root)? {
+                return Ok(Value::some(value));
+            }
+        }
+        Ok(Value::none())
+    }
+
+    /// How many of a place's items are open: the items of the collection `items` whose query
+    /// `query` holds of, with the items the type's `done` flag marks finished left out, counted
+    /// from the index's columns.
+    ///
+    /// # Errors
+    ///
+    /// A message when the query is not one the type's filters read.
+    fn place_count(
+        &self,
+        items: &Rc<CollRef>,
+        declared: &TypeMeta,
+        info: &TypeInfo,
+        enums: &[EnumMeta],
+        query: &str,
+        done: Option<&FieldMeta>,
+    ) -> HResult<usize> {
+        let clock = self.query_clock()?;
+        let parsed = find(query).map_err(|why| format!("places: `{query}`: {why}"))?;
+        let resolved = resolve(&parsed, declared, enums, &clock)?;
+        self.note_time(clock.changes_at());
+        let mut pred = resolved.pred;
+        // A place counts what it leaves open, never what is done with.
+        if let Some(done) = done {
+            if requires_true(&pred, &done.id) {
+                // What it holds is all done with, so it leaves nothing open: the list says
+                // that it is all done instead.
+                return Ok(0);
+            }
+            // A place that names the flag itself already says what it leaves open.
+            if !pred.fields().iter().any(|held| **held == done.id) {
+                pred = LangPred::And(vec![
+                    pred,
+                    LangPred::Cmp(
+                        CmpOp::Eq,
+                        Operand::Field(done.id.clone()),
+                        Operand::Lit(LangLit::Bool(false)),
+                    ),
+                ]);
+            }
+        }
+        let Some(read) = field_reads(&pred, info) else {
+            return trap(format!(
+                "places: `{query}` cannot be read as a filter of `{}`",
+                declared.name
+            ));
+        };
+        self.coll_count(&Rc::new(items.queried(read, None)))
+    }
+}
+
+/// A window's places, being drawn from the schema of its items and of the root that holds
+/// them: both declared types, the collection of items, and the flag that folds what is done.
+struct Places<'a> {
+    core: &'a Core,
+    pkg: &'a Meta,
+    declared: &'a TypeMeta,
+    info: &'a TypeInfo,
+    root: &'a RefValue,
+    root_pkg: &'a Meta,
+    root_declared: &'a TypeMeta,
+    items: Rc<CollRef>,
+    done: Option<&'a FieldMeta>,
+    author: Option<ModuleHash>,
+}
+
+impl Places<'_> {
+    /// The places of a sidebar: the type's own, then a group of the ones the root holds.
+    fn build(&self) -> HResult<Value> {
+        let mut places = self.core.filter_places(
+            self.declared,
+            &self.items,
+            self.info,
+            &self.pkg.enums,
+            self.done,
+        )?;
+        let groups = self.group_places(&mut places)?;
+        Ok(Value::Tuple(vec![Value::List(places), Value::List(groups)]))
+    }
+
+    /// A place per resource of each type the items name through an option, while the root holds
+    /// a collection of that type: the places of `Task.project` are the root's projects.
+    fn group_places(&self, places: &mut Vec<Value>) -> HResult<Vec<Value>> {
+        let core = self.core;
+        let mut groups = Vec::new();
+        for field in &self.declared.fields {
+            let Ok(Ty::Option(inner)) = parse_ty(&field.ty, &self.pkg.app) else {
+                continue;
+            };
+            let Ty::Record(key) = *inner else { continue };
+            if tilolang::host::is_value(&key) {
+                continue;
+            }
+            // A type's collection of itself is its nesting, which its list shows where the
+            // item stands: a group of every item as a place of its own is no way to navigate.
+            if key.name == self.declared.name && key.app == self.pkg.app {
+                continue;
+            }
+            let Some(target) = core.registry.borrow().type_for(&key) else {
+                continue;
+            };
+            let Some((target_pkg, _)) = core.registry.borrow().type_info(&target) else {
+                continue;
+            };
+            let Some(target_declared) = target_pkg.meta.types.iter().find(|t| t.id == target)
+            else {
+                continue;
+            };
+            // A query names the field by its filter's key, so a field the type keeps out of
+            // filters names no place.
+            let Some(key) = self
+                .declared
+                .search
+                .filters
+                .iter()
+                .find(|f| f.field.as_deref() == Some(field.id.as_str()))
+            else {
+                continue;
+            };
+            let Some((held, held_field)) =
+                core.holding(self.root, self.root_declared, &target, self.author.clone())
+            else {
+                continue;
+            };
+            let title = heading(&held_field.name);
+            let add = core.creator(self.root, self.root_pkg, &target)?;
+            let title_field = target_declared
+                .fields
+                .iter()
+                .find(|f| matches!(f.role, Some(FieldRole::Title)));
+            let len = core.coll_len(&held)?;
+            let places_before = places.len();
+            for index in 0..len {
+                let item = core.coll_get(&held, index)?;
+                let Value::Ref(item) = item else { continue };
+                let mut label = String::new();
+                if let Some(title_field) = title_field {
+                    let (_, title_field) = core.lookup_field(&item.target, &title_field.id)?;
+                    if let Value::Text(read) =
+                        core.read_value(&item.target, &title_field, self.author.as_ref())?
+                    {
+                        label = read;
+                    }
+                    // The label is the item's, so a place runs again when that changes.
+                    if let Some(vs) = core.frames.borrow_mut().view_mut() {
+                        vs.reads
+                            .push((item.target.id_string(), title_field.id.clone()));
+                    }
+                }
+                let query = format!("{}:{}", key.key, item.target.id_string());
+                let count = core.place_count(
+                    &self.items,
+                    self.declared,
+                    self.info,
+                    &self.pkg.enums,
+                    &query,
+                    self.done,
+                )?;
+                places.push(place_value(&query, &label, None, count, Some(&title)));
+            }
+            // A heading with nothing under it and nothing to add is a dead end. With an add
+            // it is where the first one is made, so it stays while the collection is empty.
+            if places.len() == places_before && matches!(add, Value::Opt(None)) {
+                continue;
+            }
+            groups.push(Value::Tuple(vec![Value::Text(title), add]));
+        }
+        Ok(groups)
+    }
 }

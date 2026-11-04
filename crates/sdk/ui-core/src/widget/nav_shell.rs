@@ -396,6 +396,8 @@ struct Metrics {
     sidebar_max: f64,
     rail: f64,
     overview: f64,
+    /// The widest the overview grows to fit what it lists.
+    overview_max: f64,
     inspector: f64,
     /// The inspector's docked width before larger text widens it: a
     /// sheet in a window short of twice that opens at the whole height.
@@ -414,6 +416,8 @@ struct Metrics {
     scale: f64,
     /// One line of body text: the unit of a page column's width.
     body_line: f64,
+    /// The line a document's body runs to, past which the page centres it.
+    reading_measure: f64,
     /// What a page scroller keeps free for its bar on its trailing edge.
     scroll_gutter: f64,
     /// A page column's inset: a `Column`'s own padding (`s6`).
@@ -437,6 +441,7 @@ impl Metrics {
             sidebar_max: f64::from(m.sidebar_max_width) * growth,
             rail: f64::from(m.rail_width),
             overview: f64::from(m.overview_width) * growth,
+            overview_max: f64::from(m.overview_max_width) * growth,
             inspector: f64::from(m.inspector_width) * growth,
             sheet_least_half: f64::from(m.inspector_width),
             drawer: f64::from(m.drawer_width) * growth,
@@ -455,6 +460,7 @@ impl Metrics {
             pointer: f64::from(m.min_pointer_target),
             scale: theme.responsive_scale(),
             body_line: f64::from(theme.text(crate::TextRole::Body).line_height_px()),
+            reading_measure: f64::from(m.reading_measure) * growth,
             scroll_gutter: f64::from(m.scrollbar_gutter),
             page_pad: f64::from(s.s6),
         }
@@ -1275,11 +1281,17 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             }
         }
     }
-    // Overview and content.
+    // Overview and content. The overview follows what it lists up to its
+    // cap: the room the detail has past the measure it reads at is the
+    // list's, so a long title fits while the page beside it still reads as
+    // a page.
+    let reading = m.reading_measure + m.scroll_gutter;
+    let roomy = ow + (region_w - reading - ow).max(0.0);
+    let widest_list = roomy.min(m.overview_max);
     if g.side_by_side {
         let x = region.x0 + screen_x(NavPane::Content);
         let lead = match g.overview {
-            OverviewPlacement::List => ow.min((region_w - content_min).max(0.0)),
+            OverviewPlacement::List => widest_list.min((region_w - content_min).max(0.0)),
             OverviewPlacement::Rail => m.rail.min(region_w),
             OverviewPlacement::None => 0.0,
         };

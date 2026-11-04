@@ -26,8 +26,9 @@ impl MergeKind {
 }
 
 /// What a field is to the platform, as its declaration marks it: the text that names the
-/// record, the record's substance, what the type held before, and — for an item that comes
-/// round again or reminds someone — the fields a repeat counts from and a reminder reads. A
+/// record, the record's substance, what the type held before, the flag saying an item is
+/// finished, and — for an item that comes round again or reminds someone — the fields a repeat
+/// counts from and a reminder reads. A
 /// host holding the record finds them here, without the app's code: which field repeats, which
 /// day it counts from, when it reminds, and whom.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,9 @@ pub enum FieldRole {
     /// `(time of: due)`: the time of day the day named here is due at, so the two read as one
     /// fact (`Today 09:00`) wherever the day shows and one control picks both.
     TimeOf { date: String },
+    /// `(done)`: the `Bool` that says the item is finished: what a place leaves out of its
+    /// count and folds into its foot, and what a window's complete action sets.
+    Done,
 }
 
 impl FieldRole {
@@ -68,6 +72,7 @@ impl FieldRole {
             Self::Title => "title",
             Self::Body => "body",
             Self::Previously => "previously",
+            Self::Done => "done",
             Self::Repeats { .. } => "repeats",
             Self::Reminds { .. } => "reminds",
             Self::Parent => "parent",
@@ -80,7 +85,9 @@ impl FieldRole {
     #[must_use]
     pub fn text(&self) -> String {
         match self {
-            Self::Title | Self::Body | Self::Previously | Self::Parent => self.word().to_owned(),
+            Self::Title | Self::Body | Self::Previously | Self::Done | Self::Parent => {
+                self.word().to_owned()
+            }
             Self::TimeOf { date } => format!("time of: {date}"),
             Self::Repeats { date } => format!("repeats: {date}"),
             Self::Reminds { date, time, who } => {
@@ -120,6 +127,12 @@ impl FieldRole {
     #[must_use]
     pub const fn is_parent(&self) -> bool {
         matches!(self, Self::Parent)
+    }
+
+    /// Whether the field says the item is finished (`(done)`).
+    #[must_use]
+    pub const fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
     }
 
     /// The day the field is the time of (`(time of: due)`), when it is one.

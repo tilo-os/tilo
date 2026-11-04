@@ -127,6 +127,7 @@ impl Checker<'_> {
             "dated" => return self.builtin_dated(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
+            "places" => return self.builtin_places(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {

@@ -109,8 +109,10 @@ view rows<T>(
     parent: Option<(T) -> Option<T>> = .none,
     parent_title: Option<(T) -> Option<Text>> = .none,
     progress: Option<(T) -> Option<Text>> = .none,
+    all_done: Bool = false,
     row: (T) -> View,
 ) {
+    let all_done = all_done and not items.is_empty()
     if items.is_empty() {
         if let a = primary {
             ui.EmptyState(empty, icon: icon, action: a.label) {
@@ -119,69 +121,105 @@ view rows<T>(
         } else {
             ui.EmptyState(empty, icon: icon)
         }
-    } else {
-        // An item that names no group stands under a heading of its own, in the order the
-        // caller gave, rather than under the last group's heading.
-        let ungrouped: Option<Text> = if let g = group {
-            .some(phrase("tilolang-no-date"))
-        } else { .none }
-        // The items done with stand last, under the one heading their group folds: a sort is
-        // stable, so the order the caller gave holds among them and among the rest.
-        let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
-        let nested = if let p = parent { true } else { false }
-        ui.VirtualList(
-            selection_follows_focus: true,
-            in_column: true,
-            tail_title: .some(closed_title),
-            tree: nested,
-            ungrouped_title: ungrouped,
-        ) {
-            on select(x: T): open(x, front: false)
-            on activate(x: T): open(x)
-            for x in shown {
-                let offered = actions(x)
-                let heading: Option<Date> = if let g = group { g(x) } else { .none }
-                let tail = if let c = closed { c(x) } else { false }
-                let under: Option<T> = if let p = parent { p(x) } else { .none }
-                let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
-                let count: Option<Text> = if let c = progress { c(x) } else { .none }
-                ui.ListItem(
-                    item: x,
-                    presence: lenses(x).find(l -> not l.mine)?.who,
-                    group: heading,
-                    tail: tail,
-                    parent: under,
-                    parent_title: belongs,
-                    progress: count,
-                ) {
-                    menu: {
-                        for a in offered {
-                            ui.MenuItem(
-                                a.label,
-                                icon: a.icon,
-                                destructive: a.destructive,
-                                key: a.key,
-                                disabled: not a.available,
-                                reason: if a.available { .none } else { .some(a.reason) },
-                                group: a.group,
-                            ) {
-                                on choose: a.run
-                            }
-                        }
-                    }
-                    swipe: {
-                        if let a = offered.find(a -> a.available and a.destructive) {
-                            ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
-                                on swipe: a.run
-                            }
-                        } else if let a = offered.find(a -> a.available) {
-                            ui.SwipeAction(a.label, icon: a.icon) {
-                                on swipe: a.run
-                            }
-                        }
-                    }
+    } else if all_done {
+        // Everything here is done with: say so calmly, over the foot that folds it away.
+        ui.Docked {
+            foot: {
+                rows_list(
+                    items,
+                    icon,
+                    group,
+                    closed,
+                    closed_title,
+                    parent,
+                    parent_title,
+                    progress,
+                ) { x ->
                     row(x)
                 }
+            }
+            ui.EmptyState(phrase("tilolang-all-done"), icon: icon, inline: true)
+        }
+    } else {
+        rows_list(items, icon, group, closed, closed_title, parent, parent_title, progress) { x ->
+            row(x)
+        }
+    }
+}
+
+/// The items of a list as the rows of a column, with `rows`' grouping, nesting and folded tail.
+view rows_list<T>(
+    items: List<T>,
+    icon: Option<Text>,
+    group: Option<(T) -> Option<Date>>,
+    closed: Option<(T) -> Bool>,
+    closed_title: Text,
+    parent: Option<(T) -> Option<T>>,
+    parent_title: Option<(T) -> Option<Text>>,
+    progress: Option<(T) -> Option<Text>>,
+    row: (T) -> View,
+) {
+    // An item that names no group stands under a heading of its own, in the order the
+    // caller gave, rather than under the last group's heading.
+    let ungrouped: Option<Text> = if let g = group {
+        .some(phrase("tilolang-no-date"))
+    } else { .none }
+    // The items done with stand last, under the one heading their group folds: a sort is
+    // stable, so the order the caller gave holds among them and among the rest.
+    let shown = if let c = closed { items.sort_by(x -> c(x)) } else { items }
+    let nested = if let p = parent { true } else { false }
+    ui.VirtualList(
+        selection_follows_focus: true,
+        in_column: true,
+        tail_title: .some(closed_title),
+        tree: nested,
+        ungrouped_title: ungrouped,
+    ) {
+        on select(x: T): open(x, front: false)
+        on activate(x: T): open(x)
+        for x in shown {
+            let offered = actions(x)
+            let heading: Option<Date> = if let g = group { g(x) } else { .none }
+            let tail = if let c = closed { c(x) } else { false }
+            let under: Option<T> = if let p = parent { p(x) } else { .none }
+            let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
+            let count: Option<Text> = if let c = progress { c(x) } else { .none }
+            ui.ListItem(
+                item: x,
+                presence: lenses(x).find(l -> not l.mine)?.who,
+                group: heading,
+                tail: tail,
+                parent: under,
+                parent_title: belongs,
+                progress: count,
+            ) {
+                menu: {
+                    for a in offered {
+                        ui.MenuItem(
+                            a.label,
+                            icon: a.icon,
+                            destructive: a.destructive,
+                            key: a.key,
+                            disabled: not a.available,
+                            reason: if a.available { .none } else { .some(a.reason) },
+                            group: a.group,
+                        ) {
+                            on choose: a.run
+                        }
+                    }
+                }
+                swipe: {
+                    if let a = offered.find(a -> a.available and a.destructive) {
+                        ui.SwipeAction(a.label, icon: a.icon, destructive: true) {
+                            on swipe: a.run
+                        }
+                    } else if let a = offered.find(a -> a.available) {
+                        ui.SwipeAction(a.label, icon: a.icon) {
+                            on swipe: a.run
+                        }
+                    }
+                }
+                row(x)
             }
         }
     }
@@ -576,6 +614,34 @@ view version_changes(v: host.Version) {
                 ui.Text(c.label, role: .caption, secondary: true)
                 c.before
                 c.after
+            }
+        }
+    }
+}
+
+/// The places a collection app's window offers in its sidebar, derived from the schema of the
+/// items and of the root that holds them: one for each of the item type's filters that is on or
+/// off, and a group for each type the items name a resource of while the root holds a
+/// collection of it (a task's projects, under "Projects", with an add that makes another).
+/// Choosing a place sets `place`, the window's query: choosing one of the root's resources shows
+/// the items that name it where they are, in the same window (`places(S, in: of)` is what it
+/// draws).
+view sidebar(side: host.Sidebar, place: State<Text>) {
+    ui.NavList(selected: place) {
+        for p in side.places {
+            if p.group == .none {
+                ui.NavItem(p.key, p.label, icon: p.icon, count: .some(p.count)) {
+                    on select: set(place, p.key)
+                }
+            }
+        }
+        for g in side.groups {
+            ui.NavSection(g.title, add: g.add) {
+                for p in side.places.filter(x -> x.group == .some(g.title)) {
+                    ui.NavItem(p.key, p.label, icon: p.icon, count: .some(p.count)) {
+                        on select: set(place, p.key)
+                    }
+                }
             }
         }
     }

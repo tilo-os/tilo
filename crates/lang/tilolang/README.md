@@ -450,7 +450,11 @@ identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold n
 `sort:`, the type's own order. Outside a view (an action, a flow) a query may leave out `in:`
 and look across the workspace. `items.matching("is:done due:-7d")` asks the same of a list,
 written as people type it in search, and `filters(T)` gives a type's filters as places and
-chips show them (`host.Filter`).
+chips show them (`host.Filter`). `places(T, in: x)` gives what a window of `x`'s `T`s offers in
+its sidebar, derived from the schema (`host.Sidebar`): a place for each of `T`'s filters that
+is on or off, and a group for each type a `T` names through an option while `x` holds a
+collection of it (`Task.project` with `Tasks.projects`: "Projects", its add the action that
+makes another). A place counts what it leaves open, and `std.sidebar(side, place)` draws it.
 
 **Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
 door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across

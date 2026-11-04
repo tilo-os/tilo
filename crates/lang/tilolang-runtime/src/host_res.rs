@@ -345,7 +345,7 @@ impl Core {
         })
     }
 
-    fn item_type(&self, ty: &Ty) -> Result<Rc<TypeInfo>, String> {
+    pub(crate) fn item_type(&self, ty: &Ty) -> Result<Rc<TypeInfo>, String> {
         let Some(Ty::Record(key)) = inner_ty(ty) else {
             return Err("the field's element type is not a record".to_owned());
         };

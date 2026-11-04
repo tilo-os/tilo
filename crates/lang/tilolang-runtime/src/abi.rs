@@ -187,6 +187,7 @@ imports! {
     (CollMoveTo, "coll_move_to", "iiil", ""),
     (Query, "query", "iiii", "i"),
     (Filters, "filters", "i", "i"),
+    (Places, "places", "ii", "i"),
     (IdentPart, "ident_part", "ii", "i"),
     (RichNew, "rich_new", "i", "i"),
     (RichPart, "rich_part", "ii", "i"),
@@ -204,6 +205,7 @@ imports! {
     (EventPart, "event_part", "i", "i"),
     (CollMoveAmong, "coll_move_among", "iiili", ""),
     (UiActions, "ui_actions", "iii", ""),
+    (UiAction, "ui_action", "iii", ""),
     (SpaceI, "space_i", "i", "l"),
     (SpaceF, "space_f", "i", "f"),
 

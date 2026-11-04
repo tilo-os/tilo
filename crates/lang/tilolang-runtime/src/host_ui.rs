@@ -71,45 +71,36 @@ impl Core {
         let mut offered = Vec::with_capacity(actions.len());
         let mut events = Vec::with_capacity(actions.len());
         for (index, action) in actions.into_iter().enumerate() {
-            // `host.Action`: label, icon, role, primary, destructive, on, key, params, run,
-            // group, frequent.
-            let Value::Tuple(fields) = action else {
-                return trap("an offered action is a host.Action");
-            };
-            let text = |at: usize| match fields.get(at) {
-                Some(Value::Text(text)) => Some(text.clone()),
-                Some(Value::Opt(Some(held))) => held.as_text().map(str::to_owned),
-                _ => None,
-            };
-            let flag = |at: usize| match fields.get(at) {
-                Some(Value::Bool(flag)) => Some(*flag),
-                Some(Value::Int(n)) => Some(*n != 0),
-                Some(Value::Opt(Some(held))) => match **held {
-                    Value::Bool(flag) => Some(flag),
-                    Value::Int(n) => Some(n != 0),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let Some(run @ Value::Action(_)) = fields.get(8).cloned() else {
-                return trap("an offered action runs an action reference");
-            };
             let event = offered_event(&name, index);
-            offered.push(Value::Offered(Rc::new(tilolang::toolkit::Offered {
-                label: text(0).unwrap_or_default(),
-                icon: text(1),
-                primary: flag(3).unwrap_or(false),
-                destructive: flag(4).unwrap_or(false),
-                on: flag(5),
-                key: text(6),
-                event: event.clone(),
-            })));
+            let (shown, run) = offered_action(&action, &event)?;
+            offered.push(shown);
             events.push((event, run));
         }
         self.with_view(|vs| {
             let n = vs.nodes.get_mut(at).ok_or("unknown ui node")?;
             n.props.insert(name, Value::List(offered));
             n.events.extend(events);
+            Ok(())
+        })?;
+        ret_void()
+    }
+
+    /// A prop `name` of `node` that is one offered action (`ui.NavSection(add: g.add)`): an
+    /// action, or nothing, as `host.Action` says of it; the node's event `name` runs it.
+    fn offer_action(&self, node: i32, name: i32, value: i32) -> HResult<Option<Wasm>> {
+        let (at, name) = (self.node_index(node)?, self.text(name)?);
+        let offered = match self.val_whole(value)? {
+            Value::Opt(None) => return ret_void(),
+            Value::Opt(Some(held)) => (*held).clone(),
+            other => other,
+        };
+        let (shown, run) = offered_action(&offered, &name)?;
+        self.with_view(|vs| {
+            let n = vs.nodes.get_mut(at).ok_or("unknown ui node")?;
+            n.props.insert(name.clone(), shown);
+            // A single action is one the component reads by its prop, and its event is the
+            // first of the prop's, as a control that offers a list of actions reports one.
+            n.events.insert(format!("{name}.0"), run);
             Ok(())
         })?;
         ret_void()
@@ -410,6 +401,7 @@ impl Core {
             }
             Imp::UiOn => self.ui_on(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
+            Imp::UiAction => self.offer_action(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAnchor => {
                 let node = self.node_index(a.h(0)?)?;
                 let anchor = self.text(a.h(1)?)?;
@@ -470,6 +462,45 @@ fn float_to_class(v: f64) -> i64 {
 /// host's validator takes the same form (`tilo_render_protocol::patch::validate::offered_event`).
 fn offered_event(prop: &str, index: usize) -> String {
     format!("{prop}.{index}")
+}
+
+/// One `host.Action` (`label`, `icon`, `role`, `primary`, `destructive`, `on`, `key`,
+/// `params`, `run`, `group`, `frequent`) as its control shows it, and the action reference its
+/// event, `event`, runs.
+fn offered_action(action: &Value, event: &str) -> HResult<(Value, Value)> {
+    let Value::Tuple(fields) = action else {
+        return trap("an offered action is a host.Action");
+    };
+    let text = |at: usize| match fields.get(at) {
+        Some(Value::Text(text)) => Some(text.clone()),
+        Some(Value::Opt(Some(held))) => held.as_text().map(str::to_owned),
+        _ => None,
+    };
+    let flag = |at: usize| match fields.get(at) {
+        Some(Value::Bool(flag)) => Some(*flag),
+        Some(Value::Int(n)) => Some(*n != 0),
+        Some(Value::Opt(Some(held))) => match **held {
+            Value::Bool(flag) => Some(flag),
+            Value::Int(n) => Some(n != 0),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(run @ Value::Action(_)) = fields.get(8).cloned() else {
+        return trap("an offered action runs an action reference");
+    };
+    Ok((
+        Value::Offered(Rc::new(tilolang::toolkit::Offered {
+            label: text(0).unwrap_or_default(),
+            icon: text(1),
+            primary: flag(3).unwrap_or(false),
+            destructive: flag(4).unwrap_or(false),
+            on: flag(5),
+            key: text(6),
+            event: event.to_owned(),
+        })),
+        run,
+    ))
 }
 
 /// A node `shown_nodes` makes: its kind, key, props and children.

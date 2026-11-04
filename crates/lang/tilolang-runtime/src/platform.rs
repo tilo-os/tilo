@@ -75,7 +75,7 @@ pub fn label_of(action: &ActionMeta) -> String {
 /// Whether the parameter type `name` (as metadata writes it) names the record type `id`:
 /// either that type itself, or one of the types of a union it is written as
 /// (`TextChannel | Thread`).
-fn names_type(meta: &Meta, name: &str, id: &str) -> bool {
+pub(crate) fn names_type(meta: &Meta, name: &str, id: &str) -> bool {
     let Some(ty) = meta.types.iter().find(|ty| ty.id == id) else {
         return false;
     };
@@ -88,7 +88,7 @@ fn names_type(meta: &Meta, name: &str, id: &str) -> bool {
 
 /// Whether an invocation can be offered with only its first parameters given: each of the rest
 /// has a default, or is a value its form asks the person for.
-fn all_asked(meta: &Meta, params: &[ParamMeta]) -> bool {
+pub(crate) fn all_asked(meta: &Meta, params: &[ParamMeta]) -> bool {
     params
         .iter()
         .all(|param| param.default.is_some() || form_asks(meta, &param.ty))
@@ -176,14 +176,14 @@ fn mark_of(held: Option<&Value>) -> Option<SeenMark> {
 }
 
 /// One action offered on a subject, before it is presented.
-struct Offered<'m> {
-    action: &'m ActionMeta,
+pub(crate) struct Offered<'m> {
+    pub(crate) action: &'m ActionMeta,
     /// What it is applied to: the subject, or the resource holding the subject and the subject.
-    args: Vec<Value>,
+    pub(crate) args: Vec<Value>,
     /// Its parameters after those.
-    rest: &'m [ParamMeta],
+    pub(crate) rest: &'m [ParamMeta],
     /// Whether it is presented for the subject: its own actions are, its holder's not.
-    present: bool,
+    pub(crate) present: bool,
 }
 
 /// The longest run of a conversation's unread messages a mention count reads: one page of
@@ -1343,7 +1343,11 @@ impl Core {
     /// An offered action as a `host.Action`: presented for the subject (its label, icon and
     /// toggled state as its presentation view gives them now), the view taking what that read,
     /// and whether it can run on the subject now (`available`, with the `reason` it cannot).
-    fn action_value(&self, shown: &Offered<'_>, subject: &RefValue) -> HResult<Option<Value>> {
+    pub(crate) fn action_value(
+        &self,
+        shown: &Offered<'_>,
+        subject: &RefValue,
+    ) -> HResult<Option<Value>> {
         let action = shown.action;
         let mut label = self.words.borrow().word(
             &tilolang::messages::key_of(&action.id),

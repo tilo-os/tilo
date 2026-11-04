@@ -6309,6 +6309,13 @@
           "name": "collapsible",
           "doc": "Whether its heading folds it away.",
           "type": "bool"
+        },
+        {
+          "name": "add",
+          "doc": "The action that makes another of the places in the group (\"New project\"), drawn at the end of the heading and run when the person presses it.",
+          "type": {
+            "option": "action"
+          }
         }
       ],
       "slots": [

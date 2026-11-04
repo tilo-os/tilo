@@ -234,28 +234,19 @@ rail it hides, as the sidebar toggle hides it. The width is remembered per
 app on this device. Rail tiles never stand in a wide sidebar, and list rows
 never in a rail.
 
-Which form a sidebar starts in follows the destinations it can hold, not
-the app and not what has loaded so far: a sidebar whose places come under
-headings (a contact book's groups, a mail account's folders) declares so
-and starts as a list even before any heading arrives. The rule runs once,
-when a window first shows its sidebar; places that load afterwards never
-change its form or width in that window's life. Only the person's drag
-does.
+A sidebar starts as a list, wide enough for its labels, and only the window
+narrows it: the room the content needs comes first, and the sidebar gives its
+width back until its rail, then hides. Which form it is in is a function of
+the width it has, so a wide window never shows rail tiles over the room for
+the labels, and nothing is settled about the form before the places arrive.
+Where the list begins is where every label stands whole beside its icon,
+never past the sidebar's minimum, so a label too long for the sidebar is cut
+short rather than wrapped onto a second line.
 
-| Starts as | When |
-|---|---|
-| Rail | One flat set of at most seven destinations, each with an icon and a label that stands whole in a tile (two caption lines, broken only at spaces), with no headings, folding, "New" action or filter, no actions in the sidebar's header, and no row that says more than its label (a second line, a figure, a check, a status, a colour, people) or nests or renames |
-| List | Anything else: headings, many or growing sets of places, nesting, long labels, rows with more to say |
-
-Today that makes these sidebars rails: Tube (six places), Clocks (four
-screens), and Containers (four places; their counts show once widened); and these
-lists: Settings, Mail, Files, Contacts (its groups), Feeds (its header adds a subscription), Passwords,
-Snippets, Shortcuts, Backups, Themes, Database client, Disks (sizes and
-health), Firewall (no icons, the active zone's label). Remote's rail is
-always a rail (`NavMode::Docked`). A sidebar that is not a navigation list
-alone (API tester's environment picker over its lists, Notes' notebook
-column) keeps its list width. Apps that paint their own sidebar (Photos,
-Music, Chat, Calendar) do not have the rail yet.
+Remote's rail is always a rail (`NavMode::Docked`). A sidebar that is not a
+navigation list alone (API tester's environment picker over its lists, Notes'
+notebook column) keeps its list width. Apps that paint their own sidebar
+(Photos, Music, Chat, Calendar) do not have the rail yet.
 
 ## Space and density
 

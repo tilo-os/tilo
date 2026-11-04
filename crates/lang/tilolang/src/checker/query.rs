@@ -73,6 +73,46 @@ impl Checker<'_> {
         )
     }
 
+    /// `places(T, in: root)`: what a window of `root`'s items offers in its sidebar, derived
+    /// from the schema: the type's filters that are on or off, and a group for each type the
+    /// items name a resource of while the root holds a collection of it, as a `host.Sidebar`.
+    pub(super) fn builtin_places(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(key) = self.queried("places", args, span) else {
+            return Ex::error();
+        };
+        let id = self
+            .env
+            .type_info(&key)
+            .map(|t| t.id.clone())
+            .unwrap_or_default();
+        let Some(root) = args
+            .iter()
+            .skip(1)
+            .find(|a| a.name.as_ref().is_some_and(|n| n.name == "in"))
+        else {
+            self.err(
+                "E022",
+                span,
+                "`places` takes the root that holds the items after the type: `places(Task, in: tasks)`",
+            );
+            return Ex::error();
+        };
+        let root = self.expr(&root.value, None);
+        if !root.ty.is_error() && !matches!(root.ty, Ty::Record(_)) {
+            let t = self.show(&root.ty);
+            self.err(
+                "E105",
+                span,
+                format!("`places` reads the resources of the root, a value of a record type; `in:` is {t}"),
+            );
+        }
+        Ex::host(
+            Imp::Places,
+            vec![Ex::str(&id), root],
+            super::platform::host_ty("Sidebar"),
+        )
+    }
+
     /// `query(T, in: x, filter: value, ..., sort: .field_order)`: the resources of `T` the
     /// filters hold of, inside `x` (or anywhere in the workspace), as a lazy list the index
     /// answers.

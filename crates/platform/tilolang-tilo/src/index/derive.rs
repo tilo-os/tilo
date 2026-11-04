@@ -37,6 +37,32 @@ pub fn column_field(column: &str) -> String {
     format!("$c\u{1}{column}")
 }
 
+/// The field holding the values a column's [`columns::open_list`] counts: its own when the item
+/// is open, none when its type's done field says it is finished. Kept beside the column's
+/// values so a change of either finds what to count, and what to stop counting.
+pub fn open_field(column: &str) -> String {
+    format!("{}{}", column_field(column), columns::OPEN)
+}
+
+/// Whether the item at `path` is open: its type's done field (`done: Bool (done)`) is not set.
+/// A type with none has every item open.
+fn open_of(sink: &mut impl Sink, path: &str, schema: &TypeSchema) -> Result<bool, IndexError> {
+    match schema.done() {
+        Some(done) => Ok(!finished(sink.field(path, done)?)),
+        None => Ok(false),
+    }
+}
+
+/// Whether the done field's value says the item is finished.
+fn finished(value: Option<FieldValue>) -> bool {
+    matches!(
+        value,
+        Some(FieldValue::Scalar(tilolang_runtime::store::Scalar::Bool(
+            true
+        )))
+    )
+}
+
 /// The values held under a [`column_field`].
 fn split_values(held: &str) -> Vec<String> {
     held.split(columns::SEP).map(str::to_owned).collect()
@@ -669,8 +695,14 @@ impl<'d> Derive<'d> {
         if !sink.keeps_columns() {
             return Ok(out);
         }
+        let done = schema.done().map(str::to_owned);
+        let done_changed = changed.is_some_and(|field| done.as_deref() == Some(field));
+        let mut open: Option<bool> = None;
         for column in &schema.columns {
-            if changed.is_some_and(|field| !columns::reads(column, field)) {
+            let split = columns::open_split(column, done.as_deref());
+            if changed.is_some_and(|field| !columns::reads(column, field))
+                && !(split && done_changed)
+            {
                 continue;
             }
             let now = columns::values(column, schema, &mut |field| field_value(sink, path, field))?;
@@ -721,6 +753,40 @@ impl<'d> Derive<'d> {
                 }
                 sink.put_text(path, &column_field(&column.name), &join_values(&now))?;
             }
+            // The item's values as they count for a place: its own while it is open, none once
+            // it is finished. The counts keep them apart from the finished items', so a place's
+            // count reads how many it holds without reading the run.
+            if split {
+                let open = match open {
+                    Some(open) => open,
+                    None => {
+                        let held = open_of(sink, path, schema)?;
+                        open = Some(held);
+                        held
+                    }
+                };
+                let counted = if open { now.clone() } else { Vec::new() };
+                let was = sink
+                    .text(path, &open_field(&column.name))?
+                    .map(|h| split_values(&h));
+                if was.as_ref() != Some(&counted) {
+                    let before = was.unwrap_or_default();
+                    let list = scope.map(|(parent, coll, _)| {
+                        columns::open_list(&scope_list(parent, coll, &column.name))
+                    });
+                    for value in before.iter().filter(|v| !counted.contains(v)) {
+                        if let Some(list) = &list {
+                            sink.count(list, value, -1)?;
+                        }
+                    }
+                    for value in counted.iter().filter(|v| !before.contains(v)) {
+                        if let Some(list) = &list {
+                            sink.count(list, value, 1)?;
+                        }
+                    }
+                    sink.put_text(path, &open_field(&column.name), &join_values(&counted))?;
+                }
+            }
             out.push((column.name.clone(), now));
         }
         Ok(out)
@@ -752,12 +818,15 @@ impl<'d> Derive<'d> {
         let Some(id) = id_of(child) else {
             return Ok(());
         };
+        let open_item = open_of(sink, child, item_schema)?;
         for column in &item_schema.columns {
             let Some(held) = sink.text(child, &column_field(&column.name))? else {
                 continue;
             };
             let list = scope_list(resource, field, &column.name);
             let counted = columns::counted(column);
+            let split = columns::open_split(column, item_schema.done());
+            let open = columns::open_list(&list);
             for value in split_values(&held) {
                 let entry = scope_entry(&value, key, id);
                 if into {
@@ -767,6 +836,9 @@ impl<'d> Derive<'d> {
                 }
                 if counted {
                     sink.count(&list, &value, if into { 1 } else { -1 })?;
+                }
+                if split && open_item {
+                    sink.count(&open, &value, if into { 1 } else { -1 })?;
                 }
             }
         }
@@ -854,12 +926,26 @@ impl<'d> Derive<'d> {
                 item_schema,
                 (whole, Some(&id)),
             )?;
+            let open = !finished(
+                item_schema
+                    .done()
+                    .and_then(|done| item_schema.field(done))
+                    .map(|field| self.value(found.obj.as_ref(), field)),
+            );
             for (column, values) in values {
-                let counted = item_schema.column(&column).is_some_and(columns::counted);
+                let schema = item_schema.column(&column);
+                let counted = schema.is_some_and(columns::counted);
+                let split = schema.is_some_and(|c| columns::open_split(c, item_schema.done()));
                 let name = scope_list(path, &field.id, &column);
                 for value in values {
                     if counted {
                         let n = counts.entry((name.clone(), value.clone())).or_default();
+                        *n = n.saturating_add(1);
+                    }
+                    if split && open {
+                        let n = counts
+                            .entry((columns::open_list(&name), value.clone()))
+                            .or_default();
                         *n = n.saturating_add(1);
                     }
                     lists

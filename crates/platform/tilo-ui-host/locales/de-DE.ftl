@@ -33,6 +33,8 @@ tilolang-empty = Noch nichts hier
 tilolang-done = Erledigt
 # The heading over the items of a list that name no group of their own.
 tilolang-no-date = Kein Datum
+# Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
+tilolang-all-done = Alles erledigt
 rich-text-reference-unreadable = Nicht mit dir geteilt
 tilolang-none-selected = Nichts ausgewählt
 tilolang-sort = Sortieren

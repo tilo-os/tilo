@@ -427,6 +427,9 @@ impl Checker<'_> {
             {
                 self.typed_prop(n, d, name, inner, doc, value);
             }
+            Type::Option(inner) if **inner == Type::Action => {
+                self.action_prop(n, name, value, &mismatch);
+            }
             Type::Option(inner) => {
                 let held = lang_type(inner);
                 let want = (!held.is_error()).then(|| Ty::Option(Box::new(held)));
@@ -490,22 +493,7 @@ impl Checker<'_> {
                     self.arg_prop(node, name, v);
                 }
             }
-            Type::Action => {
-                let v = self.expr(value, None);
-                if v.ty.is_error() {
-                    return;
-                }
-                if fits(ty, &v.ty) {
-                    let one = Ex::host(Imp::ListNew, Vec::new(), Ty::List(Box::new(v.ty.clone())));
-                    let tmp = self.fresh(one.ty.clone());
-                    self.emit(Stmt::Set(tmp, one));
-                    let list = Ex::local(tmp, Ty::List(Box::new(v.ty.clone())));
-                    self.emit(host(Imp::ListPushH, vec![list.clone(), v]));
-                    self.emit(host(Imp::UiActions, vec![node, Ex::str(name), list]));
-                } else {
-                    mismatch(self, &v.ty);
-                }
-            }
+            Type::Action => self.action_prop(n, name, value, &mismatch),
             _ => {
                 let v = self.expr(value, Some(&lang_type(ty)));
                 if v.ty.is_error() {
@@ -518,6 +506,35 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// A prop that is one action offered to the person (`ui.NavSection(add: g.add)`): the node
+    /// holds it as its control shows it, and the node's event `name` runs it.
+    fn action_prop(
+        &mut self,
+        node: LocalId,
+        name: &str,
+        value: &ast::Expr,
+        mismatch: &impl Fn(&mut Self, &Ty),
+    ) {
+        fn offered(ty: &Ty) -> bool {
+            match ty {
+                Ty::Action => true,
+                Ty::Option(inner) => offered(inner),
+                Ty::Record(key) => key.app == crate::host::HOST_APP && key.name == "Action",
+                _ => false,
+            }
+        }
+        let v = self.expr(value, None);
+        if v.ty.is_error() {
+            return;
+        }
+        if !offered(&v.ty) {
+            mismatch(self, &v.ty);
+            return;
+        }
+        let n = Ex::local(node, Ty::View);
+        self.emit(host(Imp::UiAction, vec![n, Ex::str(name), v]));
     }
 
     /// `image: "tilo-blob://<hash>"` or `image: a.photo`: a picture by where its bytes are, as

@@ -2003,15 +2003,11 @@ impl RailExtent for NavList {
     }
 }
 
-/// The most destinations a sidebar shows as a rail by default. Past it the
-/// tiles stop reading as one short set of places at a glance.
-const RAIL_DEFAULT_MAX_DESTINATIONS: usize = 7;
-
 /// A navigation sidebar whose width decides how it reads: narrow, a rail
 /// of tiles (icon over a short caption); wide, a list (icon beside the
 /// label). The shell hosting it as its sidebar asks how wide each form
-/// needs to be, which one it starts as, and switches it as its width
-/// crosses the threshold.
+/// needs to be, starts it at the list's width, and switches it as its width
+/// crosses the threshold: a window narrow enough for the rail shows one.
 pub(crate) trait AdaptiveNav {
     /// The width of the list as a rail: its longest word whole, up to the
     /// rail's cap ([`crate::chrome::sidebar_rail_width_fitting`]).
@@ -2020,10 +2016,6 @@ pub(crate) trait AdaptiveNav {
     /// ([`crate::chrome::nav_list_width_fitting`]): from here on it is a
     /// list.
     fn list_fit(&self, theme: &crate::Theme) -> f64;
-    /// Whether the sidebar starts as a rail: a short, flat set of places,
-    /// each with an icon and a label that stands whole in a tile. See
-    /// docs/design-language.md, "Windows and navigation".
-    fn rail_by_default(&self, theme: &crate::Theme) -> bool;
     /// Paint the rows as a rail's tiles or as list rows. Returns whether
     /// that changed.
     fn set_rail(&mut self, rail: bool) -> bool;
@@ -2064,50 +2056,6 @@ impl AdaptiveNav for NavList {
                 text,
                 items.iter().map(|item| item.label.as_str()),
             )
-        })
-    }
-
-    fn rail_by_default(&self, theme: &crate::Theme) -> bool {
-        // Headings, folding, a "New …" action and a filter are what a list
-        // of many or growing places needs; a rail shows none of them.
-        let flat_sections = !self.headings
-            && self.sections.iter().all(|section| {
-                section.title.is_empty()
-                    && !section.collapsible
-                    && section.trailing_action.is_none()
-                    && !section.filterable
-            });
-        let items = all_items(&self.sections);
-        // A tile is an icon over a caption: a row that says more than its
-        // label (a second line, a figure, a check, a status, a colour, the
-        // people in it) or that nests or renames needs the list.
-        let tile_shaped = items.iter().all(|item| {
-            item.icon.is_some()
-                && item.children.is_empty()
-                && !item.editable_label
-                && item.secondary.is_none()
-                && item.meta.is_none()
-                && item.status.is_none()
-                && item.status_label.is_none()
-                && item.badge.is_none()
-                && item.swatch.is_none()
-                && item.art.is_none()
-                && item.checked.is_none()
-                && item.level.is_none()
-                && item.presence.is_empty()
-        });
-        if !flat_sections
-            || !tile_shaped
-            || items.is_empty()
-            || items.len() > RAIL_DEFAULT_MAX_DESTINATIONS
-        {
-            return false;
-        }
-        let width = self.rail_fit(theme);
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-            items
-                .iter()
-                .all(|item| crate::chrome::rail_caption_fits(theme, text, &item.label, width))
         })
     }
 

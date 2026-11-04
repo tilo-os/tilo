@@ -159,6 +159,9 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
             .map(|named| named.id.clone())
     };
     match &field.role {
+        Some(FieldRole::Done) => {
+            schema = schema.finished();
+        }
         Some(FieldRole::Parent) => {
             schema.role = crate::schema::FieldRole::Parent;
         }

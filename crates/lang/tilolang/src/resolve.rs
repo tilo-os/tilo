@@ -1158,6 +1158,32 @@ impl Resolver<'_> {
             }
             return Some(FieldRole::Previously);
         }
+        // The flag saying an item is finished: a place leaves it out of its count and folds it
+        // into its foot.
+        if word == "done" {
+            if !marker.args.is_empty() {
+                self.err(
+                    "E092",
+                    marker.span,
+                    "`(done)` names no field: it marks the `Bool` field that says the item is finished",
+                );
+                return None;
+            }
+            if marked.ty != Ty::Bool {
+                let t = marked.ty.display(&self.env.app);
+                self.err("E092", marker.span, format!("only a Bool field can be the done one, the flag saying the item is finished; `{}` is {t}. Mark a Bool field instead, or remove `(done)`", marked.name));
+                return None;
+            }
+            if let Some(other) = fields.iter().find(|x| {
+                x.role
+                    .as_ref()
+                    .is_some_and(crate::types::FieldRole::is_done)
+            }) {
+                self.err("E092", marker.span, format!("`{owner}` already has a done field, `{}`; a type has at most one. Remove `(done)` from one of them", other.name));
+                return None;
+            }
+            return Some(FieldRole::Done);
+        }
         // The item this one stands under: the field its type's items nest by, which its derived
         // keys read the items above and under it through.
         if word == "parent" {
