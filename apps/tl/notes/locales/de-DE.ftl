@@ -59,27 +59,3 @@ d-xqxkoqbj = Notizzeile
 d-6wqou47w = Notizeditor
     .w-untitled = Ohne Titel
     .w-write-something = Schreib etwas
-
-d-akcqjax3-row0 = Notizbuch für p
-
-d-akcqjax3-row1 = Notizbuch für x
-
-d-akcqjax3-row2 = Notizbuch für x
-
-d-akcqjax3-row3 = Notizbuch für x
-
-d-akcqjax3-row4 = Notizbuch für x
-
-d-6wqou47w-row0 = Notizeditor für t
-
-d-6wqou47w-row1-row0 = Notizeditor für c
-
-d-6wqou47w-row1-row1 = Notizeditor für c
-
-d-6wqou47w-row1-row2-row0 = Notizeditor für c
-
-d-6wqou47w-row1-row2-row1 = Notizeditor für c
-
-d-6wqou47w-row1-row2 = Notizeditor für v
-
-d-6wqou47w-row1 = Notizeditor für s

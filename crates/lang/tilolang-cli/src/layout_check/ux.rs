@@ -434,10 +434,12 @@ fn starts_with_any(name: &str, verbs: &[&str]) -> bool {
 
 // --- names a screen reader reads ---------------------------------------------------------------
 
-/// A name a screen reader announces is words, not the code an identifier is written as.
+/// A name a screen reader announces is words, not the code an identifier is written as: the
+/// same rule the compiler holds a package's words to as it writes its catalogue
+/// ([`tilolang::messages::reads_as_code`]).
 fn names(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
     if let Some(name) = semantics_name(node)
-        && let Some(reason) = identifier_shape(name)
+        && let Some(reason) = tilolang::messages::reads_as_code(name)
     {
         push(
             out,
@@ -450,7 +452,7 @@ fn names(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) 
     if let Some(semantics) = &node.semantics {
         for child in &semantics.children {
             if let Some(name) = child.name.as_deref()
-                && let Some(reason) = identifier_shape(name)
+                && let Some(reason) = tilolang::messages::reads_as_code(name)
             {
                 push(
                     out,
@@ -469,26 +471,6 @@ fn names(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) 
     if pushed {
         keys.pop();
     }
-}
-
-/// Why `name` reads as code, if it does: the shape of an identifier rather than of the words a
-/// person says.
-fn identifier_shape(name: &str) -> Option<&'static str> {
-    if name.contains('_') && !name.contains(' ') {
-        return Some("code identifier");
-    }
-    if name.contains("::") {
-        return Some("code path");
-    }
-    for word in name.split(|c: char| c.is_whitespace() || c == ',' || c == '.') {
-        if word.is_empty() {
-            continue;
-        }
-        if word.ends_with("()") {
-            return Some("function call");
-        }
-    }
-    None
 }
 
 // --- destructive verbs -------------------------------------------------------------------------
@@ -963,6 +945,16 @@ mod tests {
             let problems = found(Kind::CodedName, &say(code), (1280, 800));
             assert_eq!(problems.len(), 1, "{code}: {problems:?}");
         }
+        // A name built from a view and a binding names the binding, which a screen reader reads
+        // out as one letter; a one-letter name of its own is a letter ("X" on an axis).
+        for code in ["Note editor for t", "Note editor for c"] {
+            let problems = found(Kind::CodedName, &say(code), (1280, 800));
+            assert_eq!(problems.len(), 1, "{code}: {problems:?}");
+            assert!(problems[0].detail.contains("code"), "{problems:?}");
+        }
+        assert!(found(Kind::CodedName, &say("X"), (1280, 800)).is_empty());
+        assert!(found(Kind::CodedName, &say("A note"), (1280, 800)).is_empty());
+        assert!(found(Kind::CodedName, &say("I pinned this"), (1280, 800)).is_empty());
     }
 
     /// A control that destroys something says "Delete", as every screen does; one that clears a

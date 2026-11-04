@@ -352,21 +352,3 @@ d-oqpazwvc = Editor
     .w-name-example-org = name@example.org
     .w-subject = Subject
     .w-write-your-message = Write your message
-
-d-4fjgzcq6-row0 = Unified for l
-
-d-4fjgzcq6-row1-row0 = Unified for p
-
-d-4fjgzcq6-row1 = Unified for acct
-
-d-4fjgzcq6-row2 = Unified for x
-
-d-gka45our-row0 = Mailboxes for p
-
-d-gka45our-row1 = Mailboxes for l
-
-d-jgdzx3la-row0 = Thread list for x
-
-d-bbuecgsi-row0 = Conversation for m
-
-d-oqpazwvc-row0 = Editor for a

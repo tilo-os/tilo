@@ -678,6 +678,9 @@ pub struct AnchorMeta {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewMeta {
     pub id: String,
+    /// The view's name, as it is declared: what its window is called and what a screen reader
+    /// says. A loop body is a part of the view it stands in and takes that view's name, never a
+    /// binding's.
     pub name: String,
     pub doc: String,
     pub params: Vec<ParamMeta>,

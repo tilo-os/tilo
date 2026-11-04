@@ -173,6 +173,15 @@ fn check_once(dir: &Path, o: &Options) -> Result<bool, String> {
                         current = false;
                     }
                 }
+                // What the compiler writes into the catalogue is what a screen reader says: a
+                // name written as an identifier is read out one letter at a time.
+                for (name, words) in crate::messages::views_named_as_code(&b.compiled.meta) {
+                    eprintln!(
+                        "{}: `{name}` is called \"{words}\", which reads as code rather than as words; name it in words",
+                        b.dir.display()
+                    );
+                    current = false;
+                }
                 // A translation of words the source no longer has is never shown.
                 let source = crate::source::catalogue(b);
                 for (locale, text) in crate::source::read_locales(&b.dir)? {

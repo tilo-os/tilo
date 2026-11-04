@@ -222,7 +222,7 @@ fn a_type_with_a_row_view_lists_without_an_item_block() {
         "{calls:#?}"
     );
     // Each row is an item holding a call of the row view, its own boundary.
-    let rows = ui_calls(func(&m, "notebook for $item"));
+    let rows = ui_calls(func(&m, "notebook row"));
     let item = rows.iter().position(|c| c == "node item").expect("item");
     let call = rows
         .iter()
@@ -679,7 +679,7 @@ fn std_list_is_a_shell_over_a_virtual_list_whose_rows_render_as_shown() {
     let row = m
         .funcs
         .iter()
-        .filter(|f| f.name.starts_with("notebook for"))
+        .filter(|f| f.name == "notebook row")
         .map(ui_calls)
         .find(|calls| calls.iter().any(|c| c == "node ui.ListItem"))
         .expect("the rows' view");

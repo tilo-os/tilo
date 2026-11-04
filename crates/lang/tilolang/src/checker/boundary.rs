@@ -112,7 +112,6 @@ impl Checker<'_> {
             RowView {
                 id: &id,
                 owner: &owner,
-                var,
                 params: &params,
                 states: &states,
             },
@@ -199,7 +198,6 @@ impl Checker<'_> {
             RowView {
                 id: &id,
                 owner: &owner,
-                var,
                 params: &params,
                 states: &states,
             },
@@ -408,7 +406,6 @@ impl Checker<'_> {
         let RowView {
             id,
             owner,
-            var,
             params,
             states,
         } = row;
@@ -432,11 +429,7 @@ impl Checker<'_> {
             }
         }
         body(self);
-        let mut f = self.end(
-            FuncKind::View,
-            &format!("{owner} for {var}"),
-            &format!("v_{id}"),
-        );
+        let mut f = self.end(FuncKind::View, &format!("{owner} row"), &format!("v_{id}"));
         f.nparams = params.len();
         self.st = outer;
         let func = self.synth_base.saturating_add(self.synth.len());
@@ -447,7 +440,10 @@ impl Checker<'_> {
                 // A row view's id is the declared view's, then `~row<n>` per loop around it.
                 owner: id.split('~').next().unwrap_or(id).to_owned(),
                 id: id.to_owned(),
-                name: format!("{owner} for {var}"),
+                // A row the checker makes is a part of the view it stands in, not a declaration
+                // of its own: it is named after that view, and the words it shows are its
+                // item's fields' own. Its binding is no part of a name a person hears.
+                name: owner.to_owned(),
                 params: params.to_vec(),
             },
         ));
@@ -638,7 +634,6 @@ fn remap_scope(scope: &Scope, map: &HashMap<LocalId, LocalId>) -> Scope {
 struct RowView<'a> {
     id: &'a str,
     owner: &'a str,
-    var: &'a str,
     params: &'a [ParamInfo],
     states: &'a [(String, StateRef)],
 }

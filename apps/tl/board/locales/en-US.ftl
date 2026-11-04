@@ -69,7 +69,3 @@ d-aa76g3qb = Card row
 d-zzww2gmr = Card page
     .w-title = Title
     .w-notes = Notes
-
-d-t5kjcxjq-row0 = Board for col
-
-d-t5kjcxjq-row1 = Board for col
