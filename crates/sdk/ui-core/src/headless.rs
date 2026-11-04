@@ -703,18 +703,20 @@ const MAX_READMISSIONS: u8 = 8;
 
 /// The modifiers a key spec holds down and the key it presses: `Shift+F10` is
 /// Shift held for `F10`, `+` types a plus. A leading name that is no modifier
-/// is the key itself.
+/// is the key itself. Only the names are trimmed: the key is the character
+/// written after the last `+`, and a space is a key.
 fn chord(spec: &str) -> (&str, Vec<String>) {
     let mut held = Vec::new();
-    let mut rest = spec.trim();
+    let mut rest = spec;
     while let Some((name, after)) = rest.split_once('+') {
+        let name = name.trim();
         if !matches!(
-            name.trim().to_ascii_lowercase().as_str(),
+            name.to_ascii_lowercase().as_str(),
             "ctrl" | "control" | "shift" | "alt" | "logo" | "super" | "meta" | "command"
         ) {
             break;
         }
-        held.push(name.trim().to_owned());
+        held.push(name.to_owned());
         rest = after;
     }
     (rest, held)
@@ -9195,12 +9197,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_alone() {
+    fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone() {
         for (spec, pressed, expected) in [
             ("Shift+F10", "F10", &["Shift"][..]),
             ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
             ("Tab", "Tab", &[][..]),
             ("+", "+", &[][..]),
+            (" ", " ", &[][..]),
+            ("Ctrl+ ", " ", &["Ctrl"][..]),
         ] {
             let (key, modifiers) = chord(spec);
             let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
