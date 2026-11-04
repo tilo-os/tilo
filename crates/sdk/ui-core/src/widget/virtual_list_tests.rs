@@ -1191,6 +1191,58 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
 }
 
 #[test]
+fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
+    let menus = Rc::new(RefCell::new(Vec::new()));
+    let m = Rc::clone(&menus);
+    let mut list = plain_rows(10).on_context(move |key, _, rect| m.borrow_mut().push((key, rect)));
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    list.set_focus(true);
+    assert!(list.reveal(&2));
+    let send = |list: &mut VirtualList<VecListModel<u32, u32>>,
+                event: &WindowEvent,
+                modifiers: winit::keyboard::ModifiersState| {
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(&taffy, node)
+            .send(list, event)
+            .handled
+    };
+    let menu = crate::synthetic_input::named_key(NamedKey::ContextMenu);
+    assert!(send(
+        &mut list,
+        &menu,
+        winit::keyboard::ModifiersState::empty()
+    ));
+    assert_eq!(menus.borrow().len(), 1);
+    assert_eq!(menus.borrow()[0].0, 2, "the row the keyboard is on");
+    let f10 = crate::synthetic_input::named_key(NamedKey::F10);
+    assert!(send(
+        &mut list,
+        &f10,
+        winit::keyboard::ModifiersState::SHIFT
+    ));
+    assert_eq!(menus.borrow().len(), 2, "Shift+F10, as a tree's rows");
+    assert_eq!(menus.borrow()[1].0, 2);
+    assert!(
+        !send(&mut list, &f10, winit::keyboard::ModifiersState::empty()),
+        "F10 alone is no menu"
+    );
+    assert_eq!(menus.borrow().len(), 2);
+
+    // A row with no menu attached offers none, and the key stays the window's.
+    let mut plain = plain_rows(3);
+    let (taffy, node) = lay_out(&mut plain, 300.0);
+    plain.set_focus(true);
+    assert!(plain.reveal(&0));
+    assert!(
+        !Dispatch::new()
+            .layout(&taffy, node)
+            .send(&mut plain, &menu)
+            .handled
+    );
+}
+
+#[test]
 fn a_selection_delegate_receives_its_neighbours_and_list_rows_join() {
     let model = VecListModel::new((0..6_u32).collect(), |i| *i).unwrap();
     let mut list = VirtualList::with_selection_delegate(model, 40.0, |_, _, key, _| {

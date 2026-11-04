@@ -4,6 +4,7 @@
 use super::{ListModel, VirtualList};
 
 use vello::kurbo::Point;
+use winit::keyboard::{Key, NamedKey};
 
 impl<M: ListModel> VirtualList<M> {
     /// A completed click on the row of `key`: select it by the modifiers, and
@@ -44,5 +45,42 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(callback) = &mut self.on_context {
             callback(key, point, rect);
         }
+    }
+
+    /// Whether `key`, pressed with `modifiers`, opens the focused row's menu: the
+    /// Menu key, or Shift+F10 on it, as it does on a tree's rows.
+    pub(super) fn take_menu_key(
+        &mut self,
+        key: &Key,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
+        let menu = *key == Key::Named(NamedKey::ContextMenu)
+            || (modifiers.shift_key() && *key == Key::Named(NamedKey::F10));
+        menu && self.open_menu_from_keyboard()
+    }
+
+    /// Open the focused row's context menu: the one the keyboard is on, at the
+    /// middle of its row.
+    pub(super) fn open_menu_from_keyboard(&mut self) -> bool {
+        if self.on_context.is_none() {
+            return false;
+        }
+        let focused = self
+            .mounted
+            .iter()
+            .find(|row| row.widget.is_focused())
+            .map(|row| row.key.clone())
+            .or_else(|| self.focused_key.clone().filter(|_| self.is_focused));
+        let Some(key) = focused else {
+            return false;
+        };
+        let Some(index) = self.model.index_of(&key) else {
+            return false;
+        };
+        let point = self
+            .row_box(index)
+            .map_or(self.rect.center(), |row| row.center());
+        self.open_context(index, key, point);
+        true
     }
 }

@@ -2619,6 +2619,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 self.scroll.momentum.stop();
                 if event.logical_key == Key::Named(NamedKey::Escape) && self.reorder.cancel() {
                     *ctx.handled = true;
+                } else if self.take_menu_key(&event.logical_key, ctx.modifiers.state()) {
+                    // The menu it opens takes the keyboard while it is open.
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 } else if let Some(up) =
                     self.reorder_chord(&event.logical_key, ctx.modifiers.state())
                 {
