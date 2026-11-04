@@ -318,9 +318,7 @@ view rows_list<T>(
                     true
                 } else if by_role {
                     placed_day(p, place) == heading
-                } else if let g = group {
-                    g(p) == heading
-                } else { true }
+                } else if let g = group { g(p) == heading } else { true }
                 let same_side = if let c = closed { c(p) == tail } else { true }
                 if same_heading and same_side { .some(p) } else { .none }
             } else { .none }
