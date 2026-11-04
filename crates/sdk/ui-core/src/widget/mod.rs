@@ -551,16 +551,6 @@ pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mu
         .find_map(|child| find_test_id_mut(child, id))
 }
 
-/// The first widget of `root`'s subtree, `root` included, that is a `T`, to change: a view or a
-/// page wraps the widget it places (a row's swipe around its row, a docked page around its
-/// list), so a caller reaches it wherever it sits.
-pub fn find_mut<T: Widget + 'static>(root: &mut dyn Widget) -> Option<&mut T> {
-    if root.as_any_mut().is_some_and(|any| any.is::<T>()) {
-        return root.as_any_mut().and_then(|any| any.downcast_mut::<T>());
-    }
-    root.children_mut().into_iter().find_map(find_mut::<T>)
-}
-
 /// Test traversal probe; production callers retain bound provenance.
 #[cfg(test)]
 pub(crate) fn resolve_widget_resource(
@@ -3045,6 +3035,9 @@ pub use decorator::Decorator;
 pub(crate) mod layout;
 pub mod remount;
 pub use remount::Remount;
+mod reach;
+pub(crate) use reach::find;
+pub use reach::find_mut;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{

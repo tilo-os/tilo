@@ -98,7 +98,7 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, DescribedList, Element, ModelPath, SearchField, StructureChange,
+    AppModel, Button, DescribedList, Element, ModelPath, NavList, SearchField, StructureChange,
     TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
@@ -2661,6 +2661,44 @@ impl NavShell {
         }
     }
 
+    /// The count the window's sidebar shows beside the place chosen in it, while that sidebar
+    /// stands beside the content: the drawer and the push screen hide the columns they cover,
+    /// and a compact rail draws a mark rather than the number.
+    fn sidebar_place_count(&self) -> Option<u32> {
+        if !self.has_sidebar() || self.geometry.sidebar != SidebarPlacement::Docked {
+            return None;
+        }
+        if !self.inputs.borrow().sidebar.is_open(SplitLayout::Docked) {
+            return None;
+        }
+        let list = crate::widget::find::<NavList>(self.sidebar.as_deref()?)?;
+        if list.is_rail() {
+            return None;
+        }
+        list.selected_count().map(crate::chrome::NavCount::value)
+    }
+
+    /// A column's header draws its count only where no visible sidebar already draws it for the
+    /// place shown: the same number twice on one screen says nothing more than once.
+    fn mirror_header_counts(&mut self) -> bool {
+        let place = self.sidebar_place_count();
+        let mut changed = false;
+        for header in self.headers.iter_mut() {
+            let repeated = match (header.title.count, place) {
+                (Some(count), Some(place)) => u32::try_from(count).ok() == Some(place),
+                _ => false,
+            };
+            if header.title.repeated_by_sidebar != repeated {
+                header.title.repeated_by_sidebar = repeated;
+                changed = true;
+            }
+        }
+        if changed {
+            self.invalidate();
+        }
+        changed
+    }
+
     fn after_flap_change(&mut self) {
         if self.layout_theme.reduce_motion {
             // Under reduced motion the panel does not slide; it fades in.
@@ -4022,8 +4060,9 @@ impl Widget for NavShell {
             }
         }
         self.apply_fit();
+        let mirrored = self.mirror_header_counts();
         self.invalidation.acknowledge_applied();
-        self.layout_dirty = stale.then(|| self.invalidation.invalidate()).is_some();
+        self.layout_dirty = stale.then(|| self.invalidation.invalidate()).is_some() || mirrored;
         self.apply_open_states();
         self.publish_open_states();
         let visible = self.geometry.visible_parts(&self.inputs.borrow());

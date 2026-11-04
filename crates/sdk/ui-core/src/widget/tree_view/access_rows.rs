@@ -480,6 +480,14 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         {
             item = item.with_description(description);
         }
+        // How many things the place holds, where it draws that number: a reader hears the count
+        // the row shows beside it.
+        if let TreeRowKey::Node(id) = key
+            && let Some(super::NavRowSpec::Item(held)) = self.nav_spec(id)
+            && let Some(count) = held.count
+        {
+            item = item.with_value(count.value().to_string());
+        }
         if let TreeRowKey::Node(id) = key
             && let Some(semantic) = self.model.semantic_key(id)
         {

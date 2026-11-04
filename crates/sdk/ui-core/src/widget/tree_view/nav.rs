@@ -260,6 +260,11 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         self.nav.is_some()
     }
 
+    /// Whether the navigation list is a compact rail of icons.
+    pub(crate) fn nav_rail(&self) -> bool {
+        self.nav.as_ref().is_some_and(|nav| nav.rail)
+    }
+
     pub(crate) fn nav_spec(&self, id: NodeId) -> Option<NavRowSpec> {
         let nav = self.nav.as_ref()?;
         (nav.spec)(&self.model, id)

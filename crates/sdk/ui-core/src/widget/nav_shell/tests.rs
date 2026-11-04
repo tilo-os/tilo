@@ -8,6 +8,7 @@ use std::rc::Rc as SharedRc;
 mod adaptive;
 mod band;
 mod capabilities;
+mod counts;
 mod hosted;
 mod inspector_sheet;
 mod listed_actions;

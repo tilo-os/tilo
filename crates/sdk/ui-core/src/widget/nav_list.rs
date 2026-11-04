@@ -394,10 +394,11 @@ impl NavItem {
         self
     }
 
-    /// A quiet count (items in a folder).
+    /// A quiet count (items in a folder). Zero shows nothing: a count means
+    /// something wants attention, and nothing does.
     #[must_use]
     pub fn count(mut self, count: u32) -> Self {
-        self.count = Some(NavCount::Neutral(count));
+        self.count = (count > 0).then_some(NavCount::Neutral(count));
         self
     }
 
@@ -1843,6 +1844,32 @@ impl NavList {
     pub fn selected_id(&self) -> Option<String> {
         let id = self.tree.selected()?;
         self.tree.model().key(id).map(str::to_owned)
+    }
+
+    /// How many things the chosen destination holds, where the list draws that count beside
+    /// it: the number a column header of the same list would otherwise draw a second time.
+    #[must_use]
+    pub fn selected_count(&self) -> Option<NavCount> {
+        fn held(items: &[NavItem], key: &str) -> Option<NavCount> {
+            items.iter().find_map(|item| {
+                if item.id == key {
+                    item.count
+                } else {
+                    held(&item.children, key)
+                }
+            })
+        }
+        let key = self.selected_id()?;
+        self.sections
+            .iter()
+            .find_map(|section| held(&section.items, &key))
+    }
+
+    /// Whether the list is a compact rail of icons, where a count draws as a mark rather than
+    /// as its number.
+    #[must_use]
+    pub fn is_rail(&self) -> bool {
+        self.tree.nav_rail()
     }
 
     /// Open or fold item or section `id` without reporting it.

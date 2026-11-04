@@ -50,10 +50,16 @@ pub enum Kind {
     /// A heading with nothing in it: a band's height taken over the content, where a heading is
     /// the words its section goes by.
     EmptyHeading,
+    /// A count shown as zero. A count means something wants attention, so zero is no badge at
+    /// all, and no room kept for one.
+    ZeroCount,
+    /// A column's header drawing a count the sidebar beside it already draws for the place
+    /// shown: the same number twice on one screen.
+    RepeatedCount,
 }
 
 impl Kind {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -71,6 +77,8 @@ impl Kind {
         Self::NestedCard,
         Self::LoneDoor,
         Self::EmptyHeading,
+        Self::ZeroCount,
+        Self::RepeatedCount,
     ];
 
     pub fn name(self) -> &'static str {
@@ -92,6 +100,8 @@ impl Kind {
             Self::NestedCard => "nested-card",
             Self::LoneDoor => "lone-door",
             Self::EmptyHeading => "empty-heading",
+            Self::ZeroCount => "zero-count",
+            Self::RepeatedCount => "repeated-count",
         }
     }
 }
@@ -350,7 +360,21 @@ struct Walk<'a> {
     display_scale: f64,
     /// Inside a box already found off the device pixels: what it holds moves with it.
     off_pixel: bool,
+    /// The counts the window's column headers draw.
+    header_counts: Vec<Count>,
+    /// The counts a window's places draw beside the place chosen in them.
+    place_counts: Vec<Count>,
     out: &'a mut Vec<Problem>,
+}
+
+/// One number a window draws: a column header's count, or a place's.
+struct Count {
+    number: u32,
+    at: Rect,
+    /// The keys of the widgets at and above it, innermost first.
+    keys: Vec<String>,
+    widget: String,
+    id: Option<String>,
 }
 
 /// Every problem of the frame `root`, laid out in `viewport`, where a target needs `min_target`
@@ -373,6 +397,8 @@ pub fn inspect(
         min_target,
         display_scale,
         off_pixel: false,
+        header_counts: Vec::new(),
+        place_counts: Vec::new(),
         out: &mut out,
     };
     walk.node(
@@ -384,6 +410,7 @@ pub fn inspect(
         false,
         "",
     );
+    walk.repeated_counts();
     out
 }
 
@@ -484,6 +511,7 @@ impl Walk<'_> {
         }
         if geometric {
             self.overlaps(node, keys, inner_clip);
+            self.counts(node, keys, own, inner_clip);
         }
         for child in &node.children {
             if floats(&child.widget) {
@@ -744,6 +772,102 @@ impl Walk<'_> {
                     &format!("its {:?}", part.role),
                 );
             }
+        }
+    }
+
+    /// The numbers `node` draws: a column header's count, or the counts of the places a list
+    /// shows. Zero wants no attention, so it is no count at all and may not be drawn; the count
+    /// of the place chosen in a list, drawn beside a column's header, is the same number twice.
+    fn counts(&mut self, node: &InspectionNode, keys: &[String], own: Rect, clip: Rect) {
+        let Some(access) = node.semantics.as_ref() else {
+            return;
+        };
+        let number = |value: Option<&str>| value.and_then(|value| value.trim().parse::<u32>().ok());
+        match node.widget.as_str() {
+            "NavShellTitle" => {
+                let Some(count) = number(access.value.as_deref()) else {
+                    return;
+                };
+                if count == 0 {
+                    self.push(
+                        Kind::ZeroCount,
+                        node,
+                        keys,
+                        "the column's count reads 0, which shows nothing".into(),
+                    );
+                    return;
+                }
+                self.header_counts.push(Count {
+                    number: count,
+                    at: own,
+                    keys: keys.iter().rev().cloned().collect(),
+                    widget: node.widget.clone(),
+                    id: node.test_id.clone(),
+                });
+            }
+            "NavList" => {
+                for place in &access.children {
+                    let Some(bounds) = place.bounds.map(ui::a11y::AccessBounds::to_rect) else {
+                        continue;
+                    };
+                    if !has_area(bounds.intersect(clip)) {
+                        continue;
+                    }
+                    let Some(count) = number(place.value.as_deref()) else {
+                        continue;
+                    };
+                    let mut keys = keys.to_vec();
+                    keys.extend(place.semantic_key.clone());
+                    if count == 0 {
+                        self.push(
+                            Kind::ZeroCount,
+                            node,
+                            &keys,
+                            format!(
+                                "the count beside {:?} reads 0, which shows nothing",
+                                place.name
+                            ),
+                        );
+                    } else if place.state.selected {
+                        self.place_counts.push(Count {
+                            number: count,
+                            at: bounds,
+                            keys: keys.iter().rev().cloned().collect(),
+                            widget: node.widget.clone(),
+                            id: node.test_id.clone(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A column's header count that a place beside it, to its left, draws too: the same number
+    /// twice on one screen.
+    fn repeated_counts(&mut self) {
+        let (headers, places) = (
+            std::mem::take(&mut self.header_counts),
+            std::mem::take(&mut self.place_counts),
+        );
+        for header in headers {
+            let Some(place) = places.iter().find(|place| {
+                place.number == header.number && place.at.x1 <= header.at.x0 + EPSILON
+            }) else {
+                continue;
+            };
+            self.out.push(Problem {
+                kind: Kind::RepeatedCount,
+                keys: header.keys.clone(),
+                widget: header.widget.clone(),
+                id: header.id.clone(),
+                detail: format!(
+                    "the count {} is drawn again at the place {} wide, {} from it",
+                    header.number,
+                    size(place.at),
+                    (header.at.x0 - place.at.x1).round()
+                ),
+            });
         }
     }
 
@@ -1097,6 +1221,115 @@ mod tests {
             ]],
             "the content the view scrolls through may be taller than the view; the card in it may not"
         );
+    }
+
+    /// A column header that reads 0, and a place whose quiet count reads 0: a count says
+    /// something wants attention, so zero is no badge and no room kept for one.
+    #[test]
+    fn a_count_of_zero_is_caught_where_it_is_drawn() {
+        let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+        let mut list = node(
+            "NavList",
+            "places",
+            [0.0, 40.0, 280.0, 240.0],
+            Some(Role::Tree),
+        );
+        list.semantics
+            .as_mut()
+            .expect("the list's semantics")
+            .children = vec![
+            place("Assigned to me", [0.0, 40.0, 280.0, 72.0], 0, false),
+            place("Inbox", [0.0, 72.0, 280.0, 104.0], 3, false),
+        ];
+        shell.children = vec![
+            list,
+            counted(
+                "NavShellTitle",
+                "title",
+                [300.0, 8.0, 380.0, 32.0],
+                Role::Heading { level: 2 },
+                "Done",
+                "0",
+            ),
+        ];
+        let zeros: Vec<Problem> = inspect(&shell, (400, 300), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::ZeroCount)
+            .collect();
+        assert_eq!(zeros.len(), 2, "{zeros:?}");
+    }
+
+    /// A column header and the place beside it in the sidebar drawing the same number: the
+    /// same count twice on one screen. A different number, or a place past the header, is not
+    /// the same count again.
+    #[test]
+    fn a_header_count_the_place_beside_it_shows_is_caught_once() {
+        let repeated = |header: u32, shown: u32, list_x0: f64| {
+            let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
+            let mut list = node(
+                "NavList",
+                "places",
+                [list_x0, 40.0, list_x0 + 280.0, 240.0],
+                Some(Role::Tree),
+            );
+            list.semantics
+                .as_mut()
+                .expect("the list's semantics")
+                .children = vec![place(
+                "Inbox",
+                [list_x0, 40.0, list_x0 + 280.0, 72.0],
+                shown,
+                true,
+            )];
+            shell.children = vec![
+                list,
+                counted(
+                    "NavShellTitle",
+                    "title",
+                    [600.0, 8.0, 680.0, 32.0],
+                    Role::Heading { level: 2 },
+                    "Inbox",
+                    &header.to_string(),
+                ),
+            ];
+            let root = stack_node("window", [0.0, 0.0, 900.0, 300.0], vec![shell]);
+            inspect(&root, (900, 300), None, 1.0)
+                .into_iter()
+                .filter(|problem| problem.kind == Kind::RepeatedCount)
+                .count()
+        };
+        assert_eq!(repeated(6, 6, 0.0), 1, "the sidebar beside it says 6");
+        assert_eq!(repeated(6, 5, 0.0), 0, "the place says another number");
+        assert_eq!(
+            repeated(6, 6, 600.0),
+            0,
+            "a place past the header is no sidebar"
+        );
+    }
+
+    fn counted(
+        widget: &str,
+        id: &str,
+        rect: [f64; 4],
+        role: Role,
+        name: &str,
+        value: &str,
+    ) -> InspectionNode {
+        let mut header = node(widget, id, rect, Some(role));
+        let access = header.semantics.as_mut().expect("the header's semantics");
+        access.name = Some(name.to_owned());
+        access.value = Some(value.to_owned());
+        header
+    }
+
+    fn place(name: &str, rect: [f64; 4], count: u32, selected: bool) -> AccessNode {
+        let mut place = AccessNode::new(Role::TreeItem);
+        place.name = Some(name.to_owned());
+        place.value = Some(count.to_string());
+        place.state.selected = selected;
+        place.bounds =
+            Some(Rect::new(rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3]).into());
+        place
     }
 
     fn inspected(root: &InspectionNode) -> Vec<Problem> {

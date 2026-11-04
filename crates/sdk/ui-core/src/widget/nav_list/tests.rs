@@ -2236,3 +2236,33 @@ fn bound_check_rename_and_delete_run_their_actions() {
         "a bound check is the checkable row's control: {bindings:?}"
     );
 }
+
+/// A count means something wants attention: zero is no count, at both doors a
+/// destination takes one, and the chosen place reports only what it draws.
+#[test]
+fn a_zero_count_is_no_count() {
+    assert!(NavItem::new("empty", "Empty").count(0).count.is_none());
+    assert!(NavItem::new("empty", "Empty").live_count(0).count.is_none());
+
+    let chosen = |item: NavItem| {
+        NavList::new(vec![NavSection::untitled("top", vec![item])]).selected("inbox")
+    };
+    assert_eq!(
+        chosen(NavItem::new("inbox", "Inbox").count(6)).selected_count(),
+        Some(crate::chrome::NavCount::Neutral(6))
+    );
+    assert_eq!(
+        chosen(NavItem::new("inbox", "Inbox").count(0)).selected_count(),
+        None,
+        "nothing wants attention, so the place draws no count"
+    );
+    assert_eq!(
+        NavList::new(vec![NavSection::untitled(
+            "top",
+            vec![NavItem::new("inbox", "Inbox")]
+        )])
+        .selected("inbox")
+        .selected_count(),
+        None
+    );
+}
