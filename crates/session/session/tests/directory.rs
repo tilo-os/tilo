@@ -846,12 +846,65 @@ struct Lounge {
     _state: tempfile::TempDir,
 }
 
+/// A runtime, or a handle onto one: both run a future to completion.
+trait RunOn {
+    fn run_on<F: std::future::Future>(&self, work: F) -> F::Output;
+}
+
+impl RunOn for tokio::runtime::Runtime {
+    fn run_on<F: std::future::Future>(&self, work: F) -> F::Output {
+        self.block_on(work)
+    }
+}
+
+impl RunOn for tokio::runtime::Handle {
+    fn run_on<F: std::future::Future>(&self, work: F) -> F::Output {
+        self.block_on(work)
+    }
+}
+
+/// Run `work` on `runtime`, giving up after the suite's hang bound.
+///
+/// The lounge's host, its pages and its governance live on runtimes of their
+/// own, so what a test waits for there is not a step of the session the suite's
+/// waits drive: a loaded machine takes a while over a relay's start, a page's
+/// write and a governance change, and a wait with no bound at all reports
+/// nothing when one of them never comes back.
+#[track_caller]
+fn block_on_within<T>(
+    runtime: &impl RunOn,
+    what: &str,
+    work: impl std::future::Future<Output = T>,
+) -> T {
+    let bound = tilo_test_env::hang_bound();
+    // The timer is made inside the runtime: a timeout built outside it has no
+    // reactor to be woken by.
+    match runtime.run_on(async move { tokio::time::timeout(bound, work).await }) {
+        Ok(value) => value,
+        Err(_) => panic!(
+            "gave up waiting for {what} after {bound:?}; it looks hung (set \
+             TILO_TEST_HANG_BOUND_SECS to wait longer)"
+        ),
+    }
+}
+
 impl Drop for Lounge {
     fn drop(&mut self) {
         drop(self.page.take());
-        if let Some(relay) = self.relay.take() {
-            self.runtime.block_on(relay.shutdown());
+        let Some(relay) = self.relay.take() else {
+            return;
+        };
+        if std::thread::panicking() {
+            // A test that already failed leaves with its report: the relay's
+            // own shutdown is not waited for on the way out of a panic, where
+            // a second panic would take the report away.
+            return;
         }
+        block_on_within(
+            &self.runtime,
+            "the lounge's relay to shut down",
+            relay.shutdown(),
+        );
     }
 }
 
@@ -919,37 +972,38 @@ impl LoungeHost {
             "The lounge's page",
             tilo_user_identity::DeviceCapabilities::member(),
         );
-        let (relay, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start(
-                tilo_relay::RelayConfig {
-                    state_root: state.join("host"),
-                    ..tilo_relay::RelayConfig::default()
-                },
-                tilo_relay::daemon::RelayIdentity {
-                    user_public_key: owner_key.verifying_key().to_bytes(),
-                    device_signing_key: host_key.clone(),
-                    device_cert: host_cert.clone(),
-                    revocations: tilo_user_identity::RevocationList::new(),
-                },
-            )
-            .await
-            .expect("the lounge's host");
-            let workspaces = relay
-                .workspaces()
-                .expect("the host governs workspaces")
-                .clone();
-            let workspace = workspaces
-                .create("Lounge")
+        let (relay, workspaces, workspace) =
+            block_on_within(runtime, "the lounge's host to start", async {
+                let relay = tilo_relay::daemon::Relay::start(
+                    tilo_relay::RelayConfig {
+                        state_root: state.join("host"),
+                        ..tilo_relay::RelayConfig::default()
+                    },
+                    tilo_relay::daemon::RelayIdentity {
+                        user_public_key: owner_key.verifying_key().to_bytes(),
+                        device_signing_key: host_key.clone(),
+                        device_cert: host_cert.clone(),
+                        revocations: tilo_user_identity::RevocationList::new(),
+                    },
+                )
                 .await
-                .expect("the lounge's workspace")
-                .workspace;
-            // The site's page is in its workspace.
-            workspaces
-                .enter(&workspace, &page_device)
-                .await
-                .expect("the site's page is in its workspace");
-            (relay, workspaces, workspace)
-        });
+                .expect("the lounge's host");
+                let workspaces = relay
+                    .workspaces()
+                    .expect("the host governs workspaces")
+                    .clone();
+                let workspace = workspaces
+                    .create("Lounge")
+                    .await
+                    .expect("the lounge's workspace")
+                    .workspace;
+                // The site's page is in its workspace.
+                workspaces
+                    .enter(&workspace, &page_device)
+                    .await
+                    .expect("the site's page is in its workspace");
+                (relay, workspaces, workspace)
+            });
         Self {
             relay,
             workspaces,
@@ -1008,9 +1062,8 @@ impl LoungeHost {
         // The line is the lounge's before anyone joins: the test proves a
         // join brings it, not that a write lands.
         // The page's writes reach the host through other runtimes' work, so the
-        // bound is the suite's, not a second count.
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
+        // wait is the suite's, not a second count.
+        tilo_test_env::wait_until("the page's line to reach the lounge's host", || {
             for event in page.drain() {
                 if let PeerEvent::CompactionRequested {
                     route: asked,
@@ -1022,22 +1075,16 @@ impl LoungeHost {
                         .expect("the page hands its record over");
                 }
             }
-            let held = runtime
-                .block_on(self.workspaces.record_routes(&self.workspace))
-                .expect("the lounge's records");
-            if held
-                .iter()
+            let held = block_on_within(
+                runtime,
+                "the lounge's records",
+                self.workspaces.record_routes(&self.workspace),
+            )
+            .expect("the lounge's records");
+            held.iter()
                 .any(|(app, record)| app == CHAT && record == CHAT_RECORD)
-            {
-                return page;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the page's line reaches the lounge's host: {held:?} {:?}",
-                page.status(),
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        });
+        page
     }
 
     /// The site as the world meets it: its entry, the directory of the
@@ -1096,8 +1143,10 @@ impl LoungeHost {
                     let mut request_id = [0u8; 32];
                     request_id[..4]
                         .copy_from_slice(&next.fetch_add(1, Ordering::Relaxed).to_le_bytes());
-                    let issued = answer
-                        .block_on(workspaces.pre_admit(
+                    let issued = block_on_within(
+                        &answer,
+                        "the lounge to issue this person's invitation",
+                        workspaces.pre_admit(
                             &host_cert,
                             PreAdmitRequest {
                                 request_id,
@@ -1105,8 +1154,9 @@ impl LoungeHost {
                                 recipient_user_public_key: Some(person),
                                 inviter_name: Some("The lounge".to_owned()),
                             },
-                        ))
-                        .expect("an invitation for this person");
+                        ),
+                    )
+                    .expect("an invitation for this person");
                     json(
                         serde_json::json!({
                             "invitation": tilo_workspace_join::encode_invitation_text(
@@ -1265,37 +1315,28 @@ impl Lounge {
     /// Wait until the lounge's host holds `desktop` as its shared desktop:
     /// the page's write reached it, and every device that joins now sees it.
     fn wait_for_desktop(&self, desktop: &SharedDesktop) {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let held = self
-                .runtime
-                .block_on(self.workspaces.record_document(
-                    &self.workspace,
-                    DESKTOP_APP,
-                    DESKTOP_RECORD,
-                ))
-                .expect("the lounge's desktop record");
+        tilo_test_env::wait_until("the page's desktop to reach the lounge's host", || {
+            let held = block_on_within(
+                &self.runtime,
+                "the lounge's desktop record",
+                self.workspaces
+                    .record_document(&self.workspace, DESKTOP_APP, DESKTOP_RECORD),
+            )
+            .expect("the lounge's desktop record");
             let recorded = held
                 .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
                 .and_then(|doc| shared_record::read(&doc, None));
-            if recorded.as_ref().map(recorded_layout) == Some(recorded_layout(desktop)) {
-                return;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the page's desktop reaches the lounge's host: {:?}",
-                recorded.as_ref().map(recorded_layout)
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+            recorded.as_ref().map(recorded_layout) == Some(recorded_layout(desktop))
+        });
     }
 
     /// A link to the lounge's workspace carrying an invitation for this
     /// person, as whoever shares the workspace copies it.
     fn invitation_link(&self) -> String {
-        let issued = self
-            .runtime
-            .block_on(self.workspaces.issue(
+        let issued = block_on_within(
+            &self.runtime,
+            "the lounge to issue this person an invitation",
+            self.workspaces.issue(
                 &self.workspace,
                 &self.host_cert,
                 tilo_workspace_join::invitations::IssueInvitationRequest {
@@ -1306,8 +1347,9 @@ impl Lounge {
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
                     inviter_name: Some("The lounge".to_owned()),
                 },
-            ))
-            .expect("an invitation to the lounge");
+            ),
+        )
+        .expect("an invitation to the lounge");
         format!(
             "{}#/w/{}?invite={}",
             self.entry,
@@ -1872,24 +1914,28 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     );
 
     // The lounge's owner removes this person, and every device of theirs.
-    lounge
-        .runtime
-        .block_on(lounge.workspaces.remove_member(
+    block_on_within(
+        &lounge.runtime,
+        "the lounge to remove this person",
+        lounge.workspaces.remove_member(
             &lounge.workspace,
             &lounge.host_cert,
             RemoveMemberRequest {
                 request_id: [0x62; 32],
                 user_public_key: person,
             },
-        ))
-        .expect("the lounge removes this person");
+        ),
+    )
+    .expect("the lounge removes this person");
     // The workspace's governance is what every device's roster is read from, and
     // it lists this person no longer: the devices of theirs on the workspace's
     // roster are gone.
-    let (_generation, members) = lounge
-        .runtime
-        .block_on(lounge.workspaces.membership(&lounge.workspace))
-        .expect("the lounge's members");
+    let (_generation, members) = block_on_within(
+        &lounge.runtime,
+        "the lounge's members",
+        lounge.workspaces.membership(&lounge.workspace),
+    )
+    .expect("the lounge's members");
     let mark = members
         .get(&hex::encode(person))
         .expect("the workspace remembers the person it removed");
@@ -1897,20 +1943,16 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     // The page, still a member, hears the workspace's governance and lists the
     // person no more, as every device's roster follows it.
     let page = lounge.page.as_ref().expect("the site's page runs");
-    let deadline = tilo_test_env::hang_deadline();
-    while page
-        .status()
-        .room_members
-        .get(&lounge.workspace)
-        .is_none_or(|members| members.contains(&hex::encode(person)))
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the lounge's remaining devices hear its governance: {:?}",
-            page.status().room_members,
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    let removed = hex::encode(person);
+    tilo_test_env::wait_until(
+        "the lounge's remaining devices to hear its governance",
+        || {
+            page.status()
+                .room_members
+                .get(&lounge.workspace)
+                .is_some_and(|members| !members.contains(&removed))
+        },
+    );
 
     // The lounge's page writes after the removal: the workspace's content from
     // now on is not this computer's, so the line never reads here.
@@ -1920,15 +1962,15 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         record: CHAT_RECORD.to_owned(),
     };
     let mut after = automerge::AutoCommit::load(
-        &lounge
-            .runtime
-            .block_on(
-                lounge
-                    .workspaces
-                    .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
-            )
-            .expect("the lounge's chat")
-            .expect("the lounge holds its chat"),
+        &block_on_within(
+            &lounge.runtime,
+            "the lounge's chat",
+            lounge
+                .workspaces
+                .record_document(&lounge.workspace, CHAT, CHAT_RECORD),
+        )
+        .expect("the lounge's chat")
+        .expect("the lounge holds its chat"),
     )
     .expect("the chat's document");
     let before = after.get_heads();
