@@ -51,3 +51,36 @@ fn an_idle_desk_wakes_for_nothing() {
         "an idle desk is passed {turns} times in {window:?}, not once"
     );
 }
+
+/// A gesture's events arrive far faster than a display shows frames: the
+/// display they are shown on takes them in at its blank, so the desk's turn
+/// is taken once per refresh, not once per event.
+#[test]
+fn a_held_frame_takes_the_turns_of_a_gesture() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    settle(&mut session, 30);
+    let drawn = session.compositor().frames_presented();
+    let window = Duration::from_millis(120);
+    let started = Instant::now();
+    let mut turns = 0_u32;
+    while started.elapsed() < window {
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
+            .expect("input");
+        session.step(Duration::from_millis(1)).expect("step");
+        turns += 1;
+    }
+    // One turn per refresh of the session's 60 Hz output: nine in this
+    // window. A turn drawn at once for every event is twenty-one, the
+    // desk laid out for each of them.
+    assert!(
+        turns <= 14,
+        "a held frame takes the gesture's turns with it: {turns} in {window:?}"
+    );
+    assert!(
+        session.compositor().frames_presented() > drawn,
+        "the frames the desk drew are shown"
+    );
+}
