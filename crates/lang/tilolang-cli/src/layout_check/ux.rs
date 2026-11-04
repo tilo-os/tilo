@@ -36,7 +36,11 @@ const COMPACT_WIDTH: f64 = 600.0;
 const ADD_VERBS: [&str; 3] = ["add ", "new ", "create "];
 
 /// The words a screen's copy destroys with, other than the one verb every screen destroys with.
-const OTHER_DELETE_VERBS: [&str; 6] = ["remove", "erase", "discard", "purge", "wipe", "drop"];
+/// `clear` is among them only on a control the view declares destructive: a field's own clear
+/// takes back what was typed, and keeps its word.
+const OTHER_DELETE_VERBS: [&str; 7] = [
+    "remove", "erase", "discard", "purge", "wipe", "drop", "clear",
+];
 
 /// The one verb a destructive control says its action with.
 pub const DELETE_VERB: &str = "Delete";
@@ -1004,10 +1008,22 @@ mod tests {
             "Wipe",
             "Drop",
             "discard…",
+            "Clear",
+            "Clear done",
+            "clear…",
         ] {
             let problems = found_as(Kind::UnsharedVerb, &say(bare), (1280, 800), &destroys);
             assert_eq!(problems.len(), 1, "{bare}: {problems:?}");
         }
+        // A control that deletes the records it names says "Delete", whatever the noun it takes
+        // away is called.
+        let problems = found_as(
+            Kind::UnsharedVerb,
+            &say("Delete finished tasks…"),
+            (1280, 800),
+            &destroys,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
         assert!(
             found_as(
                 Kind::UnsharedVerb,
@@ -1021,10 +1037,12 @@ mod tests {
 
         // A field's own button clears the value the field holds: the view declares nothing of
         // it, so the word it says is its own.
-        assert!(
-            found(Kind::UnsharedVerb, &say("Remove time"), (1280, 800)).is_empty(),
-            "a control the view declares nothing of is nobody's destructive control"
-        );
+        for cleared in ["Remove time", "Clear time"] {
+            assert!(
+                found(Kind::UnsharedVerb, &say(cleared), (1280, 800)).is_empty(),
+                "a control the view declares nothing of is nobody's destructive control: {cleared}"
+            );
+        }
     }
 
     /// A surface holds its content on the page: a card drawn on a card is one surface too many.

@@ -1714,41 +1714,42 @@ mod cases {
             "new_task",
             vec![res(&list), Value::text("milk")],
         ));
-        // Clear done stands in the header's one menu, as every command that is not the window's
-        // main thing does: a control that names it, and says whether it can run now.
+        // Delete finished tasks stands in the header's one menu, as every command that is
+        // not the window's main thing does: a control that names it, and says whether it can
+        // run now.
         let can_run = |v: &ViewInstance| -> bool {
-            node_with(v.tree(), "ui.Button", "label", "Clear done")
+            node_with(v.tree(), "ui.Button", "label", "Delete finished tasks…")
                 .props
                 .get("enabled")
                 == Some(&Value::Int(1))
         };
         let why = |v: &ViewInstance| -> String {
-            match node_with(v.tree(), "ui.Button", "label", "Clear done")
+            match node_with(v.tree(), "ui.Button", "label", "Delete finished tasks…")
                 .props
                 .get("description")
             {
                 Some(Value::Text(why)) => why.clone(),
-                other => panic!("no description on Clear done: {other:?}"),
+                other => panic!("no description on Delete finished tasks: {other:?}"),
             }
         };
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         assert!(
             !can_run(&v),
-            "nothing is done, so Clear done cannot run: {}",
+            "nothing is finished, so Delete finished tasks cannot run: {}",
             dump(v.tree())
         );
-        assert_eq!(why(&v), "Nothing is done yet", "and it says why");
+        assert_eq!(why(&v), "Nothing is finished yet", "and it says why");
         let refused =
             w.rt.invoke_action(
                 &me(),
                 (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
             )
-            .expect_err("clear_done is refused while nothing is done");
+            .expect_err("clear_done is refused while nothing is finished");
         assert!(
-            refused.to_string().contains("Nothing is done yet"),
+            refused.to_string().contains("Nothing is finished yet"),
             "{refused}"
         );
-        // A task's step goes under it while it is open: nothing is done still.
+        // A task's step goes under it while it is open: nothing is finished still.
         w.call(
             &apps.todo,
             "add_subtask",
@@ -1757,16 +1758,16 @@ mod cases {
         v.poll_patches().unwrap();
         assert!(
             !can_run(&v),
-            "an open step under an open task is nothing done: {}",
+            "an open step under an open task is nothing finished: {}",
             dump(v.tree())
         );
-        // Checking the task off takes the step with it, so Clear done can run exactly when a
-        // clear takes something.
+        // Checking the task off takes the step with it, so Delete finished tasks can run
+        // exactly when a clear takes something.
         w.call(&apps.todo, "check", vec![res(&item)]);
         v.poll_patches().unwrap();
         assert!(
             can_run(&v),
-            "once an item is done, Clear done can run: {}",
+            "once an item is finished, Delete finished tasks can run: {}",
             dump(v.tree())
         );
         let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
@@ -1781,15 +1782,15 @@ mod cases {
             "with nothing left to clear it cannot run: {}",
             dump(v.tree())
         );
-        assert_eq!(why(&v), "Nothing is done yet", "and it says why again");
+        assert_eq!(why(&v), "Nothing is finished yet", "and it says why again");
         let refused =
             w.rt.invoke_action(
                 &me(),
                 (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
             )
-            .expect_err("clear_done is refused again once nothing is done");
+            .expect_err("clear_done is refused again once nothing is finished");
         assert!(
-            refused.to_string().contains("Nothing is done yet"),
+            refused.to_string().contains("Nothing is finished yet"),
             "{refused}"
         );
     }

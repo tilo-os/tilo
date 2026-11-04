@@ -379,10 +379,15 @@ destructive action remove(tasks: Tasks, t: Task) (label: "Delete", icon: .trash,
 }
 
 /// Deletes every finished task, and answers how many went: a task is finished when everything
-/// under it is done too, so clearing takes whole finished branches and never unfinished work
-/// with it, and a task done with a step still open under it stays.
-destructive action clear_done(tasks: Tasks) -> Int (icon: .circle_check, label: "Clear done") {
-    require tasks.items.count(x -> x.done) > 0 "Nothing is done yet"
+/// under it is done too, so deleting takes whole finished branches and never unfinished work
+/// with it, and a task done with a step still open under it stays. Finished tasks are the
+/// logbook a person reads back, so this is no command of the bar: it stands with the window's
+/// other commands, behind its menu.
+destructive action clear_done(tasks: Tasks) -> Int (
+    icon: .circle_check,
+    label: "Delete finished tasks…",
+) {
+    require tasks.items.count(x -> x.finished) > 0 "Nothing is finished yet"
     // A branch is finished when it and everything under it is done, which the list's index
     // works out for each task: nothing here walks what is under one.
     let gone = tasks.items.filter(x -> x.finished)

@@ -2260,7 +2260,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 
     // What cannot run now is no row: a task in the inbox has nowhere to move out of, the app
     // has nothing done to clear, and a task at the outline's top has nowhere to outdent to.
-    for not_now in ["Inbox", "Clear done", "Outdent"] {
+    for not_now in ["Inbox", "Delete finished tasks…", "Outdent"] {
         assert!(
             !titles.contains(&not_now),
             "{not_now} cannot run now, so it is no row: {titles:?}"
@@ -2306,15 +2306,17 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
             })
             .unwrap_or_else(|| panic!("the header holds {label}"))
     };
-    let clear = button("Clear done");
+    let clear = button("Delete finished tasks…");
     assert_eq!(
         clear.props.get("enabled"),
         Some(&tilo_ui_host::Value::Int(0)),
-        "nothing is done, so Clear done is disabled"
+        "nothing is finished, so Delete finished tasks is disabled"
     );
     assert_eq!(
         clear.props.get("description"),
-        Some(&tilo_ui_host::Value::Text("Nothing is done yet".to_owned())),
+        Some(&tilo_ui_host::Value::Text(
+            "Nothing is finished yet".to_owned()
+        )),
         "and it says why"
     );
     let new_task = buttons

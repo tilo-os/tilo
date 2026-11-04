@@ -200,8 +200,8 @@ d-23y3zdgu = Duplicate
 d-ojzyzzxu = Delete
     .doc = Deletes a task and its subtasks.
 
-d-rjpcv6es = Clear done
-    .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so clearing takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
+d-rjpcv6es = Delete finished tasks…
+    .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so deleting takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
 
 d-2xixz4sk = Delete project
     .doc = Deletes a project and its sections; its tasks go back to the inbox.
