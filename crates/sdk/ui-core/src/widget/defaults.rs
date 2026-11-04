@@ -363,6 +363,31 @@ pub(super) fn modal_capture(each: EachChild<'_>) -> Option<Rect> {
     capture
 }
 
+/// Close every modal among `children`, as a widget's own default does: the
+/// children's own dismissals, in turn.
+pub(super) fn dismiss_presented_modal(children: ChildrenMut<'_>) -> bool {
+    let mut dismissed = false;
+    for child in children {
+        dismissed |= child.dismiss_presented_modal();
+    }
+    dismissed
+}
+
+/// Whether a widget presenting `capture` or having `children` presents a
+/// modal still drawn: its own, or one of its children's.
+pub(super) fn presents_modal(capture: Option<Rect>, each: EachChild<'_>) -> bool {
+    if capture.is_some() {
+        return true;
+    }
+    let mut presented = false;
+    each(&mut |child| {
+        if !presented {
+            presented = child.presents_modal();
+        }
+    });
+    presented
+}
+
 pub(super) fn take_structure_dirty(children: ChildrenMut<'_>) -> bool {
     let mut dirty = false;
     for child in children {

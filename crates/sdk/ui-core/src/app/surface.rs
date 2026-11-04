@@ -779,6 +779,24 @@ impl App {
         self.needs_sync || self.layout.layout_dirty || self.layout.structure_dirty
     }
 
+    /// Close every modal this window presents, so it leaves as its own way
+    /// out takes it down: what a host whose surface is a modal sheet runs
+    /// when the shell closes the sheet, so nothing stays up drawn taking no
+    /// input. Whether any was presented.
+    pub fn dismiss_presented_modal(&mut self) -> bool {
+        let dismissed = self.root_widget.dismiss_presented_modal();
+        if dismissed {
+            self.needs_sync = true;
+        }
+        dismissed
+    }
+
+    /// Whether the window still presents a modal, arriving, open or leaving:
+    /// a host that stands a modal sheet redraws until this is false.
+    pub fn presents_modal(&self) -> bool {
+        self.root_widget.presents_modal()
+    }
+
     /// Whether the app's model woke the window for a frame it has not run
     /// yet: background work that ended, or a read that goes on frame by
     /// frame. A window that rests has none.
