@@ -59,9 +59,12 @@
 //!
 //! Each connection is read on a thread of its own. What a request asks of the compositor, the
 //! desk or the hosted surfaces is answered on the loop's pass, the only place that may touch
-//! them, and the loop is woken for it. What asks only of the actions and the change signal — the
-//! four action requests and `watch` — is answered where it was asked, so a listing that waits for
-//! an app to publish holds no frame.
+//! them, and the loop is woken for it. Input a tool injects — the pointer, the wheel, a gesture,
+//! a key — is answered where the loop takes a device's own input, so the pass it arrives in
+//! carries it, as it carries the person's own press; what asks anything else of the desk waits
+//! for that pass's frame, where it reads the desk the frame shows. What asks only of the actions
+//! and the change signal — the four action requests and `watch` — is answered where it was asked,
+//! so a listing that waits for an app to publish holds no frame.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,7 +86,6 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_compositor::{Compositor, GestureEvent, InputEvent, gestures};
 use tilo_desktop::overlays::{Overlays, Slot};
-use tilo_desktop_model::DesktopTree;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
@@ -93,8 +95,10 @@ use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;
 
 mod seat;
+mod state;
 
 use seat::{AgentSeat, asked_of_seat};
+use state::{shown, state_dump, window_rows, within};
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
 /// session binds the socket at when its command line names none and the default is not wanted,
@@ -260,6 +264,18 @@ pub(crate) fn serve(control: &Control, compositor: &mut Compositor, desk: Desk<'
     control.serve(compositor, &desk);
 }
 
+/// What a tool handed the desk's input since the last pass, taken where a device's input
+/// reaches the desk, and publish the desk this pass laid out before it is drawn.
+pub(crate) fn serve_input(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
+    control.serve_input(compositor, &desk);
+}
+
+/// Tell the watchers the desk this pass laid out, before it is drawn: the state a reader gets
+/// is the one the frame carries.
+pub(crate) fn publish(control: &Control, desk: Desk<'_>) {
+    control.publish(&desk);
+}
+
 /// One request a connection sent the loop, and where its answer goes.
 struct Asked {
     /// The op it asks, which the socket it came in on serves.
@@ -286,6 +302,9 @@ pub(crate) struct Control {
     /// The seat each agent admitted at the door drives, and the window it
     /// aims at last.
     seats: RefCell<BTreeMap<String, seat::AgentSeat>>,
+    /// What asked anything but the desk's input since the last pass: it is
+    /// answered after the frame, where it sees the desk the frame shows.
+    waiting: RefCell<Vec<Asked>>,
 }
 
 /// One socket: where it listens, whose it is, and what its connections answer from.
@@ -519,6 +538,26 @@ impl Op {
 }
 
 impl Op {
+    /// Whether it hands the desk input, which the loop serves where a device's own input
+    /// reaches it: in the pass it arrives in, before that pass draws its frame.
+    const fn hands_input(self) -> bool {
+        matches!(
+            self,
+            Self::ClickAt
+                | Self::Drag
+                | Self::Key
+                | Self::KeyDown
+                | Self::KeyUp
+                | Self::Modifiers
+                | Self::Pinch
+                | Self::PointerButton
+                | Self::PointerMove
+                | Self::Scroll
+                | Self::Swipe
+                | Self::Type
+        )
+    }
+
     /// Whether a seat's own connection serves it: an agent's hands drive its pointer, its
     /// keys, its window and the frames it shows there, and nothing of the person's desk.
     const fn seat_serves(self) -> bool {
@@ -651,6 +690,7 @@ impl Control {
             published: std::cell::Cell::new(None),
             changes,
             seats: RefCell::new(BTreeMap::new()),
+            waiting: RefCell::new(Vec::new()),
         }
     }
 
@@ -671,7 +711,49 @@ impl Control {
         Ok(())
     }
 
-    /// Take the connections waiting, publish the state its watchers read, and answer what was
+    /// What a tool handed the desk's input since the last pass, answered where a device's input
+    /// reaches the desk: a key or a press a tool injects takes effect in the frame this pass
+    /// draws, as the same input from a device does. Everything else asked waits for the frame
+    /// ([`Self::serve`]), where it reads the desk the frame shows.
+    fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+        self.door.actions.set_workspace(desk.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }));
+        self.door.actions.set_locked(desk.locked);
+        self.take();
+        let mut waiting = self.waiting.borrow_mut();
+        let mut later = Vec::new();
+        for Asked {
+            op,
+            request,
+            ctx,
+            answer,
+        } in waiting.drain(..)
+        {
+            if op.hands_input() {
+                let _ = answer.send(loop_answer(
+                    op,
+                    &request,
+                    &ctx,
+                    compositor,
+                    desk,
+                    &self.held,
+                    &self.seats,
+                ));
+            } else {
+                later.push(Asked {
+                    op,
+                    request,
+                    ctx,
+                    answer,
+                });
+            }
+        }
+        *waiting = later;
+    }
+
+    /// Take the connections waiting, publish the desk its watchers read, and answer what was
     /// asked of the loop since the last pass.
     fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
@@ -679,16 +761,17 @@ impl Control {
                 .map(|workspace| workspace.id().to_string())
         }));
         self.door.actions.set_locked(desk.locked);
-        self.publish(desk);
         for socket in &self.sockets {
             socket.accept();
         }
-        while let Ok(Asked {
+        self.take();
+        let ready: Vec<Asked> = self.waiting.borrow_mut().drain(..).collect();
+        for Asked {
             op,
             request,
             ctx,
             answer,
-        }) = self.asked.try_recv()
+        } in ready
         {
             let _ = answer.send(loop_answer(
                 op,
@@ -701,6 +784,14 @@ impl Control {
             ));
         }
         self.sweep(compositor, desk);
+    }
+
+    /// Everything the connections sent the loop since the last look, oldest first. What asks
+    /// for the desk's input is served in the pass it arrives in; the rest waits for the frame.
+    fn take(&self) {
+        while let Ok(asked) = self.asked.try_recv() {
+            self.waiting.borrow_mut().push(asked);
+        }
     }
 
     /// Close the seat of every agent the door no longer admits: the person's
@@ -2224,201 +2315,6 @@ fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What a socket at `gate` may see of the state `dump`: a development socket sees the desk as
-/// it is, and the owner's door sees it too — except while the screen is locked, where it learns
-/// that it is and nothing of what the lock covers: no windows, no workspaces, no titles or the
-/// text in them.
-fn owner_shown(gate: Gate, dump: Json) -> Json {
-    if gate == Gate::Dev || !locked_in(&dump) {
-        return dump;
-    }
-    let mut dump = dump;
-    let Some(state) = dump.get_mut("state").and_then(Json::as_object_mut) else {
-        return dump;
-    };
-    state.insert("workspace_tree".into(), Json::Null);
-    state.insert("held_workspaces".into(), json!([]));
-    if let Some(open) = state
-        .get_mut("chrome")
-        .and_then(|chrome| chrome.get_mut("overlays"))
-        .and_then(Json::as_object_mut)
-    {
-        for shown in open.values_mut() {
-            *shown = Json::Bool(false);
-        }
-    }
-    dump
-}
-
-/// The desk's state as `ctx` may read it: an app's own workspace only, and
-/// nothing of the desk while the screen is locked.
-fn shown(ctx: &Context, dump: Json) -> Json {
-    match &ctx.scope {
-        None => owner_shown(ctx.gate, dump),
-        Some(scope) => owner_shown(ctx.gate, only_workspace(dump, scope)),
-    }
-}
-
-/// `dump` with every workspace but the one `scope` holds left out.
-fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
-    let Some(state) = dump.get_mut("state").and_then(Json::as_object_mut) else {
-        return dump;
-    };
-    if let Some(tree) = state.get_mut("workspace_tree")
-        && let Some(workspaces) = tree.get_mut("workspaces").and_then(Json::as_array_mut)
-    {
-        workspaces.retain(|workspace| in_scope(workspace, scope));
-    }
-    if let Some(held) = state
-        .get_mut("held_workspaces")
-        .and_then(Json::as_array_mut)
-    {
-        held.retain(|workspace| in_scope(workspace, scope));
-    }
-    dump
-}
-
-/// Whether a row naming its workspace's room is the one `scope` holds.
-fn in_scope(row: &Json, scope: &Scope) -> bool {
-    row.get("room").and_then(Json::as_str) == Some(scope.workspace.as_str())
-}
-
-/// `tree` with every workspace but the one `scope` holds left out.
-fn within(tree: &DesktopTree, scope: &Scope) -> DesktopTree {
-    let mut tree = tree.clone();
-    tree.workspaces
-        .retain(|workspace| workspace.id().to_string() == scope.workspace);
-    tree
-}
-
-/// Whether a state dump says the screen is locked.
-fn locked_in(dump: &Json) -> bool {
-    dump.get("state")
-        .and_then(|state| state.get("chrome"))
-        .and_then(|chrome| chrome.get("session_locked"))
-        .and_then(Json::as_bool)
-        == Some(true)
-}
-
-/// The desk as it is now: its tree without its history, the workspaces this computer holds, what
-/// stands over it, and whether the screen is locked — the shape the tools that drive a desktop
-/// read, and the line a `watch` streams as it changes.
-fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
-    let held: BTreeSet<String> = desk
-        .engine
-        .map(|engine| {
-            engine
-                .workspaces()
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let held_workspaces: Vec<Json> = tree
-        .workspaces
-        .iter()
-        .filter(|workspace| held.contains(&workspace.id().to_string()))
-        .map(|workspace| {
-            json!({
-                "workspace": workspace.slot.0,
-                "room": workspace.id().to_string(),
-            })
-        })
-        .collect();
-    let mut open = serde_json::Map::new();
-    for slot in Slot::ALL {
-        let up = desk.overlays.is_open(slot) || (slot == Slot::Overview && desk.overview.get());
-        open.insert(slot.as_str().to_owned(), up.into());
-    }
-    let tree = tilo_desktop_model::history::without_history(|| serde_json::to_value(tree))
-        .unwrap_or(Json::Null);
-    let agents: Vec<Json> = desk
-        .seats
-        .readings()
-        .iter()
-        .map(|agent| {
-            json!({
-                "key": agent.key,
-                "name": agent.name,
-                "doing": agent.doing,
-                "seat": agent.seat,
-            })
-        })
-        .collect();
-    json!({"state": {
-        "workspace_tree": tree,
-        "held_workspaces": held_workspaces,
-        "agents": agents,
-        "chrome": {
-            "session_locked": desk.locked,
-            // The lock screen's own frame is what the outputs show, not the
-            // desk's last one: the lock is up and covering the desk.
-            "lock_screen_drawn": desk.lock_screen_drawn,
-            "in_transition": false,
-            "overlays": open,
-            // Whether freed heap is still to be handed back to the kernel
-            // (a close asked for a trim), and how many trims have run.
-            "heap_trim": {
-                "pending": tilo_compositor::heap_trim::close_trim_pending(),
-                "trims": tilo_compositor::heap_trim::trims_completed(),
-            },
-        },
-        "peers": Json::Null,
-        "sharing": Json::Null,
-    }})
-}
-
-/// One row per tab of `tree` — where it is, which app shows it, and whether it is the tab in
-/// front of the active workspace's active strip and group. A workspace or strip without a name
-/// is named by its id; `kind` is the tile's variant and `app_id` the app it names, if any.
-fn window_rows(tree: &DesktopTree) -> Vec<Json> {
-    fn named(name: &str, id: u64) -> Json {
-        if name.is_empty() {
-            id.into()
-        } else {
-            name.into()
-        }
-    }
-    let mut rows = Vec::new();
-    for workspace in &tree.workspaces {
-        let workspace_active = workspace.slot == tree.active;
-        let active_strip = tree.active_strip.get(&workspace.slot);
-        for strip in &workspace.strips {
-            let strip_active = workspace_active && active_strip == Some(&strip.id);
-            let active_group = tree.active_group.get(&strip.id);
-            for group in &strip.window_groups {
-                let group_active = strip_active && active_group == Some(&group.id);
-                for tab in &group.tabs {
-                    let (kind, app_id) = tile_kind(&tab.tile);
-                    rows.push(json!({
-                        "workspace": named(&workspace.name, workspace.slot.0),
-                        "strip": named(&strip.name, strip.id.0),
-                        "group": group.id,
-                        "tab": tab.id,
-                        "kind": kind,
-                        "app_id": app_id,
-                        "title": tab.title,
-                        "active": group_active && group.active_tab == tab.id,
-                    }));
-                }
-            }
-        }
-    }
-    rows
-}
-
-/// A tile's variant name and the `app_id` it carries, as its JSON spells them.
-fn tile_kind(tile: &tilo_desktop_model::TileContent) -> (String, Json) {
-    match serde_json::to_value(tile).unwrap_or_default() {
-        Json::String(kind) => (kind, Json::Null),
-        Json::Object(variant) => variant.into_iter().next().map_or_else(
-            || (String::new(), Json::Null),
-            |(kind, body)| (kind, body.get("app_id").cloned().unwrap_or_default()),
-        ),
-        _ => (String::new(), Json::Null),
-    }
-}
-
 /// Write a PNG of every display, each at its place in the layout, to `path`.
 fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str, String)> {
     if path.is_empty() {
@@ -2610,6 +2506,7 @@ impl Changes {
 
 #[cfg(test)]
 mod tests {
+    use super::state::owner_shown;
     use super::*;
 
     #[test]
@@ -2898,6 +2795,46 @@ mod tests {
             clamped.len(),
             2 + usize::try_from(MAX_GESTURE_STEPS).unwrap()
         );
+    }
+
+    #[test]
+    fn the_input_a_tool_injects_is_answered_where_a_device_hands_its_own() {
+        let injected: Vec<&str> = Op::ALL
+            .iter()
+            .filter(|op| op.hands_input())
+            .map(|op| op.name())
+            .collect();
+        assert_eq!(
+            injected,
+            [
+                "click_at",
+                "drag",
+                "key",
+                "key_down",
+                "key_up",
+                "modifiers",
+                "pinch",
+                "pointer_button",
+                "pointer_move",
+                "scroll",
+                "swipe",
+                "type",
+            ],
+            "the input a tool injects is served before the pass lays its frame \
+             out, so that frame carries it"
+        );
+        // Everything else reads or changes what a frame already shows, and is
+        // answered once the pass has drawn it.
+        for op in [
+            Op::ClickNamed,
+            Op::ActionsInvoke,
+            Op::StateDump,
+            Op::Snapshot,
+            Op::Watch,
+            Op::Windows,
+        ] {
+            assert!(!op.hands_input(), "{} waits for the frame", op.name());
+        }
     }
 
     #[test]

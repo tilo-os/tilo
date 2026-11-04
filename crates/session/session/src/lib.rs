@@ -748,6 +748,9 @@ pub struct Session {
     active_workspace: Option<u64>,
     /// When the desk's own bookkeeping last read it.
     kept_at: Instant,
+    /// What the desk's input a tool handed the loop cost this pass, read with
+    /// the control socket's own time in the frame's timings.
+    tool_input: std::time::Duration,
     /// The magnifier's zoom level and the one its toggle turns on at.
     magnifier: (u8, u8),
     /// Setup, while it runs: it withholds the desktop's actions.
@@ -2070,6 +2073,7 @@ impl Session {
             first_frame: false,
             active_workspace: None,
             kept_at: Instant::now(),
+            tool_input: std::time::Duration::ZERO,
             magnifier: (
                 settings_store::magnifier::OFF,
                 settings_store::magnifier::DEFAULT_ZOOM,
