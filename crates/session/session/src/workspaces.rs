@@ -113,10 +113,16 @@ pub(crate) fn open_directory(
 /// `add_workspace` gives this computer the workspace a join was granted, by
 /// its id and its name, through the desk's own published action: the desk
 /// makes workspaces, not the directory.
+///
+/// Choosing Join (or Open) closes the sheet as soon as the choice has started:
+/// what became of it — the workspace opening, or joining it, or a refusal —
+/// is shown where the person now is, a banner, rather than a sheet left
+/// behind.
 pub(crate) fn follow_directory(
     seat: Option<&DirectorySeat>,
     handle: &DesktopHandle,
     directory: &directory::Store,
+    notices: &DesktopNotifications,
     add_workspace: &dyn Fn(&directory::Joined) -> Result<(), String>,
 ) {
     // A session the host set up to join one workspace joins it with nobody
@@ -134,6 +140,7 @@ pub(crate) fn follow_directory(
                 {
                     seat.presentation().close();
                 }
+                joined_notice(notices, &joined.name);
             }
             Err(error) => {
                 tracing::warn!(%error, workspace = %joined.workspace_id, "a joined workspace was not added");
@@ -143,6 +150,14 @@ pub(crate) fn follow_directory(
         if let Some(seat) = seat {
             seat.show(directory::view(directory, handle));
         }
+    }
+    // A join the person chose closed the sheet when it started. What became
+    // of it arrives after, so a failure said by the sheet is shown where the
+    // person now is — a banner — rather than in a sheet that left.
+    if let Some(note) = directory.take_unseen_note()
+        && seat.is_none_or(|seat| !seat.presentation().is_drawn())
+    {
+        failure_notice(notices, &note);
     }
     let Some(seat) = seat else {
         return;
@@ -188,6 +203,7 @@ pub(crate) fn follow_directory(
                     join_listed(seat, handle, directory, &only.key);
                 }
             }
+
             DirectoryEffect::LinkOrCode { text } => {
                 // A link or a code the person pasted joins at once: what it
                 // is decides where, and the sheet says so until it lands.
@@ -198,6 +214,10 @@ pub(crate) fn follow_directory(
             }
             DirectoryEffect::Refresh => {
                 directory.ask(None);
+                seat.show(directory::view(directory, handle));
+            }
+            DirectoryEffect::ClearNote => {
+                directory.set_note(None);
                 seat.show(directory::view(directory, handle));
             }
             DirectoryEffect::Done => {
@@ -253,13 +273,39 @@ fn join_listed(
         }
         // One join at a time: the first is still on its way.
         Some(_) => return,
-        None => {
-            if let Err(error) = directory.join(key, &listing) {
-                directory.set_note(Some(error));
+        None => match directory.join(key, &listing) {
+            Ok(()) => {
+                // The join is on its way: the sheet is done with it, and the
+                // person is told when it lands (or why it did not).
+                seat.presentation().close();
+                return;
             }
-        }
+            Err(error) => directory.set_note(Some(error)),
+        },
     }
     seat.show(directory::view(directory, handle));
+}
+
+/// Say the person joined `name`, where they are now: a note that the
+/// workspace is theirs, its windows open there.
+fn joined_notice(notices: &DesktopNotifications, name: &str) {
+    let mut notice = Notification::new(
+        tilo_desktop_surface::i18n::t_args("session-joined-workspace", &[("name", name.into())]),
+        tilo_desktop_surface::i18n::t("session-joined-workspace-body"),
+    );
+    notice.icon_kind = NotificationIconKind::Workspace;
+    notices.post(notice);
+}
+
+/// Say a join the person chose did not happen, and why, where they are: the
+/// workspace directory's own sentence, as a banner.
+fn failure_notice(notices: &DesktopNotifications, said: &str) {
+    let notice = Notification::new(
+        tilo_desktop_surface::i18n::t("session-join-failed-title"),
+        said.to_owned(),
+    )
+    .with_severity(tilo_desktop_surface::notifications::NotificationSeverity::Error);
+    notices.post(notice);
 }
 
 /// The site `text` names, when what was typed into the search is one: a

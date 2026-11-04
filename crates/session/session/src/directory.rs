@@ -423,6 +423,9 @@ pub(crate) struct Store {
     status: std::cell::RefCell<Status>,
     listed: std::cell::RefCell<Vec<Listed>>,
     note: std::cell::RefCell<Option<String>>,
+    /// The note already shown where the person was, so a failure is said once
+    /// off the sheet.
+    seen_note: std::cell::RefCell<Option<String>>,
     /// One join at a time.
     joining: std::cell::RefCell<Option<String>>,
     /// The join whose enrollment into its workspace is on its way, by the
@@ -672,6 +675,17 @@ impl Store {
     /// What became of the last read or join, when it went wrong.
     pub(crate) fn set_note(&self, note: Option<String>) {
         *self.note.borrow_mut() = note;
+    }
+
+    /// Take the note a join left behind, so a failure that outlived the sheet
+    /// is shown where the person now is: `Some` once, as the note changes.
+    pub(crate) fn take_unseen_note(&self) -> Option<String> {
+        let note = self.note.borrow().clone()?;
+        if self.seen_note.borrow().as_deref() == Some(note.as_str()) {
+            return None;
+        }
+        *self.seen_note.borrow_mut() = Some(note.clone());
+        Some(note)
     }
 }
 
@@ -924,13 +938,27 @@ fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
             "displayName": person.name,
         }))
         .send()
-        .map_err(|error| format!("the site could not be reached: {error}"))?;
+        .map_err(|error| {
+            said(
+                "a door could not be reached",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
     let status = response.status();
-    let bytes = response
-        .bytes()
-        .map_err(|error| format!("the site could not be reached: {error}"))?;
+    let bytes = response.bytes().map_err(|error| {
+        said(
+            "a door could not be read",
+            error,
+            "directory-error-unreachable",
+        )
+    })?;
     if bytes.len() > MAX_ANSWER_BYTES {
-        return Err("the door answered more than a door says".into());
+        return Err(said(
+            "a door answered more than a door says",
+            bytes.len(),
+            "directory-error-unreadable",
+        ));
     }
     if !status.is_success() {
         let refusal = serde_json::from_slice::<DoorRefusal>(&bytes)
@@ -943,12 +971,18 @@ fn join(door: &url::Url, person: &Person) -> Result<Granted, String> {
             })
             .ok()
             .and_then(|refusal| refusal.error)
-            .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+            .unwrap_or_else(|| tilo_sheets::word("directory-error-status"));
         // A 5xx is a host that is full or failing: worth trying again.
         return Err(if status.is_server_error() {
-            format!("the site could not be reached: {refusal}")
+            said(
+                "a door's site could not be reached",
+                &refusal,
+                "directory-error-unreachable",
+            )
         } else {
-            format!("the workspace did not let you in: {refusal}")
+            // The door said why in its own words: those are the ones a person
+            // reads.
+            refusal
         });
     }
     let answer: DoorAnswer = serde_json::from_slice(&bytes)
@@ -1082,6 +1116,14 @@ fn home_workspace(entry: &url::Url, home: &HomeJson) -> Result<SiteWorkspace, St
     })
 }
 
+/// What a site answered when its entry or its directory was read, in the
+/// sheet's own words: the protocol's detail (an error, a status code) goes to
+/// the log for whoever reads it, never into what the person sees.
+fn said(logged: &'static str, error: impl std::fmt::Display, shown: &str) -> String {
+    tracing::warn!(%error, "{logged}");
+    tilo_sheets::word(shown)
+}
+
 /// Read `url` as JSON, at most [`MAX_ANSWER_BYTES`] of it.
 fn get_json<T: serde::de::DeserializeOwned>(
     client: &reqwest::blocking::Client,
@@ -1091,17 +1133,41 @@ fn get_json<T: serde::de::DeserializeOwned>(
         .get(url.as_str())
         .timeout(ANSWER_TIMEOUT)
         .send()
-        .map_err(|error| format!("the site could not be reached: {error}"))?;
+        .map_err(|error| {
+            said(
+                "a site's entry could not be reached",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
     if !response.status().is_success() {
-        return Err("that site has no workspace".into());
+        return Err(said(
+            "a site's entry was not there",
+            response.status().as_u16(),
+            "directory-error-no-workspace",
+        ));
     }
-    let bytes = response
-        .bytes()
-        .map_err(|error| format!("the site could not be reached: {error}"))?;
+    let bytes = response.bytes().map_err(|error| {
+        said(
+            "a site's entry could not be read",
+            error,
+            "directory-error-unreachable",
+        )
+    })?;
     if bytes.len() > MAX_ANSWER_BYTES {
-        return Err("the site answered more than a site says".into());
+        return Err(said(
+            "a site's entry is larger than a site's entry says",
+            bytes.len(),
+            "directory-error-unreadable",
+        ));
     }
-    serde_json::from_slice(&bytes).map_err(|_| "that site has no workspace".to_owned())
+    serde_json::from_slice(&bytes).map_err(|error| {
+        said(
+            "a site's entry is not readable",
+            error,
+            "directory-error-no-workspace",
+        )
+    })
 }
 
 /// The public workspaces the directory at `directory` lists. Every
@@ -1115,20 +1181,41 @@ fn fetch_directory(
         .timeout(ANSWER_TIMEOUT)
         .json(&serde_json::json!({}))
         .send()
-        .map_err(|error| format!("the site could not be reached: {error}"))?;
+        .map_err(|error| {
+            said(
+                "a directory could not be reached",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
     if !response.status().is_success() {
-        return Err(format!(
-            "the directory answered HTTP {}",
-            response.status().as_u16()
+        return Err(said(
+            "a directory answered with a status that is not success",
+            response.status().as_u16(),
+            "directory-error-status",
         ));
     }
-    let bytes = response
-        .bytes()
-        .map_err(|error| format!("the site could not be reached: {error}"))?;
+    let bytes = response.bytes().map_err(|error| {
+        said(
+            "a directory could not be read",
+            error,
+            "directory-error-unreachable",
+        )
+    })?;
     if bytes.len() > MAX_DIRECTORY_BYTES {
-        return Err("the directory answered more than a directory says".into());
+        return Err(said(
+            "a directory is larger than a directory says",
+            bytes.len(),
+            "directory-error-unreadable",
+        ));
     }
-    serde_json::from_slice(&bytes).map_err(|error| format!("the directory is unreadable: {error}"))
+    serde_json::from_slice(&bytes).map_err(|error| {
+        said(
+            "a directory is not readable",
+            error,
+            "directory-error-unreadable",
+        )
+    })
 }
 
 /// The words a role is shown with.
