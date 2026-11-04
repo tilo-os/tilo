@@ -1126,11 +1126,14 @@ impl BrowserShell {
                 // machine that runs it. A window that stopped answering is
                 // waited for or quit where the compositor runs, which a page
                 // has none of.
+                // No Alt+Tab panel is up on a page's desk — nothing here sets
+                // the walk's switcher — so no card of one is under its pointer.
                 DesktopAsk::Shortcut(_)
                 | DesktopAsk::LeftWorkspace(_)
                 | DesktopAsk::Music(_)
                 | DesktopAsk::WaitWindow(_)
-                | DesktopAsk::ForceQuitApp(_) => {}
+                | DesktopAsk::ForceQuitApp(_)
+                | DesktopAsk::Switcher(_) => {}
             }
         }
         changed
