@@ -2503,11 +2503,11 @@ impl AppHandler {
         }
         sync_safe_area(&mut self.app, window);
         // The app's own row of slots, then the frame around it: where the row
-        // is the window's bar, the header draws no second one.
-        self.slot_bar.refresh(&mut self.app, window);
+        // is the window's bar, the header draws no second one. Only the Linux
+        // header asks: elsewhere the host draws the frame.
+        let _shown = self.slot_bar.refresh(&mut self.app, window);
         #[cfg(target_os = "linux")]
-        self.decorations
-            .refresh(&mut self.app, window, self.slot_bar.shows());
+        self.decorations.refresh(&mut self.app, window, _shown);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the

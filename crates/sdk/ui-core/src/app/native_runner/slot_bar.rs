@@ -102,8 +102,10 @@ impl SlotBar {
     /// Keep the row current: shown while nothing hosts the app's slots and
     /// it declared some, under the host's frame (`app.layout.safe_area`).
     /// Call every frame before layout: the row's height is part of the app's
-    /// top inset.
-    pub(super) fn refresh(&mut self, app: &mut App, window: &Window) {
+    /// top inset. Answers whether the row stands: while it does it is the
+    /// window's bar, so the header the app draws stands aside.
+    #[must_use]
+    pub(super) fn refresh(&mut self, app: &mut App, window: &Window) -> bool {
         // Outside a session the row is the window's bar: it hosts the app's
         // slots and presents its search and History, as the desktop's bar
         // does in one. A window the shell hears is hosted by the shell from
@@ -155,6 +157,7 @@ impl SlotBar {
                 self.row.mark_repaint();
             }
         }
+        shown
     }
 
     /// Whether the app draws the window's frame itself: the one case the row
@@ -164,12 +167,6 @@ impl SlotBar {
             crate::host_chrome::HostChrome::current(app.input.platform),
             tilo_presentation::desktop_draws_frame(window),
         ) == Some(true)
-    }
-
-    /// Whether the row stands across the top of the window.
-    #[cfg(target_os = "linux")]
-    pub(super) fn shows(&self) -> bool {
-        self.row.is_shown()
     }
 
     /// Whether the row's Close control asked to close the window.
