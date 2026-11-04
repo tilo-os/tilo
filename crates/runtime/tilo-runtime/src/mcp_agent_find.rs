@@ -389,19 +389,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // The rows the resource can hang under: the ones the publisher says
         // hold children, and the one its own id extends. A provider that
         // publishes a tree whole lists its root as a plain row, and the
-        // tree answers under it all the same, so the id decides as well.
-        let containers: Vec<&Node> = top
+        // tree answers under it all the same, so the id decides as well. The
+        // row an id extends leads: its level holds the resource, and the top
+        // level of a workspace lists more rows than a peek reads.
+        let extends = |node: &&Node| {
+            found
+                .resource
+                .strip_prefix(node.id.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+        };
+        let mut containers: Vec<&Node> = top
             .children
             .iter()
-            .filter(|node| {
-                node.container
-                    || found
-                        .resource
-                        .strip_prefix(node.id.as_str())
-                        .is_some_and(|rest| rest.starts_with('/'))
-            })
-            .take(ROOT_PEEK)
+            .filter(|node| node.container || extends(node))
             .collect();
+        containers.sort_by_key(|node| !extends(node));
+        containers.truncate(ROOT_PEEK);
         // A bound field's row (a note's body) is published under the record
         // holding it, named by the key the bound id spells: the record's own
         // key with the field's after it. The record is asked by the name the
@@ -499,6 +502,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 let Ok(level) = self.level(provider, &container.id, levels).await else {
                     continue;
                 };
+                // A row the container's level lists is a row the resource
+                // can be: a mailbox stands under its account, a note under its
+                // notebook, and neither has to be asked for by name.
+                if let Some(node) = level
+                    .children
+                    .iter()
+                    .find(|node| Self::same_resource(node, found))
+                {
+                    return Some(node.clone());
+                }
                 if found.resource.starts_with(BOUND_PREFIX)
                     && let Some(key) = &key
                     && let Some(node) = level.children.iter().find(|node| node.key == *key)

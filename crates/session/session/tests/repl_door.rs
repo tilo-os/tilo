@@ -1160,18 +1160,44 @@ fn the_repl_finds_what_place_found_places() {
             "{text:?} places a {placed_kind}, not a {wanted}: {shown:?}"
         );
 
-        // And `find` leads with the same thing: the first row names a
-        // resource of that kind, from the one search.
+        // And `find` names the same rows the one search ranks, each by a
+        // path `tilo_ls` reads: the row of the place the desk just made leads
+        // where the search puts it, and a row of the kind the search sought
+        // stands among them. `find` walks the containers it can read, so a
+        // record placed out of a notebook is reached through its notebook.
         let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));
         assert!(!failed, "{text:?} answers: {found}");
-        let first = found
+        let rows: Vec<&str> = found
             .lines()
-            .next()
+            .filter(|line| !line.starts_with('…'))
+            .collect();
+        let first = rows
+            .first()
             .unwrap_or_else(|| panic!("{text:?} finds nothing: {found}"));
-        assert_eq!(
-            first.split("  ").nth(1),
-            Some(placed_kind.as_str()),
-            "{text:?}: find leads with {first}, and the canvas places {shown:?}"
+        let path = first
+            .split("  ")
+            .next()
+            .unwrap_or_default()
+            .split('#')
+            .next()
+            .unwrap_or_default();
+        let (parent, row) = path.rsplit_once('/').unwrap_or_default();
+        assert!(
+            !parent.is_empty() && !row.is_empty(),
+            "{text:?}: find leads with a row of a directory: {first}"
+        );
+        let (listed, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": parent}));
+        assert!(!failed, "{text:?}: {parent} lists: {listed}");
+        assert!(
+            listed.contains(row),
+            "{text:?}: find leads with {first}, and {parent} lists no row {row}: {listed}"
+        );
+        assert!(
+            rows.iter().any(|row| row
+                .split("  ")
+                .nth(1)
+                .is_some_and(|label| label.contains(wanted))),
+            "{text:?}: find names a row of a {wanted}, {shown:?}: {found}"
         );
 
         // Each `place_found` is a step of the person's: take it back, so the
