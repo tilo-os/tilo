@@ -2,7 +2,7 @@
 use serde::Serialize;
 use std::io::{self, Write};
 
-/// The owner's whole record, pretty-printed.
+/// One workspace's record in the owner's file, pretty-printed.
 pub const MAX_AUTHORITY_BYTES: usize = 32 * 1024 * 1024;
 /// A host file that embeds the record, such as the desktop session's state file.
 pub const MAX_STATE_BYTES: usize = 64 * 1024 * 1024;

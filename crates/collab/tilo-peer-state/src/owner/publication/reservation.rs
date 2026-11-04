@@ -243,67 +243,48 @@ pub(crate) fn validate(
 fn digits(value: u64) -> usize {
     value.to_string().len()
 }
-fn extra(storage: &record::NativeAuthorityStorage, file: bool) -> Result<usize, String> {
-    let mut total = 0usize;
-    let mut active = false;
-    for workspace in storage.workspaces.values() {
-        let Some(publication) = &workspace.publication else {
-            continue;
-        };
-        publication.reservation.bounds()?;
-        if publication.reservation.entries == 0 {
-            continue;
-        }
-        active = true;
-        let reserved = if file {
-            publication.reservation.state_bytes
-        } else {
-            publication.reservation.authority_bytes
-        };
-        let actual = count(
-            &publication.projection,
-            if file { 5 } else { 4 },
-            store::MAX_STATE_BYTES,
-        )?;
-        // A u64 has at most 20 digits and `bounds` keeps both reserves within
-        // eight digits, so each slack term is exact and the sum is tiny.
-        let numeric = [
-            20_usize.saturating_sub(digits(publication.next_ordinal)),
-            20_usize.saturating_sub(digits(publication.revision)),
-            20_usize.saturating_sub(digits(workspace.generation)),
-            8_usize.saturating_sub(digits(publication.reservation.authority_bytes as u64)),
-            8_usize.saturating_sub(digits(publication.reservation.state_bytes as u64)),
-        ]
-        .into_iter()
-        .fold(0_usize, usize::saturating_add);
-        total = total
-            .checked_add(reserved.saturating_sub(actual))
-            .and_then(|sum| sum.checked_add(numeric))
-            .ok_or("native aggregate recovery reserve overflow")?;
+/// The recovery the workspace's publication reserves beyond what its record
+/// already holds, and the digits those may yet grow: its file is written
+/// within [`store::MAX_AUTHORITY_BYTES`] less this, so the next publication
+/// fits.
+fn extra(workspace: &record::StoredWorkspace) -> Result<usize, String> {
+    let Some(publication) = &workspace.publication else {
+        return Ok(0);
+    };
+    publication.reservation.bounds()?;
+    if publication.reservation.entries == 0 {
+        return Ok(0);
     }
-    if active {
-        total = total
-            .checked_add(20_usize.saturating_sub(digits(storage.revision)))
-            .ok_or("native storage revision reserve overflow")?;
-    }
-    Ok(total)
+    let actual = count(&publication.projection, 4, store::MAX_AUTHORITY_BYTES)?;
+    // A u64 has at most 20 digits and `bounds` keeps both reserves within
+    // eight digits, so each slack term is exact and the sum is tiny.
+    let numeric = [
+        20_usize.saturating_sub(digits(publication.next_ordinal)),
+        20_usize.saturating_sub(digits(publication.revision)),
+        20_usize.saturating_sub(digits(workspace.generation)),
+        8_usize.saturating_sub(digits(publication.reservation.authority_bytes as u64)),
+        8_usize.saturating_sub(digits(publication.reservation.state_bytes as u64)),
+    ]
+    .into_iter()
+    .fold(0_usize, usize::saturating_add);
+    publication
+        .reservation
+        .authority_bytes
+        .saturating_sub(actual)
+        .checked_add(numeric)
+        .ok_or_else(|| "native recovery reserve overflow".into())
 }
 
-/// Refuse a record that leaves no workspace for the recovery its workspaces reserved.
+/// Refuse a workspace record that leaves no room in its file for the
+/// recovery its own publication reserves.
 ///
 /// # Errors
-/// `storage` does not fit its cap together with its reserve.
-pub fn preflight_storage(storage: &record::NativeAuthorityStorage) -> Result<(), String> {
-    let limit = authority_limit(storage)?;
-    store::preflight(storage, limit).map_err(|e| e.to_string())
-}
-/// The most bytes `storage` may pretty-print to: the cap, less the recovery
-/// its workspaces reserved. [`preflight_storage`] refuses a record past it; a host
-/// that pretty-prints the record anyway counts against it in that one pass.
-pub fn authority_limit(storage: &record::NativeAuthorityStorage) -> Result<usize, String> {
-    store::MAX_AUTHORITY_BYTES
-        .checked_sub(extra(storage, false)?)
-        .ok_or_else(|| "native authority recovery reserve exceeds capacity".into())
+/// `workspace` does not fit its file's cap together with its reserve.
+pub(crate) fn preflight_workspace(workspace: &record::StoredWorkspace) -> Result<(), String> {
+    let limit = store::MAX_AUTHORITY_BYTES
+        .checked_sub(extra(workspace)?)
+        .ok_or_else(|| "native recovery reserve exceeds capacity".to_string())?;
+    store::preflight(workspace, limit).map_err(|error| error.to_string())
 }
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn check_actual_projection_bound(view: &NativeCommittedView) -> Result<(), String> {

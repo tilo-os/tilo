@@ -429,7 +429,14 @@ mod tests {
             },
         );
         let path = fixture.directory.path().join("owner.json");
-        std::fs::rename(&path, fixture.directory.path().join("retained-owner.json")).unwrap();
+        let retained = fixture.directory.path().join("retained-owner.json");
+        // The record's index and the workspace files it names move together.
+        std::fs::rename(&path, &retained).unwrap();
+        std::fs::rename(
+            crate::owner::file_store::parts_of(&path),
+            crate::owner::file_store::parts_of(&retained),
+        )
+        .unwrap();
         std::fs::create_dir(&path).unwrap();
         assert!(
             fixture
@@ -438,8 +445,7 @@ mod tests {
                 .is_err()
         );
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
-        let retained =
-            crate::owner::open_file(&fixture.directory.path().join("retained-owner.json")).unwrap();
+        let retained = crate::owner::open_file(&retained).unwrap();
         assert!(agent_caps(&retained, &fixture).is_empty());
     }
 }

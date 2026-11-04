@@ -628,8 +628,7 @@ fn relay_to_governor_and_compare_roots(
 }
 
 fn assert_archived_file_layout(path: &std::path::Path) {
-    let storage: crate::owner::NativeAuthorityStorage =
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let storage = crate::owner::read_file(path).unwrap();
     assert!(crate::owner::publication::validate_file_layout(4, &storage).is_ok());
     assert!(crate::owner::publication::validate_file_layout(5, &storage).is_ok());
     assert!(crate::owner::publication::validate_file_layout(3, &storage).is_err());

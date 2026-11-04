@@ -73,6 +73,45 @@ fn enrolled() -> Enrolled {
     }
 }
 
+/// The file one workspace's record is in, as this device holds it.
+fn workspace_file(path: &std::path::Path, workspace: WorkspaceId) -> PathBuf {
+    let name = workspace.to_string();
+    std::fs::read_dir(crate::owner::file_store::parts_of(path))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|file| {
+            file.file_name()
+                .and_then(|file| file.to_str())
+                .is_some_and(|file| file.starts_with(&name))
+        })
+        .expect("the record holds the workspace's file")
+}
+
+/// One workspace's record as its own file holds it.
+fn workspace_json(path: &std::path::Path, workspace: WorkspaceId) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(workspace_file(path, workspace)).unwrap()).unwrap()
+}
+
+/// The record as a build before the split wrote it: one file's JSON.
+fn whole_record(path: &std::path::Path) -> serde_json::Value {
+    serde_json::to_value(crate::owner::read_file(path).unwrap()).unwrap()
+}
+
+/// Every file under `root`, looking into its directories.
+fn files_under(root: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(root).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(files_under(&path));
+        } else {
+            files.push((path.clone(), std::fs::read(&path).unwrap()));
+        }
+    }
+    files
+}
+
 fn member() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
 }
@@ -882,13 +921,13 @@ fn an_expired_sealed_write_is_renewed_through_its_key_holder_and_replaces_its_or
     drop(joined.owner);
     let reopened = open_file(&joined.path).unwrap();
     assert_eq!(sent(&reopened, joined.workspace, later), vec![bytes]);
-    for file in std::fs::read_dir(joined.path.parent().unwrap()).unwrap() {
-        let contents = std::fs::read(file.unwrap().path()).unwrap();
+    for (file, contents) in files_under(joined.path.parent().unwrap()) {
         assert!(
             !contents
                 .windows(SECRET.len())
                 .any(|window| window == SECRET.as_bytes()),
-            "the keyless owner's files hold the plaintext"
+            "the keyless owner's files hold the plaintext in {}",
+            file.display()
         );
     }
 }
@@ -936,21 +975,18 @@ fn a_refused_renewal_leaves_the_sealed_write_in_custody_as_it_was() {
 }
 
 #[test]
-fn a_state_file_names_a_workspaces_host_under_the_stored_key() {
+fn a_workspace_file_names_its_host_under_the_stored_key() {
     let joined = enrolled();
     let host = joined
         .owner
         .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
         .unwrap();
     drop(joined.owner);
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let stored = value["rooms"][joined.workspace.to_string()]
-        .as_object()
-        .expect("a stored workspace");
+    let value = workspace_json(&joined.path, joined.workspace);
+    let stored = value.as_object().expect("a stored workspace");
     assert!(
         stored.contains_key("room_host"),
-        "a build any image can roll back to reads this key: {}",
+        "one key, one spelling: {}",
         serde_json::to_string_pretty(&value).unwrap()
     );
     assert!(
@@ -976,16 +1012,15 @@ fn a_host_written_under_each_renamed_key_reads() {
             .with_current(joined.workspace, |view| Ok(view.workspace_host().clone()))
             .unwrap();
         drop(joined.owner);
+        let file = workspace_file(&joined.path, joined.workspace);
         let mut value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-        let stored = value["rooms"][joined.workspace.to_string()]
-            .as_object_mut()
-            .expect("a stored workspace");
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        let stored = value.as_object_mut().expect("a stored workspace");
         let named_as_the_host = stored
             .remove("room_host")
             .expect("the record names the host");
         stored.insert(key.into(), named_as_the_host);
-        std::fs::write(&joined.path, serde_json::to_vec(&value).unwrap()).unwrap();
+        std::fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
         let reopened = open_file(&joined.path).expect("a file written under that key reads");
         assert_eq!(
             reopened
@@ -998,26 +1033,10 @@ fn a_host_written_under_each_renamed_key_reads() {
 }
 
 #[test]
-fn a_state_file_names_its_workspaces_under_the_stored_key() {
-    let joined = enrolled();
-    drop(joined.owner);
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
-    let object = value.as_object().expect("a storage object");
-    assert!(
-        object.contains_key("rooms"),
-        "a build any image can roll back to reads this key: {}",
-        serde_json::to_string_pretty(&value).unwrap()
-    );
-    assert!(!object.contains_key("workspaces"), "one key, one spelling");
-}
-
-#[test]
 fn an_owner_file_written_while_the_map_was_named_for_workspaces_restores() {
     let joined = enrolled();
     drop(joined.owner);
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let mut value = whole_record(&joined.path);
     let workspaces = value
         .as_object_mut()
         .expect("a storage object")
@@ -1083,8 +1102,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
     let revocations = tilo_user_identity::RevocationList::new();
     // The record's invitation, re-signed as the device that issued it by the
     // build before the version bump.
-    let mut value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let mut value = whole_record(&joined.path);
     let stored = value["rooms"][joined.workspace.to_string()]
         .as_object_mut()
         .expect("a stored workspace");
@@ -1150,8 +1168,7 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 
     // Opened once, the file is written in this build's form; the proof keeps
     // the bytes it was signed as.
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&joined.path).unwrap()).unwrap();
+    let value = whole_record(&joined.path);
     let stored_intent = STANDARD
         .decode(
             value["rooms"][joined.workspace.to_string()]["enrollment_intent"]
@@ -1173,14 +1190,16 @@ fn an_owner_file_from_before_the_join_version_bump_restores() {
 }
 
 #[test]
-fn owner_file_holds_byte_fields_as_compact_base64() {
+fn owner_files_hold_byte_fields_as_compact_base64() {
     let joined = enrolled();
-    let current = std::fs::read(&joined.path).unwrap();
-    assert!(!current.contains(&b'\n'), "the owner file is compact");
-    let value: serde_json::Value = serde_json::from_slice(&current).unwrap();
-    let workspace = &value["rooms"][joined.workspace.to_string()];
+    let index = std::fs::read(&joined.path).unwrap();
+    assert!(!index.contains(&b'\n'), "the record's index is compact");
+    let file = workspace_file(&joined.path, joined.workspace);
+    let bytes = std::fs::read(&file).unwrap();
+    assert!(!bytes.contains(&b'\n'), "the workspace's file is compact");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     for field in ["peer", "invitation", "enrollment_intent"] {
-        assert!(workspace[field].is_string(), "{field} is base64 text");
+        assert!(value[field].is_string(), "{field} is base64 text");
     }
 }
 

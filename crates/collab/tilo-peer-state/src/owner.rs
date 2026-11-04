@@ -6,8 +6,8 @@
 //! their durable record, [`NativeAuthorityStorage`]. Every change is admitted
 //! into a candidate, published through the host's [`Store`] and only then
 //! installed, so no reader or receipt ever sees state the disk may not hold.
-//! A host keeps that record in a file of its own beside its state file
-//! ([`open_file`]).
+//! A host keeps that record beside its state file: an index naming each
+//! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
 mod application_record;
@@ -50,7 +50,7 @@ pub use checkpoint::{
 };
 pub use document_read::{ChangesRead, CommittedDocument, DocumentChanges, DocumentRead};
 #[cfg(not(target_arch = "wasm32"))]
-pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file, write_file};
+pub use file_store::{FileHost, open_file, open_file_with, owner_file_of, read_file};
 #[cfg(not(target_arch = "wasm32"))]
 pub use history_content::HistoryContent;
 #[cfg(not(target_arch = "wasm32"))]
@@ -60,9 +60,7 @@ pub use private_direct_conversations::{
     DirectContact, DirectConversation, DirectConversationPage, DirectMessage, DirectMessageReceipt,
     DirectMessageSend, DirectMessageStatus, PrivateDirectConversationStore, person_store_key,
 };
-pub use publication::{
-    NativeOutgoing, NativeOutgoingEntry, authority_limit, preflight_storage, validate_file_layout,
-};
+pub use publication::{NativeOutgoing, NativeOutgoingEntry, validate_file_layout};
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,

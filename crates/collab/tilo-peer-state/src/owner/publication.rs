@@ -13,7 +13,7 @@ use web_time::SystemTime;
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use reservation::check_actual_projection_bound;
-pub use reservation::{authority_limit, preflight_storage};
+pub(crate) use reservation::preflight_workspace;
 
 /// A key holder sealing a record's merged history — `seal(app, record,
 /// snapshot)` — under that record's channel's current epoch, with checkpoint
