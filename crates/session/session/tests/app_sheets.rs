@@ -143,7 +143,10 @@ fn rows(session: &Session) -> Vec<ResourceSpec> {
         .unwrap_or_default()
 }
 
-/// Search for `query`, as the person does, and wait for its rows.
+/// Search for `query`, as the person does, and wait for its rows to be
+/// final: the open search says it is still searching until every source has
+/// answered and its rows are cut to the card, so a row read before that may
+/// be all a first source had to say.
 fn search(session: &mut Session, query: &str) {
     let arguments = serde_json::json!({"query": query})
         .as_object()
@@ -153,8 +156,26 @@ fn search(session: &mut Session, query: &str) {
         .invoke(DESK_RESOURCE, "search", &arguments)
         .expect("the desk opens search");
     until(session, "search's rows", |session| {
-        !rows(session).is_empty()
+        !rows(session).is_empty() && !searching(session)
     });
+}
+
+/// Whether the open search still says it is searching.
+fn searching(session: &Session) -> bool {
+    fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    let still = tilo_desktop::i18n::t("desktop-search-searching");
+    find(&session.resources(), SEARCH_RESOURCE)
+        .and_then(|search| search.presentation)
+        .and_then(|presentation| presentation.detail)
+        .is_some_and(|detail| detail == still)
 }
 
 /// Press the search row titled `title`, as the person does.
