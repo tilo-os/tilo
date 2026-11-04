@@ -22714,6 +22714,7 @@ name = "tilolang-cli"
 version = "0.1.0"
 dependencies = [
  "bounded-command",
+ "chrono",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",

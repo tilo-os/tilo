@@ -286,10 +286,15 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 
 /// Check every app of `options`.
 ///
+/// The clock is the one a capture pins ([`ui::clock::freeze_for_capture`]): the app's queries
+/// and the days its window writes read the same instant, and every run lays out the same
+/// dates.
+///
 /// # Errors
 /// An app does not compile, or its window refuses what it sends.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
+    ui::clock::freeze_for_capture();
     tilo_ui_host::i18n::ensure();
     let allow = options
         .allow

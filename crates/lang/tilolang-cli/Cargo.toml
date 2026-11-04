@@ -16,6 +16,7 @@ name = "tilolang_cli"
 path = "src/lib.rs"
 
 [dependencies]
+chrono = { workspace = true, features = ["clock", "std"] }
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 hex.workspace = true

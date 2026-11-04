@@ -82,9 +82,13 @@ impl Platform for Packages {
         ui::i18n::speak_window_language(catalogues);
     }
 
-    /// A fixed instant, so every run lays out the same dates.
+    /// A fixed instant, so every run lays out the same dates: the clock the capture pins
+    /// ([`ui::clock::freeze_for_capture`]), which the days the app reads and the days its
+    /// window writes both come from.
     fn now(&self) -> String {
-        "2026-10-27T10:00:00Z".to_owned()
+        ui::clock::local_now()
+            .to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
