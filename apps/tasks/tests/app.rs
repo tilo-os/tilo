@@ -686,6 +686,12 @@ fn a_lanes_foot_adds_the_issue_to_that_lane() {
     let mut app = open();
     press_view(&mut app, "Board");
     app.settle();
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key("tasks-board-new-title"),
+        "the board carries no entry of its own above the lanes"
+    );
     let add = |app: &mut TestApp<App>, status: Status, title: &str| {
         app.harness()
             .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
