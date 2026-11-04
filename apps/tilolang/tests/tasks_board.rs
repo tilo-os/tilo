@@ -105,10 +105,11 @@ fn drag(app: &mut TestApp<TlApp>, title: &str, onto: &str, below: bool) {
     } else {
         to[1] + 6.0
     };
-    app.harness().drag_at(
-        (from[0] + from[2] / 2.0, from[1] + from[3] / 2.0),
-        (to[0] + to[2] / 2.0, y),
-    );
+    // A lane the window cuts off is reached where it shows the card: the board scrolls across,
+    // and the pointer a person drags with stays in the window.
+    let x = (to[0] + to[2] / 2.0).min(f64::from(DESKTOP.0) - 8.0);
+    app.harness()
+        .drag_at((from[0] + from[2] / 2.0, from[1] + from[3] / 2.0), (x, y));
     settle(app);
 }
 

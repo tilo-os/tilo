@@ -252,6 +252,12 @@ fn pixels_in(app: &mut TestApp<TlApp>, pixels: &[u8], rect: [f64; 4]) -> Vec<[u8
 /// distances between the colours, 0 for the same frame.
 fn difference(app: &mut TestApp<TlApp>, pixels: &[u8], settled: &[[u8; 4]], rect: [f64; 4]) -> f64 {
     let now = pixels_in(app, pixels, rect);
+    apart(&now, settled)
+}
+
+/// How far one crop of a rect is from another of the same rect: the mean distance between
+/// their colours, 0 for the same pixels.
+fn apart(now: &[[u8; 4]], settled: &[[u8; 4]]) -> f64 {
     let common = now.len().min(settled.len());
     if common == 0 {
         return 0.0;
@@ -405,7 +411,9 @@ fn a_task_a_person_adds_lands_in_the_list() {
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
 
-    // The entry at the list's foot, as a person adds a task: a title typed, then Enter.
+    // The entry at the list's foot, as a person adds a task: a title typed, then Enter. What is
+    // typed names no day, so the row lands under the list's "No date" heading, below the rows
+    // the band reaches.
     let [x, y, w, h] = named(&mut app, "Draft");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
@@ -415,10 +423,12 @@ fn a_task_a_person_adds_lands_in_the_list() {
     });
 
     let mut series = Vec::new();
+    let mut first = None;
     for step in 1..=14 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let (_, pixels) = frame_at(&mut app, at);
         series.push(difference(&mut app, &pixels, &before, band));
+        first.get_or_insert(pixels);
     }
     println!("insert frames: {series:?}");
 
@@ -428,15 +438,18 @@ fn a_task_a_person_adds_lands_in_the_list() {
         before_rows + 1,
         "the task a person added is in the list"
     );
-    assert!(
-        rows(&mut app)
-            .iter()
-            .any(|(name, _)| name == "Water the plants"),
-        "the list shows what was typed"
+    let row = rows(&mut app)
+        .into_iter()
+        .find(|(name, _)| name == "Water the plants")
+        .unwrap_or_else(|| panic!("the list shows what was typed: {:?}", rows(&mut app)))
+        .1;
+    let drawn = apart(
+        &pixels_in(&mut app, &first.expect("a frame after the key"), row),
+        &pixels_in(&mut app, &rest, row),
     );
     assert!(
-        series.first().copied().unwrap_or_default() > 0.5,
-        "the new row is drawn by the frame after the key: {series:?}"
+        drawn > 0.5,
+        "the new row is drawn by the frame after the key, where it lands: {drawn}"
     );
     assert!(
         in_flight(&series) == 0,
