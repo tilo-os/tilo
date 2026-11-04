@@ -558,11 +558,14 @@ pub(super) fn supersede(
     compaction: &SignedOp,
 ) -> Result<Vec<SignedOp>, String> {
     let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
-    if history.is_empty() && floors.is_empty() {
+    if history.is_empty() {
         // Nothing of this route is here to supersede: its key holder's
         // compaction is the whole record, the first thing a replica that
         // holds none of it receives, as a device catching up from a store
-        // that keeps only ciphertext does.
+        // that keeps only ciphertext does. A replica that holds the route from
+        // the governance's coverage holds the floors that says it reached and
+        // none of its writes; there is nothing of it to hide from, and the
+        // compaction is how the store hands it over.
         return Ok(vec![compaction.clone()]);
     }
     let (superseded, kept): (Vec<&SignedOp>, Vec<&SignedOp>) =
