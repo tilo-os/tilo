@@ -68,6 +68,14 @@ pub struct StoredMessage {
     pub at: i64,
 }
 
+/// Whether this build reaches the old private store at all: only the device
+/// that hosts the workspace does. A page reads and writes the workspace's
+/// records, so it imports nothing and never asks the door.
+#[must_use]
+pub fn archive_reachable() -> bool {
+    cfg!(feature = "broker-transport")
+}
+
 /// What the door asks of the host: the closed vocabulary the native host's
 /// person door takes, in the same JSON.
 #[derive(Clone, serde::Serialize)]

@@ -8,24 +8,20 @@
 //! two people it is between, and the workspace's grants on the app decide
 //! every change to it.
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-#[cfg(not(target_arch = "wasm32"))]
 use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
 
 use crate::framework::{Chain, WorkspaceRecord};
 
 use super::parts::{self, DirectPart};
-#[cfg(not(target_arch = "wasm32"))]
 use super::parts::{PART_MESSAGES, PART_TEXT_BYTES, StoredMessage};
 use super::{DirectConversation, OWNER, conversation};
 
 /// How many people one window imports from the old store per sync: the
 /// import is a migration, not a reason to stall a frame.
-#[cfg(not(target_arch = "wasm32"))]
 const IMPORTS_PER_SYNC: usize = 4;
 
 /// A person this window may talk to: their root public key as the workspace
@@ -66,17 +62,13 @@ pub struct Records {
     open: RefCell<BTreeMap<String, Open>>,
     /// The people whose old private conversation is still to be imported:
     /// only a device hosting the workspace holds one.
-    #[cfg(not(target_arch = "wasm32"))]
     imports: RefCell<VecDeque<String>>,
     /// The people whose old conversation was taken in already.
-    #[cfg(not(target_arch = "wasm32"))]
     imported: RefCell<BTreeSet<String>>,
     /// Emptying the old private store, once every conversation it held is in
     /// its pair's record.
-    #[cfg(not(target_arch = "wasm32"))]
     clearing: RefCell<Option<crate::person_chat::Pending<()>>>,
     /// The old store is empty: the migration is done here.
-    #[cfg(not(target_arch = "wasm32"))]
     cleared: Cell<bool>,
 }
 
@@ -89,13 +81,9 @@ impl Records {
             me: crate::person_chat::person_key(me),
             people: RefCell::default(),
             open: RefCell::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             imports: RefCell::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             imported: RefCell::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             clearing: RefCell::default(),
-            #[cfg(not(target_arch = "wasm32"))]
             cleared: Cell::default(),
         })
     }
@@ -103,13 +91,16 @@ impl Records {
     /// The people the window may talk to, and the conversation each of them
     /// already has: what the direct message list shows.
     pub fn set_people(&self, people: Vec<Person>) {
-        #[cfg(not(target_arch = "wasm32"))]
-        for person in &people {
-            if !person.key.is_empty()
-                && !self.imports.borrow().contains(&person.key)
-                && !self.imported.borrow().contains(&person.key)
-            {
-                self.imports.borrow_mut().push_back(person.key.clone());
+        // Only a device that hosts the workspace holds an old store to import
+        // from; everywhere else the records already carry the conversations.
+        if crate::person_chat::archive_reachable() {
+            for person in &people {
+                if !person.key.is_empty()
+                    && !self.imports.borrow().contains(&person.key)
+                    && !self.imported.borrow().contains(&person.key)
+                {
+                    self.imports.borrow_mut().push_back(person.key.clone());
+                }
             }
         }
         *self.people.borrow_mut() = people;
@@ -282,7 +273,6 @@ impl Records {
     /// Import the conversation with `peer` from the old private store, page
     /// by page, into the parts of its record. Answers whether it had nothing
     /// more to take in.
-    #[cfg(not(target_arch = "wasm32"))]
     fn import(&self, peer: &str) -> bool {
         // The door names people as the workspace does; what the record keeps
         // is under the key its conversations use.
@@ -351,8 +341,10 @@ impl Records {
     /// is left, empty the old store in one publication. A page holds no store
     /// of its own: the device that hosts the workspace imports it, and the
     /// records carry the conversations to every other device.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn import_old_store(&self) {
+        if !crate::person_chat::archive_reachable() {
+            return;
+        }
         for _ in 0..IMPORTS_PER_SYNC {
             let Some(peer) = self.imports.borrow_mut().pop_front() else {
                 break;
@@ -395,7 +387,6 @@ impl Records {
 
 /// Split off as many of `rest` as fit in a part with `room` messages and
 /// `text_room` bytes left: at least one message, whatever it says.
-#[cfg(not(target_arch = "wasm32"))]
 fn imported_room(
     rest: &mut Vec<StoredMessage>,
     room: usize,

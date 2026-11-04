@@ -151,9 +151,8 @@ impl ChatApp {
             return;
         };
         direct.set_people(self.direct_people.clone());
-        // A page holds no old store: the device that hosts the workspace
-        // imports it.
-        #[cfg(not(target_arch = "wasm32"))]
+        // A page holds no old store: it imports nothing, and the device that
+        // hosts the workspace brings the conversations over.
         direct.import_old_store();
     }
 
