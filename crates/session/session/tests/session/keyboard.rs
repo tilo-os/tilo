@@ -28,9 +28,6 @@ const KEYBOARD: &str = "keyboard";
 const FIRST: &str = "HEADLESS-1";
 const SECOND: &str = "HEADLESS-2";
 
-/// How long the keyboard's app may take to come up and draw: a whole app
-/// starts here.
-
 /// One display's refresh, while waiting for the keyboard to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 

@@ -111,18 +111,17 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     let resource = format!("question:portal:{REQUEST}");
     // The question wakes the loop: a turn that would wait a minute ends
     // when it is asked.
-    let deadline = tilo_test_env::hang_deadline();
     let asked = std::time::Instant::now();
-    let question = loop {
-        session.step(std::time::Duration::from_secs(60)).unwrap();
-        if let Some(question) = session.read(&resource) {
-            break question;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the portal's question never woke the session"
-        );
-    };
+    let question = common::wait_for(
+        &mut session,
+        "the portal's question to wake the session",
+        |session| {
+            session
+                .step(std::time::Duration::from_secs(60))
+                .expect("a turn of the session that would wait a minute");
+            session.read(&resource)
+        },
+    );
     assert!(
         asked.elapsed() < std::time::Duration::from_secs(60),
         "the question woke the session"

@@ -373,8 +373,10 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
         .set(true)
         .expect("the person's setting");
     hold(&sensor, (0, -9, 0));
-    let settle = tilo_test_env::hang_deadline();
-    while Instant::now() < settle {
+    // Two seconds of the desk's own time with the machine on its side: the
+    // turn has long been read and debounced by now, so anything that were to
+    // follow the sensor would have happened.
+    for _ in 0..100 {
         client.exchange();
         session.step(Duration::from_millis(20)).expect("step");
         client.exchange();

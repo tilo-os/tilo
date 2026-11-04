@@ -21,8 +21,6 @@ use tilo_session::surfaces::Surface;
 /// The resource the session publishes the lock as.
 const LOCK: &str = "lock";
 
-/// How long the lock screen may take to show itself: a whole app starts here.
-
 /// One display's refresh, while waiting for the lock screen to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
