@@ -380,8 +380,6 @@ mod tests {
         Point::from((x, y))
     }
 
-    /// Draw the frame the display owes: waits for the blank that shows it, as
-
     #[test]
     fn everything_is_off_until_the_person_turns_it_on() {
         let a11y = A11y::default();

@@ -513,12 +513,13 @@ impl Compositor {
         self.data.backend.next_deadline(&self.data.state)
     }
 
-    /// One turn of a display's loop: answer the clients until the blank a
-    /// frame that is owed waits for comes, then draw it.
+    /// Answer the clients until the blank a frame that is owed waits for
+    /// comes: what arrives while it is held joins that frame instead of each
+    /// arrival taking a turn of its own.
     ///
     /// # Errors
-    /// The compositor's clients or its backend failed.
-    pub fn draw_frame(&mut self) -> Result<(), Error> {
+    /// The compositor's clients failed.
+    pub fn await_frame(&mut self) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
             let wait = due.saturating_duration_since(std::time::Instant::now());
             if wait.is_zero() {
@@ -526,6 +527,16 @@ impl Compositor {
             }
             self.dispatch(wait)?;
         }
+        Ok(())
+    }
+
+    /// One turn of a display's loop: wait out the blank a frame that is owed
+    /// is held for, then draw it.
+    ///
+    /// # Errors
+    /// The compositor's clients or its backend failed.
+    pub fn draw_frame(&mut self) -> Result<(), Error> {
+        self.await_frame()?;
         self.render()
     }
 

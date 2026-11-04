@@ -90,6 +90,10 @@ impl Session {
     /// a controller or a surface ends the wait however long `timeout` is;
     /// `None` waits for one of them with no limit.
     ///
+    /// A frame the displays owe is drawn at their next blank, and what
+    /// arrives before it is carried out with it, so a turn can run up to one
+    /// refresh past `timeout` while a frame is held for its blank.
+    ///
     /// # Errors
     /// The compositor failed.
     pub fn step(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
@@ -106,6 +110,10 @@ impl Session {
             self.kept_at = Instant::now();
             self.shared.observe();
         }
+        // A frame that is owed is shown at the display's next blank: what
+        // arrives before that blank joins the frame it is shown in, so the
+        // desk below is laid out once per refresh however fast events come.
+        self.compositor.await_frame()?;
         self.follow_logout_request();
         // What the session itself does before the frame: the desk, the apps
         // and the overlays this pass lays out.
