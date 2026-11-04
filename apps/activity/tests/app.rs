@@ -22,12 +22,14 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
-/// Whether the window says `text`, as a name or description a screen
+/// Whether the window says `text`, as a name, value or description a screen
 /// reader reads.
 fn says(app: &mut TestApp<App>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
-        node.label().is_some_and(|label| label.contains(text))
-            || node.description().is_some_and(|said| said.contains(text))
+        [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
     })
 }
 
