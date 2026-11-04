@@ -32,6 +32,9 @@ pub struct Update {
 #[derive(Default)]
 struct Shared {
     latest: Option<Update>,
+    /// The generation of the directory's build that `latest` is, so a read
+    /// that finds the same one again takes nothing.
+    taken: Option<u64>,
     wakes: Vec<ui::wake::WakeHandle>,
 }
 
@@ -114,6 +117,24 @@ pub fn start(app: &str) {
     }
 }
 
+/// Take the latest later build of `app` now, as the watch does when one is published: code that
+/// starts a window in this process after taking a rebuild — the reload in place of
+/// `tilolang dev` — shows the build the running window showed, not the one the process started
+/// on. Then [`start`] following the directory takes the builds after it.
+pub fn catch_up(app: &str) {
+    let Some(dir) = updates_dir() else {
+        return;
+    };
+    let Ok(Some(generation)) = tilo_app_module::current(&dir) else {
+        return;
+    };
+    // The build the process started on is the one it runs already.
+    if started_generation(&dir) == Some(generation) || lock().taken == Some(generation) {
+        return;
+    }
+    take(&dir, generation, app);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn watch(dir: &Path, app: &str) {
     let (replaced, replacements) = std::sync::mpsc::channel();
@@ -131,7 +152,7 @@ fn watch(dir: &Path, app: &str) {
             return;
         }
     };
-    let mut seen = started_generation(dir);
+    let mut seen = lock().taken.or_else(|| started_generation(dir));
     loop {
         match tilo_app_module::current(dir) {
             Ok(Some(generation)) if Some(generation) != seen => {
@@ -171,10 +192,10 @@ fn started_generation(dir: &Path) -> Option<u64> {
     }
 }
 
-/// Read generation `generation` and hand it to the windows.
-fn take(dir: &Path, generation: u64, app: &str) {
+/// Read the build the directory published as `published` and hand it to the windows.
+fn take(dir: &Path, published: u64, app: &str) {
     let read_at = Instant::now();
-    let bundle = match Bundle::read(&dir.join(generation.to_string())) {
+    let bundle = match Bundle::read(&dir.join(published.to_string())) {
         Ok(bundle) => bundle,
         Err(error) => {
             eprintln!("tilolang: the new build does not read: {error}");
@@ -193,6 +214,7 @@ fn take(dir: &Path, generation: u64, app: &str) {
         .latest
         .as_ref()
         .map_or(1, |update| update.generation.saturating_add(1));
+    shared.taken = Some(published);
     shared.latest = Some(Update {
         generation,
         bundle: Arc::new(bundle),
