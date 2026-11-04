@@ -4,8 +4,8 @@
 //! Client surfaces and the layers of hosted surface apps ([`SurfaceHost`])
 //! are composited per output ([`render`]); where windows go and who has focus
 //! is a [`WindowPolicy`]'s decision; a [`Backend`] supplies outputs and
-//! input ([`backend::headless`]: CPU composition with no display, for tests
-//! and screenshots; [`backend::nested`]: a window inside another desktop;
+//! input ([`backend::headless`]: offscreen composition with no display, for
+//! tests and screenshots; [`backend::nested`]: a window inside another desktop;
 //! [`backend::drm`]: a bare TTY).
 //!
 //! ```no_run
@@ -354,7 +354,6 @@ impl Compositor {
         state.loop_handle = Some(event_loop.handle());
         state.x11 = Some(X11Displays::new(event_loop.handle(), display.handle()));
         let backend = make_backend(&event_loop.handle(), &mut state)?;
-        host::composes_on_cpu(backend.composes_on_cpu());
         let mut compositor = Self {
             event_loop,
             display,

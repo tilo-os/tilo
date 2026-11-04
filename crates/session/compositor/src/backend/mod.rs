@@ -31,14 +31,6 @@ pub trait Backend {
         false
     }
 
-    /// Whether this backend draws the pixels it is handed itself, in memory,
-    /// rather than sampling them as a texture on a GPU: a hosted surface then
-    /// rasterizes its frames instead of drawing them to copy them back every
-    /// frame ([`crate::host::hosted_frames_on_cpu`]).
-    fn composes_on_cpu(&self) -> bool {
-        false
-    }
-
     /// When the backend next wants [`Backend::render`] called with no event
     /// to bring it: an output with something new to show that cannot take a
     /// frame yet. Nothing owed, nothing due: the compositor sleeps.

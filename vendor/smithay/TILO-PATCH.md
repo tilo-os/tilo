@@ -248,3 +248,22 @@ long as the session lives.
 Remove these once upstream separates binding a display from spawning its
 server, with a backlog deep enough for the clients waiting on one, and ends
 its server when the Wayland connection does.
+
+## Shared memory in the opaque 10-bit format
+
+`Xrgb2101010` had no way in: its format table entry has no transparent
+counterpart to look up, so `fourcc_to_gl_formats` answered `None` and a GLES
+renderer refused the buffer, leaving a client that sent one with no window.
+Its bytes also lie the other way round from the formats the table maps: DRM
+keeps blue in the low bits where GL's `RGBA` reading of
+`UNSIGNED_INT_2_10_10_10_REV` finds red, so uploading it as `Abgr2101010`
+would paint it with two channels swapped.
+
+- `src/backend/renderer/gles/format.rs`: `Xrgb2101010` maps to `RGB10_A2`,
+  read as `RGBA` with `UNSIGNED_INT_2_10_10_10_REV`, and the shader's opaque
+  variant supplies alpha 1, so the format's unused high bits are not read.
+- `src/backend/renderer/gles/mod.rs`: it joins the shared-memory formats a
+  GLES 3 renderer imports, and `swizzle_blue_first` swaps red and blue on the
+  texture that carries it, in both import paths.
+
+Remove this once upstream maps the opaque 10-bit RGB formats.

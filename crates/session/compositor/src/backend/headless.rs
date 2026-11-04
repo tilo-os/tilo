@@ -1,10 +1,24 @@
-//! Outputs with no display: composited on the CPU into images that tests,
-//! screenshots and a viewer read back.
+//! Outputs with no display: composited on the GPU into offscreen images that
+//! tests, screenshots and a viewer read back.
 //!
-//! No GPU and no devices; input arrives through
-//! [`Compositor::input`](crate::Compositor::input). Frames are drawn when
-//! asked ([`Compositor::render`](crate::Compositor::render)), each drawing
-//! only what changed since the last.
+//! There is no window and no display device, so the renderer makes its own
+//! EGL display, surfaceless: Mesa picks the machine's GPU, or its software
+//! rasterizer where there is none. Its outputs are EGL images, not scanout
+//! buffers.
+//!
+//! The renderer is GLES, the one the real backends use, because clients hand
+//! their frames over as dma-bufs allocated on the GPU the session tells them
+//! to allocate on (`zwp_linux_dmabuf_feedback_v1`). A CPU renderer can only
+//! map a buffer the CPU can read, and a hardware client's swapchain is
+//! device-local: it would reject every accelerated window, and a headless
+//! capture would show a desktop with no apps in it. Reading them on the GPU
+//! is what the session does on a real display, so what a test or a capture
+//! sees here is the desktop's own rendering, software-rasterized where the
+//! machine has no GPU to draw it.
+//!
+//! Input arrives through [`Compositor::input`](crate::Compositor::input).
+//! Frames are drawn when asked ([`Compositor::render`](crate::Compositor::render)),
+//! each drawing only what changed since the last.
 //!
 //! The simulated display shows a frame once per refresh, as a real one does:
 //! a session on this backend draws at its mode's rate and no faster, and a
@@ -19,15 +33,16 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::Fourcc;
+use smithay::backend::egl::native::EGLSurfacelessDisplay;
+use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::element::memory::{
     MemoryRenderBuffer, MemoryRenderBufferRenderElement,
 };
-use smithay::backend::renderer::pixman::PixmanRenderer;
-use smithay::backend::renderer::{Bind, ExportMem, ImportDma as _, Offscreen};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::{Bind, ExportMem, ImportDma as _, Offscreen, Texture};
 use smithay::output::Output;
-use smithay::reexports::pixman::Image;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
 use tilo_color_pipeline::hdr_surface::{HdrLayer, HdrLayerRecording};
 
@@ -44,7 +59,7 @@ struct HeadlessOutput {
     /// it beside the others.
     place: Option<(i32, i32)>,
     damage: OutputDamageTracker,
-    target: Image<'static, 'static>,
+    target: GlesTexture,
     /// Whether the target holds the previous frame (the damage tracker's
     /// buffer age is then 1, else 0).
     drawn: bool,
@@ -132,18 +147,43 @@ impl HeadlessOutput {
 /// The ramp size headless outputs carry, as many display engines do.
 const GAMMA_SIZE: usize = 256;
 
-/// The CPU renderer and every headless output's image.
+/// The GPU renderer and every headless output's image.
 pub struct HeadlessBackend {
-    renderer: PixmanRenderer,
+    renderer: GlesRenderer,
     outputs: Vec<HeadlessOutput>,
 }
 
 impl HeadlessBackend {
     /// A backend with no outputs yet.
     pub fn new(state: &mut State) -> Result<Self, BackendError> {
-        let renderer = PixmanRenderer::new().map_err(|error| failed("pixman renderer", error))?;
-        // Clients' dma-bufs are read through a mapping.
-        state.enable_dmabuf(renderer.dmabuf_formats().iter().copied().collect(), None);
+        // SAFETY: this backend makes the process's EGL display and context,
+        // and both live only in it; no other EGL client creates or
+        // terminates either.
+        let display = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
+            .map_err(|error| failed("EGL display", error))?;
+        // The GPU the display renders on: clients are told to allocate their
+        // dma-bufs there, so the buffers they hand over are the ones this
+        // renderer imports. A machine with no GPU (a software rasterizer)
+        // has no node, and its clients render through shared memory.
+        let node = EGLDevice::device_for_display(&display)
+            .ok()
+            .and_then(|device| device.try_get_render_node().ok().flatten());
+        let context = EGLContext::new(&display).map_err(|error| failed("EGL context", error))?;
+        // SAFETY: the context is current on this thread, the one that draws,
+        // and the renderer keeps it for as long as it draws here.
+        let renderer = unsafe { GlesRenderer::new(context) }
+            .map_err(|error| failed("GLES renderer", error))?;
+        let formats: Vec<_> = renderer.dmabuf_formats().iter().copied().collect();
+        let render_formats: Vec<_> = renderer
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .copied()
+            .collect();
+        state.enable_dmabuf(formats, node);
+        if let Some(node) = node {
+            state.enable_dmabuf_capture(node.dev_id(), render_formats);
+        }
         Ok(Self {
             renderer,
             outputs: Vec::new(),
@@ -199,10 +239,10 @@ impl HeadlessBackend {
 /// twice with the layers replaced by black and by their channel colours, and
 /// the two composited at each layer's signal.
 fn composite_hdr(
-    renderer: &mut PixmanRenderer,
+    renderer: &mut GlesRenderer,
     state: &State,
     output: &Output,
-    (width, height): (usize, usize),
+    (width, height): (u32, u32),
     scale: f64,
     layers: &[HdrLayer],
 ) -> Result<Vec<u8>, BackendError> {
@@ -211,14 +251,10 @@ fn composite_hdr(
         i32::try_from(height).map_err(|error| failed("height", error))?,
     ));
     let transform = output.current_transform();
-    let pass = |renderer: &mut PixmanRenderer, pixels: &mut Option<Vec<u8>>| {
+    let pass = |renderer: &mut GlesRenderer, pixels: &mut Option<Vec<u8>>| {
         let elements = output_elements(renderer, state, output);
-        *pixels = Some(render_to_memory::<
-            PixmanRenderer,
-            Image<'static, 'static>,
-            _,
-        >(
-            renderer, size, scale, transform, &elements, BACKGROUND
+        *pixels = Some(render_to_memory::<GlesRenderer, GlesTexture, _>(
+            renderer, size, scale, transform, &elements, BACKGROUND,
         )?);
         Ok::<(), CaptureError>(())
     };
@@ -239,21 +275,18 @@ fn composite_hdr(
     let (Some(first), Some(second)) = (first, second) else {
         return Err(BackendError("an HDR pass drew nothing".into()));
     };
-    let size = (
-        u32::try_from(width).map_err(|error| failed("width", error))?,
-        u32::try_from(height).map_err(|error| failed("height", error))?,
-    );
+    let size = (width, height);
     Ok(crate::hdr::composite(&first, &second, size, layers))
 }
 
 /// The composited frame as the one element the output draws: every pixel of
 /// it, in the output's physical size.
 fn frame_element(
-    renderer: &mut PixmanRenderer,
+    renderer: &mut GlesRenderer,
     rgba: &[u8],
-    (width, height): (usize, usize),
+    (width, height): (u32, u32),
     scale: f64,
-) -> Result<MemoryRenderBufferRenderElement<PixmanRenderer>, BackendError> {
+) -> Result<MemoryRenderBufferRenderElement<GlesRenderer>, BackendError> {
     let width = i32::try_from(width).map_err(|error| failed("width", error))?;
     let height = i32::try_from(height).map_err(|error| failed("height", error))?;
     let buffer = MemoryRenderBuffer::from_slice(
@@ -454,12 +487,6 @@ impl Backend for HeadlessBackend {
         Ok(())
     }
 
-    /// Its outputs are images the CPU composes into: a hosted surface's
-    /// pixels reach them as memory, never as a texture a GPU samples.
-    fn composes_on_cpu(&self) -> bool {
-        true
-    }
-
     fn render(&mut self, state: &mut State) -> Result<(), BackendError> {
         for output in &mut self.outputs {
             if output.dark {
@@ -498,40 +525,44 @@ impl Backend for HeadlessBackend {
                     (width, height),
                     scale,
                 )?];
-                let mut framebuffer = self
-                    .renderer
-                    .bind(&mut output.target)
-                    .map_err(|error| failed("bind output", error))?;
-                output
-                    .damage
-                    .render_output(
-                        &mut self.renderer,
-                        &mut framebuffer,
-                        0,
-                        &elements,
-                        BACKGROUND,
-                    )
-                    .map_err(|error| failed("render output", error))?;
+                {
+                    let mut framebuffer = self
+                        .renderer
+                        .bind(&mut output.target)
+                        .map_err(|error| failed("bind output", error))?;
+                    output
+                        .damage
+                        .render_output(
+                            &mut self.renderer,
+                            &mut framebuffer,
+                            0,
+                            &elements,
+                            BACKGROUND,
+                        )
+                        .map_err(|error| failed("render output", error))?;
+                }
                 output.drawn = true;
                 state.frame_shown(&output.output);
                 output.showed(started);
                 continue;
             }
-            let mut framebuffer = self
-                .renderer
-                .bind(&mut output.target)
-                .map_err(|error| failed("bind output", error))?;
-            let age = usize::from(output.drawn);
-            let rendered = output
-                .damage
-                .render_output(
-                    &mut self.renderer,
-                    &mut framebuffer,
-                    age,
-                    &elements,
-                    BACKGROUND,
-                )
-                .map_err(|error| failed("render output", error))?;
+            let rendered = {
+                let mut framebuffer = self
+                    .renderer
+                    .bind(&mut output.target)
+                    .map_err(|error| failed("bind output", error))?;
+                let age = usize::from(output.drawn);
+                output
+                    .damage
+                    .render_output(
+                        &mut self.renderer,
+                        &mut framebuffer,
+                        age,
+                        &elements,
+                        BACKGROUND,
+                    )
+                    .map_err(|error| failed("render output", error))?
+            };
             if tracing::enabled!(tracing::Level::DEBUG) {
                 trace_passes(
                     &elements,
@@ -616,12 +647,7 @@ impl Backend for HeadlessBackend {
         region: (usize, usize),
         request: &crate::BackdropRequest,
     ) -> Result<Option<crate::BackdropImage>, BackendError> {
-        crate::backdrop::draw::<_, Image<'static, 'static>>(
-            &mut self.renderer,
-            state,
-            region,
-            request,
-        )
+        crate::backdrop::draw::<_, GlesTexture>(&mut self.renderer, state, region, request)
     }
 
     fn capture(
@@ -629,7 +655,7 @@ impl Backend for HeadlessBackend {
         state: &mut State,
         frame: &crate::capture::Frame,
     ) -> Result<crate::capture::Copied, crate::capture::CaptureError> {
-        crate::capture::copy::<_, Image<'static, 'static>>(&mut self.renderer, state, frame)
+        crate::capture::copy::<_, GlesTexture>(&mut self.renderer, state, frame)
     }
 
     fn read_back(
@@ -637,7 +663,7 @@ impl Backend for HeadlessBackend {
         state: &mut State,
         target: &crate::capture::Target,
     ) -> Result<Screenshot, crate::capture::CaptureError> {
-        crate::capture::read_back::<_, Image<'static, 'static>>(&mut self.renderer, state, target)
+        crate::capture::read_back::<_, GlesTexture>(&mut self.renderer, state, target)
     }
 
     fn read_back_scaled(
@@ -646,12 +672,7 @@ impl Backend for HeadlessBackend {
         target: &crate::capture::Target,
         max: (u32, u32),
     ) -> Result<Screenshot, crate::capture::CaptureError> {
-        crate::capture::read_back_scaled::<_, Image<'static, 'static>>(
-            &mut self.renderer,
-            state,
-            target,
-            max,
-        )
+        crate::capture::read_back_scaled::<_, GlesTexture>(&mut self.renderer, state, target, max)
     }
 
     fn screenshot(&mut self, _state: &mut State, name: &str) -> Result<Screenshot, BackendError> {
@@ -666,15 +687,16 @@ impl Backend for HeadlessBackend {
             i32::try_from(width).map_err(|error| failed("width", error))?,
             i32::try_from(height).map_err(|error| failed("height", error))?,
         ));
-        let framebuffer = self
-            .renderer
-            .bind(&mut output.target)
-            .map_err(|error| failed("bind output", error))?;
         // ABGR8888 is R, G, B, A in memory.
-        let mapping = self
-            .renderer
-            .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Abgr8888)
-            .map_err(|error| failed("read back", error))?;
+        let mapping = {
+            let framebuffer = self
+                .renderer
+                .bind(&mut output.target)
+                .map_err(|error| failed("bind output", error))?;
+            self.renderer
+                .copy_framebuffer(&framebuffer, Rectangle::from_size(size), Fourcc::Abgr8888)
+                .map_err(|error| failed("read back", error))?
+        };
         let bytes = self
             .renderer
             .map_texture(&mapping)
@@ -684,8 +706,8 @@ impl Backend for HeadlessBackend {
             ramp.apply(&mut rgba);
         }
         Ok(Screenshot {
-            width: u32::try_from(width).map_err(|error| failed("width", error))?,
-            height: u32::try_from(height).map_err(|error| failed("height", error))?,
+            width,
+            height,
             rgba,
         })
     }
