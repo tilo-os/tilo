@@ -362,14 +362,7 @@ impl Checker<'_> {
         info: &crate::resolve::TypeInfo,
         span: Span,
     ) {
-        let Some(time) = info.fields.iter().find(|field| {
-            field.derived.is_none()
-                && field
-                    .role
-                    .as_ref()
-                    .and_then(crate::types::FieldRole::time_of)
-                    == Some(day.name.as_str())
-        }) else {
+        let Some(time) = info.time_of(&day.name) else {
             return;
         };
         // What the chip says after the day: the time of day it is due at.

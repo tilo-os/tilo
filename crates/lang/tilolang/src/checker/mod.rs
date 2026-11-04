@@ -145,6 +145,11 @@ struct FnState {
     row_views: usize,
     /// What the locals bound by `let` hold, in terms of places (see [`outcomes::Sym`]).
     syms: HashMap<LocalId, outcomes::Sym>,
+    /// The locals a day value travels with: for a local holding a day whose type pairs a time
+    /// of day with it (`at: Option<Time> (time of: due)`), the local holding that time of day
+    /// as `Option<Time>`. The declaration pairs them, so they travel together wherever the
+    /// value flows — a local, a branch of an `if` — and a row shows one fact (`Today 09:00`).
+    day_times: HashMap<LocalId, LocalId>,
     /// The parameters of the templates being expanded that are not values: view state,
     /// lambdas and blocks of the caller ([`template::Macro`]).
     macros: HashMap<String, template::Macro>,
@@ -886,11 +891,20 @@ impl Checker<'_> {
             );
             ty = Ty::Error;
         }
-        let id = self.declare(name, ty);
+        let id = self.bind_let(name, ty, ex, value.span);
         if let Some(sym) = sym {
             self.st.syms.insert(id, sym);
         }
+    }
+
+    /// Bind the checked value `ex` to the new local `name`, of type `ty`: what a `let` holds,
+    /// and — for a day — the time of day it is due at, which travels with it.
+    fn bind_let(&mut self, name: &str, ty: Ty, ex: Ex, span: Span) -> LocalId {
+        let id = self.declare(name, ty);
+        let time = self.day_time(&ex, span);
         self.emit(Stmt::Set(id, ex));
+        self.set_day_time(id, time);
+        id
     }
 
     fn return_stmt(&mut self, value: Option<&ast::Expr>, span: Span) {
@@ -1040,7 +1054,9 @@ impl Checker<'_> {
                 }
             }
         };
+        let time = self.day_time(&new, name.span);
         self.emit(Stmt::Set(id, new));
+        self.set_day_time(id, time);
     }
 
     fn assign_field(

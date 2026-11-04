@@ -593,50 +593,24 @@ impl Checker<'_> {
         )
     }
 
-    /// A row's `meta:`: when it happened, or the day an item is due. A day its type pairs a
-    /// time of day with (`at: Option<Time> (time of: due)`) reads with it as one fact
-    /// (`Today 9:00 AM`): the row is given the day, and beside it the time of day it is due at,
-    /// which the UI host joins as the one fact the presenter gives.
+    /// A row's `meta:`: when it happened, or the day an item is due. A day whose type pairs a
+    /// time of day with it (`at: Option<Time> (time of: due)`) reads with it as one fact
+    /// (`Today 09:00`): the row is given the day, and beside it the time of day it is due at,
+    /// which the UI host joins as the one fact the presenter gives. The day carries its time of
+    /// day wherever the value flows, so a local or a branch of an `if` loses nothing
+    /// ([`super::Checker::day_time`]).
     fn meta_arg(&mut self, node: &Ex, value: &ast::Expr) {
-        self.text_arg(node, "meta", value);
-        let ExprKind::Field { base, name } = &value.kind else {
-            return;
-        };
-        if !matches!(base.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
-            return;
+        let v = self.expr(value, None);
+        if let Some(time) = self.day_time(&v, value.span) {
+            self.set_time_when_some(node, "meta:time", time);
         }
-        let b = self.expr(base, None);
-        let Ty::Record(key) = b.ty.clone() else {
-            return;
-        };
-        let env = self.env;
-        let Some(paired) = env
-            .type_info(&key)
-            .and_then(|info| info.field(&name.name))
-            .and_then(|day| {
-                env.type_info(&key)?.fields.iter().find(|field| {
-                    field
-                        .role
-                        .as_ref()
-                        .and_then(crate::types::FieldRole::time_of)
-                        == Some(day.name.as_str())
-                })
-            })
-            .map(|field| field.name.clone())
-        else {
-            return;
-        };
-        let time = ast::Ident {
-            name: paired,
-            span: value.span,
-        };
-        let read = self.field_read(b, &time);
-        self.set_time_when_some(node, "meta:time", read);
+        self.text_prop(node, "meta", v, value.span);
     }
 
     /// A row's `mark:`: an icon (`mark: .pin`), the name of one (`mark: a.icon`), or an enum
     /// value whose case names one (`mark: t.priority`), which also gives the row the tone the
-    /// case reads in: its mark and its checkbox ring show the item's priority.
+    /// case reads in: its mark and its checkbox ring show the item's priority. A case that
+    /// reads in no tone says the item has no importance to show, and draws no mark.
     fn mark_arg(&mut self, n: LocalId, e: &ast::Expr) {
         let node = Ex::local(n, Ty::View);
         if !matches!(e.kind, ExprKind::Ident(_) | ExprKind::Field { .. }) {
@@ -646,8 +620,17 @@ impl Checker<'_> {
         let v = self.expr(e, None);
         match v.ty.clone() {
             Ty::Enum(key) => {
-                if let Some(icon) = self.enum_method(v.clone(), &key, "icon") {
-                    self.set_when_some(&node, "mark", icon, &Ty::Text, e.span);
+                if self.env.enum_info(&key).is_some() {
+                    let opt = Ty::Option(Box::new(Ty::Text));
+                    let mark = self.per_variant(v.clone(), &key, opt.clone(), |case| {
+                        match (&case.icon, &case.tone) {
+                            (Some(icon), Some(_)) => {
+                                Ex::host(Imp::SomeH, vec![Ex::str(icon)], opt.clone())
+                            }
+                            _ => Ex::host(Imp::NoneV, Vec::new(), opt.clone()),
+                        }
+                    });
+                    self.set_when_some(&node, "mark", mark, &Ty::Text, e.span);
                 }
                 self.enum_tone(&node, "tone", v, e.span);
             }

@@ -118,25 +118,32 @@ impl ListRowFace<'_> {
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         let m = RowMetrics::new(theme);
         let (_, leading_h) = self.leading_extent(&m, text, theme);
+        let fact_avatar = self.fact_avatar(theme).unwrap_or(0.0);
         let value = match self.value {
             Some((value, RowValue::Title)) => {
                 f64::from(text.measure_style(value, None, &m.value_title).1)
             }
             _ => 0.0,
         };
-        let big_leading = matches!(
-            self.leading,
-            Some(
-                RowLeading::Avatar(_)
-                    | RowLeading::Thumbnail(_)
-                    | RowLeading::Media(..)
-                    | RowLeading::AvatarSpace
-            )
-        );
+        let big_leading = fact_avatar > 0.0
+            || matches!(
+                self.leading,
+                Some(
+                    RowLeading::Avatar(_)
+                        | RowLeading::Thumbnail(_)
+                        | RowLeading::Media(..)
+                        | RowLeading::AvatarSpace
+                )
+            );
         let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
             .max(m.min_height)
             .max(self.min_target);
-        (self.text_block(text, &m).max(leading_h).max(value) + 2.0 * m.pad_y)
+        (self
+            .text_block(text, &m)
+            .max(leading_h)
+            .max(value)
+            .max(fact_avatar)
+            + 2.0 * m.pad_y)
             .max(min)
             .ceil()
     }
@@ -159,6 +166,22 @@ impl ListRowFace<'_> {
 
     pub(super) fn count_label(&self) -> Option<String> {
         self.count.map(|count| count.to_string())
+    }
+
+    /// The side of the avatar in the facts column, where the row shows one.
+    pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
+        (self.avatar.is_some() || self.avatar_room)
+            .then(|| RowMetrics::avatar(theme, self.extra_lines() > 0))
+    }
+
+    /// The width of the marks' run, the gaps between them included.
+    pub(super) fn marks_width(&self, m: &RowMetrics) -> f64 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "the marks of a row are at most MAX_MARKS"
+        )]
+        let n = self.marks.iter().flatten().count() as f64;
+        n * m.mark + (n - 1.0).max(0.0) * m.tag_gap
     }
 
     /// How far inside the row's edge its trailing slot ends: its own marks
@@ -246,36 +269,58 @@ impl ListRowFace<'_> {
             geo.trailing = Some(Rect::new(right - width, rect.y0, right, rect.y1));
             right -= width + m.column_gap;
         }
+        // The facts stand in one column, right-aligned on the edge the trailing slot leaves:
+        // when, who, how far, how important, in that order from the text to the row's end. A
+        // value of the row's own is no fact: it keeps the edge, the facts stand inside it.
         if self.value.is_some() {
             geo.value_right = right;
             right -= self.value_width(m, text) + m.column_gap;
         }
+        let facts_right = right;
+        let actions = self.shows_actions().then(|| {
+            let n = self.actions.len() as f64;
+            n * m.action + (n - 1.0).max(0.0) * m.action_gap
+        });
+        if let Some(width) = actions {
+            // The hover actions take the facts' place: nothing else stands on that edge while
+            // they show.
+            geo.meta_right = facts_right;
+            geo.meta_left = facts_right;
+            geo.text_right = facts_right - width - m.column_gap;
+            geo.title_right = geo.text_right;
+            geo.second_right = geo.text_right;
+            return geo;
+        }
+        let marks = self.marks_width(m);
+        if marks > 0.0 {
+            geo.marks_right = Some(right);
+            right -= marks + m.column_gap;
+        }
+        if let Some(label) = self.count_label() {
+            let pill = BadgeFace::intrinsic_width(&label, text, theme);
+            geo.count_right = Some(right);
+            right -= pill + m.column_gap;
+        }
+        if let Some(side) = self.fact_avatar(theme) {
+            if self.avatar.is_some() {
+                geo.avatar = Some(Rect::new(
+                    right - side,
+                    cy - side / 2.0,
+                    right,
+                    cy + side / 2.0,
+                ));
+            }
+            right -= side + m.column_gap;
+        }
         geo.meta_right = right;
+        let meta_w = self.meta_width(m, text, ((right - left).max(0.0)) / 2.0);
+        geo.meta_left = right - meta_w;
+        if meta_w > 0.0 {
+            right -= meta_w + m.column_gap;
+        }
         geo.text_right = right;
         geo.title_right = right;
         geo.second_right = right;
-        if self.shows_actions() {
-            let n = self.actions.len() as f64;
-            let width = n * m.action + (n - 1.0).max(0.0) * m.action_gap;
-            geo.text_right = right - width - m.column_gap;
-            geo.title_right = geo.text_right;
-            geo.second_right = geo.text_right;
-        } else {
-            let mut title_right = right;
-            let meta_w = self.meta_width(m, text, (right - left).max(0.0) / 2.0);
-            if meta_w > 0.0 {
-                title_right = right - meta_w - m.column_gap;
-            }
-            if let Some(label) = self.count_label() {
-                let pill = BadgeFace::intrinsic_width(&label, text, theme);
-                if self.extra_lines() > 0 {
-                    geo.second_right = right - pill - m.column_gap;
-                } else {
-                    title_right -= pill + m.column_gap;
-                }
-            }
-            geo.title_right = title_right;
-        }
         geo
     }
 

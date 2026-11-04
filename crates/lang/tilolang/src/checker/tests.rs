@@ -277,6 +277,21 @@ view board(b: Board) {\n    list(b.tasks)\n}",
         "enum Priority {\n    high\n}\ntype Task {\n    title: Text (title)\n    priority: Priority = .high\n}\nview task(t: Task) {\n    stack {\n        ui.Chip(t.title, tone: t.title)\n    }\n}",
     );
     assert!(wrong.iter().any(|d| d.code == "E065"), "{wrong:#?}");
+
+    // A case that names an icon but no tone says nothing about importance: its glyph never
+    // reaches the row.
+    let (m, _) = lower(
+        "enum Priority {\n    low (icon: .pin)\n    high (icon: .flag, tone: .warning)\n}\n\
+type Task {\n    title: Text (title)\n    priority: Priority = .low\n}\n\
+row view task_row for Task\n\
+view task_row(t: Task) {\n    row(t.title, mark: t.priority)\n}",
+    );
+    let marks = strings(func(&m, "task_row"));
+    assert!(marks.contains(&"flag".to_string()), "{marks:?}");
+    assert!(
+        !marks.contains(&"pin".to_string()),
+        "a case that reads in no tone draws no mark: {marks:?}"
+    );
 }
 
 #[test]
@@ -297,6 +312,19 @@ view task_row(t: Task) {\n    row(t.title, meta: t.due)\n}",
         !has(&row, "prop meta:time:as"),
         "a companion is read beside the prop it completes, and says nothing of its own kind: \
          {row:#?}"
+    );
+    // A day read into a local carries its time of day with it, through the branches an `if`
+    // takes.
+    let (m, _) = lower(
+        "type Task {\n    title: Text (title)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Option<Time> (time of: due) = .none\n}\n\
+row view task_row for Task\n\
+view task_row(t: Task) {\n    let due: Option<Date> = if t.done { .none } else { t.due }\n    row(t.title, meta: due)\n}",
+    );
+    let row = ui_calls(func(&m, "task_row"));
+    assert!(has(&row, "prop meta"), "{row:#?}");
+    assert!(
+        has(&row, "prop meta:time"),
+        "the time of day the local carries: {row:#?}"
     );
     // A day its type pairs no time of day with is the whole fact.
     let (m, _) = lower(

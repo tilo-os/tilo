@@ -9,7 +9,7 @@ enum Priority {
     /// No priority
     none
     /// Low
-    low (icon: .flag)
+    low
     /// Medium
     medium (icon: .flag, tone: .info)
     /// High

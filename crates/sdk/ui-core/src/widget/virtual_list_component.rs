@@ -762,6 +762,16 @@ fn bare_row(
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
+    // What the row over it states, read before the row's own: a row that stands under its
+    // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
+    // is the parent's, read once above it.
+    let parent_meta = nesting_parent(rows, key, tree).and_then(|parent| {
+        rows.with_item(&parent, |item| match item.row {
+            ItemRow::Row(row) => row.meta,
+            ItemRow::View(_) | ItemRow::None => None,
+        })
+        .flatten()
+    });
     rows.with_item(key, |item| {
         let ListItemProps {
             presence,
@@ -794,6 +804,13 @@ fn bare_row(
                 // The list paces the rows it builds unless a row says its own, so one option on
                 // the list covers its content.
                 props.motion = props.motion.or(Some(feel));
+                // The fact the parent's row already states is the parent's.
+                if let (Some(parent), Some(meta)) = (&parent_meta, &props.meta)
+                    && parent == meta
+                {
+                    props.meta = None;
+                    props.meta_tone = crate::widget::Tone::Neutral;
+                }
                 // The list activates its rows itself, by key: a row of it is not a target of
                 // its own.
                 props.activate = Event::None;
@@ -836,6 +853,21 @@ fn bare_row(
         };
         (row, swipe, attached)
     })
+}
+
+/// The key of the row `key` stands under in its tree, when it stands nested under it: its
+/// parent's row is the one above, not the item its sort put it away from.
+fn nesting_parent(
+    rows: &DescribedRows,
+    key: &str,
+    tree: Option<&TreeMarks<String>>,
+) -> Option<String> {
+    let marks = tree?;
+    if !marks.is_nested(&key.to_owned()) {
+        return None;
+    }
+    let parent = rows.with_item(key, |item| item.parent.clone()).flatten()?;
+    rows.key_presenting(&parent.0)
 }
 
 /// `row` with a change mark after it, on its line, when it has one.

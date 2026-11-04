@@ -54,6 +54,20 @@ impl TypeInfo {
         self.fields.iter().find(|f| f.name == name)
     }
 
+    /// The field holding the time of day the day `day` is due at
+    /// (`at: Option<Time> (time of: due)`): the declaration pairs the two, so a value of the
+    /// day carries its time of day wherever it flows, and a list shows them as one fact.
+    pub fn time_of(&self, day: &str) -> Option<&FieldInfo> {
+        self.fields.iter().find(|field| {
+            field.derived.is_none()
+                && field
+                    .role
+                    .as_ref()
+                    .and_then(crate::types::FieldRole::time_of)
+                    == Some(day)
+        })
+    }
+
     pub fn field_names(&self) -> String {
         self.fields
             .iter()

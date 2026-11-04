@@ -7,14 +7,17 @@
 //! | Column | Holds | Set in |
 //! |---|---|---|
 //! | leading | an [`Avatar`](crate::widget::Avatar), an [`Icon`], a short badge (`GET`), a thumbnail, a checkbox, a swatch, in a fixed-width column so a list's titles line up | the leading slot's own geometry |
-//! | text | the title (with a mark and tags after it), an optional subtitle, then an optional secondary line of one or two lines | `Body` (`.strong()` when emphasised), `Body`, `Caption` |
-//! | meta | a timestamp, a size, a count, on the title's line | `Caption.numeric()`, right-aligned |
-//! | trailing | a value, one persistent control, a status dot, a check, a disclosure chevron | — |
+//! | text | the title (with tags after it), an optional subtitle, then an optional secondary line of one or two lines | `Body` (`.strong()` when emphasised), `Body`, `Caption` |
+//! | facts | what the item is, in the same order on every row: when (a day and the time of day it is due), who (an avatar), how far (a progress count), how important (a mark); right-aligned on one edge | `Caption.numeric()`, `Caption`, icons |
+//! | trailing | one persistent control, a status dot, a check, a disclosure chevron | — |
+//!
+//! Nothing stands inline after the title: a fact reads in the facts column, whose right edge is
+//! the same on every row of a list, so the facts of a list read as one column down its edge.
 //!
 //! What a face paints lives in `paint` beside this file; the rect of each of
 //! its columns in `geometry`.
 //!
-//! Hover (or keyboard focus) swaps the meta for the row's actions. The row
+//! Hover (or keyboard focus) swaps the facts column for the row's actions. The row
 //! height comes from the measured line boxes of its text, never a constant,
 //! so it grows with the text scale. Selection is the lift (HIG §9.3), and
 //! rows sit edge to edge, with no rule between them.
@@ -322,13 +325,15 @@ struct RowGeometry {
     /// Where the title starts (the separator starts here too).
     text_x: f64,
     text_right: f64,
-    /// Where the title's line ends: the meta narrows only that line.
+    /// Where the title's line ends: the facts column narrows it.
     title_right: f64,
-    /// Where the line under the title ends: a count narrows only that line.
+    /// Where the line under the title ends.
     second_right: f64,
     /// The persistent trailing control's slot.
     trailing: Option<Rect>,
-    /// The trailing value's right edge.
+    /// The avatar in the facts column, where the row shows one.
+    avatar: Option<Rect>,
+    /// The trailing value's left edge in the facts column.
     value_right: f64,
     /// The status dot's centre x.
     dot_x: Option<f64>,
@@ -337,14 +342,20 @@ struct RowGeometry {
     check: Option<Rect>,
     /// The disclosure chevron's slot.
     disclosure: Option<Rect>,
-    /// Where the meta's right edge sits.
+    /// Where the marks in the facts column end (the column's own right edge).
+    marks_right: Option<f64>,
+    /// Where a count's pill ends in the facts column.
+    count_right: Option<f64>,
+    /// Where the meta's right edge sits in the facts column.
     meta_right: f64,
+    /// Where the meta's room starts: what lies left of it is the text's.
+    meta_left: f64,
 }
 
-/// How many marks [`ListRowFace::mark`] keeps after a title.
+/// How many marks [`ListRowFace::mark`] keeps on a row's edge.
 pub const MAX_MARKS: usize = 3;
 
-/// One mark after a row's title: an icon in tertiary ink, or a swatch in a
+/// One mark on a row's edge: an icon in tertiary ink or the row's tone, or a swatch in a
 /// colour that belongs to the item (a task's project, a calendar).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RowMark {
@@ -370,6 +381,10 @@ pub struct ListRowFace<'a> {
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
+    /// Who the item is, as a fact: their face in the facts column.
+    avatar: Option<AvatarFace<'a>>,
+    /// The room an avatar takes in the facts column, left empty on a row without one.
+    avatar_room: bool,
     marks: [Option<RowMark>; MAX_MARKS],
     /// The tone the row's own mark reads in: an item's priority, a status.
     mark_tone: Tone,
@@ -431,6 +446,8 @@ impl<'a> ListRowFace<'a> {
             meta: None,
             meta_spans: &[],
             value: None,
+            avatar: None,
+            avatar_room: false,
             marks: [None; MAX_MARKS],
             mark_tone: Tone::Neutral,
             tags: &[],
@@ -528,8 +545,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A timestamp, size or count, right-aligned in tabular figures on the
-    /// title's line. It narrows only the title's line.
+    /// When it happened or is due (a day, with the time of day it is due where the view pairs
+    /// one), in tabular figures: the first fact of the facts column, on the title's line.
     #[must_use]
     pub fn meta(mut self, text: &'a str) -> Self {
         self.meta = Some(text);
@@ -544,8 +561,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A figure at the trailing edge (a time, a code, a temperature) that
-    /// hover actions never replace.
+    /// A figure among the facts (how far a branch got, a temperature), between who it is and
+    /// how important it is.
     #[must_use]
     pub fn value(mut self, text: &'a str) -> Self {
         self.value = Some((text, RowValue::Body));
@@ -559,10 +576,26 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A mark after the title in tertiary ink (starred, pinned, shared,
-    /// has attachments). Each call adds one more, in order, up to
-    /// [`MAX_MARKS`]; later ones are ignored. Star, pin and bookmark are
-    /// filled.
+    /// Who the item is, as a fact in the facts column: their face, between when it is due and
+    /// how far it has got. A row led by an avatar ([`RowLeading::Avatar`]) is a row that _is_
+    /// the person (a contact); a row that is something a person is on shows them here.
+    #[must_use]
+    pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
+        self.avatar = Some(avatar);
+        self
+    }
+
+    /// Keep the room an avatar takes in the facts column without showing one, so the facts of
+    /// a list whose rows show avatars keep one column.
+    #[must_use]
+    pub fn avatar_room(mut self) -> Self {
+        self.avatar_room = true;
+        self
+    }
+
+    /// A mark on the row's edge, after every other fact (starred, pinned, shared, how much it
+    /// matters), in tertiary ink or the row's own tone. Each call adds one more, in order, up
+    /// to [`MAX_MARKS`]; later ones are ignored. Star, pin and bookmark are filled.
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
         self.push_mark(RowMark::Icon(icon));
@@ -599,8 +632,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// How many items the row stands for (the messages in a thread), in a
-    /// quiet pill at the trailing edge of the line under the title.
+    /// How many items the row stands for (the messages in a thread, a branch's open steps), in
+    /// a quiet pill among the facts, after the figure.
     #[must_use]
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
@@ -889,6 +922,8 @@ enum Leading {
         square: bool,
         glyph: Option<Icon>,
     },
+    /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
+    AvatarSpace,
     Icon(Icon),
     Badge(String),
     Thumbnail(ImageData),
@@ -902,8 +937,27 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
-    AvatarSpace,
     Signal(crate::widget::SignalLevel),
+}
+
+/// Who a row is about, as a fact in its facts column ([`ListRow::avatar`]): their face.
+struct FactAvatar {
+    name: String,
+    identity: String,
+    image: Option<ImageData>,
+    square: bool,
+    glyph: Option<Icon>,
+}
+
+impl FactAvatar {
+    fn face(&self) -> AvatarFace<'_> {
+        let face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        let face = if self.square { face.square() } else { face };
+        match self.glyph {
+            Some(glyph) => face.glyph(glyph),
+            None => face,
+        }
+    }
 }
 
 /// What a retained hover action runs.
@@ -1049,6 +1103,10 @@ pub struct ListRow {
     mark_tone: Tone,
     tags: Vec<(String, ChipStyle)>,
     count: Option<usize>,
+    /// Who the row is about, as a fact in the facts column.
+    avatar: Option<FactAvatar>,
+    /// The room an avatar takes in the facts column, left empty on a row without one.
+    avatar_room: bool,
     leading: Option<Leading>,
     leading_column: Option<f64>,
     nested: bool,
@@ -1147,6 +1205,8 @@ impl ListRow {
             mark_tone: Tone::Neutral,
             tags: Vec::new(),
             count: None,
+            avatar: None,
+            avatar_room: false,
             leading: None,
             leading_column: None,
             nested: false,
@@ -1320,7 +1380,9 @@ impl ListRow {
         self
     }
 
-    /// A person's avatar in the leading column.
+    /// A person's avatar in the leading column: the row _is_ the person (a contact, an
+    /// account). Something a person is on shows them as a fact instead
+    /// ([`ListRowFace::avatar`]), on its facts column.
     #[must_use]
     pub fn avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.leading = Some(Leading::Avatar {
@@ -2023,6 +2085,12 @@ impl ListRow {
         }
         face = face.nested(self.nested);
         face = face.depth(self.depth);
+        if let Some(avatar) = &self.avatar {
+            face = face.avatar(avatar.face());
+        }
+        if self.avatar_room {
+            face = face.avatar_room();
+        }
         if let Some(leading) = &self.leading {
             face = face.leading(match leading {
                 Leading::Avatar {
@@ -2032,12 +2100,14 @@ impl ListRow {
                     square,
                     glyph,
                 } => {
-                    let mut avatar = AvatarFace::new(name, identity).image(image.as_ref());
-                    if let Some(glyph) = glyph {
-                        avatar = avatar.glyph(*glyph);
-                    }
-                    RowLeading::Avatar(if *square { avatar.square() } else { avatar })
+                    let avatar = AvatarFace::new(name, identity).image(image.as_ref());
+                    let avatar = if *square { avatar.square() } else { avatar };
+                    RowLeading::Avatar(match glyph {
+                        Some(glyph) => avatar.glyph(*glyph),
+                        None => avatar,
+                    })
                 }
+                Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Icon(icon) => RowLeading::Icon(*icon),
                 Leading::Badge(badge) => RowLeading::Badge(badge),
                 Leading::Thumbnail(image) => RowLeading::Thumbnail(image),
@@ -2059,7 +2129,6 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
-                Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }

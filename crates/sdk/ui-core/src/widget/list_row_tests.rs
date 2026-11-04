@@ -126,19 +126,69 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
 
 #[test]
 fn a_row_without_its_avatar_keeps_the_avatars_room() {
-    // A conversation with no messages yet has no last author to show; its text still lines up
-    // with that of the conversations that have one, at the same height.
+    // A list whose rows show who is on the item keeps the face's room on a row nobody is on
+    // yet, so the text of every row ends where the others do.
     let outer = Rect::new(0.0, 0.0, 400.0, 56.0);
     let with = ListRowFace::new("Design")
         .secondary("See you there")
-        .leading(RowLeading::Avatar(AvatarFace::new("Ada", "ada")));
+        .avatar(AvatarFace::new("Ada", "ada"));
     let without = ListRowFace::new("Empty")
         .secondary("No messages yet")
-        .leading(RowLeading::AvatarSpace);
+        .avatar_room();
     let bare = ListRowFace::new("Empty").secondary("No messages yet");
-    assert!((geometry(&with, outer).text_x - geometry(&without, outer).text_x).abs() < 0.01);
-    assert!(geometry(&bare, outer).text_x < geometry(&without, outer).text_x);
+    assert!(geometry(&with, outer).avatar.is_some());
+    assert!(geometry(&without, outer).avatar.is_none());
+    assert!(
+        (geometry(&with, outer).text_right - geometry(&without, outer).text_right).abs() < 0.01,
+        "the room of the face keeps the facts column one column"
+    );
+    assert!(geometry(&bare, outer).text_right > geometry(&without, outer).text_right);
     assert!((face_height(&with, 1.0) - face_height(&without, 1.0)).abs() < 0.01);
+}
+
+#[test]
+fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    let outer = Rect::new(0.0, 0.0, 560.0, 44.0);
+    let face = ListRowFace::new("Call the landlord about the boiler")
+        .meta("Today 09:00")
+        .avatar(AvatarFace::new("Ada", "ada"))
+        .value("2/5")
+        .count(3)
+        .mark(Icon::Flag)
+        .mark_tone(Tone::Warning);
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    let avatar = geo.avatar.expect("who is on it, in the facts");
+    // When it is due, who is on it, how far it has got, how important it is: left to right,
+    // and the title ends before the column starts.
+    assert!(
+        geo.meta_right <= avatar.x0,
+        "the due fact stands left of the face: {geo:?}"
+    );
+    assert!(geo.text_right < geo.meta_right, "{geo:?}");
+    let count = geo.count_right.expect("the count's pill");
+    assert!(avatar.x1 <= count, "{geo:?}");
+    let marks = geo.marks_right.expect("the priority mark");
+    assert!(count <= marks, "{geo:?}");
+    assert!(
+        (geo.value_right - (outer.x1 - m.bleed)).abs() < 0.01,
+        "the last fact ends on the row's content edge"
+    );
+    assert!(marks <= geo.value_right, "a value keeps the edge: {geo:?}");
+    // The facts column ends on one edge down a list, whatever each row's facts say.
+    let other = ListRowFace::new("Water the plants")
+        .meta("Jun 30")
+        .avatar(AvatarFace::new("Grace", "grace"))
+        .value("12/5")
+        .mark(Icon::Star);
+    let other = other.geometry(outer, &m, &mut text, &theme);
+    assert!((other.value_right - geo.value_right).abs() < 0.01);
+    // A row whose facts end earlier keeps that same edge.
+    let bare = ListRowFace::new("Water the plants").meta("Jun 30");
+    let bare = bare.geometry(outer, &m, &mut text, &theme);
+    assert!((bare.meta_right - geo.value_right).abs() < 0.01, "{bare:?}");
 }
 
 #[test]
@@ -238,25 +288,27 @@ fn hover_actions_replace_the_meta_but_not_the_value() {
 }
 
 #[test]
-fn the_meta_and_count_narrow_only_their_own_line() {
+fn the_text_ends_before_the_rows_facts() {
     let rect = Rect::new(0.0, 0.0, 400.0, 64.0);
-    let face = ListRowFace::new("Ada Lovelace")
-        .secondary("A preview that runs the full width of the row")
-        .meta("Yesterday");
-    let geo = geometry(&face, rect);
+    let bare =
+        ListRowFace::new("Ada Lovelace").secondary("A preview that runs the full width of the row");
+    let geo = geometry(&bare, rect);
+    let bare_right = geo.text_right;
     assert!(
-        geo.title_right < geo.text_right,
-        "the meta narrows the title"
+        (geo.title_right - geo.text_right).abs() < 0.01
+            && (geo.second_right - geo.text_right).abs() < 0.01,
+        "a row with no facts keeps the row's width"
+    );
+    let facts = bare.clone().meta("Yesterday").count(4);
+    let geo = geometry(&facts, rect);
+    assert!(geo.title_right < bare_right, "the facts narrow the title");
+    assert!(
+        (geo.second_right - geo.title_right).abs() < 0.01,
+        "the preview ends where the title does, before the column"
     );
     assert!(
-        (geo.second_right - geo.text_right).abs() < 0.01,
-        "the preview keeps the full width"
-    );
-    let thread = face.clone().count(4);
-    let geo = geometry(&thread, rect);
-    assert!(
-        geo.second_right < geo.text_right,
-        "a count narrows the line under the title"
+        geo.title_right <= geo.meta_left + 0.01,
+        "no line runs into the facts' room"
     );
 }
 

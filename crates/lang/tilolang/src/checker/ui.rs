@@ -165,8 +165,8 @@ impl Checker<'_> {
                         }
                         None => self.expr(value, None),
                     };
-                    let id = self.declare(&name.name, v.ty.clone());
-                    self.emit(Stmt::Set(id, v));
+                    let bound = v.ty.clone();
+                    self.bind_let(&name.name, bound, v, s.span);
                 }
                 UiKind::If { cond, then, els } => {
                     let c = self.expr_as(cond, &Ty::Bool);

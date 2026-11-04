@@ -204,25 +204,8 @@ impl ListRowFace<'_> {
                 &Circle::new(Point::new(x, cy), m.dot / 2.0),
             );
         }
-        if let Some((value, size)) = self.value {
-            let style = match size {
-                RowValue::Body => &m.value_body,
-                RowValue::Title => &m.value_title,
-            };
-            let (w, h) = ctx.text.measure_style(value, None, style);
-            ctx.text(
-                value,
-                style,
-                theme.text_primary,
-                Point::new(
-                    geo.value_right - f64::from(w),
-                    row.center().y - f64::from(h) / 2.0,
-                ),
-                None,
-            );
-        }
-
-        // Meta, or the hover actions in its place.
+        // The facts stand in one column on the row's trailing edge, in the fixed order when,
+        // who, how far, how important: the hover actions take their place while they show.
         if self.shows_actions() {
             let rects = self.action_rects_with(row, &m, ctx.text, theme);
             for (index, (action, r)) in self.actions.iter().zip(&rects).enumerate() {
@@ -250,34 +233,38 @@ impl ListRowFace<'_> {
                     .draw(ctx.scene, ctx.transform, glyph, theme.text_primary);
             }
         } else {
-            self.paint_meta(ctx, &m, &geo, row, title_cy, extra, &[ground, under]);
-            if let Some(label) = self.count_label() {
+            let facts_cy = if extra { title_cy } else { row.center().y };
+            if let (Some(slot), Some(avatar)) = (geo.avatar, &self.avatar) {
+                avatar.paint(ctx, slot);
+            }
+            if let (Some(right), Some(label)) = (geo.count_right, self.count_label()) {
                 let w = BadgeFace::intrinsic_width(&label, ctx.text, theme);
                 let h = BadgeFace::height(theme);
-                let cy = if extra {
-                    let second = if self.subtitle.is_some() {
-                        RowMetrics::line(ctx.text, &m.subtitle)
-                    } else {
-                        RowMetrics::line(ctx.text, &m.secondary)
-                    };
-                    text_top + title_line * crate::num::f64_of_usize(title_drawn) + second / 2.0
-                } else {
-                    row.center().y
-                };
-                let right = if extra {
-                    geo.meta_right
-                } else {
-                    geo.title_right + w + m.column_gap
-                };
                 BadgeFace::new(
-                    Rect::new(right - w, cy - h / 2.0, right, cy + h / 2.0),
+                    Rect::new(right - w, facts_cy - h / 2.0, right, facts_cy + h / 2.0),
                     &label,
                 )
                 .paint(ctx.scene, ctx.transform, ctx.text, theme);
             }
+            if let (Some((value, size)), right) = (self.value, geo.value_right) {
+                let style = match size {
+                    RowValue::Body => &m.value_body,
+                    RowValue::Title => &m.value_title,
+                };
+                let (w, h) = ctx.text.measure_style(value, None, style);
+                ctx.text(
+                    value,
+                    style,
+                    theme.text_primary,
+                    Point::new(right - f64::from(w), facts_cy - f64::from(h) / 2.0),
+                    None,
+                );
+            }
+            self.paint_meta(ctx, &m, &geo, row, title_cy, extra, &[ground, under]);
+            self.paint_marks(ctx, &m, &geo, facts_cy);
         }
 
-        // Title (with its mark and tags), subtitle and secondary text.
+        // Title (with its tags), subtitle and secondary text.
         let text_x = geo.text_x;
         let mut y = text_top;
         let mut last_end = text_x;
@@ -319,45 +306,6 @@ impl ListRowFace<'_> {
         }
         let line_cy = y - title_line / 2.0;
         let mut x = last_end + m.tag_gap;
-        for mark in self.marks.iter().flatten().copied() {
-            if x + m.mark > geo.title_right {
-                break;
-            }
-            let r = Rect::new(
-                x,
-                line_cy - m.mark / 2.0,
-                x + m.mark,
-                line_cy + m.mark / 2.0,
-            );
-            let ink = if self.mark_tone == Tone::Neutral {
-                theme.text_tertiary
-            } else {
-                self.mark_tone.colour(theme)
-            };
-            match mark {
-                RowMark::Icon(icon @ (Icon::Star | Icon::Pin)) => {
-                    icon.draw_filled(ctx.scene, ctx.transform, r, ink);
-                }
-                RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, ink),
-                RowMark::Swatch(color) => {
-                    // The swatch sits inside the mark's box, as an icon's
-                    // glyph does, with its own derived edge.
-                    let swatch = r.inset(-(m.mark * 0.1));
-                    let radius = swatch.width() * 0.25;
-                    let shape = RoundedRect::from_rect(swatch, radius);
-                    ctx.scene
-                        .fill(Fill::NonZero, ctx.transform, color, None, &shape);
-                    ctx.scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        ctx.transform,
-                        crate::surface::edge_on(color),
-                        None,
-                        &crate::surface::edge_outline(swatch, radius),
-                    );
-                }
-            }
-            x += m.mark + m.tag_gap;
-        }
         let tag_h = BadgeFace::height(theme);
         for (label, style) in self.tags {
             let w = BadgeFace::intrinsic_width(label, ctx.text, theme);
@@ -434,9 +382,9 @@ impl ListRowFace<'_> {
         }
     }
 
-    /// The width the title is set in: its column, less the tags and marks
-    /// after it. The title keeps at least half its line; tags and the mark
-    /// take the rest and drop off before the title elides further.
+    /// The width the title is set in: its column, less the tags after it. The title keeps at
+    /// least half its line; the tags take the rest and drop off before the title elides
+    /// further.
     fn title_room(
         &self,
         geo: &RowGeometry,
@@ -446,11 +394,48 @@ impl ListRowFace<'_> {
     ) -> f32 {
         let title_width = (geo.title_right - geo.text_x).max(0.0);
         let tags_w = self.tags_width(text, theme, m);
-        let mark_count = self.marks.iter().flatten().count();
-        #[allow(clippy::cast_precision_loss, reason = "at most MAX_MARKS")]
-        let mark_w = mark_count as f64 * (m.mark + m.tag_gap);
-        let accessories = (tags_w + mark_w).min(title_width / 2.0);
+        let accessories = tags_w.min(title_width / 2.0);
         crate::num::f32_of_f64((title_width - accessories).max(0.0))
+    }
+
+    /// The marks, in the facts column, on the column's edge: the last fact of a row.
+    fn paint_marks(&self, ctx: &mut PaintCtx<'_>, m: &RowMetrics, geo: &RowGeometry, cy: f64) {
+        let Some(right) = geo.marks_right else {
+            return;
+        };
+        let theme = ctx.theme;
+        let ink = if self.mark_tone == Tone::Neutral {
+            theme.text_tertiary
+        } else {
+            self.mark_tone.colour(theme)
+        };
+        let mut x = right - self.marks_width(m);
+        for mark in self.marks.iter().flatten().copied() {
+            let r = Rect::new(x, cy - m.mark / 2.0, x + m.mark, cy + m.mark / 2.0);
+            match mark {
+                RowMark::Icon(icon @ (Icon::Star | Icon::Pin)) => {
+                    icon.draw_filled(ctx.scene, ctx.transform, r, ink);
+                }
+                RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, ink),
+                RowMark::Swatch(color) => {
+                    // The swatch sits inside the mark's box, as an icon's glyph does, with its
+                    // own derived edge.
+                    let swatch = r.inset(-(m.mark * 0.1));
+                    let radius = swatch.width() * 0.25;
+                    let shape = RoundedRect::from_rect(swatch, radius);
+                    ctx.scene
+                        .fill(Fill::NonZero, ctx.transform, color, None, &shape);
+                    ctx.scene.stroke(
+                        &vello::kurbo::Stroke::new(1.0),
+                        ctx.transform,
+                        crate::surface::edge_on(color),
+                        None,
+                        &crate::surface::edge_outline(swatch, radius),
+                    );
+                }
+            }
+            x += m.mark + m.tag_gap;
+        }
     }
 
     /// Whether the title, painted in `rect`, is cut short with an ellipsis.
@@ -492,11 +477,12 @@ impl ListRowFace<'_> {
         grounds: &[Color],
     ) {
         let theme = ctx.theme;
-        let cap = (geo.meta_right - (row.x0 + m.bleed)).max(0.0) / 2.0;
+        // The room the layout gave the meta: what the text claims from here is its own, so a
+        // long fact elides rather than reaching into the title.
+        let cap = (geo.meta_right - geo.meta_left).max(0.0);
         let line_cy = if extra { title_cy } else { row.center().y };
         if !self.meta_spans.is_empty() {
-            let width = self.meta_width(m, ctx.text, f64::INFINITY);
-            let mut x = geo.meta_right - width.min(cap);
+            let mut x = geo.meta_left;
             for (span, tone) in self.meta_spans {
                 let ink = if *tone == Tone::Neutral {
                     theme.text_dim

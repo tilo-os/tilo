@@ -4,7 +4,7 @@ use super::{Checker, Ctx, Ex, Written, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
-use crate::ir::{self, Conv, Ek};
+use crate::ir::{self, Conv, Ek, LocalId};
 use crate::types::Ty;
 
 impl Checker<'_> {
@@ -886,6 +886,90 @@ impl Checker<'_> {
                 let t = self.show(&other);
                 self.err("E021", name.span, format!("`.{}` needs a record, but the value has type {t}, which has no fields; methods are called `.{}(...)`", name.name, name.name));
                 Ex::error()
+            }
+        }
+    }
+
+    /// The time of day the day value `ex` is due at, when the field it came from declares one
+    /// (`at: Option<Time> (time of: due)`): the declaration pairs the two, so the time of day
+    /// travels with the day wherever the value flows — through a local, and through the
+    /// branches of an `if` — and a row shows them as one fact (`Today 09:00`). `None` for a
+    /// day no type pairs a time of day with.
+    ///
+    /// A branch's condition is read again for the time of day the branch picks: a view's
+    /// condition is a pure read, so it reads the same.
+    pub(super) fn day_time(&mut self, ex: &Ex, span: Span) -> Option<Ex> {
+        let opt = Ty::Option(Box::new(Ty::Time));
+        let day = match &ex.ty {
+            Ty::Date => true,
+            Ty::Option(inner) => **inner == Ty::Date,
+            _ => false,
+        };
+        if !day {
+            return None;
+        }
+        match &ex.kind {
+            Ek::Local(id) => self.st.day_times.get(id).map(|time| Ex::local(*time, opt)),
+            Ek::Seq(_, value) => self.day_time(value, span),
+            Ek::If(cond, then, els) => {
+                let then = self.day_time(then, span);
+                let els = self.day_time(els, span);
+                if then.is_none() && els.is_none() {
+                    return None;
+                }
+                let none = Ex::host(Imp::NoneV, Vec::new(), opt.clone());
+                Some(Ex::new(
+                    Ek::If(
+                        cond.clone(),
+                        Box::new(then.unwrap_or_else(|| none.clone())),
+                        Box::new(els.unwrap_or(none)),
+                    ),
+                    opt,
+                ))
+            }
+            Ek::Host(Imp::ResGetH, args) => {
+                let [base, field] = args.as_slice() else {
+                    return None;
+                };
+                let Ek::Str(field) = &field.kind else {
+                    return None;
+                };
+                // The read names the field's id; the type declares it by name.
+                let Ty::Record(key) = base.ty.clone() else {
+                    return None;
+                };
+                let env = self.env;
+                let info = env.type_info(&key)?;
+                let day = info.fields.iter().find(|f| &f.id == field)?.name.clone();
+                let time = info.time_of(&day)?.name.clone();
+                let read = self.field_read(base.clone(), &ast::Ident { name: time, span });
+                match &read.ty {
+                    Ty::Option(inner) if **inner == Ty::Time => Some(read),
+                    Ty::Time => Some(Ex::host(Imp::SomeH, vec![read], opt)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Take the time of day `time` `ex` carries, when it carries one, beside the local `id`
+    /// that holds the day, and leave the local without one where the value carries none.
+    pub(super) fn set_day_time(&mut self, id: LocalId, time: Option<Ex>) {
+        let companion = self.st.day_times.get(&id).copied();
+        match time {
+            Some(time) => {
+                let local = if let Some(companion) = companion {
+                    companion
+                } else {
+                    let local = self.fresh(Ty::Option(Box::new(Ty::Time)));
+                    self.st.day_times.insert(id, local);
+                    local
+                };
+                self.emit(ir::Stmt::Set(local, time));
+            }
+            None => {
+                self.st.day_times.remove(&id);
             }
         }
     }

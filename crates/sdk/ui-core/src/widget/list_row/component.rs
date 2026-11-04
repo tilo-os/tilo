@@ -27,16 +27,16 @@ pub struct ListRowProps {
     pub item: Option<ResourceId>,
     /// The line under the title: the start of the item's content, the last message.
     pub secondary: Option<String>,
-    /// A quiet fact on the trailing edge: when it happened, how many.
+    /// When it happened or is due: the first fact of the row's facts column.
     pub meta: Option<String>,
     /// The tone the trailing fact reads in, where the item it states has one: a day gone by
     /// is overdue. The UI host reads it off the day itself, as the one presenter gives it.
     pub meta_tone: Tone,
-    /// The item's value on the trailing edge, as a setting shows it.
+    /// The item's figure among its facts, as a setting shows it.
     pub value: Option<String>,
     /// A short code in the leading column: a method, a kind.
     pub badge: Option<String>,
-    /// A mark after the title: pinned, starred, an item's priority.
+    /// A mark on the row's edge, after every other fact: pinned, starred, an item's priority.
     pub mark: Option<Icon>,
     /// The tone the mark and the row's checkbox ring read in: the item's priority, a theme
     /// role rather than a colour. `Neutral` draws them as the row's quiet ink.
@@ -45,10 +45,11 @@ pub struct ListRowProps {
     pub icon: Option<Icon>,
     /// Whether the row is selected in its list.
     pub selected: bool,
-    /// Keep the room an avatar takes without showing one, so the row's text lines up with the
-    /// rows of its list that show one.
+    /// Keep the room an avatar takes in the facts column without showing one, so the facts of
+    /// a list's rows keep one column.
     pub avatar_space: bool,
-    /// The avatar in the leading column: who the item is, or who last wrote in it.
+    /// Who the item is: their face among its facts, between when it is due and how far it
+    /// has got.
     #[component(slot)]
     pub avatar: Option<AvatarProps>,
     /// A control on the trailing edge, which moves under the text when the row is narrow.
@@ -130,8 +131,6 @@ impl Described for ListRow {
 #[derive(PartialEq, Eq)]
 enum Kind {
     None,
-    Avatar,
-    Space,
     Icon,
     Badge,
     Checkbox,
@@ -141,8 +140,6 @@ enum Kind {
 fn leading_kind(leading: Option<&Leading>) -> Kind {
     match leading {
         None => Kind::None,
-        Some(Leading::Avatar { .. }) => Kind::Avatar,
-        Some(Leading::AvatarSpace) => Kind::Space,
         Some(Leading::Icon(_)) => Kind::Icon,
         Some(Leading::Badge(_)) => Kind::Badge,
         Some(Leading::Checkbox { .. }) => Kind::Checkbox,
@@ -153,10 +150,6 @@ fn leading_kind(leading: Option<&Leading>) -> Kind {
 fn props_kind(props: &ListRowProps) -> Kind {
     if props.checkbox.is_some() {
         Kind::Checkbox
-    } else if props.avatar.is_some() {
-        Kind::Avatar
-    } else if props.avatar_space {
-        Kind::Space
     } else if props
         .badge
         .as_deref()
@@ -171,8 +164,13 @@ fn props_kind(props: &ListRowProps) -> Kind {
 }
 
 impl ListRow {
-    /// Take every described part of `props`. One leading column shows, in this order of
-    /// precedence: the checkbox, the avatar, the avatar's room, the badge, the icon.
+    /// Take every described part of `props`. The leading column shows one of them, in this
+    /// order of precedence: the checkbox, the badge, the icon. The avatar is a fact of the
+    /// facts column, and its room is kept there.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the props of a row are taken into the row in one place, in their own order"
+    )]
     fn apply(&mut self, props: ListRowProps) {
         let ListRowProps {
             key: _,
@@ -208,6 +206,17 @@ impl ListRow {
         self.value = shown(value).map(|value| (value, super::RowValue::Body));
         self.mark = mark;
         self.mark_tone = tone;
+        self.avatar = avatar.map(|avatar| {
+            let (name, identity) = avatar.name_and_identity();
+            super::FactAvatar {
+                name,
+                identity,
+                image: None,
+                square: avatar.square,
+                glyph: avatar.glyph,
+            }
+        });
+        self.avatar_room = avatar_space;
         self.selected = selected;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.check_binding = None;
@@ -226,17 +235,6 @@ impl ListRow {
                 Box::new(move |_| check.fire(None))
             };
             Some(Leading::Checkbox { checked, on_toggle })
-        } else if let Some(avatar) = avatar {
-            let (name, identity) = avatar.name_and_identity();
-            Some(Leading::Avatar {
-                name,
-                identity,
-                image: None,
-                square: avatar.square,
-                glyph: avatar.glyph,
-            })
-        } else if avatar_space {
-            Some(Leading::AvatarSpace)
         } else if let Some(badge) = badge {
             Some(Leading::Badge(badge))
         } else {

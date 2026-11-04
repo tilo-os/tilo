@@ -2370,7 +2370,7 @@
         },
         {
           "name": "meta",
-          "doc": "A quiet fact on the trailing edge: when it happened, how many.",
+          "doc": "When it happened or is due: the first fact of the row's facts column.",
           "type": {
             "option": "text"
           }
@@ -2393,7 +2393,7 @@
         },
         {
           "name": "value",
-          "doc": "The item's value on the trailing edge, as a setting shows it.",
+          "doc": "The item's figure among its facts, as a setting shows it.",
           "type": {
             "option": "text"
           }
@@ -2407,7 +2407,7 @@
         },
         {
           "name": "mark",
-          "doc": "A mark after the title: pinned, starred, an item's priority.",
+          "doc": "A mark on the row's edge, after every other fact: pinned, starred, an item's priority.",
           "type": {
             "option": "icon"
           }
@@ -2442,7 +2442,7 @@
         },
         {
           "name": "avatar_space",
-          "doc": "Keep the room an avatar takes without showing one, so the row's text lines up with the rows of its list that show one.",
+          "doc": "Keep the room an avatar takes in the facts column without showing one, so the facts of a list's rows keep one column.",
           "type": "bool"
         },
         {
@@ -2466,7 +2466,7 @@
       "slots": [
         {
           "name": "avatar",
-          "doc": "The avatar in the leading column: who the item is, or who last wrote in it.",
+          "doc": "Who the item is: their face among its facts, between when it is due and how far it has got.",
           "accepts": {
             "component": "Avatar"
           }
