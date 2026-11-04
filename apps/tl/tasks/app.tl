@@ -61,10 +61,10 @@ type Task {
     derive subtasks_done: Int = children.count(done)
 
     search {
-        filter "Inbox" = project == .none (icon: .inbox)
-        filter "Today" = due <= today and not done (icon: .star)
-        filter "Upcoming" = due > today and not done (icon: .calendar)
-        filter done "Done" (icon: .circle_check)
+        filter "Inbox" = inbox(filed: project, day: due) (icon: .inbox)
+        filter "Today" = agenda(day: due) (icon: .star)
+        filter "Upcoming" = upcoming(day: due) (icon: .calendar)
+        filter "Done" = logbook (icon: .circle_check)
         filter due
         filter project
         filter priority
@@ -523,18 +523,28 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
 }
 
-/// The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name
-/// holds of, and the projects, each showing its tasks where they are. The place chosen is the
-/// window's, so everyone looking sees the same list; what is typed in the entry at its end is
-/// each person's own until Enter adds it.
+/// The tasks window: Inbox, Today, Upcoming and Done, each the place its role makes of the
+/// tasks (`inbox`, `agenda`, `upcoming`, `logbook`), and the projects, each showing its tasks
+/// where they are. The place chosen is the window's, so everyone looking sees the same list;
+/// what is typed in the entry at its end is each person's own until Enter adds it.
 view home(t: Tasks) {
     window place: Text = "is:inbox"
     // The sidebar's places are the schema's: this type's filters that are on or off, and a
     // place per project. A priority is picked in search, not chosen as a place.
     let side = places(Task, in: t)
     let chosen = side.places.find(p -> p.key == place)
-    let shown = t.items.matching(place).sort_by(.due)
+    // A place with a role comes in the order its role says (what is due soonest first, what
+    // was finished last first); any other list is the tasks by the day they are due.
+    let role = chosen?.role ?? ""
+    let shown = if role == "" {
+        t.items.matching(place).sort_by(.due)
+    } else { t.items.matching(place) }
     let title = chosen?.label ?? "Tasks"
+    // What the place counts where its role makes that a count people read: what waits to be
+    // sorted, what is due. A list of what is done says how many there are.
+    let count = if let c = chosen {
+        if c.counts { c.count } else { shown.len() }
+    } else { shown.len() }
     // A project's place adds to that project, in the place's own list.
     let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
     // The window's primary action is the one whose key puts the keyboard in the entry at the
@@ -548,7 +558,7 @@ view home(t: Tasks) {
         content_kind: .document,
         sidebar_title: "Tasks",
         overview_title: title,
-        overview_count: chosen?.count ?? shown.len(),
+        overview_count: count,
     ) {
         // What the place leaves open, as its sidebar says it: the rows of what is done with
         // fold under the list, not into its count.
@@ -566,6 +576,8 @@ view home(t: Tasks) {
                 .some("list-checks"),
                 group: .due,
                 closed: .folded,
+                role: role,
+                place: place,
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),
@@ -823,6 +835,8 @@ scenario "a busy week" -> Task {
             done: true,
         ),
     )
+    // What no one has sorted yet: no project, no day.
+    tasks.items.insert(Task(title: "Sort the paper mail"))
     let call = tasks.items.insert(
         Task(
             title: "Call the landlord about the boiler",
