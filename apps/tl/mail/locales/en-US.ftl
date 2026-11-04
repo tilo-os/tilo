@@ -206,7 +206,7 @@ d-eqvgypxr = Archive
 d-eef4pxgf = Move to inbox
     .doc = Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again.
 
-d-taywgw3n = Move to…
+d-taywgw3n = Move to
     .doc = Moves the conversation to another mailbox of its account.
 
 d-xytb2lle = Delete

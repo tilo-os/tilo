@@ -1899,7 +1899,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     // read, and the keys the app gives its actions.
     let actions = offered(&mut session);
     let labels: Vec<&str> = actions.iter().map(|(label, _)| label.as_str()).collect();
-    assert!(labels.contains(&"New task"), "{labels:?}");
+    assert!(labels.contains(&"New task…"), "{labels:?}");
     let key = |label: &str| {
         actions
             .iter()
@@ -1908,8 +1908,8 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             .1
             .clone()
     };
-    assert_eq!(key("New task").as_deref(), Some("Ctrl+n"));
-    assert_eq!(key("Delete").as_deref(), Some("delete"));
+    assert_eq!(key("New task…").as_deref(), Some("Ctrl+n"));
+    assert_eq!(key("Delete…").as_deref(), Some("delete"));
 
     // The window's own palette lists them, as a native app window's does.
     let listed: Vec<(String, Option<String>)> = session
@@ -1922,7 +1922,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         .map(|action| (action.label.clone(), action.state.shortcut.clone()))
         .collect();
     assert!(
-        listed.contains(&("New task".to_owned(), Some("Ctrl+n".to_owned()))),
+        listed.contains(&("New task…".to_owned(), Some("Ctrl+n".to_owned()))),
         "{listed:?}"
     );
     // A session's palette builds each action row from that same published state, and paints a
@@ -1951,13 +1951,13 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             depth: 0,
         })
     };
-    let new_task = row("New task");
+    let new_task = row("New task…");
     assert_eq!(
         new_task.keybinding_label(platform).as_deref(),
         Some("Ctrl+N")
     );
     assert_eq!(
-        row("Delete").keybinding_label(platform).as_deref(),
+        row("Delete…").keybinding_label(platform).as_deref(),
         Some("Delete")
     );
     session
@@ -2136,7 +2136,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         vec![
             ("Tasks".to_owned(), Some(ui::icons::Icon::Layers), None),
             (
-                "New task".to_owned(),
+                "New task…".to_owned(),
                 Some(ui::icons::Icon::Plus),
                 Some(vec![command, "N".to_owned()]),
             ),
@@ -2183,7 +2183,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         .collect();
     assert_eq!(
         new,
-        ["New task", "New project"],
+        ["New task…", "New project"],
         "the query narrows the list to what it names"
     );
 }
@@ -2217,7 +2217,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Tasks",
             "Water the plants",
             "Open",
-            "New task",
+            "New task…",
             "New project",
             "Task summary",
             "Complete",
@@ -2260,7 +2260,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
 
     // What cannot run now is no row: a task in the inbox has nowhere to move out of, the app
     // has nothing done to clear, and a task at the outline's top has nowhere to outdent to.
-    for not_now in ["Inbox", "Delete finished tasks…", "Outdent"] {
+    for not_now in ["Inbox", "Delete finished tasks", "Outdent"] {
         assert!(
             !titles.contains(&not_now),
             "{not_now} cannot run now, so it is no row: {titles:?}"
@@ -2306,7 +2306,7 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
             })
             .unwrap_or_else(|| panic!("the header holds {label}"))
     };
-    let clear = button("Delete finished tasks…");
+    let clear = button("Delete finished tasks");
     assert_eq!(
         clear.props.get("enabled"),
         Some(&tilo_ui_host::Value::Int(0)),

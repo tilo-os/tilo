@@ -13,14 +13,15 @@ move to which project, rename to what, snooze until when. So tilolang has no fre
 
 ```
 /// Shares the note with someone in the workspace.
-action share(n: Note, with: Principal, can: Access = .read) (label: "Share…", icon: .share) {
+action share(n: Note, with: Principal, can: Access = .read) (label: "Share", icon: .share) {
     grant(n, to: with, can: can)
 }
 ```
 
 `share` in the note's menu, the command surface or a shortcut opens a form: a people picker for
 `with`, and `can` as a choice starting at `.read`. The submit button is labelled "Share". Nothing
-in the app describes that form.
+in the app describes that form. Where it is offered it reads "Share…": the host adds the dots to
+a command that still asks for an argument, so no app writes them.
 
 - **Fields come from the one schema.** Each parameter's `FieldType` picks its control:
 
@@ -64,7 +65,7 @@ The app declares the form; the shell decides how it appears:
 When the generated form isn't right, the action names a view for it:
 
 ```
-action share(n: Note, with: Principal, can: Access = .read) (label: "Share…", form: share_form) { ... }
+action share(n: Note, with: Principal, can: Access = .read) (label: "Share", form: share_form) { ... }
 
 view share_form(f: Form<share>) {
     stack(gap: related) {

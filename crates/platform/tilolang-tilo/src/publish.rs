@@ -188,6 +188,19 @@ pub fn action_type(
     } else {
         said_of(words, &action.id, "doc", None, &action.doc)
     };
+    // A command the person choosing it still has to answer for opens its form: its label says
+    // so with "…", as the runtime's own surfaces say it. What the spec is given is what it does
+    // not ask for — the subject, the resource it runs against — and the parameters after it are
+    // the form's. The form's own placeholder names the command without the dots, which ask.
+    let mut label = label;
+    if action
+        .unbound(action.params.len().saturating_sub(params.len()))
+        .next()
+        .is_some()
+        && !label.ends_with('…')
+    {
+        label.push('…');
+    }
     // An action without parameters is planned when it runs, not when it is published: planning
     // is a trial run of the action, and publishing every item's actions must not run them all.
     let no_params = params.is_empty();

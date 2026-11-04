@@ -615,11 +615,7 @@ impl Core {
                 id: time.id.clone(),
                 kind: time.kind,
             };
-            let stood = self
-                .store
-                .borrow()
-                .read_before(of, &spec, &v.change)
-                .ok()?;
+            let stood = self.store.borrow().read_before(of, &spec, &v.change).ok()?;
             let value = self.field_value(of, time, stood, None).ok()?;
             self.change_shown(&time.ty, &value).ok()?
         };
@@ -643,10 +639,10 @@ impl Core {
         if mine {
             return self.word("tilolang-you", "You");
         }
-        self.names
-            .borrow()
-            .as_ref()
-            .map_or_else(|| who.to_owned(), |host| host.name(&Principal(who.to_owned())))
+        self.names.borrow().as_ref().map_or_else(
+            || who.to_owned(),
+            |host| host.name(&Principal(who.to_owned())),
+        )
     }
 
     /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
@@ -1556,9 +1552,11 @@ impl Core {
             available = false;
             why = refused;
         }
-        // An action that still asks for something opens its form: its label says so, as a
-        // menu item that opens a dialog does.
-        if shown.rest.iter().any(|param| param.default.is_none()) && !label.ends_with('…') {
+        // An action that still asks for something opens its form: its label says so, as a menu
+        // item that opens a dialog does. What it asks is what this offer left unbound — the
+        // parameters after the ones it gave, the subject and its places among them — so a
+        // command the view or the host answers every question of runs, and reads, as it is.
+        if action.unbound(shown.args.len()).next().is_some() && !label.ends_with('…') {
             label.push('…');
         }
         let role = action.role.clone().unwrap_or_default();

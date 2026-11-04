@@ -667,6 +667,22 @@ impl ActionMeta {
     pub fn is_internal(&self) -> bool {
         self.role.as_deref() == Some("internal")
     }
+
+    /// The parameters an invocation that has given `bound` arguments still lacks: those after
+    /// them that have no default, each with its place, which its form asks the person for
+    /// before the action runs. Empty when it runs at once on what it was given.
+    ///
+    /// What an offer binds — the subject, the places its view supplies, the resource holding
+    /// the subject — is what `bound` counts, so this is the one rule for what a command still
+    /// asks: the form an invocation opens on (`missing_arguments`) and the "…" its label says
+    /// so with ([`crate::host::Action`]'s label) both read it.
+    pub fn unbound(&self, bound: usize) -> impl Iterator<Item = (usize, &ParamMeta)> {
+        self.params
+            .iter()
+            .enumerate()
+            .skip(bound)
+            .filter(|(_, param)| param.default.is_none())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

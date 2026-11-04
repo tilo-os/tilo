@@ -155,7 +155,7 @@ d-wclcgiyt = Tomorrow
 d-tg5yjcju = Next week
     .doc = Makes a task due at the end of next week.
 
-d-jqhwyztw = Pick date…
+d-jqhwyztw = Pick date
     .doc = Makes a task due on a day the person picks.
 
 d-x5xnqddo = No date
@@ -176,13 +176,13 @@ d-kglmmfa7 = High
 d-lrdm4l3c = Urgent
     .doc = Marks a task as urgent.
 
-d-laxsa3x6 = Project…
+d-laxsa3x6 = Project
     .doc = Files a task under a project the person picks.
 
 d-dshqxolf = Inbox
     .doc = Takes a task out of its project, back to the inbox.
 
-d-c6y4cxdd = Assign…
+d-c6y4cxdd = Assign
     .doc = Gives a task to someone, or to nobody.
 
 d-berwb3de = Move to
@@ -200,7 +200,7 @@ d-23y3zdgu = Duplicate
 d-ojzyzzxu = Delete
     .doc = Deletes a task and its subtasks.
 
-d-rjpcv6es = Delete finished tasks…
+d-rjpcv6es = Delete finished tasks
     .doc = Deletes every finished task, and answers how many went: a task is finished when everything under it is done too, so deleting takes whole finished branches and never unfinished work with it, and a task done with a step still open under it stays.
 
 d-2xixz4sk = Delete project

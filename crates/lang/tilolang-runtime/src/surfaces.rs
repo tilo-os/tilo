@@ -79,7 +79,6 @@ const FREQUENT: usize = 10;
 const AVAILABLE: usize = 11;
 const REASON: usize = 12;
 const APPLIES: usize = 13;
-const ID: usize = 14;
 
 impl Core {
     /// The host's surfaces for the tree a boundary rendered: each item's menu, and the window's
@@ -197,7 +196,7 @@ impl Core {
         }
         let key = self.key(at)?;
         for (index, action) in taken.iter().enumerate() {
-            let item = self.menu_item(action, &format!("{key}~action-{index}"));
+            let item = Self::menu_item(action, &format!("{key}~action-{index}"));
             self.put_in_slot(at, MENU, item)?;
         }
         if kind == LIST_ITEM && self.slot(at, SWIPE)?.is_none() {
@@ -207,7 +206,7 @@ impl Core {
                 .find(|action| flag(action, DESTRUCTIVE))
                 .or_else(|| taken.iter().find(|action| flag(action, AVAILABLE)));
             if let Some(action) = swipe {
-                let node = self.swipe_action(action, &format!("{key}~swipe"));
+                let node = Self::swipe_action(action, &format!("{key}~swipe"));
                 self.put_in_slot(at, SWIPE, node)?;
             }
         }
@@ -238,7 +237,7 @@ impl Core {
                 .filter(|action| flag(action, APPLIES));
             let key = self.key(at)?;
             for (index, action) in acted.enumerate() {
-                let item = self.menu_item(&action, &format!("{key}~item-{index}"));
+                let item = Self::menu_item(&action, &format!("{key}~item-{index}"));
                 self.put_in_slot(at, ITEMS, item)?;
             }
         }
@@ -412,7 +411,7 @@ impl Core {
             )?;
         }
         for (index, action) in by_place.into_iter().flatten().enumerate() {
-            let node = self.action_button(&action, &format!("{key}~{slot}~action-{index}"), entry);
+            let node = Self::action_button(&action, &format!("{key}~{slot}~action-{index}"), entry);
             self.put_in_slot(shell, slot, node)?;
         }
         Ok(())
@@ -492,7 +491,7 @@ impl Core {
         menu.props.insert("icon_only".to_owned(), on_off(true));
         let at = self.push(menu)?;
         for (index, action) in acted.iter().enumerate() {
-            let item = self.menu_item(action, &format!("{key}~more-{index}"));
+            let item = Self::menu_item(action, &format!("{key}~more-{index}"));
             let child = self.push(item)?;
             self.insert(at, usize::MAX, child)?;
         }
@@ -718,10 +717,10 @@ impl Core {
     }
 
     /// One action as a menu row: what choosing it runs, in its words.
-    fn menu_item(&self, action: &Value, key: &str) -> NodeBuild {
+    fn menu_item(action: &Value, key: &str) -> NodeBuild {
         let mut node = empty("ui.MenuItem", key);
         node.props
-            .insert("label".to_owned(), Value::text(self.action_name(action)));
+            .insert("label".to_owned(), Value::text(Self::action_name(action)));
         if let Some(icon) = opt_text(action, ICON) {
             node.props.insert("icon".to_owned(), Value::text(icon));
         }
@@ -751,10 +750,10 @@ impl Core {
     }
 
     /// One action as a swipe: what a row offers when dragged, undone rather than confirmed.
-    fn swipe_action(&self, action: &Value, key: &str) -> NodeBuild {
+    fn swipe_action(action: &Value, key: &str) -> NodeBuild {
         let mut node = empty("ui.SwipeAction", key);
         node.props
-            .insert("label".to_owned(), Value::text(self.action_name(action)));
+            .insert("label".to_owned(), Value::text(Self::action_name(action)));
         if let Some(icon) = opt_text(action, ICON) {
             node.props.insert("icon".to_owned(), Value::text(icon));
         }
@@ -773,12 +772,12 @@ impl Core {
     /// `entry` is the key the list's entry declares, when the window has one: the primary it
     /// stands for is answered there, so it names the addition plainly rather than a form to
     /// fill in.
-    fn action_button(&self, action: &Value, key: &str, entry: Option<&str>) -> NodeBuild {
+    fn action_button(action: &Value, key: &str, entry: Option<&str>) -> NodeBuild {
         let primary = flag(action, PRIMARY);
         let destructive = flag(action, DESTRUCTIVE);
         let frequent = flag(action, FREQUENT);
         let icon = opt_text(action, ICON).map(str::to_owned);
-        let mut name = self.action_name(action);
+        let mut name = Self::action_name(action);
         if primary && entry.is_some() && entry == opt_text(action, KEY) {
             name = name.trim_end_matches('…').to_owned();
         }
@@ -824,13 +823,14 @@ impl Core {
         node
     }
 
-    /// What an action is called: the word its id names, as the app's declarations wrote it.
-    fn action_name(&self, action: &Value) -> String {
-        let id = text_of(action_field(action, ID)).unwrap_or_default();
-        let label = text_of(action_field(action, LABEL)).unwrap_or_default();
-        self.words
-            .borrow()
-            .word(&tilolang::messages::key_of(id), &[], label)
+    /// What an action is called, as the offer said: the words of its declaration, in the
+    /// reader's language — those a view presenting its state showed where it has one — and the
+    /// "…" of a command that still asks for something before it acts
+    /// ([`crate::platform::Core::action_value`] settles both when it offers it).
+    fn action_name(action: &Value) -> String {
+        text_of(action_field(action, LABEL))
+            .unwrap_or_default()
+            .to_owned()
     }
 
     fn arena<T>(

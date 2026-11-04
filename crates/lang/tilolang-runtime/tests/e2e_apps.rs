@@ -1718,13 +1718,13 @@ mod cases {
         // not the window's main thing does: a control that names it, and says whether it can
         // run now.
         let can_run = |v: &ViewInstance| -> bool {
-            node_with(v.tree(), "ui.Button", "label", "Delete finished tasks…")
+            node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
                 .props
                 .get("enabled")
                 == Some(&Value::Int(1))
         };
         let why = |v: &ViewInstance| -> String {
-            match node_with(v.tree(), "ui.Button", "label", "Delete finished tasks…")
+            match node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
                 .props
                 .get("description")
             {

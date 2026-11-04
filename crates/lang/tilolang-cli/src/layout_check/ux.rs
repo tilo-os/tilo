@@ -1019,7 +1019,7 @@ mod tests {
         // away is called.
         let problems = found_as(
             Kind::UnsharedVerb,
-            &say("Delete finished tasks…"),
+            &say("Delete finished tasks"),
             (1280, 800),
             &destroys,
         );

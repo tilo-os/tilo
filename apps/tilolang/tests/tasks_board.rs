@@ -321,7 +321,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
-    let add = action_id(&mut app, &tasks, "New task");
+    let add = action_id(&mut app, &tasks, "New task…");
     let titled = |title: &str| {
         let mut args = serde_json::Map::new();
         args.insert("title".to_owned(), title.into());
@@ -358,7 +358,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     )
     .unwrap();
     // And removes one it added.
-    let remove = action_id(&mut app, &tasks, "Delete");
+    let remove = action_id(&mut app, &tasks, "Delete…");
     let mut which = serde_json::Map::new();
     which.insert(
         "t".to_owned(),
@@ -430,7 +430,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
         .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
         .remove(0);
     let tasks = format!("tl:so.tilo.lang.tasks:{root}");
-    let add = action_id(&mut app, &tasks, "New task");
+    let add = action_id(&mut app, &tasks, "New task…");
     let mut titled = serde_json::Map::new();
     titled.insert("title".to_owned(), "Call the landlord".into());
     app.invoke(None, None, &tasks, &add, &titled, false)

@@ -247,7 +247,7 @@ action due_next_week(t: Task) (label: "Next week", icon: .calendar, group: "Due"
 
 /// Makes a task due on a day the person picks.
 action schedule(t: Task, due: Option<Date>) (
-    label: "Pick date…",
+    label: "Pick date",
     icon: .calendar,
     key: "Ctrl+D",
     group: "Due",
@@ -293,7 +293,7 @@ action set_priority_urgent(t: Task) (label: "Urgent", icon: .triangle_alert, gro
 
 /// Files a task under a project the person picks.
 action file(t: Task, p: Project) (
-    label: "Project…",
+    label: "Project",
     icon: .folder,
     key: "Ctrl+Shift+M",
     group: "Move to project",
@@ -308,7 +308,7 @@ action unfile(t: Task) (label: "Inbox", icon: .inbox, group: "Move to project") 
 }
 
 /// Gives a task to someone, or to nobody.
-action assign(t: Task, who: Option<Principal>) (label: "Assign…", icon: .user) {
+action assign(t: Task, who: Option<Principal>) (label: "Assign", icon: .user) {
     t.assignee = who
 }
 
@@ -385,7 +385,7 @@ destructive action remove(tasks: Tasks, t: Task) (label: "Delete", icon: .trash,
 /// other commands, behind its menu.
 destructive action clear_done(tasks: Tasks) -> Int (
     icon: .circle_check,
-    label: "Delete finished tasks…",
+    label: "Delete finished tasks",
 ) {
     require tasks.items.count(x -> x.finished) > 0 "Nothing is finished yet"
     // A branch is finished when it and everything under it is done, which the list's index

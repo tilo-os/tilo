@@ -321,13 +321,7 @@ impl Core {
         let Some(meta) = pkg.action(&aref.action) else {
             return Vec::new();
         };
-        meta.params
-            .iter()
-            .enumerate()
-            .skip(aref.args.len())
-            .filter(|(_, param)| param.default.is_none())
-            .map(|(at, _)| at)
-            .collect()
+        meta.unbound(aref.args.len()).map(|(at, _)| at).collect()
     }
 
     /// The default of the parameter `at` of `action`, over the arguments before it: `None`

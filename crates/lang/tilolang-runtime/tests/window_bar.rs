@@ -209,7 +209,7 @@ mod cases {
         w.task(&root, "milk");
         let window = w.window("home", &root);
         let tree = window.tree();
-        let delete_finished = nodes_with(tree, "ui.Button", "label", "Delete finished tasks…");
+        let delete_finished = nodes_with(tree, "ui.Button", "label", "Delete finished tasks");
         assert_eq!(
             delete_finished.len(),
             1,
@@ -237,8 +237,45 @@ mod cases {
             .collect::<Vec<_>>();
         assert_eq!(
             destructive,
-            ["Delete finished tasks…"],
+            ["Delete finished tasks"],
             "only the actions declared destructive are drawn so:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// A command's "…" is the host's, and says what it means: it opens a form, because running
+    /// it still asks for an argument. Finished tasks' delete is answered by the window it stands
+    /// in — its only parameter is the resource the window shows — so it reads plainly, while the
+    /// actions whose forms ask for a day, a project or a person keep their "…". No app writes
+    /// the dots.
+    #[test]
+    fn the_dots_follow_the_arguments_the_offer_leaves_open() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        assert_eq!(
+            nodes_with(tree, "ui.Button", "label", "Delete finished tasks").len(),
+            1,
+            "the window answers what finished tasks' delete asks for:\n{}",
+            dump(tree)
+        );
+        let row = of_kind(tree, "ui.ListItem")[0];
+        let labels: Vec<String> = slot(row, "menu")
+            .iter()
+            .map(|item| text_of(item, "label"))
+            .collect();
+        for asks in ["Pick date…", "Project…", "Assign…"] {
+            assert!(
+                labels.iter().any(|label| label == asks),
+                "a form opens for {asks}, so it says so: {labels:?}\n{}",
+                dump(tree)
+            );
+        }
+        assert!(
+            labels.iter().any(|label| label == "Complete"),
+            "an action whose argument has a default runs at once: {labels:?}\n{}",
             dump(tree)
         );
     }

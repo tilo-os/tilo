@@ -72,6 +72,35 @@ destructive action remove(shelf: Shelf, item: Item) (icon: .trash) { shelf.items
 
 const ITEM_KIND: &str = "tl.so.tilo.lang.shapes.Item";
 
+/// A package with one command the person choosing it answers for, and one that runs on the
+/// resource alone.
+const ASKS: &str = r#"app so.tilo.lang.asks "Asks"
+
+type Pile {
+    name: Text
+}
+
+root Pile
+
+default view main for Pile
+
+view main(p: Pile) {
+    page {
+        text(p.name)
+    }
+}
+
+/// Renames it to what the person types.
+action rename(p: Pile, name: Text) {
+    p.name = name
+}
+
+/// Empties it: there is nothing left to ask.
+destructive action empty(p: Pile) (icon: .trash) {
+    p.name = ""
+}
+"#;
+
 /// The native counterpart of the package's `Size`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -396,4 +425,27 @@ fn a_resource_lists_the_views_that_show_it() {
     // A view is listed on the type it shows: an item has none of its own.
     let item = publish_record(&types, "Item", "i", "An item");
     assert!(item.views.is_empty(), "{:?}", item.views);
+}
+
+/// A command the person choosing it still has to answer for says so with "…", as the runtime's
+/// own menus do: what the published spec is given is the resource, so the parameters after it
+/// are the form's. One that acts on what it is given reads plainly.
+#[test]
+fn a_command_that_asks_for_an_argument_says_so_before_it_opens() {
+    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(ASKS, "")]);
+    let meta = &packages[0].meta;
+    let label = |name: &str| {
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+            .unwrap();
+        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+        action_type(meta, &meta.kind_of("Pile"), action, &planner, &SourceWords)
+            .bind(Target::new("l".to_owned()))
+            .label
+            .clone()
+    };
+    assert_eq!(label("rename"), "Rename…", "the name is the form's");
+    assert_eq!(label("empty"), "Empty", "it runs on what it is given");
 }

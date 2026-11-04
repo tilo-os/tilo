@@ -123,8 +123,8 @@ fn the_field_the_run_renamed_takes_its_colour() {
     let (mut app, notebook) = notes_after_a_run();
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
     let (agent, ambient) = run();
-    let item = published_with(&mut app, &notebook, "Retitle");
-    let retitle = action_id(&mut app, &item, "Retitle");
+    let item = published_with(&mut app, &notebook, "Retitle…");
+    let retitle = action_id(&mut app, &item, "Retitle…");
     let mut title = Map::new();
     title.insert("title".to_owned(), "Meeting notes".into());
     app.invoke(Some(agent), Some(&ambient), &item, &retitle, &title, false)

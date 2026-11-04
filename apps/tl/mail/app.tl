@@ -332,7 +332,7 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox", key: "i") {
 }
 
 /// Moves the conversation to another mailbox of its account.
-action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
+action move_to(t: Thread, to: Mailbox) (label: "Move to", icon: .folder) {
     require not t.boxes.any(b -> b == to.key) "It is in {to.name} already"
     for m in t.messages {
         if m.mailbox != "sent" {
