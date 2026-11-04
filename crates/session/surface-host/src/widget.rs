@@ -463,6 +463,7 @@ impl crate::Published for WidgetHost {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         let started = self
             .host

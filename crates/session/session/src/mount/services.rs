@@ -42,7 +42,12 @@ impl surfaces::ActionDoor for tilo_surface_host::Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        tilo_surface_host::Doors::invoke(self, address, arguments)
+        tilo_surface_host::Doors::invoke(
+            self,
+            address,
+            arguments,
+            &mut tilo_surface_host::Look::none(),
+        )
     }
 }
 
@@ -75,6 +80,7 @@ impl Published for ServiceDoor {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         match self
             .services

@@ -2634,9 +2634,10 @@ impl crate::Published for ShellPart {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         self.input = true;
-        crate::Published::invoke(&mut self.widgets, address, arguments)
+        crate::Published::invoke(&mut self.widgets, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

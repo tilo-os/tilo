@@ -29,6 +29,7 @@ mod shared_tree;
 pub mod surface;
 mod wake;
 pub mod warmth;
+pub mod window;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use surface::peer_view::{

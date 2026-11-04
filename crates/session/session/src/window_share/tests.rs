@@ -878,6 +878,133 @@ fn until_window(
     }
 }
 
+/// A window this session does not run — the person's own program on the
+/// compositor — is read and pictured through the two actions the desk
+/// publishes for it: `look` answers a picture kept in the workspace's
+/// content, `read` what the window calls itself. Neither acts on the
+/// window: a window is reached by the address its own app publishes, never
+/// by pixels.
+#[test]
+fn a_window_the_session_does_not_run_is_read_and_pictured() {
+    tilo_window_share::flatpak_share::read_encoders();
+    let mut host = member(0xa4, own_desk());
+    let _window = mapped(&mut host.session, APP);
+    let tab = foreign_tab(&host.session);
+    let workspace = host
+        .session
+        .desktop()
+        .with_policy(|policy| {
+            policy
+                .handle()
+                .read(|tree| tree.active_workspace().map(|held| held.id().to_string()))
+        })
+        .expect("a workspace in front");
+
+    // What the window calls itself, as the desk names it in its bar.
+    let read = completed(
+        host.session
+            .invoke(&tab_resource_id(tab), "read", &Arguments::new())
+            .expect("read answers"),
+    );
+    let answered = read.value.expect("read answers with what the window is");
+    assert_eq!(answered["app"], APP);
+    assert_eq!(
+        answered["title"],
+        tilo_desktop_search::names::window_name(APP, APP),
+        "the title the desk shows: {answered}"
+    );
+
+    // The picture of the window, kept where any caller of the action
+    // protocol reads content by.
+    let look = completed(
+        host.session
+            .invoke(&tab_resource_id(tab), "look", &Arguments::new())
+            .expect("look answers"),
+    );
+    let answered = look.value.expect("look answers with the picture");
+    let address = answered["content"].as_str().expect("the picture's address");
+    let hash = tilo_actions::content_hash(address).expect("a content address");
+    assert!(
+        host.session.content.puts().holds(&workspace, hash),
+        "the picture is kept as content of the workspace the window stands in: {answered}"
+    );
+    assert_eq!(
+        look.resources,
+        [address.to_owned()],
+        "the picture is the answer's one resource"
+    );
+    for edge in ["width", "height"] {
+        assert!(
+            answered[edge].as_u64().is_some_and(|pixels| pixels > 0),
+            "the picture has the window's {edge}: {answered}"
+        );
+    }
+
+    // The window's row offers nothing that reaches into the window itself:
+    // the two reads, and the desk's own focus and close of the tab it
+    // stands in.
+    let row = host
+        .session
+        .resources()
+        .into_iter()
+        .flat_map(descendants)
+        .find(|resource| resource.id.as_str() == tab_resource_id(tab))
+        .expect("the window's row");
+    for action in &row.actions {
+        assert!(
+            matches!(
+                action.action_type().operation_type.as_deref(),
+                Some(tilo_desktop_surface::window::LOOK | tilo_desktop_surface::window::READ)
+            ) || action.id == "focus"
+                || action.id == "close-tab",
+            "the window's row offers {}, which reaches into another desktop's window",
+            action.id
+        );
+    }
+}
+
+/// The tab of the one window the compositor runs but this session did not
+/// start, as the desk's tree names it.
+#[track_caller]
+fn foreign_tab(session: &Session) -> u64 {
+    session
+        .desktop()
+        .with_policy(|policy| {
+            policy.handle().read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .flat_map(|workspace| &workspace.strips)
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find_map(|tab| match tab.tile {
+                        TileContent::Foreign { .. } => Some(tab.id),
+                        _ => None,
+                    })
+            })
+        })
+        .expect("a window the session does not run")
+}
+
+/// `started`, or the completed answer it is.
+#[track_caller]
+fn completed(started: ui::host_operation::ResourceOperationStart) -> tilo_actions::ActionOutput {
+    match started {
+        ui::host_operation::ResourceOperationStart::Completed(output) => output,
+        ui::host_operation::ResourceOperationStart::Accepted => {
+            panic!("a read action answers at once")
+        }
+    }
+}
+
+/// `resource` and everything below it.
+fn descendants(resource: ResourceSpec) -> Vec<ResourceSpec> {
+    let mut all = vec![resource.clone()];
+    for child in resource.children {
+        all.extend(descendants(child));
+    }
+    all
+}
+
 /// One session shares a window of its desk and the other shows it: the
 /// viewing member's tab holds the picture its sender streams, and the sharing
 /// device's bar names the member watching it.

@@ -221,6 +221,7 @@ impl Published for LaunchNotes {
         &mut self,
         address: &ActionAddress,
         _: &Map<String, Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         Err(tilo_actions::DoorError::Unknown(address.clone()))
     }

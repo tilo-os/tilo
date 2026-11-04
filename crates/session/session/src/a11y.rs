@@ -355,6 +355,7 @@ mod tests {
             &mut self,
             address: &ui::tilo_actions::ActionAddress,
             _arguments: &serde_json::Map<String, serde_json::Value>,
+            _look: &mut tilo_surface_host::Look<'_>,
         ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError>
         {
             Err(ui::tilo_actions::DoorError::Unknown(address.clone()))

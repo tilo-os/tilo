@@ -396,6 +396,69 @@ impl DesktopHost {
         self.desk.borrow().policy.handle().set_withheld_apps(apps);
     }
 
+    /// Answer `look` and `read` of a window this session does not run, which
+    /// the desk publishes on the window's own resource: the tree holds what
+    /// they say, and the session's [`crate::Look`] makes the picture. Any
+    /// other address is left to the desk's tree.
+    fn read_window(
+        &self,
+        address: &ui::tilo_actions::ActionAddress,
+        look: &mut crate::Look<'_>,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::DoorError>
+    {
+        use tilo_desktop_surface::window;
+        let reads = address.action == "look" || address.action == "read";
+        let Some(tab) = window::resource_tab(&address.resource).filter(|_| reads) else {
+            return Ok(None);
+        };
+        let desk = self.desk.borrow();
+        let handle = desk.policy.handle();
+        let Some(shown) = handle.read(|tree| window::shown(tree, tab)) else {
+            // Not a window this session does not run: the tree publishes no
+            // read action of it, so the address names nothing.
+            return Err(ui::tilo_actions::DoorError::Unknown(address.clone()));
+        };
+        if address.action == "look" {
+            // A window whose app keeps what it shows to itself is never
+            // pictured, however it was asked: the address is not offered
+            // while it is withheld, and a catalogue read before then does not
+            // outlive it.
+            if handle.withholds(&shown.app_id) {
+                return Err(ui::tilo_actions::DoorError::Unavailable {
+                    code: "withheld".into(),
+                    reason: "this app's window keeps what it shows to itself".into(),
+                });
+            }
+            let shot = look
+                .window(shown.window, &shown.workspace)
+                .map_err(|reason| ui::tilo_actions::DoorError::Unavailable {
+                    code: "no_picture".into(),
+                    reason,
+                })?;
+            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+                ui::tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "title": shown.title,
+                        "app": shown.app_id,
+                        "width": shot.width,
+                        "height": shot.height,
+                        "content": shot.content,
+                    })),
+                    resources: vec![shot.content],
+                },
+            )));
+        }
+        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+            ui::tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({
+                    "title": shown.title,
+                    "app": shown.app_id,
+                })),
+                resources: Vec::new(),
+            },
+        )))
+    }
+
     /// Read touchpad gestures by `config` from the next one on; `None`
     /// leaves them all to the clients.
     pub fn set_gestures(&self, config: Option<GestureConfig>) {
@@ -483,8 +546,31 @@ impl crate::Published for DesktopHost {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
-        crate::Published::invoke(&mut self.desk.borrow_mut().host, address, arguments)
+        if let Some(answered) = self.read_window(address, look)? {
+            return Ok(answered);
+        }
+        crate::Published::invoke(&mut self.desk.borrow_mut().host, address, arguments, look)
+    }
+
+    fn invoke_as(
+        &mut self,
+        actor: &str,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut crate::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
+        if let Some(answered) = self.read_window(address, look)? {
+            return Ok(answered);
+        }
+        crate::Published::invoke_as(
+            &mut self.desk.borrow_mut().host,
+            actor,
+            address,
+            arguments,
+            look,
+        )
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

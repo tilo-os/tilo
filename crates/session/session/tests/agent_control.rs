@@ -1,6 +1,6 @@
-//! An agent the person admitted drives a seat of its own through the agent door, in the
-//! control protocol its computer tools speak: its pointer, the frames it sees, the window it
-//! aims at — and nothing of the person's desk.
+//! The control protocol a program speaks for the session's pointer, keys and frames is served
+//! to a program inside an app this session started, and to nothing else: an agent the person
+//! admitted is no exception, so no tool acts through pixels or synthetic input.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -144,15 +144,6 @@ fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     });
 }
 
-/// The agent's own seat, as its control connection reads it.
-fn seat_of(session: &mut Session, socket: &std::path::Path) -> Value {
-    control(
-        session,
-        socket,
-        &json!({"op": "agent_seat", "agent": "claude-code"}),
-    )
-}
-
 /// Ask to work here and allow it for this session: the program is served as
 /// the agent the person admitted.
 fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Value {
@@ -164,47 +155,17 @@ fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Val
     })
 }
 
-/// A frame of the seat's viewport, written as a PNG at `path`.
-fn frame(session: &mut Session, socket: &std::path::Path, path: &std::path::Path) -> (u32, u32) {
-    let shot = control(
-        session,
-        socket,
-        &json!({
-            "op": "snapshot",
-            "agent": "claude-code",
-            "path": path.to_str().expect("a path"),
-        }),
-    );
-    assert_eq!(shot, json!({"ok": {"frame": 0}}), "the seat sees: {shot}");
-    let image = image::open(path).expect("a PNG").into_rgba8();
-    (image.width(), image.height())
-}
-
-/// Before the person admits anyone, a program that speaks the control protocol
-/// is served nothing here: no seat is its own.
-fn nothing_before_admission(session: &mut Session, socket: &std::path::Path) {
-    let refused = control(session, socket, &json!({"op": "agent_seat"}));
-    let code = refused.pointer("/err/code").and_then(Value::as_str);
-    assert_eq!(
-        code,
-        Some("not_allowed"),
-        "a program outside the door's agents has no seat: {refused}"
-    );
-    let message = refused.pointer("/err/message").and_then(Value::as_str);
-    assert!(
-        message.is_some_and(|message| message.contains("an agent the person admitted")),
-        "it is told a seat is an admitted agent's: {refused}"
-    );
-}
-
+/// A program that speaks the control protocol is served nothing here, whether or not the person
+/// admitted it: an agent reads and acts through the actions a resource publishes, never through
+/// the session's pointer, keys or a picture of its screen.
 #[test]
-fn an_admitted_agents_control_connection_is_served_as_its_own_seat() {
+fn a_control_connection_is_refused_even_from_an_admitted_agent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("agent.sock");
     let (mut session, questions) = session(root.path(), &socket);
 
-    nothing_before_admission(&mut session, &socket);
+    refused_control(&mut session, &socket, "before the person admitted anything");
 
     // The program asks to work here; the person allows it for this session.
     let program = Program::connect(&socket);
@@ -214,79 +175,36 @@ fn an_admitted_agents_control_connection_is_served_as_its_own_seat() {
         "the program is served as the agent it was admitted as: {served}"
     );
 
-    // Its computer tools drive a seat of their own: a viewport on the screen it acts in.
-    let seat = seat_of(&mut session, &socket);
-    assert_eq!(
-        seat["answer"]["viewport"],
-        json!([0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)]),
-        "the seat sees the whole screen it acts on: {seat}"
-    );
-    assert_eq!(seat["answer"]["agent"], "claude-code", "{seat}");
+    refused_control(&mut session, &socket, "with the agent admitted");
+    program.end();
+}
 
-    // Its pointer moves, and the frames it sees come back as a PNG of that viewport.
-    let moved = control(
-        &mut session,
-        &socket,
-        &json!({
-            "op": "pointer_move",
-            "agent": "claude-code",
-            "window": null,
-            "x": 40.0,
-            "y": 24.0,
-        }),
-    );
-    assert_eq!(
-        moved,
-        json!({"ok": {}}),
-        "the seat's pointer moves: {moved}"
-    );
-
-    let png = root.path().join("seat.png");
-    assert_eq!(
-        frame(&mut session, &socket, &png),
-        (
-            u32::try_from(WIDTH).unwrap(),
-            u32::try_from(HEIGHT).unwrap()
-        ),
-        "the frames are the viewport the seat was given"
-    );
-
-    // The seat has its own hands and nothing of the person's desk: the ops the person's doors
-    // answer are refused here, by name.
-    for (op, request) in [
-        (
-            "click_at",
-            json!({"op": "click_at", "agent": "claude-code", "x": 2.0, "y": 2.0}),
-        ),
-        ("windows", json!({"op": "windows", "agent": "claude-code"})),
+/// Ask for a seat on the control protocol and read the refusal: it names the protocol as served
+/// to a program inside an app this session started, and to nothing else.
+#[track_caller]
+fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) {
+    for request in [
+        json!({"op": "agent_seat"}),
+        json!({"op": "pointer_move", "x": 40.0, "y": 24.0}),
+        json!({"op": "click_at", "x": 2.0, "y": 2.0}),
+        json!({"op": "type", "text": "hello"}),
     ] {
-        let refused = control(&mut session, &socket, &request);
+        let refused = control(session, socket, &request);
         assert_eq!(
-            refused["err"]["code"], "not_permitted",
-            "a seat is not the person's desk: {op} {refused}"
+            refused.pointer("/err/code").and_then(Value::as_str),
+            Some("not_allowed"),
+            "{when}, the control protocol answers no `{}`: {refused}",
+            request["op"]
         );
+        let message = refused
+            .pointer("/err/message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         assert!(
-            refused["err"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains(op)),
-            "{op} is named in its refusal: {refused}"
+            message.contains("a program running inside an app"),
+            "it is told what the protocol is served to: {refused}"
         );
     }
-
-    // The program leaves: the seat is no longer served on this pid.
-    program.end();
-    let refused = common::wait_for(
-        &mut session,
-        "the program's seat to stop being served",
-        |session| {
-            let refused = seat_of(session, &socket);
-            (refused["err"]["code"] == "not_allowed").then_some(refused)
-        },
-    );
-    assert_eq!(
-        refused["err"]["code"], "not_allowed",
-        "an ended agent's program has no seat: {refused}"
-    );
 }
 
 /// What the desk says to the person now: the titles and bodies of its notices.

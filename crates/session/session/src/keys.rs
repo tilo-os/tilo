@@ -1088,13 +1088,17 @@ impl Shared {
     /// The lock screen withholds the hosted surfaces' actions while it is
     /// up; the keys that work there are the device's own (a level, the
     /// power key), and the services publishing those still run.
-    pub(crate) fn run_invocations(&self, locked: bool) -> bool {
+    pub(crate) fn run_invocations(
+        &self,
+        locked: bool,
+        look: &mut tilo_surface_host::Look<'_>,
+    ) -> bool {
         let invocations = std::mem::take(&mut *self.invocations.borrow_mut());
         let ran = !invocations.is_empty();
         for invocation in invocations {
             let outcome = self
                 .doors
-                .invoke(&invocation.address, &invocation.arguments)
+                .invoke(&invocation.address, &invocation.arguments, look)
                 .or_else(|error| {
                     if !locked {
                         return Err(error);
@@ -1314,7 +1318,10 @@ impl Shared {
             });
         let arguments = osd.arguments(display.as_deref());
         let address = ActionAddress::new(OSD_RESOURCE, "show");
-        if let Err(error) = self.doors.invoke(&address, &arguments) {
+        if let Err(error) =
+            self.doors
+                .invoke(&address, &arguments, &mut tilo_surface_host::Look::none())
+        {
             tracing::warn!(?error, "no readout shown");
         }
     }

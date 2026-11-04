@@ -238,6 +238,7 @@ impl Published for Setup {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         let Surface::Ceremony { door, .. } = &self.surface else {
             return Err(DoorError::Unknown(address.clone()));

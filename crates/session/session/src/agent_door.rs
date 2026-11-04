@@ -321,8 +321,6 @@ struct Inner {
 }
 
 struct Connection {
-    /// The pid that opened it, as the seat's own computer tools connect with.
-    pid: u32,
     /// The agent the person admitted it as: empty until they answer.
     agent: String,
     /// What the client called itself, as the sheet showed it.
@@ -342,14 +340,13 @@ impl Seats {
 
     /// A connection, before the person answers for it: nothing of it shows
     /// until it is admitted.
-    fn joining(&self, pid: u32) -> u64 {
+    fn joining(&self) -> u64 {
         let mut inner = self.inner.lock_recover();
         inner.next = inner.next.wrapping_add(1);
         let seat = inner.next;
         inner.connections.insert(
             seat,
             Connection {
-                pid,
                 agent: String::new(),
                 client: String::new(),
                 workspace: String::new(),
@@ -425,27 +422,6 @@ impl Seats {
             }
         }
         true
-    }
-
-    /// The agent `pid` was admitted as, when that program is served here now: what its own
-    /// computer tools drive a seat as.
-    fn agent_of(&self, pid: u32) -> Option<String> {
-        let inner = self.inner.lock_recover();
-        inner
-            .connections
-            .values()
-            .find(|connection| connection.pid == pid && !connection.agent.is_empty())
-            .map(|connection| connection.agent.clone())
-    }
-
-    /// Whether `agent` is still seated here: the person's Stop ends every one of its
-    /// connections.
-    pub(crate) fn admits(&self, agent: &str) -> bool {
-        self.inner
-            .lock_recover()
-            .connections
-            .values()
-            .any(|connection| connection.agent == agent)
     }
 
     /// The agents seated here now, as the desk's shell lists them.
@@ -1274,11 +1250,12 @@ fn refuse(mut stream: UnixStream, refusal: &PeerRefusal) {
     }
 }
 
-/// What a control client that is neither an admitted agent nor a program inside an app this
-/// session started is told.
-const CONTROL_IN_APP_ONLY: &str = "The control protocol is served here to an agent the person \
-     admitted, as that agent's own seat, and to a program running inside an app this session \
-     started, as that app; this program is neither.";
+/// What a control client that is not a program inside an app this session started is told:
+/// the pointer, the keys and the frames of the person's desk are theirs, and an agent acts
+/// through the actions a resource publishes.
+const CONTROL_IN_APP_ONLY: &str = "The control protocol is served here to a program running \
+     inside an app this session started, as that app, and to nothing else: this program is \
+     not one.";
 
 /// Tell a control client it is served nothing here, in the control
 /// protocol's own framing, then let it go.
@@ -1446,6 +1423,7 @@ impl SessionDoors {
         search: &crate::search::SessionSearch,
         shows: &dyn Fn(&str) -> bool,
         person: &str,
+        look: &mut tilo_surface_host::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
@@ -1477,9 +1455,9 @@ impl SessionDoors {
                             reason: word("agent-door-session-reads-only"),
                         })
                     } else if actor == person {
-                        doors.invoke(&address, &arguments)
+                        doors.invoke(&address, &arguments, look)
                     } else {
-                        doors.invoke_as(&actor, &address, &arguments)
+                        doors.invoke_as(&actor, &address, &arguments, look)
                     };
                     done.complete(ran);
                 }
@@ -2067,14 +2045,6 @@ fn serve_connection(
         }
     };
     if tilo_runtime::session_door::is_control_request(&first) {
-        // An admitted agent's own program drives its own seat: its pointer,
-        // its keys and the window it aims at, with none of the person's desk.
-        if let Some(agent) = seats.agent_of(pid) {
-            tracing::info!(pid, %agent, "agent door: an admitted agent asked in the control protocol");
-            let first = String::from_utf8_lossy(&first).into_owned();
-            crate::test_control::serve_seat(stream, first, &agent, control);
-            return;
-        }
         // Only a program inside an app this session started drives the
         // control protocol: it acts as that app, in the workspace the app was
         // started into, and the broker's permissions decide for it.
@@ -2107,7 +2077,7 @@ fn serve_connection(
         Arc::clone(session),
     ));
     let admitted = Arc::clone(&tasks);
-    let seat = seats.joining(pid);
+    let seat = seats.joining();
     let seat_stream = match stream.try_clone() {
         Ok(copy) => Some(copy),
         Err(error) => {
@@ -2221,7 +2191,7 @@ mod tests {
         use std::io::Read as _;
         let seats = Seats::new();
         let (served, client) = UnixStream::pair().unwrap();
-        let asked = seats.joining(41);
+        let asked = seats.joining();
         assert!(
             seats.readings().is_empty(),
             "nothing shows before the answer"
@@ -2239,7 +2209,7 @@ mod tests {
         // One agent, two connections: the bar shows one presence, and the
         // person's Stop ends both.
         let (second_served, second_client) = UnixStream::pair().unwrap();
-        let other = seats.joining(41);
+        let other = seats.joining();
         seats.admitted(other, "claude-code", "Claude Code", "Studio");
         seats.attached(other, &second_served);
         assert_eq!(seats.readings().len(), 1, "one presence per agent");

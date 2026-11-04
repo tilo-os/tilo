@@ -1813,6 +1813,20 @@ impl Compositor {
         self.data.state.shareable_window_rect(identifier)
     }
 
+    /// The foreign-toplevel identifier of the mapped window whose
+    /// [`WindowInfo::id`] is `id`: what a capture names a window by, and how
+    /// what the desk knows of a window reaches what it shows.
+    #[must_use]
+    pub fn capture_identifier(&self, id: u64) -> Option<String> {
+        self.data
+            .state
+            .capture
+            .shareable_windows()
+            .into_iter()
+            .find(|(_, info)| info.id == id)
+            .map(|(identifier, _)| identifier)
+    }
+
     /// The evdev code of a key of the active layout that produces
     /// `keysym`; `None` when the layout cannot type it.
     #[must_use]

@@ -1082,7 +1082,15 @@ impl crate::Shared {
                     uri,
                     fallback: None,
                 },
-                &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+                &mut |own| {
+                    self.doors
+                        .invoke(
+                            &own.address,
+                            &own.arguments,
+                            &mut tilo_surface_host::Look::none(),
+                        )
+                        .map(drop)
+                },
             );
         }
         // What the person handed to an agent becomes the task it acts on, in
@@ -1113,7 +1121,15 @@ impl crate::Shared {
                 notifications::HistoryActivation::OpenApp { app_id, .. } => self.search.perform(
                     &workspace,
                     tilo_desktop_search::Target::Launch { app: app_id },
-                    &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+                    &mut |own| {
+                        self.doors
+                            .invoke(
+                                &own.address,
+                                &own.arguments,
+                                &mut tilo_surface_host::Look::none(),
+                            )
+                            .map(drop)
+                    },
                 ),
                 other => tracing::debug!(?other, "notification chosen"),
             }

@@ -227,6 +227,7 @@ impl Published for People {
         &mut self,
         address: &ActionAddress,
         _arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         Err(DoorError::Unknown(address.clone()))
     }
@@ -420,8 +421,9 @@ impl Published for Door {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        self.0.borrow_mut().invoke(address, arguments)
+        self.0.borrow_mut().invoke(address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

@@ -55,6 +55,8 @@ desktop:desk desktop (Windows)
     close-tab Close Mail
     focus Focus Mail
     force-quit-app Force quit Mail
+    look See Mail as a picture
+    read Read what Mail shows
     wait-window Keep waiting for Mail
   desktop:display:1 desktop.display (Display 1)
     focus-display Focus a display

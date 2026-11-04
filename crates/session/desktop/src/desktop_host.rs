@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
+use tilo_desktop_model::layout::TileContent;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId, WorkspaceSlot,
 };
@@ -39,7 +40,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 use crate::about::TiloMenu;
 use crate::chrome::{ChromeIntent, TopBarPresence};
-use crate::desk_verbs::{OpenSearch, chrome_resource, desk_resource, launchpad_resource};
+use crate::desk_verbs::{self, OpenSearch, chrome_resource, desk_resource, launchpad_resource};
 use crate::desk_widgets::music::MusicAction;
 use crate::display_identify::DisplayIdentify;
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
@@ -477,7 +478,7 @@ impl DeskLayer {
 
 impl ui::resources::PublishesResources for DeskLayer {
     fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        let tabs: Vec<(u64, String)> = self.handle.read(|tree| {
+        let windows: Vec<desk_verbs::Shown> = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
                 .flat_map(|workspace| &workspace.strips)
@@ -488,7 +489,21 @@ impl ui::resources::PublishesResources for DeskLayer {
                         || tab.title.clone(),
                         |app| tilo_desktop_search::names::window_name(&app, &tab.title),
                     );
-                    (tab.id, title)
+                    // A window the session does not run is read of through the
+                    // desk, unless its app keeps what it shows to itself: the
+                    // address is not offered, so no row names a picture nobody
+                    // may make.
+                    let foreign = match &tab.tile {
+                        TileContent::Foreign { app_id, .. } if !self.handle.withholds(app_id) => {
+                            Some(app_id.clone())
+                        }
+                        _ => None,
+                    };
+                    desk_verbs::Shown {
+                        tab: tab.id,
+                        title,
+                        foreign,
+                    }
                 })
                 .collect()
         });
@@ -499,7 +514,12 @@ impl ui::resources::PublishesResources for DeskLayer {
             searching: self.handle.search_searching(),
         });
         let hung = self.handle.unresponsive_tabs();
-        let mut resources = vec![desk_resource(&tabs, &hung, &self.handle.displays(), search)];
+        let mut resources = vec![desk_resource(
+            &windows,
+            &hung,
+            &self.handle.displays(),
+            search,
+        )];
         if self.handle.read(desk_is_empty) {
             resources.push(launchpad_resource());
         }

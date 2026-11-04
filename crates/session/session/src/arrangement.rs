@@ -1608,6 +1608,7 @@ impl Published for ArrangementDoor {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         // The arrangement publishes its record's undo and redo beside its
         // arranging actions: both step the record, never decode as an
@@ -1681,9 +1682,10 @@ impl Published for ArrangementDoor {
         actor: &str,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         actor.clone_into(&mut self.actor.borrow_mut());
-        self.invoke(address, arguments)
+        self.invoke(address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

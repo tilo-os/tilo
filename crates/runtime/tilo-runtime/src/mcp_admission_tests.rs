@@ -10,7 +10,6 @@ fn admitted_runtime_factory_preserves_exact_caller_and_ignores_client_identity_l
         "workspace".into(),
         actor,
         Some("secret".into()),
-        None,
     ));
     let created = Arc::new(Mutex::new(Vec::new()));
     let seen = created.clone();
@@ -54,7 +53,6 @@ fn admitted_runtime_factory_failure_or_wrong_audience_never_falls_back_to_keyles
             "workspace".into(),
             "04".repeat(32),
             Some("secret".into()),
-            None,
         ));
         endpoint
             .serve_sessions(Arc::new(move || {
@@ -114,9 +112,19 @@ fn an_agent_session_acts_as_its_admitted_agent_in_its_own_execution() {
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
-        assert!(names.contains(&"tilo_do"), "{names:?}");
-        assert!(
-            !names.iter().any(|name| name.starts_with("computer")),
+        // What an agent is handed: resources and the actions their apps
+        // publish, and nothing that moves a pointer, presses a key or
+        // replays an adapter — no tool here reaches a program's window.
+        assert_eq!(
+            names,
+            [
+                "tilo_ls",
+                "tilo_read",
+                "tilo_do",
+                "tilo_find",
+                "tilo",
+                "tilo_status"
+            ],
             "{names:?}"
         );
         for server in [&first, &second] {

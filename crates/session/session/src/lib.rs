@@ -101,6 +101,7 @@ pub mod live;
 mod lock_screen;
 mod lock_service;
 pub mod logging;
+mod look;
 mod membership;
 pub mod mount;
 pub mod nearby_transfer;
@@ -647,7 +648,7 @@ impl Shared {
     }
 
     /// Carry out what the person chose in the sheets.
-    fn follow_sheets(&self) {
+    fn follow_sheets(&self, look: &mut tilo_surface_host::Look<'_>) {
         // What a place can show, as the arrangement published it: an
         // agent's `find` leads with the resource typing the text would
         // place, so it reads the same catalogue the canvas places through.
@@ -658,6 +659,7 @@ impl Shared {
             &self.search,
             &|resource| catalog.borrow().get(resource).is_some(),
             &self.person,
+            look,
         );
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
@@ -822,6 +824,10 @@ pub struct Session {
     /// The plane the apps it runs read and invoke its services on, while it
     /// serves one.
     action_plane: Option<Plane>,
+    /// The content its workspaces' records reference, and what a window it
+    /// does not run is pictured into: the address is read by any caller of
+    /// the action protocol.
+    content: std::sync::Arc<content::Plane>,
     /// The control door `tilo-control` drives this session over: the
     /// development and the device admin's sockets, when the launcher names
     /// them, and the one a program inside an app reaches.
@@ -1608,7 +1614,7 @@ impl Session {
                     broker: std::sync::Arc::clone(&channels_broker),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
-                content: Some(record_content),
+                content: Some(std::sync::Arc::clone(&record_content)),
                 task_programs,
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
@@ -2048,6 +2054,7 @@ impl Session {
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,
+            content: record_content,
             control,
             liveness,
             automation,
@@ -2461,9 +2468,11 @@ impl Session {
     /// The door's refusal: there is no step to take back.
     pub fn undo_arrangement(&mut self) -> Result<(), DoorError> {
         let address = ActionAddress::new(arrangement::RECORD_RESOURCE, "undo");
-        self.shared
-            .doors
-            .invoke(&address, &serde_json::Map::new())?;
+        self.shared.doors.invoke(
+            &address,
+            &serde_json::Map::new(),
+            &mut crate::look::look(&mut self.compositor, Some(&self.content)),
+        )?;
         Ok(())
     }
 
@@ -2485,9 +2494,12 @@ impl Session {
         if let Ok(mut arrangement) = self.shared.arrangement.try_borrow_mut() {
             let _ = &mut arrangement;
         }
-        self.shared
-            .doors
-            .invoke_as(actor, &ActionAddress::new(resource, action), arguments)
+        self.shared.doors.invoke_as(
+            actor,
+            &ActionAddress::new(resource, action),
+            arguments,
+            &mut crate::look::look(&mut self.compositor, Some(&self.content)),
+        )
     }
 
     /// A window was at `place`: where search's Continue reopens it.
@@ -2510,7 +2522,11 @@ impl Session {
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
         let address = ActionAddress::new(resource, action);
-        let started = self.shared.doors.invoke(&address, arguments)?;
+        let started = self.shared.doors.invoke(
+            &address,
+            arguments,
+            &mut crate::look::look(&mut self.compositor, Some(&self.content)),
+        )?;
         self.settle()
             .map_err(|error| DoorError::Failed(error.to_string()))?;
         Ok(started)
@@ -2650,7 +2666,10 @@ impl Session {
     /// chain.
     fn settle_asks(&mut self) -> Result<(), Error> {
         for _ in 0..4 {
-            self.shared.follow_asks();
+            self.shared.follow_asks(&mut crate::look::look(
+                &mut self.compositor,
+                Some(&self.content),
+            ));
             // What was plugged in since, and what the person asked of its
             // notice: an open starts Files like any other launch.
             if let Some(drives) = &self.shared.drives {
@@ -2681,7 +2700,11 @@ impl Session {
             self.shared.follow_gestures();
             self.shared.follow_tab_menus();
             self.follow_window_moves();
-            let ran = self.shared.run_invocations(self.compositor.locked());
+            let locked = self.compositor.locked();
+            let ran = {
+                let mut look = crate::look::look(&mut self.compositor, Some(&self.content));
+                self.shared.run_invocations(locked, &mut look)
+            };
             let commands = std::mem::take(&mut *self.shared.commands.borrow_mut());
             let commanded = !commands.is_empty();
             for command in commands {

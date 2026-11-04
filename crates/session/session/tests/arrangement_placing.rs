@@ -94,6 +94,7 @@ impl Published for Mailbox {
         &mut self,
         address: &ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         self.asked.borrow_mut().push(address.action.clone());
         Ok(ui::host_operation::ResourceOperationStart::Completed(

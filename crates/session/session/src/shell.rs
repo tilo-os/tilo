@@ -843,11 +843,12 @@ impl tilo_surface_host::Published for ShellChrome {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
-        self.chrome.borrow_mut().invoke(address, arguments)
+        self.chrome.borrow_mut().invoke(address, arguments, look)
     }
 
     fn invoke_as(
@@ -855,13 +856,14 @@ impl tilo_surface_host::Published for ShellChrome {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
         self.chrome
             .borrow_mut()
-            .invoke_as(actor, address, arguments)
+            .invoke_as(actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -904,6 +906,7 @@ impl tilo_surface_host::Published for ShellDesk {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
         {
@@ -913,7 +916,7 @@ impl tilo_surface_host::Published for ShellDesk {
                 // The desk runs its search as it always does, so its rows are published on its
                 // search resource for the palette and the agents; the shell's launcher is what
                 // draws, and it opens on what was asked for.
-                let started = self.desk.borrow_mut().invoke(address, arguments)?;
+                let started = self.desk.borrow_mut().invoke(address, arguments, look)?;
                 self.surfaces.overlays.search(query);
                 return Ok(started);
             }
@@ -923,7 +926,7 @@ impl tilo_surface_host::Published for ShellDesk {
                 tilo_actions::ActionOutput::default(),
             ));
         }
-        self.desk.borrow_mut().invoke(address, arguments)
+        self.desk.borrow_mut().invoke(address, arguments, look)
     }
 
     fn invoke_as(
@@ -931,12 +934,15 @@ impl tilo_surface_host::Published for ShellDesk {
         actor: &str,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
         if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
         {
-            return self.invoke(address, arguments);
+            return self.invoke(address, arguments, look);
         }
-        self.desk.borrow_mut().invoke_as(actor, address, arguments)
+        self.desk
+            .borrow_mut()
+            .invoke_as(actor, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -1073,12 +1079,24 @@ impl crate::Session {
                             tilo_desktop_search::Target::Launch {
                                 app: app.to_owned(),
                             },
-                            &mut |own| doors.invoke(&own.address, &own.arguments).map(drop),
+                            &mut |own| {
+                                doors
+                                    .invoke(
+                                        &own.address,
+                                        &own.arguments,
+                                        &mut tilo_surface_host::Look::none(),
+                                    )
+                                    .map(drop)
+                            },
                         )
                         .map_err(|error| error.to_string());
                 }
                 doors
-                    .invoke(&ActionAddress::new(resource, action), arguments)
+                    .invoke(
+                        &ActionAddress::new(resource, action),
+                        arguments,
+                        &mut tilo_surface_host::Look::none(),
+                    )
                     .map(drop)
                     .map_err(|error| error.to_string())
             },

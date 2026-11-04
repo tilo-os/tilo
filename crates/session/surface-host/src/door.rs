@@ -15,12 +15,66 @@ use ui::device_local_door::SharedDoor;
 use ui::host_operation::ResourceOperationStart;
 use ui::tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 
+/// A picture of a window, as a surface answers with one: the address it is
+/// kept at, and how large it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shot {
+    /// Where the picture is kept: a `tilo.content:<hash>` address any caller
+    /// of the action protocol reads it by.
+    pub content: String,
+    /// Its width in pixels.
+    pub width: u32,
+    /// Its height in pixels.
+    pub height: u32,
+}
+
+/// The session's way of picturing a window it does not run, handed to the
+/// surface publishing that window's `look` when it is invoked: the picture
+/// is made where the compositor is, never by the surface that names the
+/// window. Absent ([`Look::none`]) where no compositor stands, which is
+/// every caller that is not the session's own loop.
+pub struct Look<'a> {
+    picture: Option<Picture<'a>>,
+}
+
+/// How a surface pictures the window `u64` into content kept in `&str`.
+type Picture<'a> = Box<dyn FnMut(u64, &str) -> Result<Shot, String> + 'a>;
+
+impl<'a> Look<'a> {
+    /// No picture can be made here.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self { picture: None }
+    }
+
+    /// Pictures are made by `picture`: the compositor's own.
+    pub fn over(picture: impl FnMut(u64, &str) -> Result<Shot, String> + 'a) -> Self {
+        Self {
+            picture: Some(Box::new(picture)),
+        }
+    }
+
+    /// The window the compositor knows as `window`, kept as content of
+    /// `workspace`.
+    ///
+    /// # Errors
+    /// No picture can be made here, the window is not on the desk (any more),
+    /// or it could not be drawn or kept.
+    pub fn window(&mut self, window: u64, workspace: &str) -> Result<Shot, String> {
+        match &mut self.picture {
+            Some(picture) => picture(window, workspace),
+            None => Err("no compositor stands here to picture a window".into()),
+        }
+    }
+}
+
 /// A hosted surface's published side.
 pub trait Published {
     /// What it publishes now: its resources, with their actions.
     fn resources(&mut self) -> Vec<ResourceSpec>;
 
-    /// Run its published action `address` with `arguments`.
+    /// Run its published action `address` with `arguments`; `look` pictures a
+    /// window this session does not run, for the surface publishing one.
     ///
     /// # Errors
     /// The surface's refusal: no such action, bad arguments, not allowed.
@@ -28,6 +82,7 @@ pub trait Published {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError>;
 
     /// Run its published action `address` as `actor` (an agent, a script):
@@ -41,8 +96,9 @@ pub trait Published {
         _actor: &str,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        self.invoke(address, arguments)
+        self.invoke(address, arguments, look)
     }
 
     /// The labels of its accessibility tree, in reading order.
@@ -240,7 +296,7 @@ impl Doors {
     }
 
     /// Invoke the published action `address`, on the surface publishing
-    /// it.
+    /// it; `look` pictures a window this session does not run.
     ///
     /// # Errors
     /// No surface publishes it, or the surface refused.
@@ -248,6 +304,7 @@ impl Doors {
         &self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
@@ -257,14 +314,15 @@ impl Doors {
                 surface.resources()
             };
             if ui::tilo_actions::door::resolve(&published, address).is_some() {
-                return surface.invoke(address, arguments);
+                return surface.invoke(address, arguments, look);
             }
         }
         Err(DoorError::Unknown(address.clone()))
     }
 
     /// Invoke the published action `address` as `actor` (an agent, a
-    /// script), which the surface attributes its change to.
+    /// script), which the surface attributes its change to; `look` pictures
+    /// a window this session does not run.
     ///
     /// # Errors
     /// No surface publishes it, or the surface refused.
@@ -273,11 +331,12 @@ impl Doors {
         actor: &str,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         for (_, surface) in self.offered() {
             let mut surface = surface.borrow_mut();
             if ui::tilo_actions::door::resolve(&surface.resources(), address).is_some() {
-                return surface.invoke_as(actor, address, arguments);
+                return surface.invoke_as(actor, address, arguments, look);
             }
         }
         Err(DoorError::Unknown(address.clone()))

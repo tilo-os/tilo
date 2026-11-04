@@ -108,12 +108,6 @@ class Session:
                 "TILO_RUNTIME_PROFILE": str(self.profile),
                 "TILO_RUNTIME_BINARY": str(RUNTIME_HOST),
                 "TILO_TEST_CONTROL": str(self.run / "control.sock"),
-                # The agent's hands: the session's agent door, which an
-                # admitted agent also asks its own seat on (pointer, keys and
-                # a window's frames), as on a hosted machine an agent uses.
-                "TILO_RUNTIME_COMPUTER_CONTROL": str(
-                    self.run / "tilo-session" / "agent.sock"
-                ),
                 # The dev host keeps the user's real build cache.
                 "CARGO_HOME": os.environ.get("CARGO_HOME", str(pathlib.Path.home() / ".cargo")),
                 "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(pathlib.Path.home() / ".rustup")),

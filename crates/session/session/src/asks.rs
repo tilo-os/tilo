@@ -21,7 +21,7 @@ use crate::{
 
 impl Shared {
     /// Carry out what the desktop asked since the last frame.
-    pub(crate) fn follow_asks(&self) {
+    pub(crate) fn follow_asks(&self, look: &mut tilo_surface_host::Look<'_>) {
         // A press on one of the person's devices is one of the session's own
         // verbs: the queue it lands in is carried out here, with the asks.
         self.carry_out_presses();
@@ -98,7 +98,7 @@ impl Shared {
         for choice in self.handle.take_host_choices() {
             self.host_action(&choice);
         }
-        self.follow_sheets();
+        self.follow_sheets(look);
         let choices = self.handle.take_search_choices();
         if choices.is_empty() {
             return;
@@ -110,11 +110,13 @@ impl Shared {
         });
         for choice in choices {
             self.search.perform(&workspace, choice, &mut |own| {
-                self.doors.invoke(&own.address, &own.arguments).map(drop)
+                self.doors
+                    .invoke(&own.address, &own.arguments, look)
+                    .map(drop)
             });
         }
         // What the session's own actions asked of it.
-        self.follow_asks();
+        self.follow_asks(look);
     }
 
     /// Open this person's conversation with the person `key` names, in Chat:
@@ -141,7 +143,13 @@ impl Shared {
             ),
         ));
         self.search.perform(&workspace, target, &mut |own| {
-            self.doors.invoke(&own.address, &own.arguments).map(drop)
+            self.doors
+                .invoke(
+                    &own.address,
+                    &own.arguments,
+                    &mut tilo_surface_host::Look::none(),
+                )
+                .map(drop)
         });
     }
 
@@ -364,7 +372,7 @@ impl Shared {
     ) -> Result<(), String> {
         let address = ActionAddress::new(CHROME_RESOURCE, action);
         self.doors
-            .invoke(&address, args)
+            .invoke(&address, args, &mut tilo_surface_host::Look::none())
             .map(|_| ())
             .map_err(|error| error.to_string())
     }

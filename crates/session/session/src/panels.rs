@@ -119,8 +119,9 @@ impl Published for Banners {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        self.host.invoke(address, arguments)
+        self.host.invoke(address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -320,6 +321,7 @@ impl Published for Readout {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         // A readout stands on the display whose key changed it, and keeps
         // clear of the line the person is typing on.
@@ -330,7 +332,7 @@ impl Published for Readout {
                 .map(str::to_owned);
             self.stand(display.as_deref());
         }
-        Published::invoke(&mut self.host, address, arguments)
+        Published::invoke(&mut self.host, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
