@@ -74,9 +74,8 @@ view days(b: Board, place: Text) {
 
 
 view sidebar(b: Board) {
-    for p in places(Task, in: b).places {
-        ui.NavItem(p.key, p.label, count: if p.counts { .some(p.count) } else { .none })
-    }
+    window place: Text = "is:inbox"
+    std.sidebar(places(Task, in: b), place)
 }
 "#;
 
@@ -309,5 +308,31 @@ view sidebar(b: Board) {
             places[4].0.starts_with("project:"),
             "a project's place is keyed by the project: {places:?}"
         );
+        // The sidebar draws those counts and no others.
+        let view =
+            t.rt.open_view(
+                &me(),
+                &t.app.view("sidebar"),
+                vec![Value::resource(&t.board)],
+            )
+            .unwrap();
+        let nav = |key: &str| -> &UiNode {
+            of_kind(view.tree(), "ui.NavItem")
+                .into_iter()
+                .find(|node| node.props.get("key") == Some(&Value::text(key)))
+                .unwrap_or_else(|| panic!("no place {key} in\n{}", dump(view.tree())))
+        };
+        assert_eq!(
+            nav("is:inbox").props.get("count"),
+            Some(&Value::Int(1)),
+            "the inbox shows what waits to be sorted"
+        );
+        assert_eq!(
+            nav("is:today").props.get("count"),
+            Some(&Value::Int(2)),
+            "today shows what is due, the overdue one included"
+        );
+        assert_eq!(nav("is:upcoming").props.get("count"), None);
+        assert_eq!(nav("is:done").props.get("count"), None);
     }
 }

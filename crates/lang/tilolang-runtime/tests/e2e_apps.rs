@@ -1145,9 +1145,9 @@ mod cases {
             }
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // It starts on the inbox: what is in no project, done or not, and the task done with
-        // stands last of the two, under the heading the list folds away.
-        assert_eq!(row_titles(v.tree()), ["eggs", "milk"]);
+        // It starts on the inbox: what is unsorted and open, and the task done with is in
+        // neither, so it stands in Done alone.
+        assert_eq!(row_titles(v.tree()), ["eggs"]);
         let before = w.rt.history(&list.doc).unwrap().len();
         choose(&v, "is:done");
         v.poll_patches().unwrap();
@@ -1157,16 +1157,21 @@ mod cases {
             text_prop(of_kind(tree, "ui.NavList")[0], "selected"),
             "is:done"
         );
+        let count = |key: &str| {
+            node_with(tree, "ui.NavItem", "key", key)
+                .props
+                .get("count")
+                .cloned()
+        };
+        // What each place leaves open, in the places whose role makes a count: the task done
+        // with is in none of them, and a logbook shows no count at all.
+        assert_eq!(count("is:inbox"), Some(Value::Int(1)), "the unsorted task");
         assert_eq!(
-            (
-                &node_with(tree, "ui.NavItem", "key", "is:inbox").props["count"],
-                &node_with(tree, "ui.NavItem", "key", "is:today").props["count"],
-                &node_with(tree, "ui.NavItem", "key", "is:done").props["count"]
-            ),
-            // What each place leaves open: the task done with counts nowhere, and is the
-            // whole of the Done place, which says it is all done.
-            (&Value::Int(1), &Value::Int(0), &Value::Int(0))
+            count("is:today"),
+            Some(Value::Int(0)),
+            "nothing is due today"
         );
+        assert_eq!(count("is:done"), None, "a logbook shows no count");
 
         assert_eq!(
             w.rt.history(&list.doc).unwrap().len(),
