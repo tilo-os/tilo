@@ -14,7 +14,8 @@ use std::rc::Rc;
 use crate::component::{Component, Described, Event, ResourceId, SlotType, Source, Value};
 use crate::icons::Icon;
 use crate::widget::{
-    Card, CardProps, ContextMenuArea, Element, MenuEntry, MenuItemProps, SectionHeader,
+    Card, CardBody, CardProps, ContextMenuArea, Element, MenuEntry, MenuItemProps, SectionHeader,
+    Widget, capability::capability_mut,
 };
 
 use super::{Board, BoardDrop};
@@ -244,10 +245,7 @@ fn card_body(
 ) -> Element {
     if body.len() == 1 {
         let mut element = body.remove(0);
-        if let Some(card) = crate::widget::capability::capability_mut::<dyn crate::widget::CardBody>(
-            element.as_mut(),
-        ) {
-            card.show_as_card(selected, activate);
+        if show_as_card(element.as_mut(), selected, activate.clone()) {
             return element;
         }
         body.push(element);
@@ -263,6 +261,22 @@ fn card_body(
             activate,
         },
     ))
+}
+
+/// Show `widget` as a card, if it is one: the widget itself, or the one widget a layout holds
+/// alone. A view call is built as a stack around what the view shows — the call's way to its
+/// body, not a box around it — so a card whose body is a view that shows a row is still that
+/// row's card. `false` when `widget` holds no widget that can be one.
+fn show_as_card(widget: &mut dyn Widget, selected: bool, activate: Event) -> bool {
+    if let Some(card) = capability_mut::<dyn CardBody>(widget) {
+        card.show_as_card(selected, activate);
+        return true;
+    }
+    let mut children = widget.children_mut();
+    if children.len() != 1 {
+        return false;
+    }
+    show_as_card(children.remove(0), selected, activate)
 }
 
 impl Described for Board {
@@ -420,11 +434,15 @@ mod tests {
     #[test]
     fn a_card_whose_body_is_a_row_is_that_row_shown_as_a_card() {
         let mut props = props(&Intents::default());
-        // A body arrives wrapped — in the host's pane, a context menu — and still answers as
-        // the row it is.
+        // A body arrives wrapped — in the host's pane, the stack a view call is built as, a
+        // context menu — and still answers as the row it is.
         let row = crate::widget::ListRow::new("row", "Measure the new bedroom").meta("Thursday");
         props.lanes[0].cards[0].body = vec![Box::new(crate::widget::ContextMenuArea::new(
-            Box::new(row),
+            Box::new(
+                crate::widget::Container::new()
+                    .with_no_padding()
+                    .with_child(Box::new(row)),
+            ),
             |_| Vec::new(),
         ))];
         let host = crate::headless::FrameHarness::for_root(

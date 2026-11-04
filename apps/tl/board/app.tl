@@ -109,7 +109,7 @@ view card_tile(b: Board, col: Column, card: Card) {
                 }
             }
         }
-        row(card.title, secondary: card.notes)
+        row(card.title, secondary: if card.notes == "" { .none } else { .some(card.notes) })
     }
 }
 

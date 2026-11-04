@@ -459,17 +459,25 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
     }
 }
 
-/// The lanes of a board as its window shows them: each lane's title, the count its header
-/// shows, and its cards' tasks.
-fn lanes(view: &ViewInstance) -> Vec<(String, i64, Vec<Option<String>>)> {
-    fn walk(node: &UiNode, out: &mut Vec<(String, i64, Vec<Option<String>>)>) {
+/// A lane's title as its node carries it: none for the lane of the tasks in no section.
+fn lane_title(node: &UiNode) -> Option<String> {
+    match node.props.get("title") {
+        Some(Value::Text(title)) => Some(title.clone()),
+        None | Some(Value::Unit) | Some(Value::Opt(None)) => None,
+        other => panic!("a lane's title: {other:?}"),
+    }
+}
+
+/// The lanes of a board as its window shows them: what each lane is called (none for the lane
+/// of the tasks in no section), the count its header shows (none where it has no heading), and
+/// its cards' tasks.
+fn lanes(view: &ViewInstance) -> Vec<(Option<String>, Option<i64>, Vec<Option<String>>)> {
+    fn walk(node: &UiNode, out: &mut Vec<(Option<String>, Option<i64>, Vec<Option<String>>)>) {
         if node.kind == "ui.BoardLane" {
-            let title = match node.props.get("title") {
-                Some(Value::Text(title)) => title.clone(),
-                other => panic!("a lane's title: {other:?}"),
-            };
+            let title = lane_title(node);
             let count = match node.props.get("count") {
-                Some(Value::Int(count)) => *count,
+                Some(Value::Int(count)) => Some(*count),
+                None | Some(Value::Unit) | Some(Value::Opt(None)) => None,
                 other => panic!("a lane's count: {other:?}"),
             };
             let mut cards = Vec::new();
@@ -542,35 +550,36 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     assert_eq!(
         lanes(&view),
         [
-            (
-                "No section".to_owned(),
-                4,
-                ids(&[&boxes, &van, &books, &bedworkspace])
-            ),
-            ("Doing".to_owned(), 0, vec![]),
+            (None, None, ids(&[&boxes, &van, &books, &bedworkspace])),
+            (Some("Doing".to_owned()), Some(0), vec![]),
         ]
     );
-    let drop = |view: &mut ViewInstance, lane: &str, task: &Value, at: i64| {
-        let key = key_of(view, "ui.BoardLane", &|l| {
-            l.props.get("title") == Some(&Value::text(lane))
+    let drop = |view: &mut ViewInstance, lane: Option<&str>, task: &Value, at: i64| {
+        let key = key_of(view, "ui.BoardLane", &|l| match lane {
+            Some(lane) => lane_title(l).as_deref() == Some(lane),
+            None => lane_title(l).is_none(),
         });
         let carried = Value::List(vec![task.clone(), Value::Int(at)]);
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
         view.poll_patches().unwrap();
     };
     // Into the empty lane, then a second card above it.
-    drop(&mut view, "Doing", &books, 0);
-    drop(&mut view, "Doing", &van, 0);
+    drop(&mut view, Some("Doing"), &books, 0);
+    drop(&mut view, Some("Doing"), &van, 0);
     // Within a lane: the last card to the top.
-    drop(&mut view, "No section", &bedworkspace, 0);
+    drop(&mut view, None, &bedworkspace, 0);
     // Below a lane's last card.
-    drop(&mut view, "Doing", &boxes, 2);
+    drop(&mut view, Some("Doing"), &boxes, 2);
     ada.commit();
     assert_eq!(
         lanes(&view),
         [
-            ("No section".to_owned(), 1, ids(&[&bedworkspace])),
-            ("Doing".to_owned(), 3, ids(&[&van, &books, &boxes])),
+            (None, None, ids(&[&bedworkspace])),
+            (
+                Some("Doing".to_owned()),
+                Some(3),
+                ids(&[&van, &books, &boxes])
+            ),
         ]
     );
     assert_eq!(target(&read(&ada, &van, "section")), target(&doing));
@@ -655,18 +664,88 @@ fn a_lanes_header_counts_the_cards_it_holds() {
     assert_eq!(
         lanes(&view),
         [
-            ("No section".to_owned(), 2, ids(&[&boxes, &tape])),
-            ("Packing".to_owned(), 1, ids(&[&kitchen])),
-            ("Booked".to_owned(), 0, vec![]),
+            (None, None, ids(&[&boxes, &tape])),
+            (Some("Packing".to_owned()), Some(1), ids(&[&kitchen])),
+            (Some("Booked".to_owned()), Some(0), vec![]),
         ]
     );
     for (title, count, cards) in lanes(&view) {
+        let Some(count) = count else {
+            assert!(title.is_none(), "a lane with a heading has a count");
+            continue;
+        };
         assert_eq!(
             usize::try_from(count).unwrap_or(usize::MAX),
             cards.len(),
-            "the header of `{title}` counts the cards it holds"
+            "the header of `{title:?}` counts the cards it holds"
         );
     }
+}
+
+/// A project's window too narrow for two lanes of cards: the same tasks as a list under the
+/// section each stands in, the tasks in no section first and under no heading.
+#[test]
+fn a_narrow_projects_window_reads_its_tasks_as_a_list_by_section() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root.clone()]);
+    ada.commit();
+    let packing = call(&ada, "new_section", vec![project.clone()]);
+    call(
+        &ada,
+        "rename_section",
+        vec![packing.clone(), Value::text("Packing")],
+    );
+    call(
+        &ada,
+        "add_to",
+        vec![project.clone(), Value::text("Order boxes"), Value::none()],
+    );
+    call(
+        &ada,
+        "add_to",
+        vec![
+            project.clone(),
+            Value::text("Pack the kitchen"),
+            Value::some(packing),
+        ],
+    );
+    // The window is a board; what it shows is decided by the room it has.
+    call(&ada, "show_board", vec![project.clone(), Value::Bool(true)]);
+    ada.commit();
+    let Value::Ref(at) = &project else {
+        panic!("a resource: {project:?}")
+    };
+    let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.poll_patches().unwrap();
+    view.set_space("", tilolang_runtime::Space::from_rem(20.0, 40.0));
+    view.poll_patches().unwrap();
+    let tree = view.tree().clone();
+    fn walk(node: &UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Board" {
+            out.push("board".to_owned());
+        }
+        if node.kind == "ui.ListRow" {
+            if let Some(Value::Text(title)) = node.props.get("title") {
+                out.push(title.clone());
+            }
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut seen = Vec::new();
+    walk(&tree, &mut seen);
+    assert_eq!(
+        seen,
+        ["Order boxes".to_owned(), "Pack the kitchen".to_owned()],
+        "a narrow window reads the tasks as a list, under the section they are in"
+    );
+    // Room for two lanes, the same window is the board again, the same tasks as cards.
+    view.set_space("", tilolang_runtime::Space::from_rem(60.0, 40.0));
+    view.poll_patches().unwrap();
+    let mut seen = Vec::new();
+    walk(view.tree(), &mut seen);
+    assert_eq!(seen, ["board", "Order boxes", "Pack the kitchen"]);
 }
 
 /// A checklist written before a task's steps were tasks of their own opens with each step a
