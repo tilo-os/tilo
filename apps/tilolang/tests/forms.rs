@@ -257,23 +257,24 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
 }
 
 #[test]
-fn a_button_on_the_task_page_asks_whom_to_assign_it_to() {
+fn the_task_pages_assignee_opens_the_people_to_pick_from() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     click(&mut app, row.center());
-    let button = bounds_of(&mut app, "Assign to…", Some(ui::a11y::Role::Button))
-        .unwrap_or_else(|| panic!("the page offers Assign to…: {:?}", all_names(&mut app)));
-    click(&mut app, button.center());
+    // The page keeps one person field for who does the task, showing nobody yet.
+    let chip = bounds_of(&mut app, "No one", Some(ui::a11y::Role::Button)).unwrap_or_else(|| {
+        panic!(
+            "the page offers who does the task: {:?}",
+            all_names(&mut app)
+        )
+    });
+    click(&mut app, chip.center());
     let names = all_names(&mut app);
     assert!(
-        accessible(&mut app)
-            .iter()
-            .any(|node| node.role == ui::a11y::Role::Dialog
-                && node.name.as_deref() == Some("Assign to…")),
-        "the button opened the action's form: {names:?}"
+        names.iter().any(|name| name == "Me"),
+        "the field opened the people to pick from: {names:?}"
     );
-    assert!(names.iter().any(|name| name == "To"), "{names:?}");
 }
 
 #[test]
