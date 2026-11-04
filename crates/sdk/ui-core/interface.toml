@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 22
+version = 23
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -213,6 +213,8 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::set_capture_protection.protected" = "bool"
 "FloatingSurfaceClientMessage::shared_windows" = "struct"
 "FloatingSurfaceClientMessage::shared_windows.shared" = "Vec<SharedWindow>"
+"FloatingSurfaceClientMessage::sideways_wheel" = "struct"
+"FloatingSurfaceClientMessage::sideways_wheel.travel" = "f64"
 "FloatingSurfaceClientMessage::source_cleared" = "struct"
 "FloatingSurfaceClientMessage::source_cleared.id" = "String"
 "FloatingSurfaceClientMessage::surface_geometry" = "struct"

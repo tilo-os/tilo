@@ -550,6 +550,16 @@ impl Answers<'_> {
             FloatingSurfaceClientMessage::DescribeHistory { .. } => {
                 refuse(&reply, &app, &name, NO_HISTORY);
             }
+            // The app under the pointer did not scroll with a sideways wheel:
+            // the strip its window stands in pans by it, as a wheel over the
+            // strip's own canvas does. Nothing to answer — the app took what
+            // it scrolled with, and this is what it left.
+            FloatingSurfaceClientMessage::SidewaysWheel { travel } => {
+                if let Some(tab) = anchor {
+                    self.desktop
+                        .with_policy(|policy| policy.handle().sideways_wheel(tab, travel));
+                }
+            }
             // The connection said its version when it opened; a second one
             // is answered with the one this session speaks.
             FloatingSurfaceClientMessage::Hello { .. } => refuse(&reply, &app, &name, SAID),

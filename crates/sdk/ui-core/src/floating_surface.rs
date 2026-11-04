@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 22;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 23;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -534,6 +534,16 @@ pub enum FloatingSurfaceClientMessage {
     WindowTargets {
         targets: Vec<crate::window_targets::WindowTarget>,
         instance: Option<u64>,
+    },
+    /// The app under the pointer could not scroll sideways with this wheel
+    /// event: the shell pans the window strip under it by `travel` logical
+    /// pixels, positive toward later windows, by the same rules it applies
+    /// to a wheel over its own canvas. Sent for every event of a gesture the
+    /// app left to the shell, and never for one it took, so a gesture is
+    /// never split between app and strip. An app outside a session's shell
+    /// has no such connection and keeps every wheel.
+    SidewaysWheel {
+        travel: f64,
     },
 }
 

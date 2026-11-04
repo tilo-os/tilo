@@ -5,6 +5,20 @@ use crate::floating_surface::{
 };
 use crate::vello::kurbo::Vec2;
 
+/// The sideways travel of a wheel `event` in logical pixels, positive toward
+/// later content, when it is one: the desk's window strip and the app under
+/// the pointer read a wheel by this one rule
+/// ([`ui::widget::sideways_travel`]).
+#[cfg(feature = "native")]
+fn sideways_travel_of(event: &WindowEvent, scale_factor: f64) -> Option<f64> {
+    match event {
+        WindowEvent::MouseWheel { delta, .. } => {
+            crate::widget::sideways_travel(delta, scale_factor)
+        }
+        _ => None,
+    }
+}
+
 /// What the shell was last told on this connection, where telling it
 /// nothing yet differs from telling it "none".
 pub enum Told<T> {
@@ -114,6 +128,36 @@ pub(super) struct FloatingRuntime {
     /// What of [`crate::window_share`] the shell was told on this
     /// connection.
     pub window_share_sent: WindowShareSent,
+    /// Sideways wheel travel this window's content left to the shell, in
+    /// logical pixels toward later windows: the shell draws the window strip
+    /// this window stands in, so it pans the strip by what the app does not
+    /// scroll with, and the next pass sends it
+    /// ([`crate::floating_surface::FloatingSurfaceClientMessage::SidewaysWheel`]).
+    #[cfg(feature = "native")]
+    pub sideways: f64,
+    /// Who owns the sideways wheel gesture in progress, and when its last
+    /// event came ([`App::record_sideways_wheel`]).
+    #[cfg(feature = "native")]
+    pub sideways_gesture: Option<SidewaysGesture>,
+}
+
+/// Who owns a sideways wheel gesture for all of its events.
+#[cfg(feature = "native")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Sideways {
+    /// The content under the pointer scrolled by the gesture's first event.
+    Content,
+    /// It did not, so the shell's strip takes the whole gesture.
+    Strip,
+}
+
+/// A sideways wheel gesture in progress: who owns it, and when its last event
+/// came, so a pause ends it ([`ui::widget::WHEEL_GESTURE_GAP`]).
+#[cfg(feature = "native")]
+#[derive(Clone, Copy)]
+pub(super) struct SidewaysGesture {
+    pub(super) owner: Sideways,
+    pub(super) last: crate::time::Instant,
 }
 
 /// What of a window's live sharing the shell was told on one connection.
@@ -187,6 +231,10 @@ impl FloatingRuntime {
             window_bar: window_bar::WindowBarRuntime::default(),
             window_record: None,
             window_share_sent: WindowShareSent::default(),
+            #[cfg(feature = "native")]
+            sideways: 0.0,
+            #[cfg(feature = "native")]
+            sideways_gesture: None,
         }
     }
 }
@@ -450,6 +498,9 @@ impl App {
     #[cfg(feature = "native")]
     fn drain_unhosted_floating_requests(&mut self) -> bool {
         self.floating.pending_ime_ids.clear();
+        // No shell reaches this window's strip: what a wheel left to it has
+        // nowhere to go, and no later connection hears it.
+        self.floating.sideways = 0.0;
         let mut changed = if let Some(intent) = self.take_native_host_intent() {
             match intent {
                 crate::widget::AppHostIntent::AllowHostShell { reply } => {
@@ -499,6 +550,79 @@ impl App {
             .into_iter()
             .collect();
         changed
+    }
+
+    /// Whether the shell's window strip takes the sideways wheel `event`: the
+    /// rest of a gesture that began with one this app did not scroll with. The
+    /// strip pans by every event of it, and no view of the app sees one. The
+    /// gesture's first event decided ([`Self::record_sideways_wheel`]), and
+    /// its every event keeps that owner, so a gesture never splits between the
+    /// app and the strip.
+    #[cfg(feature = "native")]
+    pub(crate) fn strip_takes_sideways_wheel(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        now: crate::time::Instant,
+    ) -> bool {
+        let Some(travel) = sideways_travel_of(event, scale_factor) else {
+            return false;
+        };
+        let Some(gesture) = self.sideways_gesture_now(now) else {
+            return false;
+        };
+        self.floating.sideways_gesture = Some(SidewaysGesture {
+            last: now,
+            ..gesture
+        });
+        if gesture.owner != Sideways::Strip {
+            return false;
+        }
+        self.floating.sideways += travel;
+        true
+    }
+
+    /// Record what the app did with the sideways wheel `event` its views have
+    /// had their turn with (`taken`: the content scrolled by it): the
+    /// gesture's first event decides who owns it, and what the app did not
+    /// scroll with goes to the shell's strip, which pans by it
+    /// ([`crate::floating_surface::FloatingSurfaceClientMessage::SidewaysWheel`]).
+    #[cfg(feature = "native")]
+    pub(crate) fn record_sideways_wheel(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        taken: bool,
+        now: crate::time::Instant,
+    ) {
+        let Some(travel) = sideways_travel_of(event, scale_factor) else {
+            return;
+        };
+        if let Some(gesture) = self.sideways_gesture_now(now) {
+            self.floating.sideways_gesture = Some(SidewaysGesture {
+                last: now,
+                ..gesture
+            });
+            return;
+        }
+        let owner = if taken {
+            Sideways::Content
+        } else {
+            Sideways::Strip
+        };
+        self.floating.sideways_gesture = Some(SidewaysGesture { owner, last: now });
+        if owner == Sideways::Strip {
+            self.floating.sideways += travel;
+        }
+    }
+
+    /// The sideways wheel gesture in progress, ended by a pause of
+    /// [`ui::widget::WHEEL_GESTURE_GAP`] since its last event.
+    #[cfg(feature = "native")]
+    fn sideways_gesture_now(&self, now: crate::time::Instant) -> Option<SidewaysGesture> {
+        let gesture = self.floating.sideways_gesture?;
+        (now.saturating_duration_since(gesture.last) < crate::widget::WHEEL_GESTURE_GAP)
+            .then_some(gesture)
     }
 
     #[cfg(feature = "native")]
@@ -661,6 +785,18 @@ impl App {
         }
         self.send_window_targets(client, instance)?;
         self.send_window_share(client, instance)?;
+        // The sideways wheel this window's content left to the shell, which
+        // pans the strip the window stands in by it: one message for the
+        // events of the gesture the app decided against
+        // ([`FloatingSurfaceClientMessage::SidewaysWheel`]).
+        let sideways = std::mem::take(&mut self.floating.sideways);
+        if sideways != 0.0 {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::SidewaysWheel {
+                    travel: sideways,
+                },
+            )?;
+        }
         for request in crate::shared_selection::take_agent_requests() {
             let ask = request.ask.clone();
             let draft = request.draft.clone();
@@ -1162,6 +1298,10 @@ impl App {
         self.floating.window_targets_sent = Told::Nothing;
         self.floating.window_targets_told = None;
         self.floating.window_resource_sent = Told::Nothing;
+        // What a wheel left for the strip went with the shell that would
+        // have panned it: a new connection never hears a stale gesture.
+        self.floating.sideways = 0.0;
+        self.floating.sideways_gesture = None;
         // Nothing draws the embeds or lists the windows any more; a new
         // shell is told the embeds, the shares and the record afresh.
         crate::window_share::host_lost();

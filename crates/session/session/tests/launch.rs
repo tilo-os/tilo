@@ -1014,6 +1014,120 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
     );
 }
 
+/// Tell the session `message` on a window's own connection, as the app does.
+fn tell(connection: &mut UnixStream, message: &FloatingSurfaceClientMessage) {
+    let mut frame = serde_json::to_vec(message).unwrap();
+    frame.push(b'\n');
+    connection.write_all(&frame).unwrap();
+    connection.flush().unwrap();
+}
+
+/// A sideways wheel the app under the pointer did not scroll with pans the
+/// strip its window stands in, by the travel it left: the desk moves the
+/// window, and everything the app drew in it, by that much.
+#[test]
+fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
+    use ui::window_targets::{TargetAction, WindowTarget};
+
+    let _settled = ui::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let started = home.home().join("starts");
+    let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
+    let (pid, workspace) = probe_showing(&mut session, &apps, &started);
+
+    // The window in front describes a control of its content, so where it
+    // stands on the desk is something this test reads.
+    let mut connection = ask(
+        &launches,
+        PROBE,
+        &workspace,
+        pid,
+        &FloatingSurfaceClientMessage::WindowTargets {
+            targets: vec![WindowTarget {
+                role: "ListItem".to_owned(),
+                name: "Documents".to_owned(),
+                rect: [4.0, 6.0, 44.0, 24.0],
+                actions: vec![TargetAction::Activate],
+            }],
+            instance: None,
+        },
+    );
+    // More windows than the desk shows at once, each of an app of its own,
+    // so its strip has somewhere to pan to.
+    for id in 12..=15 {
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(window(id, "org.example.Other")).unwrap());
+    }
+    let shown: Vec<Option<u64>> = (11..=15).map(Some).collect();
+    until(
+        &mut session,
+        "every window of the strip is shown",
+        |session| shown_windows(session) == shown,
+    );
+    // The app's own window in front again, where its control is drawn.
+    session
+        .desktop()
+        .with_policy(|policy| assert!(policy.focus(11), "the app's window comes forward"));
+    until(&mut session, "the window's control is listed", |session| {
+        session
+            .controls()
+            .iter()
+            .any(|(name, _)| name == "Documents")
+    });
+
+    let control = |session: &Session| {
+        session
+            .controls()
+            .into_iter()
+            .find(|(name, _)| name == "Documents")
+            .map(|(_, rect)| rect)
+    };
+    let (at, _, _, _) = control(&session).expect("the control the app described");
+
+    tell(
+        &mut connection,
+        &FloatingSurfaceClientMessage::SidewaysWheel { travel: 160.0 },
+    );
+    let mut panned = 0.0;
+    until(
+        &mut session,
+        "the strip pans what the app leaves",
+        |session| {
+            let Some((now, _, _, _)) = control(session) else {
+                return false;
+            };
+            panned = at - now;
+            panned.abs() > 100.0
+        },
+    );
+    assert!(
+        (panned - 160.0).abs() < 2.0,
+        "the windows move by the travel the app left: {panned}"
+    );
+
+    // The rest of the gesture pans it on, event by event.
+    tell(
+        &mut connection,
+        &FloatingSurfaceClientMessage::SidewaysWheel { travel: 60.0 },
+    );
+    until(
+        &mut session,
+        "every event the app leaves pans the strip",
+        |session| {
+            let Some((now, _, _, _)) = control(session) else {
+                return false;
+            };
+            panned = at - now;
+            panned.abs() > 200.0
+        },
+    );
+    assert!(
+        (panned - 220.0).abs() < 2.0,
+        "the strip pans by the whole gesture the app left: {panned}"
+    );
+}
+
 #[test]
 fn an_address_the_app_does_not_claim_opens_no_tab() {
     let _settled = ui::motion::testing::settled();

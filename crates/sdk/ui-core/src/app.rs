@@ -2977,6 +2977,10 @@ fn humanize_ident(ident: &str) -> String {
 mod window_targets_tests;
 
 #[cfg(test)]
+#[path = "app/sideways_wheel_tests.rs"]
+mod sideways_wheel_tests;
+
+#[cfg(test)]
 #[path = "app/manual_composition_tests.rs"]
 mod manual_composition_tests;
 

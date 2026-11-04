@@ -3,6 +3,7 @@
 
 #![allow(
     clippy::unwrap_used,
+    clippy::panic,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
@@ -623,6 +624,81 @@ impl ui::widget::AppWidget for Hosted {
 
 struct Apps(Rc<std::cell::RefCell<Option<ui::widget::RouteHandle>>>);
 
+thread_local! {
+    /// Where the wide view is scrolled to, as its app keeps it.
+    static WIDE: Rc<std::cell::Cell<f64>> = Rc::new(std::cell::Cell::new(0.0));
+}
+
+/// A view wider than its window that scrolls sideways with a sideways
+/// wheel, as a wide page or a spreadsheet does: it takes the wheel while
+/// it can still move that way and leaves it at its edge.
+struct WideView {
+    rect: ui::kurbo::Rect,
+    offset: Rc<std::cell::Cell<f64>>,
+}
+
+impl WideView {
+    /// How far the view scrolls: three windows' width.
+    const WIDTH: f64 = 1800.0;
+}
+
+impl ui::widget::Widget for WideView {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        let ui::winit::event::WindowEvent::MouseWheel { delta, .. } = event else {
+            return;
+        };
+        let travel = match delta {
+            ui::winit::event::MouseScrollDelta::PixelDelta(p) => -p.x / ctx.scale_factor,
+            ui::winit::event::MouseScrollDelta::LineDelta(x, _) => -f64::from(*x) * 40.0,
+        };
+        if travel == 0.0 {
+            return;
+        }
+        let max = (Self::WIDTH - self.rect.width()).max(0.0);
+        let next = (self.offset.get() + travel).clamp(0.0, max);
+        if (next - self.offset.get()).abs() < 0.001 {
+            return;
+        }
+        self.offset.set(next);
+        *ctx.handled = true;
+    }
+
+    fn name(&self) -> &'static str {
+        "WideView"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
+    }
+}
+
 impl TileSource for Apps {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
         let content: ui::widget::Element = match tab.title.as_str() {
@@ -642,6 +718,10 @@ impl TileSource for Apps {
                     .with_height(600.0)
                     .with_child(Box::new(ui::widget::Spacer::fixed(5000.0))),
             ),
+            "Wide" => Box::new(WideView {
+                rect: ui::kurbo::Rect::ZERO,
+                offset: WIDE.with(Rc::clone),
+            }),
             "Greedy" => Box::new(TakesEveryWheel::default()),
             caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
@@ -1240,29 +1320,103 @@ fn a_wheel_the_strip_does_not_pan_with_ticks_at_once() {
     assert_eq!(phase_calls(&rows, "ui.host_tick"), 1, "{rows:?}");
 }
 
-#[test]
-fn a_trackpad_swipe_the_strip_cannot_follow_is_the_apps() {
-    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
-    assert!(pan_offset(&handle).abs() < 0.5, "at home");
-    // Backwards from home the strip cannot move, so the gesture is the
-    // app's, even once it reverses toward later windows.
-    for _ in 0..10 {
-        page_wheel(&mut driver, -12.0, 0.0);
-    }
-    for _ in 0..10 {
-        page_wheel(&mut driver, 12.0, 0.0);
-    }
-    assert!(pan_offset(&handle).abs() < 0.5);
+/// Move the pointer onto the shown window's content, where the row routes
+/// the wheel into the app it runs.
+fn point_at_the_window(driver: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
+    let Some((_, window)) = handle.shown_tabs().first().copied() else {
+        panic!("the desk shows no window to point at");
+    };
+    let at = window.center();
+    driver.send(&ui::winit::event::WindowEvent::CursorMoved {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        position: (at.x, at.y).into(),
+    });
+}
 
-    let (mut driver, handle, _) = mount_apps(&["A"]);
+/// The app under the pointer has the sideways scroll first, and the strip
+/// takes what the app leaves: whichever way the gesture goes, all of it
+/// stays with the one that took its first event.
+#[test]
+fn the_app_under_the_pointer_has_the_sideways_scroll_first() {
+    // An app that takes every wheel keeps the whole gesture, backwards and
+    // forwards, though the strip could pan far both ways.
+    let (mut driver, handle, _) = mount_apps(&["Greedy", "B", "C", "D", "E"]);
     let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
-    assert!(max < 0.5, "one window fits: {max}");
-    for &dx in &trackpad_swipe() {
+    assert!(max > 1000.0, "the strip could pan: {max}");
+    point_at_the_window(&mut driver, &handle);
+    let home = pan_offset(&handle);
+    for _ in 0..10 {
+        page_wheel(&mut driver, 24.0, 0.0);
+    }
+    for _ in 0..10 {
+        page_wheel(&mut driver, -24.0, 0.0);
+    }
+    assert!(
+        (pan_offset(&handle) - home).abs() < 0.5,
+        "the app's, whichever way it goes: {}",
+        pan_offset(&handle)
+    );
+
+    // An app that scrolls only up and down leaves the sideways scroll to
+    // the strip, which pans by it from the gesture's first event.
+    let (mut driver, handle, _) = mount_apps(&["Long", "B", "C", "D", "E"]);
+    point_at_the_window(&mut driver, &handle);
+    let home = pan_offset(&handle);
+    let swipe = trackpad_swipe();
+    let total: f64 = swipe.iter().sum();
+    for &dx in &swipe {
         page_wheel(&mut driver, dx, 0.0);
     }
     assert!(
-        pan_offset(&handle).abs() < 0.5,
-        "a lone window's app scrolls sideways"
+        (pan_offset(&handle) - home - total).abs() < 0.5,
+        "the strip pans what the app leaves: {} of {total}",
+        pan_offset(&handle) - home
+    );
+}
+
+/// A view wide enough to scroll sideways itself keeps the sideways scroll:
+/// its app moves it, and the strip stays where it was.
+#[test]
+fn a_wide_view_keeps_the_sideways_scroll_and_the_strip_stays_home() {
+    WIDE.with(|offset| offset.set(0.0));
+    let (mut driver, handle, _) = mount_apps(&["Wide", "B", "C", "D", "E"]);
+    point_at_the_window(&mut driver, &handle);
+    let home = pan_offset(&handle);
+    for _ in 0..5 {
+        page_wheel(&mut driver, 40.0, 0.0);
+    }
+    let scrolled = WIDE.with(|offset| offset.get());
+    assert!(
+        (scrolled - 200.0).abs() < 0.5,
+        "the view scrolled sideways by the wheel: {scrolled}"
+    );
+    assert!(
+        (pan_offset(&handle) - home).abs() < 0.5,
+        "and the strip did not: {}",
+        pan_offset(&handle)
+    );
+    // Reversing inside the gesture is still the view's.
+    for _ in 0..5 {
+        page_wheel(&mut driver, -40.0, 0.0);
+    }
+    assert!(WIDE.with(|offset| offset.get()) < scrolled);
+    assert!((pan_offset(&handle) - home).abs() < 0.5);
+
+    // A flick that reaches the view's edge inside the gesture stays the
+    // view's: the rest of the gesture does not fall through to the strip.
+    pause();
+    for _ in 0..40 {
+        page_wheel(&mut driver, 80.0, 0.0);
+    }
+    let max = WideView::WIDTH - handle.shown_tabs()[0].1.width();
+    assert!(
+        (WIDE.with(|offset| offset.get()) - max).abs() < 0.5,
+        "the view scrolled to its edge anyway"
+    );
+    assert!(
+        (pan_offset(&handle) - home).abs() < 0.5,
+        "the gesture stays the view's past its edge: {}",
+        pan_offset(&handle)
     );
 }
 
@@ -1478,7 +1632,7 @@ fn a_sideways_wheel_spin_pans_the_strip_and_focus_follows_to_where_it_stopped() 
     }
     relayout(&mut driver);
     assert!(
-        (pan_offset(&handle) - before - 960.0).abs() < 0.5,
+        (pan_offset(&handle) - before - 4.0 * 6.0 * ui::widget::line_of_wheel()).abs() < 0.5,
         "four notches pan the strip four notches' travel"
     );
     assert_eq!(
@@ -1554,7 +1708,7 @@ fn a_slow_spin_pans_exactly_its_notches_and_the_strip_stays_where_it_left_it() {
         settle(&mut driver);
     }
     assert!(
-        (pan_offset(&handle) - (from - 20.0 * 40.0)).abs() < 0.5,
+        (pan_offset(&handle) - (from - 20.0 * ui::widget::line_of_wheel())).abs() < 0.5,
         "twenty slow notches pan twenty lines: {} from {from}",
         pan_offset(&handle)
     );

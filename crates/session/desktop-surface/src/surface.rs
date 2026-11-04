@@ -46,7 +46,7 @@ use crate::navigation::{
 };
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
-use paging::{can_pan, pan_row, panned_to, sideways, vertical};
+use paging::{Sideways, can_pan, pan_row, panned_to, sideways, vertical};
 use strip::{strip_row, strip_style};
 
 mod arrivals;
@@ -300,6 +300,9 @@ struct Shared {
     /// pass, and what the person did there, for the apps' connections
     /// ([`DesktopHandle::declare_bar`] and its siblings).
     bars: window_bars::Bars,
+    /// Sideways wheel travel the apps of these windows left to the desk,
+    /// by tab, taken on the next pass ([`DesktopHandle::sideways_wheel`]).
+    sideways: Vec<(TabId, f64)>,
     /// What wakes the host holding this desk for a change queued on its handle
     /// ([`DesktopHandle::set_wake`]).
     wake: crate::wake::Waker,
@@ -859,9 +862,9 @@ pub struct DesktopSurface {
 /// or a spin of a mouse's sideways wheel.
 #[derive(Clone, Copy)]
 struct Swipe {
-    /// The strip took the gesture, so the rest of it is the strip's, ends
-    /// included; else it belongs to the content under the pointer.
-    taken: bool,
+    /// Who took the gesture's first sideways event: the content under the
+    /// pointer, or the strip, and so the rest of it, ends included.
+    owner: Sideways,
     /// Travel since the last step, toward the next one, while the strip
     /// cannot pan the way the gesture goes.
     travel: f64,
@@ -928,6 +931,7 @@ impl DesktopSurface {
             #[cfg(not(target_arch = "wasm32"))]
             peers: Rc::new(RefCell::new(peer_view::PeerSurfaces::default())),
             bars: window_bars::Bars::default(),
+            sideways: Vec::new(),
             wake: crate::wake::Waker::default(),
         }));
         let acknowledger = shared.borrow().acknowledger.clone();
@@ -2020,109 +2024,6 @@ impl DesktopSurface {
         }
     }
 
-    /// Whether the strip takes this wheel event. A sideways gesture, a
-    /// trackpad's swipe or a mouse wheel's spin alike, moves the strip by its
-    /// travel: it pans the strip under the pointer as one direct pan, 1:1
-    /// within the strip and against the rubber band past either end, and
-    /// when the gesture ends the strip settles and focus goes to the window
-    /// panned to ([`Self::end_idle_swipe`]). A strip whose windows all fit
-    /// cannot pan, so there the travel steps focus a window per
-    /// [`STEP_TRAVEL_PX`], the first event of a gesture stepping at once so
-    /// a single notch is felt.
-    ///
-    /// A gesture arrives as many events and all of them follow the decision
-    /// its first one made: the strip takes it when it can pan or there is a
-    /// window that way, and then keeps the rest of it at the strip's ends,
-    /// pulling the rubber band, so the app under the pointer does not scroll
-    /// sideways at the end of a flick; else the content under the pointer
-    /// has it first ([`Self::pull_unhandled_swipe`]).
-    fn route_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) -> bool {
-        self.end_idle_swipe(now);
-        let Some(travel) = self.strip_travel(delta, scale_factor) else {
-            return false;
-        };
-        let forward = if travel > 0.0 { 1 } else { -1 };
-        let (pans, fits) = self.shown_row_ref().map_or((false, true), |row| {
-            (
-                can_pan(row, travel),
-                !can_pan(row, 1.0) && !can_pan(row, -1.0),
-            )
-        });
-        let mut swipe = self.swipe.unwrap_or_else(|| {
-            let taken = pans || self.neighbour(forward).is_some();
-            Swipe {
-                taken,
-                // On a strip that fits, the first event steps at once.
-                travel: if taken {
-                    f64::from(forward) * STEP_TRAVEL_PX - travel
-                } else {
-                    0.0
-                },
-                panned: false,
-                pan: None,
-                last: now,
-            }
-        });
-        swipe.last = now;
-        if swipe.taken {
-            let stepping = fits && swipe.pan.is_none() && self.neighbour(forward).is_some();
-            if stepping {
-                // A reversal starts its travel afresh.
-                if swipe.travel * travel < 0.0 {
-                    swipe.travel = 0.0;
-                }
-                swipe.travel += travel;
-                loop {
-                    if swipe.travel.abs() < STEP_TRAVEL_PX {
-                        break;
-                    }
-                    let step = if swipe.travel > 0.0 { 1 } else { -1 };
-                    if !self.step_focus(step) {
-                        swipe.travel = 0.0;
-                        break;
-                    }
-                    swipe.travel -= f64::from(step) * STEP_TRAVEL_PX;
-                }
-            } else {
-                self.pull_strip(&mut swipe, travel, now);
-            }
-        }
-        self.swipe = Some(swipe);
-        swipe.taken
-    }
-
-    /// Move the shown strip by `travel` as part of `swipe`'s direct pan,
-    /// beginning it on the gesture's first pull. A strip showing a
-    /// maximized window stays at home.
-    fn pull_strip(&mut self, swipe: &mut Swipe, travel: f64, now: Instant) {
-        let Some(row) = self.shown_row() else {
-            return;
-        };
-        if row.groups.iter().any(|g| g.maximized) {
-            return;
-        }
-        let requested = swipe.pan.unwrap_or_else(|| row.scroll_x()) + travel;
-        swipe.pan = Some(requested);
-        swipe.panned |= row.hold_strip_pull(requested, now);
-    }
-
-    /// A sideways gesture neither the strip took nor the content under the
-    /// pointer scrolled by, such as one over the only window on a strip:
-    /// the strip takes it from here and pulls against its rubber band, as
-    /// it does past either end of a strip that pans.
-    fn pull_unhandled_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) {
-        let Some(travel) = sideways(delta, scale_factor) else {
-            return;
-        };
-        let Some(mut swipe) = self.swipe.filter(|swipe| !swipe.taken) else {
-            return;
-        };
-        swipe.taken = true;
-        swipe.last = now;
-        self.pull_strip(&mut swipe, travel, now);
-        self.swipe = Some(swipe);
-    }
-
     /// The strip travel of a wheel event: its sideways travel, or over
     /// empty canvas, where nothing scrolls, its vertical travel too, so a
     /// plain mouse wheel moves the strip there (down toward later windows).
@@ -2140,11 +2041,12 @@ impl DesktopSurface {
         })
     }
 
-    /// Whether [`Self::route_swipe`] would take `delta` at `now` only to pan
-    /// the shown strip, answered without routing it. A pan moves where the windows
-    /// are and nothing else. Stepping focus on a strip that fits, a swipe at
-    /// the strip's end, and the end of an earlier pan, which moves focus to
-    /// the window panned to, all do more.
+    /// Whether this event is in a sideways gesture the strip owns and pans
+    /// with it, answered without routing it. A pan moves where the windows are
+    /// and nothing else. Stepping focus on a strip that fits, a swipe at the
+    /// strip's end and the end of an earlier pan, which moves focus to the
+    /// window panned to, all do more. A gesture's first event is the content's
+    /// to take, so only a gesture already the strip's counts.
     fn pans_strip(&self, delta: MouseScrollDelta, now: Instant) -> bool {
         // Only the direction matters here, which no scale factor changes.
         let Some(travel) = self.strip_travel(delta, 1.0) else {
@@ -2153,10 +2055,10 @@ impl DesktopSurface {
         let pans = self.shown_row_ref().is_some_and(|row| can_pan(row, travel));
         match self.swipe {
             Some(swipe) if now.saturating_duration_since(swipe.last) < SWIPE_GAP => {
-                swipe.taken && pans
+                swipe.owner == Sideways::Strip && pans
             }
             Some(swipe) if swipe.panned => false,
-            _ => pans,
+            _ => false,
         }
     }
 
@@ -2447,6 +2349,9 @@ impl Widget for DesktopSurface {
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.borrow().is_open();
         self.end_idle_swipe(ui::time::now());
+        // What the apps of its windows left of their sideways wheels moves
+        // the strip before this pass draws it.
+        let panned = self.take_app_sideways(ui::time::now());
         self.reconcile();
         self.harvest();
         // A window the pass just moved or renamed is a tree the rows follow
@@ -2498,6 +2403,7 @@ impl Widget for DesktopSurface {
             || share_asked
             || embeds_changed
             || artwork
+            || panned
             || self.structure_dirty
     }
 
@@ -2676,11 +2582,15 @@ impl Widget for DesktopSurface {
             *ctx.handled = true;
             return;
         }
-        if let WindowEvent::MouseWheel { delta, .. } = event
-            && self.route_swipe(*delta, ctx.scale_factor, ui::time::now())
-        {
-            *ctx.handled = true;
-            return;
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            let now = ui::time::now();
+            self.end_idle_swipe(now);
+            if let Some(travel) = self.strip_travel(*delta, ctx.scale_factor)
+                && self.route_strip_swipe(travel, now)
+            {
+                *ctx.handled = true;
+                return;
+            }
         }
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if let [.., _, hung, _] = children[..] {
@@ -2740,11 +2650,15 @@ impl Widget for DesktopSurface {
             self.reveal = Some((strip, group));
             self.relayout = true;
         }
-        if let WindowEvent::MouseWheel { delta, .. } = event
-            && !*ctx.handled
-        {
-            self.pull_unhandled_swipe(*delta, ctx.scale_factor, ui::time::now());
-            *ctx.handled = self.swipe.is_some_and(|swipe| swipe.taken);
+        if let WindowEvent::MouseWheel { delta, .. } = event {
+            // The window under the pointer and its app had the event; a
+            // node above the strip that took it is no strip pan either.
+            let travel = self.strip_travel(*delta, ctx.scale_factor);
+            if let Some(travel) = travel
+                && self.take_sideways(travel, *ctx.handled, ui::time::now())
+            {
+                *ctx.handled = true;
+            }
         }
     }
 
