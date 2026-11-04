@@ -128,6 +128,11 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     // retains a full, independent pointer target.
     let phone_width = 360_u32;
     let metrics = Theme::light().tokens.metrics;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the layout metrics are whole, positive point widths"
+    )]
     let docked_width = (metrics.sidebar_min_width + metrics.page_min_width) as u32;
     for width in [phone_width, docked_width] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
