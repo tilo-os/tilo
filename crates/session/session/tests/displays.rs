@@ -542,12 +542,8 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
         u32::try_from(HEIGHT).unwrap(),
     );
     pump(&mut session, &mut client, |session, _| {
-        session
-            .portal()
-            .expect("portal sheet")
-            .presentation()
-            .place()
-            .is_some()
+        let presentation = session.portal().expect("portal sheet").presentation();
+        presentation.place().is_some() && presentation.is_open()
     });
     assert_eq!(
         session

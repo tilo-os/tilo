@@ -394,11 +394,12 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
     until(&mut session, "the question", |session| {
         publisher(session, "confirm").is_some()
     });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
-        "the question is the uninstall question: {labels:?}"
-    );
+    until(&mut session, "the question's title", |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Uninstall Tilo Imager?")
+    });
     assert!(file.is_file(), "nothing goes before the person answers");
 
     answer(&mut session, "confirm");
@@ -443,11 +444,12 @@ fn the_uninstall_question_takes_the_app_by_name() {
     until(&mut session, "the question", |session| {
         publisher(session, "confirm").is_some()
     });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
-        "the name finds the app: {labels:?}"
-    );
+    until(&mut session, "the question's title", |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Uninstall Tilo Imager?")
+    });
     assert!(file.is_file(), "nothing goes before the person answers");
 }
 

@@ -358,14 +358,23 @@ fn a_run_placed_on_the_canvas_is_the_shells_conversation_place() {
     the_agent_finds_the_launch_notes(&runs, &run);
     until(&mut session, |session| desk(session).run_entries.len() == 4);
     let resource = wire::run(&run);
-
-    session
-        .invoke(
-            "shell:arrangement",
-            "place",
-            &arguments(json!({ "resource": resource, "x": 40, "y": 40 })),
-        )
-        .expect("the arranging action runs");
+    // The run's own resource is one the arrangement can place once its app
+    // has published it: the arrangement takes what is published in its own
+    // pass, behind the app's.
+    common::wait_for(
+        &mut session,
+        format!("the arrangement to place {resource}"),
+        |session| {
+            session
+                .invoke(
+                    "shell:arrangement",
+                    "place",
+                    &arguments(json!({ "resource": resource, "x": 40, "y": 40 })),
+                )
+                .ok()
+                .map(|_| ())
+        },
+    );
     let placed = |session: &Session| {
         session
             .arrangement()

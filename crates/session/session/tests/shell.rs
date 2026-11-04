@@ -140,11 +140,21 @@ fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screen
         .count()
 }
 
+/// The colours the screen shows across the bar's band: the bar draws there,
+/// and nothing of the desk does.
+fn band_colours(shot: &tilo_compositor::Screenshot) -> usize {
+    (0..shot.width)
+        .step_by(2)
+        .filter_map(|x| shot.pixel(x, 16))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
 /// Press the bar's control named `name` with the pointer.
 fn press(session: &mut Session, name: &str) {
-    let (x, y, w, h) = session
-        .shell_control(name)
-        .unwrap_or_else(|| panic!("the bar shows {name}: {:?}", session.accessible_labels()));
+    let (x, y, w, h) = common::wait_for(session, format!("the bar's {name}"), |session| {
+        session.shell_control(name)
+    });
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     let compositor = session.compositor();
     compositor
@@ -193,13 +203,12 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
     if !desk.strip.is_empty() {
         assert!(says(&session, &desk.strip), "the bar names the strip");
     }
-    let shot = keep(&mut session, "shell-bar-empty-desk");
     // The bar draws in its band: its controls stand on the desk there.
-    let band = (0..shot.width)
-        .step_by(2)
-        .filter_map(|x| shot.pixel(x, 16))
-        .collect::<std::collections::BTreeSet<_>>();
-    assert!(band.len() > 8, "the bar draws in its band");
+    let _shot = common::wait_for(&mut session, "the bar in its band", |session| {
+        session.step(Duration::from_millis(16)).expect("step");
+        let shot = keep(session, "shell-bar-empty-desk");
+        (band_colours(&shot) > 8).then_some(shot)
+    });
     // Its controls stand where the bar's band is.
     let (_, y, _, h) = session.shell_control(&desk.workspace).unwrap();
     let band = bar_band(&session);
@@ -1152,7 +1161,9 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
     // Nobody here: the people door alone.
-    let door = bar_control(&session, "People").expect("the people door");
+    let door = common::wait_for(&mut session, "the people door", |session| {
+        bar_control(session, "People")
+    });
     assert!(
         session.shell_control("Mia Clayton").is_none(),
         "no face of a person who is not here"
@@ -1439,6 +1450,8 @@ fn session_where(
 fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     common::wait_for(session, "the services' reading", |session| {
         session.settle_services();
+        // What the services reported reaches the shell on the frame the loop runs.
+        session.step(Duration::from_millis(1)).expect("step");
         done(session).then_some(())
     });
 }
@@ -1690,13 +1703,18 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     until_settled(&mut session, |session| {
         !session.surfaces().running(quick_settings::SURFACE)
     });
-    let closed = drawn(&mut session);
-    assert_ne!(
-        closed.pixel(PROBE.0, PROBE.1).expect("a pixel of the desk"),
-        controls
-            .pixel(PROBE.0, PROBE.1)
-            .expect("a pixel of the panel"),
-        "the panel's ground goes with it"
+    // The panel's ground goes with it: the desk shows where it stood.
+    let closed = common::wait_for(
+        &mut session,
+        "the panel's ground to go with it",
+        |session| {
+            let frame = drawn(session);
+            (frame.pixel(PROBE.0, PROBE.1).expect("a pixel of the desk")
+                != controls
+                    .pixel(PROBE.0, PROBE.1)
+                    .expect("a pixel of the panel"))
+            .then_some(frame)
+        },
     );
     save(&closed, "quick-settings-closed-again");
 }
@@ -2180,10 +2198,7 @@ fn bar_band_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
 
 /// Run frames until what a setting wrote is drawn: nothing the views read reports itself.
 fn settle(session: &mut Session) {
-    for _ in 0..20 {
-        session.settle_services();
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    drawn(session);
 }
 
 /// A device whose pack charges (or drains) and whose link is Wi-Fi, in memory: what the bar's
@@ -2524,27 +2539,31 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
             "Notifications",
             PERSON,
         ] {
-            assert!(
-                says(&session, words),
-                "a compact bar keeps {words:?}: {:?}",
-                session.accessible_labels()
+            common::wait_for(
+                &mut session,
+                format!("a compact bar keeping {words:?}"),
+                |session| says(session, words).then_some(()),
             );
         }
         for words in ["Volume", "are here"] {
-            assert!(
-                !says(&session, words),
-                "and gives way on {words:?}: {:?}",
-                session.accessible_labels()
+            common::wait_for(
+                &mut session,
+                format!("a compact bar giving way on {words:?}"),
+                |session| (!says(session, words)).then_some(()),
             );
         }
-        let over: Vec<_> = bar_band_controls(&session)
-            .into_iter()
-            .filter(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
-            .collect();
-        assert!(
-            over.is_empty(),
-            "nothing stands past {width}'s edge: {over:?}"
+        let over = common::wait_for(
+            &mut session,
+            format!("the bar to stand inside {width}'s edge"),
+            |session| {
+                let over: Vec<_> = bar_band_controls(session)
+                    .into_iter()
+                    .filter(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
+                    .collect();
+                over.is_empty().then_some(over)
+            },
         );
+        let _ = over;
         // The trailing group ends inside the bar's band, not over its edge.
         let (_, y, _, h) = bar_control(&session, PERSON).expect("the person's face");
         let band = bar_band(&session);
@@ -2602,20 +2621,24 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
                         ),
                         "the capture is of the whole screen"
                     );
-                    let band = bar_band(&session);
-                    let over: Vec<_> = bar_band_controls(&session)
-                        .into_iter()
-                        .filter(|(_, (x, y, w, h))| {
-                            *x < -0.5
-                                || x + w > f64::from(width) + 0.5
-                                || *y < band.1 - 0.5
-                                || y + h > band.1 + band.3 + 0.5
-                        })
-                        .collect();
-                    assert!(
-                        over.is_empty(),
-                        "{width} wide, {style} in {appearance}, {count} here: nothing overflows: \
-                         {over:?}"
+                    common::wait_for(
+                        &mut session,
+                        format!(
+                            "{width} wide, {style} in {appearance}, {count} here: nothing overflows"
+                        ),
+                        |session| {
+                            let band = bar_band(session);
+                            let over: Vec<_> = bar_band_controls(session)
+                                .into_iter()
+                                .filter(|(_, (x, y, w, h))| {
+                                    *x < -0.5
+                                        || x + w > f64::from(width) + 0.5
+                                        || *y < band.1 - 0.5
+                                        || y + h > band.1 + band.3 + 0.5
+                                })
+                                .collect();
+                            over.is_empty().then_some(())
+                        },
                     );
                 }
             }

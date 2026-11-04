@@ -206,10 +206,12 @@ fn the_chromes_actions_show_the_shells_surfaces() {
             .invoke(CHROME, action, &Map::new())
             .unwrap_or_else(|error| panic!("{action} shows {surface}: {error:?}"));
         until(&mut session, surface, |session| here(session) == surface);
-        assert!(
-            on_screen(&session, shown).is_some(),
-            "{action} draws the shell's {surface}: {:?}",
-            session.accessible_labels()
+        // The surface is up in the shell's own state; what it draws is read once it has
+        // laid itself out, which is the same wait as every other one here.
+        until(
+            &mut session,
+            &format!("{action} drawing {shown}"),
+            |session| on_screen(session, shown).is_some(),
         );
         session
             .invoke(CHROME, action, &Map::new())

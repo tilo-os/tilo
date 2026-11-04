@@ -25,7 +25,6 @@ use tilo_compositor::{Compositor, InputEvent, OutputConfig, Screenshot};
 use tilo_desktop::desk_verbs::DISPLAY_KIND;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
-use tilo_sheets::power::PowerSeat;
 use wayland_client::protocol::{
     wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_keyboard, wl_keyboard::WlKeyboard,
     wl_registry, wl_registry::WlRegistry, wl_seat, wl_seat::WlSeat, wl_shm, wl_shm::WlShm,
@@ -312,14 +311,13 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     frame.pixel(x, y).expect("a pixel of the frame")
 }
 
-/// The point at the middle of `power`'s panel, in its own coordinates.
-fn panel_centre(power: &PowerSeat) -> (i32, i32) {
-    let panel = power.panel();
-    assert!(
-        panel.x1 > panel.x0 && panel.y1 > panel.y0,
-        "the menu drew a panel: {:?}",
-        (panel.x0, panel.y0, panel.x1, panel.y1)
-    );
+/// The point at the middle of the menu's panel, in its own coordinates, once
+/// the menu has laid the panel out.
+fn panel_centre(session: &mut Session) -> (i32, i32) {
+    let panel = common::wait_for(session, "the menu's panel", |session| {
+        let panel = session.power_menu().expect("power sheet").panel();
+        (panel.x1 > panel.x0 && panel.y1 > panel.y0).then_some(panel)
+    });
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a point on a display, well inside its bounds"
@@ -356,36 +354,28 @@ fn a_sheet_opens_on_the_display_in_focus() {
     let power = session.power_menu().expect("power sheet");
     power.presentation().open(false);
     pump(&mut session, &mut client, |session, _| {
-        session
-            .power_menu()
-            .expect("power sheet")
-            .presentation()
-            .place()
-            == Some(right())
+        let presentation = session.power_menu().expect("power sheet").presentation();
+        presentation.place() == Some(right()) && presentation.is_open()
     });
     let power = session.power_menu().expect("power sheet");
-    assert!(
-        power.presentation().is_open(),
-        "the menu is up for the person"
-    );
     assert_eq!(
         power.presentation().place(),
         Some(right()),
         "the sheet covers the display in focus"
     );
-    let (cx, cy) = panel_centre(power);
-    for _ in 0..4 {
-        client.exchange();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
+    assert!(power.presentation().is_open(), "and is up for the person");
+    let (cx, cy) = panel_centre(&mut session);
 
-    let after_right = shot(&mut session, "HEADLESS-2");
-    let after_left = shot(&mut session, "HEADLESS-1");
-    assert_ne!(
-        pixel(&after_right, cx, cy),
-        pixel(&before_right, cx, cy),
-        "the sheet is drawn on the display in focus, at ({cx}, {cy}) of it"
+    let _after_right = common::wait_for(
+        &mut session,
+        format!("the sheet drawn on the display in focus, at ({cx}, {cy}) of it"),
+        |session| {
+            session.step(Duration::from_millis(16)).expect("step");
+            let frame = shot(session, "HEADLESS-2");
+            (pixel(&frame, cx, cy) != pixel(&before_right, cx, cy)).then_some(frame)
+        },
     );
+    let after_left = shot(&mut session, "HEADLESS-1");
     assert_eq!(
         pixel(&after_left, cx, cy),
         pixel(&before_left, cx, cy),
@@ -446,27 +436,26 @@ fn a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys() {
     pump(&mut session, &mut client, |session, _| {
         session.power_menu().expect("power sheet").panel().x1 > 0.0
     });
-    let (cx, cy) = panel_centre(session.power_menu().expect("power sheet"));
+    let (cx, cy) = panel_centre(&mut session);
     let (wx, wy, ww, wh) = rect(&mut session, "org.example.Editor");
     assert!(
         cx >= wx && cx < wx + ww && cy >= wy && cy < wy + wh,
         "the menu's middle ({cx}, {cy}) is over the window {:?}",
         (wx, wy, ww, wh)
     );
-    for _ in 0..4 {
-        client.exchange();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-    let after = shot(&mut session, "HEADLESS-1");
     assert_eq!(
         pixel(&before, cx, cy),
         WINDOW,
         "the window filled the display at ({cx}, {cy}) before the sheet"
     );
-    assert_ne!(
-        pixel(&after, cx, cy),
-        WINDOW,
-        "the sheet paints over the maximised window"
+    common::wait_for(
+        &mut session,
+        "the sheet painting over the maximised window",
+        |session| {
+            session.step(Duration::from_millis(16)).expect("step");
+            let frame = shot(session, "HEADLESS-1");
+            (pixel(&frame, cx, cy) != WINDOW).then_some(())
+        },
     );
     let (x, y, w, h) = rect(&mut session, "org.example.Editor");
     assert_eq!(
