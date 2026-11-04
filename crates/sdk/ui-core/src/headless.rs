@@ -701,6 +701,25 @@ fn full_relayout_forced() -> bool {
 /// before a view counts as never settling.
 const MAX_READMISSIONS: u8 = 8;
 
+/// The modifiers a key spec holds down and the key it presses: `Shift+F10` is
+/// Shift held for `F10`, `+` types a plus. A leading name that is no modifier
+/// is the key itself.
+fn chord(spec: &str) -> (&str, Vec<String>) {
+    let mut held = Vec::new();
+    let mut rest = spec.trim();
+    while let Some((name, after)) = rest.split_once('+') {
+        if !matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "ctrl" | "control" | "shift" | "alt" | "logo" | "super" | "meta" | "command"
+        ) {
+            break;
+        }
+        held.push(name.trim().to_owned());
+        rest = after;
+    }
+    (rest, held)
+}
+
 thread_local! {
     /// Re-admissions in progress on this thread, nested inside each other.
     static READMISSIONS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
@@ -7861,7 +7880,8 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Press and release one key.
+    /// Press and release one key, holding the modifiers a `+` chord names
+    /// (`Ctrl+Z`, `Shift+F10`) for as long as the press lasts.
     ///
     /// `Tab` drives host focus traversal unless the focused widget explicitly
     /// owns it (for example, a code editor's indentation). This mirrors
@@ -7883,9 +7903,16 @@ impl FrameHarness {
         });
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
+        let (spec, held) = chord(spec);
         let key = keys::parse_key(spec);
+        if !held.is_empty() {
+            self.set_modifiers(&held);
+        }
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send_host_event(&key_input(&key, state));
+        }
+        if !held.is_empty() {
+            self.set_modifiers(&[]);
         }
     }
 
@@ -9161,6 +9188,24 @@ impl FrameHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_alone() {
+        for (spec, pressed, expected) in [
+            ("Shift+F10", "F10", &["Shift"][..]),
+            ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
+            ("Tab", "Tab", &[][..]),
+            ("+", "+", &[][..]),
+        ] {
+            let (key, modifiers) = chord(spec);
+            let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+            assert_eq!(
+                (key, held.as_slice()),
+                (pressed, expected),
+                "{spec} is {pressed} with {expected:?} held"
+            );
+        }
+    }
 
     /// A theme change repaints everything on the next frame, retained caches
     /// included: a window switched from dark to light renders exactly what a

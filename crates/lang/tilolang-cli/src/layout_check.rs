@@ -196,9 +196,10 @@ pub struct Options {
     /// package's first root, as the launcher opens an app.
     pub root: Option<String>,
     /// Key presses sent to each window before it is read, in order, as
-    /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`): the layout a
-    /// person reaches by keyboard, for its shot and its semantics. They reach the window at
-    /// the `dump` size, where a shot shows them; none there, at the first layout.
+    /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
+    /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by
+    /// keyboard, for its shot and its semantics. They reach the window at the `dump` size,
+    /// where a shot shows them; none there, at the first layout.
     pub keys: Vec<String>,
 }
 
