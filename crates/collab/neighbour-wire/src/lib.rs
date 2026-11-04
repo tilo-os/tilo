@@ -237,6 +237,8 @@ impl RefusalReason {
             || reason.contains("may not")
             || reason.contains("cannot")
             || reason.contains("layout")
+            || reason.contains("publishes no")
+            || reason.contains("not granted")
         {
             Self::Forbidden
         } else {

@@ -243,15 +243,21 @@ fn a_member_reads_where_their_refused_change_is_not() {
     // apps' windows are written into.
     show(&bob_laptop, &site);
 
-    // Bob opens an app on the shared desk: the workspace's desk is written for
-    // the first time, by the device that holds it, and the site takes it.
+    // Bob opens an app on the shared desk: does the site take it, or does it
+    // tell him why not?
     let _bob_note = open(&bob_laptop, "Notes");
     waited(
-        "Bob's window on the workspace's desk",
+        "the site to take Bob's window or to refuse it",
         &site,
         &[&bob_laptop],
-        || windows(&site) >= 1,
+        || windows(&site) >= 1 || !refusals(&bob_laptop).is_empty(),
     );
+    if windows(&site) == 0 {
+        panic!(
+            "the site took nothing and filed: {:?}",
+            refusals(&bob_laptop)
+        );
+    }
 
     // And a second one, while he may write: what the site holds is his desk,
     // and what he writes next is refused against it.

@@ -590,10 +590,33 @@ async fn change_refusal(
         .or_else(|| crate::surfaces::role_refusal(delta, standings.as_deref(), claimed));
     if let Some(reason) = refused {
         tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
+        file_refusal_of(ws, env, &reason).await;
         return Some(reason);
     }
     let author = deciding_author(peer, attached, own_device, &claimed);
     desktop_refusal(ws, author, env).await
+}
+
+/// File `ws`'s verdict on `env`, a change this host refused for `reason`, in
+/// its own slice of the workspace document, and publish it as the workspace's
+/// next governance: the change's author reads why it is not here, live or on
+/// catch-up, and every member of the workspace keeps the verdict.
+pub(super) async fn file_refusal_of(ws: &SharedWorkspace, env: &Envelope, reason: &str) {
+    let Some(body) = governor_notice(env) else {
+        return;
+    };
+    let Some(authority) = ws.lock().await.workspace_authority.clone() else {
+        return;
+    };
+    let Some(workspaces) = authority.workspaces() else {
+        return;
+    };
+    if let Err(error) = workspaces
+        .publish_refusal(authority.workspace(), &body, reason)
+        .await
+    {
+        tracing::warn!(%error, %reason, "the workspace did not file its refusal of a change");
+    }
 }
 
 /// Hand `body`, a change `author` made that the relay kept, to the workspace's
@@ -653,12 +676,7 @@ pub(super) async fn desktop_refusal(
         .err()?;
     // Neither kept nor forwarded: what this device refused is filed in its
     // own workspace slice, the one place the write's author reads it.
-    if let Err(error) = workspaces
-        .file_layout_refusal(authority.workspace(), &body, &reason)
-        .await
-    {
-        tracing::warn!(%error, %reason, "the workspace did not file its refusal of a layout write");
-    }
+    file_refusal_of(ws, env, &reason).await;
     if reason == crate::workspaces::LAYOUT_REFUSAL {
         tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
     } else {

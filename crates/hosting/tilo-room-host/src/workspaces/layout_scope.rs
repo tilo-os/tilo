@@ -339,14 +339,14 @@ impl Workspaces {
         Ok(())
     }
 
-    /// File this device's verdict on `body`, a write it refused while taking
-    /// it in ([`Self::decide_layout_write`]), and publish it as the
-    /// workspace's next governance: its author reads it live, and every
-    /// member keeps it.
+    /// File this device's verdict on `body`, a write it refused
+    /// ([`Self::decide_layout_write`], [`Self::decide_desktop_write`], or an
+    /// app surface the change names), and publish it as the workspace's next
+    /// governance: its author reads it live, and every member keeps it.
     ///
     /// # Errors
     /// Why the verdict was not filed, or `body` is not a message.
-    pub(crate) async fn file_layout_refusal(
+    pub(crate) async fn publish_refusal(
         &self,
         workspace: &str,
         body: &[u8],

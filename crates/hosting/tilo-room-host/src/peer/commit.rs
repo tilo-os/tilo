@@ -3,7 +3,8 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
-    desktop_refusal, enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
+    desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_record,
+    unix_now_ns, unpublished,
 };
 use crate::workspace_access::WorkspaceOperation;
 
@@ -283,6 +284,7 @@ async fn commit_refusal(
     };
     if let Some(reason) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
         tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
+        file_refusal_of(ws, delta, &reason).await;
         return Some(reason);
     }
     if let Some(reason) = desktop_refusal(ws, author, delta).await {
@@ -290,6 +292,7 @@ async fn commit_refusal(
     }
     let reason = crate::surfaces::role_refusal(bytes, standings.as_deref(), author)?;
     tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+    file_refusal_of(ws, delta, &reason).await;
     Some(reason)
 }
 
