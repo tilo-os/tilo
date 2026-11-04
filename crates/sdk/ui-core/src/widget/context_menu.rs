@@ -943,16 +943,27 @@ impl ContextMenu {
 
     /// Painted (clipped) geometry of an action row, in host coordinates.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
-        if !self.open || !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+        if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
             return None;
         }
-        if !self.shown.contains(&index) {
+        let rect = self.row_bounds(index)?.intersect(self.body_rect());
+        (!rect.is_zero_area()).then_some(rect)
+    }
+
+    /// The box a row occupies in the rows' scrolling, on screen or scrolled past the panel's
+    /// edge: where the row is, so a reader of the menu finds it there rather than nowhere.
+    pub fn row_bounds(&self, index: usize) -> Option<Rect> {
+        if !self.open || !self.shown.contains(&index) {
             return None;
         }
         let body = self.body_rect();
         let top = body.y0 - self.scroll.offset().y + self.row_top(index);
-        let rect = Rect::new(body.x0, top, body.x1, top + self.item_height(index)).intersect(body);
-        (!rect.is_zero_area()).then_some(rect)
+        Some(Rect::new(
+            body.x0,
+            top,
+            body.x1,
+            top + self.item_height(index),
+        ))
     }
 
     pub fn focus_item(&mut self, index: usize) -> bool {
@@ -2111,7 +2122,7 @@ impl Widget for ContextMenu {
                     return Some(
                         AccessNode::new(Role::StaticText)
                             .with_name(text.clone())
-                            .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
+                            .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
                             .with_state(AccessState {
                                 hidden: !self.open,
                                 ..Default::default()
@@ -2134,7 +2145,7 @@ impl Widget for ContextMenu {
                 let mut node = AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
                     .with_action_target(format!("context-menu:item:{index}"))
-                    .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
+                    .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
                     .with_position(action_position, action_count)
                     .with_state(AccessState {
                         focusable: *enabled,

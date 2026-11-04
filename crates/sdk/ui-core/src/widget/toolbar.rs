@@ -2075,9 +2075,9 @@ impl Widget for Toolbar {
                         AccessNode::new(Role::MenuItem)
                             .with_name(command.name().to_owned())
                             .with_action_target(format!("toolbar.item.{index}"))
-                            // Keep scrolled-out actions focusable so semantic focus
-                            // can reveal them, but export no fabricated painted area.
-                            .with_bounds(self.menu.item_rect(row).unwrap_or(Rect::ZERO))
+                            // A scrolled-out action still says where it stands in the rows,
+                            // so semantic focus can name it and then scroll it into view.
+                            .with_bounds(self.menu.row_bounds(row).unwrap_or(Rect::ZERO))
                             .with_state(AccessState {
                                 focusable: true,
                                 focused: self.focused && self.menu.hovered() == Some(row),
@@ -3272,35 +3272,35 @@ mod lifecycle_tests {
             }
             tb.open_menu(true);
             let menu_child = tb.targets().len();
-            let first_height = tb.menu.item_rect(0).unwrap().height();
+            let first = tb.menu.item_rect(0).unwrap();
             tb.menu.focus_item(tb.menu_indices.len() - 1);
             let node = tb.accessibility().unwrap();
             let menu = &node.children[menu_child];
             assert_eq!(menu.bounds.unwrap().to_rect(), tb.menu.get_rect());
-            let mut clipped = false;
-            for (child, row) in menu.children.iter().zip(
-                tb.menu_indices
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(row, index)| index.map(|_| row)),
-            ) {
-                let expected = tb.menu.item_rect(row).unwrap_or(Rect::ZERO);
-                assert_eq!(child.bounds.unwrap().to_rect(), expected);
-                clipped |= expected.height() > 0.0 && expected.height() < first_height;
+            // Every command keeps the box it holds in the rows, on screen or scrolled past the
+            // panel's edge: a reader that focuses it says where it is, not that it is nowhere.
+            for (row, child) in menu.children.iter().enumerate() {
+                let bounds = child.bounds.unwrap().to_rect();
+                assert_eq!(
+                    bounds.height(),
+                    first.height(),
+                    "command {row} of {} keeps its box: {bounds:?}",
+                    menu.children.len()
+                );
+                assert_eq!(bounds.width(), first.width());
             }
-            assert!(clipped);
-            assert_eq!(menu.children[0].bounds.unwrap().to_rect(), Rect::ZERO);
             assert!(
                 !menu.children[0].state.hidden,
                 "offscreen commands retain semantic focus access"
             );
             assert!(tb.focus_synthetic_accessibility(&[menu_child, 0]));
+            let shown = tb.accessibility().unwrap().children[menu_child].children[0]
+                .bounds
+                .unwrap()
+                .to_rect();
             assert!(
-                !tb.accessibility().unwrap().children[menu_child].children[0]
-                    .bounds
-                    .unwrap()
-                    .to_rect()
-                    .is_zero_area()
+                shown.y0 >= tb.menu.get_rect().y0 && shown.y1 <= tb.menu.get_rect().y1,
+                "focusing a command scrolls it into the panel, where it is whole: {shown:?}"
             );
         }
     }
