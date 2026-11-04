@@ -112,6 +112,12 @@ async fn side(secret: [u8; 32], channel: ChannelId, keys: &ChannelContentKeys) -
 }
 
 impl Side {
+    /// Start encoding `source` for what the lane's devices show of it.
+    fn start(&self, source: Source, fps: u32) -> Arc<Sending> {
+        let sink: Arc<dyn Sink> = Arc::clone(&self.video) as Arc<dyn Sink>;
+        Arc::new(Sending::start(source, fps, &sink).unwrap())
+    }
+
     fn addr(&self) -> EndpointAddr {
         EndpointAddr::new(self.endpoint.id()).with_ip_addr(SocketAddr::from((
             Ipv4Addr::LOCALHOST,
@@ -452,10 +458,7 @@ async fn a_camera_shown_at_low_reaches_the_other_device_as_that_layer_alone() {
     // Alice's own tile shows her camera at the same layer.
     alice.video.own_tile(Some(Layer::Low));
 
-    let sending = alice
-        .video
-        .start(Source::Camera, 30)
-        .expect("a camera encoder thread");
+    let sending = alice.start(Source::Camera, 30);
     let publisher = tokio::spawn(publish_frames(Arc::clone(&sending)));
 
     let (received, _cursor) = picture(&bob.video, "Bob's tile shows Alice's camera", 0).await;
@@ -516,10 +519,7 @@ async fn a_lane_that_joins_after_the_app_showed_a_picture_hears_it() {
     assert!(own.is_empty(), "nothing arrived before the lane did");
 
     lane(&bob, &mut alice).await;
-    let sending = alice
-        .video
-        .start(Source::Camera, 30)
-        .expect("a camera encoder thread");
+    let sending = alice.start(Source::Camera, 30);
     let publisher = tokio::spawn(publish_frames(Arc::clone(&sending)));
     let (received, _) = picture(
         &bob.video,

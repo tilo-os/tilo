@@ -30,7 +30,8 @@ use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle, VoiceEvent};
 use tilo_call_lane::picture::VideoObject;
 use tilo_call_lane::{
-    ALPN, CAMERA_FPS, CAMERA_SIZE, Calls, Hello, Lane, Layer, Peer, Picture, Roster, Source, Video,
+    ALPN, CAMERA_FPS, CAMERA_SIZE, Calls, Hello, Lane, Layer, Peer, Picture, Roster, Sending, Sink,
+    Source, Video,
 };
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
@@ -199,9 +200,10 @@ impl Native {
         // The page's camera is shown here: what makes it encode, and at which
         // layer.
         video.show(bridge, &[Layer::Low], &[]);
-        let sending = video
-            .start(Source::Camera, CAMERA_FPS)
-            .expect("a camera encoder thread");
+        let sink: Arc<dyn Sink> = Arc::clone(&video) as Arc<dyn Sink>;
+        let sending = Arc::new(
+            Sending::start(Source::Camera, CAMERA_FPS, &sink).expect("a camera encoder thread"),
+        );
         Self {
             _endpoint: endpoint,
             _lanes: lanes,

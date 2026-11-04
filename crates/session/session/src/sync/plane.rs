@@ -2,10 +2,11 @@
 //! on the device's own key, the peer actor served on it, and the commands the
 //! session hands it until it stops.
 //!
-//! The endpoint is also where a call's lane is served
-//! ([`tilo_call_lane::ALPN`]): from the first pass, so a peer reaching this
-//! device for a call finds someone to answer, and the call installed on it
-//! when there is one.
+//! The endpoint is also where a page's call lane is served
+//! ([`tilo_call_lane::ALPN`]): from the first pass, so a page's host reaching
+//! this device finds someone to answer, and the call installed on it when
+//! there is one. Two desktops' calls need no lane: their pictures are tracks
+//! of the workspace's plane.
 
 use std::sync::Arc;
 

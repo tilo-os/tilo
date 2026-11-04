@@ -4,20 +4,25 @@
 //!
 //! **Sending.** A source has one [`Sending`]: its capture publishes the
 //! newest frame into a [`Feed`], and a thread of its own encodes each frame
-//! for every layer someone shows — [`PicturePeer`] carries what each device
-//! said it shows, on the lane's control stream. A layer nobody shows is not
-//! encoded. A layer that starts being shown starts at a keyframe: the
-//! standing one while the picture has not changed since, so a still screen
-//! costs no encode, or one encoded from the last frame at once. Each
-//! tilo-video/1 object ([`crate::picture`]) is sealed under the stream's
-//! media key ([`crate::frame`]) and written to a unidirectional stream per
-//! source and layer, which starts at a keyframe.
+//! for every layer someone shows, as the [`Sink`] it was started with says. A
+//! layer nobody shows is not encoded. A layer that starts being shown starts
+//! at a keyframe: the standing one while the picture has not changed since,
+//! so a still screen costs no encode, or one encoded from the last frame at
+//! once. Each tilo-video/1 object ([`crate::picture`]) is sealed under the
+//! stream's media key ([`crate::frame`]) and written to a unidirectional
+//! stream per source and layer, which starts at a keyframe.
 //!
 //! **Receiving.** Each picture stream of a sending device arrives on a
 //! unidirectional stream of the lane's connection, is opened with the
 //! channel's keys and waits in the call's [`Inbox`] until the app collects
 //! it; a stream that falls behind starts over at its next keyframe, so the
 //! app's decoder never sees a picture whose reference was dropped.
+//!
+//! A [`Video`] is one device's pictures on one lane: what its peers show, the
+//! pictures they send, and the inbox the app collects. What a device encodes
+//! for is its [`Sink`]'s to say, since more than a lane can carry a picture:
+//! the lane's own share of it is [`Video::asking`], [`Video::sent`] and
+//! [`Video::own_picture`].
 //!
 //! Nothing here waits on a device: the capture thread only ever replaces the
 //! newest frame, and the lane's writer drops a picture rather than queueing
@@ -28,7 +33,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use crate::picture::{self as video, Codec, VideoObject};
+use crate::picture::{self as video, Codec};
 use channel_crypto::ChannelContentKeys;
 use iroh::endpoint::{ReadExactError, RecvStream, SendStream};
 use media::realtime::{EncoderConfig, InputFormat, InputFrame, RealtimeEncoder, StreamCodec};
@@ -41,7 +46,7 @@ use crate::carrier::Peer;
 use crate::frame::{OVERHEAD, Opener, Sealer, Stream, TrackName};
 use crate::roster::Roster;
 
-pub use crate::picture::{Layer, Source};
+pub use crate::picture::{Layer, Source, VideoObject};
 pub use crate::wire::{layer_of_wire, layer_wire, source_of_wire, source_wire, stream_of};
 
 /// Camera frames a second.
@@ -914,8 +919,8 @@ impl Control {
     }
 }
 
-/// One call's pictures, on the session's side: the sources it sends, the
-/// lanes it sends them on, and what arrived from them.
+/// One call's pictures, on the session's side: the lanes it sends them on,
+/// what arrived from them, and what it encodes for them.
 pub struct Video {
     inner: Arc<Inner>,
 }
@@ -932,9 +937,11 @@ struct Inner {
     /// that cannot go out now is dropped.
     outbox: mpsc::Sender<Outgoing>,
     inbox: Mutex<Inbox>,
-    /// The sources this device publishes, as its capture started them.
-    sources: Mutex<BTreeMap<Source, Arc<Sending>>>,
+    /// What this device shows, and what a device asked to start over.
     showing: Mutex<Showing>,
+    /// Told whenever a device shows something else, or asks for a keyframe:
+    /// what encodes this device's pictures answers with one.
+    wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 struct Together {
@@ -1008,8 +1015,8 @@ impl Video {
             current: Mutex::new(None),
             outbox,
             inbox: Mutex::new(Inbox::default()),
-            sources: Mutex::new(BTreeMap::new()),
             showing: Mutex::new(Showing::default()),
+            wake: Mutex::new(None),
         });
         let weak = Arc::downgrade(&inner);
         tokio::spawn(async move {
@@ -1069,7 +1076,6 @@ impl Video {
     /// Shut the call's pictures: every lane stops, and nothing more is
     /// encoded or kept.
     pub fn close(&self) {
-        self.inner.sources.lock_recover().clear();
         for peer in self.inner.peers.lock_recover().drain(..) {
             peer.peer.close();
         }
@@ -1112,24 +1118,59 @@ impl Video {
         self.inner.wake();
     }
 
-    /// Start publishing `source`, encoding it for the layers someone shows.
-    ///
-    /// # Errors
-    /// The encoder thread could not be started.
-    pub fn start(self: &Arc<Self>, source: Source, fps: u32) -> Result<Arc<Sending>, String> {
-        let sink: Arc<dyn Sink> = self.inner.clone();
-        let sending = Arc::new(Sending::start(source, fps, &sink)?);
-        self.inner
-            .sources
-            .lock_recover()
-            .insert(source, Arc::clone(&sending));
-        Ok(sending)
+    /// Ask `wake` to run whenever what a device shows changes, or one asks
+    /// for a keyframe: what encodes this device's pictures answers with the
+    /// layers it now shows.
+    pub fn set_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
+        *self.inner.wake.lock_recover() = Some(wake);
     }
 
-    /// Stop publishing `source`: its encoder stops, and nothing more of it
-    /// is sent.
-    pub fn stop(&self, source: Source) {
-        self.inner.sources.lock_recover().remove(&source);
+    /// What the lane's devices show of `source`, and whether one asked to
+    /// start it over at a keyframe: what this device encodes for its lane
+    /// peers.
+    ///
+    /// The channels of the call itself run on the session's plane
+    /// ([`crate::plane`]), which asks for its layers the same way.
+    #[must_use]
+    pub fn asking(&self, source: Source) -> Asking {
+        self.inner.asking(source)
+    }
+
+    /// One encoded picture of `source`, to be sealed and sent to the lane
+    /// devices that show its layer.
+    pub fn sent(&self, source: Source, object: &VideoObject) {
+        self.inner.seal_and_send(source, object);
+    }
+
+    /// This person's own picture, for their own tile: kept here, never sent.
+    pub fn own_picture(&self, object: &VideoObject) {
+        self.inner.keep_own(object);
+    }
+
+    /// A stream lost a picture before the app saw it: nothing of it is drawn
+    /// until its next keyframe.
+    pub fn behind(&self, from: [u8; 32], source: Source) {
+        self.inner.inbox.lock_recover().behind(from, source);
+    }
+
+    /// One picture of `source` a device sent over the plane: queued for the
+    /// app like one a lane carried.
+    pub fn heard(&self, from: [u8; 32], source: Source, body: Vec<u8>) {
+        let Ok(header) = video::validate(&body) else {
+            return;
+        };
+        let dropped = self.inner.inbox.lock_recover().admit(Picture {
+            from,
+            source,
+            keyframe: header.keyframe,
+            object: body,
+        });
+        // A device's stream that fell behind is asked over the lane, which
+        // only a lane's device can answer: a plane's device sends its next
+        // keyframe of its own accord.
+        for (device, source) in dropped {
+            self.inner.ask(device, source);
+        }
     }
 
     /// The pictures the app has not collected, oldest first, up to `budget`
@@ -1146,12 +1187,12 @@ impl Video {
 }
 
 impl Inner {
-    /// Something a device shows changed: every source encodes for it from
-    /// now.
+    /// Something a device shows changed: what encodes this device's pictures
+    /// answers with a keyframe of every layer it now shows.
     fn wake(&self) {
-        let sources = self.sources.lock_recover();
-        for sending in sources.values() {
-            sending.ask_keyframe();
+        let wake = self.wake.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
         }
     }
 
@@ -1184,9 +1225,7 @@ impl Inner {
     /// start it over at a keyframe.
     fn asked(&self, source: Source) {
         self.showing.lock_recover().restart.insert(source);
-        if let Some(sending) = self.sources.lock_recover().get(&source) {
-            sending.ask_keyframe();
-        }
+        self.wake();
     }
 
     /// A device's picture stream was cut off before a picture ended.
@@ -1245,8 +1284,11 @@ impl Inner {
     }
 
     /// Seal `object` and hand it to the writer, unless this device holds no
-    /// keys for the call.
+    /// keys for the call or has no lane to send it on.
     fn seal_and_send(&self, source: Source, object: &VideoObject) {
+        if self.peers.lock_recover().is_empty() {
+            return;
+        }
         let current = self.current.lock_recover();
         let Some(together) = current.as_ref() else {
             return;
@@ -1303,17 +1345,17 @@ impl Inner {
     }
 }
 
-impl Sink for Inner {
+impl Sink for Video {
     fn asking(&self, source: Source) -> Asking {
-        self.asking(source)
+        self.inner.asking(source)
     }
 
     fn sent(&self, source: Source, object: &VideoObject) {
-        self.seal_and_send(source, object);
+        self.inner.seal_and_send(source, object);
     }
 
     fn own(&self, object: &VideoObject) {
-        self.keep_own(object);
+        self.inner.keep_own(object);
     }
 }
 

@@ -716,6 +716,10 @@ pub struct Client {
     /// each with the workspace it was heard in: what the calls playing it take
     /// ([`Self::take_call_audio`]).
     call_audio: RefCell<Vec<(String, Heard)>>,
+    /// The call pictures the workspaces' live planes heard since the last
+    /// call, each with the workspace it was heard in: what the calls playing
+    /// there draw ([`Self::take_call_pictures`]).
+    call_pictures: RefCell<Vec<(String, Heard)>>,
     /// What became of the enrollments asked for since the last call.
     enrolled: std::sync::mpsc::Receiver<Enrolled>,
     /// This device's workspaces, which a join enrolls into: `None` when the
@@ -927,6 +931,7 @@ impl Client {
             arrived,
             surfaces: RefCell::new(Vec::new()),
             call_audio: RefCell::new(Vec::new()),
+            call_pictures: RefCell::new(Vec::new()),
             enrolled,
             engine,
             link,
@@ -1194,9 +1199,15 @@ impl Client {
                         .push((workspace.clone(), object));
                     continue;
                 }
+                if matches!(object.track, Track::Camera(_) | Track::Screen(_)) {
+                    // A call's pictures, already opened: the call of that
+                    // workspace draws them.
+                    self.call_pictures
+                        .borrow_mut()
+                        .push((workspace.clone(), object));
+                    continue;
+                }
                 if object.track != Track::Presence {
-                    // Pictures run on their own lanes; nothing here draws
-                    // them.
                     continue;
                 }
                 let Some(frame) = presence::decode(&object.body) else {
@@ -1489,6 +1500,15 @@ impl Client {
     #[must_use]
     pub(crate) fn take_call_audio(&self) -> Vec<(String, Heard)> {
         std::mem::take(&mut *self.call_audio.borrow_mut())
+    }
+
+    /// Take the call pictures the workspaces' live planes heard since the
+    /// last call, each with the workspace it was heard in and already
+    /// opened. A call draws the pictures of the devices its channel says are
+    /// in it.
+    #[must_use]
+    pub(crate) fn take_call_pictures(&self) -> Vec<(String, Heard)> {
+        std::mem::take(&mut *self.call_pictures.borrow_mut())
     }
 
     /// Send one message of `surface`'s stream on the topic of the workspace it is
@@ -2129,6 +2149,7 @@ impl Client {
                 arrived,
                 surfaces: RefCell::new(Vec::new()),
                 call_audio: RefCell::new(Vec::new()),
+                call_pictures: RefCell::new(Vec::new()),
                 enrolled: {
                     let (_landed, enrolled) = std::sync::mpsc::channel();
                     enrolled
