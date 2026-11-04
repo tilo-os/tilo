@@ -1996,7 +1996,11 @@ impl Session {
             })
         });
         let surface_apps = std::mem::take(&mut options.surfaces);
-        let slot_views = slot_views::SlotViews::new(shared.overlays.clone(), options.scale);
+        let slot_views = slot_views::SlotViews::new(
+            shared.handle.clone(),
+            shared.overlays.clone(),
+            options.scale,
+        );
         // Assistive technology reads the desktop through the same endpoint an
         // app's window has: what a client asks wakes this loop, which is
         // where every tree and every action lives.

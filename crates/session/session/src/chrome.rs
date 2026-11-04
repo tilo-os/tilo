@@ -16,7 +16,7 @@ use tilo_desktop::chrome::{
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
 use tilo_desktop::launchpad::LaunchpadAction;
-use tilo_desktop::overlays::{Overlays, Slot};
+use tilo_desktop::overlays::{Overlays, Slot, Target};
 use tilo_desktop::topbar::{Placement, TopBarChrome};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
@@ -551,6 +551,22 @@ impl crate::Session {
     }
 }
 
+/// What holds the keyboard over the desk: the desk's search from the pass it
+/// says it is open, and what the overlay stack says otherwise.
+///
+/// The palette is the desk's own state while it is the chrome that draws it
+/// and publishes its surface. A key typed between the desk opening it and the
+/// chrome drawing it is the palette's, not the window's behind it: what the
+/// person typed goes into the search, and the frame that key asks for is the
+/// one that publishes the palette's surface.
+pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
+    if handle.search_open() {
+        Target::Surface(Slot::Search)
+    } else {
+        overlays.target()
+    }
+}
+
 /// The chrome above the windows (the top bar, overview, menus) as the
 /// session hosts it: its own tree beside the desk's, covering the outputs.
 pub(crate) fn host(
@@ -606,8 +622,13 @@ pub(crate) fn host(
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon
     // as the top surface closes.
+    let desk = handle.clone();
     let holds = overlays.clone();
-    let keyboard = Rc::new(move || holds.target().slot().is_some_and(Slot::is_chrome));
+    let keyboard = Rc::new(move || {
+        keyboard_target(&desk, &holds)
+            .slot()
+            .is_some_and(Slot::is_chrome)
+    });
     let placement = SurfacePlacement {
         origin: (0, 0),
         size: (1, 1),

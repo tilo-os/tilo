@@ -396,24 +396,18 @@ impl VoiceAudio {
     }
     /// Admit one received frame for its publisher's decode and playout.
     ///
+    /// A frame that arrives while this machine is still behind on that
+    /// publisher is dropped, here or at its decoder: the call goes on.
+    ///
     /// # Errors
     ///
-    /// [`AudioError::Closed`] after close, [`AudioError::Capacity`] when the publisher's queue is
-    /// full, or the jitter buffer's refusal.
+    /// [`AudioError::Closed`] after close, or the jitter buffer's refusal of a
+    /// frame past its life, malformed, or for a publisher at its limit.
     pub fn receive(&mut self, frame: ReceivedOpus, now: Instant) -> Result<(), AudioError> {
         if self.closed {
             return Err(AudioError::Closed);
         }
         let id = frame.publisher.clone();
-        let outstanding = if let Some(decoder) = self.decoders.get_mut(&id) {
-            decoder.expire(now);
-            decoder.outstanding()
-        } else {
-            0
-        };
-        if outstanding.saturating_add(self.jitter.queued_for(&id)) >= 10 {
-            return Err(AudioError::Capacity);
-        }
         self.jitter.push(frame, now)?;
         if self.jitter.target_ms(&id).is_some() {
             self.decoders
@@ -423,10 +417,13 @@ impl VoiceAudio {
     }
     /// Decode due frames and push at most one mixed output frame.
     ///
+    /// A decoder this machine cannot keep up with drops the frames it is
+    /// behind on; what it holds stays bounded either way.
+    ///
     /// # Errors
     ///
-    /// [`AudioError::Closed`] after close, an output device failure, or a decoder capacity or
-    /// codec failure.
+    /// [`AudioError::Closed`] after close, an output device failure, or a codec
+    /// failure.
     pub fn playout(&mut self, now: Instant) -> Result<(), AudioError> {
         if self.closed {
             return Err(AudioError::Closed);
@@ -458,13 +455,6 @@ impl VoiceAudio {
             }
             if let Some(decoder) = self.decoders.get_mut(&frame.publisher) {
                 decoder.expire(now);
-                if decoder
-                    .outstanding()
-                    .saturating_add(self.jitter.queued_for(&frame.publisher))
-                    >= 10
-                {
-                    return Err(AudioError::Capacity);
-                }
                 decoder.push(frame, now)?;
             }
         }
@@ -737,7 +727,10 @@ impl Decoder {
             return Ok(());
         }
         if self.outstanding() >= 10 {
-            return Err(AudioError::Capacity);
+            // This machine decodes slower than the call speaks. The frame is
+            // heard late or not at all; the call is not the thing that ends,
+            // and the frames already queued keep their place in its stream.
+            return Ok(());
         }
         let pts = self.next_pts;
         self.next_pts = pts
@@ -791,7 +784,9 @@ impl Decoder {
                 .map(|pair| i16::from_le_bytes(*pair))
                 .collect();
             if self.ready.len() >= 10 {
-                return Err(AudioError::Capacity);
+                // Decoded faster than the call plays it out: this frame is
+                // given up rather than the call it belongs to.
+                continue;
             }
             self.ready.push_back(PcmFrame {
                 samples,
@@ -1458,10 +1453,10 @@ mod tests {
         }
         audio.playout(now + Duration::from_millis(60)).unwrap();
         audio.playout(now + Duration::from_millis(81)).unwrap();
-        assert_eq!(
-            audio.playout(now + Duration::from_millis(102)),
-            Err(AudioError::Capacity)
-        );
+        // A decoder that cannot keep up is given fewer frames, never the call:
+        // the pass that would overrun its capacity drops what arrived and
+        // plays on.
+        audio.playout(now + Duration::from_millis(102)).unwrap();
         assert!(
             audio.decoders[&id].pending.len()
                 + audio.decoders[&id].ready.len()
