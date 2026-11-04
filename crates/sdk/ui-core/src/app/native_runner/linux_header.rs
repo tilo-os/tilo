@@ -10,7 +10,6 @@ use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::platform::wayland::WindowExtWayland;
 use winit::window::Window;
 
 use super::super::App;
@@ -61,7 +60,7 @@ impl Decorations {
     pub(super) fn refresh(&mut self, app: &mut App, window: &Window, slot_row_shown: bool) {
         if matches!(self, Self::Unsettled) {
             let chrome = HostChrome::current(app.input.platform);
-            *self = match app_draws_frame(chrome, window.server_side_decorations()) {
+            *self = match app_draws_frame(chrome, tilo_presentation::desktop_draws_frame(window)) {
                 None => return,
                 Some(true) => {
                     window.set_decorations(false);

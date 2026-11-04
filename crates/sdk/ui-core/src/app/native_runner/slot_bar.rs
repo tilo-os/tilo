@@ -11,8 +11,6 @@
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::event::WindowEvent;
-#[cfg(target_os = "linux")]
-use winit::platform::wayland::WindowExtWayland;
 use winit::window::Window;
 
 use super::super::App;
@@ -162,18 +160,10 @@ impl SlotBar {
     /// Whether the app draws the window's frame itself: the one case the row
     /// carries the window's controls, since the desktop draws none.
     fn decorates_itself(&self, app: &App, window: &Window) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            crate::host_chrome::header_bar::app_draws_frame(
-                crate::host_chrome::HostChrome::current(app.input.platform),
-                window.server_side_decorations(),
-            ) == Some(true)
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (app, window);
-            false
-        }
+        crate::host_chrome::header_bar::app_draws_frame(
+            crate::host_chrome::HostChrome::current(app.input.platform),
+            tilo_presentation::desktop_draws_frame(window),
+        ) == Some(true)
     }
 
     /// Whether the row stands across the top of the window.
