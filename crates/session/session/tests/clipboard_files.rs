@@ -200,7 +200,7 @@ fn copied_files_are_pasted_beside_the_ones_already_in_the_folder() {
         false,
     );
     paste_into(&mut session, &destination, None);
-    let pasted = destination.join("notes (2).txt");
+    let pasted = destination.join("notes 2.txt");
     until(&mut session, "the paste finished", |_| pasted.exists());
     until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()

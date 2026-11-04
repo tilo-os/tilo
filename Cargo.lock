@@ -6853,11 +6853,17 @@ dependencies = [
 name = "host-fs"
 version = "0.1.0"
 dependencies = [
+ "cap-fs-ext",
+ "cap-std",
  "libc",
  "rustix 1.1.4",
+ "tempfile",
  "tilo-clock",
  "tilo-paths",
+ "tilo-test-env",
+ "tracing",
  "trash",
+ "uuid",
  "workspace-hack",
  "xattr",
 ]
