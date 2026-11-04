@@ -1,6 +1,6 @@
 //! The desktop draws the slots its apps declare in their windows' bars.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -429,5 +429,45 @@ fn a_windows_app_describes_its_controls_and_the_press_goes_back_on_its_connectio
     assert!(
         handle.window_controls().is_empty(),
         "nothing of the closed app's is listed"
+    );
+}
+
+/// What an app in a process of its own asks of its window's bar is desk work
+/// the desk is asked to take up: each one brings it the pass that shows it,
+/// so a bar the person is not touching shows what its app declared rather
+/// than waiting for the desk to draw something of its own.
+#[test]
+fn every_bar_ask_brings_the_desk_its_next_pass() {
+    let (_surface, handle) = crate::surface::tests::desktop(1);
+    let asked = Rc::new(Cell::new(false));
+    let woken = Rc::clone(&asked);
+    handle.set_wake(Rc::new(move || woken.set(true)));
+    let toolbar = WindowToolbar {
+        actions: vec![ToolbarAction::new("save", "plus", "Save")],
+        ..WindowToolbar::default()
+    };
+
+    handle.declare_bar(7, 41, Some(toolbar));
+    assert!(asked.replace(false), "a declaration asks for its pass");
+    handle.offer_bar(7, 41, ui::window_toolbar::WindowOffer::default());
+    assert!(asked.replace(false), "an offer asks for its pass");
+    handle.declare_bar(7, 41, None);
+    assert!(asked.replace(false), "taking slots away asks for its pass");
+    handle.edit_bar_location(7);
+    assert!(
+        asked.replace(false),
+        "editing the location asks for its pass"
+    );
+    handle.open_bar_search(7, ui::window_toolbar::SearchOpening::Find);
+    assert!(asked.replace(false), "opening the search asks for its pass");
+    handle.declare_targets(7, 41, Vec::new());
+    assert!(
+        asked.replace(false),
+        "the window's controls ask for their pass"
+    );
+    handle.bar_connection_closed(41);
+    assert!(
+        asked.replace(false),
+        "dropping what a closed connection asked for asks for its pass"
     );
 }

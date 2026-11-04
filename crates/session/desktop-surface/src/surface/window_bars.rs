@@ -85,47 +85,40 @@ impl DesktopHandle {
     /// the next pass on. The app is the one the session vouched for, so it
     /// only ever reaches a tab that shows it.
     pub fn declare_bar(&self, tab: u64, connection: u64, toolbar: Option<WindowToolbar>) {
-        self.shared
-            .borrow_mut()
-            .bars
-            .declared
-            .push((tab, connection, toolbar));
+        self.queue_bar_ask(|bars| bars.declared.push((tab, connection, toolbar)));
     }
 
     /// `connection`'s app said what `tab`'s window offers the bar's search
     /// and History control.
     pub fn offer_bar(&self, tab: u64, connection: u64, offer: WindowOffer) {
-        self.shared
-            .borrow_mut()
-            .bars
-            .offered
-            .push((tab, connection, offer));
+        self.queue_bar_ask(|bars| bars.offered.push((tab, connection, offer)));
     }
 
     /// `tab`'s app asked for its location in the bar to be edited, as its own
     /// Ctrl+L does.
     pub fn edit_bar_location(&self, tab: u64) {
-        self.shared.borrow_mut().bars.edits.push(tab);
+        self.queue_bar_ask(|bars| bars.edits.push(tab));
     }
 
     /// `tab`'s app asked for its window's search in the bar to open, as its
     /// own Ctrl+F (or Ctrl+H, for `opening`) does.
     pub fn open_bar_search(&self, tab: u64, opening: SearchOpening) {
-        self.shared.borrow_mut().bars.searches.push((tab, opening));
+        self.queue_bar_ask(|bars| bars.searches.push((tab, opening)));
+    }
+
+    /// Queue desk work an app handed over, and ask the desk for its next
+    /// pass: what an app asks reaches its window's bar in the pass that
+    /// follows, not whenever the desk next draws something of its own.
+    fn queue_bar_ask(&self, ask: impl FnOnce(&mut Bars)) {
+        let mut shared = self.shared.borrow_mut();
+        ask(&mut shared.bars);
+        shared.changed();
     }
 
     /// `connection`'s app described the controls of `tab`'s content
     /// ([`ui::window_targets`]): what a session finds and presses there.
     pub fn declare_targets(&self, tab: u64, connection: u64, targets: Vec<WindowTarget>) {
-        let mut shared = self.shared.borrow_mut();
-        shared
-            .bars
-            .declared_targets
-            .push((tab, connection, targets));
-        // The controls a window offers are part of what the desk shows: it
-        // takes them up in the pass that follows, not whenever the desk next
-        // changes.
-        shared.changed();
+        self.queue_bar_ask(|bars| bars.declared_targets.push((tab, connection, targets)));
     }
 
     /// The controls the windows the desk shows offer by name now, each with
@@ -196,7 +189,7 @@ impl DesktopHandle {
 
     /// `connection` closed: the slots and offers its app declared go with it.
     pub fn bar_connection_closed(&self, connection: u64) {
-        self.shared.borrow_mut().bars.gone.push(connection);
+        self.queue_bar_ask(|bars| bars.gone.push(connection));
     }
 
     /// What the person did in the bars for the apps in processes of their
