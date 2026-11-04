@@ -117,11 +117,15 @@ impl DesktopHandle {
     /// `connection`'s app described the controls of `tab`'s content
     /// ([`ui::window_targets`]): what a session finds and presses there.
     pub fn declare_targets(&self, tab: u64, connection: u64, targets: Vec<WindowTarget>) {
-        self.shared
-            .borrow_mut()
+        let mut shared = self.shared.borrow_mut();
+        shared
             .bars
             .declared_targets
             .push((tab, connection, targets));
+        // The controls a window offers are part of what the desk shows: it
+        // takes them up in the pass that follows, not whenever the desk next
+        // changes.
+        shared.changed();
     }
 
     /// The controls the windows the desk shows offer by name now, each with

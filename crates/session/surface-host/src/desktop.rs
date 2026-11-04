@@ -585,6 +585,12 @@ impl SurfaceHost for DesktopHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // Something outside the desk's tree asked for a pass — an app
+        // described the controls of its window's content, a service published
+        // what the desk shows. The desk reads what they changed in a pass of
+        // its own, as it does standing under the shell
+        // ([`crate::shell::Aside`]), and draws the frame that pass asks for.
+        self.advance();
         self.desk.borrow_mut().host.prepare_frame()
     }
 
@@ -959,6 +965,60 @@ mod tests {
             *told.borrow(),
             vec![4242],
             "a window without a process has none to tell"
+        );
+    }
+
+    /// A window's app describes the controls of its own content, and nothing
+    /// else on the desk changes. The desk takes them up in the frame that
+    /// follows: what a person can reach does not wait for the next thing that
+    /// happens to draw.
+    #[test]
+    fn a_windows_declared_controls_are_taken_up_in_the_next_frame() {
+        use ui::window_targets::{TargetAction, WindowTarget};
+
+        let (mut desk, mut policy) = desktop(7, 1.0);
+        SurfaceHost::outputs_changed(&mut desk, &[(0, 0, 1280, 800)]);
+        policy.map(&window(1, "so.tilo.file-explorer", Some(4242)), &[output()]);
+        for _ in 0..8 {
+            SurfaceHost::prepare_frame(&mut desk);
+        }
+        assert!(
+            !SurfaceHost::prepare_frame(&mut desk),
+            "the desk is at rest before the app describes its content"
+        );
+        let handle = desk.with_policy(|policy| policy.handle().clone());
+        let tab = handle
+            .shown_tabs()
+            .first()
+            .map(|(tab, _)| *tab)
+            .expect("the window is drawn");
+        assert!(handle.window_controls().is_empty());
+
+        handle.declare_targets(
+            tab,
+            41,
+            vec![WindowTarget {
+                role: "Row".to_owned(),
+                name: "Documents".to_owned(),
+                rect: [10.0, 20.0, 110.0, 40.0],
+                actions: vec![TargetAction::Activate],
+            }],
+        );
+        assert!(
+            handle.window_controls().is_empty(),
+            "nothing of it is read before the frame that reads it"
+        );
+
+        SurfaceHost::prepare_frame(&mut desk);
+
+        let listed = handle.window_controls();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Documents"],
+            "the frame after the declaration carries the window's controls"
         );
     }
 }
