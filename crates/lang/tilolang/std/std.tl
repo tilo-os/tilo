@@ -266,9 +266,9 @@ view rows_list<T>(
             // rows are the host's, so a row reaching one back costs one step, however far
             // along the list it stands.
             let above: Option<T> = if let p = shown.previous(x) {
-                if if let g = group { g(p) == heading } else { true } and if let c = closed { c(p) == tail } else { true } {
-                    .some(p)
-                } else { .none }
+                let same_heading = if let g = group { g(p) == heading } else { true }
+                let same_side = if let c = closed { c(p) == tail } else { true }
+                if same_heading and same_side { .some(p) } else { .none }
             } else { .none }
             let offered = actions(x, above)
             let under: Option<T> = if let p = parent { p(x) } else { .none }

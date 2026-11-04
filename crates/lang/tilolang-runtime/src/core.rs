@@ -405,10 +405,7 @@ impl Core {
             | Imp::Me
             | Imp::ForeignRef
             | Imp::MatchGroup => self.program_import(imp, a),
-            Abort => {
-                let msg = self.text(a.h(0)?)?;
-                trap(format!("abort: {msg}"))
-            }
+            Abort => trap(format!("abort: {}", self.text(a.h(0)?)?)),
         }
     }
 }

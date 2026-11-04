@@ -159,7 +159,7 @@ impl Core {
         let value = match list {
             Ok(item) => item.map_or_else(Value::none, Value::some),
             Err(coll) => {
-                let at = match self.place_of(&coll, &want)? {
+                let at = match self.place_of(&coll, &want) {
                     Some(at) => Some(at),
                     None => match Self::item_id(&want) {
                         Some(id) => self
@@ -180,12 +180,10 @@ impl Core {
 
     /// Where `item` stands in `coll` while a view renders the row of it: the place the host gave
     /// the row, which the row's own body knows without reading the rows before it.
-    fn place_of(&self, coll: &Rc<crate::value::CollRef>, item: &Value) -> HResult<Option<usize>> {
+    fn place_of(&self, coll: &Rc<crate::value::CollRef>, item: &Value) -> Option<usize> {
         let place = self.row_place.borrow().clone();
-        let Some((rows, at)) = place else {
-            return Ok(None);
-        };
-        Ok((Rc::ptr_eq(&rows, coll) && Self::item_id(item).is_some()).then_some(at))
+        let (rows, at) = place?;
+        (Rc::ptr_eq(&rows, coll) && Self::item_id(item).is_some()).then_some(at)
     }
 
     /// The item `v` is a reference to, if it is a reference.
@@ -279,6 +277,21 @@ impl Core {
                 })?;
                 self.element(imp, item)
             }
+            Imp::SomeH
+            | Imp::SomeI
+            | Imp::SomeF
+            | Imp::NoneV
+            | Imp::IsSome
+            | Imp::UnwrapI
+            | Imp::UnwrapF
+            | Imp::UnwrapH => self.option_import(imp, a),
+            _ => trap("not an aggregate import"),
+        }
+    }
+
+    /// The imports over options: `some`, `none`, `is_some` and `unwrap`.
+    fn option_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
             Imp::SomeH => {
                 let v = self.val_whole(a.h(0)?)?;
                 self.ret_h(Value::some(v))
@@ -298,7 +311,7 @@ impl Core {
                 })?;
                 self.element(imp, inner)
             }
-            _ => trap("not an aggregate import"),
+            _ => trap("not an option import"),
         }
     }
 
