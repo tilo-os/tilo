@@ -1,7 +1,9 @@
-//! A page that only watches a public workspace, as its spectator: it reads what
-//! the members seal in the workspace's records with the keys the workspace's node
-//! hands it, and writes nothing, not even a request for a channel's access.
-//! In a workspace that is not public it gets no keys and opens nothing.
+//! A page that only watches a workspace, as its spectator, asks its records'
+//! channels for access like any device and writes nothing. The workspace
+//! refuses it by name, in a public workspace too: a key opens a channel for the
+//! devices its record's readers name, and no route hands a page one. It holds
+//! what members sealed and opens none of it, and the node never sees a key to
+//! give.
 
 #![allow(
     clippy::unwrap_used,
@@ -31,9 +33,11 @@ use tilo_relay_protocol::workspaces::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
-use support::{
-    TestHost, admitted, enrol, next_document_on, start_peer, start_workspace_host, wait_for,
-};
+use support::{TestHost, admitted, enrol, start_peer, start_workspace_host, wait_for};
+
+/// The refusal a watching page is answered with when it asks a record's
+/// channel for access.
+const SEALED: &str = "this workspace opens a record's channel only to the devices its readers name, not to those who only watch";
 
 async fn workspaces(link: &HttpsLink, request: WorkspacesRequest) -> Workspace {
     match carrier::workspaces(link.client().as_ref(), link.session(), &request)
@@ -61,6 +65,13 @@ impl Paths {
             .filter(|(posted, _)| posted.ends_with(path))
             .map(|(_, status)| *status)
             .collect()
+    }
+
+    fn of(inner: Arc<dyn HttpClient>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            posted: Mutex::default(),
+        })
     }
 }
 
@@ -109,7 +120,7 @@ async fn watching_page(root: &SigningKey, host: &DeviceCert, paths: Arc<Paths>) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() {
+async fn a_watching_page_is_refused_a_records_channel_and_opened_none_of_it() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     // A workspace service's node, which takes part in its workspaces' channels.
     let host = enrol(
@@ -199,13 +210,17 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
         },
     )
     .await;
-    let spectators = |public| tilo_relay::Spectators {
-        root: spectator.verifying_key().to_bytes(),
-        seats: 4,
-        public,
-    };
+    // A public workspace: anyone may join it as a guest, and a watching page
+    // still opens nothing its members sealed.
     relay
-        .admit_spectators(workspace_id, spectators(true))
+        .admit_spectators(
+            workspace_id,
+            tilo_relay::Spectators {
+                root: spectator.verifying_key().to_bytes(),
+                seats: 4,
+                public: true,
+            },
+        )
         .await
         .unwrap();
 
@@ -231,11 +246,9 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
     })
     .await;
 
-    // A watching page opens it with the keys the node hands it.
-    let paths = Arc::new(Paths {
-        inner: https.clone(),
-        posted: Mutex::default(),
-    });
+    // The watching page asks the note's channel for access, and the workspace
+    // refuses it by name.
+    let paths = Paths::of(https.clone());
     let watcher = watching_page(&spectator, &host.cert, paths.clone()).await;
     watcher.join(workspace_id).unwrap();
     watcher.open_route(route.clone()).unwrap();
@@ -245,68 +258,21 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
             &DocumentMutation::Incremental(b"a spectator's edit".to_vec()),
         )
         .unwrap();
-    let mut pending = Vec::new();
-    assert_eq!(
-        next_document_on(&watcher, &mut pending, &route).await,
-        hello
-    );
-    assert_eq!(paths.asked("/channel-keys").first(), Some(&200));
-    assert!(paths.asked("/here").is_empty());
-
-    // Alice's next write reaches the page live; nothing of the page's
-    // reached her or was refused it.
-    let again = DocumentMutation::Incremental(b"and again".to_vec());
-    alice_page.publish(route.clone(), &again).unwrap();
-    assert_eq!(
-        next_document_on(&watcher, &mut pending, &route).await,
-        again
-    );
-    let status = watcher.status();
-    assert!(status.failures.is_empty(), "{:?}", status.failures);
-    assert_eq!(status.outgoing_pending, 0);
-    // Alice also holds the workspace's shared desktop record, which the
-    // workspace was seeded with; the page's edit would have arrived on the note's
-    // route.
-    assert!(
-        alice_page.drain().iter().all(
-            |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
-        ),
-        "the watching page wrote to Alice"
-    );
-
-    // In a workspace that is not public a watching page reads the workspace but
-    // none of what its members seal.
-    relay
-        .admit_spectators(workspace_id, spectators(false))
-        .await
-        .unwrap();
-    let paths = Arc::new(Paths {
-        inner: https.clone(),
-        posted: Mutex::default(),
-    });
-    let sealed_off = watching_page(&spectator, &host.cert, paths.clone()).await;
-    sealed_off.join(workspace_id).unwrap();
-    wait_for("the page to hold Alice's sealed note", || {
-        let held = sealed_off
-            .status()
-            .routes
-            .get(&route)
-            .is_some_and(|route| route.awaiting_keys > 0)
-            && !paths.asked("/channel-keys").is_empty();
-        async move { held.then_some(()) }
+    let refusal = wait_for("the workspace to refuse the page's channel", || {
+        let status = watcher.status();
+        let refusal = status
+            .failures
+            .iter()
+            .find(|failure| failure.message == SEALED)
+            .map(|failure| failure.code);
+        async move { refusal }
     })
     .await;
-    // One request per sealed record the page holds (the note, and the
-    // workspace's shared desktop it was seeded with), each refused.
-    let refused = paths.asked("/channel-keys");
-    assert!(
-        !refused.is_empty() && refused.iter().all(|status| *status == 403),
-        "{refused:?}"
-    );
-    // The workspace's own seed of its shared desktop is no member's sealed
-    // writing; what a member sealed (the note, and any sealed desktop
-    // change) the page never opens.
-    let opened: Vec<_> = sealed_off
+    assert_eq!(refusal, "permission-required");
+
+    // The page holds what Alice sealed and opens none of it: nothing of it
+    // reaches the page's apps, and its own edit reaches no one.
+    let opened: Vec<_> = watcher
         .drain()
         .into_iter()
         .filter_map(|event| match event {
@@ -320,10 +286,46 @@ async fn a_watching_page_opens_a_public_workspaces_records_and_writes_nothing() 
         .collect();
     assert!(
         opened.is_empty(),
-        "a page opened a private workspace's sealed records: {opened:?}"
+        "a watching page opened sealed records: {opened:?}"
     );
+    let awaiting = watcher
+        .status()
+        .routes
+        .get(&route)
+        .map(|route| route.awaiting_keys);
+    assert!(
+        awaiting.is_some_and(|count| count > 0),
+        "the page did not hold the sealed note: {awaiting:?}"
+    );
+    let again = DocumentMutation::Incremental(b"and again".to_vec());
+    alice_page.publish(route.clone(), &again).unwrap();
+    admitted(&alice_page).await;
+    wait_for("Alice's second write to be committed", || {
+        let committed = alice_page.status().outgoing_pending == 0;
+        async move { committed.then_some(()) }
+    })
+    .await;
+    assert!(
+        watcher.drain().iter().all(
+            |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
+        ),
+        "a watching page read a sealed write"
+    );
+    assert!(
+        alice_page.drain().iter().all(
+            |event| !matches!(event, PeerEvent::Document(document) if document.route == route)
+        ),
+        "the watching page wrote to Alice"
+    );
+    // No route handed the page a record's keys, and it is listed as here
+    // nowhere: the node holds no key to hand a page.
+    assert!(
+        paths.asked("/channel-keys").is_empty(),
+        "the node was asked for a record's keys: {:?}",
+        paths.asked("/channel-keys")
+    );
+    assert!(paths.asked("/here").is_empty());
 
-    sealed_off.close();
     watcher.close();
     alice_page.close();
     relay.shutdown().await;

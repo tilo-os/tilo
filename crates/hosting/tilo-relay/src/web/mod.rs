@@ -1036,31 +1036,6 @@ async fn route(
             }
             Ok(encoded(&reply))
         }
-        protocol::CHANNEL_KEYS_PATH => {
-            let session = authed()?;
-            let request: protocol::ChannelKeysRequest = decode(&bytes)?;
-            let relay = &web.sessions.context().relay;
-            let keys = web
-                .workspaces
-                .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?
-                .spectator_keys(&request, |runtime| {
-                    crate::workspace_access::decide(
-                        runtime,
-                        &relay.trust(),
-                        &session.peer,
-                        crate::workspace_access::WorkspaceOperation::ChannelReadKeys,
-                    )
-                })
-                .await
-                .map_err(|why| status(StatusCode::FORBIDDEN, &why))?;
-            let keys = keys
-                .to_bytes()
-                .map_err(|why| status(StatusCode::INTERNAL_SERVER_ERROR, &why.to_string()))?;
-            Ok(encoded(&protocol::ChannelKeys {
-                keys: keys.to_vec(),
-            }))
-        }
         tilo_relay_protocol::workspaces::private::PRIVATE_PATH => {
             use tilo_relay_protocol::workspaces::private::{MAX_REQUEST_BYTES, PrivateCall};
             let session = authed()?;

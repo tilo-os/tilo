@@ -154,11 +154,10 @@ pub struct PeerConfig {
     pub revocations: RevocationList,
     /// This page only watches the workspaces it joins: a public workspace's
     /// spectator. It writes nothing: no document, live frame, action,
-    /// compaction or presence of its own, no live join, and no channel
-    /// governance, so it never asks a channel for access; it only asks the
-    /// workspace for content its records reference. It takes the
-    /// content keys of the records it opens from the workspace's node over
-    /// HTTPS instead ([`tilo_relay_client::https::channel_keys`]).
+    /// compaction or presence of its own, and no live join. It takes part in
+    /// its records' encrypted channels like any device and asks their
+    /// participants for access; the keys it opens them with are the ones the
+    /// channel's group gives it, never a key handed over by the host.
     pub watching: bool,
     /// The page keeps this session beside the workspace in front, only to
     /// deliver for it (problem reports to the page's home workspace): the
@@ -531,12 +530,6 @@ enum Command {
     ),
     Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
-    /// What the workspace's node answered a watching page asking for a
-    /// record's keys.
-    WatchedKeys(
-        DocumentRoute,
-        Result<channel_crypto::ChannelContentKeys, String>,
-    ),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
     /// now; a connected or failed one stays as it is.
@@ -729,7 +722,6 @@ impl PeerHandle {
         let task = Task {
             replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
             commands: commands.downgrade(),
-            watched: crate::watching::WatchedKeys::default(),
             config,
             signer,
             store,
@@ -1206,7 +1198,6 @@ struct Task {
     /// background; weak, so the session still ends with its last handle.
     commands: mpsc::WeakUnboundedSender<Command>,
     /// The records a watching page asks the node for keys of.
-    watched: crate::watching::WatchedKeys,
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
@@ -2004,12 +1995,9 @@ impl Task {
                 Self::request_node(done, client);
                 true
             }
-            // Handled by the caller's loop, and keys by `unless_watching`.
-            Command::Reconnect
-            | Command::Retry
-            | Command::Refresh
-            | Command::Close
-            | Command::WatchedKeys(..) => true,
+            // Handled by the caller's loop, and a watching page's writes by
+            // `unless_watching`.
+            Command::Reconnect | Command::Retry | Command::Refresh | Command::Close => true,
         }
     }
 
@@ -2080,22 +2068,9 @@ impl Task {
     /// `command`, unless this page only watches and it would write: then
     /// it is answered here, sending nothing, and `None` is returned. A
     /// watching page joins no live plane, publishes, compacts and acts on
-    /// nothing, is not listed as here, and opens a record by asking its
-    /// node for the record's keys.
+    /// nothing, and is not listed as here. It takes part in its records'
+    /// channels, and asks them for access, as any device does.
     fn unless_watching(&mut self, command: Command) -> Option<Command> {
-        if let Command::WatchedKeys(route, answer) = command {
-            self.watched
-                .answered(&route, answer.is_ok(), tilo_clock::unix_now_ms());
-            // Refused: the workspace keeps the record from those who watch, and
-            // its documents stay held, awaiting keys.
-            if let Ok(keys) = answer {
-                self.absorb(crate::channels::Changes {
-                    keys: vec![(route, keys)],
-                    ..crate::channels::Changes::default()
-                });
-            }
-            return None;
-        }
         if !self.config.watching {
             return Some(command);
         }
@@ -2127,7 +2102,7 @@ impl Task {
             Command::CallLane(_, _, done) => {
                 done(Err("a page that only watches takes part in no call".into()));
             }
-            Command::OpenRoute(route) => self.watched.want(route),
+            Command::OpenRoute(route) => self.open_channel(&route),
             command => return Some(command),
         }
         None
@@ -2192,44 +2167,6 @@ impl Task {
                 return;
             }
             self.resending.remove(&op);
-        }
-    }
-
-    /// Ask the workspace's node for the keys of every record this watching
-    /// page waits on and is not asking for already; each answer comes back
-    /// as [`Command::WatchedKeys`].
-    fn ask_watched_keys(&mut self, client: Option<&Link>) {
-        let Some(Link::Https(link)) = client else {
-            return;
-        };
-        let seated = lock(&self.shared).status.workspaces.clone();
-        let due = self.watched.due(tilo_clock::unix_now_ms(), |route| {
-            route
-                .workspace_id()
-                .is_ok_and(|workspace| seated.get(&workspace) == Some(&true))
-        });
-        for route in due {
-            let http = link.client().clone();
-            let session = link.session().to_owned();
-            let commands = self.commands.clone();
-            n0_future::task::spawn(async move {
-                let request = tilo_relay_protocol::web::ChannelKeysRequest {
-                    app_id: route.app_id.clone(),
-                    workspace: route.cluster_id.clone(),
-                    record: route.record.clone(),
-                };
-                let keys =
-                    tilo_relay_client::https::channel_keys(http.as_ref(), &session, &request)
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|reply| {
-                            channel_crypto::ChannelContentKeys::from_bytes(&reply.keys)
-                                .map_err(|error| error.to_string())
-                        });
-                if let Some(commands) = commands.upgrade() {
-                    let _ = commands.send(Command::WatchedKeys(route, keys));
-                }
-            });
         }
     }
 
@@ -2898,9 +2835,7 @@ impl Task {
                         return;
                     }
                 }
-                if !self.config.watching {
-                    self.open_channel(&route);
-                }
+                self.open_channel(&route);
                 let waits = match &envelope.encryption {
                     Some(metadata) => self
                         .ciphers
@@ -2929,9 +2864,6 @@ impl Task {
                     },
                 };
                 if waits {
-                    if self.config.watching {
-                        self.watched.want(route.clone());
-                    }
                     let key = OpKey::of(envelope);
                     self.hold_document(route, key, body, author);
                     return;
@@ -3118,9 +3050,6 @@ impl Task {
     /// seal and commit what was held, and sign and send governance. Returns
     /// `false` when the session could not take an envelope.
     async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
-        if self.config.watching {
-            self.ask_watched_keys(client);
-        }
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
@@ -3191,11 +3120,6 @@ impl Task {
                 self.release_barriers();
             }
             for outgoing in changes.outgoing {
-                if self.config.watching {
-                    // A watching page is no channel member: it asks nothing
-                    // over the channel and acknowledges nothing there.
-                    continue;
-                }
                 let Some(client) = client else {
                     // Offline: overdue requests are sent again after the
                     // reconnect; acknowledgements go with the next frame.

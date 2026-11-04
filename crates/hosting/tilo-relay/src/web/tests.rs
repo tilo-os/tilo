@@ -130,48 +130,6 @@ async fn browser_as(
     protocol::decode_grant(&body).unwrap().0.token
 }
 
-/// A page takes its seat in a workspace by subscribing to it over its session, as
-/// the page's own client does once it joined: the workspace's bootstrap and replay
-/// reach the page, then its `Ready`.
-#[cfg(feature = "agents")]
-async fn subscribe(addr: SocketAddr, token: [u8; 32], workspace_id: u64) {
-    let (status, _) = post(
-        addr,
-        "/send",
-        Some(token),
-        postcard::to_allocvec(&vec![crate::Envelope::Subscribe { workspace_id }]).unwrap(),
-    )
-    .await;
-    assert_eq!(status, 204, "the page's subscription");
-    let mut ack = None;
-    let mut ready = false;
-    for _ in 0..10 {
-        let (status, body) = post(
-            addr,
-            "/events",
-            Some(token),
-            postcard::to_allocvec(&protocol::EventsRequest {
-                ack,
-                wait_ms: 5_000,
-            })
-            .unwrap(),
-        )
-        .await;
-        assert_eq!(status, 200, "the page's events");
-        let page: protocol::EventsPage = postcard::from_bytes(&body).unwrap();
-        if page
-            .envelopes
-            .iter()
-            .any(|envelope| matches!(envelope, crate::Envelope::Ready { .. }))
-        {
-            ready = true;
-            break;
-        }
-        ack = page.cursor;
-    }
-    assert!(ready, "the workspace admitted the page");
-}
-
 #[test]
 fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
     let files = |host| TlsSource::Files {
@@ -213,19 +171,17 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
     );
 }
 
-/// A public workspace's spectator takes a channel's content keys from the node
-/// and opens what was sealed there; nobody else does: not before it
-/// holds a seat, not a member, not in a workspace that is not public, and never
-/// for a channel nobody created.
+/// No route hands a page the content keys of a record's channel. A page takes
+/// part in its records' encrypted channels like any device: the keys it opens
+/// them with are the ones the group admits it with, and the host hands none.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the relay and its workspaces serve the page until the relay shuts down at the end"
 )]
-async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
+async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
-    let watcher = SigningKey::from_bytes(&[72; 32]);
     // A workspace service's node, which takes part in its workspaces' channels.
     let (host_key, host) = device(
         &signer,
@@ -233,8 +189,6 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
-    let (joined_key, joined) = device(&watcher, 75, DeviceCapabilities::member());
-    let (watch_key, watch) = device(&watcher, 76, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = Relay::start_with_relay_mode(
         RelayConfig {
@@ -256,57 +210,6 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     workspaces
         .enter(&workspace.workspace, &owner)
         .await
-        .unwrap();
-    // The spectator person is a viewer of the workspace, as its host makes it.
-    let invitation = workspaces
-        .issue(
-            &workspace.workspace,
-            &owner,
-            crate::workspaces::IssueInvitationRequest {
-                request_id: [1; 32],
-                role: MemberRole::Viewer,
-                recipient_user_public_key: Some(joined.user_public_key),
-                invitee_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
-                inviter_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let verified = tilo_peer_state::join::decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    crate::workspace_join::WorkspaceJoinClient::new(endpoint(&joined_key).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation,
-            joined.clone(),
-            &joined_key,
-            [2; 32],
-        )
-        .await
-        .unwrap();
-    // A member wrote in the chat's channel.
-    let record = "@tilo:package-primary";
-    let node = workspaces
-        .own_route_keys(
-            &tilo_peer_state::document_frame::DocumentRoute {
-                app_id: "so.tilo.chat".into(),
-                cluster_id: workspace.workspace.clone(),
-                record: record.into(),
-            },
-            true,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    let artifact = collab_types::ArtifactId::new();
-    let (metadata, sealed) = node
-        .seal_content(artifact, collab_types::ContentRetention::Delta, b"hello")
         .unwrap();
 
     let sessions = Sessions::new(relay.web_context().clone());
@@ -334,64 +237,14 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(plain_accept_loop(listener, web));
-    let ask = |token, record: &str| {
-        post(
-            addr,
-            protocol::CHANNEL_KEYS_PATH,
-            Some(token),
-            postcard::to_allocvec(&protocol::ChannelKeysRequest {
-                app_id: "so.tilo.chat".into(),
-                workspace: workspace.workspace.clone(),
-                record: record.into(),
-            })
-            .unwrap(),
-        )
-    };
-    let spectators = |public| crate::workspace_access::Spectators {
-        root: watcher.verifying_key().to_bytes(),
-        seats: 4,
-        public,
-    };
-    let watching = browser(addr, &watch_key, &watch).await;
-    let owner_token = browser(addr, &owner_key, &owner).await;
-
-    // Before the workspace lets anyone watch, and before the page holds a seat.
-    assert_eq!(ask(watching, record).await.0, 403);
-    relay
-        .admit_spectators(workspace.workspace_id, spectators(true))
-        .await
-        .unwrap();
+    let token = browser(addr, &owner_key, &owner).await;
+    let (code, body) = post(addr, "/channel-keys", Some(token), Vec::new()).await;
     assert_eq!(
-        ask(watching, record).await.0,
-        403,
-        "a spectator without a seat"
+        code,
+        404,
+        "a page is handed no content keys over HTTPS: {}",
+        String::from_utf8_lossy(&body)
     );
-    subscribe(addr, watching, workspace.workspace_id).await;
-    let (code, body) = ask(watching, record).await;
-    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
-    let keys: protocol::ChannelKeys = postcard::from_bytes(&body).unwrap();
-    let keys = channel_crypto::ChannelContentKeys::from_bytes(&keys.keys).unwrap();
-    assert_eq!(
-        &keys.open_content(artifact, &metadata, &sealed).unwrap()[..],
-        b"hello",
-        "the spectator opens what a member sealed"
-    );
-    assert_eq!(
-        ask(watching, "@tilo:never-written").await.0,
-        403,
-        "no channel is created for a spectator"
-    );
-    assert_eq!(
-        ask(owner_token, record).await.0,
-        403,
-        "a member takes keys over the channel"
-    );
-    // A workspace that is not public keeps its members' writing from spectators.
-    relay
-        .admit_spectators(workspace.workspace_id, spectators(false))
-        .await
-        .unwrap();
-    assert_eq!(ask(watching, record).await.0, 403);
 
     serving.abort();
     crate::daemon::Relay::shutdown(relay).await;

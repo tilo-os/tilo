@@ -40,7 +40,6 @@ pub mod session;
 #[cfg(feature = "toolkit")]
 pub mod transport;
 pub mod voice;
-mod watching;
 
 pub use call_media::{
     Asked, HeardFrame, LaneAnswer, LaneCall, LaneTurn, MicFrame, Opened, OpenedPicture,

@@ -197,7 +197,7 @@ pub struct LaneTurn {
     /// The call the page is in, as hex.
     pub call: String,
     /// The app and record whose channel seals the call: the keys it is sealed
-    /// and opened under are that channel's ([`tilo_relay_protocol::web::ChannelKeysRequest`]).
+    /// and opened under are that channel's, from the group the page joined.
     pub app: String,
     pub record: String,
     /// The page's microphone frames, oldest first, in the order it made them.

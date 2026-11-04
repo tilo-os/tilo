@@ -23,7 +23,6 @@
 //! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/here` ([`HERE_PATH`]) | [`HereRequest`] | [`HereReply`]; `400` out of bounds, `403` when not admitted |
 //! | `/live` ([`LIVE_INFO_PATH`]) | [`LiveRequest`] | [`LiveInfo`]; `403` when the page's device is not admitted |
-//! | `/channel-keys` ([`CHANNEL_KEYS_PATH`]) | [`ChannelKeysRequest`] | [`ChannelKeys`]; `403` when not admitted |
 //! | `/private` ([`PRIVATE_PATH`](crate::workspaces::private::PRIVATE_PATH)) | [`PrivateCall`](crate::workspaces::private::PrivateCall) | [`PrivateReply`](crate::workspaces::private::PrivateReply) (a watch long-polls) |
 //! | `/workspace-join` ([`WORKSPACE_JOIN_PATH`]) | `tilo_workspace_join::JoinTransportRequest` | `JoinTransportResponse` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
@@ -348,40 +347,8 @@ pub struct EventsPage {
     pub envelopes: Vec<Envelope>,
 }
 
-/// Route a spectator of a public workspace takes a channel's content keys from,
-/// to open what the workspace's members sealed there. Only a device of the workspace's
-/// spectator person is answered, only in a public workspace and only while it is
-/// subscribed; a member is admitted to a channel by its participants
-/// instead.
-pub const CHANNEL_KEYS_PATH: &str = "/channel-keys";
-
 /// The route of the host's workspace join exchange over HTTPS.
 pub const WORKSPACE_JOIN_PATH: &str = "/workspace-join";
-
-/// The record whose channel's content keys a spectator asks for.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChannelKeysRequest {
-    pub app_id: String,
-    /// The workspace (the record's cluster).
-    #[serde(rename = "room")]
-    pub workspace: String,
-    /// The record id.
-    pub record: String,
-}
-
-/// A channel's content keys, in their endpoint encoding
-/// (`channel_crypto::ChannelContentKeys::to_bytes`).
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChannelKeys {
-    /// The encoded keys.
-    pub keys: Vec<u8>,
-}
-
-impl core::fmt::Debug for ChannelKeys {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("ChannelKeys").finish_non_exhaustive()
-    }
-}
 
 /// Route of the live plane: how a page learns where the relay's WebTransport
 /// listener is and which certificate to pin for it.

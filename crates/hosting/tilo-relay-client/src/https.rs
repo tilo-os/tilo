@@ -255,29 +255,6 @@ pub async fn private(
     postcard::from_bytes(&bytes).map_err(|_| LinkError::Malformed("private reply".into()))
 }
 
-/// Take a record's channel content keys from the room's node, as a
-/// public room's spectator, which is no channel member and asks nothing
-/// over the channel. The answer carries the keys in their encoded form.
-///
-/// # Errors
-///
-/// Returns [`LinkError::Refused`] when the room keeps them from this device:
-/// it is no seated spectator, the room is not public, the record is kept
-/// from some of the room, or its channel does not exist yet.
-pub async fn channel_keys(
-    client: &dyn HttpClient,
-    session: &str,
-    request: &tilo_relay_protocol::web::ChannelKeysRequest,
-) -> Result<tilo_relay_protocol::web::ChannelKeys, LinkError> {
-    call(
-        client,
-        tilo_relay_protocol::web::CHANNEL_KEYS_PATH,
-        Some(session),
-        encode(request)?,
-    )
-    .await
-}
-
 /// Administer the host's workspaces as this session's device (`/rooms`).
 pub async fn workspaces(
     client: &dyn HttpClient,

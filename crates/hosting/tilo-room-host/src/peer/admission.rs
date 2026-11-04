@@ -4,6 +4,8 @@
 
 use std::ops::ControlFlow;
 
+use crate::workspace_access::WorkspaceOperation;
+
 use super::{
     Arc, Envelope, FanoutStamp, HashMap, Invariant, LiveFanout, LiveFrame, PeerError,
     PreparedRecipients, PublicationFrames, PublicationScope, ReplayCatchup, ReplayPendingTarget,
@@ -319,6 +321,32 @@ fn state_timing_steps(host: bool, delta: &[u8]) -> (&'static str, &'static str) 
         }
         (_, None) => ("state.plain.persist", "state.plain.publish"),
     }
+}
+
+/// The plane `envelope` rides on: a device asks a record's channel for access
+/// with the frame its own key package came in, and everything else is a change.
+pub(super) fn plane_of(envelope: &Envelope) -> WorkspaceOperation {
+    if carries_channel_access(envelope) {
+        WorkspaceOperation::ChannelAccess
+    } else {
+        WorkspaceOperation::Publish
+    }
+}
+
+fn carries_channel_access(envelope: &Envelope) -> bool {
+    use neighbour_wire::NeighbourMsg;
+    let Envelope::Delta { delta, .. } = envelope else {
+        return false;
+    };
+    let Some(crate::coedit::CoeditPayload::Checkpoint { body, .. }) =
+        crate::coedit::CoeditPayload::decode(delta)
+    else {
+        return false;
+    };
+    matches!(
+        postcard::from_bytes::<NeighbourMsg>(&body),
+        Ok(NeighbourMsg::MlsAccessRequest { .. } | NeighbourMsg::MlsRoutedAccessRequest { .. })
+    )
 }
 
 /// [`state_timing_steps`] for a member's checkpoint: the governance it

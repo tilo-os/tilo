@@ -87,18 +87,6 @@ impl Readers {
         Some(self.workspace.difference(withheld).copied().collect())
     }
 
-    /// Whether a Read Deny keeps `channel`'s record from any device; a
-    /// channel whose record the node cannot name counts as withheld, as it
-    /// may be a member's own.
-    #[cfg(feature = "web")]
-    pub fn withholds(&self, channel: ChannelId) -> bool {
-        !self
-            .withheld
-            .get(&channel)
-            .unwrap_or(&self.unrouted)
-            .is_empty()
-    }
-
     /// Whether every device these readers let read a channel, `later` lets
     /// read it too: `later` only lets devices in.
     fn within(&self, later: &Self) -> bool {
@@ -761,7 +749,6 @@ impl Workspaces {
             workspace.peer(),
             &workspace.peer().governance().governed_access(now)?,
             Some(participant),
-            None,
             now,
         )?;
         let messages = participation.open_channel(channel, &allowed)?;

@@ -177,10 +177,15 @@ impl StateSource {
     pub fn authorized(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
         self.authorized_for(runtime, WorkspaceOperation::State)
     }
-    /// Whether this source may take a frame of its own into the workspace now: a
-    /// spectator holds the workspace's state, and never publishes into it.
-    fn publishes(&self, runtime: &crate::workspace::WorkspaceRuntime) -> bool {
-        self.authorized_for(runtime, WorkspaceOperation::Publish)
+    /// Whether this source may take a frame of its own into the workspace now,
+    /// on the plane `op`: a spectator holds the workspace's state, and never
+    /// publishes into it, though it does ask its records' channels for access.
+    fn publishes(
+        &self,
+        runtime: &crate::workspace::WorkspaceRuntime,
+        op: WorkspaceOperation,
+    ) -> bool {
+        self.authorized_for(runtime, op)
     }
     fn authorized_for(
         &self,
@@ -499,6 +504,9 @@ pub(super) async fn handle_delta(
         tracing::warn!(%limited, device = %hex::encode(peer.device_public_key), "refused a change over the member limit");
         return Ok(None);
     }
+    // A page asks a record's channel for access on a plane of its own, and is
+    // refused there by name.
+    let op = crate::peer::admission::plane_of(&env);
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
@@ -512,9 +520,10 @@ pub(super) async fn handle_delta(
                 WorkspaceOperation::State,
             ));
         }
+        let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: unpublished(&runtime, peer).into(),
+            reason: refused_reason(&runtime, &asker.trust(), peer, op).into(),
         }));
     };
     trace_native_publication("server_authorized", &env, None);
@@ -663,11 +672,16 @@ pub(super) async fn handle_delta_prefix(
     envelopes: Vec<Envelope>,
     inbound_budget: Vec<Option<Arc<tokio::sync::OwnedSemaphorePermit>>>,
 ) -> Result<Option<Envelope>, PeerError> {
-    let Some(Envelope::Delta {
+    let Some(first) = envelopes.first() else {
+        return Err(PeerError::Protocol(
+            "checkpoint prefix started with a non-delta".into(),
+        ));
+    };
+    let Envelope::Delta {
         workspace_id,
         author_device_public_key,
         ..
-    }) = envelopes.first()
+    } = first
     else {
         return Err(PeerError::Protocol(
             "checkpoint prefix started with a non-delta".into(),
@@ -678,6 +692,8 @@ pub(super) async fn handle_delta_prefix(
             "delta sent before subscribing to workspace".into(),
         ));
     }
+    // A prefix of changes rides on the plane its first change does.
+    let op = crate::peer::admission::plane_of(first);
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
@@ -692,9 +708,7 @@ pub(super) async fn handle_delta_prefix(
         ));
     }
     let Some(source) = authorized_state_source(&workspace, peer, session).await? else {
-        for envelope in &envelopes {
-            trace_native_publication("server_source_refused", envelope, None);
-        }
+        trace_all(&envelopes, "server_source_refused");
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
             return Err(lost_session(
@@ -704,14 +718,13 @@ pub(super) async fn handle_delta_prefix(
                 WorkspaceOperation::State,
             ));
         }
+        let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            reason: unpublished(&runtime, peer).into(),
+            reason: refused_reason(&runtime, &asker.trust(), peer, op).into(),
         }));
     };
-    for envelope in &envelopes {
-        trace_native_publication("server_authorized", envelope, None);
-    }
+    trace_all(&envelopes, "server_authorized");
     for envelope in &envelopes {
         let Envelope::Delta {
             author_device_public_key,
@@ -769,7 +782,33 @@ pub(super) async fn authorized_state_source(
 ) -> Result<Option<StateSource>, PeerError> {
     let source = StateSource::new(peer, session);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    Ok(source.publishes(&runtime).then_some(source))
+    Ok(source
+        .publishes(&runtime, WorkspaceOperation::Publish)
+        .then_some(source))
+}
+
+/// Why the relay took none of `peer`'s frames into the workspace: the
+/// admission decision's own reason where there is one, so a page that asked a
+/// channel for access is told exactly why not.
+pub(super) fn refused_reason(
+    runtime: &crate::workspace::WorkspaceRuntime,
+    trust: &workspace_access::RelayTrust<'_>,
+    peer: &AuthenticatedPeer,
+    op: WorkspaceOperation,
+) -> &'static str {
+    match workspace_access::decide(runtime, trust, peer, op) {
+        workspace_access::Decision::Deny(reason) => reason.reason(),
+        workspace_access::Decision::Admit | workspace_access::Decision::AdmitAndEnrol => {
+            unpublished(runtime, peer)
+        }
+    }
+}
+
+/// Trace `step` for each of `envelopes`, the frames of one publication.
+fn trace_all(envelopes: &[Envelope], step: &str) {
+    for envelope in envelopes {
+        trace_native_publication(step, envelope, None);
+    }
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace.
