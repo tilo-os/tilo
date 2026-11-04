@@ -10,7 +10,7 @@
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Color;
 
 use crate::component::{Component, Described};
 use crate::presence::PresenceCtx;
@@ -34,7 +34,9 @@ crate::component::choice!(ChromeShape, "ChromeShape", {
     Rounded => "rounded",
 });
 
-/// The edge of the screen a bar or a dock stands on: the side of its body the content is.
+/// The edge of the screen a bar or a dock stands on: the side of its body the content is. A
+/// square body casts no rule from it (bars cast none, design-language.md); it says which way a
+/// floating, rounded body's hairline faces and how a view lays its content out.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChromeEdge {
     Top,
@@ -60,7 +62,9 @@ pub struct ChromeProps {
     /// How the body sits in its edge: edge to edge and square (the default), or an inset,
     /// rounded body.
     pub shape: Option<ChromeShape>,
-    /// The screen edge the body stands on, where a square body draws its rule.
+    /// The screen edge the body stands on. A square body casts no rule at it: a bar edge to
+    /// edge with the screen has no line to mark, and a hairline a pixel inside its body would
+    /// start its ground below the display's own edge.
     pub edge: Option<ChromeEdge>,
     /// What the body is made of: the theme's bar body (the default), the theme's glass, or
     /// that glass made calm. A shell's bar and dock say which the person chose; every body
@@ -170,17 +174,14 @@ impl ChromeBody {
             return;
         }
         match self.shape {
-            // A square body's rule is along the edge its content is on, as a bar's is.
-            ChromeShape::Square => {
-                let width = width.max(1.0);
-                let rule = match self.edge {
-                    ChromeEdge::Top => Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + width),
-                    ChromeEdge::Bottom => Rect::new(rect.x0, rect.y1 - width, rect.x1, rect.y1),
-                    ChromeEdge::Leading => Rect::new(rect.x0, rect.y0, rect.x0 + width, rect.y1),
-                    ChromeEdge::Trailing => Rect::new(rect.x1 - width, rect.y0, rect.x1, rect.y1),
-                };
-                scene.fill(Fill::NonZero, transform, ink, None, &rule);
-            }
+            // A bar standing edge to edge in the screen's own edge casts no
+            // rule (design-language.md: "Bars, cards and selected controls
+            // cast none"): a hairline a pixel into its body left the bar's
+            // ground starting one logical pixel below the display's top, which
+            // on a dense panel reads as a bar floating a little down the
+            // screen. A floating (rounded) body keeps its hairline, which
+            // separates it from what shows around it.
+            ChromeShape::Square => {}
             ChromeShape::Rounded => {
                 scene.stroke(
                     &Stroke::new(width),
