@@ -23,18 +23,22 @@ impl Shared {
     /// Alt's release goes.
     ///
     /// A locked session takes the walk down with everything else it shows over its windows.
-    pub(crate) fn follow_switcher(&self, locked: bool) {
+    pub(crate) fn follow_switcher(&self, compositor: &tilo_compositor::Compositor) {
+        let locked = compositor.locked();
         if locked {
             self.desk_overlays
                 .close(crate::overlays::Overlay::Switcher.name());
             self.desk_overlays.forget_walk();
         }
-        let view = (!locked)
+        let now = std::time::Instant::now();
+        // A flick shorter than the panel's reveal delay shows nothing, and costs
+        // no reading of the desk's windows.
+        let view = (!locked && self.desk_overlays.revealed(now))
             .then(|| {
                 crate::desk_resource::switcher_view(
                     &self.handle,
                     &self.desk_overlays,
-                    std::time::Instant::now(),
+                    &window_sizes(compositor),
                 )
             })
             .flatten();
@@ -45,4 +49,22 @@ impl Shared {
                 .with_widgets(tilo_surface_host::WidgetHost::relayout);
         }
     }
+}
+
+/// Each window's size in logical pixels, as the compositor lays it out: the
+/// shape a card of the panel takes, so the window's picture fills it.
+fn window_sizes(
+    compositor: &tilo_compositor::Compositor,
+) -> std::collections::HashMap<u64, (u32, u32)> {
+    compositor
+        .windows()
+        .into_iter()
+        .filter_map(|(window, (_, _, width, height))| {
+            Some((
+                window.id,
+                (u32::try_from(width).ok()?, u32::try_from(height).ok()?),
+            ))
+        })
+        .filter(|(_, (width, height))| *width > 0 && *height > 0)
+        .collect()
 }

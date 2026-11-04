@@ -538,17 +538,13 @@ fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
         .collect()
 }
 
-/// What the switcher's panel shows now: the windows the walk crosses, in its order, and the one
-/// it has reached. `None` while no walk is up or its panel has not been held long enough to
-/// show, so a quick flick flashes nothing.
+/// What the switcher's panel shows while the walk is up: the windows it crosses, in its order,
+/// and the one it has reached. `None` when no walk is up.
 pub(crate) fn switcher_view(
     handle: &DesktopHandle,
     overlays: &crate::overlays::Overlays,
-    now: std::time::Instant,
+    sizes: &std::collections::HashMap<u64, (u32, u32)>,
 ) -> Option<tilo_desktop::window_switcher::SwitcherView> {
-    if !overlays.revealed(now) {
-        return None;
-    }
     let (windows, reached, surfaces) = handle.read(|tree| {
         let windows = windows(tree, handle);
         let reached = reaching(overlays, &windows);
@@ -565,14 +561,17 @@ pub(crate) fn switcher_view(
             // has no picture: its card shows the app's own face. A key that is no tab is such
             // a window, and so is one whose host pictures nothing.
             // ignored-failure: a window that is no tab has no client to picture
-            let tab = window
+            let client = window
                 .key
                 .parse::<u64>()
                 .ok()
-                .filter(|_| window.preview == "live");
-            let picture = tab.and_then(|tab| surfaces.get(&tab).copied());
+                .and_then(|tab| surfaces.get(&tab).copied());
+            let window_id = (window.preview == "live").then_some(client).flatten();
             tilo_desktop::window_switcher::SwitcherCard {
-                window: picture,
+                window: window_id,
+                // The shape of the window's own pixels, as the compositor lays
+                // it out: the card takes it, so the picture fills the card.
+                size: client.and_then(|client| sizes.get(&client).copied()),
                 title: window.title.clone(),
                 app_key: window.app_key.clone(),
             }

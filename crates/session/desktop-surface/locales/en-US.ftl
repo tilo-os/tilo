@@ -1118,6 +1118,9 @@ window-switcher-app-title = Switch windows of this app
 window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
 window-switcher-untitled = Untitled window
 window-switcher-caption-paged = { $position } of { $count }
+window-switcher-hint-walk = Walk
+window-switcher-hint-go = Go there
+window-switcher-hint-stay = Stay
 
 # Workspace overview
 overview-empty-window = Empty window

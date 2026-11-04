@@ -1137,6 +1137,9 @@ window-switcher-app-title = Fenster dieser App wechseln
 window-switcher-app-description = Fenster dieser App in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke ` zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
 window-switcher-untitled = Unbenanntes Fenster
 window-switcher-caption-paged = { $position } von { $count }
+window-switcher-hint-walk = Weiter
+window-switcher-hint-go = Dorthin
+window-switcher-hint-stay = Bleiben
 
 # Workspace overview
 overview-empty-window = Leeres Fenster

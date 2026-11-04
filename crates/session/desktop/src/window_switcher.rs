@@ -19,7 +19,7 @@ use std::rc::Rc;
 use ui::num::f32_of_f64;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -29,6 +29,7 @@ use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::AppKind as UiAppKind;
+use ui::widget::{KeyHint, KeyHintsFace};
 
 use tilo_desktop_model::{GroupId, StripId, TileContent};
 
@@ -161,15 +162,47 @@ pub struct SwitcherWindow {
     pub preview: PreviewSource,
 }
 
+/// The shape a card takes when the desk knows nothing of its window's: the
+/// desk's own 16:10.
+const STANDING_ASPECT: f64 = 16.0 / 10.0;
+
+/// The shortest a preview well goes, however small the display: a card still
+/// shows what it holds.
+const LEAST_WELL: f64 = 24.0;
+
+/// The tallest a preview goes, as a share of the display it stands on: previews
+/// grow with the screen rather than staying thumbnails on a large one.
+const CARD_HEIGHT_SHARE: f64 = 0.42;
+
+/// The widest one card goes, as a share of the display: a window far wider than
+/// its row-mates leaves the rest of the display in view beside it.
+const CARD_WIDTH_SHARE: f64 = 0.6;
+
 /// One card of the panel: a window, the name over it, and the app whose face
 /// stands in its well until the compositor draws the window there.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwitcherCard {
     /// The compositor's window, when its live picture stands in the well.
     pub window: Option<u64>,
+    /// The window's size in logical pixels, as the compositor lays it out: the
+    /// card takes the window's own shape, so its picture fills it. `None`
+    /// where there is no window to measure.
+    pub size: Option<(u32, u32)>,
     pub title: String,
     /// The app the window shows, as the desk's reading names it.
     pub app_key: String,
+}
+
+impl SwitcherCard {
+    /// The window's width over its height, or the standing shape of a card
+    /// with no window to measure.
+    fn aspect(&self) -> f64 {
+        self.size
+            .filter(|(width, height)| *width > 0 && *height > 0)
+            .map_or(STANDING_ASPECT, |(width, height)| {
+                f64::from(width) / f64::from(height)
+            })
+    }
 }
 
 /// What the panel shows: the windows the walk crosses, in its order, the one
@@ -201,27 +234,31 @@ struct Metrics {
     icon: f64,
     /// The app mark beside a previewed window's title.
     mark: f64,
-    /// The height of the 16:10 well a window's preview sits in; the
-    /// card is the well plus an inset on each side.
+    /// The height a card's well measures: the standing card's at the theme's
+    /// own size, and the page's shared one once the layout has fitted it to
+    /// the display.
     well_h: f64,
     well_radius: f64,
-    card_w: f64,
-    card_h: f64,
     inset: f64,
     gap: f64,
     pad: f64,
     margin: f64,
     radius: f64,
     card_radius: f64,
-    caption_h: f64,
+    /// The title line under a card's well.
+    title_h: f64,
+    /// The height of the keys drawn under the cards.
+    footer_h: f64,
 }
 
 impl Metrics {
-    fn from_tokens(tokens: &ui::tokens::Tokens) -> Self {
+    fn from_theme(theme: &Theme) -> Self {
+        let tokens = &theme.tokens;
         let spacing = &tokens.spacing;
         let line = |role| f64::from(tokens.typography.style(role).line_height_px());
         let inset = f64::from(spacing.s2);
-        let title_h = line(TextRole::Label);
+        // The standing card is the one a window with no shape of its own gets:
+        // the same size the panel has always shown.
         let well_w = f64::from(spacing.s16) * 2.5;
         let well_h = well_w * 10.0 / 16.0;
         Self {
@@ -229,47 +266,47 @@ impl Metrics {
             mark: f64::from(tokens.metrics.icon_sm),
             well_h,
             well_radius: f64::from(tokens.radii.control),
-            card_w: well_w + 2.0 * inset,
-            card_h: inset + well_h + inset + title_h + inset,
             inset,
             gap: f64::from(spacing.s2),
             pad: f64::from(spacing.s4),
             margin: f64::from(spacing.s8),
             radius: f64::from(tokens.radii.panel),
             card_radius: f64::from(tokens.radii.control),
-            caption_h: line(TextRole::Subheading) + f64::from(spacing.s3),
+            title_h: line(TextRole::Label),
+            footer_h: KeyHintsFace::height(theme).max(line(TextRole::Subheading)),
         }
     }
 
-    /// These metrics fitted to `host` with `caption_h` reserved under the
-    /// cards: unchanged when one card fits inside the margins, otherwise
-    /// the outer margin falls to the card inset and the preview well
-    /// shrinks (keeping 16:10) until one card does, so the panel never
-    /// runs off a small display.
-    fn fitted(self, host: Rect, caption_h: f64) -> Self {
-        let room = |m: &Self| {
-            (
-                host.width() - 2.0 * (m.margin + m.pad),
-                host.height() - 2.0 * (m.margin + m.pad) - caption_h,
-            )
-        };
-        let (room_w, room_h) = room(&self);
-        if room_w >= self.card_w && room_h >= self.card_h {
-            return self;
+    /// What a card spends on its insets and its title line, beside its well.
+    fn text_part(self) -> f64 {
+        3.0 * self.inset + self.title_h
+    }
+
+    /// The tallest a well goes on this display: a share of the display, and
+    /// never under the standing card.
+    fn box_h(self, host: Rect) -> f64 {
+        (host.height() * CARD_HEIGHT_SHARE).max(self.well_h)
+    }
+
+    /// The widest a card goes on this display, its insets included: a share of
+    /// the display, and never under the standing card.
+    fn box_w(self, host: Rect) -> f64 {
+        let standing = self.well_h * STANDING_ASPECT + 2.0 * self.inset;
+        (host.width() * CARD_WIDTH_SHARE).max(standing)
+    }
+
+    /// What the panel spends under its cards: a gap, then the keys.
+    fn footer_band(self) -> f64 {
+        self.inset + self.footer_h
+    }
+
+    /// These metrics with the outer margin given up to the card inset: what a
+    /// display too small for the margin keeps of the panel.
+    fn tightened(self) -> Self {
+        Self {
+            margin: self.margin.min(self.inset),
+            ..self
         }
-        let mut m = self;
-        m.margin = m.margin.min(m.inset);
-        let (room_w, room_h) = room(&m);
-        let text_part = m.card_h - m.well_h;
-        let well_w = (m.card_w - 2.0 * m.inset)
-            .min(room_w - 2.0 * m.inset)
-            .min((room_h - text_part) * 16.0 / 10.0)
-            .max(0.0);
-        m.well_h = well_w * 10.0 / 16.0;
-        m.card_w = well_w + 2.0 * m.inset;
-        m.card_h = text_part + m.well_h;
-        m.icon = m.icon.min(m.well_h * 0.6);
-        m
     }
 }
 
@@ -279,9 +316,10 @@ struct Geometry {
     panel: Rect,
     /// `(card index, card)` for the page on screen.
     cards: Vec<(usize, Rect)>,
-    /// The page position line under the cards; zero when every window is
-    /// on screen and there is nothing to add to the cards.
-    caption: Rect,
+    /// The row under the cards: the keys, and the page's place when it pages.
+    footer: Rect,
+    /// Whether the windows outnumber the cards on the page.
+    paged: bool,
     /// The metrics the cards were laid out at, fitted to the host.
     metrics: Metrics,
 }
@@ -302,49 +340,178 @@ fn fit_count(span: f64, pitch: f64) -> usize {
     ((span / pitch).floor().max(1.0)) as usize
 }
 
-/// Cards in rows, centred on the display, with the selected window's page
-/// on screen when there are more windows than fit.
-fn geometry(host: Rect, count: usize, selected: usize, m: Metrics) -> Geometry {
-    if count == 0 {
-        return Geometry::default();
-    }
-    // The caption only says where the page is, so it exists only when the
-    // windows do not all fit.
-    let whole = geometry_with(host, count, selected, m.fitted(host, 0.0), 0.0);
-    if whole.cards.len() >= count {
-        return whole;
-    }
-    let fitted = m.fitted(host, m.caption_h);
-    let paged = geometry_with(host, count, selected, fitted, m.caption_h);
-    if paged.cards.len() >= count {
-        // Shrinking the cards to make room for the line fitted them all
-        // after all: there is no page to report.
-        return geometry_with(host, count, selected, fitted, 0.0);
-    }
-    paged
+/// Whether `inner` stands inside `outer`.
+fn within(outer: Rect, inner: Rect) -> bool {
+    inner.x0 >= outer.x0 - 1e-9
+        && inner.y0 >= outer.y0 - 1e-9
+        && inner.x1 <= outer.x1 + 1e-9
+        && inner.y1 <= outer.y1 + 1e-9
 }
 
-fn geometry_with(
-    host: Rect,
-    count: usize,
-    selected: usize,
+/// Cards in rows, centred on the display, each the shape of its own window at
+/// the height the page shares, with the selected window's page on screen when
+/// there are more windows than fit.
+fn geometry(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
+    if view.cards.is_empty() {
+        return Geometry::default();
+    }
+    let whole = geometry_with(host, view, m);
+    if within(host, whole.panel) {
+        return whole;
+    }
+    geometry_with(host, view, m.tightened())
+}
+
+/// How the cards sit at one well height: their widths, the rows they wrap into,
+/// and how many of those rows the page holds.
+struct Layout {
+    widths: Vec<f64>,
+    rows: Vec<Vec<usize>>,
+    card_h: f64,
+    /// How many rows stand between the panel's pads and its keys.
+    fit: usize,
+}
+
+impl Layout {
+    /// Whether one page stands every card.
+    fn all_stand(&self) -> bool {
+        self.rows.len() <= self.fit
+    }
+}
+
+/// The cards at `well_h`: each the shape of its own window, all sharing one
+/// height, wrapped onto as many rows as `room_w` takes, with `room_h` standing
+/// as many of those rows as fit.
+fn rows_at(aspects: &[f64], well_h: f64, m: Metrics, room_w: f64, room_h: f64) -> Layout {
+    let widths: Vec<f64> = aspects
+        .iter()
+        .map(|aspect| well_h * aspect + 2.0 * m.inset)
+        .collect();
+    let card_h = well_h + m.text_part();
+    // Rows take every card that fits on their line, in the walk's order.
+    let mut rows: Vec<Vec<usize>> = Vec::new();
+    let mut row: Vec<usize> = Vec::new();
+    let mut row_w = 0.0;
+    for (at, width) in widths.iter().copied().enumerate() {
+        if !row.is_empty() && row_w + m.gap + width > room_w + 1e-6 {
+            rows.push(std::mem::take(&mut row));
+            row_w = 0.0;
+        }
+        row_w = if row.is_empty() {
+            width
+        } else {
+            row_w + m.gap + width
+        };
+        row.push(at);
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    let pitch_y = card_h + m.gap;
+    Layout {
+        widths,
+        rows,
+        card_h,
+        fit: fit_count(room_h + m.gap, pitch_y).max(1),
+    }
+}
+
+/// The tallest well that stands every card on one line of `room_w`.
+fn one_line(aspects: &[f64], m: Metrics, room_w: f64) -> f64 {
+    let shapes: f64 = aspects.iter().sum();
+    if shapes <= 0.0 {
+        return f64::INFINITY;
+    }
+    let spent = usize_to_f64(aspects.len()) * 2.0 * m.inset
+        + m.gap * usize_to_f64(aspects.len().saturating_sub(1));
+    ((room_w - spent) / shapes).max(0.0)
+}
+
+/// The tallest well that still stands every card on the page, found by halving:
+/// smaller cards wrap onto fewer rows and leave more of those rows on the page.
+/// `least` when even the least well pages.
+fn tallest_standing_on_page(
+    aspects: &[f64],
     m: Metrics,
-    caption_h: f64,
-) -> Geometry {
-    let pitch_x = m.card_w + m.gap;
-    let pitch_y = m.card_h + m.gap;
-    let avail_w = host.width() - 2.0 * (m.margin + m.pad) + m.gap;
-    let avail_h = host.height() - 2.0 * (m.margin + m.pad) - caption_h + m.gap;
-    let columns = fit_count(avail_w, pitch_x).min(count);
-    let rows_fit = fit_count(avail_h, pitch_y);
-    let page = columns.saturating_mul(rows_fit).max(1);
-    let first = selected.checked_div(page).unwrap_or(0).saturating_mul(page);
-    let shown = count.saturating_sub(first).min(page);
-    let rows = shown.div_ceil(columns).max(1);
-    let grid_w = usize_to_f64(columns) * pitch_x - m.gap;
-    let grid_h = usize_to_f64(rows) * pitch_y - m.gap;
+    room_w: f64,
+    room_h: f64,
+    least: f64,
+    tallest: f64,
+) -> f64 {
+    if !rows_at(aspects, least, m, room_w, room_h).all_stand() {
+        return least;
+    }
+    let (mut fits, mut over) = (least, tallest);
+    for _ in 0..24 {
+        let mid = f64::midpoint(fits, over);
+        if rows_at(aspects, mid, m, room_w, room_h).all_stand() {
+            fits = mid;
+        } else {
+            over = mid;
+        }
+    }
+    fits
+}
+
+fn geometry_with(host: Rect, view: &SwitcherView, m: Metrics) -> Geometry {
+    let count = view.cards.len();
+    let aspects: Vec<f64> = view.cards.iter().map(SwitcherCard::aspect).collect();
+    let widest = aspects.iter().copied().fold(STANDING_ASPECT, f64::max);
+    let room_w = (host.width() - 2.0 * (m.margin + m.pad)).max(0.0);
+    let room_h = (host.height() - 2.0 * (m.margin + m.pad) - m.footer_band()).max(0.0);
+    // Every card shares one height, so the row reads as a row: as tall as the
+    // display's box allows, and low enough that the widest window still fits the
+    // box's width. No card is wider than its window's shape asks for, so the
+    // window's picture fills it rather than letterboxing in it.
+    let usable_h = (room_h - m.text_part()).max(0.0);
+    let widest_h = ((room_w.min(m.box_w(host)) - 2.0 * m.inset).max(0.0)) / widest;
+    let tallest = usable_h.min(m.box_h(host)).min(widest_h);
+    // The least a card goes: the standing card the panel has always shown, or
+    // as much as a display too small for it allows. Cards never shrink under it
+    // to fit more on a page; the walk turns the page instead.
+    let least = m.well_h.min(tallest).max(LEAST_WELL.min(tallest));
+    // A handful of windows stands on one line, as tall as that line allows, so
+    // the walk reads at a glance. More windows than a line of standing cards
+    // holds give way to rows: as tall as stand every one of them on the page.
+    let line_h = one_line(&aspects, m, room_w).min(tallest);
+    let well_h = if line_h >= least {
+        line_h
+    } else {
+        tallest_standing_on_page(&aspects, m, room_w, room_h, least, tallest)
+    };
+    let Layout {
+        widths,
+        rows,
+        card_h,
+        fit: rows_fit,
+    } = rows_at(&aspects, well_h, m, room_w, room_h);
+    let row_width = |row: &[usize]| {
+        let gaps = m.gap * usize_to_f64(row.len().saturating_sub(1));
+        row.iter()
+            .map(|at| widths.get(*at).copied().unwrap_or(0.0))
+            .sum::<f64>()
+            + gaps
+    };
+    let pitch_y = card_h + m.gap;
+    let selected_row = rows
+        .iter()
+        .position(|row| row.contains(&view.selected))
+        .unwrap_or(0);
+    let first_row = selected_row
+        .checked_div(rows_fit)
+        .unwrap_or(0)
+        .saturating_mul(rows_fit);
+    let shown_rows = rows
+        .get(first_row..(first_row.saturating_add(rows_fit)).min(rows.len()))
+        .unwrap_or_default();
+    let shown = shown_rows.iter().map(Vec::len).sum::<usize>();
+    let grid_w = shown_rows
+        .iter()
+        .map(|row| row_width(row))
+        .fold(0.0, f64::max);
+    let grid_h = usize_to_f64(shown_rows.len()) * pitch_y - m.gap;
     let panel_w = grid_w + 2.0 * m.pad;
-    let panel_h = grid_h + caption_h + 2.0 * m.pad;
+    let panel_h = grid_h + m.footer_band() + 2.0 * m.pad;
     let center = host.center();
     let panel = Rect::new(
         center.x - panel_w / 2.0,
@@ -352,36 +519,29 @@ fn geometry_with(
         center.x + panel_w / 2.0,
         center.y + panel_h / 2.0,
     );
-    let cards = (0..shown)
-        .map(|slot| {
-            let row = slot.checked_div(columns).unwrap_or(0);
-            let column = slot.checked_rem(columns).unwrap_or(0);
-            // The last row is centred when it is short.
-            let in_row = if row.saturating_add(1) == rows {
-                shown.saturating_sub(row.saturating_mul(columns))
-            } else {
-                columns
-            };
-            let row_w = usize_to_f64(in_row) * pitch_x - m.gap;
-            let x0 = panel.x0 + m.pad + (grid_w - row_w) / 2.0 + usize_to_f64(column) * pitch_x;
-            let y0 = panel.y0 + m.pad + usize_to_f64(row) * pitch_y;
-            (
-                first.saturating_add(slot),
-                Rect::new(x0, y0, x0 + m.card_w, y0 + m.card_h),
-            )
-        })
-        .collect();
-    let caption = Rect::new(
+    let mut cards = Vec::with_capacity(shown);
+    for (row_at, row) in shown_rows.iter().enumerate() {
+        let mut x = panel.x0 + m.pad + (grid_w - row_width(row)) / 2.0;
+        let y0 = panel.y0 + m.pad + usize_to_f64(row_at) * pitch_y;
+        for at in row {
+            let width = widths.get(*at).copied().unwrap_or(0.0);
+            cards.push((*at, Rect::new(x, y0, x + width, y0 + card_h)));
+            x += width + m.gap;
+        }
+    }
+    let footer_y0 = panel.y0 + m.pad + grid_h + m.inset;
+    let footer = Rect::new(
         panel.x0 + m.pad,
-        panel.y1 - m.pad - caption_h,
+        footer_y0,
         panel.x1 - m.pad,
-        panel.y1 - m.pad,
+        footer_y0 + m.footer_h,
     );
     Geometry {
         panel,
         cards,
-        caption,
-        metrics: m,
+        footer,
+        paged: shown < count,
+        metrics: Metrics { well_h, ..m },
     }
 }
 
@@ -580,11 +740,19 @@ impl Switcher {
         } else {
             ("window-switcher-title", "window-switcher-description")
         };
+        // The keys under the cards, as a reader hears them: "Alt + Tab: Walk,
+        // Enter: Go there, Esc: Stay".
+        let hints = Self::hints(view.app_scope);
+        let spoken = KeyHintsFace::new(&hints).spoken().join(", ");
+        let footer = self.inner.geometry.borrow().footer;
+        let keys = AccessNode::new(Role::StaticText)
+            .with_name(spoken)
+            .with_bounds(footer);
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(t(title))
                 .with_description(t(description))
-                .with_children(vec![AccessNode::new(Role::List).with_children(items)]),
+                .with_children(vec![AccessNode::new(Role::List).with_children(items), keys]),
         )
     }
 
@@ -605,14 +773,13 @@ impl Switcher {
             inner.drawn.set(inner.revision.get());
             return;
         };
-        let metrics = Metrics::from_tokens(&theme.tokens);
-        let geometry = geometry(host, view.cards.len(), view.selected, metrics);
+        let metrics = Metrics::from_theme(theme);
+        let geometry = geometry(host, view, metrics);
         // The panel is modal while it is up: the desk behind it waits.
         ui::overlay::scrim::modal(scene, transform, host, 1.0, theme);
         let m = geometry.metrics;
         let panel = geometry.panel;
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
 
         // A Panel (HIG §9.1): the shell's floating-surface ground, edge and
         // elevation, like the overview and the palette.
@@ -658,40 +825,15 @@ impl Switcher {
             }
         }
 
-        // Where this page sits among the windows, when they do not all fit.
-        // The selected window's title is on its card already; repeating it
-        // here only said the same thing twice.
-        if geometry.caption.height() > 0.0 {
-            let caption = t_args(
-                "window-switcher-caption-paged",
-                &[
-                    (
-                        "position",
-                        ArgValue::Number(usize_to_f64(view.selected.saturating_add(1))),
-                    ),
-                    ("count", ArgValue::Number(usize_to_f64(view.cards.len()))),
-                ],
-            );
-            let text = text_renderer.elide_to_width_style(
-                &caption,
-                f32_of_f64(geometry.caption.width()),
-                &theme.text(TextRole::Subheading),
-            );
-            let (w, h) =
-                text_renderer.measure_style(&text, None, &theme.text(TextRole::Subheading));
-            text_renderer.draw_style(
-                scene,
-                &text,
-                colors.text_dim,
-                transform.pre_translate(
-                    (
-                        geometry.caption.center().x - f64::from(w) / 2.0,
-                        geometry.caption.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &theme.text(TextRole::Subheading),
+        // The keys under the cards, and the page's place among the windows when
+        // they do not all fit. The selected window's title is on its card
+        // already; repeating it here only said the same thing twice.
+        if geometry.footer.height() > 0.0 {
+            Self::draw_footer(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                geometry.footer,
+                view,
+                geometry.paged,
             );
         }
         text_renderer.set_text_scale(renderer_scale);
@@ -699,10 +841,18 @@ impl Switcher {
         inner.drawn.set(inner.revision.get());
     }
 
+    /// How a card paints: the card stands on the panel, not on the desk, so
+    /// its lift is taken off the panel's own ground — the surface step that
+    /// makes it read as lifted there rather than off the desk behind.
+    fn card_tier(theme: &Theme, state: ui::chrome::SelectionState) -> ui::chrome::SelectionTier {
+        ui::chrome::selection_tier_on(theme, state, ui::chrome::shell::panel_ground(theme))
+    }
+
     /// One window's card: its preview well (or app mark) over its elided
-    /// title, lifted by the shared selection tier when selected or hovered.
-    /// A card whose window the compositor pictures draws no face: the window
-    /// itself stands there.
+    /// title, lifted off the panel's own ground when selected or hovered, and
+    /// ringed in the person's colour when the walk has reached it. A card
+    /// whose window the compositor pictures draws no face: the window itself
+    /// stands there.
     fn draw_card(
         ctx: &mut PaintCtx<'_>,
         (card, m): (Rect, Metrics),
@@ -713,7 +863,19 @@ impl Switcher {
             (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        ui::chrome::selection_tier(theme, state).paint(scene, transform, card, m.card_radius);
+        Self::card_tier(theme, state).paint(scene, transform, card, m.card_radius);
+        if state.active {
+            // The card the walk reached wears the person's own colour, just
+            // outside its edge: chosen at a glance on either theme, without
+            // taking any room from the window it shows.
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &RoundedRect::from_rect(card.inflate(1.0, 1.0), m.card_radius + 1.0),
+            );
+        }
         let well = Self::well_of_rect(card, m);
         let app = WindowApp::named(&window.app_key);
         draw_preview_well(
@@ -766,6 +928,73 @@ impl Switcher {
             None,
             &theme.text(TextRole::Label),
         );
+    }
+
+    /// The keys the walk answers to, drawn under the cards in the person's own
+    /// keyboard legends, and where this page stands among the windows when
+    /// they do not all fit.
+    fn draw_footer(ctx: &mut PaintCtx<'_>, footer: Rect, view: &SwitcherView, paged: bool) {
+        let theme = ctx.theme;
+        let hints = Self::hints(view.app_scope);
+        let face = KeyHintsFace::new(&hints);
+        let hints_w = face.width(&mut *ctx.text, theme);
+        let style = theme.text(TextRole::Subheading);
+        let caption = paged.then(|| {
+            t_args(
+                "window-switcher-caption-paged",
+                &[
+                    (
+                        "position",
+                        ArgValue::Number(usize_to_f64(view.selected.saturating_add(1))),
+                    ),
+                    ("count", ArgValue::Number(usize_to_f64(view.cards.len()))),
+                ],
+            )
+        });
+        let caption_w = caption.as_ref().map_or(0.0, |text| {
+            f64::from(ctx.text.measure_style(text, None, &style).0)
+        });
+        let gap = if caption.is_some() {
+            f64::from(theme.tokens.spacing.rhythm.related)
+        } else {
+            0.0
+        };
+        let x0 = footer.center().x - (hints_w + gap + caption_w) * 0.5;
+        let painted = face.paint(ctx, Rect::new(x0, footer.y0, x0 + hints_w, footer.y1));
+        let Some(caption) = caption else {
+            return;
+        };
+        let x0 = x0 + painted + gap;
+        if x0 + caption_w > footer.x1 + 1.0 {
+            // A panel too narrow for both keeps its keys whole: the page's
+            // place is told to a reader instead.
+            return;
+        }
+        let (_, line) = ctx.text.measure_style(&caption, None, &style);
+        ctx.text.draw_style(
+            &mut *ctx.scene,
+            &caption,
+            theme.tokens.colors.text_dim,
+            ctx.transform
+                .pre_translate((x0, footer.center().y - f64::from(line) / 2.0).into()),
+            None,
+            &style,
+        );
+    }
+
+    /// The keys under the panel: the chord that walks, and what Enter and
+    /// Escape do to the walk. The app's walk answers to the key above Tab.
+    fn hints(app_scope: bool) -> Vec<KeyHint> {
+        let walk = if app_scope {
+            ["Alt", "`"]
+        } else {
+            ["Alt", "Tab"]
+        };
+        vec![
+            KeyHint::new(walk, t("window-switcher-hint-walk")),
+            KeyHint::new(["Enter"], t("window-switcher-hint-go")),
+            KeyHint::new(["Esc"], t("window-switcher-hint-stay")),
+        ]
     }
 }
 
@@ -917,16 +1146,16 @@ mod tests {
 
     #[test]
     fn cards_stay_inside_the_display_and_page_to_the_selection() {
-        let m = Metrics::from_tokens(&Theme::dark().tokens);
+        let m = Metrics::from_theme(&Theme::dark());
         let host = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let few = geometry(host, 3, 0, m);
+        let few = geometry(host, &view(3, 0), m);
         assert_eq!(few.cards.len(), 3);
         assert!(
             few.cards
                 .iter()
                 .all(|(_, card)| few.panel.contains(card.center()))
         );
-        let many = geometry(host, 200, 150, m);
+        let many = geometry(host, &view(200, 150), m);
         assert!(many.cards.len() < 200, "not every window fits");
         assert!(many.cards.iter().any(|(index, _)| *index == 150));
         assert!(host.contains(many.panel.origin()));
@@ -940,7 +1169,7 @@ mod tests {
     #[test]
     fn the_switcher_panel_fits_every_host() {
         for theme in [Theme::dark(), Theme::dark().with_text_scale(1.5)] {
-            let m = Metrics::from_tokens(&theme.tokens);
+            let m = Metrics::from_theme(&theme);
             for (w, h) in [
                 (240.0, 160.0),
                 (320.0, 480.0),
@@ -953,15 +1182,9 @@ mod tests {
                 let host = Rect::new(0.0, 0.0, w, h);
                 for count in [1, 3, 12] {
                     for selected in [0, count - 1] {
-                        let g = geometry(host, count, selected, m);
-                        let inside = |r: Rect| {
-                            r.x0 >= host.x0 - 1e-9
-                                && r.y0 >= host.y0 - 1e-9
-                                && r.x1 <= host.x1 + 1e-9
-                                && r.y1 <= host.y1 + 1e-9
-                        };
+                        let g = geometry(host, &view(count, selected), m);
                         assert!(
-                            inside(g.panel),
+                            within(host, g.panel),
                             "panel {:?} leaves {host:?} with {count} windows",
                             g.panel
                         );
@@ -980,9 +1203,13 @@ mod tests {
                             );
                         }
                         assert_eq!(
-                            g.caption.height() > 0.0,
+                            g.paged,
                             g.cards.len() < count,
-                            "a position line only when the windows are paged"
+                            "a page is reported only when the windows outnumber it"
+                        );
+                        assert!(
+                            g.footer.height() > 0.0 && within(g.panel, g.footer),
+                            "the keys stand under the cards inside the panel"
                         );
                     }
                 }
@@ -990,9 +1217,161 @@ mod tests {
         }
     }
 
+    /// Every card takes the shape of the window it shows, at the one height
+    /// the row shares: the compositor's picture of the window then fills the
+    /// card instead of standing in it with bare bars at its sides.
+    #[test]
+    fn every_card_takes_its_windows_shape_at_the_rows_one_height() {
+        let theme = Theme::dark();
+        let mut shaped = view(4, 0);
+        let sizes = [(1600, 1000), (800, 1600), (1000, 1000), (1920, 1080)];
+        for (card, size) in shaped.cards.iter_mut().zip(sizes) {
+            card.size = Some(size);
+        }
+        let host = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let g = geometry(host, &shaped, Metrics::from_theme(&theme));
+        let heights: Vec<f64> = g.cards.iter().map(|(_, card)| card.height()).collect();
+        assert_eq!(heights.len(), 4, "a row of four");
+        assert!(
+            heights
+                .windows(2)
+                .all(|pair| (pair[0] - pair[1]).abs() < 1e-9),
+            "the row shares one height, so it reads as a row: {heights:?}"
+        );
+        for (index, card) in &g.cards {
+            let (width, height) = sizes[*index];
+            let aspect = f64::from(width) / f64::from(height);
+            let well = Switcher::well_of_rect(*card, g.metrics);
+            assert!(
+                (well.width() / well.height() - aspect).abs() < 1e-6,
+                "card {index} keeps its window's shape: {well:?} against {width}x{height}",
+            );
+            assert!(
+                (well.width() - (card.width() - 2.0 * g.metrics.inset)).abs() < 1e-6,
+                "the window's picture fills the card across"
+            );
+            assert!(
+                (card.height() - (well.height() + g.metrics.text_part())).abs() < 1e-6,
+                "under the well only the title's room"
+            );
+        }
+        // A card the desk has no window to measure stands at the desk's own
+        // shape, so an unpictured window's app face is not squeezed either.
+        let mut standing = shaped.clone();
+        for card in &mut standing.cards {
+            card.size = None;
+        }
+        let g = geometry(host, &standing, Metrics::from_theme(&theme));
+        for (index, card) in &g.cards {
+            let well = Switcher::well_of_rect(*card, g.metrics);
+            assert!(
+                (well.width() / well.height() - STANDING_ASPECT).abs() < 1e-6,
+                "card {index} with no window to measure stands at 16:10"
+            );
+        }
+    }
+
+    /// A preview grows with the display it stands on: a handful of windows on a
+    /// desktop show far larger than the standing thumbnail, while a small
+    /// display still stands the panel inside itself.
+    #[test]
+    fn previews_grow_with_the_display_they_stand_on() {
+        let m = Metrics::from_theme(&Theme::dark());
+        let desktop = Rect::new(0.0, 0.0, 1472.0, 920.0);
+        let g = geometry(desktop, &view(3, 0), m);
+        assert!(
+            g.metrics.well_h > 2.0 * m.well_h,
+            "three windows on a desktop stand well over thumbnail size: {}",
+            g.metrics.well_h
+        );
+        assert_eq!(g.cards.len(), 3, "and all three stand on one line");
+        assert!(!g.paged);
+        let phone = Rect::new(0.0, 0.0, 320.0, 480.0);
+        let small = geometry(phone, &view(3, 0), m);
+        assert!(within(phone, small.panel), "the panel stays on a small one");
+        assert!(
+            small.metrics.well_h < g.metrics.well_h,
+            "and its previews are as large as that display affords"
+        );
+    }
+
+    /// The card the walk reached is lifted off the panel's own ground by the
+    /// selection's full step and ringed in the person's colour; the cards the
+    /// walk has not reached are the panel itself, unringed.
+    #[test]
+    fn the_walked_card_stands_off_the_panels_own_ground() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let ground = ui::chrome::shell::panel_ground(&theme);
+            let rest =
+                Switcher::card_tier(&theme, ui::chrome::SelectionState::new(false, false, false));
+            assert_eq!(rest.fill.components[3], 0.0, "a card at rest is the panel");
+            assert!(rest.border.is_none() && rest.inner_glow.is_none());
+            let chosen =
+                Switcher::card_tier(&theme, ui::chrome::SelectionState::new(true, false, false));
+            assert!(
+                ui::chrome::lightness_step(chosen.fill, ground) >= ui::chrome::SELECTION_MIN_STEP,
+                "the walked card reads as lifted: {:?} on {ground:?}",
+                chosen.fill
+            );
+            assert!(chosen.border.is_some(), "and holds the lift at its edge");
+            assert_eq!(
+                theme.border_focus, theme.tokens.colors.intent.accent_ink,
+                "the walk's ring is the person's own colour"
+            );
+        }
+    }
+
+    /// The keys the walk answers to stand under the cards in the person's
+    /// words, and a reader hears them there too, after the windows.
+    #[test]
+    fn the_panel_names_the_keys_under_its_cards() {
+        let switcher = Switcher::default();
+        switcher.set(Some(view(2, 0)));
+        let root = switcher.accessibility().expect("the panel reads");
+        let keys = root
+            .children
+            .iter()
+            .find(|child| child.role == Role::StaticText)
+            .expect("the keys are read under the windows");
+        let spoken = keys.name.as_deref().expect("the keys are named");
+        let said = KeyHintsFace::new(&Switcher::hints(false))
+            .spoken()
+            .join(", ");
+        assert_eq!(spoken, said);
+        for (key, word) in [
+            ("Alt + Tab", t("window-switcher-hint-walk")),
+            ("Enter", t("window-switcher-hint-go")),
+            ("Esc", t("window-switcher-hint-stay")),
+        ] {
+            assert!(
+                spoken.contains(&format!("{key}: {word}")),
+                "{key} is spoken with its word: {spoken}"
+            );
+        }
+        // The app's walk answers to the key above Tab, and says so.
+        let mut app = view(2, 0);
+        app.app_scope = true;
+        switcher.set(Some(app));
+        let spoken = switcher
+            .accessibility()
+            .expect("the panel reads")
+            .children
+            .iter()
+            .find(|child| child.role == Role::StaticText)
+            .and_then(|keys| keys.name.clone())
+            .expect("the keys are read");
+        assert!(
+            spoken.starts_with("Alt + `: "),
+            "the app's own chord: {spoken}"
+        );
+        assert!(!spoken.contains("Alt + Tab"));
+    }
+
     fn card(title: &str, window: Option<u64>) -> SwitcherCard {
         SwitcherCard {
             window,
+            // The standing shape's pixels: a card drawn before its window is measured.
+            size: window.map(|_| (1600, 1000)),
             title: title.to_owned(),
             app_key: "so.tilo.notes".to_owned(),
         }
