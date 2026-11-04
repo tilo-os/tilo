@@ -1308,6 +1308,14 @@ impl ResourceApp for CalendarShell {
     const OPENS: &'static [&'static str] = &["text/calendar"];
     const ARGUMENTS: usize = 1;
 
+    /// The person's accounts, kept by Settings, and the directory of their
+    /// identities, kept by Contacts: both theirs, read here for the
+    /// calendars and the attendees they name.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
+        ui::framework::PersonKind::shared::<accounts::person::PersonAccounts>(),
+        ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
+    ];
+
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
     }

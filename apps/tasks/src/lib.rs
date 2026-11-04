@@ -143,6 +143,13 @@ impl ResourceApp for App {
     /// ([`chat_uri`]).
     const ARGUMENTS: usize = 1;
 
+    /// The models the person's agent runs may offer, kept by Settings: their
+    /// chain's next step is asked against them.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::shared::<
+            tilo_agent_models::OfferedModels,
+        >()];
+
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }

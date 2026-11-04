@@ -379,3 +379,72 @@ fn a_shared_record_is_one_record_kept_by_each_app_and_changed_by_its_owner_and_e
     let kept = editor_app.shared_person::<Saved>().unwrap();
     assert_eq!(saved(&kept), ["added-by-the-editor"]);
 }
+
+/// An app that declares the person's saved videos with itself and shows
+/// nothing of them.
+struct DeclaringApp;
+
+impl ResourceApp for DeclaringApp {
+    type Resource = Queue;
+    const ID: &'static str = "so.tilo.test-declaring";
+    const TITLE: &'static str = "Declaring";
+    const PERSON_RECORDS: &'static [PersonKind] = &[PersonKind::shared::<Saved>()];
+
+    fn view(_cx: &mut ViewCx<Queue>) -> Element {
+        Box::new(Column::new())
+    }
+}
+
+/// An app reading the person's saved videos without declaring them.
+struct UndeclaredApp;
+
+impl ResourceApp for UndeclaredApp {
+    type Resource = Queue;
+    const ID: &'static str = "so.tilo.test-undeclared";
+    const TITLE: &'static str = "Undeclared";
+
+    fn view(cx: &mut ViewCx<Queue>) -> Element {
+        let saved = cx.shared_person::<Saved>();
+        Box::new(Column::new().push(Box::new(Text::new(&format!(
+            "{} saved",
+            saved.map_or(0, |saved| saved.with(|state| state.videos.len()))
+        )))))
+    }
+}
+
+#[test]
+fn the_person_records_an_app_declares_are_its_surface_before_a_view_opens_them() {
+    let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
+    let resources = report["resources"].as_array().expect("resources");
+    let declared = resources
+        .iter()
+        .find(|resource| resource["kind"] == Saved::KIND)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} is part of the app's surface: {resources:?}",
+                Saved::KIND
+            )
+        });
+    assert_eq!(declared["person"], true, "{declared:?}");
+
+    // The declared record is open with the window, published beside the
+    // app's own, whether or not a view shows it.
+    let mut app = TestApp::<DeclaringApp>::for_person(&ada()).unwrap();
+    assert_eq!(app.open_person_records(), 1);
+    assert!(app.shared_person::<Saved>().is_some());
+}
+
+#[test]
+fn a_record_a_view_opens_without_the_app_declaring_it_is_not_the_persons() {
+    let report = tilo_app::framework::headless::surface_report::<UndeclaredApp>();
+    let resources = report["resources"].as_array().expect("resources");
+    let opened = resources
+        .iter()
+        .find(|resource| resource["kind"] == Saved::KIND)
+        .expect("the view opened it");
+    assert_eq!(
+        opened.get("person"),
+        None,
+        "the declaration decides what is the person's, not the open: {opened:?}"
+    );
+}

@@ -567,9 +567,13 @@ actions that queued an outside consequence undo through their inverse action.
 - **The public surface is committed.** `tilo-app surface` writes the app's
   verbs, their parameters, its field schema and its kinds to `surface.toml` in
   the app crate (ids, footprints, paths, layouts and types, one line per
-  field; labels and descriptions stay in the code); `tilo-app check` and CI fail when code and file disagree. A
+  field; labels and descriptions stay in the code), and marks which of those
+  records are the person's own (`person`), declared with the app
+  (`ResourceApp::PERSON_RECORDS`) rather than with the window showing them;
+  `tilo-app check` and CI fail when code and file disagree. A
   rename is allowed and shows up in review. The packaged surface is also what
-  a receiver without the app decides its changes against.
+  a receiver without the app decides its changes against, the person's
+  records among them.
 - **Storage changes are migrations.** `#[resource(version = N, migrate = path)]`
   declares the current schema version; `migrate` converts a document from any
   older version, reading old shapes with the model helpers. It runs once, as a

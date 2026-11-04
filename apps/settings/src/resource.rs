@@ -191,6 +191,13 @@ impl ResourceApp for SettingsShell {
         );
     }
 
+    /// The accounts every app of the person's reads: theirs, kept by
+    /// Settings in their own scope.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::shared::<
+            accounts::person::PersonAccounts,
+        >()];
+
     fn fixture(fixture: &mut Fixture<Settings>) {
         crate::scenarios::prepare(fixture);
     }

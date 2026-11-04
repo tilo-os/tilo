@@ -313,6 +313,14 @@ impl ResourceApp for MessagesShell {
     const ID: &'static str = "so.tilo.messages";
     const TITLE: &'static str = "Messages";
     const ICON: Option<&'static str> = Some("chat");
+
+    /// The person's accounts, kept by Settings, and the directory of their
+    /// identities, kept by Contacts: both theirs, read here for the service
+    /// accounts and the people they message.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] = &[
+        ui::framework::PersonKind::shared::<tilo_messaging::PersonAccounts>(),
+        ui::framework::PersonKind::shared::<tilo_contact_directory::ContactDirectory>(),
+    ];
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
     }

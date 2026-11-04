@@ -256,7 +256,7 @@ impl ViewStorage {
         &self,
         base: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
-        super::controls::opened_in_workspace::<P>();
+        super::controls::opened_record::<P>();
         self.chains.open::<P>(self.records.as_ref(), base)
     }
 
@@ -268,7 +268,7 @@ impl ViewStorage {
         base: &ui_core::record::RecordId,
         base_state: impl Fn() -> Rc<<P::Base as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::chain::ChainState<P>>> {
-        super::controls::opened_in_workspace::<P>();
+        super::controls::opened_record::<P>();
         self.chains
             .open_beside::<P>(self.records.as_ref(), base, base_state)
     }
@@ -280,7 +280,7 @@ impl ViewStorage {
         &self,
         parent: impl Fn() -> Rc<<C::Parent as tilo_resource::Resource>::State> + 'static,
     ) -> Option<Rc<super::children::ChildrenState<C>>> {
-        super::controls::opened_in_workspace::<C>();
+        super::controls::opened_record::<C>();
         self.chains
             .open_children::<C>(self.records.as_ref(), parent)
     }
@@ -315,7 +315,7 @@ impl ViewStorage {
     pub(crate) fn person<P: tilo_resource::Resource>(
         &self,
     ) -> Option<super::person::PersonRecord<P>> {
-        super::controls::opened_in_workspace::<P>();
+        super::controls::opened_record::<P>();
         self.person.as_ref()?.open::<P>()
     }
 
@@ -349,7 +349,7 @@ impl ViewStorage {
     pub(crate) fn shared_person<P: tilo_resource::SharedRecord>(
         &self,
     ) -> Option<super::person::PersonRecord<P>> {
-        super::controls::opened::<P>();
+        super::controls::opened_record::<P>();
         self.person.as_ref()?.open_shared::<P>()
     }
 
@@ -446,7 +446,7 @@ impl ViewStorage {
     where
         T: tilo_resource::Resource<State = T> + tilo_resource::Fields + SettingsSchema,
     {
-        super::controls::opened::<T>();
+        super::controls::opened_section::<T>();
         if let Some(open) = self.sections.borrow().get(T::KIND) {
             return Rc::clone(open);
         }

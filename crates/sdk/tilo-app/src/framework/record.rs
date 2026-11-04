@@ -338,7 +338,9 @@ pub(crate) mod sealed {
 /// [`ResourceApp::records`](super::ResourceApp::records): each is opened
 /// with the window and published beside the app's resource, so the palette
 /// and agents reach it whether or not a view has shown it, and the app's
-/// committed surface lists it.
+/// committed surface lists it. The person's own shared records are declared
+/// with the app instead
+/// ([`ResourceApp::PERSON_RECORDS`](super::ResourceApp::PERSON_RECORDS)).
 pub struct Records<'a> {
     /// The window's storage, where they are opened; `None` while the app's
     /// records are only declared ([`Self::declaring`]).
@@ -517,16 +519,6 @@ impl<'a> Records<'a> {
             return self;
         };
         let _ = storage.person::<P>();
-        self
-    }
-
-    /// The person's record `P` another app keeps
-    /// ([`RecordEnv::shared_person`](super::RecordEnv::shared_person)).
-    pub fn shared_person<P: tilo_resource::SharedRecord>(&mut self) -> &mut Self {
-        let Some(storage) = self.storage else {
-            return self;
-        };
-        let _ = storage.shared_person::<P>();
         self
     }
 

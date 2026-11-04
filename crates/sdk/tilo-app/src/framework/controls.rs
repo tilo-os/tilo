@@ -84,17 +84,20 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// A view opened a record of `P` beside the app's own, in the person's
-/// workspace: a surface report lists its surface too, marked as the person's.
-pub(crate) fn opened<P: Resource>() {
+/// A view opened a settings section of `P`, which lives in the person's own
+/// scope: a surface report lists its surface too, marked as the person's.
+pub(crate) fn opened_section<P: Resource>() {
     record_opened::<P>(true);
 }
 
-/// The app opened records of `P` beside its own in the workspace it lives in
-/// (the parts of a chain): a surface report lists their surface too, so
-/// every member decides a change to them against it as against the app's
-/// own record.
-pub(crate) fn opened_in_workspace<P: Resource>() {
+/// A view or the window opened a record of `P` beside the app's own: a
+/// surface report lists its surface too, so every member decides a change to
+/// it against it as against the app's own record. Whether it is the
+/// person's — kept in their store rather than in a workspace's — is the
+/// app's declaration's to say
+/// ([`ResourceApp::PERSON_RECORDS`](super::ResourceApp::PERSON_RECORDS)), not
+/// the open's.
+pub(crate) fn opened_record<P: Resource>() {
     record_opened::<P>(false);
 }
 

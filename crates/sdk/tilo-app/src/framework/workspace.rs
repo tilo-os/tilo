@@ -570,7 +570,7 @@ impl WorkspaceState {
         // The owner's own window lists the record in its surface: its
         // changes are decided against the owner's surface.
         if owner == self.app_id {
-            super::controls::opened_in_workspace::<P>();
+            super::controls::opened_record::<P>();
         }
         let opened = open(&self.records);
         self.held(key, opened)
@@ -586,7 +586,7 @@ impl WorkspaceState {
         owner: &'static str,
         base: &WorkspaceRecord<P::Base>,
     ) -> Option<Chain<P>> {
-        super::controls::opened_in_workspace::<P>();
+        super::controls::opened_record::<P>();
         let workspace = super::chain::WorkspaceRecords {
             store: self.records.store_of(owner).ok()?,
             me: self.records.author().0.clone(),

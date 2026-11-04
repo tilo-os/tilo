@@ -193,7 +193,11 @@
 //!   [`PersonRecord`] is one record per kind and workspace, the same on
 //!   every device, edited with the resource's actions, attributed, in its
 //!   history and undone per step, and synced with the workspace. A
-//!   preference is still a setting.
+//!   preference is still a setting. A record that is the person's rather
+//!   than a workspace's — their accounts, their contacts, the models their
+//!   agents offer — is declared with the app
+//!   ([`ResourceApp::PERSON_RECORDS`]), kept in their own scope and carried
+//!   to their other devices by their personal store ([`PersonKind`]).
 //! * **What grows without end** — a chat's messages, a log — is a chain of
 //!   part records of another resource type kept beside the app's own in its
 //!   workspace ([`Chain`], [`Chained`]): declared in [`ResourceApp::records`],
@@ -402,7 +406,7 @@ pub use launch::{Command, Helper, LaunchInput, OpenHere};
 pub use live::Live;
 pub use opening::Opened;
 pub use people::People;
-pub use person::PersonRecord;
+pub use person::{PersonKind, PersonRecord};
 pub use preview::PastVersion;
 pub use publishing::Publishes;
 pub use query::{Query, ReadFailure};

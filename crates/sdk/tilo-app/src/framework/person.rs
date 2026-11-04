@@ -307,6 +307,63 @@ pub(crate) fn resource_id(kind: &str) -> String {
     format!("person:{kind}")
 }
 
+/// One of the person's own records an app keeps, declared with the app
+/// ([`ResourceApp::PERSON_RECORDS`](super::ResourceApp::PERSON_RECORDS)).
+///
+/// It is the person's, not the workspace's: kept in their own scope, carried
+/// to their other devices by their personal store, and never reaching a
+/// collaborator. The app's committed surface names it whether or not a view
+/// of it is showing, so the host admits the app's changes to it — and its
+/// reads of it — against the surface.
+#[derive(Clone, Copy)]
+pub struct PersonKind {
+    kind: &'static str,
+    report: fn() -> tilo_resource::Surface,
+    open: fn(&super::settings::ViewStorage),
+}
+
+impl PersonKind {
+    /// The person's record `P`, kept by the app that owns it
+    /// ([`SharedRecord`](tilo_resource::SharedRecord)).
+    #[must_use]
+    pub const fn shared<P: tilo_resource::SharedRecord>() -> Self {
+        Self {
+            kind: P::KIND,
+            report: shared_surface::<P>,
+            open: open_shared::<P>,
+        }
+    }
+
+    /// The kind of record it is.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    /// Its surface, as the app's surface report lists it: `P`'s, marked as
+    /// the person's own.
+    #[must_use]
+    pub fn surface(&self) -> tilo_resource::Surface {
+        (self.report)()
+    }
+
+    /// Open it with the window, so it is published before any view shows it.
+    pub(crate) fn open(&self, storage: &super::settings::ViewStorage) {
+        (self.open)(storage);
+    }
+}
+
+fn shared_surface<P: tilo_resource::SharedRecord>() -> tilo_resource::Surface {
+    tilo_resource::Surface {
+        person: true,
+        ..P::surface()
+    }
+}
+
+fn open_shared<P: tilo_resource::SharedRecord>(storage: &super::settings::ViewStorage) {
+    let _ = storage.shared_person::<P>();
+}
+
 fn history_spec(record: &str, label: &str, undo: bool) -> tilo_actions::ActionSpec {
     let mut spec = history_operation(record.to_owned(), label, undo);
     spec.type_mut().contract.result = tilo_actions::ResultSpec::Json {
