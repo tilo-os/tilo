@@ -16,6 +16,7 @@ use tilo_surface_host::shell_part::{ArrangementReading, Ask};
 use tilo_surface_host::{Doors, SessionLink, ShellPart, ShellWork};
 
 use crate::desk_resource::Desk;
+use crate::displays;
 use crate::panels::Held;
 
 /// The shell package and the packages it uses, compiled, the shell last: what the shell's
@@ -155,21 +156,34 @@ impl Shell {
     /// stands again when that display comes back, so unplugging and replugging makes no new
     /// part. Cheap when nothing changed, which is what every frame runs.
     fn follow_outputs(&mut self, compositor: &mut Compositor, doors: &mut Doors) {
-        let outputs = outputs_of(compositor);
+        let outputs = displays::placed(&compositor.outputs());
         for (name, part) in &self.parts {
-            if !outputs.iter().any(|(shown, ..)| shown == name) {
+            if !outputs.iter().any(|shown| &shown.connector == name) {
                 part.borrow_mut().set_display(None, 1.0);
             }
         }
         let fullscreen = compositor.fullscreen_outputs();
-        for (name, rect, scale) in &outputs {
-            if let Some((_, part)) = self.parts.iter().find(|(shown, _)| shown == name) {
-                part.borrow_mut()
-                    .set_display(Some((name.clone(), *rect)), *scale);
+        for output in &outputs {
+            if let Some((_, part)) = self
+                .parts
+                .iter()
+                .find(|(shown, _)| *shown == output.connector)
+            {
+                part.borrow_mut().set_display(
+                    Some((output.connector.clone(), output.part_rect())),
+                    output.scale,
+                );
                 part.borrow_mut().set_fullscreen(fullscreen.clone());
                 continue;
             }
-            self.mount_part(compositor, doors, name, *rect, *scale, &fullscreen);
+            self.mount_part(
+                compositor,
+                doors,
+                &output.connector,
+                output.part_rect(),
+                output.scale,
+                &fullscreen,
+            );
         }
     }
 
@@ -628,21 +642,6 @@ pub struct PartPlace {
     pub scale: f64,
     /// A fullscreen window owns the output, so the part draws nothing there.
     pub aside: bool,
-}
-
-/// Every output `compositor` shows, by connector name, logical rectangle `(x, y, w, h)` and the
-/// scale it draws at: one part stands on each, its whole screen, and none spans them all.
-fn outputs_of(compositor: &Compositor) -> Vec<(String, (i32, i32, u32, u32), f64)> {
-    compositor
-        .outputs()
-        .into_iter()
-        .filter_map(|output| {
-            output.rect.map(|(x, y, w, h)| {
-                let side = |side: i32| u32::try_from(side.max(1)).unwrap_or(1);
-                (output.name.clone(), (x, y, side(w), side(h)), output.scale)
-            })
-        })
-        .collect()
 }
 
 /// The compositor's window for the reading's window `key` (its tab's id), when it may be

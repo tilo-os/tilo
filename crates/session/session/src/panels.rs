@@ -215,8 +215,9 @@ impl SurfaceHost for Banners {
 pub(crate) struct ReadoutPlace {
     /// The focused text field's caret, in desk coordinates.
     caret: Option<Rect>,
-    /// Each display's connector, its rectangle and the scale it draws at.
-    displays: Vec<(String, (i32, i32, i32, i32), f64)>,
+    /// Each display the compositor shows, where it stands and the scale it
+    /// draws at.
+    displays: Vec<crate::displays::Placed>,
 }
 
 /// The session's hold of [`ReadoutPlace`], shared with the readout.
@@ -226,10 +227,9 @@ impl ReadoutPlace {
     /// Take the outputs the compositor shows and the caret of the field the
     /// person types into, as they stand now.
     pub(crate) fn observe(&mut self, outputs: &[OutputInfo], caret: Option<Rect>) {
-        self.displays = outputs
-            .iter()
-            .filter(|output| output.enabled)
-            .filter_map(|output| Some((output.name.clone(), output.rect?, output.scale)))
+        self.displays = crate::displays::placed(outputs)
+            .into_iter()
+            .filter(|display| display.on)
             .collect();
         self.caret = caret;
     }
@@ -245,14 +245,11 @@ impl ReadoutPlace {
         let named = display.and_then(|display| {
             self.displays
                 .iter()
-                .find(|(connector, ..)| connector == display)
-                .map(|(_, rect, scale)| (*rect, *scale))
+                .find(|shown| shown.connector == display)
         });
-        named.or_else(|| {
-            self.displays
-                .first()
-                .map(|(_, rect, scale)| (*rect, *scale))
-        })
+        named
+            .or_else(|| self.displays.first())
+            .map(|shown| (shown.rect, shown.scale))
     }
 }
 
