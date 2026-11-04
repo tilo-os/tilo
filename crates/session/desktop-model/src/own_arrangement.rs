@@ -1,28 +1,26 @@
-//! The person's own arrangement: the shell's typed record of what is open
-//! where (shell.md §2, workspace-model.md §9).
+//! The arrangement as a shell reads it: what is open where (shell.md §2,
+//! workspace-model.md §9).
 //!
-//! The strips shell's arrangement is a list of strips, each a row's column
-//! of places with a width, each place showing a resource through a view. It
-//! is the person's, not the workspace's: it lives in their own record
-//! ([`record_id`], `records: .own`), syncs to their devices that use the
-//! same shell, and has history and undo. No other member reads it.
+//! The strips shell's arrangement is a list of strips, each a row's column of
+//! places with a width, each place showing a resource through a view. The desk
+//! itself is the one record of it ([`Strips::from_tree`], which keeps every
+//! workspace's rows, every window group and every place — and every id — as
+//! the desk has them); a table of rows, strips and places is what a shell that
+//! arranges the desk reads, and what the desk's own record keeps, entry by
+//! entry, for the workspace ([`crate::shared_record`]).
 //!
-//! The record keeps a row, a strip and a place each as its own entry under
-//! its own id, so two devices changing different entries both keep their
-//! change and a merge writes only what moved. Every entry names the shell
-//! that made it: a shell that does not know an entry another shell made
-//! keeps it ([`Strips::foreign`]) and never changes or removes it.
-//!
-//! Today's arrangement in [`DesktopTree`] is migrated into it by
-//! [`Strips::from_tree`], which keeps every workspace's strips, every
-//! window group and every place — and every id — as it is.
+//! [`read`] and [`write`] carry the same table as one document of its own: how
+//! a session keeps the arrangement while it runs, and its history and undo.
+//! The document keeps a row, a strip and a place each as its own entry under
+//! its own id, so changing one entry leaves the others alone. Every entry
+//! names the shell that made it: a shell that does not know an entry another
+//! shell made keeps it ([`Strips::foreign`]) and never changes or removes it.
 
 use std::collections::BTreeMap;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
-use tilo_automerge::ApplyIncoming as _;
 
 use crate::apps::canonical_app_id;
 use crate::arrangement::{ArrangementKind, CanvasPlace};
@@ -37,17 +35,6 @@ pub const SHELL: &str = "so.tilo.shell.strips";
 /// Another default shell, the conversation's: its places are its own and
 /// this shell leaves them alone.
 pub const CONVERSATION_SHELL: &str = "so.tilo.shell.conversation";
-
-/// The record kind of a person's arrangement, in their own record.
-pub const KIND: &str = "tilolang.room";
-
-/// The id of `person`'s own record of their arrangement: only their devices
-/// read and change it ([`tilo_action_policy::member_record`]), the workspace's
-/// owner included. `person` is the lowercase hex of their user root key.
-#[must_use]
-pub fn record_id(person: &str) -> String {
-    tilo_action_policy::member_record_id(&person.to_ascii_lowercase(), KIND)
-}
 
 /// A row of the desk: a strip across the desk's width, holding columns.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,21 +586,6 @@ const SHELL_KEY: &str = "shell";
 #[must_use]
 pub fn read(doc: &impl ReadDoc) -> Strips {
     read_as(doc, SHELL)
-}
-
-/// Take in `other`, another device's record, entry by entry: what merged in
-/// besides what `doc` already held.
-///
-/// # Errors
-/// Why `other`'s changes cannot be taken in; `doc` is unchanged.
-pub fn merge_into(
-    doc: &mut AutoCommit,
-    other: &AutoCommit,
-) -> Result<usize, automerge::AutomergeError> {
-    // `AutoCommit::merge` takes the other document mutably; a copy is merged
-    // so the caller's own reading stands as it was.
-    let mut other = other.clone();
-    doc.merge_incoming(&mut other).map(|added| added.len())
 }
 
 /// The arrangement `doc` holds, as the shell `shell` reads it. Places of

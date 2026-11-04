@@ -451,19 +451,12 @@ struct Shared {
     personal: Option<RefCell<workspaces::Personal>>,
     /// The copies the person can paste again.
     clipboard: Rc<mount::clipboard::Clipboard>,
-    /// The person's arrangement, as their own record: what is open where,
-    /// with history and undo (shell.md §2). The desk places its windows
-    /// from it.
+    /// The person's arrangement: the desk this session holds, with history and
+    /// undo (shell.md §2), and the app places its windows from it.
     arrangement: Rc<RefCell<arrangement::Arrangement>>,
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what an arranging action that is not their own waits for.
     underway: Rc<Cell<arrangement::Busy>>,
-    /// The heads of the arrangement the file holds, so a record that did not
-    /// move is not written again.
-    kept_arrangement: RefCell<Option<Vec<ui::automerge::ChangeHash>>>,
-    /// Where the arrangement is kept between sessions: this device's state
-    /// folder, or nowhere for a session that keeps nothing.
-    arrangement_state: Option<std::path::PathBuf>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
@@ -1101,10 +1094,6 @@ impl Session {
             }
             desk_doc::Kept::None => {}
         }
-        // The person's arrangement: today's desk, migrated into their own
-        // record, and from then on the record the desk places its windows
-        // from. It is kept beside the desk on this device, and is the
-        // person's own ([`arrangement::record_id`]) on every device theirs.
         // The runs people ask this session's agents for, and each run's program host: the
         // conversation over them (shell.md §8.1) is the shell's, and its lines reach here.
         let the_runs = options.agent_runs.take().unwrap_or_else(|| {
@@ -1116,14 +1105,23 @@ impl Session {
             std::sync::Arc::clone(&the_programs),
             &options.person,
         ));
-        let mut record = ui::automerge::AutoCommit::new();
-        if let Some(text) = options.state.as_deref().and_then(arrangement::load_at) {
-            match ui::automerge::AutoCommit::load(&text) {
-                Ok(kept) => record = kept,
-                // ignored-failure: another build kept the arrangement, and a fresh desk is made
-                Err(error) => tracing::debug!(%error, "the kept arrangement is not this build's"),
-            }
-        }
+        // The person's arrangement: the desk this session holds, which the
+        // workspace shares as its own desk record. A device that has kept none
+        // yet reads it from the desk, or from the record a build before this
+        // one kept beside it — laid out once, and gone. What the desk's windows
+        // do not carry — the view a place shows and whether it is pinned — is
+        // kept with the desk ([`desk_doc::DeskDoc::arrangement_marks`]).
+        let marks = activity.arrangement_marks();
+        let record = if marks.is_some() {
+            ui::automerge::AutoCommit::new()
+        } else {
+            options
+                .state
+                .as_deref()
+                .and_then(arrangement::take_kept)
+                .unwrap_or_default()
+        };
+        let marks = marks.unwrap_or_default();
         let kept_desk = handle.read(Clone::clone);
         let records = std::collections::BTreeMap::new();
         let arrangement = Rc::new(RefCell::new(arrangement::Arrangement::new(
@@ -1132,6 +1130,7 @@ impl Session {
             handle.clone(),
             &kept_desk,
             &records,
+            &marks,
         )));
         // Whether the person is mid-gesture or typing, as only the
         // compositor knows: what an arranging action that is not their own
@@ -1883,8 +1882,6 @@ impl Session {
             clipboard: Rc::new(mount::clipboard::Clipboard::new(options.wake.handle())),
             arrangement,
             underway: busy,
-            kept_arrangement: RefCell::new(None),
-            arrangement_state: options.state.clone(),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,
@@ -2407,7 +2404,7 @@ impl Session {
         self.shared.services.borrow_mut().settle();
     }
 
-    /// The person's arrangement, as their own record.
+    /// The person's arrangement: the desk this session holds, with its history and undo.
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement

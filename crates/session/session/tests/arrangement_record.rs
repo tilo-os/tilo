@@ -1,11 +1,12 @@
-//! The shell's arrangement is the person's own typed record (shell.md §2,
-//! workspace-model.md §9): what is open where, kept in their record with
-//! history and undo, synced to their devices that use the same shell, and
-//! shared with no other member.
+//! The arrangement is the desk's own record (shell.md §2, workspace-model.md
+//! §9): what is open where, kept with the desk the workspace shares, with
+//! history and undo. No second record of it exists, and what the desk's windows
+//! do not carry — the view a place shows and whether it is pinned — is kept
+//! with the desk too.
 //!
-//! Each test here fails before the arrangement is a record: the desk keeps
-//! its own tree, nothing attributes a move to anyone, nothing undoes one,
-//! and an agent's move lands under the person's hands.
+//! Each test here fails without it: nothing attributes a move to anyone,
+//! nothing undoes one, an agent's move lands under the person's hands, and a
+//! place's view and pin are gone after a restart.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -292,12 +293,15 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     );
 }
 
-// (3) A second device with the same shell gets the arrangement; another
-// member does not.
+// (3) One record answers what the arrangement is: the desk's own, which the
+// workspace shares. Nothing is kept beside it, and another member of the
+// workspace reads none of it.
 #[test]
-fn a_second_device_gets_the_arrangement_and_another_member_does_not() {
+fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
-    let mut here = session();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    let mut here = session_in(Some(state.clone()));
     step(&mut here);
     let window = open_window(&mut here, "org.example.Notes");
     let second = add_strip(&here, "Second");
@@ -307,55 +311,28 @@ fn a_second_device_gets_the_arrangement_and_another_member_does_not() {
         .ask_person(&move_to(window, second))
         .unwrap();
     step(&mut here);
-
-    // A second device of the person's places the same desk from the same
-    // record.
-    let state = tempfile::tempdir().expect("a state directory");
-    let mut other = session_in(Some(state.path().to_path_buf()));
-    step(&mut other);
-    let shared = here.arrangement().borrow().shared_record().clone();
-    other.arrangement().borrow_mut().adopt(&shared);
-    step(&mut other);
     assert_eq!(
-        other.handle().read(|tree| tree
-            .workspaces
-            .iter()
-            .filter(|w| !w.strips.is_empty())
-            .count()),
-        1,
-        "the other device shows the arrangement"
-    );
-
-    // What this person's devices share: the record, on the route only their
-    // devices hold the key to.
-    let id = own_arrangement::record_id(ADA);
-    assert_eq!(
-        tilo_action_policy::member_record(&id),
-        Some((ADA, own_arrangement::KIND)),
-        "the record is the person's own"
-    );
-    // Another member's record of the same kind is another record, which this
-    // arrangement's changes never reach.
-    assert_ne!(id, own_arrangement::record_id(BO));
-
-    // The other device reads the arrangement from the same record.
-    let brought: Strips = own_arrangement::read(&shared);
-    assert_eq!(
-        brought.strip_of(window).map(|strip| strip.row.0),
+        strip_of(&here, window).map(|strip| row_of(&here, strip)),
         Some(second),
-        "the other device has the arrangement"
+        "the desk holds the move"
+    );
+    drop(here);
+
+    // The desk's one document is what keeps it: no record of the arrangement's
+    // own is written beside it.
+    assert!(
+        state.join("tilo").join("desk.automerge").exists(),
+        "the desk's document keeps the arrangement"
+    );
+    assert!(
+        !state.join("tilo").join("arrangement.automerge").exists(),
+        "no second record of the arrangement is kept"
     );
 
-    // Another member of the workspace runs the same shell on their own
-    // device: their arrangement is their own record, and holds none of this
-    // one's places.
+    // Another member of the workspace runs a desk of their own: nothing of this
+    // one's arrangement is theirs.
     let mut theirs = session_as(BO);
     step(&mut theirs);
-    assert_eq!(
-        theirs.arrangement().borrow().record_id(),
-        own_arrangement::record_id(BO),
-        "their record is their own"
-    );
     assert!(
         theirs
             .arrangement()
@@ -365,14 +342,142 @@ fn a_second_device_gets_the_arrangement_and_another_member_does_not() {
             .is_none(),
         "nothing of this person's arrangement is theirs"
     );
-    // And what they share of theirs contains none of it.
-    let theirs_record = theirs.arrangement().borrow().shared_record().clone();
-    assert!(
-        own_arrangement::read(&theirs_record)
-            .place(window)
-            .is_none(),
-        "their record, read, holds none of this person's places"
+}
+
+// (5) What the desk's windows do not carry — the view a place shows and the
+// pin on it — is kept with the desk, so it survives a restart with the
+// arrangement.
+#[test]
+fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    let place = {
+        let mut session = session_in(Some(state.clone()));
+        step(&mut session);
+        let window = open_window(&mut session, "org.example.Notes");
+        step(&mut session);
+        let strip = strip_of(&session, window).expect("the place has a strip");
+        let place = session.handle().mint_id();
+        session
+            .arrangement()
+            .borrow_mut()
+            .ask_person(&tilo_session::arrangement::ArrangementAction::OpenInto {
+                strip,
+                after: Some(window),
+                place,
+                shows: "org.example.Notes".into(),
+                view: "editor".into(),
+                record: String::new(),
+                state: serde_json::json!({
+                    "LocalApp": {
+                        "app_id": "org.example.Notes",
+                        "label": "Notes",
+                        "note": "",
+                    }
+                }),
+            })
+            .expect("the place opens");
+        session
+            .arrangement()
+            .borrow_mut()
+            .ask_person(&tilo_session::arrangement::ArrangementAction::Pin {
+                place,
+                pinned: true,
+            })
+            .expect("the place is pinned");
+        step(&mut session);
+        assert_eq!(
+            arrangement(&session)
+                .place(place)
+                .map(|place| place.view.as_str()),
+            Some("editor"),
+            "the arrangement holds the view it shows"
+        );
+        place
+    };
+
+    let mut next = session_in(Some(state));
+    step(&mut next);
+    let held = next.arrangement().borrow().strips();
+    let back = held.place(place).expect("the place came back");
+    assert_eq!(back.view, "editor", "the view the place shows");
+    assert!(back.pinned, "the place is still pinned");
+}
+
+// (6) The arrangement a build before this one kept beside the desk is taken
+// once: the desk comes up from it, and the file it was kept in is gone.
+#[test]
+fn the_record_a_build_before_this_one_kept_comes_into_the_desk_once() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+
+    // The record as the build before this one left it: a workspace, a strip
+    // and a place, saying what it shows and that it is pinned.
+    let (workspace, strip, place) = (1u64, 7u64, 9u64);
+    let row = tilo_desktop_model::own_arrangement::Row {
+        id: tilo_desktop_model::StripId(strip),
+        workspace: tilo_desktop_model::WorkspaceSlot(workspace),
+        name: "Writing".into(),
+        shell: "so.tilo.shell.strips".into(),
+    };
+    let held = Strips {
+        workspaces: vec![tilo_desktop_model::own_arrangement::PlacedWorkspace {
+            id: tilo_desktop_model::WorkspaceSlot(workspace),
+            name: "Home".into(),
+        }],
+        rows: vec![row],
+        strips: vec![tilo_desktop_model::own_arrangement::Strip {
+            id: strip,
+            workspace: tilo_desktop_model::WorkspaceSlot(workspace),
+            row: tilo_desktop_model::StripId(strip),
+            width: tilo_desktop_model::WindowWidth::Normal,
+            maximized: false,
+            active: Some(place),
+            canvas: None,
+            shell: "so.tilo.shell.strips".into(),
+            places: vec![tilo_desktop_model::own_arrangement::Place {
+                id: place,
+                shows: "org.example.Notes".into(),
+                view: "editor".into(),
+                record: String::new(),
+                state: serde_json::json!({
+                    "LocalApp": {
+                        "app_id": "org.example.Notes",
+                        "label": "Notes",
+                        "note": "",
+                    }
+                }),
+                title: "Notes".into(),
+                pinned: true,
+                shell: "so.tilo.shell.strips".into(),
+            }],
+        }],
+        foreign: Vec::new(),
+    };
+    let mut doc = ui::automerge::AutoCommit::new();
+    own_arrangement::write(&mut doc, &held).expect("the record");
+    let path = state.join("tilo");
+    std::fs::create_dir_all(&path).expect("the state directory");
+    let file = path.join("arrangement.automerge");
+    std::fs::write(&file, doc.save()).expect("the record is kept");
+
+    // The session starts on a desk the record places, and the record is gone.
+    let mut session = session_in(Some(state));
+    step(&mut session);
+    let held = arrangement(&session);
+    let back = held.place(place).expect("the place came into the desk");
+    assert_eq!(back.view, "editor", "the view it shows");
+    assert!(back.pinned, "and the pin on it");
+    assert_eq!(
+        session
+            .handle()
+            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0)),
+        Some(workspace),
+        "the desk comes up on it"
     );
+    assert!(!file.exists(), "the record it came from is gone");
 }
 
 // (4) While the person types or drags, an agent's move waits, not drops, and
@@ -813,36 +918,23 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
 
 // (4) A place whose saved window state this build cannot read: the window
 // does not come back, and its tab says why, where the person can close it —
-// the place itself stays in their record for a build that reads it.
+// the place itself stays in the arrangement for a build that reads it.
 #[test]
 fn a_place_that_does_not_read_back_keeps_its_tab_saying_why() {
     let _settled = ui::motion::testing::settled();
-    let state = tempfile::tempdir().expect("a state directory");
-    // The place as this build's desk and record hold it.
-    let mut first = session_in(Some(state.path().to_path_buf()));
-    step(&mut first);
-    let tab = open_window(&mut first, "org.example.Notes");
-    step(&mut first);
+    let mut session = session();
+    step(&mut session);
+    let tab = open_window(&mut session, "org.example.Notes");
+    step(&mut session);
     assert!(
-        arrangement(&first).strip_of(tab).is_some(),
-        "the record holds the place"
+        arrangement(&session).strip_of(tab).is_some(),
+        "the arrangement holds the place"
     );
-    first
-        .arrangement()
-        .borrow_mut()
-        .save(state.path())
-        .expect("the record is kept");
-    drop(first);
 
-    // The state a newer build wrote for that place, as this one reads it: a
-    // live window it cannot open again.
-    let kept = tilo_session::arrangement::load_at(state.path()).expect("the record");
-    let mut doc = ui::automerge::AutoCommit::load(&kept).expect("the record reads");
-    let mut strips = own_arrangement::read(&doc);
-    assert!(
-        strips.place(tab).is_some(),
-        "the record kept the place the desk held"
-    );
+    // The arrangement a newer build wrote for that place, as this one reads it:
+    // a live window it cannot open again.
+    let mut doc = ui::automerge::AutoCommit::new();
+    let mut strips = arrangement(&session);
     for strip in &mut strips.strips {
         for place in &mut strip.places {
             if place.id == tab {
@@ -850,18 +942,24 @@ fn a_place_that_does_not_read_back_keeps_its_tab_saying_why() {
             }
         }
     }
-    own_arrangement::write(&mut doc, &strips).expect("the record");
-    tilo_session::arrangement::save_at(state.path(), &mut doc).expect("kept");
-
-    let mut session = session_in(Some(state.path().to_path_buf()));
+    own_arrangement::write(&mut doc, &strips).expect("the arrangement");
+    let tree = session.handle().read(Clone::clone);
+    let mut seated = tilo_session::arrangement::Arrangement::new(
+        ADA,
+        doc,
+        session.handle().clone(),
+        &tree,
+        &std::collections::BTreeMap::new(),
+        &tilo_session::arrangement::Marks::default(),
+    );
+    seated.place_now();
     step(&mut session);
-    step(&mut session);
 
-    // The place is still theirs: a build that reads the state opens the
-    // window it kept, and closing the tab is the end of it here.
+    // The place is still theirs: a build that reads the state opens the window
+    // it kept, and closing the tab is the end of it here.
     assert!(
         arrangement(&session).strip_of(tab).is_some(),
-        "the place stays in their record"
+        "the place stays in the arrangement"
     );
 
     // Where the window would be, its tab says why it is not here.

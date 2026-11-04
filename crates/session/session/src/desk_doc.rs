@@ -33,6 +33,7 @@ use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc as _, ScalarValue, Value};
 use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION, desktop_doc};
 
+use crate::arrangement::Marks;
 use crate::desk_migration::Adopted;
 use crate::desk_migration::shell;
 use crate::i18n::{t, t_args};
@@ -43,6 +44,14 @@ pub(crate) const FILE: &str = "desk.automerge";
 /// The key in the document that says which shape of desk it holds: a build
 /// that does not know the shape leaves the desk alone rather than guess.
 const SCHEMA_KEY: &str = "schema";
+
+/// The key the arrangement's own choices are kept under: the view each place
+/// shows its resource through, and the places the person pinned. The
+/// arrangement itself is the desk this document holds, and these two are what
+/// its windows do not carry. A document without the key has kept no
+/// arrangement yet: the session reads one from the desk, or from the record a
+/// build before this one kept beside it, and writes the key from then on.
+const MARKS_KEY: &str = "arrangement_marks_v1";
 
 /// How long a drag or a burst of switches waits for its last frame before how
 /// the desk looks is written.
@@ -371,6 +380,34 @@ impl DeskDoc {
         self.doc.borrow().base_heads()
     }
 
+    /// The arrangement's own choices this document keeps, `None` on a desk
+    /// that has kept none yet: the session then reads the arrangement from the
+    /// desk itself, or from the record a build before this one kept beside it.
+    pub(crate) fn arrangement_marks(&self) -> Option<Marks> {
+        let doc = self.doc.borrow();
+        let (Value::Scalar(scalar), _) = doc.get(ROOT, MARKS_KEY).ok().flatten()? else {
+            return None;
+        };
+        let ScalarValue::Str(text) = scalar.as_ref() else {
+            return None;
+        };
+        // ignored-failure: marks that do not read are a desk another build wrote, and the next keep writes marks this one reads
+        serde_json::from_str(text).ok()
+    }
+
+    /// Keep `marks` as the arrangement's, when they differ from the ones the
+    /// document holds. Whether anything was written.
+    pub(crate) fn keep_arrangement_marks(&self, marks: &Marks) -> bool {
+        let Ok(text) = serde_json::to_string(marks) else {
+            tracing::warn!("the arrangement's choices do not write");
+            return false;
+        };
+        if self.arrangement_marks().as_ref() == Some(marks) {
+            return false;
+        }
+        self.write_metadata(|doc| doc.put(ROOT, MARKS_KEY, text.as_str()).is_ok())
+    }
+
     /// The names this device's changes are known by, by actor (hex).
     pub(crate) fn authors(&self) -> std::collections::BTreeMap<String, String> {
         desktop_doc::author_names(&self.doc.borrow())
@@ -399,28 +436,14 @@ impl crate::Shared {
         tilo_durable_writer::global().flush();
     }
 
-    /// Keep the person's arrangement as it stands: its own file, so the next
-    /// session places the same desk from it. Written when the record moved,
-    /// not every frame.
+    /// Keep the arrangement's own choices with the desk: the view each place
+    /// shows its resource through and the places the person pinned. The
+    /// arrangement itself is the desk, which [`Self::keep_desk`] writes; these
+    /// two are what its windows do not carry. Written when they move, not every
+    /// frame.
     pub(crate) fn keep_arrangement(&self) {
-        let Some(state) = &self.arrangement_state else {
-            return;
-        };
-        let mut arrangement = self.arrangement.borrow_mut();
-        let heads = arrangement.heads();
-        if self
-            .kept_arrangement
-            .borrow()
-            .as_ref()
-            .is_some_and(|kept| *kept == heads)
-        {
-            return;
-        }
-        if let Err(error) = arrangement.save(state) {
-            tracing::warn!(%error, "the arrangement is not kept");
-            return;
-        }
-        *self.kept_arrangement.borrow_mut() = Some(heads);
+        let marks = self.arrangement.borrow().marks();
+        self.activity.keep_arrangement_marks(&marks);
     }
 }
 

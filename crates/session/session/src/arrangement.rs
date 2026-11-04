@@ -1,14 +1,20 @@
-//! The person's arrangement as their own typed record (shell.md §2,
-//! workspace-model.md §9): what is open where, kept in their own record
-//! (`records: .own`, [`own_arrangement::record_id`]) with history and undo,
-//! synced to their devices that use the same shell, and shared with no other
-//! member.
+//! The person's arrangement as the desk they share with the workspace
+//! (workspace.md §9): what is open where, kept in the desk's own record
+//! ([`tilo_desktop_model::shared_record`], through the desk this session holds)
+//! with history and undo. A workspace's history — a strip made, a width
+//! dragged — is the desk's, and every member of the workspace reads the same
+//! one. What only one device decides — which window is in front, the width a
+//! strip has on its screen — stays device-local, as the desk keeps it.
 //!
-//! Today's desk in [`DesktopTree`] is the arrangement's first reading: the
-//! migration ([`Strips::from_tree`]) keeps every workspace, row, strip,
-//! place and id. From then on each arranging action ([`ArrangementAction`])
-//! is one change of the record, attributed to whoever asked for it — the
-//! person's own input included — and undone as that one step.
+//! A place also has two things the desk's windows do not carry: the view it
+//! shows its resource through, and whether the person pinned it. The desk's
+//! document keeps both beside the desk ([`Marks`]), so one
+//! record answers what the arrangement is, on this device and across a
+//! restart.
+//!
+//! Each arranging action ([`ArrangementAction`]) is one change of the desk,
+//! attributed to whoever asked for it — the person's own input included — and
+//! undone as that one step.
 //!
 //! One rule is fixed (shell.md §1): nothing moves or takes focus under an
 //! ongoing gesture or while the person types. An arranging action that
@@ -54,6 +60,22 @@ pub const PLACE_KIND: &str = "arrangement.place";
 pub const STRIP_KIND: &str = "arrangement.strip";
 /// The kind of a row's own resource.
 pub const ROW_KIND: &str = "arrangement.row";
+
+/// What a person chose for places the desk's own windows do not hold: the view
+/// each place shows its resource through, and the places they pinned. The
+/// desk's document keeps them beside the desk (`arrangement_marks_v1`), so one
+/// record answers what the arrangement is, on this device and across a restart.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Marks {
+    /// The view a place shows, by the place's id; a place without one shows
+    /// its app's default.
+    #[serde(default)]
+    pub views: BTreeMap<u64, String>,
+    /// The places the person pinned, so an agent's arrangement leaves them
+    /// alone (shell.md §5).
+    #[serde(default)]
+    pub pins: std::collections::BTreeSet<u64>,
+}
 
 /// What a place, a strip or a row of the arrangement is published as a resource of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -415,13 +437,23 @@ impl Arrangement {
         handle: DesktopHandle,
         keep: &DesktopTree,
         records: &BTreeMap<TabId, String>,
+        marks: &Marks,
     ) -> Self {
-        // Nothing kept: today's desk is the arrangement's first reading.
+        // Nothing kept: the desk is the arrangement, and the choices the
+        // desk's windows do not carry (`marks`) go with it.
         let mut kept = own_arrangement::read(&doc);
         if kept.is_empty() {
             kept = Strips::from_tree(keep, records);
+            for strip in &mut kept.strips {
+                for place in &mut strip.places {
+                    if let Some(view) = marks.views.get(&place.id) {
+                        place.view.clone_from(view);
+                    }
+                    place.pinned = marks.pins.contains(&place.id);
+                }
+            }
             if let Err(error) = own_arrangement::write(&mut doc, &kept) {
-                tracing::warn!(%error, "the desk could not be migrated into the person's record");
+                tracing::warn!(%error, "the desk could not be read as the arrangement");
             }
         }
         // A place the record kept as the live window this device showed at
@@ -581,6 +613,24 @@ impl Arrangement {
     #[must_use]
     pub fn strips(&self) -> Strips {
         own_arrangement::read(&self.doc)
+    }
+
+    /// What the person chose for places the desk's windows do not carry: the
+    /// view each shows its resource through and the places they pinned, as the
+    /// arrangement holds them now. The desk's document keeps these beside the
+    /// desk ([`Marks`]).
+    #[must_use]
+    pub fn marks(&self) -> Marks {
+        let mut marks = Marks::default();
+        for place in self.strips().places() {
+            if !place.view.is_empty() {
+                marks.views.insert(place.id, place.view.clone());
+            }
+            if place.pinned {
+                marks.pins.insert(place.id);
+            }
+        }
+        marks
     }
 
     /// The desk's windows by tab id, as a place shows one: the app it shows, what the window
@@ -745,33 +795,6 @@ impl Arrangement {
         hasher.finish()
     }
 
-    /// The record itself, for this person's devices and its history.
-    #[must_use]
-    pub const fn doc(&self) -> &AutoCommit {
-        &self.doc
-    }
-
-    /// The record's heads: they move with each change here or merged from
-    /// another of the person's devices.
-    pub fn heads(&mut self) -> Vec<ChangeHash> {
-        self.doc.get_heads()
-    }
-
-    /// Keep the record under `state`, replacing the one before.
-    ///
-    /// # Errors
-    /// The state directory could not be written.
-    pub fn save(&mut self, state: &std::path::Path) -> std::io::Result<()> {
-        save_at(state, &mut self.doc)
-    }
-
-    /// The id the record is kept under: `person`'s own, which only their
-    /// devices read and change.
-    #[must_use]
-    pub fn record_id(&self) -> String {
-        own_arrangement::record_id(&self.person)
-    }
-
     /// The person whose arrangement it is.
     #[must_use]
     pub fn person(&self) -> &str {
@@ -838,33 +861,6 @@ impl Arrangement {
             _ => String::new(),
         };
         Some((who, what))
-    }
-
-    /// The record's document, shared as the person's own: what their other
-    /// devices read the arrangement from.
-    #[must_use]
-    pub fn shared_record(&self) -> &AutoCommit {
-        &self.doc
-    }
-
-    /// Take in `doc`, the record as this person's other device wrote it
-    /// last: what that device opened, moved and closed, merged entry by
-    /// entry. The desk is laid out again from it.
-    pub fn adopt(&mut self, doc: &AutoCommit) {
-        // The other device's heads, as its record has them.
-        let mut other = doc.clone();
-        if other.get_heads() == self.doc.get_heads() {
-            return;
-        }
-        if let Err(error) = own_arrangement::merge_into(&mut self.doc, &other) {
-            tracing::warn!(%error, "the person's arrangement did not merge");
-            return;
-        }
-        // What the other device changed is not this desk doing something of
-        // its own: the history takes the other device's changes as its own
-        // baseline.
-        self.undo = UndoLog::new(&mut self.doc);
-        self.place();
     }
 
     /// The person's own change, made as their gesture's end says: their own
@@ -1297,38 +1293,32 @@ fn clamp_side(value: i64) -> u32 {
     u32::try_from(value.max(1)).unwrap_or(u32::MAX)
 }
 
-/// Where the person's arrangement is kept on this device: beside the desk,
-/// as its Automerge document.
-const FILE: &str = "arrangement.automerge";
-
-/// Where the record lives under `state`, this device's state directory.
-fn path(state: &std::path::Path) -> std::path::PathBuf {
-    state.join("tilo").join(FILE)
-}
-
-/// The record kept under `state`, if there is one this build reads.
+/// The arrangement a build before this one kept beside the desk under `state`,
+/// taken once: what it holds is the desk from here on, so the session lays the
+/// desk out from it and the file goes. `None` when this device kept none, or
+/// kept one this build cannot read.
 #[must_use]
-pub fn load_at(state: &std::path::Path) -> Option<Vec<u8>> {
-    std::fs::read(path(state))
-        .map_err(|error| tracing::warn!(%error, "no arrangement is kept"))
-        .ok()
+pub fn take_kept(state: &std::path::Path) -> Option<AutoCommit> {
+    let path = state.join("tilo").join(LEGACY_FILE);
+    let text = std::fs::read(&path).ok()?;
+    let doc = match AutoCommit::load(&text) {
+        Ok(doc) => doc,
+        Err(error) => {
+            // ignored-failure: another build kept the arrangement, and the desk
+            // this device holds is the one its person sees
+            tracing::debug!(%error, "the kept arrangement is not this build's");
+            return None;
+        }
+    };
+    if let Err(error) = std::fs::remove_file(&path) {
+        tracing::warn!(path = %path.display(), %error, "the kept arrangement is not cleared");
+    }
+    Some(doc)
 }
 
-/// Keep `doc` under `state`, replacing the one before.
-///
-/// # Errors
-/// The state directory could not be written.
-pub fn save_at(state: &std::path::Path, doc: &mut AutoCommit) -> std::io::Result<()> {
-    let path = path(state);
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    // Written beside and moved into place: a session that dies mid-write
-    // leaves the arrangement it had.
-    let beside = path.with_extension("automerge.tmp");
-    std::fs::write(&beside, doc.save())?;
-    std::fs::rename(&beside, &path)
-}
+/// The arrangement file a build before this one kept beside the desk, brought
+/// into the desk's document once.
+const LEGACY_FILE: &str = "arrangement.automerge";
 
 /// The id space's counter mask, for an id this build derives rather than
 /// mints.

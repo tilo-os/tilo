@@ -226,6 +226,19 @@ impl Activity {
         self.0.desk.record_now(tree, time)
     }
 
+    /// The arrangement's own choices the desk's document keeps: the view each
+    /// place shows its resource through and the places the person pinned,
+    /// `None` on a desk that has kept none yet.
+    pub(crate) fn arrangement_marks(&self) -> Option<crate::arrangement::Marks> {
+        self.0.desk.arrangement_marks()
+    }
+
+    /// Keep the arrangement's own choices with the desk's document. Whether
+    /// anything was written.
+    pub(crate) fn keep_arrangement_marks(&self, marks: &crate::arrangement::Marks) -> bool {
+        self.0.desk.keep_arrangement_marks(marks)
+    }
+
     /// The workspace a change the model wrote back leaves the desk at, if
     /// one is waiting.
     pub(crate) fn take_restored(&self) -> Option<DesktopTree> {
