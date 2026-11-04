@@ -53,7 +53,7 @@ pub(super) async fn start_bots(
     Option<Arc<tilo_connector::ConnectorProcess>>,
 )> {
     use tilo_relay::room_bots::discord;
-    use tilo_relay::room_bots::installed::{self, BotRunner, InstalledBot};
+    use tilo_relay::room_bots::installed::{self, InstalledBot};
     if let Some(path) = &persistent.discord_token_file {
         let token = std::fs::read_to_string(path)
             .with_context(|| format!("read the Discord token file {}", path.display()))?;
@@ -129,36 +129,61 @@ pub(super) async fn start_bots(
     };
     let mut runners = Vec::new();
     for (dir, bot) in installed_bots {
-        let wanted =
-            InstalledBot::connectors(&bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?);
-        let own = started
-            .iter()
-            .filter(|(app, _)| wanted.contains(*app))
-            .map(|(app, process)| (app.clone(), Arc::clone(process)))
-            .collect::<BTreeMap<_, _>>();
-        let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
-        let runner = BotRunner::new(
+        runners.extend(run_bot(
+            workspaces,
+            workspace,
+            host_cert,
+            root,
+            (dir, bot),
+            &started,
+        )?);
+    }
+    Ok((runners, started.get(discord::APP).cloned()))
+}
+
+/// Run `bot` on this host, its connector `own` reaching the workspace and its
+/// delegation renewed with the workspace's root as it runs out.
+fn run_bot(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    root: &SigningKey,
+    (dir, bot): (
+        std::path::PathBuf,
+        tilo_relay::room_bots::installed::InstalledBot,
+    ),
+    started: &BTreeMap<String, Arc<tilo_connector::ConnectorProcess>>,
+) -> anyhow::Result<[tokio::task::JoinHandle<()>; 2]> {
+    use tilo_relay::room_bots::installed::BotRunner;
+    let wanted = tilo_relay::room_bots::installed::InstalledBot::connectors(
+        &bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?,
+    );
+    let own = started
+        .iter()
+        .filter(|(app, _)| wanted.contains(*app))
+        .map(|(app, process)| (app.clone(), Arc::clone(process)))
+        .collect::<BTreeMap<_, _>>();
+    let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
+    let runner = BotRunner::new(
+        workspaces.clone(),
+        workspace.to_owned(),
+        host_cert.clone(),
+        certifier.device_key(&bot.installation),
+        bot.clone(),
+        own,
+        dir.join("progress.json"),
+    )
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok([
+        tokio::spawn(tilo_relay::room_bots::membership::keep_renewed(
             workspaces.clone(),
             workspace.to_owned(),
             host_cert.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            own,
-            dir.join("progress.json"),
-        )
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        runners.push(tokio::spawn(
-            tilo_relay::room_bots::membership::keep_renewed(
-                workspaces.clone(),
-                workspace.to_owned(),
-                host_cert.clone(),
-                certifier,
-                bot.clone(),
-            ),
-        ));
-        runners.push(tokio::spawn(runner.run()));
-    }
-    Ok((runners, started.get(discord::APP).cloned()))
+            certifier,
+            bot,
+        )),
+        tokio::spawn(runner.run()),
+    ])
 }
 
 /// A file name for directory entry or program path `entry`.
