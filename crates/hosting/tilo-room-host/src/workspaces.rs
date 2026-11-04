@@ -2232,6 +2232,34 @@ impl Workspaces {
         self.settle(workspace).await
     }
 
+    /// File this device's verdict on `body`, a message it refused because
+    /// `reason`, and publish it as the workspace's next governance: the
+    /// write's author reads it live or on catch-up, and every member keeps it.
+    /// A body that is no document write (a change to the workspace's topology,
+    /// say) names no app record and sequence for a verdict to join, and files
+    /// nothing.
+    ///
+    /// # Errors
+    /// Why the verdict was not filed, or `body` is not a message.
+    pub(crate) async fn publish_refusal(
+        &self,
+        workspace: &str,
+        body: &[u8],
+        reason: &str,
+    ) -> Result<(), String> {
+        let message: neighbour_wire::NeighbourMsg =
+            postcard::from_bytes(body).map_err(|error| error.to_string())?;
+        if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
+            return Ok(());
+        }
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        self.file_refusal(&mut governed, &message, reason).await
+    }
+
     /// Forget this device's verdicts on the writes of `message`'s route up to
     /// its sequence: a write of that author landed after all, so what its
     /// device refused is not missing. Answers whether the workspace changed.

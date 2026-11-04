@@ -1933,6 +1933,98 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
     titles_in(governed.peer().admitted_workspace().unwrap())
 }
 
+/// A document write the workspace refused is filed as this device's verdict in
+/// the workspace's own document, signed by its device and naming the write's
+/// route, author and sequence: one fact, carried by the sync that already
+/// carries the workspace. A change to the workspace's topology names no record
+/// and files nothing, and the same write again keeps the verdict held.
+#[tokio::test]
+async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Studio").await.unwrap().workspace;
+    let (member, member_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let author = collab_types::Ed25519PublicKey::from_bytes(member_key.verifying_key().to_bytes());
+    let (app, record) = ("so.tilo.notes", "notes");
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        vec![7; 12],
+        collab_types::document_artifact_id(app, &workspace, record),
+        author,
+        collab_types::document_attestation_id(app, &workspace, record),
+        collab_types::OpKind::Change,
+        SystemTime::now(),
+        7,
+    );
+    collab_types::sign_op(&mut envelope, &member_key).unwrap();
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(member_key.verifying_key().as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace.clone(),
+        record_id: record.into(),
+        envelope: Box::new(envelope),
+    })
+    .unwrap();
+    let reason = "record read forbidden: notes/main";
+    workspaces
+        .publish_refusal(&workspace, &body, reason)
+        .await
+        .unwrap();
+    {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let governed = state.lock().await;
+        let held = governed.peer().workspace().write_refusals();
+        assert_eq!(held.len(), 1, "the workspace files its verdict: {held:?}");
+        let refusal = &held[0];
+        assert_eq!(
+            refusal.author, member.device_public_key,
+            "the write's author"
+        );
+        assert_eq!(refusal.by, cert.device_public_key, "the refusing device");
+        assert!(
+            refusal.signed_by(&cert.device_public_key),
+            "signed as its own"
+        );
+        assert_eq!(
+            (refusal.app.as_str(), refusal.record.as_str()),
+            (app, record)
+        );
+        assert_eq!(refusal.seq, 7);
+        assert_eq!(refusal.reason, neighbour_wire::RefusalReason::Forbidden);
+        assert_eq!(refusal.detail, reason);
+    }
+    // A topology change is no record's write: it names no route for a verdict.
+    let topology = terminals_opened(&workspaces, &workspace, &member, member_salt).await;
+    workspaces
+        .publish_refusal(&workspace, &topology, "the workspace's layout is personal")
+        .await
+        .unwrap();
+    // The same write again keeps the verdict the workspace already holds.
+    workspaces
+        .publish_refusal(&workspace, &body, reason)
+        .await
+        .unwrap();
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let governed = state.lock().await;
+    assert_eq!(
+        governed
+            .peer()
+            .workspace()
+            .write_refusals()
+            .iter()
+            .filter(|refusal| refusal.author == member.device_public_key)
+            .count(),
+        1,
+        "one verdict per write's author and route"
+    );
+    drop(governed);
+    drop(state);
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
 /// Two strangers in a public workspace: A opens two terminals, and B is never
 /// given them, their app or their titles. The door refuses A's change, and
 /// the governor, should it reach it anyway, commits nothing of it.

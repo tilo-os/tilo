@@ -674,8 +674,8 @@ pub(super) async fn desktop_refusal(
         .decide_layout_write(authority.workspace(), author, &body)
         .await
         .err()?;
-    // Neither kept nor forwarded: what this device refused is filed in its
-    // own workspace slice, the one place the write's author reads it.
+    // Neither kept nor forwarded: a document write's verdict is filed in this
+    // device's own workspace slice, the one place its author reads it.
     file_refusal_of(ws, env, &reason).await;
     if reason == crate::workspaces::LAYOUT_REFUSAL {
         tracing::debug!(%reason, device = %hex::encode(author), "refused a shared layout change");
