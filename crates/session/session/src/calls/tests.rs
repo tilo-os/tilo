@@ -303,6 +303,7 @@ fn presence(client: &Client, from: u8, payload: collab_types::PeerPresencePayloa
             camera,
             screen,
         },
+        collab_types::PeerPresencePayload::Person { name } => Payload::Person { name },
         other => panic!("the tests say no {other:?} as a desktop"),
     };
     let frame = Presence::desktop(WORKSPACE, payload);
@@ -1142,7 +1143,14 @@ async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
     // this person's presence says so: the presence is the whole of it.
     let peer = Client::untethered(public(0xb0), OwnPresence::default());
     peer.follow_desktop(&desk_tree());
-    peer.hear(hello(0xf0, "Quinten"));
+    peer.hear(hello(0xf0, "Framework 16"));
+    presence(
+        &peer,
+        0xf0,
+        collab_types::PeerPresencePayload::Person {
+            name: "Quinten".to_owned(),
+        },
+    );
     presence(&peer, 0xf0, collab_types::PeerPresencePayload::Arrived);
     availability(&peer, 0xf0, Some(call_presence()));
     let calls = peer.calls();

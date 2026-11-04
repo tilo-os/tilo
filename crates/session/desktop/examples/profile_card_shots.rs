@@ -30,6 +30,18 @@ fn ada() -> ProfileModel {
         name: "Ada Lovelace".to_owned(),
         identity: "ada".to_owned(),
         key: Some("a6d40c19e7b2f84c3d5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a7c2".to_owned()),
+        devices: vec![
+            tilo_desktop::here::PersonDevice {
+                id: "ada-device".to_owned(),
+                label: "Framework 16".to_owned(),
+                availability: ui::Availability::Available,
+            },
+            tilo_desktop::here::PersonDevice {
+                id: "ada-laptop".to_owned(),
+                label: "ThinkPad".to_owned(),
+                availability: ui::Availability::Focusing,
+            },
+        ],
         other: Some(OtherPerson {
             id: "ada-device".to_owned(),
             status: Some(RosterStatus {
@@ -37,6 +49,7 @@ fn ada() -> ProfileModel {
                 source: LineSource::Generated,
             }),
             place: Some("In Notes".to_owned()),
+            presence: Some(ui::Availability::Available),
             following: false,
             can_follow: true,
             can_message: true,

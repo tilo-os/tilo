@@ -625,6 +625,7 @@ mod tests {
             id: "ada".into(),
             user: None,
             label: "Ada".into(),
+            devices: Vec::new(),
             rgb: (1, 2, 3),
             agent: false,
             tab: None,

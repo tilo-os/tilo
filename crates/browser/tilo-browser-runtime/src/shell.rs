@@ -1199,13 +1199,17 @@ impl BrowserShell {
             .unwrap_or_default();
         Some(ProfileModel {
             name: row.label.clone(),
-            identity: person.id.clone(),
+            // The face's letters and colour are the person's: the same on
+            // every tab and device they are here on.
+            identity: key.clone().unwrap_or_else(|| person.id.clone()),
             colour: Some(row.color),
             key,
+            devices: person.devices.clone(),
             other: Some(tilo_desktop::profile_card::OtherPerson {
                 id: id.to_owned(),
                 status: row.status.clone(),
                 place: row.activity.clone(),
+                presence: (!person.agent).then_some(row.availability),
                 following: self.pinned.followed() == Some(id),
                 can_follow: row.followable && !person.agent,
                 can_message,
@@ -1829,6 +1833,7 @@ fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
             id: key.clone(),
             status: None,
             place: None,
+            presence: None,
             following: false,
             can_follow: false,
             can_message: crate::desktop::known_application(CHAT_APP).is_some(),

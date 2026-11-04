@@ -26,8 +26,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     Avatar, AvatarSize, Button, ButtonRole, ColorSwatch, ColorSwatchPicker, Column, Container,
-    Divider, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle, ToggleGroup,
-    Widget,
+    Divider, Fact, Facts, ListRow, Popover, PopoverSide, Row, Segment, Text, TextInput, Toggle,
+    ToggleGroup, Widget,
 };
 use ui::{LocalState, TextRole};
 use vello::kurbo::{Point, Rect};
@@ -135,6 +135,9 @@ pub struct ProfileModel {
     /// The person's root key (hex): the id that stays theirs on every
     /// device and never changes, shown short with Copy.
     pub key: Option<String>,
+    /// The devices the person is here on, each as it calls itself and as it
+    /// said it was: which of their machines are here.
+    pub devices: Vec<crate::here::PersonDevice>,
     /// The card is about someone else: what they say they are doing and
     /// what this person can do with them. `None` for the person's own card.
     pub other: Option<OtherPerson>,
@@ -150,6 +153,9 @@ pub struct OtherPerson {
     pub status: Option<crate::collaborators::RosterStatus>,
     /// Where they are ("In Chat"), when it adds to the status.
     pub place: Option<String>,
+    /// How they said they are here; `None` for an agent, which says nothing
+    /// of it.
+    pub presence: Option<ui::Availability>,
     /// This person follows their view now.
     pub following: bool,
     /// The host can follow them (bring forward what they are in).
@@ -476,6 +482,16 @@ impl ProfileCard {
                     .with_role(TextRole::Subheading)
                     .with_wrap_mode(ui::text_render::TextWrapMode::WordOrGlyph),
             ));
+        // How they are here, under their name: their presence, before
+        // anything about where they are.
+        if let Some(presence) = other.presence {
+            who = who.push(Box::new(
+                Text::new(&t(availability_key(presence)))
+                    .with_id("profile-other-availability")
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+        }
         if let Some(place) = &other.place {
             who = who.push(Box::new(
                 Text::new(place).with_role(TextRole::Caption).dimmed(),
@@ -489,6 +505,7 @@ impl ProfileCard {
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            .with_intrinsic_height()
             .push(Box::new(CardFocus::new(t_args(
                 "profile-card-of",
                 &[("name", model.name.clone().into())],
@@ -499,6 +516,11 @@ impl ProfileCard {
         }
         for link in &other.linked {
             body = body.push(Self::linked_to(link));
+        }
+        if !model.devices.is_empty() {
+            body = body
+                .push(Box::new(Divider::horizontal()))
+                .push(Box::new(Self::devices_section(&model.devices)));
         }
         if let Some(key) = &model.key {
             body = body
@@ -546,6 +568,28 @@ impl ProfileCard {
                 .push(Box::new(actions));
         }
         body
+    }
+
+    /// The devices someone is here on, each named as it calls itself and as
+    /// it said it was: the secondary row under who they are. The two are
+    /// separate facts, laid out with space between them.
+    fn devices_section(devices: &[crate::here::PersonDevice]) -> Column {
+        let mut column = Column::new()
+            .with_no_padding()
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .with_intrinsic_height()
+            .push(Box::new(
+                Text::new(&t("profile-section-devices"))
+                    .with_role(TextRole::Caption)
+                    .dimmed(),
+            ));
+        for device in devices {
+            column = column.push(Box::new(Facts::new(vec![
+                Fact::text(device.label.clone()),
+                Fact::text(t(availability_key(device.availability))),
+            ])));
+        }
+        column
     }
 
     /// Change the picture, and take it away again, where the host offers
@@ -628,9 +672,13 @@ impl ProfileCard {
             return self.other_body(model, other);
         }
         let header = self.own_header(model);
+        // As tall as what the card says: the card is placed by its own
+        // content, so a column filling its parent would measure the card
+        // short and draw its last rows outside it.
         let mut body = Column::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .with_padding_rhythm(ui::tokens::Rhythm::Related, ui::tokens::Rhythm::Related)
+            .with_intrinsic_height()
             // First in the card's focus order: the card opens focused on
             // itself, not in its name field.
             .push(Box::new(CardFocus::new(t("profile-card"))))
@@ -929,8 +977,8 @@ impl ProfileCard {
         let mut column = Column::new()
             .with_no_padding()
             .with_rhythm(ui::tokens::Rhythm::Tight)
-            // As tall as what it says: filling the card's column pushed
-            // the rows after it out of the card.
+            // As tall as what it says: the card's body measures itself by
+            // its rows, and this one must answer with its own height.
             .with_intrinsic_height();
         match &account.state {
             LinkState::Unlinked { connect, elsewhere } => {
@@ -2303,6 +2351,7 @@ mod tests {
                     source: status,
                 }),
                 place: None,
+                presence: Some(ui::Availability::Available),
                 following: false,
                 can_follow: true,
                 can_message,

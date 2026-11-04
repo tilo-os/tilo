@@ -163,6 +163,7 @@ fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload)
             camera,
             screen,
         },
+        collab_types::PeerPresencePayload::Person { name } => Payload::Person { name },
         collab_types::PeerPresencePayload::Following { target } => Payload::Following { target },
         collab_types::PeerPresencePayload::Wave { seq, target } => Payload::Wave { seq, target },
         other => panic!("the tests say no {other:?} as a desktop"),
@@ -172,6 +173,19 @@ fn presence(sync: &Client, from: u8, payload: collab_types::PeerPresencePayload)
         device(from),
         &Presence::desktop(WORKSPACE, payload),
     );
+}
+
+/// The device `from` arrives, and says whose device it is: the person's own
+/// name for themselves, which is what everyone here calls them.
+fn arrived_as(sync: &Client, from: u8, name: &str) {
+    presence(
+        sync,
+        from,
+        collab_types::PeerPresencePayload::Person {
+            name: name.to_owned(),
+        },
+    );
+    presence(sync, from, collab_types::PeerPresencePayload::Arrived);
 }
 
 /// Their pointer, over the Notes window.
@@ -320,7 +334,7 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
 
     // Someone else, here and in the channel's call with their camera on.
     sync.hear(hello(0xaa, "Framework 16"));
-    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Arrived);
+    arrived_as(&sync, 0xaa, "Ada");
     presence(
         &sync,
         0xaa,
@@ -340,7 +354,7 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
     // This person's laptop joins the same call: its presence says so, and
     // this device offers no second join.
     sync.hear(hello_of(QUINTEN, 0xf0, "ThinkPad"));
-    presence(&sync, 0xf0, collab_types::PeerPresencePayload::Arrived);
+    arrived_as(&sync, 0xf0, "Quinten");
     presence(
         &sync,
         0xf0,
@@ -371,7 +385,7 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     // Another person, at their own device, in the same workspace: here, heads
     // down, with their pointer over Notes.
     sync.hear(hello(0xaa, "Framework 16"));
-    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Arrived);
+    arrived_as(&sync, 0xaa, "Ada");
     presence(
         &sync,
         0xaa,
@@ -390,11 +404,13 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     press_faces(&mut session);
     let labels = session.accessible_labels();
     let listed = |what: &str| labels.iter().any(|label| label.contains(what));
-    assert!(listed("Framework 16"), "who is here: {labels:?}");
+    assert!(listed("Ada"), "who is here: {labels:?}");
     assert!(
-        labels
-            .iter()
-            .any(|label| label == "Framework 16 is in Notes"),
+        !listed("Framework 16"),
+        "a person is named, never their machine: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Ada is in Notes"),
         "where their pointer is: {labels:?}"
     );
     assert!(listed("Away"), "how they said they are: {labels:?}");
@@ -409,13 +425,11 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     let labels = session.accessible_labels();
     drop(session);
     assert!(
-        !labels
-            .iter()
-            .any(|label| label == "Framework 16 is in Notes"),
+        !labels.iter().any(|label| label == "Ada is in Notes"),
         "the roster closed: {labels:?}"
     );
     assert!(
-        labels.iter().any(|label| label == "Framework 16"),
+        labels.iter().any(|label| label == "Ada"),
         "their face still names them from the bar: {labels:?}"
     );
 }
@@ -431,12 +445,12 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     let mut session = session(&sync);
 
     // Two people here: one at their machine, one away from it.
-    for (seed, label, state) in [
-        (0xaa, "Framework 16", "available"),
-        (0xbb, "ThinkPad", "away"),
+    for (seed, device, name, state) in [
+        (0xaa, "Framework 16", "Ada", "available"),
+        (0xbb, "ThinkPad", "Grace", "away"),
     ] {
-        sync.hear(hello(seed, label));
-        presence(&sync, seed, collab_types::PeerPresencePayload::Arrived);
+        sync.hear(hello(seed, device));
+        arrived_as(&sync, seed, name);
         presence(
             &sync,
             seed,
@@ -455,12 +469,16 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     press_faces(&mut session);
     let labels = session.accessible_labels();
     assert!(
-        labels.iter().any(|label| label == "Framework 16"),
+        labels.iter().any(|label| label == "Ada"),
         "both are here: {labels:?}"
     );
     assert!(
-        labels.iter().any(|label| label == "ThinkPad"),
+        labels.iter().any(|label| label == "Grace"),
         "both are here: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label == "Framework 16"),
+        "a person is named, never their machine: {labels:?}"
     );
     // How available a person is is said of them, and only of them: the one
     // who is at their machine is not told apart from the one who is away by
@@ -636,6 +654,70 @@ fn capture(session: &mut Session, name: &str) {
     std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
 }
 
+/// Ada is here on two devices, working in Notes on the first and focusing on
+/// the second, each saying whose device it is.
+fn ada_here_on_two_devices(sync: &Client) {
+    sync.hear(hello_of(0xaa, 0xaa, "Framework 16"));
+    arrived_as(sync, 0xaa, "Ada");
+    presence(
+        sync,
+        0xaa,
+        collab_types::PeerPresencePayload::Availability {
+            state: "available".to_owned(),
+            call: None,
+            camera: false,
+            screen: false,
+        },
+    );
+    pointer(sync, 0xaa, 12.0, 34.0);
+    sync.hear(hello_of(0xaa, 0xac, "ThinkPad"));
+    arrived_as(sync, 0xac, "Ada");
+    presence(
+        sync,
+        0xac,
+        collab_types::PeerPresencePayload::Availability {
+            state: "focusing".to_owned(),
+            call: None,
+            camera: false,
+            screen: false,
+        },
+    );
+}
+
+/// What the card says of Ada: her own name for its title, the person's root
+/// key for its ID, and each of her devices with how it said it was, in the
+/// roster's place rather than beside it.
+fn assert_ada_card(labels: &[String]) {
+    assert!(
+        labels.iter().any(|label| label == "Ada’s profile"),
+        "the card is the person's: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Person ID"),
+        "the card's ID row: {labels:?}"
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == &tilo_desktop::profile_card::short_key(&person(0xaa))),
+        "the ID is the person's root key: {labels:?}"
+    );
+    for (device, presence) in [("Framework 16", "Available"), ("ThinkPad", "Focusing")] {
+        assert!(
+            labels.iter().any(|label| label == device),
+            "each device as it calls itself: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == presence),
+            "and how it said it was: {labels:?}"
+        );
+    }
+    assert!(
+        !labels.iter().any(|label| label == "People"),
+        "the card stands in the roster's place: the roster is gone, {labels:?}"
+    );
+}
+
 /// A press on a person's face in the bar opens their card, and Message opens
 /// Chat on the record the two of them share: the same card the web desk shows,
 /// handed the app invocation that reveals the pair's conversation.
@@ -657,11 +739,9 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
     let sync = Rc::new(Client::untethered(device(0xf0), mine));
     let mut session = session_over(&sync, Some(host.clone() as Rc<dyn AppActions>));
 
-    // Another person, at their own device, in the same workspace, working in
-    // Notes: their face stands in the bar.
-    sync.hear(hello_of(0xaa, 0xaa, "Framework 16"));
-    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Arrived);
-    pointer(&sync, 0xaa, 12.0, 34.0);
+    // Another person, at two of their devices, in the same workspace: their
+    // face stands in the bar, under their name and never their machine's.
+    ada_here_on_two_devices(&sync);
     // The pointer comes up to the bar, as the person's does to press them:
     // the bar draws who is here, and their face stands under it.
     session
@@ -669,11 +749,23 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
         .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
         .expect("the pointer");
     until(&mut session, "their face is in the bar", |session| {
-        control(session, &["Framework 16"]).is_some()
+        control(session, &["Ada"]).is_some()
     });
+    // Who is here stands open, listing the people here.
+    press_faces(&mut session);
+    let labels = session.accessible_labels();
+    assert!(
+        labels.iter().any(|label| label == "People"),
+        "the roster lists who is here: {labels:?}"
+    );
+    assert!(
+        control(&session, &["Framework 16"]).is_none(),
+        "the face names the person, never their machine: {:?}",
+        session.controls()
+    );
 
     // A press on their face opens their card.
-    let face = control(&session, &["Framework 16"]).expect("the face the person has here");
+    let face = control(&session, &["Ada"]).expect("the face the person has here");
     press(&mut session, face);
     until(&mut session, "the card opens", |session| {
         control(session, &["profile-message", "Message"]).is_some()
@@ -684,6 +776,7 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
         "the card offers Message: {:?}",
         session.controls()
     );
+    assert_ada_card(&session.accessible_labels());
     capture(&mut session, "people-card-message");
     let message = message.expect("the card's Message");
 

@@ -15,8 +15,10 @@
 //!
 //! The transport is `tilo-network-actor`'s peer actor on an Iroh endpoint,
 //! on the device's own collaboration key. The device certificate the actor
-//! announces beside it names the device (the label everyone calls it by) and
-//! the person it belongs to, so two devices of one person are one face.
+//! announces beside it names the device and the person it belongs to, so two
+//! devices of one person are one face; what everyone here calls that person
+//! is the person's own word, said on the workspace's presence, never their
+//! machine's name.
 //!
 //! That endpoint keeps number 0's directory behind a gate and its relays
 //! held back ([`tilo_endpoint_reachability`]): a desktop whose workspaces
@@ -141,7 +143,7 @@ pub struct LiveCall {
 pub struct LiveCaller {
     /// Their device's publisher.
     pub id: String,
-    /// What to call the device.
+    /// The name everyone here calls them: the person's.
     pub label: String,
     /// The person behind the device (user root, hex), once its certificate
     /// was heard.
@@ -189,8 +191,12 @@ struct Peer {
     /// The person behind the device (user root, hex), once its certificate
     /// has been heard.
     user: Option<String>,
-    /// What to call the device: its own label, from its certificate.
+    /// The name everyone here calls them, as their presence says it: the
+    /// person's, never the device's.
     label: String,
+    /// What the device calls itself, from its certificate: what tells two
+    /// devices of one person apart.
+    device: String,
     /// What they say they are doing, in their own words.
     status: Option<String>,
     /// How available they say they are.
@@ -218,6 +224,7 @@ impl Peer {
             publisher,
             user: None,
             label: String::new(),
+            device: String::new(),
             status: None,
             availability: Availability::default(),
             following: None,
@@ -230,8 +237,9 @@ impl Peer {
     }
 
     /// What the desktop lists of them: an agent's face and the record it
-    /// works in come from its shell frame, a person's from its certificate
-    /// and its own words.
+    /// works in come from its shell frame, a person's from their presence
+    /// and their own words. What they are called is the person's name; the
+    /// device they say it from is named beside it.
     fn member(&self) -> LiveMember {
         let shell = self.shell.as_deref();
         let agent = shell.is_some_and(|shell| shell.agent);
@@ -244,6 +252,7 @@ impl Peer {
             publisher: self.publisher.to_string(),
             kind: if agent { "agent" } else { "person" }.into(),
             label,
+            device: self.device.clone(),
             focus: shell
                 .and_then(collab_types::presence::ShellPresence::focus)
                 .map(|(app, record)| Focus {
@@ -377,6 +386,11 @@ impl Workspace {
                             target: target.clone(),
                         });
                     }
+                    // The person's own name for themselves: what everyone
+                    // here calls them, on whichever device they say it.
+                    Payload::Person { name } => {
+                        name.trim().clone_into(&mut peer.label);
+                    }
                     // A shell — a page's desktop, or an agent's face — says
                     // where its person is and, for an agent, that it works
                     // here at all.
@@ -428,6 +442,8 @@ impl Workspace {
     /// person it belongs to. Only the sender's own, validly signed
     /// certificate says who is there: one naming another device, or signed by
     /// nobody, is refused, so nobody here can be named as somebody else.
+    /// What everyone calls them is the person's own word
+    /// ([`Payload::Person`]), never their device's name.
     fn certified(&mut self, from: EndpointId, cert: &tilo_user_identity::DeviceCert) {
         if cert.device_public_key != *from.as_bytes() {
             tracing::warn!(
@@ -445,10 +461,7 @@ impl Workspace {
         }
         self.with(from, |peer| {
             peer.user = Some(hex::encode(cert.user_public_key));
-            let label = cert.device_label.trim();
-            if !label.is_empty() {
-                label.clone_into(&mut peer.label);
-            }
+            cert.device_label.trim().clone_into(&mut peer.device);
         });
     }
 
@@ -730,6 +743,10 @@ pub struct Client {
     /// The person this device belongs to, by their root key, as its
     /// certificate names them.
     user: Option<[u8; 32]>,
+    /// What this device calls itself, from its certificate: the name its
+    /// person's other devices are told apart by. Empty on a device that
+    /// named none.
+    device: String,
     /// What the plane heard that needs a newer system on this device since
     /// the last call.
     updates: std::sync::mpsc::Receiver<()>,
@@ -853,9 +870,7 @@ impl Client {
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (enrollments, enrolled) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
-        let user = identity
-            .as_ref()
-            .map(|identity| identity.device_cert.user_public_key);
+        let (user, device) = certified_as(identity.as_ref());
         let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), continuity);
         // What the actor serves for the session is installed before it starts:
         // every actor built from here on answers those doors.
@@ -934,6 +949,7 @@ impl Client {
             engine,
             link,
             user,
+            device,
             desk: RefCell::new(None),
             content: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
@@ -1560,8 +1576,9 @@ impl Client {
             .map(|held| held.ws)
     }
 
-    /// The devices heard in `workspace` beside this one, by publisher and the name
-    /// each goes by: what shows which device a window of the workspace runs on.
+    /// The devices heard in `workspace` beside this one, by publisher and the
+    /// name each device goes by: what shows which device a window of the
+    /// workspace runs on.
     #[must_use]
     pub(crate) fn workspace_devices(&self, workspace: &str) -> Vec<(EndpointId, String)> {
         self.plane
@@ -1572,7 +1589,14 @@ impl Client {
             .map(|held| {
                 held.peers
                     .iter()
-                    .map(|peer| (peer.publisher, peer.label.clone()))
+                    .map(|peer| {
+                        let name = if peer.device.trim().is_empty() {
+                            peer.label.clone()
+                        } else {
+                            peer.device.clone()
+                        };
+                        (peer.publisher, name)
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -1829,6 +1853,14 @@ impl Client {
     fn say(&self, ws: DeskWorkspaceId, workspace: &str) {
         let own = self.own.borrow().clone();
         let mut frames = vec![
+            // The person's name first: everyone here calls them by it, from
+            // the frame they arrive on.
+            Presence::desktop(
+                workspace,
+                Payload::Person {
+                    name: own.label.trim().to_owned(),
+                },
+            ),
             Presence::desktop(workspace, Payload::Arrived),
             Presence::desktop(
                 workspace,
@@ -2024,6 +2056,7 @@ impl Client {
             publisher,
             kind: "person".into(),
             label: own.label,
+            device: self.device.clone(),
             focus: None,
             activity: own.status,
             place: None,
@@ -2150,6 +2183,7 @@ impl Client {
                 engine: None,
                 link: None,
                 user: None,
+                device: String::new(),
                 desk: RefCell::new(None),
                 content: RefCell::new(None),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
@@ -2240,6 +2274,21 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
     serde_json::from_str(value)
         .ok() // ignored-failure: a host value that is not JSON names no endpoint address here
         .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
+}
+
+/// Who this device's certificate says its person is, and what the device
+/// calls itself: the id that stays the person's, and the name its other
+/// devices are told apart by.
+fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
+    identity.map_or_else(
+        || (None, String::new()),
+        |identity| {
+            (
+                Some(identity.device_cert.user_public_key),
+                identity.device_cert.device_label.trim().to_owned(),
+            )
+        },
+    )
 }
 
 /// This device's fabric before the endpoint runs, so a device that proves

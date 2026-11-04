@@ -419,6 +419,7 @@ fn editor_presence(
         | PeerPresencePayload::Reaction { .. }
         | PeerPresencePayload::Wave { .. }
         | PeerPresencePayload::Composing { .. }
+        | PeerPresencePayload::Person { .. }
         | PeerPresencePayload::Shell(_) => None,
     }
 }

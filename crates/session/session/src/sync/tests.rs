@@ -128,6 +128,7 @@ fn word(said: PeerPresencePayload) -> Option<Payload> {
         PeerPresencePayload::Following { target } => Payload::Following { target },
         PeerPresencePayload::Wave { seq, target } => Payload::Wave { seq, target },
         PeerPresencePayload::Composing { composing } => Payload::Composing { composing },
+        PeerPresencePayload::Person { name } => Payload::Person { name },
         _ => return None,
     })
 }
@@ -143,6 +144,20 @@ fn heard(sync: &Client, from: u8, workspace: &str, said: PeerPresencePayload) {
 
 fn here(sync: &Client, from: u8) {
     heard(sync, from, WORKSPACE, PeerPresencePayload::Arrived);
+}
+
+/// `from` arrives saying what everyone here calls them: the person's name,
+/// which is what their device's certificate cannot say.
+fn named(sync: &Client, from: u8, name: &str) {
+    heard(
+        sync,
+        from,
+        WORKSPACE,
+        PeerPresencePayload::Person {
+            name: name.to_owned(),
+        },
+    );
+    here(sync, from);
 }
 
 /// A device's identity announcement: which person it is a device of,
@@ -267,7 +282,7 @@ fn what_a_peer_says_they_are_doing_is_the_roster_line() {
 fn a_peer_in_a_call_says_which_channel_to_join() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
-    here(&sync, 1);
+    named(&sync, 1, "Ada");
     assert!(sync.calls().is_empty());
 
     let voice = ui::CallPresence {
@@ -292,11 +307,11 @@ fn a_peer_in_a_call_says_which_channel_to_join() {
         .iter()
         .map(|person| person.label.as_str())
         .collect();
-    assert_eq!(who, ["Framework 16"]);
+    assert_eq!(who, ["Ada"], "the call names the person, not their machine");
 
     // Someone else in the same channel is in the same call, not another.
     sync.hear(hello(2, 0xbb, "Phone"));
-    here(&sync, 2);
+    named(&sync, 2, "Ben");
     heard(&sync, 2, WORKSPACE, in_voice(Some(voice.encode())));
     let calls = sync.calls();
     assert_eq!(calls.len(), 1);
@@ -704,7 +719,7 @@ fn an_agents_shell_frame_puts_its_face_on_the_desk() {
 fn a_wave_reaches_the_person_it_is_for() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
-    here(&sync, 1);
+    named(&sync, 1, "Ada");
     let me = device(0xf0).to_string();
     heard(
         &sync,
@@ -717,12 +732,12 @@ fn a_wave_reaches_the_person_it_is_for() {
         "the client takes the wave and hands it to the bar"
     );
     let notice = sync.wave_notice().expect("the bar has a wave to say");
-    assert_eq!(notice.from, "Framework 16");
+    assert_eq!(notice.from, "Ada");
 
     // A wave at someone else here is not this person's news: the bar
     // keeps saying the wave at this person.
     sync.hear(hello(2, 0xbb, "Desktop"));
-    here(&sync, 2);
+    named(&sync, 2, "Ben");
     heard(
         &sync,
         2,
@@ -734,7 +749,7 @@ fn a_wave_reaches_the_person_it_is_for() {
     );
     assert_eq!(
         sync.wave_notice().map(|notice| notice.from),
-        Some("Framework 16".to_owned()),
+        Some("Ada".to_owned()),
         "a wave at someone else here is not this person's news"
     );
 }
