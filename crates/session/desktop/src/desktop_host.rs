@@ -1595,6 +1595,7 @@ impl DesktopChrome {
     fn new_workspace(&self, join: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
         let name = Self::name_of(name, tree.workspaces.len());
+        let joining = join.is_some();
         let mut workspace = if let Some(id) = join {
             let Some(joined) = WorkspaceId::parse(id) else {
                 self.handle.acknowledge(tilo_desktop_surface::i18n::t(
@@ -1618,12 +1619,18 @@ impl DesktopChrome {
             }
             Workspace::new(WorkspaceSlot(self.handle.mint_id()), name)
         };
-        let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
-        let strip_id = strip.id;
-        workspace.strips.push(strip);
+        // A workspace a site lets this computer into comes with the strips
+        // its site holds: a strip made here would stand beside them on this
+        // desk only, and in no other copy of the workspace. The first window
+        // opened there makes the strip it goes in.
         let id = workspace.slot;
+        if !joining {
+            let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
+            let strip_id = strip.id;
+            workspace.strips.push(strip);
+            tree.active_strip.insert(id, strip_id);
+        }
         tree.workspaces.push(workspace);
-        tree.active_strip.insert(id, strip_id);
         tree.active = id;
         self.handle.replace_tree(tree);
     }
