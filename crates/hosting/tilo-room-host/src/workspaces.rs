@@ -2180,10 +2180,8 @@ impl Workspaces {
         let following = crate::timing::start();
         let followed = workspace.follow(author, message.clone());
         if followed.changed {
+            self.landed(workspace, &message);
             self.keep_soon(workspace);
-            if self.landed(workspace, &message) {
-                self.keep_soon(workspace);
-            }
         }
         if followed.replay_wanted {
             self.replay_soon(workspace.workspace().to_owned());
