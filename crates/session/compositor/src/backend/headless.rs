@@ -293,6 +293,49 @@ fn window_frame_pixels(value: f64) -> i32 {
     pixels
 }
 
+/// What one frame costs to compose, per layer: the pixels its damage asks
+/// for, and how much of that area each element drawn over them is painted
+/// in. A layer that paints a bar in a frame the size of a display is its
+/// bar here, and a layer that shows nothing is not in the list at all.
+fn trace_passes<E: smithay::backend::renderer::element::Element>(
+    elements: &[E],
+    damage: &[Rectangle<i32, Physical>],
+    output: &Output,
+) {
+    let scale = smithay::utils::Scale::from(output.current_scale().fractional_scale());
+    let damage_px = damage.iter().fold(0i64, |sum, rect| {
+        sum.saturating_add(i64::from(rect.size.w).saturating_mul(i64::from(rect.size.h)))
+    });
+    let passes: Vec<String> = elements
+        .iter()
+        .rev()
+        .filter_map(|element| {
+            let geometry = element.geometry(scale);
+            let drawn = damage
+                .iter()
+                .filter_map(|rect| rect.intersection(geometry))
+                .fold(0i64, |sum, rect| {
+                    sum.saturating_add(
+                        i64::from(rect.size.w).saturating_mul(i64::from(rect.size.h)),
+                    )
+                });
+            (drawn > 0).then(|| {
+                format!(
+                    "{drawn}px of {}x{}@{},{}",
+                    geometry.size.w, geometry.size.h, geometry.loc.x, geometry.loc.y
+                )
+            })
+        })
+        .collect();
+    tracing::debug!(
+        output = output.name(),
+        damage_px,
+        passes = passes.len(),
+        ?passes,
+        "frame composited"
+    );
+}
+
 impl Backend for HeadlessBackend {
     fn describe(&self) -> &'static str {
         "headless"
@@ -479,7 +522,7 @@ impl Backend for HeadlessBackend {
                 .bind(&mut output.target)
                 .map_err(|error| failed("bind output", error))?;
             let age = usize::from(output.drawn);
-            output
+            let rendered = output
                 .damage
                 .render_output(
                     &mut self.renderer,
@@ -489,6 +532,13 @@ impl Backend for HeadlessBackend {
                     BACKGROUND,
                 )
                 .map_err(|error| failed("render output", error))?;
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                trace_passes(
+                    &elements,
+                    rendered.damage.map(Vec::as_slice).unwrap_or_default(),
+                    &output.output,
+                );
+            }
             output.drawn = true;
             state.frame_shown(&output.output);
             output.showed(started);
