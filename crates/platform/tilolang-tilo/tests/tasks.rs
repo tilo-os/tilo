@@ -463,21 +463,23 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
 fn lane_title(node: &UiNode) -> Option<String> {
     match node.props.get("title") {
         Some(Value::Text(title)) => Some(title.clone()),
-        None | Some(Value::Unit) | Some(Value::Opt(None)) => None,
+        None | Some(Value::Unit | Value::Opt(None)) => None,
         other => panic!("a lane's title: {other:?}"),
     }
 }
 
-/// The lanes of a board as its window shows them: what each lane is called (none for the lane
-/// of the tasks in no section), the count its header shows (none where it has no heading), and
-/// its cards' tasks.
-fn lanes(view: &ViewInstance) -> Vec<(Option<String>, Option<i64>, Vec<Option<String>>)> {
-    fn walk(node: &UiNode, out: &mut Vec<(Option<String>, Option<i64>, Vec<Option<String>>)>) {
+/// A lane as a board's window shows it: what it is called (none for the lane of the tasks in no
+/// section), the count its header shows (none where it has no heading), and its cards' tasks.
+type Lane = (Option<String>, Option<i64>, Vec<Option<String>>);
+
+/// The lanes of a board as its window shows them, in the order they stand.
+fn lanes(view: &ViewInstance) -> Vec<Lane> {
+    fn walk(node: &UiNode, out: &mut Vec<Lane>) {
         if node.kind == "ui.BoardLane" {
             let title = lane_title(node);
             let count = match node.props.get("count") {
                 Some(Value::Int(count)) => Some(*count),
-                None | Some(Value::Unit) | Some(Value::Opt(None)) => None,
+                None | Some(Value::Unit | Value::Opt(None)) => None,
                 other => panic!("a lane's count: {other:?}"),
             };
             let mut cards = Vec::new();

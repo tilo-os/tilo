@@ -195,6 +195,46 @@ fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
 }
 
 #[test]
+fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
+    let theme = Theme::dark();
+    let m = RowMetrics::card(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let outer = Rect::new(0.0, 0.0, 264.0, 57.0);
+    let face = ListRowFace::new("Order boxes and tape")
+        .card()
+        .leading(RowLeading::Checkbox { checked: false })
+        .meta("Thursday")
+        .mark(Icon::Flag)
+        .mark_tone(Tone::Warning);
+    let geo = face.geometry(outer, &m, &mut text, &theme);
+    let line = RowMetrics::line(&mut text, &face.title_style(&m));
+    // The facts stand on one line under the title, read from where the title's text begins —
+    // the day, then the flag — not spread across the card's width.
+    assert!(
+        (geo.meta_left - geo.text_x).abs() < 0.01,
+        "the facts start at the title's text: {geo:?}"
+    );
+    let marks = geo.marks_right.expect("the flag");
+    assert!(geo.meta_right <= marks, "the day stands before the flag");
+    assert!(
+        geo.facts_cy > outer.y0 + m.pad_y + line,
+        "the facts stand under the title's line: {geo:?}"
+    );
+    assert!(
+        geo.facts_cy <= outer.y1 - m.pad_y,
+        "the facts stand inside the card"
+    );
+    // The checkbox hangs on the title's first line, not centred on the card.
+    assert!(
+        geo.leading.y0 >= outer.y0 + m.pad_y - 0.01
+            && geo.leading.y1 <= outer.y0 + m.pad_y + line + 0.01,
+        "the checkbox stands on the title's first line: {:?}",
+        geo.leading
+    );
+}
+
+#[test]
 fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
     let theme = Theme::dark();
     let m = RowMetrics::new(&theme);
