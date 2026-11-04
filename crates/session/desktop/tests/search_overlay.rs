@@ -9,6 +9,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 use std::rc::Rc;
+use std::time::Duration;
 
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
@@ -155,6 +156,24 @@ impl Session {
             )));
     }
 
+    /// Frames until every source of the open search has answered: a source
+    /// answers on a worker, and its answer wakes the desk, so a test pumps
+    /// what the wake asks for and draws the frame it brings.
+    fn settle_search(&mut self) {
+        let background = ui::background::Background::current();
+        let now = ui::time::now();
+        let deadline = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
+        loop {
+            self.frame();
+            if !self.handle.search_searching() {
+                return;
+            }
+            assert!(ui::time::now() < deadline, "the search never finished");
+            let now = ui::time::now();
+            background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+        }
+    }
+
     fn type_text(&mut self, text: &str) {
         for character in text.chars() {
             self.chrome
@@ -195,7 +214,7 @@ fn typing_and_enter_reach_the_palette_not_the_window() {
     // The window in front was never asked: it holds no field that would take
     // these keys, and search holds the keyboard instead.
     session.type_text("notes");
-    session.frame();
+    session.settle_search();
     let (query, rows) = session.handle.search_rows();
     assert_eq!(query, "notes", "what was typed is the palette's query");
     assert!(!rows.is_empty(), "the desk's own window is a row");
@@ -397,9 +416,7 @@ fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
     );
 
     session.press(NamedKey::Backspace);
-    for _ in 0..3 {
-        session.frame();
-    }
+    session.settle_search();
     assert_eq!(
         *host.scopes.borrow(),
         [ui::search::Scope::Workspace, ui::search::Scope::Everywhere],

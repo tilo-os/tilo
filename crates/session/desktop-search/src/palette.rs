@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tilo_actions::{FlatAction, ResourceSpec};
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, Source, Target, frame_deadline};
+use crate::model::{Hit, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
@@ -281,15 +281,18 @@ impl DesktopSearch {
         self.sources.is_some()
     }
 
-    /// Whether a source has still to answer the query, or an application's
-    /// answer is still coming: the host keeps calling [`Self::refresh`]
-    /// until it arrives.
+    /// Whether an application's answer to the query is still coming: it
+    /// arrives on the host's clock, so the host keeps calling
+    /// [`Self::refresh`] until it does. A source of the search's own is not
+    /// this: it answers on a worker, which wakes the desk's next pass.
     pub fn waiting(&self) -> bool {
         self.sources.as_ref().is_some_and(Sources::waiting)
-            || self
-                .stream
-                .as_ref()
-                .is_some_and(crate::model::SearchStream::pending)
+    }
+
+    /// Whether a source of the open search still owes an answer: it works it
+    /// out off the frame, and wakes the desk when it is in.
+    pub fn answering(&self) -> bool {
+        self.stream.as_ref().is_some_and(SearchStream::pending)
     }
 
     /// Open over `data` with an empty query.
@@ -380,15 +383,6 @@ impl DesktopSearch {
         self.rows_room = self.rows_room.given();
     }
 
-    /// Whether a source has still to be asked for the query: the search
-    /// asks its sources a frame at a time, and the rows are complete only
-    /// once none is left.
-    fn awaiting_sources(&self) -> bool {
-        self.stream
-            .as_ref()
-            .is_some_and(crate::model::SearchStream::pending)
-    }
-
     /// Whether the rows shown are cut to the room the card gave them: before
     /// it has given one, and in the frame it gives a new one, they are not.
     fn rows_placed(&self) -> bool {
@@ -400,13 +394,20 @@ impl DesktopSearch {
         }
     }
 
-    /// Whether the search has a frame's work of its own left: a source
-    /// still to ask, or rows to cut to the card's room. A host draws the
-    /// frames this asks for; an application's answer still coming is not
-    /// this, and is looked for on the host's clock ([`Self::waiting`]).
+    /// Whether the search has a frame's work of its own left: a source that
+    /// holds the frame's state still to ask, or rows to cut to the card's
+    /// room. A host draws the frames this asks for; a source on a worker is
+    /// not this (its answer wakes the desk), and neither is an
+    /// application's answer still coming, which is looked for on the host's
+    /// clock ([`Self::waiting`]).
     #[must_use]
     pub fn filling_in(&self) -> bool {
-        self.sources.is_some() && (self.awaiting_sources() || !self.rows_placed())
+        self.sources.is_some()
+            && (self
+                .stream
+                .as_ref()
+                .is_some_and(SearchStream::awaiting_here)
+                || !self.rows_placed())
     }
 
     /// Whether the search is over: every source has answered for the query,
@@ -417,14 +418,14 @@ impl DesktopSearch {
     #[must_use]
     pub fn settled(&self) -> bool {
         // With nothing open there is nothing to wait for.
-        self.sources.is_none() || (self.rows_placed() && !self.waiting())
+        self.sources.is_none() || (self.rows_placed() && !self.waiting() && !self.answering())
     }
 
     /// Run the query again when the palette's text changed since the rows
     /// were built, the index's code arrived since, or an application's
-    /// answer that was still coming arrived; and ask the sources that are
-    /// still answering, a frame at a time. Returns whether the rows
-    /// changed.
+    /// answer that was still coming arrived; and take the answers the
+    /// sources sent and ask the source that holds the frame's state next.
+    /// Returns whether the rows changed.
     pub fn refresh(&mut self) -> bool {
         let Some(sources) = &self.sources else {
             return false;
@@ -488,14 +489,12 @@ impl DesktopSearch {
                 .map(|(at, source)| (source.id().to_owned(), (source.browse_rank(), at)))
                 .collect()
         };
-        let deadline = frame_deadline(crate::model::FRAME_BUDGET);
         let now = sources.now;
         let usage = &self.usage;
         let workers = &self.workers;
-        let stream =
-            crate::model::search_stream(query, &all, 0, workers, deadline, &|hit: &Hit| {
-                usage.strength(query, hit, now)
-            });
+        let stream = crate::model::search_stream(query, &all, 0, workers, &|hit: &Hit| {
+            usage.strength(query, hit, now)
+        });
         drop(all);
         drop(switches);
         self.order = order;
@@ -520,12 +519,9 @@ impl DesktopSearch {
         }
         let query = self.palette.query().to_owned();
         let now = sources.now;
-        let deadline = frame_deadline(crate::model::FRAME_BUDGET);
         let usage = &self.usage;
         let workers = &self.workers;
-        let asked = stream.resume(&all, workers, deadline, &|hit: &Hit| {
-            usage.strength(&query, hit, now)
-        });
+        let asked = stream.resume(&all, workers, &|hit: &Hit| usage.strength(&query, hit, now));
         drop(all);
         drop(switches);
         self.stream = Some(stream);
@@ -2061,19 +2057,16 @@ mod tests {
         );
     }
 
-    /// Show what a host shows: keep asking for the rows of the sources that
-    /// have not answered yet, as a running palette does every frame.
     /// Draw the frames a host draws for a search until every source has
-    /// answered. A source answers on a worker, so a frame that finds
-    /// nothing new asks again a moment later, as the host's next frame
-    /// does.
+    /// answered: a source answers on a worker and wakes the desk, so a test
+    /// drives the frames those wakes ask for.
     fn settled(search: &mut DesktopSearch) {
-        let deadline = frame_deadline(crate::tests::SETTLE);
+        let now = ui::time::now();
+        let deadline = now.checked_add(crate::tests::SETTLE).unwrap_or(now);
         loop {
-            // A frame with nothing new is a frame, and a source answers on
-            // a worker: the search is settled when no source owes an answer
-            // and a frame found nothing to change.
-            if !search.refresh() && !search.awaiting_sources() {
+            // The search is settled when no source owes an answer and a
+            // frame found nothing to change.
+            if !search.refresh() && !search.answering() {
                 return;
             }
             assert!(

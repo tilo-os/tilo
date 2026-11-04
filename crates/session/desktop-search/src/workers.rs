@@ -10,7 +10,7 @@
 //! reads any more, rather than into another search's rows.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::model::Hit;
@@ -38,6 +38,10 @@ struct Job {
     query: Query,
     /// Where the answer goes: the asking search's own channel.
     answer: Sender<Answer>,
+    /// What wakes the desk that asked when the answer is in: the desk draws
+    /// no frame for a search while a source works, so the answer is what asks
+    /// for the frame that shows it.
+    wake: ui::wake::WakeHandle,
 }
 
 #[derive(Default)]
@@ -112,6 +116,11 @@ impl SearchWorkers {
 
     /// Ask source `index`, under its `key`, on a worker, unless a query of
     /// that source is already in flight: then this one waits for it.
+    ///
+    /// Called from the frame that asks its sources, which is the frame of the
+    /// desk that shows the answer: its wake is what asks for the frame that
+    /// collects and shows it, and it stays with the job while the job waits
+    /// for an older query of the same source.
     pub(crate) fn ask(
         &self,
         generation: u64,
@@ -125,6 +134,7 @@ impl SearchWorkers {
             source,
             query,
             answer,
+            wake: ui::wake::WakeHandle::new(),
         };
         {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -144,28 +154,45 @@ impl SearchWorkers {
     }
 
     /// Run `job` away from the frame, and once it is done let the query that
-    /// waited for its source run.
+    /// waited for its source run. The answer wakes the desk: no frame is
+    /// drawn for the search while its sources work.
     fn start(&self, job: Job, key: &str) {
         let workers = self.clone();
         let key = key.to_owned();
         let done = key.clone();
+        let Job {
+            source,
+            query,
+            answer,
+            wake,
+            ..
+        } = job;
+        let unanswered = answer.clone();
+        let asker = wake.clone();
         let spawned = self.background.spawn("tilo-search", move || {
             // A source that panics answers nothing rather than taking the
             // worker down with it.
-            let hits = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.query))
-                .unwrap_or_default();
-            // The search that asked may be gone: nobody reads its channel.
-            let _ = job.answer.send(Answer {
-                source: job.source,
-                hits,
-            });
+            let hits =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(query)).unwrap_or_default();
+            // The search that asked may be gone: nobody reads its channel,
+            // and the wake finds no search waiting.
+            let _ = answer.send(Answer { source, hits });
+            wake.wake();
             workers.finished(&done);
         });
         if spawned.is_err() {
             // A host with no threads of its own: the source answers nothing
-            // rather than the frame blocking on it.
+            // rather than the frame blocking on it, and the search ends with
+            // the rows the sources that could answer brought, instead of
+            // waiting on one that never will.
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.running.remove(&key);
+            drop(state);
+            let _ = unanswered.send(Answer {
+                source,
+                hits: Vec::new(),
+            });
+            asker.wake();
         }
     }
 
@@ -190,31 +217,4 @@ impl SearchWorkers {
             self.start(job, key);
         }
     }
-}
-
-/// The answer that arrived by `deadline`: waiting no longer than the frame
-/// has left for it.
-pub(crate) fn arrived(answers: &Receiver<Answer>, deadline: ui::time::Instant) -> Option<Answer> {
-    let now = ui::time::now();
-    if now >= deadline {
-        return answers.try_recv().ok();
-    }
-    wait(answers, deadline.saturating_duration_since(now))
-}
-
-/// Wait at most `wait` for an answer.
-#[cfg(not(all(target_family = "wasm", not(tilo_no_js))))]
-fn wait(answers: &Receiver<Answer>, wait: ui::time::Duration) -> Option<Answer> {
-    answers
-        .recv_timeout(std::time::Duration::from_nanos(
-            u64::try_from(wait.as_nanos()).unwrap_or(u64::MAX),
-        ))
-        .ok()
-}
-
-/// A browser page has one thread: it takes what has arrived and the next
-/// frame takes the rest, rather than blocking the page on a source.
-#[cfg(all(target_family = "wasm", not(tilo_no_js)))]
-fn wait(answers: &Receiver<Answer>, _wait: ui::time::Duration) -> Option<Answer> {
-    answers.try_recv().ok()
 }

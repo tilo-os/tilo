@@ -12,6 +12,7 @@
     clippy::indexing_slicing,
     reason = "test fixtures: a failed lookup is the assertion"
 )]
+use std::time::Duration;
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
@@ -777,14 +778,39 @@ impl Desk {
             let event = char_key(&character.to_string());
             self.chrome().send_host_event(&event);
         }
-        self.settle();
+        self.settle_search();
     }
 
     /// A named key pressed in the open palette's field.
     fn key_search(&mut self, key: NamedKey) {
         let event = named_key(key);
         self.chrome().send_host_event(&event);
-        self.settle();
+        self.settle_search();
+    }
+
+    /// Frames until every source of the open search has answered. A source
+    /// answers on a worker, and its answer wakes the desk: a test pumps what
+    /// the wake asks for and draws the frame it brings, as a host does. An
+    /// application's own answer is the host's to look for on its clock, so
+    /// this does not wait for one.
+    fn settle_search(&mut self) {
+        let background = ui::background::Background::current();
+        let now = ui::time::now();
+        let deadline = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
+        loop {
+            self.settle();
+            let busy = {
+                let palette = self.handle.search_palette();
+                let palette = palette.borrow();
+                palette.filling_in() || palette.answering()
+            };
+            if !busy {
+                return;
+            }
+            assert!(ui::time::now() < deadline, "the search never finished");
+            let now = ui::time::now();
+            background.park(now.checked_add(Duration::from_millis(2)).unwrap_or(now));
+        }
     }
 
     /// The retained path of the widget holding keyboard focus.

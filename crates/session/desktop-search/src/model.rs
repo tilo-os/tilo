@@ -4,9 +4,10 @@
 //!
 //! No source runs on the frame thread. A frame hands the sources that can
 //! move ([`Source::shared`]) to a pool of workers ([`crate::workers`]) and
-//! collects the answers that arrived before its deadline, so a source
-//! reading a disk index over a large home, a mailbox or a service never
-//! holds up the frame that typed into it.
+//! takes the answers that are in, so a source reading a disk index over a
+//! large home, a mailbox or a service never holds up the frame that typed
+//! into it. A frame never waits for a source: an answer wakes the desk,
+//! which draws the frame that shows it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +16,6 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use tilo_actions::{ActionAddress, ActionDescriptor, ActionSpec, ResourceId};
 
 use ui::search::system::{self, KindGroup, ResourceKind};
-use ui::time::{Duration, Instant};
 
 use crate::workers::{Answer, SearchWorkers};
 
@@ -430,18 +430,6 @@ impl<S: Source + Send + Sync + 'static> Source for Arc<S> {
     }
 }
 
-/// How long one frame may spend asking sources: the rows of the fast ones
-/// are on screen while a slow source is still answering.
-pub const FRAME_BUDGET: Duration = Duration::from_millis(8);
-
-/// The instant a frame that starts now may wait until: `budget` from now,
-/// or the clock's own end when that is nearer.
-#[must_use]
-pub fn frame_deadline(budget: Duration) -> Instant {
-    let now = ui::time::now();
-    now.checked_add(budget).unwrap_or(now)
-}
-
 /// One search, as it fills in: the hits of the sources whose answers came
 /// back, merged on the shared ranking, one row per [`Thing`]. The palette
 /// asks for another frame's worth with [`resume`](Self::resume) until
@@ -550,6 +538,15 @@ impl SearchStream {
         !self.to_ask.is_empty() || !self.here.is_empty() || self.outstanding > 0
     }
 
+    /// Whether a source that holds the frame's state is still to ask: the
+    /// desk asks one such source per frame, so it owes the frames that ask
+    /// them. A source on a worker is not this: it answers on its own, and
+    /// wakes the desk when it does.
+    #[must_use]
+    pub fn awaiting_here(&self) -> bool {
+        !self.here.is_empty()
+    }
+
     /// The hits that came in, in the ranking's order, one row per thing.
     #[must_use]
     pub fn rows(&self) -> Vec<Hit> {
@@ -594,20 +591,20 @@ impl SearchStream {
             .collect()
     }
 
-    /// Hand the sources not asked yet to the workers, and collect the
-    /// answers that arrived by `deadline`. Never waits for a source: an
-    /// answer that has not come back is another frame's.
+    /// Hand the sources not asked yet to the workers, ask one source that
+    /// stays on the frame, and take the answers that came. Never waits for a
+    /// source: an answer that is not in yet wakes the desk when it is, and
+    /// shows on the frame that wake draws.
     ///
     /// `sources` is the same slice the search was made from: the sources
     /// that cannot move are asked from it, on the frame, at the end.
     ///
-    /// Returns whether the rows changed, so a host knows to ask again for
-    /// the rows it brought.
+    /// Returns whether the rows changed, so a host knows the frame it draws
+    /// has different rows.
     pub fn resume(
         &mut self,
         sources: &[&dyn Source],
         workers: &SearchWorkers,
-        deadline: Instant,
         used: &dyn Fn(&Hit) -> f32,
     ) -> bool {
         // A new needle replaced this search: the answers still coming are
@@ -646,19 +643,22 @@ impl SearchStream {
                 changed |= self.ask_here(source, used);
             }
         }
-        // Collect every answer that arrives by the frame's deadline: a
-        // source answering in a frame's time is in the frame that typed,
-        // and one that takes longer fills in on a later frame. Only while a
-        // source owes an answer: with none out, nothing more is coming, and
-        // waiting for the deadline would spend the frame on an empty
-        // channel.
-        while self.outstanding > 0 {
-            let Some(answer) = crate::workers::arrived(&self.answers, deadline) else {
-                break;
-            };
+        // Every answer that is in, merged: the rows are the best answer of
+        // what came back so far, and the ones still out come on the frame
+        // their wake draws.
+        while let Ok(answer) = self.answers.try_recv() {
             changed |= self.collect(answer, used);
         }
         changed
+    }
+
+    /// Take the next answer the workers send, waiting for it when it is not
+    /// in yet, and merge it: what a caller with no frame to wake does
+    /// ([`search`]), and the one place a search waits on a source.
+    fn wait_for_answer(&mut self, used: &dyn Fn(&Hit) -> f32) {
+        if let Ok(answer) = self.answers.recv() {
+            self.collect(answer, used);
+        }
     }
 
     /// What a source is asked: what was typed, or what was typed without
@@ -773,18 +773,18 @@ impl std::fmt::Debug for SearchStream {
     }
 }
 
-/// One frame of a search: hand the sources to `workers`, collect what came
-/// back, and merge it, one row per thing ([`Thing`]).
+/// One frame of a search: hand the sources to `workers`, take the answers
+/// that came back, and merge them, one row per thing ([`Thing`]). The sources
+/// still out wake the desk when they answer.
 pub fn search_stream(
     needle: &str,
     sources: &[&dyn Source],
     row_budget: usize,
     workers: &SearchWorkers,
-    deadline: Instant,
     used: &dyn Fn(&Hit) -> f32,
 ) -> SearchStream {
     let mut stream = SearchStream::new(needle, sources, row_budget, workers);
-    stream.resume(sources, workers, deadline, used);
+    stream.resume(sources, workers, used);
     stream
 }
 
@@ -807,21 +807,24 @@ pub fn search(
     let workers = SearchWorkers::new();
     let mut stream = SearchStream::new(needle, sources, row_budget, &workers);
     while stream.pending() {
-        // Everything at once: the deadline is the clock's own end, so the
-        // stream takes every answer the workers send before it returns.
-        stream.resume(sources, &workers, frame_deadline(ONE_PASS), used);
+        stream.resume(sources, &workers, used);
+        if !stream.pending() {
+            break;
+        }
+        if stream.outstanding > 0 {
+            // With nothing left to ask, only a source still answering is
+            // waited for: this caller has no frame the answer could wake.
+            stream.wait_for_answer(used);
+        }
     }
     stream.groups()
 }
-
-/// The deadline a caller without frames gives its one pass: far enough that
-/// every source is asked whatever it takes.
-const ONE_PASS: Duration = Duration::from_secs(3600);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
+    use ui::time::Duration;
 
     /// A source that answers with its rows for any needle naming one of
     /// them, or all of them for the empty one.
@@ -1376,7 +1379,7 @@ mod tests {
     /// One frame of the stream, and how long it took.
     fn frame(stream: &mut SearchStream, all: &[&dyn Source], workers: &SearchWorkers) -> Duration {
         let started = ui::time::now();
-        stream.resume(all, workers, frame_deadline(FRAME_BUDGET), &|_| 0.0);
+        stream.resume(all, workers, &|_| 0.0);
         ui::time::now().saturating_duration_since(started)
     }
 
@@ -1391,14 +1394,7 @@ mod tests {
         let mut all = world.all();
         all.push(&slow);
         let workers = SearchWorkers::default();
-        let mut stream = search_stream(
-            "notes",
-            &all,
-            0,
-            &workers,
-            frame_deadline(FRAME_BUDGET),
-            &|_| 0.0,
-        );
+        let mut stream = search_stream("notes", &all, 0, &workers, &|_| 0.0);
         // The frame that typed the first character: the fast sources are
         // in, the slow one is out, and this frame did not wait for it.
         let took = frame(&mut stream, &all, &workers);
@@ -1469,27 +1465,13 @@ mod tests {
         let workers = SearchWorkers::default();
         // "ala" is asked, and the person types on to "alac" before it can
         // answer.
-        let mut older = search_stream(
-            "ala",
-            &all,
-            0,
-            &workers,
-            frame_deadline(FRAME_BUDGET),
-            &|_| 0.0,
-        );
+        let mut older = search_stream("ala", &all, 0, &workers, &|_| 0.0);
         frame(&mut older, &all, &workers);
         assert!(
             older.pending(),
             "the first needle is still being worked out"
         );
-        let mut newer = search_stream(
-            "alac",
-            &all,
-            0,
-            &workers,
-            frame_deadline(FRAME_BUDGET),
-            &|_| 0.0,
-        );
+        let mut newer = search_stream("alac", &all, 0, &workers, &|_| 0.0);
         let deadline = ui::time::now() + Duration::from_secs(10);
         while newer.pending() && ui::time::now() < deadline {
             frame(&mut newer, &all, &workers);
@@ -1598,14 +1580,7 @@ mod tests {
             // hands them over and collects what already arrived.
             let workers = SearchWorkers::default();
             let started = ui::time::now();
-            let _stream = search_stream(
-                &needle,
-                &refs,
-                12,
-                &workers,
-                frame_deadline(FRAME_BUDGET),
-                &|_| 0.0,
-            );
+            let _stream = search_stream(&needle, &refs, 12, &workers, &|_| 0.0);
             let took = ui::time::now().saturating_duration_since(started);
             // The frame that typed never holds the rows of the index: the
             // four sources are out on the workers, and the frame returns
@@ -1659,19 +1634,12 @@ mod tests {
         };
         let sources: Vec<&dyn Source> = vec![&web, &answers];
         let workers = SearchWorkers::default();
-        let mut stream = search_stream(
-            "12*7",
-            &sources,
-            0,
-            &workers,
-            frame_deadline(FRAME_BUDGET),
-            &|_| 0.0,
-        );
+        let mut stream = search_stream("12*7", &sources, 0, &workers, &|_| 0.0);
         // The frames until both answered: an answer that comes back a frame
         // later is still in the frame that shows it, ahead of the web row.
         let deadline = ui::time::now() + Duration::from_secs(10);
         while stream.pending() && ui::time::now() < deadline {
-            stream.resume(&sources, &workers, frame_deadline(FRAME_BUDGET), &|_| 0.0);
+            stream.resume(&sources, &workers, &|_| 0.0);
             std::thread::sleep(Duration::from_millis(1));
         }
         let names: Vec<String> = stream.rows().into_iter().map(|row| row.title).collect();
