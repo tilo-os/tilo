@@ -150,16 +150,15 @@ impl PagePrivate {
     /// it: read only, so the migration takes it over and nothing is written
     /// back there.
     async fn import(&self, peer: &str, after_sequence: u64) -> Result<Answer, String> {
-        let page = match self
+        let PrivateReply::Conversation(page) = self
             .ask(PrivateOperation::Read {
                 peer: peer.to_owned(),
                 after_sequence,
                 limit: PAGE,
             })
             .await?
-        {
-            PrivateReply::Conversation(page) => page,
-            _ => return Err("unexpected private read reply".into()),
+        else {
+            return Err("unexpected private read reply".into());
         };
         if page.peer != peer {
             return Err("private conversation peer binding changed".into());
@@ -275,7 +274,8 @@ impl PagePrivate {
 
 fn peer_key(peer: &str) -> Result<[u8; 32], String> {
     let mut bytes = [0; 32];
-    hex::decode_to_slice(peer, &mut bytes).map_err(|_| "invalid private peer key".into())
+    hex::decode_to_slice(peer, &mut bytes).map_err(|_| "invalid private peer key".to_owned())?;
+    Ok(bytes)
 }
 
 impl ui::person_chat::Transport for PagePrivate {
