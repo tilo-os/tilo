@@ -90,7 +90,11 @@ fn steps_until<T>(
 }
 
 /// Step the session's loop until `probe` answers, or `within` runs out.
-fn steps_within<T>(
+///
+/// One slice of a wait a test drives itself: a signal the product carries as
+/// live frames rather than as state it keeps may be shed, so the test asks
+/// again between slices and keeps its own deadline, instead of sampling once.
+pub fn steps_within<T>(
     session: &mut Session,
     within: std::time::Duration,
     mut probe: impl FnMut(&mut Session) -> Option<T>,

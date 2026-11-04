@@ -936,6 +936,16 @@ impl Lounge {
     }
 }
 
+/// A key the lounge keeps to itself: drawn for each lounge rather than a
+/// constant, because the suites on a machine share one network, and two lounges
+/// answering to one node id answer each other's joins as a host that does not
+/// govern the room the join names.
+fn lounge_key() -> [u8; 32] {
+    let mut key = [0; 32];
+    getrandom::fill(&mut key).expect("a key for the lounge");
+    key
+}
+
 /// The host behind the lounge's site: a relay of this machine, certified
 /// under a key root of the test's own, which governs the lounge's workspace and
 /// keeps what its page writes sealed.
@@ -956,15 +966,15 @@ impl LoungeHost {
     /// A host governing a workspace of its own, with the site's page entered in
     /// it.
     fn start(runtime: &tokio::runtime::Runtime, state: &std::path::Path) -> Self {
-        let owner_key = ed25519_dalek::SigningKey::from_bytes(&[0x41; 32]);
-        let host_key = ed25519_dalek::SigningKey::from_bytes(&[0x42; 32]);
+        let owner_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
+        let host_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let host_cert = certified(
             &owner_key,
             &host_key,
             "The lounge's host",
             tilo_user_identity::cloud_enrollment::host_capabilities(),
         );
-        let page_key = ed25519_dalek::SigningKey::from_bytes(&[0x43; 32]);
+        let page_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let page_device = certified(
             &owner_key,
             &page_key,
@@ -1678,17 +1688,12 @@ fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
     let front = window_in_front(session);
     let shown = front.expect("the workspace in front shows a strip with a window");
     other_member_arrives(lounge);
-    other_member_points_at(lounge, shown, 12.0, 34.0);
-    wait_until(
+    wait_until_their_pointer(
         session,
+        lounge,
+        shown,
+        (12.0, 34.0),
         "the other member's pointer is drawn here",
-        |session| {
-            session.drawn_peer_pointers().iter().any(|(_, (x, y))| {
-                tile_here(session, shown).is_some_and(|tile| {
-                    (x - (tile.x0 + 12.0)).abs() < 0.5 && (y - (tile.y0 + 34.0)).abs() < 0.5
-                })
-            })
-        },
     );
     let drawn = session.drawn_peer_pointers();
     let tile = tile_here(session, shown).expect("the window in front draws its tile");
@@ -1703,20 +1708,12 @@ fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
         "drawn over the window's tile where they put it: {drawn:?}, tile {tile:?}"
     );
     // And it follows them.
-    other_member_points_at(lounge, shown, 40.0, 55.0);
-    wait_until(
+    wait_until_their_pointer(
         session,
+        lounge,
+        shown,
+        (40.0, 55.0),
         "the other member's pointer follows where they moved it",
-        |session| {
-            session
-                .drawn_peer_pointers()
-                .first()
-                .is_some_and(|(_, (x, y))| {
-                    tile_here(session, shown).is_some_and(|tile| {
-                        (x - (tile.x0 + 40.0)).abs() < 0.5 && (y - (tile.y0 + 55.0)).abs() < 0.5
-                    })
-                })
-        },
     );
 }
 
@@ -1772,6 +1769,62 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
         )],
     )
     .expect("the other member's pointer moves");
+}
+
+/// How long the desk is stepped between one pointing and the next.
+const POINT_AGAIN: Duration = Duration::from_millis(200);
+
+/// Wait until the desk draws the other member's pointer at `(x, y)` over the
+/// tile of `tab`, pointing again as it waits.
+///
+/// Their pointer is a live frame the host fans out and never keeps: a host
+/// whose queue for this device is full drops it (that is what ephemeral
+/// means), and a person's pointer keeps moving, so the test says where they
+/// are more than once rather than sampling a frame that may have been shed.
+/// What the wait is for is unchanged — the desk drawing their pointer where
+/// they put it — and its only bound is the suite's hang bound.
+#[track_caller]
+fn wait_until_their_pointer(
+    session: &mut Session,
+    lounge: &Lounge,
+    tab: u64,
+    at: (f32, f32),
+    what: &str,
+) {
+    let deadline = std::time::Instant::now()
+        .checked_add(tilo_test_env::hang_bound())
+        .expect("the wait's bound fits in an Instant");
+    loop {
+        other_member_points_at(lounge, tab, at.0, at.1);
+        let drawn = common::steps_within(session, POINT_AGAIN, |session| {
+            pointer_here(session, tab, at).then_some(())
+        });
+        if drawn.is_some() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "gave up waiting for {what} after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer).\n\
+             the shell's refusals: {:?}\nthe session says: {:?}\nthe pointers drawn: {:?}",
+            tilo_test_env::hang_bound(),
+            session.shell_refusals(),
+            session.accessible_labels(),
+            session.drawn_peer_pointers()
+        );
+    }
+}
+
+/// Whether the desk drew someone's pointer at `(x, y)` of the tile of `tab`.
+fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
+    session
+        .drawn_peer_pointers()
+        .iter()
+        .any(|(_, (at_x, at_y))| {
+            tile_here(session, tab).is_some_and(|tile| {
+                (at_x - (tile.x0 + f64::from(x))).abs() < 0.5
+                    && (at_y - (tile.y0 + f64::from(y))).abs() < 0.5
+            })
+        })
 }
 
 /// Wait until the lounge's workspace and its people reached this computer,

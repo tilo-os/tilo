@@ -69,17 +69,20 @@ fn main() {
     }
 }
 
-/// Open `resource`, asking again while the session has not answered: an ask
-/// that came back at once is a service still coming up, and one that used its
-/// patience is a loop that has not got to the app yet, and both are asked
-/// again until the app has waited long enough to report the session absent.
+/// The session's silence, which is an ask to make again: its loop had not got
+/// to the app yet, and a loaded machine takes a while over it.
+const UNANSWERED: &str = "The session did not answer.";
+
+/// Open `resource`, asking again while the session stays silent, and taking
+/// any other answer as the answer it is: a session that says why it refuses
+/// the ask has answered it.
 fn open(resource: &str) -> Result<SessionResource, String> {
     let deadline = Instant::now() + ANSWERING;
     loop {
         match SessionResource::open(resource) {
             Ok(opened) => return Ok(opened),
-            Err(error) if Instant::now() >= deadline => return Err(error),
-            Err(_unanswered) => std::thread::sleep(Duration::from_millis(100)),
+            Err(error) if error != UNANSWERED || Instant::now() >= deadline => return Err(error),
+            Err(_silent) => std::thread::sleep(Duration::from_millis(100)),
         }
     }
 }

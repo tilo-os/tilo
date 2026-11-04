@@ -980,18 +980,24 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     assert!(session.input_config().touchpad_enabled);
-    tap(&mut session, keys::F21);
-    assert!(
-        !session.input_config().touchpad_enabled,
-        "the key turned it off"
-    );
-    assert!(
-        session
-            .accessible_labels()
-            .contains(&"Touchpad off".to_owned()),
-        "the readout says so: {:?}",
-        session.accessible_labels()
-    );
+    // The readout that answers the key stays up for a moment of its own, and a
+    // machine running a whole suite at once can spend that moment on the turn
+    // that pressed the key: the press and the read of what it says happen at
+    // one reading of the clock, so what is read is the readout the key raised.
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        tap(&mut session, keys::F21);
+        assert!(
+            !session.input_config().touchpad_enabled,
+            "the key turned it off"
+        );
+        assert!(
+            session
+                .accessible_labels()
+                .contains(&"Touchpad off".to_owned()),
+            "the readout says so: {:?}",
+            session.accessible_labels()
+        );
+    });
     let mut on = serde_json::Map::new();
     on.insert("on".into(), true.into());
     session

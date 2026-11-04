@@ -8,13 +8,20 @@
 use super::*;
 
 /// Step the session until its readout says `words`, and what it says there.
+///
+/// The readout is up for a moment of its own, and a machine running a whole
+/// suite at once can spend that moment on the turn that raised it: the turns
+/// that wait for it and the read of what it says happen at one reading of the
+/// clock, so the readout the key raised is the one read.
 #[track_caller]
 pub(super) fn readout_saying(session: &mut Session, words: &str) -> String {
-    pump(session, &mut [], |session, _| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label.contains(words))
+    ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        pump(session, &mut [], |session, _| {
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label.contains(words))
+        })
     });
     session
         .accessible_labels()
