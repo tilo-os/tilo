@@ -354,7 +354,7 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks here", .none, .some("list-checks")) { x ->
+                std.rows(shown, "No tasks here", .none, .some("list-checks")) { (x, under) ->
                     task_row(x)
                 }
             }
@@ -392,7 +392,7 @@ view project_list(p: Project, draft: State<Text>) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks yet", .none, .some("folder")) { x ->
+                std.rows(shown, "No tasks yet", .none, .some("folder")) { (x, under) ->
                     task_row(x)
                 }
             }

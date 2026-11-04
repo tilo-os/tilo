@@ -165,6 +165,20 @@ fn an_optional_view_renders_when_given() {
 }
 
 #[test]
+fn a_row_block_names_the_values_it_draws_with() {
+    // A view of items that draws a row with the item it stands under takes a block naming
+    // both: the item and the one it stands under.
+    ok(
+        "view listed<T>(items: List<T>, row: (T, Option<T>) -> View) {\n    stack {\n        for x in items {\n            row(x, .none)\n        }\n    }\n}\nview w(c: C) {\n    listed(c.items) { (x, under) ->\n        text(x.t)\n    }\n}",
+    );
+    // A block naming another number of values is refused, saying how many the view takes.
+    expect(
+        "E022",
+        "view listed<T>(items: List<T>, row: (T, Option<T>) -> View) {\n    stack {\n        for x in items {\n            row(x, .none)\n        }\n    }\n}\nview w(c: C) {\n    listed(c.items) { x ->\n        text(x.t)\n    }\n}",
+    );
+}
+
+#[test]
 fn a_root_is_an_expression_anywhere() {
     ok(
         "view w() {\n    let c = root C\n    text(c.t)\n}\naction a() {\n    let c = root C\n    c.t = \"x\"\n}",

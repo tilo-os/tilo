@@ -11,11 +11,11 @@ use crate::widget::Tone;
 impl Formats {
     /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card
     /// reads it, by how far `day` is from `today`. A day gone by says which day it was and that
-    /// it is `Overdue` (`Jun 29 · Overdue`), in the overdue tone; today and tomorrow are named;
+    /// it is `Overdue` (`Overdue since Jun 29`), in the overdue tone; today and tomorrow are named;
     /// the week ahead its weekday (`Thursday`); this year the month and day (`Jun 29`); other
     /// years the full date (`Jun 29, 2025`). Given a `time`, the day and the time read as one
     /// fact (`Today 09:00`, `Thu 14:30`, `Jun 29 09:00`); a day gone by keeps its date there
-    /// too (`Jun 29 14:30 · Overdue`), because a fact says when it is, and "Yesterday" alone
+    /// too (`Overdue since Jun 29 14:30`), because a fact says when it is, and "Yesterday" alone
     /// would not say which day of the month is late.
     ///
     /// The day is the person's own: `today` is [`crate::clock::today`].

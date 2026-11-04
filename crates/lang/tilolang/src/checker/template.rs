@@ -80,9 +80,10 @@ pub(crate) struct Closure {
     pub scope: Scope,
 }
 
-/// A block given to a template, with the scope it was written in: its item, when it shows one.
+/// A block given to a template, with the scope it was written in: the values it names, each
+/// with its type — an item block's one item, or the several values of a function's block.
 pub(crate) struct UiClosure {
-    pub item: Option<(String, Ty)>,
+    pub params: Vec<(String, Ty)>,
     pub body: Vec<UiStmt>,
     pub scope: Scope,
 }
@@ -473,13 +474,13 @@ impl Checker<'_> {
                         .find(|(name, _)| name.name == p.name.name)
                         .map(|(_, body)| (*body).clone())
                         .or_else(|| {
-                            (content.item.is_none() && !content.body.is_empty())
+                            (content.params.is_empty() && !content.body.is_empty())
                                 .then(|| content.body.clone())
                                 .filter(|_| is_content_param(view, p))
                         });
                     body.map(|body| {
                         Macro::Block(Rc::new(UiClosure {
-                            item: None,
+                            params: Vec::new(),
                             body,
                             scope: caller.clone(),
                         }))
@@ -503,7 +504,7 @@ impl Checker<'_> {
                         macros.insert(
                             p.name.name.clone(),
                             Macro::Block(Rc::new(UiClosure {
-                                item: None,
+                                params: Vec::new(),
                                 body: Vec::new(),
                                 scope: caller.clone(),
                             })),
@@ -662,7 +663,9 @@ impl Checker<'_> {
     ) -> Option<Macro> {
         let param_tys: Vec<Ty> = fparams.iter().map(|t| self.type_in(t, types)).collect();
         if let Some(a) = arg {
-            // A key path or a lambda, as the function of every value the parameter takes.
+            // A key path or a lambda, as the function of every value the parameter takes. A
+            // function of a view is given its rows by the call's block, never by a lambda: the
+            // block names the values it draws with, and the item is one of them.
             let bound: Option<(Vec<ast::Ident>, ast::Expr)> = if item_block {
                 None
             } else if let Some((param, body)) = super::optional::lambda_of(&a.value) {
@@ -727,9 +730,30 @@ impl Checker<'_> {
             return None;
         }
         let item_ty = param_tys.first().cloned().unwrap_or(Ty::Error);
-        if let Some((item, ())) = &content.item {
+        // The block names the values its rows are drawn with: the item, and at the top of a
+        // nested list the item it stands under.
+        if !content.params.is_empty() {
+            if content.params.len() != param_tys.len() {
+                self.err(
+                    "E022",
+                    content.params[0].span,
+                    format!(
+                        "`{}` takes a block naming {} value(s); this block names {}",
+                        p.name.name,
+                        param_tys.len(),
+                        content.params.len()
+                    ),
+                );
+                return None;
+            }
+            let params = content
+                .params
+                .iter()
+                .zip(param_tys.iter())
+                .map(|(param, ty)| (param.name.clone(), ty.clone()))
+                .collect();
             return Some(Macro::Block(Rc::new(UiClosure {
-                item: Some((item.name.clone(), item_ty)),
+                params,
                 body: content.body.clone(),
                 scope: Scope {
                     ui: UiPlace {
@@ -802,29 +826,20 @@ impl Checker<'_> {
         match m {
             Macro::Block(block) => {
                 let mut extra = HashMap::new();
-                match (&block.item, args) {
-                    (Some((item, ty)), [a]) => {
+                if block.params.len() == args.len() {
+                    for ((name, ty), a) in block.params.iter().zip(args) {
                         let v = self.expr_as(&a.value, ty);
                         let local = self.fresh(ty.clone());
                         self.emit(Stmt::Set(local, v));
-                        extra.insert(item.clone(), local);
+                        extra.insert(name.clone(), local);
                     }
-                    (None, []) => {}
-                    _ => {
-                        self.err(
-                            "E022",
-                            span,
-                            format!(
-                                "`{name}` takes {}",
-                                if block.item.is_some() {
-                                    "one item"
-                                } else {
-                                    "no arguments"
-                                }
-                            ),
-                        );
-                        return parent;
-                    }
+                } else {
+                    self.err(
+                        "E022",
+                        span,
+                        format!("`{name}` takes {} value(s)", block.params.len()),
+                    );
+                    return parent;
                 }
                 let saved = self.enter(&block.scope, extra);
                 if name == "composer" {
@@ -1101,7 +1116,7 @@ fn coerces(found: &Ty, want: &Ty) -> bool {
 /// names slots too: `std.transcript(c, c.messages) { m -> message(m) composer: { ... } }` is the
 /// row of each item and, beside it, the composer, which does not see the item.
 struct Content {
-    item: Option<(ast::Ident, ())>,
+    params: Vec<ast::Ident>,
     body: Vec<UiStmt>,
 }
 
@@ -1117,7 +1132,7 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
         }
     }
     let content = Content {
-        item: c.item.clone().map(|item| (item, ())),
+        params: c.params.clone(),
         body,
     };
     (slots, content)

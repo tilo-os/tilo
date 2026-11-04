@@ -180,7 +180,7 @@ impl Checker<'_> {
             return Some(list);
         }
         let block = c.block.as_deref().unwrap_or_default();
-        let var = c.item.as_ref().map_or(ROW_ITEM, |item| item.name.as_str());
+        let var = c.params.first().map_or(ROW_ITEM, |item| item.name.as_str());
         let mut names = BTreeSet::new();
         names_in_ui(block, &mut names);
         names.remove(var);
@@ -550,8 +550,8 @@ fn macro_reads(m: &Macro, out: &mut Vec<LocalId>) {
         Macro::Block(block) => {
             let mut names = BTreeSet::new();
             names_in_ui(&block.body, &mut names);
-            if let Some((item, _)) = &block.item {
-                names.remove(item);
+            for (param, _) in &block.params {
+                names.remove(param);
             }
             scope_reads(&block.scope, &names, out);
         }
@@ -589,7 +589,7 @@ fn remap_macro(m: &Macro, map: &HashMap<LocalId, LocalId>) -> Macro {
             scope: remap_scope(&closure.scope, map),
         })),
         Macro::Block(block) => Macro::Block(Rc::new(UiClosure {
-            item: block.item.clone(),
+            params: block.params.clone(),
             body: block.body.clone(),
             scope: remap_scope(&block.scope, map),
         })),

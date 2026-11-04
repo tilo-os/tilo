@@ -93,7 +93,7 @@ view list<R, T, S>(
                     place: query,
                     entry: entry,
                     entry_placeholder: entry_placeholder,
-                ) { x ->
+                ) { (x, under) ->
                     row(x)
                 }
             }
@@ -111,7 +111,7 @@ view list<R, T, S>(
                     place: query,
                     entry: entry,
                     entry_placeholder: entry_placeholder,
-                ) { x ->
+                ) { (x, under) ->
                     row(x)
                 }
             }
@@ -133,6 +133,9 @@ view list<R, T, S>(
 /// under the days it was finished on, newest first; an inbox lists its items plainly, for there
 /// is nothing about them to sort by yet. A place does not fold what is done with away: it holds
 /// only what belongs in it.
+///
+/// `row` draws an item with the item it stands under (`.none` at the top), so a child leaves
+/// out what its parent already says — the day they are both due, the project they both are of.
 view rows<T>(
     items: List<T>,
     empty: Text,
@@ -149,7 +152,7 @@ view rows<T>(
     all_done: Bool = false,
     entry: Option<(Text) -> Action> = .none,
     entry_placeholder: Text = phrase("tilolang-add"),
-    row: (T) -> View,
+    row: (T, Option<T>) -> View,
 ) {
     // A list that is no place's is grouped by the caller, and folds what it leaves done.
     let all_done = all_done and role == "" and not items.is_empty()
@@ -174,8 +177,8 @@ view rows<T>(
                             parent,
                             parent_title,
                             progress,
-                        ) { x ->
-                            row(x)
+                        ) { (x, under) ->
+                            row(x, under)
                         }
                     }
                     std.add_entry(primary, entry_placeholder, commit)
@@ -197,8 +200,8 @@ view rows<T>(
                     parent,
                     parent_title,
                     progress,
-                ) { x ->
-                    row(x)
+                ) { (x, under) ->
+                    row(x, under)
                 }
             }
         }
@@ -225,8 +228,8 @@ view rows<T>(
                     parent,
                     parent_title,
                     progress,
-                ) { x ->
-                    row(x)
+                ) { (x, under) ->
+                    row(x, under)
                 }
             }
             ui.EmptyState(phrase("tilolang-all-done"), icon: icon, inline: true)
@@ -243,8 +246,8 @@ view rows<T>(
             parent,
             parent_title,
             progress,
-        ) { x ->
-            row(x)
+        ) { (x, under) ->
+            row(x, under)
         }
     }
 }
@@ -264,6 +267,8 @@ view add_entry(primary: Option<host.Action>, placeholder: Text, commit: (Text) -
 /// `role` and `place` are the place the list is of, when it is one of a place's: what its role
 /// groups the list by, and the place's key (`is:today`), which reads the day each item stands
 /// at in it.
+///
+/// `row` draws an item with the item it stands under, as `rows` does.
 view rows_list<T>(
     items: List<T>,
     icon: Option<Text>,
@@ -275,7 +280,7 @@ view rows_list<T>(
     parent: Option<(T) -> Option<T>>,
     parent_title: Option<(T) -> Option<Text>>,
     progress: Option<(T) -> Option<Text>>,
-    row: (T) -> View,
+    row: (T, Option<T>) -> View,
 ) {
     // An item that names no day stands under a heading of its own, in the order the caller
     // gave, rather than under the last group's heading. A place lists by its role's days, and
@@ -364,7 +369,7 @@ view rows_list<T>(
                         }
                     }
                 }
-                row(x)
+                row(x, under)
             }
         }
     }
@@ -380,7 +385,8 @@ view rows_list<T>(
 /// items at once never leave one in two places. A row's checkbox asks `toggled`. Give `progress`
 /// and a row with items under it says how far its branch got ("1/3"), as the list of the same
 /// items says it. An item whose parent is not among `items` stands at the top, so a deleted
-/// parent never hides what was inside it.
+/// parent never hides what was inside it. `row` draws an item with the item it stands under
+/// (`.none` at the top), so a child leaves out what its parent already says.
 view outline<T>(
     name: Text,
     items: List<T>,
@@ -392,7 +398,7 @@ view outline<T>(
     progress: Option<(T) -> Option<Text>> = .none,
     icon: Option<Text> = .none,
     fill: Bool = true,
-    row: (T) -> View,
+    row: (T, Option<T>) -> View,
 ) {
     if items.is_empty() {
         ui.EmptyState(empty, icon: icon)
@@ -436,7 +442,7 @@ view outline<T>(
                         }
                     }
                     row: {
-                        row(x)
+                        row(x, parent(x))
                     }
                 }
             }
@@ -551,6 +557,16 @@ view document<R>(of: R, content: View) {
                 }
             }
         }
+    }
+}
+
+/// What follows a document's heading, one row lead in: the body starts under the text the
+/// heading's control leads to, so a task's notes, subtasks and facts stand in the column its
+/// title's text does, and the box that says the item is done stands in the gutter to their
+/// left. A document whose heading opens with its title alone has no lead to make.
+view body(content: View) {
+    stack(lead: 1) {
+        content
     }
 }
 

@@ -100,11 +100,12 @@ and the list draws a section band for each run and holds it at the top while its
 past (dates arrive formatted: Today, Tomorrow, a weekday, a day). Only the rows in view are
 built and asked for their group, so a heading costs nothing on a long list. `closed:` names the
 items done with: they stand last under `closed_title`, folded away until the person presses the
-band. The heading is a date the platform writes, never a string an app formats:
+band. The heading is a date the platform writes, never a string an app formats. The block names
+the item and the item it stands under, so a row leaves out what its parent already says:
 
 ```
 std.rows(shown, "No tasks here", .none, .some("list-checks"),
-         group: .due, closed: .done) { t -> task_row(t) }
+         group: .due, closed: .done) { (t, under) -> task_row(t, under) }
 ```
 
 The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.ListItem` carry it

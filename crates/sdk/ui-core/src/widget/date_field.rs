@@ -1,7 +1,7 @@
 //! `DateField`: a day, shown as one fact and picked in a popover.
 //!
 //! The field reads as a chip: the calendar icon and the day as the person reads a day
-//! ([`crate::format::day_fact_today`]: "Jun 29 · Overdue", "Today", "Tomorrow", "Thursday",
+//! ([`crate::format::day_fact_today`]: "Overdue since Jun 29", "Today", "Tomorrow", "Thursday",
 //! with the time of day it is due at when it has one — "Today 9:00 AM"), in the tone the fact
 //! stands in, or "Add date" in the quieter ink while it holds none, and the chevron every
 //! choice control wears. Pressing it
@@ -216,7 +216,7 @@ impl DateField {
     }
 
     /// What the field reads as, and the tone it says it in: the day and the time it is due at
-    /// ("Today 9:00 AM", "Jun 29 · Overdue"), or "Add date" while it holds none.
+    /// ("Today 9:00 AM", "Overdue since Jun 29"), or "Add date" while it holds none.
     #[must_use]
     pub fn fact(value: Option<NaiveDate>, at: Option<NaiveTime>) -> (String, Tone) {
         value.map_or_else(

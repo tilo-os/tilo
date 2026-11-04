@@ -507,6 +507,14 @@ fn subtask_count(t: Task) -> Option<Text> {
     if t.subtasks == 0 { .none } else { .some("{t.subtasks_done}/{t.subtasks}") }
 }
 
+/// When a task is due of its own, beside what the row it stands under already says: a subtask
+/// due when its parent is due repeats the parent's fact, so only a day that differs reads on it.
+fn own_due(t: Task, under: Option<Task>) -> Option<Date> {
+    if let p = under {
+        if p.due == t.due { .none } else { t.due }
+    } else { t.due }
+}
+
 /// The tasks of a project, in order.
 fn tasks_of(p: Project) -> List<Task> {
     tasks.items.filter(t -> t.project == p)
@@ -579,8 +587,8 @@ view home(t: Tasks) {
                 all_done: if let c = chosen { c.count == 0 } else { false },
                 entry: text -> quick_add(t, text, project, place == "is:today"),
                 entry_placeholder: entry_placeholder,
-            ) { x ->
-                task_row(x, .day)
+            ) { (x, under) ->
+                task_row(x, .day, under)
             }
         }
         content: {
@@ -618,8 +626,8 @@ view project_list(p: Project) {
                 progress: x -> subtask_count(x),
                 entry: text -> quick_add(tasks, text, p),
                 entry_placeholder: "New task in {p.name}",
-            ) { x ->
-                task_row(x, .project)
+            ) { (x, under) ->
+                task_row(x, .project, under)
             }
         }
         content: {
@@ -701,17 +709,18 @@ view task_card(t: Task, sections: List<Section>) {
                 }
             }
         }
-        task_row(t, .project)
+        task_row(t, .project, .none)
     }
 }
 
 /// One task as a row: whether it is done, its title, its project, when it is due, a flag while
-/// it matters, and who is doing it. `place` leaves out what the place the row stands in already
-/// says — the day a list of a day is grouped by, the project a project's list is of — so a row
-/// repeats nothing the page around it states.
-view task_row(t: Task, place: RowPlace) {
+/// it matters, and who is doing it. `place` and `under` leave out what the place the row stands
+/// in and the row it stands under already say — the day a list of a day is grouped by, the
+/// project a project's list is of, the day a subtask shares with its parent — so a row repeats
+/// nothing the page around it states.
+view task_row(t: Task, place: RowPlace, under: Option<Task>) {
     let project: Option<Text> = if place == .project { .none } else { t.project?.name }
-    let due: Option<Date> = if place == .day { .none } else { t.due }
+    let due: Option<Date> = if place == .day { .none } else { own_due(t, under) }
     row(
         t.title,
         checkbox: t.done,
@@ -739,13 +748,14 @@ view task_summary(t: Task) {
 
 /// One task in an outline, which counts its done subtasks while it is folded. `project` is the
 /// project of the page around the outline: a row repeats no project the page already names, and
-/// names its own while the subtask is of another.
-view task_outline_row(t: Task, project: Option<Project>) {
+/// names its own while the subtask is of another. `under` is the task it stands under, whose
+/// own day a subtask due the same day does not repeat.
+view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
     ui.TreeViewRow(
         checkbox: t.done,
         icon: t.priority.icon(),
         secondary: if t.project == project { .none } else { t.project?.name },
-        trailing: t.due,
+        trailing: own_due(t, under),
     )
 }
 
@@ -758,54 +768,62 @@ view task_page(t: Task) {
         opening(t) {
             on check: check(t)
         }
-        section("Subtasks") {
-            // A task with no subtasks puts no tree up, and the walk over the tasks under this
-            // one is made only once there is one.
-            if not tasks.items.filter(x -> x.parent == .some(t)).is_empty() {
-                let kids = tasks.items.descendants(t, .parent)
-                std.outline(
-                    "Subtasks",
-                    kids,
-                    x -> x.parent,
-                    x -> x.title,
-                    "No subtasks yet",
-                    (moved, parent, before) -> move_to(tasks, moved, parent, before),
-                    x -> check(x),
-                    progress: x -> subtask_count(x),
-                    fill: false,
-                ) { x ->
-                    task_outline_row(x, t.project)
+        // What follows the heading stands in its body, under the text its title leads to.
+        std.body() {
+            section("Subtasks") {
+                // A task with no subtasks puts no tree up, and the walk over the tasks under
+                // this one is made only once there is one.
+                if not tasks.items.filter(x -> x.parent == .some(t)).is_empty() {
+                    let kids = tasks.items.descendants(t, .parent)
+                    std.outline(
+                        "Subtasks",
+                        kids,
+                        x -> x.parent,
+                        x -> x.title,
+                        "No subtasks yet",
+                        (moved, parent, before) -> move_to(
+                            tasks,
+                            moved,
+                            parent,
+                            before,
+                        ),
+                        x -> check(x),
+                        progress: x -> subtask_count(x),
+                        fill: false,
+                    ) { (x, under) ->
+                        task_outline_row(x, t.project, under)
+                    }
+                }
+                ui.TextInput(value: step, placeholder: "Add a subtask") {
+                    on submit: add_subtask(tasks, t, step).then(set(step, ""))
                 }
             }
-            ui.TextInput(value: step, placeholder: "Add a subtask") {
-                on submit: add_subtask(tasks, t, step).then(set(step, ""))
-            }
-        }
-        facts(t) {
-            ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
-                ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
-                    on choose: unfile(t)
+            facts(t) {
+                ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
+                    ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
+                        on choose: unfile(t)
+                    }
+                    for p in tasks.projects {
+                        ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
+                            on choose: file(t, p)
+                        }
+                    }
                 }
-                for p in tasks.projects {
-                    ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
-                        on choose: file(t, p)
+                ui.MenuButton(t.priority.label(), icon: .flag) {
+                    for a in actions(t).filter(a -> a.group == .some("Priority")) {
+                        ui.MenuItem(
+                            a.label,
+                            icon: a.icon,
+                            disabled: not a.available,
+                            reason: if a.available { .none } else { .some(a.reason) },
+                        ) {
+                            on choose: a.run
+                        }
                     }
                 }
             }
-            ui.MenuButton(t.priority.label(), icon: .flag) {
-                for a in actions(t).filter(a -> a.group == .some("Priority")) {
-                    ui.MenuItem(
-                        a.label,
-                        icon: a.icon,
-                        disabled: not a.available,
-                        reason: if a.available { .none } else { .some(a.reason) },
-                    ) {
-                        on choose: a.run
-                    }
-                }
-            }
+            std.history(t)
         }
-        std.history(t)
     }
 }
 
@@ -837,7 +855,7 @@ scenario "a busy week" -> Task {
             title: "Call the landlord about the boiler",
             notes: RichText("Ask whether Tuesday morning works for the engineer."),
             due: 2026-06-30,
-            at: 2026-06-30T09,
+            at: 2026-06-30T09:00,
             priority: .high,
         ),
     )

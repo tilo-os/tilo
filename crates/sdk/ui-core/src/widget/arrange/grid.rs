@@ -3,7 +3,7 @@
 use taffy::style_helpers::{fr, length, minmax, repeat};
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
+use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
 use super::units::{Axis, Length, columns_for};
 use crate::tokens::Rhythm;
 
@@ -63,7 +63,7 @@ impl Layout for GridLayout {
         self.items = count;
     }
 
-    fn container(&self, resolved: &Resolved) -> Style {
+    fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gap = length(resolved.gap(self.gap));
         // A column that keeps its content takes at least its min-content width: the grid
         // overflows rather than squeezing what a cell holds.
@@ -71,31 +71,37 @@ impl Layout for GridLayout {
             Columns::FixedKeepingContent(_) => taffy::style_helpers::min_content(),
             Columns::Fixed(_) | Columns::AtLeast(_) => length(0.0_f32),
         };
-        Style {
-            display: taffy::Display::Grid,
-            grid_template_columns: vec![repeat(self.count.max(1), vec![minmax(min, fr(1.0_f32))])],
-            grid_auto_rows: vec![taffy::style_helpers::auto()],
-            align_items: Some(if self.hug {
-                taffy::AlignItems::Start
-            } else {
-                taffy::AlignItems::Stretch
-            }),
-            gap: Size {
-                width: gap,
-                height: gap,
+        lead_container(
+            Style {
+                display: taffy::Display::Grid,
+                grid_template_columns: vec![repeat(
+                    self.count.max(1),
+                    vec![minmax(min, fr(1.0_f32))],
+                )],
+                grid_auto_rows: vec![taffy::style_helpers::auto()],
+                align_items: Some(if self.hug {
+                    taffy::AlignItems::Start
+                } else {
+                    taffy::AlignItems::Stretch
+                }),
+                gap: Size {
+                    width: gap,
+                    height: gap,
+                },
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                size: Size {
+                    width: taffy::style_helpers::percent(1.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                ..Style::default()
             },
-            min_size: Size {
-                width: length(0.0_f32),
-                height: taffy::Dimension::auto(),
-            },
-            size: Size {
-                width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::Dimension::auto(),
-            },
-            ..Style::default()
-        }
+            lead,
+            self.leading(),
+        )
     }
-
     fn slot(&self, _index: usize, slot: &Slot, resolved: &Resolved) -> Style {
         let mut style = wrapper_style();
         slot.fit.apply(&mut style, Axis::Inline, resolved.rem);

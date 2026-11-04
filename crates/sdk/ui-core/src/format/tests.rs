@@ -436,8 +436,8 @@ fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
     for (when, english, _) in [
         (
             day(2026, 6, 20),
-            "Jun 20 · Overdue",
-            "20. Juni · Überfällig",
+            "Overdue since Jun 20",
+            "Überfällig seit 20. Juni",
         ),
         (day(2026, 6, 30), "Today", "Heute"),
         (day(2026, 7, 1), "Tomorrow", "Morgen"),
@@ -453,8 +453,8 @@ fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
     for (when, _, german) in [
         (
             day(2026, 6, 20),
-            "Jun 20 · Overdue",
-            "20. Juni · Überfällig",
+            "Overdue since Jun 20",
+            "Überfällig seit 20. Juni",
         ),
         (day(2026, 6, 30), "Today", "Heute"),
         (day(2026, 7, 1), "Tomorrow", "Morgen"),
@@ -475,7 +475,7 @@ fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     let midnight = || chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
     speak("en-US");
     let fact = H24.day_fact(day(2026, 6, 29), Some(midnight()), day(2026, 6, 30));
-    assert_eq!(fact.text, "Jun 29 00:00 · Overdue");
+    assert_eq!(fact.text, "Overdue since Jun 29 00:00");
     assert_eq!(fact.tone, crate::widget::Tone::Danger);
     let fact = H24.day_fact(day(2026, 6, 30), Some(midnight()), day(2026, 6, 30));
     assert_eq!(fact.text, "Today 00:00");
@@ -485,7 +485,7 @@ fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     assert_eq!(fact.tone, crate::widget::Tone::Neutral);
     assert_eq!(
         H24.day_fact(day(2026, 12, 31), None, day(2027, 1, 1)).text,
-        "Dec 31, 2026 · Overdue"
+        "Overdue since Dec 31, 2026"
     );
 }
 
@@ -556,29 +556,29 @@ fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
         (
             day(2025, 6, 29),
             (9, 0),
-            "Jun 29, 2025 09:00 · Overdue",
-            "29. Juni 2025 09:00 · Überfällig",
+            "Overdue since Jun 29, 2025 09:00",
+            "Überfällig seit 29. Juni 2025 09:00",
             Tone::Danger,
         ),
         (
             day(2026, 6, 29),
             (14, 30),
-            "Jun 29 14:30 · Overdue",
-            "29. Juni 14:30 · Überfällig",
+            "Overdue since Jun 29 14:30",
+            "Überfällig seit 29. Juni 14:30",
             Tone::Danger,
         ),
         (
             day(2026, 6, 25),
             (7, 5),
-            "Jun 25 07:05 · Overdue",
-            "25. Juni 07:05 · Überfällig",
+            "Overdue since Jun 25 07:05",
+            "Überfällig seit 25. Juni 07:05",
             Tone::Danger,
         ),
         (
             day(2026, 6, 10),
             (7, 5),
-            "Jun 10 07:05 · Overdue",
-            "10. Juni 07:05 · Überfällig",
+            "Overdue since Jun 10 07:05",
+            "Überfällig seit 10. Juni 07:05",
             Tone::Danger,
         ),
     ];

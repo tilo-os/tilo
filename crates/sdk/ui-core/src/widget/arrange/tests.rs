@@ -90,6 +90,59 @@ fn an_absent_child_takes_its_gap_with_it() {
     );
 }
 
+/// A container that leads stands what it holds one row lead in — the gutter a row's leading
+/// control stands in, its cell and the gap after it — so a document's body lands under the text
+/// its heading's control leads to, whatever size the person's controls take.
+#[test]
+fn a_container_that_leads_stands_what_it_holds_under_the_text_a_control_leads_to() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = Theme::dark();
+    for environment in [
+        InteractionEnvironment::POINTER,
+        InteractionEnvironment::TOUCH,
+    ] {
+        let target = f64::from(environment.minimum_target());
+        let heading = Row::row()
+            .fill_width()
+            .push(boxed(target as f32))
+            .push(boxed(100.0));
+        let mut body = Stack::stack().fill_width().push(boxed(100.0));
+        body.set_lead(1);
+        let mut root = Stack::stack()
+            .fill_width()
+            .push(Box::new(heading))
+            .push(Box::new(body));
+        root.set_interaction_environment(environment);
+        solve(&mut root, &theme, 600.0);
+        let r = rects(&root);
+        // The heading's text begins past the control that leads it.
+        let text = r[0].x0 + target + gap(&theme, Rhythm::Related);
+        let held = held_in(&root);
+        assert!(
+            (held.x0 - text).abs() < 0.5,
+            "{environment:?}: the body stands at {}, the text at {text}",
+            held.x0
+        );
+        assert!(
+            (held.x0 - (r[1].x0 + target + gap(&theme, Rhythm::Related))).abs() < 0.5,
+            "{environment:?}: one lead in: {held:?}"
+        );
+        // A container without a lead keeps its content at its edge.
+        let mut plain = Stack::stack().fill_width().push(boxed(100.0));
+        solve(&mut plain, &theme, 600.0);
+        assert!(rects(&plain)[0].x0.abs() < 0.5);
+    }
+}
+
+/// Where the body of `root` — its second child, which leads — holds what is written in it.
+fn held_in(root: &Stack) -> vello::kurbo::Rect {
+    root.children()[1]
+        .children()
+        .first()
+        .map(|child| child.get_rect())
+        .expect("the body holds one child")
+}
+
 #[test]
 fn a_row_runs_leading_to_trailing_and_mirrors_in_right_to_left() {
     let theme = Theme::dark();

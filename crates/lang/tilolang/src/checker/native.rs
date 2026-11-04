@@ -172,9 +172,9 @@ impl Checker<'_> {
                 ],
             ));
         }
-        let has_rows = match (&c.block, &c.item) {
-            (Some(_), Some(_)) => true,
-            (Some(_), None) => {
+        let has_rows = match (&c.block, c.params.as_slice()) {
+            (Some(_), [_]) => true,
+            (Some(_), _) => {
                 self.err(
                     "E097",
                     c.call.span,
@@ -236,8 +236,8 @@ impl Checker<'_> {
             vec![it_ex.clone(), Ex::str("item"), item.clone()],
         ));
         self.st.keys.push(key_local);
-        match (&c.block, &c.item, row_view) {
-            (Some(block), Some(var), _) => {
+        match (&c.block, c.params.as_slice(), row_view) {
+            (Some(block), [var], _) => {
                 self.bind_local(&var.name, fl.item_local);
                 let saved = self.st.ui;
                 self.st.ui.parent = "item";
@@ -1324,6 +1324,14 @@ impl Checker<'_> {
             .filter(|field| field.ty == Ty::Text)
             .cloned();
         let body = Self::role_field(&info, crate::types::FieldRole::is_body).cloned();
+        // Whether the heading opens with the box that says the item is done: what is written
+        // about it then stands one row lead in, under the text the title leads to, the box in
+        // the gutter to its left.
+        let led = done.is_some()
+            && self
+                .env
+                .toolkit
+                .is_some_and(|toolkit| toolkit.get("Checkbox").is_some());
         if done.is_some() || title.is_some() {
             let row = self.new_node("row", concat(key.clone(), Ex::str("#heading")));
             let line = Ex::local(row, Ty::View);
@@ -1421,7 +1429,7 @@ impl Checker<'_> {
             {
                 let n = self.new_node(
                     &crate::toolkit::kind(&d.name),
-                    concat(key, Ex::str("#body")),
+                    concat(key.clone(), Ex::str("#body")),
                 );
                 let view = Ex::local(n, Ty::View);
                 self.bind_part(&view, d, &b, &body, c.call.span);
@@ -1436,7 +1444,18 @@ impl Checker<'_> {
                     Imp::UiPropH,
                     vec![view.clone(), Ex::str("placeholder"), label],
                 ));
-                self.emit(host(Imp::UiChild, vec![node, view]));
+                if led {
+                    let wrap = self.new_node("stack", concat(key, Ex::str("#body-lead")));
+                    let holder = Ex::local(wrap, Ty::View);
+                    self.emit(host(
+                        Imp::UiPropI,
+                        vec![holder.clone(), Ex::str("lead"), Ex::int(1)],
+                    ));
+                    self.emit(host(Imp::UiChild, vec![holder.clone(), view]));
+                    self.emit(host(Imp::UiChild, vec![node, holder]));
+                } else {
+                    self.emit(host(Imp::UiChild, vec![node, view]));
+                }
             } else {
                 let t = self.show(&body.ty);
                 self.err(

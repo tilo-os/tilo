@@ -325,7 +325,15 @@ impl<'a> Parser<'a> {
 
     /// Whether an `(` at the cursor opens the parameters of a lambda, `(a, b) ->`.
     fn params_arrow(&self) -> bool {
-        let mut at = 1;
+        self.params_arrow_at(0)
+    }
+
+    /// Whether the `(` `at` tokens ahead opens the parameters of a lambda.
+    fn params_arrow_at(&self, at: usize) -> bool {
+        if !matches!(self.peek_at(at), Tok::LParen) {
+            return false;
+        }
+        let mut at = at + 1;
         loop {
             if !matches!(self.peek_at(at), Tok::Ident(_)) {
                 return false;
@@ -2514,13 +2522,27 @@ impl<'a> Parser<'a> {
         let node = self.node();
         let call = self.postfix()?;
         let mut block = None;
-        let mut item = None;
+        let mut params = Vec::new();
         if self.is(&Tok::LBrace) {
-            if matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Arrow) {
+            let arrow = (matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::Arrow))
+                || self.params_arrow_at(1);
+            if arrow {
                 // `list(items) { x -> ... }`, or a view that takes a view of an item:
-                // `std.list(nb, nb.notes) { n -> row(n.title) }`.
+                // `std.list(nb, nb.notes) { n -> row(n.title) }`. A block of a template's
+                // function may take several values: `rows(xs) { (x, parent) -> ... }`.
                 self.bump();
-                item = Some(self.ident("the item's name")?);
+                if self.is(&Tok::LParen) {
+                    self.bump();
+                    params.push(self.ident("the block's name")?);
+                    while self.is(&Tok::Comma) {
+                        self.bump();
+                        params.push(self.ident("the block's name")?);
+                    }
+                    self.expect(&Tok::RParen)?;
+                } else {
+                    params.push(self.ident("the item's name")?);
+                }
                 self.expect(&Tok::Arrow)?;
                 block = Some(self.ui_block_rest()?);
             } else {
@@ -2539,7 +2561,7 @@ impl<'a> Parser<'a> {
         Ok(UiCall {
             node,
             call,
-            item,
+            params,
             block,
             anchor,
         })

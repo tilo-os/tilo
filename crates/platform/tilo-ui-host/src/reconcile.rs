@@ -261,6 +261,15 @@ fn position(node: &UiNode) -> Option<At> {
     })
 }
 
+/// How many leads a node reserves before its own content (`lead: 1`): a document's body stands
+/// one lead in, under the text its heading's control leads to.
+fn lead(node: &UiNode) -> i16 {
+    match prop(node, "lead") {
+        Some(Value::Int(count)) => i16::try_from(*count).unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// The tree as it is drawn: a `page` inside another page, or inside a block's view, is a plain
 /// stack. A page is the outermost layout of a window (gutter, readable measure); a view shown
 /// within another view's layout takes the width that layout offers and adds no second gutter.
@@ -410,6 +419,8 @@ trait SlotHost {
     fn remove(&mut self, index: usize);
     fn move_slot(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
+    /// Reserve `lead` leads before what the container holds.
+    fn set_lead(&mut self, lead: i16);
 }
 
 impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange::Arranged<L> {
@@ -436,6 +447,10 @@ impl<L: ui::widget::arrange::Layout + 'static> SlotHost for ui::widget::arrange:
     fn set_placement(&mut self, index: usize, placement: Placement) {
         let Placement { fit, span, at } = placement;
         ui::widget::arrange::Arranged::set_placement(self, index, fit, span, at);
+    }
+
+    fn set_lead(&mut self, lead: i16) {
+        ui::widget::arrange::Arranged::set_lead(self, lead);
     }
 }
 
@@ -658,6 +673,18 @@ impl Reconciler {
 
     /// The widgets of the tree under `node`.
     pub fn build(&mut self, node: &UiNode) -> Element {
+        let mut element = self.build_kind(node);
+        // A container's lead is its own padding: what it holds stands that far in from its
+        // leading edge, under the text a heading's control leads to.
+        let lead = lead(node);
+        if lead > 0 {
+            with_host(&mut element, |host| host.set_lead(lead));
+        }
+        element
+    }
+
+    /// The widget of `node` itself, before the lead its arguments reserve.
+    fn build_kind(&mut self, node: &UiNode) -> Element {
         if crate::adapter::component_name(&node.kind).is_some() {
             return self.component(node);
         }
@@ -1925,6 +1952,35 @@ mod tests {
             .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
             .collect();
         assert_eq!(after, before, "both keep their pane");
+    }
+
+    /// The stack `element` is, as the arrangement that leads what it holds.
+    fn arrangement(
+        element: &mut Element,
+    ) -> &mut ui::widget::arrange::Arranged<ui::widget::arrange::FlexLayout> {
+        element
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut())
+            .expect("a stack is an arrangement")
+    }
+
+    #[test]
+    fn a_container_that_leads_stands_its_content_one_lead_in() {
+        let mut reconciler = reconciler();
+        let mut led = stack("s", vec![text("a", "a")]);
+        led.props.insert("lead".to_owned(), Value::Int(1));
+        let mut built = reconciler.build(&led);
+        assert_eq!(
+            arrangement(&mut built).lead(),
+            1,
+            "the node's lead is the container's"
+        );
+        let mut plain = reconciler.build(&stack("p", vec![text("b", "b")]));
+        assert_eq!(
+            arrangement(&mut plain).lead(),
+            0,
+            "a container without one keeps its edge"
+        );
     }
 
     #[test]

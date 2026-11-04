@@ -3,7 +3,8 @@
 use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
-use super::arranged::{Arranged, Layout, Resolved, Slot, wrapper_style};
+use super::Side;
+use super::arranged::{Arranged, Layout, Resolved, Slot, lead_container, wrapper_style};
 use super::units::{Align, Axis, Direction, Distribute};
 use crate::tokens::Rhythm;
 
@@ -27,42 +28,54 @@ impl Layout for FlexLayout {
         }
     }
 
-    fn container(&self, resolved: &Resolved) -> Style {
+    fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gap = length(resolved.gap(self.gap));
-        Style {
-            display: taffy::Display::Flex,
-            flex_direction: match self.axis {
-                Axis::Block => taffy::FlexDirection::Column,
-                Axis::Inline => self.direction.row(),
-            },
-            flex_wrap: if self.wrap {
-                taffy::FlexWrap::Wrap
-            } else {
-                taffy::FlexWrap::NoWrap
-            },
-            align_items: Some(self.align.items()),
-            justify_content: Some(self.distribute.justify()),
-            gap: Size {
-                width: gap,
-                height: gap,
-            },
-            min_size: Size {
-                width: length(0.0_f32),
-                height: taffy::Dimension::auto(),
-            },
-            size: Size {
-                width: if self.full_width {
-                    taffy::style_helpers::percent(1.0_f32)
-                } else {
-                    taffy::Dimension::auto()
+        lead_container(
+            Style {
+                display: taffy::Display::Flex,
+                flex_direction: match self.axis {
+                    Axis::Block => taffy::FlexDirection::Column,
+                    Axis::Inline => self.direction.row(),
                 },
-                height: if self.full_height {
-                    taffy::style_helpers::percent(1.0_f32)
+                flex_wrap: if self.wrap {
+                    taffy::FlexWrap::Wrap
                 } else {
-                    taffy::Dimension::auto()
+                    taffy::FlexWrap::NoWrap
                 },
+                align_items: Some(self.align.items()),
+                justify_content: Some(self.distribute.justify()),
+                gap: Size {
+                    width: gap,
+                    height: gap,
+                },
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                size: Size {
+                    width: if self.full_width {
+                        taffy::style_helpers::percent(1.0_f32)
+                    } else {
+                        taffy::Dimension::auto()
+                    },
+                    height: if self.full_height {
+                        taffy::style_helpers::percent(1.0_f32)
+                    } else {
+                        taffy::Dimension::auto()
+                    },
+                },
+                ..Style::default()
             },
-            ..Style::default()
+            lead,
+            self.leading(),
+        )
+    }
+
+    /// A row written right to left leads on the right.
+    fn leading(&self) -> Side {
+        match self.direction {
+            Direction::Rtl => Side::Trailing,
+            Direction::Ltr => Side::Leading,
         }
     }
 

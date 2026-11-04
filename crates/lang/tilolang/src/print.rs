@@ -426,13 +426,13 @@ fn bind_text(b: &crate::ast::LetBind, col: usize, level: usize, ctx: &mut Ctx) -
 
 /// A calendar literal as written: an instant without its seconds when they are zero.
 fn calendar_text(text: &str) -> String {
-    match text {
-        // The canonical text carries the seconds a time may be written without.
-        _ if text.len() == 20 && text.ends_with(":00Z") => {
-            format!("{}Z", text.trim_end_matches(":00Z"))
-        }
-        _ if text.len() == 19 && text.ends_with(":00") => text.trim_end_matches(":00").to_owned(),
-        _ => text.to_owned(),
+    // The canonical text carries the seconds a time may be written without.
+    match text.strip_suffix(":00Z") {
+        Some(minutes) if text.len() == 20 => format!("{minutes}Z"),
+        _ => match text.strip_suffix(":00") {
+            Some(minutes) if text.len() == 19 => minutes.to_owned(),
+            _ => text.to_owned(),
+        },
     }
 }
 
@@ -1423,11 +1423,14 @@ impl Printer<'_> {
             .as_ref()
             .map(|a| format!(" as {}", a.name))
             .unwrap_or_default();
-        let item = c
-            .item
-            .as_ref()
-            .map(|i| format!(" {} ->", i.name))
-            .unwrap_or_default();
+        let item = match c.params.as_slice() {
+            [] => String::new(),
+            [one] => format!(" {} ->", one.name),
+            many => {
+                let names: Vec<&str> = many.iter().map(|p| p.name.as_str()).collect();
+                format!(" ({}) ->", names.join(", "))
+            }
+        };
         // What follows the call on its line: the block it opens, or the name it is anchored to.
         let after = match &c.block {
             None => anchor.clone(),

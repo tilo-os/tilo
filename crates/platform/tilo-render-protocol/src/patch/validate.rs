@@ -84,7 +84,7 @@ impl Default for PatchLimits {
 
 /// The sizing and placement arguments every node takes (`fill`, `min: 12.rem`, `at`).
 pub const NODE_ARGS: &[&str] = &[
-    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at",
+    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at", "lead",
 ];
 
 /// Every primitive of the language a view may send: the layouts, controls and blocks the host

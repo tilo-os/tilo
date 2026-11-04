@@ -138,8 +138,12 @@ pub const PREVIEW_ROWS: i64 = 5;
 pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap"];
 
 /// Sizing and placement arguments accepted by every UI call, including view calls.
+///
+/// `lead` counts row leads — the gutter a row's leading control stands in, its cell and the
+/// gap after it: a container that says `lead: 1` stands its content one lead in, under the
+/// text a heading's control leads to.
 pub const NODE_ARGS: &[&str] = &[
-    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at",
+    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at", "lead",
 ];
 
 /// Bare flags accepted by every UI call: `truncate`, `fill`.

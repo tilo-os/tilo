@@ -882,8 +882,9 @@ pub struct UiCall {
     pub node: NodeId,
     /// A call of a UI primitive or of a view, or a bare name.
     pub call: Expr,
-    /// The item name of a list's item block: `list(xs) { x -> ... }`.
-    pub item: Option<Ident>,
+    /// The names a block opens with: `list(xs) { x -> ... }`, or a template's function of
+    /// several values, `rows(xs) { (x, under) -> ... }`. Empty for a plain block.
+    pub params: Vec<Ident>,
     pub block: Option<Vec<UiStmt>>,
     pub anchor: Option<Ident>,
 }
