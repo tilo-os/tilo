@@ -19,11 +19,14 @@
 //! pixels on each.
 //!
 //! Two lines per key say how long it took on this client's own clock:
-//! `CLIENT-KEY n=<key> key_to_commit_us=<us>`, from the key's dispatch to the
-//! commit that answers it, and `CLIENT-FRAME n=<key> key_to_frame_us=<us>`,
-//! from the dispatch to the frame callback the compositor sends once that
-//! commit is on screen. It is the same measurement against any session,
-//! because nothing in it depends on the session's own instrumentation.
+//! `CLIENT-KEY n=<key> key_to_commit_us=<us> at_us=<us>`, from the key's
+//! dispatch to the commit that answers it, and `CLIENT-FRAME n=<key>
+//! key_to_frame_us=<us> at_us=<us>`, from the dispatch to the frame callback
+//! the compositor sends once that commit is on screen. `at_us` is when the
+//! line's event happened on the client's start, on one timeline for every
+//! key, so a run's frames can be placed on the display's blank grid. It is
+//! the same measurement against any session, because nothing in it depends
+//! on the session's own instrumentation.
 
 #![allow(
     clippy::unwrap_used,
@@ -100,6 +103,9 @@ struct Client {
     showing: VecDeque<Option<(u32, Instant)>>,
     /// Keys typed so far, the number on its line.
     keys: u32,
+    /// When this process started: the clock both lines also stamp, so
+    /// every key's commit and frame can be placed on one timeline.
+    started: Instant,
 }
 
 /// LINEAR dma-bufs the client draws into with the CPU through GBM.
@@ -213,6 +219,7 @@ fn main() {
         configured: false,
         exit: false,
         typed: 0,
+        started: Instant::now(),
         damage,
         dmabuf,
         scale,
@@ -353,8 +360,9 @@ impl Client {
         // the commit before it: a key's, or a redraw's the key did not cause.
         let answer = self.pressing.take().map(|(number, press_at)| {
             eprintln!(
-                "CLIENT-KEY n={number} key_to_commit_us={}",
+                "CLIENT-KEY n={number} key_to_commit_us={} at_us={}",
                 commit_at.duration_since(press_at).as_micros(),
+                commit_at.duration_since(self.started).as_micros(),
             );
             (number, press_at)
         });
@@ -501,9 +509,11 @@ impl CompositorHandler for Client {
         let Some((number, press_at)) = answer else {
             return;
         };
+        let shown_at = Instant::now();
         eprintln!(
-            "CLIENT-FRAME n={number} key_to_frame_us={}",
-            Instant::now().duration_since(press_at).as_micros(),
+            "CLIENT-FRAME n={number} key_to_frame_us={} at_us={}",
+            shown_at.duration_since(press_at).as_micros(),
+            shown_at.duration_since(self.started).as_micros(),
         );
     }
     fn surface_enter(
