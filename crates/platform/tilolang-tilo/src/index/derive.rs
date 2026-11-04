@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use automerge::{ObjId, ReadDoc};
+use tilolang_runtime::derived::parent_in;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::place::{Place, Resolved};
 use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, doc_of};
@@ -48,13 +49,13 @@ pub fn open_field(column: &str) -> String {
 /// A type with none has every item open.
 fn open_of(sink: &mut impl Sink, path: &str, schema: &TypeSchema) -> Result<bool, IndexError> {
     match schema.done() {
-        Some(done) => Ok(!finished(sink.field(path, done)?)),
+        Some(done) => Ok(!finished(sink.field(path, done)?.as_ref())),
         None => Ok(false),
     }
 }
 
 /// Whether the done field's value says the item is finished.
-fn finished(value: Option<FieldValue>) -> bool {
+fn finished(value: Option<&FieldValue>) -> bool {
     matches!(
         value,
         Some(FieldValue::Scalar(tilolang_runtime::store::Scalar::Bool(
@@ -757,13 +758,12 @@ impl<'d> Derive<'d> {
             // it is finished. The counts keep them apart from the finished items', so a place's
             // count reads how many it holds without reading the run.
             if split {
-                let open = match open {
-                    Some(open) => open,
-                    None => {
-                        let held = open_of(sink, path, schema)?;
-                        open = Some(held);
-                        held
-                    }
+                let open = if let Some(open) = open {
+                    open
+                } else {
+                    let held = open_of(sink, path, schema)?;
+                    open = Some(held);
+                    held
                 };
                 let counted = if open { now.clone() } else { Vec::new() };
                 let was = sink
@@ -930,7 +930,8 @@ impl<'d> Derive<'d> {
                 item_schema
                     .done()
                     .and_then(|done| item_schema.field(done))
-                    .map(|field| self.value(found.obj.as_ref(), field)),
+                    .map(|field| self.value(found.obj.as_ref(), field))
+                    .as_ref(),
             );
             for (column, values) in values {
                 let schema = item_schema.column(&column);
@@ -1375,11 +1376,8 @@ impl<'d> Derive<'d> {
         let (holder, field, key) = &placed;
         self.index_columns(sink, path, own, Some((holder, field, key)), None)?;
         if let Some(parent) = parent {
-            let before = was.as_ref().and_then(derived::parent_in);
-            let now = sink
-                .field(path, parent)?
-                .as_ref()
-                .and_then(derived::parent_in);
+            let before = was.as_ref().and_then(parent_in);
+            let now = sink.field(path, parent)?.as_ref().and_then(parent_in);
             derived::reparent(sink, path, parent, before.as_deref(), now.as_deref())?;
             for above in [before.as_deref(), now.as_deref()].into_iter().flatten() {
                 self.derive_item_and_up(sink, above)?;
@@ -1450,8 +1448,8 @@ impl<'d> Derive<'d> {
         }
         // The values derived from the field: on the item, and up the items it stands under.
         if schema.parent() == Some(field) {
-            let before = before.as_ref().and_then(derived::parent_in);
-            let now = derived::parent_in(&now);
+            let before = before.as_ref().and_then(parent_in);
+            let now = parent_in(&now);
             derived::reparent(sink, path, field, before.as_deref(), now.as_deref())?;
             for above in [before.as_deref(), now.as_deref()].into_iter().flatten() {
                 self.derive_item_and_up(sink, above)?;
@@ -1485,7 +1483,7 @@ impl<'d> Derive<'d> {
             if !worked {
                 continue;
             }
-            let now = derived::eval(sink, path, schema, expr)?;
+            let now = derived::eval(sink, path, expr)?;
             let before = field_value(sink, path, field)?;
             if now.is(&before) {
                 continue;

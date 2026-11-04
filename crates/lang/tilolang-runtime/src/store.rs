@@ -14,6 +14,7 @@ use serde_json::Value as Json;
 use crate::flow::Journal;
 use crate::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use crate::meta::FieldKind;
+use crate::registry::TypeInfo;
 use crate::value::ResourceRef;
 
 #[derive(Debug, thiserror::Error)]
@@ -1037,6 +1038,14 @@ pub trait Store {
     ///
     /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
+
+    /// The types every loaded package declares, as the runtime loads and reloads them. A store
+    /// that works a derived key out as it reads it ([`crate::derived`]) finds what a key reads
+    /// — the type's fields and the field an item stands under — in them; a store that keeps an
+    /// index is told them when its schema is registered.
+    fn loaded_types(&mut self, types: &[Rc<TypeInfo>]) {
+        let _ = types;
+    }
 
     /// The items of the collection `field` of `at`, in order, shared: a view reads the length
     /// or one item of a large collection through this without copying the others. A store that

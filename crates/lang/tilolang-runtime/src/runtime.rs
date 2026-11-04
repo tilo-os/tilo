@@ -114,7 +114,10 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         let core = Core::new(Box::new(store), Box::new(authority), limits)
             .map_err(RuntimeError::Package)?;
-        Ok(Self { core })
+        let runtime = Self { core };
+        // The types the host provides to every module, such as `Invocation`.
+        runtime.publish_types();
+        Ok(runtime)
     }
 
     /// Compile a module (cached by content hash), check it exports everything its metadata
@@ -135,6 +138,7 @@ impl Runtime {
             .borrow_mut()
             .add(pkg)
             .map_err(RuntimeError::Package)?;
+        self.publish_types();
         Ok(hash)
     }
 
@@ -159,7 +163,15 @@ impl Runtime {
             .borrow_mut()
             .replace(pkg)
             .map_err(RuntimeError::Package)?;
+        self.publish_types();
         Ok(hash)
+    }
+
+    /// Give the store the types every loaded package declares: what a store that works a
+    /// derived key out as it reads it finds the key and its parent field by.
+    fn publish_types(&self) {
+        let types = self.core.registry.borrow().loaded_types();
+        self.core.store.borrow_mut().loaded_types(&types);
     }
 
     fn check_exports(&self, hash: &ModuleHash, meta: &Meta) -> Result<(), RuntimeError> {
@@ -235,12 +247,15 @@ impl Runtime {
     pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = ModuleHash::of_bytes(&meta.to_json_bytes());
         let pkg = crate::registry::Package::foreign(hash, meta).map_err(RuntimeError::Package)?;
-        self.core
+        let hash = self
+            .core
             .registry
             .borrow_mut()
             .add(pkg)
             .map(|pkg| pkg.hash.clone())
-            .map_err(RuntimeError::Package)
+            .map_err(RuntimeError::Package)?;
+        self.publish_types();
+        Ok(hash)
     }
 
     /// Load another app's package with its module: its views run here, inline in the views
@@ -264,6 +279,7 @@ impl Runtime {
             .borrow_mut()
             .add(pkg)
             .map_err(RuntimeError::Package)?;
+        self.publish_types();
         Ok(hash)
     }
 

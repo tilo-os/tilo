@@ -18,6 +18,7 @@ pub mod catalogue;
 mod colls;
 mod core;
 pub mod delegate;
+pub mod derived;
 mod embed;
 pub mod engine;
 pub mod error;

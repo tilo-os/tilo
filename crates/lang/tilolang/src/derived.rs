@@ -6,10 +6,11 @@
 //! the task it stands under. Everything else — that a branch is done through, how many of a
 //! task's subtasks are done — follows from those facts and the other items, and a copy of it in
 //! the record would be a second truth that two people's changes could leave disagreeing. The
-//! store derives it from the collection and keeps the answer where it reads fields from (the
-//! index, `tilolang_tilo::index`), so a view reads a derived key as it reads a field, at the
-//! same cost, and a change updates the few items whose answer it changes: the item and the ones
-//! it stands under, and the ones under a key that reads them.
+//! store works it out from the collection (`tilolang_runtime::derived`, the one evaluator every
+//! store reads its keys through): an index keeps the answer where it reads fields from, so a view
+//! reads a derived key as it reads a field, at the same cost, and a change updates the few items
+//! whose answer it changes: the item and the ones it stands under, and the ones under a key that
+//! reads them; a store that keeps no index works the key out as it is read, over its documents.
 //!
 //! A derived key reads the item's own fields and, through the type's parent field
 //! (`parent: Option<Task> (parent)`), the items standing directly under it (`children`) and the
@@ -113,6 +114,38 @@ impl<F> Derived<F> {
                 left.each(f);
                 right.each(f);
             }
+        }
+    }
+
+    /// The expression with each field replaced by `f(field)` (`derive folded: Bool = done` names
+    /// `done` by its name; a store reads the record's fields by id).
+    #[must_use]
+    pub fn map<G>(&self, f: &dyn Fn(&F) -> G) -> Derived<G> {
+        match self {
+            Self::Bool(b) => Derived::Bool(*b),
+            Self::Int(i) => Derived::Int(*i),
+            Self::Field(field) => Derived::Field(f(field)),
+            Self::Not(inner) => Derived::Not(Box::new(inner.map(f))),
+            Self::And(parts) => Derived::And(parts.iter().map(|p| p.map(f)).collect()),
+            Self::Or(parts) => Derived::Or(parts.iter().map(|p| p.map(f)).collect()),
+            Self::Compare { op, left, right } => Derived::Compare {
+                op: *op,
+                left: Box::new(left.map(f)),
+                right: Box::new(right.map(f)),
+            },
+            Self::Children => Derived::Children,
+            Self::Count { holds } => Derived::Count {
+                holds: Box::new(holds.map(f)),
+            },
+            Self::All { holds } => Derived::All {
+                holds: Box::new(holds.map(f)),
+            },
+            Self::Any { holds } => Derived::Any {
+                holds: Box::new(holds.map(f)),
+            },
+            Self::Above { holds } => Derived::Above {
+                holds: Box::new(holds.map(f)),
+            },
         }
     }
 

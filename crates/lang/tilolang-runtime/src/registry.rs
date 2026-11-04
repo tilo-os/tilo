@@ -5,6 +5,9 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
+use tilolang::derived::Derived;
+use tilolang::types::FieldRole;
+
 use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
     ActionMeta, EnumMeta, FieldKind, FlowMeta, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta,
@@ -19,6 +22,9 @@ pub struct FieldInfo {
     pub ty: Ty,
     pub kind: FieldKind,
     pub default: Option<Json>,
+    /// What a store works it out from, for a `derive` key: a value no record holds
+    /// ([`crate::derived`]).
+    pub derived: Option<Derived<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,6 +35,9 @@ pub struct TypeInfo {
     /// `mark others` in its `search` block: another person's change to it is marked unseen
     /// for a reader, as an agent's is (task-legibility.md §4).
     pub mark_others: bool,
+    /// The field holding the item a record stands under (`(parent)`): the one its derived
+    /// keys read the items above and under it through.
+    pub parent: Option<String>,
 }
 
 impl TypeInfo {
@@ -153,20 +162,36 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         .map(|f| {
             let ty = parse_ty(&f.ty, app).map_err(|e| format!("{}.{}: {e}", t.name, f.name))?;
             let kind = field_kind(f, &ty);
+            // A key's expression names the type's fields; a record holds them under their ids.
+            let derived = f.derived.as_ref().map(|expr| {
+                expr.map(&|name| {
+                    t.fields
+                        .iter()
+                        .find(|field| field.name == *name)
+                        .map_or_else(|| name.to_owned(), |field| field.id.clone())
+                })
+            });
             Ok(FieldInfo {
                 id: f.id.clone(),
                 name: f.name.clone(),
                 ty,
                 kind,
                 default: f.default.clone(),
+                derived,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let parent = t
+        .fields
+        .iter()
+        .find(|f| matches!(f.role, Some(FieldRole::Parent)))
+        .map(|f| f.id.clone());
     Ok(TypeInfo {
         id: t.id.clone(),
         name: t.name.clone(),
         fields,
         mark_others: t.search.mark_others,
+        parent,
     })
 }
 
@@ -327,6 +352,15 @@ impl Registry {
 
     pub fn type_owner(&self, ty: &str) -> Option<&ModuleHash> {
         self.types.get(ty)
+    }
+
+    /// Every type every loaded package declares, for a store that works a derived key out as
+    /// it reads it ([`crate::derived`]).
+    pub fn loaded_types(&self) -> Vec<Rc<TypeInfo>> {
+        self.packages
+            .values()
+            .flat_map(|p| p.types.iter().cloned())
+            .collect()
     }
 
     pub fn type_info(&self, ty: &str) -> Option<(Rc<Package>, Rc<TypeInfo>)> {

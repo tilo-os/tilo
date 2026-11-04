@@ -6,11 +6,12 @@
 //! their parent field ([`children_list`]), kept as an item is placed, dropped and moved, so
 //! counting them or checking every one costs the items under the item and nothing else. A
 //! derived key is written as a field of the item, and read as one; only [`super::derive`]
-//! writes it.
+//! writes it. What a key says is worked out by [`tilolang_runtime::derived`], the one evaluator
+//! every store reads its keys through; this module is what that evaluator reads here.
 
 use tilolang::derived::Derived;
-use tilolang::pred::Lit;
-use tilolang_runtime::store::{FieldValue, Scalar, doc_of};
+use tilolang_runtime::derived::{Computed, Facts};
+use tilolang_runtime::store::doc_of;
 
 use super::IndexError;
 use super::derive::{Sink, item_path, member_list};
@@ -30,56 +31,49 @@ pub fn child_entry(id: &str) -> Entry {
     (id.to_owned(), id.to_owned())
 }
 
-/// A value a derived key's expression computed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Computed {
-    Bool(bool),
-    Int(i64),
-}
-
-impl Computed {
-    /// What a field of the item holds of it.
-    #[must_use]
-    pub fn value(self) -> FieldValue {
-        FieldValue::Scalar(match self {
-            Self::Bool(b) => Scalar::Bool(b),
-            Self::Int(i) => Scalar::Int(i),
-        })
-    }
-
-    /// Whether a field's value is it.
-    #[must_use]
-    pub fn is(self, value: &FieldValue) -> bool {
-        match (self, value) {
-            (Self::Bool(b), FieldValue::Scalar(Scalar::Bool(held))) => b == *held,
-            (Self::Int(i), FieldValue::Scalar(Scalar::Int(held)) | FieldValue::Counter(held)) => {
-                i == *held
-            }
-            _ => false,
-        }
-    }
-
-    fn of(value: &FieldValue) -> Option<Self> {
-        match value {
-            FieldValue::Scalar(Scalar::Bool(b)) => Some(Self::Bool(*b)),
-            FieldValue::Scalar(Scalar::Int(i)) | FieldValue::Counter(i) => Some(Self::Int(*i)),
-            _ => None,
-        }
-    }
-}
-
 /// What the field `field` of the item at `path` holds, as a derived key reads it: its value, or
 /// what an item without one holds.
 fn held(sink: &mut impl Sink, path: &str, field: &FieldSchema) -> Result<Computed, IndexError> {
     let value = sink.field(path, &field.id)?;
-    if let Some(now) = value.as_ref().and_then(Computed::of) {
-        return Ok(now);
+    Ok(Computed::held(value.as_ref(), &field.default))
+}
+
+/// The sink as the evaluator reads it: the fields of an item from the index, the items under it
+/// from its children list, and the item it stands under from its parent field.
+struct FactsOf<'a, S: Sink>(&'a mut S);
+
+impl<S: Sink> Facts for FactsOf<'_, S> {
+    type Error = IndexError;
+
+    fn field(&mut self, path: &str, field: &str) -> Result<Computed, IndexError> {
+        let Some(schema) = type_of(self.0, path)? else {
+            return Ok(Computed::Bool(false));
+        };
+        match schema.field(field) {
+            Some(field) => held(self.0, path, field),
+            None => Ok(Computed::Bool(false)),
+        }
     }
-    Ok(match field.default {
-        serde_json::Value::Bool(b) => Computed::Bool(b),
-        serde_json::Value::Number(ref n) if n.is_i64() => Computed::Int(n.as_i64().unwrap_or(0)),
-        _ => Computed::Bool(false),
-    })
+
+    fn children(&mut self, path: &str) -> Result<Vec<String>, IndexError> {
+        let Some(schema) = type_of(self.0, path)? else {
+            return Ok(Vec::new());
+        };
+        Ok(children_in(self.0, path, schema)?
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect())
+    }
+
+    fn above(&mut self, path: &str) -> Result<Option<String>, IndexError> {
+        let Some(schema) = type_of(self.0, path)? else {
+            return Ok(None);
+        };
+        let Some(parent) = schema.parent() else {
+            return Ok(None);
+        };
+        parent_of(self.0, path, parent)
+    }
 }
 
 /// The path the item at `path` stands under, through the parent field `parent`: `None` when it
@@ -92,86 +86,37 @@ pub fn parent_of(
     path: &str,
     parent: &str,
 ) -> Result<Option<String>, IndexError> {
-    Ok(sink.field(path, parent)?.as_ref().and_then(parent_in))
+    Ok(sink
+        .field(path, parent)?
+        .as_ref()
+        .and_then(tilolang_runtime::derived::parent_in))
 }
 
-/// The path a parent field's value names: the item the record stands under, `None` for one
-/// standing under none.
-#[must_use]
-pub fn parent_in(value: &FieldValue) -> Option<String> {
-    match value {
-        FieldValue::Scalar(Scalar::Json(json)) => match Lit::of_json(json) {
-            Some(Lit::Ref(path)) => Some(path),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Evaluate `expr` for the item at `path`, of the type `schema`, reading its fields and the
-/// items standing under it from `sink`.
+/// Evaluate `expr` for the item at `path` over the index.
 ///
 /// # Errors
 /// The index cannot be read.
 pub fn eval(
     sink: &mut impl Sink,
     path: &str,
-    schema: &TypeSchema,
     expr: &Derived<String>,
 ) -> Result<Computed, IndexError> {
-    Ok(match expr {
-        Derived::Bool(b) => Computed::Bool(*b),
-        Derived::Int(i) => Computed::Int(*i),
-        Derived::Field(id) => match schema.field(id) {
-            Some(field) => held(sink, path, field)?,
-            None => Computed::Bool(false),
-        },
-        Derived::Not(inner) => match eval(sink, path, schema, inner)? {
-            Computed::Bool(b) => Computed::Bool(!b),
-            count @ Computed::Int(_) => count,
-        },
-        Derived::And(parts) => {
-            for part in parts {
-                if eval(sink, path, schema, part)? != Computed::Bool(true) {
-                    return Ok(Computed::Bool(false));
-                }
-            }
-            Computed::Bool(true)
-        }
-        Derived::Or(parts) => {
-            for part in parts {
-                if eval(sink, path, schema, part)? == Computed::Bool(true) {
-                    return Ok(Computed::Bool(true));
-                }
-            }
-            Computed::Bool(false)
-        }
-        Derived::Compare { op, left, right } => {
-            let (Computed::Int(left), Computed::Int(right)) = (
-                eval(sink, path, schema, left)?,
-                eval(sink, path, schema, right)?,
-            ) else {
-                return Ok(Computed::Bool(false));
-            };
-            Computed::Bool(op.holds(left, right))
-        }
-        Derived::Children => Computed::Int(count(sink, path, schema, None)?),
-        Derived::Count { holds } => Computed::Int(count(sink, path, schema, Some(holds))?),
-        Derived::All { holds } => Computed::Bool(every(sink, path, schema, holds, true)?),
-        Derived::Any { holds } => Computed::Bool(every(sink, path, schema, holds, false)?),
-        Derived::Above { holds } => {
-            // The items it stands under, through the item each of them stands under: one with
-            // none above it holds.
-            let mut all = true;
-            for at in chain(sink, path)?.into_iter().skip(1) {
-                if eval(sink, &at, schema, holds)? != Computed::Bool(true) {
-                    all = false;
-                    break;
-                }
-            }
-            Computed::Bool(all)
-        }
-    })
+    tilolang_runtime::derived::eval(&mut FactsOf(sink), path, expr)
+}
+
+/// The items standing under the item at `path` (of the type `schema`), as their list's entries.
+///
+/// # Errors
+/// The index cannot be read.
+fn children_in(
+    sink: &mut impl Sink,
+    path: &str,
+    schema: &TypeSchema,
+) -> Result<Vec<Entry>, IndexError> {
+    let Some(parent) = schema.parent() else {
+        return Ok(Vec::new());
+    };
+    sink.entries(&children_list(path, parent))
 }
 
 /// The items standing under the item at `path`, as their paths.
@@ -183,11 +128,7 @@ pub fn children(
     path: &str,
     schema: &TypeSchema,
 ) -> Result<Vec<String>, IndexError> {
-    let Some(parent) = schema.parent() else {
-        return Ok(Vec::new());
-    };
-    Ok(sink
-        .entries(&children_list(path, parent))?
+    Ok(children_in(sink, path, schema)?
         .into_iter()
         .map(|(_, id)| item_path(doc_of(path), &id))
         .collect())
@@ -232,54 +173,6 @@ pub fn reach(schema: &TypeSchema, field: &FieldSchema) -> Reach {
     Reach::Under
 }
 
-/// How many items stand under the item at `path`, those holding `holds` when it is given.
-fn count(
-    sink: &mut impl Sink,
-    path: &str,
-    schema: &TypeSchema,
-    holds: Option<&Derived<String>>,
-) -> Result<i64, IndexError> {
-    let Some(parent) = schema.parent() else {
-        return Ok(0);
-    };
-    let entries = sink.entries(&children_list(path, parent))?;
-    if holds.is_none() {
-        return Ok(i64::try_from(entries.len()).unwrap_or(i64::MAX));
-    }
-    let mut n = 0_i64;
-    for (_, id) in entries {
-        let child = item_path(doc_of(path), &id);
-        if eval(sink, &child, schema, holds.unwrap_or(&Derived::Bool(false)))?
-            == Computed::Bool(true)
-        {
-            n = n.saturating_add(1);
-        }
-    }
-    Ok(n)
-}
-
-/// Whether every item standing under the item at `path` holds `holds` (`all`), or one of them
-/// does.
-fn every(
-    sink: &mut impl Sink,
-    path: &str,
-    schema: &TypeSchema,
-    holds: &Derived<String>,
-    all: bool,
-) -> Result<bool, IndexError> {
-    let Some(parent) = schema.parent() else {
-        return Ok(all);
-    };
-    for (_, id) in sink.entries(&children_list(path, parent))? {
-        let child = item_path(doc_of(path), &id);
-        let holds = eval(sink, &child, schema, holds)? == Computed::Bool(true);
-        if holds != all {
-            return Ok(!all);
-        }
-    }
-    Ok(all)
-}
-
 /// Whether the type `schema` derives any value from the field `field`.
 #[must_use]
 pub fn reads(schema: &TypeSchema, field: &str) -> bool {
@@ -306,22 +199,7 @@ pub fn type_of(
 /// # Errors
 /// The index cannot be read.
 pub fn chain(sink: &mut impl Sink, path: &str) -> Result<Vec<String>, IndexError> {
-    let mut out = vec![path.to_owned()];
-    let mut at = path.to_owned();
-    while let Some(schema) = type_of(sink, &at)? {
-        let Some(parent) = schema.parent() else {
-            break;
-        };
-        let Some(above) = parent_of(sink, &at, parent)? else {
-            break;
-        };
-        if out.contains(&above) {
-            break;
-        }
-        out.push(above.clone());
-        at = above;
-    }
-    Ok(out)
+    tilolang_runtime::derived::chain(&mut FactsOf(sink), path)
 }
 
 /// How deep the item at `path` stands among the items it stands under.

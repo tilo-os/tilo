@@ -29,10 +29,12 @@ use automerge::{
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming;
 
+use crate::derived::{Computed, Facts};
 use crate::flow::Journal;
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
+use crate::registry::{FieldInfo, TypeInfo};
 use crate::store::{
     Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
     NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store, StoreError, SubId, Txn,
@@ -79,6 +81,9 @@ struct Inner {
     journals: BTreeMap<RunId, String>,
     /// Each document's items resolved into their collections, as the document is now.
     resolved: RefCell<HashMap<DocId, Rc<Resolved>>>,
+    /// The types the runtime loaded, by id: what a derived key and its parent field are found
+    /// by ([`crate::derived`]).
+    types: BTreeMap<TypeId, Rc<TypeInfo>>,
 }
 
 /// The Automerge-backed reference store.
@@ -107,6 +112,7 @@ impl AmStore {
                 next_sub: 1,
                 journals: BTreeMap::new(),
                 resolved: RefCell::new(HashMap::new()),
+                types: BTreeMap::new(),
             })),
         }
     }
@@ -246,6 +252,14 @@ impl Inner {
         item_obj(doc, item).ok_or_else(|| not_found(format!("item `{item}`")))
     }
 
+    /// The type of the resource at `at`, when the runtime loaded the package declaring it.
+    fn type_at(&self, at: &ResourceRef) -> Option<Rc<TypeInfo>> {
+        let doc = self.doc(&at.doc).ok()?;
+        let obj = self.locate(at).ok()?;
+        let ty = str_at(doc, &obj, TYPE_KEY)?;
+        self.types.get(&ty).cloned()
+    }
+
     /// The items of the collection `field` of `at`, with their order keys.
     fn members(&self, at: &ResourceRef, field: &str) -> Result<Vec<(String, String)>, StoreError> {
         Ok(self
@@ -383,6 +397,123 @@ fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldV
             }
             None => Ok(FieldValue::Entries(Vec::new())),
         },
+    }
+}
+
+/// The fields of a type, as the store reads one of them.
+fn spec(field: &FieldInfo) -> FieldSpec {
+    FieldSpec {
+        id: field.id.clone(),
+        kind: field.kind,
+    }
+}
+
+/// What a derived key among the type's fields reads, worked out over the documents: `None` for
+/// a field the record holds itself ([`crate::derived`]).
+fn derived_value(
+    inner: &Inner,
+    at: &ResourceRef,
+    field: &FieldSpec,
+) -> Result<Option<FieldValue>, StoreError> {
+    let Some(ty) = inner.type_at(at) else {
+        return Ok(None);
+    };
+    let Some(info) = ty.field(&field.id) else {
+        return Ok(None);
+    };
+    let Some(expr) = &info.derived else {
+        return Ok(None);
+    };
+    let now = crate::derived::eval(&mut FactsOf { inner }, &at.id_string(), expr)?;
+    Ok(Some(now.value()))
+}
+
+/// The resource a derived key's expression names: a document, then `/item` for an item.
+fn facts_at(path: &str) -> Result<ResourceRef, StoreError> {
+    ResourceRef::parse_id(path, String::new())
+        .ok_or_else(|| not_found(format!("resource `{path}`")))
+}
+
+/// The documents as the one evaluator of derived keys reads them: an item's fields, the items
+/// standing under it through the type's parent field, and the item it stands under.
+struct FactsOf<'a> {
+    inner: &'a Inner,
+}
+
+impl Facts for FactsOf<'_> {
+    type Error = StoreError;
+
+    fn field(&mut self, path: &str, field: &str) -> Result<Computed, StoreError> {
+        let at = facts_at(path)?;
+        let Some(ty) = self.inner.type_at(&at) else {
+            return Ok(Computed::Bool(false));
+        };
+        let Some(info) = ty.field(field) else {
+            return Ok(Computed::Bool(false));
+        };
+        if let Some(expr) = &info.derived {
+            return crate::derived::eval(self, path, expr);
+        }
+        let doc = self.inner.doc(&at.doc)?;
+        let obj = self.inner.locate(&at)?;
+        let none = Json::Null;
+        let default = info.default.as_ref().unwrap_or(&none);
+        let now = read_field(doc, &obj, &spec(info))?;
+        Ok(Computed::held(Some(&now), default))
+    }
+
+    fn children(&mut self, path: &str) -> Result<Vec<String>, StoreError> {
+        let at = facts_at(path)?;
+        let Some(ty) = self.inner.type_at(&at) else {
+            return Ok(Vec::new());
+        };
+        let Some(parent) = ty.parent.as_deref() else {
+            return Ok(Vec::new());
+        };
+        let doc = self.inner.doc(&at.doc)?;
+        let resolved = self.inner.resolved(&at.doc)?;
+        let mut out = Vec::new();
+        for id in resolved.places.keys() {
+            let Some(obj) = item_obj(doc, id) else {
+                continue;
+            };
+            let Some(child) =
+                str_at(doc, &obj, TYPE_KEY).and_then(|ty| self.inner.types.get(&ty).cloned())
+            else {
+                continue;
+            };
+            if child.parent.as_deref() != Some(parent) {
+                continue;
+            }
+            let Some(info) = child.field(parent) else {
+                continue;
+            };
+            let now = read_field(doc, &obj, &spec(info))?;
+            if crate::derived::parent_in(&now).as_deref() == Some(path) {
+                out.push(id.clone());
+            }
+        }
+        Ok(out)
+    }
+
+    fn above(&mut self, path: &str) -> Result<Option<String>, StoreError> {
+        let at = facts_at(path)?;
+        let Some(ty) = self.inner.type_at(&at) else {
+            return Ok(None);
+        };
+        let Some(parent) = ty.parent.as_deref() else {
+            return Ok(None);
+        };
+        let Some(info) = ty.field(parent) else {
+            return Ok(None);
+        };
+        let doc = self.inner.doc(&at.doc)?;
+        let obj = self.inner.locate(&at)?;
+        Ok(crate::derived::parent_in(&read_field(
+            doc,
+            &obj,
+            &spec(info),
+        )?))
     }
 }
 
@@ -863,8 +994,21 @@ impl Store for AmStore {
         }
     }
 
+    fn loaded_types(&mut self, types: &[Rc<TypeInfo>]) {
+        let mut inner = self.inner.borrow_mut();
+        // Every loaded package's types, as they are now: a reload that changes a key replaces
+        // the one it was.
+        inner.types.clear();
+        for ty in types {
+            inner.types.insert(ty.id.clone(), Rc::clone(ty));
+        }
+    }
+
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
         let inner = self.inner.borrow();
+        if let Some(now) = derived_value(&inner, at, field)? {
+            return Ok(now);
+        }
         let obj = inner.locate(at)?;
         if field.kind == FieldKind::Collection {
             return Ok(FieldValue::Items(
