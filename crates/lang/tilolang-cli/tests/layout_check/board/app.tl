@@ -35,7 +35,7 @@ view board(b: Board) {
                     ) {
                         for card in col.cards {
                             ui.BoardCard(card) {
-                                row(card.title)
+                                card_row(card)
                             }
                         }
                     }
@@ -43,6 +43,11 @@ view board(b: Board) {
             }
         }
     }
+}
+
+/// A card as its row, which the card shows as a card.
+view card_row(card: Card) {
+    row(card.title)
 }
 
 /// A board of three lanes: six cards in the first, which a window shows at once; one in the

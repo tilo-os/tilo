@@ -147,6 +147,54 @@ fn a_row_without_its_avatar_keeps_the_avatars_room() {
 }
 
 #[test]
+fn a_card_wraps_its_title_up_to_three_lines_and_cuts_only_past_what_fits() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    // The narrowest room a lane gives a card.
+    let width = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
+    let lines = |text: &mut TextRenderer, title: &str| {
+        ListRowFace::new(title)
+            .card()
+            .meta("Thursday")
+            .card_title_lines(width, text, &theme)
+    };
+    let height = |text: &mut TextRenderer, title: &str, lines: u8| {
+        ListRowFace::new(title)
+            .card()
+            .title_lines(lines)
+            .meta("Thursday")
+            .height(text, &theme)
+    };
+    // A title that fits keeps one line: a card never cuts what it can show.
+    assert_eq!(lines(&mut text, "Book the van"), 1);
+    // A longer one takes the lines it needs, and its card grows to hold them.
+    let long = "Order boxes, tape and bubble wrap for the kitchen, the bedroom and the hallway";
+    let wrapped = lines(&mut text, long);
+    assert!(
+        (2..=CARD_TITLE_LINES).contains(&wrapped),
+        "a long title takes {wrapped} lines"
+    );
+    let one = height(&mut text, "Book the van", 1);
+    let several = height(&mut text, long, wrapped);
+    assert!(
+        (44.0..=56.0).contains(&one),
+        "a card of one title line and its facts is {one} tall"
+    );
+    assert!(
+        several > one,
+        "a card as tall as its title's lines: {several} for {wrapped}, {one} for one"
+    );
+    // Past three lines it is cut, and its card is no taller than three lines make it.
+    let endless = "Words ".repeat(80);
+    assert_eq!(lines(&mut text, &endless), CARD_TITLE_LINES);
+    assert!(
+        (height(&mut text, &endless, CARD_TITLE_LINES) - height(&mut text, long, 3)).abs() < 0.01,
+        "a title past three lines stands in the room three take"
+    );
+}
+
+#[test]
 fn a_rows_facts_stand_in_one_column_in_a_fixed_order() {
     let theme = Theme::dark();
     let m = RowMetrics::new(&theme);

@@ -331,7 +331,7 @@ impl Board {
         }
         self.sized = Some(width);
         self.set_lane_widths(width);
-        for &lane in taffy.children(node).unwrap_or_default().iter() {
+        for &lane in &taffy.children(node).unwrap_or_default() {
             let Ok(mut style) = taffy.style(lane).cloned() else {
                 continue;
             };

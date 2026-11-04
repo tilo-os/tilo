@@ -665,7 +665,7 @@ view task_card(t: Task, sections: List<Section>) {
         on activate: open(t)
         menu: {
             if t.section != .none {
-                ui.MenuItem("Move to No section", icon: .arrow_right) {
+                ui.MenuItem("Remove from section", icon: .arrow_right) {
                     on choose: place(t, .none, 0)
                 }
             }

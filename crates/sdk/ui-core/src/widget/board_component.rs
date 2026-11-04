@@ -70,9 +70,11 @@ pub struct BoardLaneProps {
 
 /// One card of a lane: a summary of the resource it stands for, which a press opens. The card is
 /// its body: a row given as its body is shown as a card — the row paints the surface, wraps its
-/// title and stands its facts under it — so what the card says is written once.
+/// title and stands its facts under it — so what the card says is written once, and the row is
+/// what assistive technology reads as the lane's item. The card itself is the container around
+/// it, with no role of its own.
 #[derive(Component, Default)]
-#[component(name = "BoardCard", role = "ListItem", presents = "item")]
+#[component(name = "BoardCard", role = "Generic", presents = "item")]
 pub struct BoardCardProps {
     /// The card's stable key.
     #[component(key)]

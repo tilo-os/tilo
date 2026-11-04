@@ -277,7 +277,7 @@ view release_board(r: Release) {
                     ) {
                         for x in cards {
                             ui.BoardCard(x) {
-                                row(x.title, secondary: x.stage)
+                                board_item_row(x)
                             }
                         }
                     }
@@ -285,6 +285,11 @@ view release_board(r: Release) {
             }
         }
     }
+}
+
+/// An item on the release's board as its row: its title, and the stage it is in.
+view board_item_row(x: Item) {
+    row(x.title, secondary: x.stage)
 }
 
 /// The basics, looked after by the person looking.

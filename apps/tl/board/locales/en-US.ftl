@@ -64,6 +64,8 @@ d-t5kjcxjq = Board
 d-ufycrk6s = Card tile
     .w-move-to = Move to { $title }
 
+d-aa76g3qb = Card row
+
 d-zzww2gmr = Card page
     .w-title = Title
     .w-notes = Notes

@@ -369,6 +369,8 @@ d-7ptc3r7a = Item row
 d-qczmqkvq = Release board
     .w-release = Release
 
+d-glo4d4xp = Board item row
+
 d-z5ai6zk5 = Controls
     .w-boxes-and-switches = Boxes and switches
     .w-send-by-email = Send by email

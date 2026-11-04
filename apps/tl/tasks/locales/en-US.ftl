@@ -265,10 +265,9 @@ d-7froalwb = Project list
     .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
-    .w-no-section = No section
 
 d-hc5ndp4x = Task card
-    .w-move-to-no-section = Move to No section
+    .w-remove-from-section = Remove from section
     .w-move-to = Move to { $name }
 
 d-w63ba6ad = Task row
