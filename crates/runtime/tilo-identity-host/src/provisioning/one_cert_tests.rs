@@ -35,8 +35,10 @@ fn a_freshly_provisioned_device_holds_one_certificate_in_both_places() {
 #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
 fn a_renewed_certificate_is_the_same_bytes_in_both_places() {
     let tmp = tempfile::tempdir().unwrap();
-    let (personal, paths, expired) =
-        super::renewal_tests::aged_throwaway(tmp.path(), 48 * 60 * 60 * 1_000_000_000);
+    let (personal, paths, expired) = crate::provisioning::renewal::renewal_tests::aged_throwaway(
+        tmp.path(),
+        48 * 60 * 60 * 1_000_000_000,
+    );
 
     ensure_collaboration_identity(&personal, &paths, FILES).expect("start");
 
