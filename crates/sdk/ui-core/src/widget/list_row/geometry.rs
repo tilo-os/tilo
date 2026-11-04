@@ -407,6 +407,33 @@ impl ListRowFace<'_> {
         geo
     }
 
+    /// Where a card's content starts: under its own padding, and centred in the card where
+    /// the row's minimum height (the target a finger needs) leaves it taller than the
+    /// content it holds, so a grown card carries no dead space under its text.
+    pub(super) fn card_content_top(
+        &self,
+        rect: Rect,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> f64 {
+        let held = self.card_content_height(m, text, theme);
+        rect.y0 + m.pad_y + ((rect.height() - 2.0 * m.pad_y - held) / 2.0).max(0.0)
+    }
+
+    /// The height of what a card holds: its text, the gap and the facts line under it, or
+    /// its leading column where that is taller.
+    fn card_content_height(&self, m: &RowMetrics, text: &mut TextRenderer, theme: &Theme) -> f64 {
+        let facts = self.facts_height(text, m, theme);
+        let gap = if facts > 0.0 {
+            f64::from(theme.tokens.spacing.rhythm.tight)
+        } else {
+            0.0
+        };
+        let (_, lead_h) = self.leading_extent(m, text, theme);
+        (self.text_block(text, m) + gap + facts).max(lead_h)
+    }
+
     /// Lay a card out in `rect`, its own surface: the checkbox hangs on the title's first line,
     /// the text takes the rest of the card's width, and the facts stand on one line under the
     /// text, read left to right in the order a row keeps them — the day, who, how far, how
@@ -422,7 +449,8 @@ impl ListRowFace<'_> {
         let right = (rect.x1 - m.bleed).max(left);
         let (lead_w, lead_h) = self.leading_extent(m, text, theme);
         let title_line = RowMetrics::line(text, &self.title_style(m));
-        let first_cy = rect.y0 + m.pad_y + title_line / 2.0;
+        let top = self.card_content_top(rect, m, text, theme);
+        let first_cy = top + title_line / 2.0;
         let mut geo = RowGeometry {
             leading: Rect::new(
                 left,
@@ -449,15 +477,11 @@ impl ListRowFace<'_> {
         if self.shows_actions() {
             geo.meta_right = right;
             geo.meta_left = right;
-            geo.facts_cy = rect.y0
-                + m.pad_y
-                + block
-                + f64::from(theme.tokens.spacing.rhythm.tight)
-                + facts / 2.0;
+            geo.facts_cy = top + block + f64::from(theme.tokens.spacing.rhythm.tight) + facts / 2.0;
             return geo;
         }
         let gap = f64::from(theme.tokens.spacing.rhythm.tight);
-        let mut cy = rect.y0 + m.pad_y + block + gap + facts / 2.0;
+        let mut cy = top + block + gap + facts / 2.0;
         // A card is as tall as its facts line; the facts centre on it.
         cy = cy
             .min(rect.y1 - m.pad_y - facts / 2.0)

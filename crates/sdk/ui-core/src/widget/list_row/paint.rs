@@ -197,10 +197,11 @@ impl ListRowFace<'_> {
         let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
         let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
         let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
-        // A card's text starts under its own padding; a row's is centred in it beside the
-        // leading column.
+        // A card's text starts under its own padding — centred in the card where the
+        // target a finger needs made it taller than its content; a row's is centred in
+        // it beside the leading column.
         let text_top = if self.card {
-            row.y0 + m.pad_y
+            self.card_content_top(row, &m, ctx.text, theme)
         } else {
             row.center().y - block / 2.0
         };

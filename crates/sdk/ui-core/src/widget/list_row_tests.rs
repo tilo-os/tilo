@@ -274,10 +274,54 @@ fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
         "the facts stand inside the card"
     );
     // The checkbox hangs on the title's first line, not centred on the card.
+    let first_cy = face.card_content_top(outer, &m, &mut text, &theme) + line / 2.0;
     assert!(
-        geo.leading.y0 >= outer.y0 + m.pad_y - 0.01
-            && geo.leading.y1 <= outer.y0 + m.pad_y + line + 0.01,
+        (geo.leading.center().y - first_cy).abs() < 0.01,
         "the checkbox stands on the title's first line: {:?}",
+        geo.leading
+    );
+    assert!(
+        (first_cy - outer.center().y).abs() > 0.5,
+        "the card holds more room than its content, and the line is not the card's middle"
+    );
+}
+
+/// A card that a finger's target made taller than its one line centres that line in it: the
+/// text never hangs under the top padding with dead space below.
+#[test]
+fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
+    let theme = Theme::dark();
+    let m = RowMetrics::card(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let face = ListRowFace::new("Screenshots for the docs").card();
+    let line = RowMetrics::line(&mut text, &face.title_style(&m));
+    let natural = face.height(&mut text, &theme);
+    let touch =
+        f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_collection_row());
+    assert!(touch > natural, "a finger's target grows a one-line card");
+    let grown = Rect::new(0.0, 0.0, 264.0, touch);
+    let top = face.card_content_top(grown, &m, &mut text, &theme);
+    assert!(
+        (top + line / 2.0 - grown.center().y).abs() < 0.5,
+        "the title's line is centred in the grown card: {top} in {touch}"
+    );
+    // The natural card starts its text under its own padding: centring adds nothing where
+    // the card is only as tall as the text it holds.
+    let snug = Rect::new(0.0, 0.0, 264.0, natural);
+    let top = face.card_content_top(snug, &m, &mut text, &theme);
+    assert!(
+        (top - (snug.y0 + m.pad_y)).abs() < 0.5,
+        "a card that fits its text keeps its padding: {top}"
+    );
+    // A leading checkbox hangs on the centred line, as it hangs on the title's line.
+    let boxed = ListRowFace::new("Screenshots for the docs")
+        .card()
+        .leading(RowLeading::Checkbox { checked: false });
+    let geo = boxed.geometry(grown, &m, &mut text, &theme);
+    assert!(
+        (geo.leading.center().y - grown.center().y).abs() < 0.5,
+        "the checkbox centres with the line: {:?}",
         geo.leading
     );
 }
