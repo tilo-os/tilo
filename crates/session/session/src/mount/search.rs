@@ -6,7 +6,8 @@
 use std::rc::Rc;
 
 use crate::Shared;
-use crate::{search, tab_app};
+use crate::arrangement::tab_app;
+use crate::search;
 use tilo_desktop_search::providers::places::Place;
 
 impl Shared {

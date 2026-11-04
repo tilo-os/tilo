@@ -241,6 +241,18 @@ pub fn found(
     most_specific(&named, text)
 }
 
+/// The app a window shows, by its id, when its tab holds a window at all.
+pub(crate) fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
+    use tilo_desktop_model::TileContent;
+    match tile {
+        TileContent::Foreign { app_id, .. }
+        | TileContent::LocalApp { app_id, .. }
+        | TileContent::PeerWindow { app_id, .. }
+        | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
+        _ => None,
+    }
+}
+
 /// The resource `text` names among the hits a place can show, each with the
 /// name its resource goes by: the top of them, or the one inside it that
 /// carries the same name when the text is that name — a note titled like the

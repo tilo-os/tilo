@@ -523,18 +523,6 @@ pub(crate) fn apply_keyboard(compositor: &mut Compositor, keyboard: &KeyboardLay
     ));
 }
 
-/// The app a window shows, by its id.
-fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> {
-    use tilo_desktop_model::TileContent;
-    match tile {
-        TileContent::Foreign { app_id, .. }
-        | TileContent::LocalApp { app_id, .. }
-        | TileContent::PeerWindow { app_id, .. }
-        | TileContent::HostedWindow { app_id, .. } => Some(app_id.clone()),
-        _ => None,
-    }
-}
-
 impl Shared {
     /// Show each workspace's shared desktop as the workspace holds it, and
     /// write back what this device changed there: what every device in a
