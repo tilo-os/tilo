@@ -685,29 +685,31 @@ struct Fixture(u32);
 
 impl fmt::Display for Fixture {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            out,
-            "the fixture's compositor starts (the wrapper {} runs {}, and is {}; its children:",
-            self.0,
-            process(self.0),
-            if zombie(self.0) { "gone" } else { "running" }
-        )?;
         let children = fs::read_to_string(format!("/proc/{}/task/{}/children", self.0, self.0))
             .unwrap_or_default();
-        let mut seen = false;
-        for pid in children
+        let children: Vec<String> = children
             .split_whitespace()
             .filter_map(|pid| pid.parse::<u32>().ok())
-        {
-            seen = true;
-            write!(
-                out,
-                " {pid} runs {}{},",
-                process(pid),
-                if zombie(pid) { " (a zombie)" } else { "" }
-            )?;
-        }
-        write!(out, "{})", if seen { "" } else { " none" })
+            .map(|pid| {
+                format!(
+                    "{pid} runs {}{}",
+                    process(pid),
+                    if zombie(pid) { " (a zombie)" } else { "" }
+                )
+            })
+            .collect();
+        write!(
+            out,
+            "the fixture's compositor (the wrapper {} runs {}, and is {}; its children: {})",
+            self.0,
+            process(self.0),
+            if zombie(self.0) { "gone" } else { "running" },
+            if children.is_empty() {
+                "none".to_owned()
+            } else {
+                children.join(", ")
+            },
+        )
     }
 }
 
