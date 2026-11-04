@@ -546,11 +546,9 @@ impl<P: Chained> ChainState<P> {
             if !self.workspace.store.takes_writes() {
                 return Err("the part is migrated once the store takes writes".into());
             }
-            self.workspace
-                .store
-                .with(&part, tilo_resource::evolution::migrate::<P>)
-                .ok_or("the part is not open here")?
-                .map_err(|error| error.to_string())?;
+            self.workspace.store.migrate(&part, |doc| {
+                tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
+            })?;
         }
         let reader = self
             .workspace
