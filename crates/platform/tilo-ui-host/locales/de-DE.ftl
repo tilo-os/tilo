@@ -28,6 +28,9 @@ tilolang-invocation-failed = Fehlgeschlagen
 tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
+tilolang-assigned-to-me = Mir zugewiesen
+tilolang-you = Du
+tilolang-history-agent = { $actor } · Software
 tilolang-empty = Noch nichts hier
 # What a list's entry at its end says while it is empty.
 tilolang-add = Etwas hinzufügen

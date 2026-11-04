@@ -524,6 +524,16 @@ impl Checker<'_> {
             }
             FilterKind::Identifier => self.identifier_value(e),
             FilterKind::Text => Some(self.expr_as(e, &Ty::Text)),
+            // Who it names: `me` for the person looking, else a member by their id.
+            FilterKind::Person => {
+                if let ExprKind::Ident(name) = &e.kind
+                    && name == "me"
+                    && self.lookup(name).is_none()
+                {
+                    return Some(Ex::str("me"));
+                }
+                Some(self.expr_as(e, &Ty::Text))
+            }
         }
     }
 

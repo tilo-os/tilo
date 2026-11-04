@@ -401,7 +401,14 @@ impl Core {
             ty: None,
             ..query
         };
-        let resolved = resolve(&filters, declared, &pkg.meta.enums, &self.program_clock()?)?;
+        let viewer = self.looking().ok();
+        let resolved = resolve(
+            &filters,
+            declared,
+            &pkg.meta.enums,
+            &self.program_clock()?,
+            viewer.as_deref(),
+        )?;
         let Some(pred) = crate::colls::field_reads(&resolved.pred, &info) else {
             return trap(format!(
                 "find: {} cannot be read as its filters ask",

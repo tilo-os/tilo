@@ -102,6 +102,8 @@ pub enum Lit {
     Ref(String),
     /// An identifier as it is held, `scheme:value`.
     Ident(String),
+    /// A person or agent of the workspace, by the id the host names them with.
+    Principal(String),
     /// No value: an option that is none.
     Absent,
     /// The members of a set, as a field holds them.
@@ -166,6 +168,9 @@ impl Lit {
                 if let Some(J::String(r)) = m.get("ref") {
                     return Some(Self::Ref(r.clone()));
                 }
+                if let Some(J::String(p)) = m.get("principal") {
+                    return Some(Self::Principal(p.clone()));
+                }
                 return None;
             }
             J::Array(_) => return None,
@@ -188,7 +193,7 @@ impl Lit {
             Self::Int(i) => Some(i.to_string()),
             Self::Float(f) => Some(f.0.to_string()),
             Self::Bool(b) => Some(b.to_string()),
-            Self::Variant(v) | Self::Ref(v) => Some(v.clone()),
+            Self::Variant(v) | Self::Ref(v) | Self::Principal(v) => Some(v.clone()),
             other => other.as_text().map(str::to_owned),
         }
     }
@@ -209,7 +214,11 @@ impl Lit {
             (Self::Float(x), Self::Float(y)) => x.cmp(y),
             (Self::Int(x), Self::Float(y)) => Float(*x as f64).cmp(y),
             (Self::Float(x), Self::Int(y)) => x.cmp(&Float(*y as f64)),
-            (Self::Variant(x), Self::Variant(y)) | (Self::Ref(x), Self::Ref(y)) if !ordered => {
+            (Self::Variant(x), Self::Variant(y))
+            | (Self::Ref(x), Self::Ref(y))
+            | (Self::Principal(x), Self::Principal(y))
+                if !ordered =>
+            {
                 x.cmp(y)
             }
             (Self::Ident(x), y) | (y, Self::Ident(x)) if !ordered => {

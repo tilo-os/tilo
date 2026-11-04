@@ -28,6 +28,11 @@ tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed
 tilolang-embed-error = This block could not run
 tilolang-all = All { $kind }
+# The sidebar place of what the person looking is assigned, still open.
+tilolang-assigned-to-me = Assigned to me
+# The actor of a history line the person looking made, and one software made for them.
+tilolang-you = You
+tilolang-history-agent = { $actor } · Software
 tilolang-empty = Nothing here yet
 # What a list's entry at its end says while it is empty.
 tilolang-add = Add an item

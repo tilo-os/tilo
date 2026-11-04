@@ -410,6 +410,9 @@ pub enum FilterKind {
     Identifier,
     /// Tags: `tag:urgent`.
     Text,
+    /// A person or agent of the workspace: `assignee:me`, `assignee:<id>`. A field of
+    /// `Principal` is one without declaring it.
+    Person,
     /// A named filter, a toggle.
     Predicate,
 }

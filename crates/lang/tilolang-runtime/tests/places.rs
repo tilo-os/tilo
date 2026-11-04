@@ -200,7 +200,7 @@ view sidebar(b: Board) {
                 .unwrap();
             let clock = Clock::at(NOW).unwrap();
             let parsed = find(q).unwrap();
-            resolve(&parsed, ty, &self.app.meta().enums, &clock)
+            resolve(&parsed, ty, &self.app.meta().enums, &clock, None)
                 .unwrap()
                 .order
         }

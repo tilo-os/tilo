@@ -69,7 +69,8 @@ impl Core {
             return trap(format!("query: type `{ty}` is not declared"));
         };
         let clock = self.query_clock()?;
-        let resolved = resolve(&query, declared, &pkg.meta.enums, &clock)?;
+        let viewer = self.looking().ok();
+        let resolved = resolve(&query, declared, &pkg.meta.enums, &clock, viewer.as_deref())?;
         // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
         // read of it moves on, and only then.
         self.note_time(clock.changes_at());
@@ -287,9 +288,6 @@ impl Core {
     }
 
     fn placed_day(&self, item: &RefValue, place: &str) -> HResult<Value> {
-        let Some(key) = place.strip_prefix("is:") else {
-            return Ok(Value::none());
-        };
         let (pkg, _) = self
             .registry
             .borrow()
@@ -303,16 +301,10 @@ impl Core {
         let Some(declared) = pkg.meta.types.iter().find(|t| t.id == item.target.ty) else {
             return trap(format!("placed_day: `{}` is not declared", item.target.ty));
         };
-        let Some(role) = declared
-            .search
-            .filters
-            .iter()
-            .find(|f| f.key == key)
-            .and_then(|f| f.role.as_ref())
-        else {
+        let Some(role) = crate::query::place_role(declared, place) else {
             return Ok(Value::none());
         };
-        match role {
+        match &role {
             FilterRole::Inbox { .. } => Ok(Value::none()),
             FilterRole::Agenda { day } | FilterRole::Upcoming { day } => {
                 let (_, field) = self.lookup_field(&item.target, day)?;
@@ -666,8 +658,9 @@ impl Core {
         done: Option<&FieldMeta>,
     ) -> HResult<usize> {
         let clock = self.query_clock()?;
+        let viewer = self.looking().ok();
         let parsed = find(query).map_err(|why| format!("places: `{query}`: {why}"))?;
-        let resolved = resolve(&parsed, declared, enums, &clock)?;
+        let resolved = resolve(&parsed, declared, enums, &clock, viewer.as_deref())?;
         self.note_time(clock.changes_at());
         let mut pred = resolved.pred;
         // A place counts what it leaves open, never what is done with.
@@ -715,17 +708,73 @@ struct Places<'a> {
 }
 
 impl Places<'_> {
-    /// The places of a sidebar: the type's own, then a group of the ones the root holds.
+    /// The places of a sidebar: what the person looking holds, the type's own filters, then a
+    /// group of the ones the root holds.
     fn build(&self) -> HResult<Value> {
-        let mut places = self.core.filter_places(
+        let mut places = Vec::new();
+        if let Some(mine) = self.mine_place()? {
+            places.push(mine);
+        }
+        places.extend(self.core.filter_places(
             self.declared,
             &self.items,
             self.info,
             &self.pkg.enums,
             self.done,
-        )?;
+        )?);
         let groups = self.group_places(&mut places)?;
         Ok(Value::Tuple(vec![Value::List(places), Value::List(groups)]))
+    }
+
+    /// The place of what the person looking is assigned (`is:mine`), for a type that names who
+    /// its items belong to and a workspace they share with someone else: on their own, nothing
+    /// is anyone's but theirs, and the place says nothing a list of all of it does not.
+    fn mine_place(&self) -> HResult<Option<Value>> {
+        if !self
+            .declared
+            .search
+            .filters
+            .iter()
+            .any(|f| f.kind == FilterKind::Person)
+        {
+            return Ok(None);
+        }
+        let me = self.core.looking()?;
+        let shared = self
+            .core
+            .members
+            .borrow()
+            .list()
+            .iter()
+            .any(|member| member.who.0 != me);
+        if !shared {
+            return Ok(None);
+        }
+        let query = crate::query::MINE_PLACE;
+        let count = self.core.place_count(
+            &self.items,
+            self.declared,
+            self.info,
+            &self.pkg.enums,
+            query,
+            self.done,
+        )?;
+        // The place's words are the platform's, not the app's: every app with a member field
+        // offers the same one.
+        let label = self
+            .core
+            .words
+            .borrow()
+            .word("tilolang-assigned-to-me", &[], "Assigned to me");
+        let role = crate::query::place_role(self.declared, query);
+        Ok(Some(place_value(
+            query,
+            &label,
+            Some("user"),
+            count,
+            None,
+            role.as_ref(),
+        )))
     }
 
     /// A place per resource of each type the items name through an option, while the root holds

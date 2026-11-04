@@ -311,6 +311,7 @@ pub fn resolve(
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
+    viewer: Option<&str>,
 ) -> Result<Resolved, String> {
     let mut all = Vec::new();
     // Free text finds the type's own `Text` fields: each word must appear inside one of them.
@@ -318,7 +319,7 @@ pub fn resolve(
         all.push(text_pred(&query.text, ty));
     }
     for term in &query.terms {
-        all.push(term_pred(term, ty, enums, clock)?);
+        all.push(term_pred(term, ty, enums, clock, viewer)?);
     }
     let order = match &query.sort {
         Some(sort) => Some(order_of(sort, ty)?),
@@ -377,6 +378,7 @@ fn term_pred(
     ty: &TypeMeta,
     enums: &[EnumMeta],
     clock: &Clock,
+    viewer: Option<&str>,
 ) -> Result<Pred<String>, String> {
     let Some(key) = &term.key else {
         // A word alone is an identifier where the type holds one (`jane@x.com`), text where it
@@ -392,8 +394,13 @@ fn term_pred(
         }
         return Ok(text_pred(std::slice::from_ref(&term.value), ty));
     };
+    // `is:mine`: what the person looking is assigned, still open. A type that names no member
+    // holds none of it, as a type with no text holds no word.
+    if key == "is" && term.value == "mine" {
+        return mine_pred(ty, viewer);
+    }
     if let Some(filter) = ty.search.filter(key) {
-        return filter_pred(filter, &term.value, enums, clock)
+        return filter_pred(filter, &term.value, enums, clock, viewer)
             .map_err(|why| format!("`{key}:{}`: {why}", term.value));
     }
     // `discord:janedoe`, `mailto:jane@x.com`: an identifier, not a filter, where the type
@@ -476,6 +483,7 @@ fn filter_pred(
     value: &str,
     enums: &[EnumMeta],
     clock: &Clock,
+    viewer: Option<&str>,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
         // A filter on the time it is asked at ("Today": `due <= today`) reads it now, and
@@ -549,6 +557,18 @@ fn filter_pred(
             Ok(one_of(each))
         }
         FilterKind::Reference => Ok(member(Lit::Ref(value.to_owned()))),
+        FilterKind::Person => {
+            // `me` is whoever is looking, so a place that names it reads differently for each
+            // of the people it is shared with; anything else is a member by their id.
+            let who = if value == "me" {
+                viewer
+                    .ok_or("`me` is only known where someone is looking")?
+                    .to_owned()
+            } else {
+                value.to_owned()
+            };
+            Ok(member(Lit::Principal(who)))
+        }
         FilterKind::Text => Ok(member(Lit::Text(value.to_owned()))),
         FilterKind::Identifier => {
             let pattern = identifier::normalize_pattern(value)?;
@@ -749,15 +769,18 @@ fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
     let [term] = terms else {
         return None;
     };
-    if term.value != "true" {
+    let key = term.key.as_deref()?;
+    // A place is a toggle on a named filter (`is:today`) or the member place (`is:mine`); a
+    // filter by a value (`due:today`) lists in the type's own order.
+    let place = if key == "is" {
+        format!("is:{}", term.value)
+    } else {
+        format!("{key}:{}", term.value)
+    };
+    if term.value != "true" && place != MINE_PLACE {
         return None;
     }
-    let filter = ty
-        .search
-        .filters
-        .iter()
-        .find(|f| Some(&f.key) == term.key.as_ref())?;
-    let order = match filter.role.as_ref()? {
+    let order = match place_role(ty, &place)? {
         FilterRole::Agenda { day } | FilterRole::Upcoming { day } => Order {
             field: day.clone(),
             kind: crate::meta::FieldKind::Register,
@@ -777,6 +800,60 @@ fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
         FilterRole::Inbox { .. } => return None,
     };
     Some(order)
+}
+
+/// The place of what the person looking is assigned, still open: the key a query asks it by,
+/// which every type with a member field holds.
+pub const MINE_PLACE: &str = "is:mine";
+
+/// The role a place's list stands at, from the place's key: the named filter it is a toggle on
+/// (`is:today`), or the member place, which is an agenda of what the person looking has, by the
+/// day the type's own agenda groups by.
+#[must_use]
+pub fn place_role(ty: &TypeMeta, place: &str) -> Option<FilterRole> {
+    if let Some(key) = place.strip_prefix("is:") {
+        if key == "mine" {
+            return ty.search.filters.iter().find_map(|f| match &f.role {
+                Some(role @ FilterRole::Agenda { .. }) => Some(role.clone()),
+                _ => None,
+            });
+        }
+        return ty
+            .search
+            .filters
+            .iter()
+            .find(|f| f.key == key)
+            .and_then(|f| f.role.clone());
+    }
+    None
+}
+
+/// `is:mine`: the items whose member field holds the person looking, still open — the place of
+/// what is theirs to do, and the same in every app whose type names who it belongs to.
+fn mine_pred(ty: &TypeMeta, viewer: Option<&str>) -> Result<Pred<String>, String> {
+    let member = ty
+        .search
+        .filters
+        .iter()
+        .find(|f| f.kind == FilterKind::Person)
+        .and_then(|f| f.field.clone())
+        .ok_or_else(|| {
+            format!(
+                "`is:mine` needs a field of {} naming who it belongs to (a `Principal` field)",
+                ty.name
+            )
+        })?;
+    let me = viewer.ok_or("`is:mine` is only known where someone is looking")?;
+    let mut parts = vec![eq(&member, Lit::Principal(me.to_owned()))];
+    // What is done with is no one's to do.
+    if let Some(done) = ty
+        .fields
+        .iter()
+        .find(|f| f.role.as_ref().is_some_and(crate::meta::FieldRole::is_done))
+    {
+        parts.push(eq(&done.id, Lit::Bool(false)));
+    }
+    Ok(Pred::And(parts))
 }
 
 /// `-received` or `received`: the field by name, and whether the latest or last comes first.

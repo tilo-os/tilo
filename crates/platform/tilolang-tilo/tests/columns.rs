@@ -189,6 +189,7 @@ impl Workspace {
             task,
             &self.meta.enums,
             &Clock::at(NOW).unwrap(),
+            None,
         )
         .unwrap();
         let pred = store_pred(&resolved.pred, task, APP).unwrap();
@@ -230,6 +231,7 @@ impl Workspace {
             task,
             &self.meta.enums,
             &Clock::at(NOW).unwrap(),
+            None,
         )
         .unwrap();
         let pred = store_pred(&resolved.pred, task, APP).unwrap();
@@ -409,7 +411,8 @@ fn a_query_of_every_resource_of_a_type_reads_its_columns_across_the_workspace() 
     let clock = Clock::at(NOW).unwrap();
     let select = |ty: &str, q: &str| -> Vec<String> {
         let meta = workspace.ty(ty);
-        let resolved = resolve(&find(q).unwrap(), meta, &workspace.meta.enums, &clock).unwrap();
+        let resolved =
+            resolve(&find(q).unwrap(), meta, &workspace.meta.enums, &clock, None).unwrap();
         let pred = store_pred(&resolved.pred, meta, APP).unwrap();
         let title = field_id(
             &workspace.meta,
@@ -596,6 +599,7 @@ fn inbox_listing(
         thread,
         &meta.enums,
         &Clock::at(NOW).unwrap(),
+        None,
     )
     .unwrap();
     let pred = store_pred(&resolved.pred, thread, INBOX_APP).unwrap();

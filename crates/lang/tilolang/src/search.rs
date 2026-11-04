@@ -44,6 +44,8 @@ fn scalar_kind(ty: &Ty) -> Option<FilterKind> {
             FilterKind::Reference
         }
         Ty::Identifier => FilterKind::Identifier,
+        // Whose a resource is: a person or an agent of the workspace.
+        Ty::Principal => FilterKind::Person,
         _ => return None,
     })
 }
@@ -157,7 +159,7 @@ impl Ctx<'_> {
             let why = if matches!(field.ty, Ty::Text) {
                 "text is found by searching for it, not filtered"
             } else {
-                "a filter compares a Bool, an enum, a Date or Time, a number, a reference, an identifier, an option of one, or a Set"
+                "a filter compares a Bool, an enum, a Date or Time, a number, a reference, an identifier, a person, an option of one, or a Set"
             };
             let msg = format!(
                 "`{}` of {} is {t}, which no filter compares: {why}. {}",
@@ -662,6 +664,37 @@ pub fn resolve(
             );
         }
     }
+    // A field naming who a resource belongs to is a filter whether the block lists it or not:
+    // `assignee:me` reads the same in every app that has one, and the place of what the
+    // person looking holds (`is:mine`) needs it. `hide` keeps it out, as it keeps any field.
+    let person: Vec<FilterMeta> = info
+        .fields
+        .iter()
+        .filter(|f| !out.hidden.contains(&f.id))
+        .filter(|f| {
+            !out.filters
+                .iter()
+                .any(|x| x.field.as_deref() == Some(f.id.as_str()))
+        })
+        .filter(|f| !out.filters.iter().any(|x| x.key == f.name))
+        .filter_map(|f| {
+            let (kind, optional, many) = filter_kind(&f.ty)?;
+            (kind == FilterKind::Person).then(|| FilterMeta {
+                key: f.name.clone(),
+                label: sentence_case(&f.name),
+                doc: f.doc.lines().next().unwrap_or_default().trim().to_owned(),
+                kind,
+                field: Some(f.id.clone()),
+                ty: f.ty.meta_text(&env.app),
+                pred: None,
+                optional,
+                many,
+                icon: None,
+                role: None,
+            })
+        })
+        .collect();
+    out.filters.extend(person);
     out
 }
 
