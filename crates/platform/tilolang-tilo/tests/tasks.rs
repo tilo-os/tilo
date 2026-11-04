@@ -1890,6 +1890,42 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
     assert_eq!(delete.key.as_deref(), Some("delete"));
 }
 
+/// Only an action that says what state it shows (`on:`) is drawn as a toggle, in the state it
+/// reports; the commands offered beside it run once and stay buttons.
+#[test]
+fn only_an_action_that_shows_a_state_is_drawn_as_a_toggle() {
+    let (mut ada, root) = workspace();
+    let project = call(&ada, "new_project", vec![root]);
+    ada.commit();
+    let Value::Ref(at) = &project else {
+        panic!("a project: {project:?}")
+    };
+    let mut view = ada.host.open_resource(&at.target, None).unwrap();
+    view.poll_patches().unwrap();
+    let (mut toggles, mut commands) = (Vec::new(), Vec::new());
+    for button in all(view.tree(), "ui.Button") {
+        let Some(label) = text_of(button, "label") else {
+            continue;
+        };
+        // A flag prop is the node's 0 or 1: only an action that reports a state is given one.
+        match button.props.get("toggled") {
+            Some(_) => toggles.push(label),
+            None => commands.push(label),
+        }
+    }
+    assert_eq!(
+        toggles,
+        ["Board"],
+        "the one action that reports a state is the one drawn as a toggle"
+    );
+    assert!(
+        ["New task", "New section", "Rename…"]
+            .iter()
+            .all(|label| commands.contains(&label.to_string())),
+        "and the commands beside it are buttons, not switches: {commands:?}"
+    );
+}
+
 /// A command whose place this view does not have is not among the commands it offers: a task
 /// with nothing over it in its day cannot be indented under it, though the store holds another
 /// day's task before it, and the one under a task it can see is. Running the one offered nests
@@ -1943,6 +1979,10 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
         "the one under a task of its own day does: {:?}",
         offered(&mut view, &tank)
     );
+    assert!(
+        !offered(&mut view, &van).contains(&"Outdent".to_owned()),
+        "and a task at the top level has none to move out of"
+    );
 
     // Running it nests it under the task over it, which is the one of its own day.
     let key = row_command_key(&mut view, &tank, "Indent");
@@ -1961,6 +2001,12 @@ fn the_moves_a_row_offers_follow_the_rows_the_view_shows() {
         target(&read(&ada, &tank, "parent")),
         target(&van),
         "under the task the list shows over it, never one of another day"
+    );
+    let mut view = ada.view(APP);
+    assert!(
+        offered(&mut view, &tank).contains(&"Outdent".to_owned()),
+        "and now it has a parent to move out of: {:?}",
+        offered(&mut view, &tank)
     );
 
     // The task's own window shows no row over it, so it offers no move that needs one.
