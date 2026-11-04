@@ -555,30 +555,17 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
         window.failed()
     );
     assert!(
-        window
-            .composed()
-            .is_some_and(|tree| shortcut_action_declared(
-                tree,
-                &ui::platform::Shortcut::from("Ctrl+Enter")
-            )
-            .is_some()),
+        window.composed().is_some_and(|tree| shortcut_action_where(
+            tree,
+            None,
+            &ui::platform::Shortcut::from("Ctrl+Enter")
+        )
+        .is_some()),
         "the composed shell carries the declared shortcut: {:#?}",
         window.composed()
     );
     let mut harness =
         ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (900, 700));
-    let press = |harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str| {
-        let modifiers: Vec<String> = modifiers.iter().map(|name| (*name).to_owned()).collect();
-        harness.set_modifiers(&modifiers);
-        harness.key(key);
-        harness.set_modifiers(&[]);
-        let window = harness
-            .root_widget_mut()
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<AppWindow>())
-            .expect("the window");
-        window.flush();
-    };
     // The action's own `key:` names its shortcut: its modifiers with its key, and neither
     // half on its own, nor another modifier held with it.
     press(&mut harness, &["command"], "Enter");
@@ -725,6 +712,232 @@ fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
         Some("field"),
         "and it leaves the keyboard in the entry"
     );
+}
+
+/// Press `key` with `modifiers` held, as a person does, and let the window send what it did.
+fn press(harness: &mut ui::headless::FrameHarness, modifiers: &[&str], key: &str) {
+    let modifiers: Vec<String> = modifiers.iter().map(|name| (*name).to_owned()).collect();
+    harness.set_modifiers(&modifiers);
+    harness.key(key);
+    harness.set_modifiers(&[]);
+    drawn_window(harness).flush();
+}
+
+/// What the control called `name` shows, as assistive technology reads it.
+fn shown_value(harness: &ui::headless::FrameHarness, name: &str) -> Option<String> {
+    let named = node_named(harness, name);
+    harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == named)
+        .and_then(|(_, node)| node.value().map(str::to_owned))
+}
+
+/// The entry a list's next item is typed in declares the primary action's key: pressed there,
+/// the key commits what was typed through the entry's own submit, rather than making an empty
+/// item.
+#[test]
+fn the_primary_actions_key_in_the_entry_commits_what_was_typed() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[
+            ("key", Value::text("Ctrl+n")),
+            ("entry", Value::Bool(true)),
+            ("placeholder", Value::text("New task")),
+        ],
+        Value::text(""),
+    );
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        tree.children[0]
+            .events
+            .insert("submit".to_owned(), Event::default());
+        // The bar's own button for the same action.
+        let mut button = UiNode::empty("ui.Button", "bar");
+        button
+            .props
+            .insert("label".to_owned(), Value::text("New task"));
+        button.props.insert("key".to_owned(), Value::text("Ctrl+n"));
+        button.events.insert("press".to_owned(), Event::default());
+        tree.children.insert(0, button);
+    }
+    page.push(ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
+        "New task",
+        Some("Ctrl+n"),
+    ))));
+    let (mut app, mut harness) = drawn(&page);
+    drawn_window(&mut harness)
+        .invoke_action(tilo_actions::ActionAddress::new("tasks:1", "new"), None);
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field"),
+        "the primary action put the keyboard in the entry"
+    );
+    harness.type_text("Buy milk");
+    press(&mut harness, &["command"], "n");
+    let told = told(&mut app);
+    let fires: Vec<ToApp> = told
+        .iter()
+        .filter(|message| matches!(message, ToApp::Fire { .. }))
+        .cloned()
+        .collect();
+    assert_eq!(
+        fires,
+        [ToApp::Fire {
+            lane: Lane::Root,
+            key: "field".to_owned(),
+            event: "submit".to_owned(),
+            value: Some(Value::text("Buy milk")),
+        }],
+        "the key committed the item typed in the entry, as its own Enter does: {told:?}"
+    );
+}
+
+/// Two items of a list each declare the key that completes them: the press completes the item
+/// the keyboard is on, not the first one the window shows.
+#[test]
+fn a_press_runs_the_action_of_the_item_the_keyboard_is_on() {
+    use wire::Event;
+    let mut page = UiNode::empty("stack", "page");
+    let mut page_open = Vec::new();
+    for (key, name) in [("a", "First"), ("b", "Second")] {
+        let mut item = UiNode::empty("stack", key);
+        let mut complete = UiNode::empty("ui.Button", &format!("{key}#complete"));
+        complete
+            .props
+            .insert("label".to_owned(), Value::text("Complete"));
+        complete
+            .props
+            .insert("key".to_owned(), Value::text("Ctrl+Enter"));
+        complete.events.insert("press".to_owned(), Event::default());
+        let mut title = UiNode::empty("ui.TextInput", &format!("{key}#title"));
+        title.binding = Some(crate::Binding {
+            field: Some((format!("doc/tasks:{key}"), "title".to_owned())),
+            name: name.to_owned(),
+        });
+        title
+            .props
+            .insert("placeholder".to_owned(), Value::text(name));
+        item.children.push(complete);
+        item.children.push(title);
+        page.children.push(item);
+        page_open.push(ToUi::Bound {
+            lane: Lane::Root,
+            key: format!("{key}#title"),
+            value: Value::text(format!("{name} task")),
+            acked: 0,
+        });
+    }
+    let mut open = vec![ToUi::Open {
+        lane: Lane::Root,
+        target: doc(),
+        tree: page,
+        front: None,
+    }];
+    open.extend(page_open);
+    let (mut app, mut harness) = drawn(&open);
+    harness
+        .click_named("b#title")
+        .expect("the second item's title is drawn");
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("b#title"),
+        "the keyboard is in the second item's title"
+    );
+    press(&mut harness, &["command"], "Enter");
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            lane: Lane::Root,
+            key: "b#complete".to_owned(),
+            event: "press".to_owned(),
+            value: None,
+        }],
+        "the press completed the item the keyboard is on, not the first one"
+    );
+}
+
+/// A field's own keys are the field's: Delete edits the text the keyboard is in, and the action
+/// that declares Delete runs only where no field has the keyboard.
+#[test]
+fn a_fields_own_keys_edit_its_text_before_any_action_declares_them() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[("placeholder", Value::text("Title"))],
+        Value::text("Q3 plan"),
+    );
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        let mut erase = UiNode::empty("ui.Button", "erase");
+        erase
+            .props
+            .insert("label".to_owned(), Value::text("Delete"));
+        erase.props.insert("key".to_owned(), Value::text("Delete"));
+        erase.events.insert("press".to_owned(), Event::default());
+        tree.children.push(erase);
+    }
+    let (mut app, mut harness) = drawn(&page);
+    // With no field to type in, the key is the action's.
+    harness.key("Delete");
+    drawn_window(&mut harness).flush();
+    assert_eq!(
+        fired(&mut app),
+        [ToApp::Fire {
+            lane: Lane::Root,
+            key: "erase".to_owned(),
+            event: "press".to_owned(),
+            value: None,
+        }],
+        "the declared action runs where nothing takes typing"
+    );
+    // In the field, the same key edits the text it holds.
+    harness.click_named("field").expect("the title is drawn");
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the click put the keyboard in the title"
+    );
+    harness.key("Home");
+    harness.key("Delete");
+    harness.relayout();
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some("3 plan"),
+        "Delete took the character out of the text the field holds"
+    );
+    assert!(
+        fired(&mut app).is_empty(),
+        "the key in the field ran no action"
+    );
+}
+
+/// The keys a field uses to select stay the field's: select all, then typing replaces the text.
+#[test]
+fn a_fields_select_all_stays_in_the_field() {
+    let (mut app, mut harness) = drawn(&bound_page(
+        "ui.TextInput",
+        &[("placeholder", Value::text("Title"))],
+        Value::text("Q3 plan"),
+    ));
+    harness.click_named("field").expect("the title is drawn");
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_control().as_deref(),
+        Some("field"),
+        "the click put the keyboard in the title"
+    );
+    press(&mut harness, &["command"], "a");
+    harness.type_text("Q4 plan");
+    harness.relayout();
+    assert_eq!(
+        shown_value(&harness, "Field").as_deref(),
+        Some("Q4 plan"),
+        "select all, then typing replaced what the field held"
+    );
+    assert!(fired(&mut app).is_empty(), "the keys ran no action");
 }
 
 /// A page whose one described control `kind` is bound to a note's field and shows `value`,

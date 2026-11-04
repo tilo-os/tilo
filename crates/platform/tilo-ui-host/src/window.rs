@@ -1378,10 +1378,6 @@ impl AppWindow {
     /// press took it): it goes to the field the press leaves the keyboard in. Whether it was
     /// held.
     fn hold_typing(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
-        fn types_text(widget: &dyn Widget) -> bool {
-            (widget.is_focused() && widget.ime_content().is_some())
-                || widget.children().into_iter().any(types_text)
-        }
         let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
             return false;
         };
@@ -1397,7 +1393,7 @@ impl AppWindow {
         self.take_events();
         if self.fired <= self.took
             || key.state != ui::winit::event::ElementState::Pressed
-            || types_text(self.body.as_ref())
+            || takes_typing(self.body.as_ref())
         {
             return false;
         }
@@ -1464,54 +1460,68 @@ impl AppWindow {
         true
     }
 
-    /// Run the offered action an app declared a shortcut for (`key: "Ctrl+Enter"`, `key: "e"`)
-    /// when the person presses it in this window: the row's action first (the content the
-    /// window after the list shows), else one the window's own header or content offers.
-    /// Whether it ran one, so the press is the action's and typing does not take it.
+    /// The press the app declared for `event` (`key: "Ctrl+Enter"`, `key: "e"`) in this window,
+    /// when no text field the keyboard is in uses it: see [`Press`]. A paste, or a key an input
+    /// method is composing, is no press of an app's.
     fn declared_shortcut(
-        &mut self,
+        &self,
         event: &ui::winit::event::WindowEvent,
         modifiers: ui::winit::keyboard::ModifiersState,
-    ) -> bool {
-        // While a text field has the keyboard every key is typing, and a shortcut is a press on
-        // its own: a paste, or a key an input method is composing, is neither.
-        if self.focused_text_field().is_some() || self.composing {
-            return false;
+    ) -> Option<Press> {
+        if self.composing {
+            return None;
         }
         let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
-            return false;
+            return None;
         };
         if key.state != ui::winit::event::ElementState::Pressed || key.repeat {
-            return false;
+            return None;
         }
         if key
             .text
             .as_ref()
             .is_some_and(|text| text.chars().count() > 1)
         {
-            return false;
+            return None;
         }
-        let conventions = ui::platform::PlatformConventions::default();
-        let declared = self.built.as_ref().and_then(|built| {
-            let pressed =
-                ui::platform::Shortcut::pressed(&key.logical_key, modifiers, conventions)?;
-            focus_field(built, &pressed)
-        });
-        if let Some(field) = declared {
-            self.focus_request = Some(field);
-            self.take_events();
-            return true;
+        let pressed = ui::platform::Shortcut::pressed(
+            &key.logical_key,
+            modifiers,
+            ui::platform::PlatformConventions::default(),
+        )?;
+        self.press_where(&pressed)
+    }
+
+    /// Where a press of `pressed` leads in the window: the field it brings the person to, the
+    /// field that carries it out (the keyboard is already there), or the control that runs it —
+    /// on the item the keyboard is on first, then what that stands in, then the window.
+    fn press_where(&self, pressed: &ui::platform::Shortcut) -> Option<Press> {
+        let built = self.built.as_ref()?;
+        let focused = self.focused_control();
+        // A key a text field declares is the field's: where the keyboard is already in it, it
+        // carries the key out there, on the item the person is on, rather than sending them to
+        // the first field of the window that names it.
+        if let Some(field) = focused.as_deref().filter(|field| {
+            node_at(built, field).is_some_and(|field| text_field(field) && declares(field, pressed))
+        }) {
+            return Some(if field_takes_a_press(built, field) {
+                Press::Commit
+            } else {
+                Press::Lead(field.to_owned())
+            });
         }
-        let Some((node_key, event)) = self
-            .built
-            .as_ref()
-            .and_then(|built| shortcut_action(built, &key.logical_key, modifiers, conventions))
-        else {
-            return false;
-        };
-        self.act(UiEvent::Fire(node_key, event, None));
-        self.take_events();
-        true
+        if let Some(field) = focus_field(built, pressed) {
+            return Some(Press::Lead(field));
+        }
+        shortcut_action_where(built, focused.as_deref(), pressed)
+            .map(|(key, event)| Press::Run(key, event))
+    }
+
+    /// The press the field the keyboard is in takes as its own: Enter, which a field of one line
+    /// that submits commits what it holds with.
+    fn enter_press(&mut self, ctx: &mut ui::widget::EventCtx<'_>) {
+        let enter = ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::Enter);
+        self.body.handle_event(&enter, ctx);
     }
 
     /// The field a press on the control `key` leads the person to: one whose declared key is
@@ -1523,31 +1533,31 @@ impl AppWindow {
     }
 
     /// Run the action the app declared the shortcut `key` for, as pressing it does: the event
-    /// it runs reaches the app at once. Whether the window offers it. A test's way in, and the
-    /// person's key.
+    /// it runs reaches the app at once, or the keyboard goes to the field the key leads to.
+    /// Whether the window offers it. A test's way in.
     pub fn run_shortcut(&mut self, key: &str) -> bool {
-        let wanted = ui::platform::Shortcut::from(key);
-        let declared = self
-            .built
-            .as_ref()
-            .and_then(|built| focus_field(built, &wanted));
-        if let Some(field) = declared {
-            self.focus_request = Some(field);
-            self.take_events();
-            self.flush();
-            return true;
-        }
-        let Some((node_key, event)) = self
-            .built
-            .as_ref()
-            .and_then(|built| shortcut_action_declared(built, &wanted))
-        else {
+        let Some(press) = self.press_where(&ui::platform::Shortcut::from(key)) else {
             return false;
         };
-        self.act(UiEvent::Fire(node_key, event, None));
-        self.take_events();
-        self.flush();
-        true
+        match press {
+            // The window's own request, taken once its tree is laid out again: what the field
+            // commits, it commits as the person leaves it.
+            Press::Lead(field) => {
+                self.focus_request = Some(field);
+                self.take_events();
+                self.flush();
+                true
+            }
+            // The keyboard is already in the field that declares the key, and the field carries
+            // it out through its own press: only the event path does that.
+            Press::Commit => true,
+            Press::Run(node_key, event) => {
+                self.act(UiEvent::Fire(node_key, event, None));
+                self.take_events();
+                self.flush();
+                true
+            }
+        }
     }
 
     /// Send what the person typed after each press the app ran since, into the view a press
@@ -1743,31 +1753,33 @@ impl AppWindow {
         }
     }
 
-    /// The bound control the keyboard is in now, by key in the composed tree.
-    fn focused_field(&self) -> Option<String> {
-        fn focused(widget: &dyn Widget, bound: &HashMap<String, Value>) -> Option<String> {
+    /// The control the keyboard is in now, by key in the composed tree.
+    fn focused_control(&self) -> Option<String> {
+        fn focused(widget: &dyn Widget) -> Option<String> {
             if widget.is_focused()
                 && let Some(id) = widget.test_id()
-                && bound.contains_key(id)
             {
                 return Some(id.to_owned());
             }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| focused(child, bound))
+            widget.children().into_iter().find_map(focused)
         }
-        focused(self.body.as_ref(), &self.bound.borrow())
+        focused(self.body.as_ref())
     }
 
-    /// The bound text control the keyboard is in, by key in the composed tree.
-    fn focused_text_field(&self) -> Option<String> {
-        let field = self.focused_field()?;
+    /// The bound text control the keyboard is in now, by key in the composed tree.
+    fn focused_field(&self) -> Option<String> {
+        let field = self.focused_control()?;
         matches!(
             self.bound.borrow().get(&field),
             Some(Value::Text(_) | Value::Rich(_))
         )
         .then_some(field)
+    }
+
+    /// Whether the keyboard is in a field that takes typing: a text field's keys are its own
+    /// until it says it does not use one.
+    fn typing(&self) -> bool {
+        takes_typing(self.body.as_ref())
     }
 
     /// The splice of the bound text control `composed` from `before` to `text`, which it now
@@ -1950,7 +1962,6 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
             in_order(child, out);
         }
     }
-    let text_input = crate::adapter::kind("TextInput");
     // A bound control whose binding is text takes typing, whatever component it is: the
     // document's body is a block editor, and a field after the title moves to it all the same.
     let takes_typing = |node: &UiNode| {
@@ -1970,12 +1981,7 @@ fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
     let field = nodes.get(at)?;
     // Given `lines`, the field wraps and Enter breaks its line (a document's title still ends
     // at Enter, and wraps only to fit).
-    let one_line = field.kind == text_input
-        && matches!(
-            field.props.get("lines"),
-            None | Some(Value::Unit | Value::Opt(None))
-        );
-    if !one_line || field.events.contains_key("submit") {
+    if !one_line(field) || field.events.contains_key("submit") {
         return None;
     }
     let lane = lane_of(key).0;
@@ -2077,6 +2083,18 @@ pub fn show_bound<S: std::hash::BuildHasher>(
     }
 }
 
+/// Where a press of a key an app declared leads in a window.
+enum Press {
+    /// The keyboard goes to the text field the key brings the person to: the entry an app wrote
+    /// for its primary action, rather than an item nobody typed.
+    Lead(String),
+    /// The key is the one the field the keyboard is already in declares: the field carries it
+    /// out itself, as its own press does.
+    Commit,
+    /// The control that declares the action runs it, on the event it takes.
+    Run(String, String),
+}
+
 /// The window stands for its body in the layout and in every walk of the widgets (it adds no
 /// node of its own, so a walk that pairs widgets with layout nodes meets the body's children
 /// under it), taking the person's input and its own changes on the way.
@@ -2095,31 +2113,136 @@ fn keyed<'a>(widget: &'a dyn Widget, key: &str) -> Option<&'a dyn Widget> {
         .find_map(|child| keyed(child, key))
 }
 
-/// The node key and event to fire for the control in `node`'s tree whose `key` prop is the press
-/// `key` with `modifiers` makes, matched the way the toolkit matches every shortcut
-/// ([`ui::platform::Shortcut::matches`]): one key, in one spelling, with the modifiers it names,
-/// and a command modifier that is the platform's own. So an app's `key: "Ctrl+Enter"` is
-/// Command+Enter on a Mac and `key: "e"` is the unshifted E on every layout (a `Button`'s
-/// `press`, a `MenuItem`'s `choose`, as the action's `key:` reaches them through `std.header`).
-/// The content after the list (the row the person selected) leads, so a row's shortcut beats the
-/// window's; then the whole shell. `None` when no control declares it.
-fn shortcut_action(
+/// The node key and event to fire for the control that answers a press, matched the way the
+/// toolkit matches every shortcut ([`ui::platform::Shortcut::same_press`]): one key, in one
+/// spelling, with the modifiers it names, and a command modifier that is the platform's own. So
+/// an app's `key: "Ctrl+Enter"` is Command+Enter on a Mac and `key: "e"` is the unshifted E on
+/// every layout (a `Button`'s `press`, a `MenuItem`'s `choose`, as the action's `key:` reaches
+/// them through `std.header`). `None` when no control declares it.
+///
+/// The control `focused` — the one the keyboard is in — is where the answer starts: the actions
+/// of the item the person is on lead, then those of what it stands in, out to the window's. With
+/// no control to start from, the content after the overview's list leads (the resource the
+/// person selected), then the whole shell.
+fn shortcut_action_where(
     node: &UiNode,
-    key: &ui::winit::keyboard::Key,
-    modifiers: ui::winit::keyboard::ModifiersState,
-    conventions: ui::platform::PlatformConventions,
+    focused: Option<&str>,
+    pressed: &ui::platform::Shortcut,
 ) -> Option<(String, String)> {
-    let pressed = ui::platform::Shortcut::pressed(key, modifiers, conventions)?;
-    shortcut_action_where(node, &|declared| declared.same_press(&pressed))
+    if let Some(path) = focused.and_then(|key| path_to(node, key)) {
+        // Out from the control the keyboard is in: what it declares itself, then what else
+        // stands beside the way on at each level (the item's own controls, the header of the page
+        // it is on), then what the item stands in.
+        for (at, stands) in path.iter().enumerate().rev() {
+            if let Some(found) = declared_action(stands, pressed) {
+                return Some(found);
+            }
+            let on_the_way = path.get(at.saturating_add(1)).map(|next| next.key.as_str());
+            for child in &stands.children {
+                if Some(child.key.as_str()) == on_the_way {
+                    continue;
+                }
+                if let Some(found) = declared_within(child, pressed) {
+                    return Some(found);
+                }
+            }
+        }
+    }
+    for child in crate::shell::slot_children(node, "content") {
+        if let Some(found) = declared_within(child, pressed) {
+            return Some(found);
+        }
+    }
+    declared_within(node, pressed)
 }
 
-/// The node key and event of the control in `node`'s tree whose `key` prop is `wanted`, as a
-/// test names it. See [`shortcut_action`].
-fn shortcut_action_declared(
-    node: &UiNode,
-    wanted: &ui::platform::Shortcut,
-) -> Option<(String, String)> {
-    shortcut_action_where(node, &|declared| declared.same_press(wanted))
+/// The control `node` itself is for the shortcut `pressed`: its node key and the event that
+/// runs its action, by its kind (a button's `press`, a menu item's `choose`).
+fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
+    if !declares(node, pressed) {
+        return None;
+    }
+    ["press", "choose"]
+        .into_iter()
+        .find(|event| node.events.contains_key(*event))
+        .map(|event| (node.key.clone(), event.to_owned()))
+}
+
+/// The first control in `node`'s tree, itself included, that answers the shortcut `pressed`.
+fn declared_within(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(String, String)> {
+    declared_action(node, pressed).or_else(|| {
+        node.children
+            .iter()
+            .find_map(|child| declared_within(child, pressed))
+    })
+}
+
+/// Whether `node` declares `pressed` as its key, in its `key` prop (`key: "Ctrl+Enter"`).
+fn declares(node: &UiNode, pressed: &ui::platform::Shortcut) -> bool {
+    matches!(
+        node.props.get("key"),
+        Some(Value::Text(key))
+            if ui::platform::Shortcut::from(key.as_str()).same_press(pressed)
+    )
+}
+
+/// The nodes from `node` down to the one keyed `key`, the window's root first.
+fn path_to<'a>(node: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {
+    if node.key == key {
+        return Some(vec![node]);
+    }
+    node.children.iter().find_map(|child| {
+        let mut path = path_to(child, key)?;
+        path.insert(0, node);
+        Some(path)
+    })
+}
+
+/// Whether `node` is a text field: what a person types in.
+fn text_field(node: &UiNode) -> bool {
+    node.kind == crate::adapter::kind("TextInput") || node.kind == crate::adapter::kind("RichInput")
+}
+
+/// Whether `node` is a text field of one line: Enter ends its text rather than breaking a line.
+fn one_line(node: &UiNode) -> bool {
+    node.kind == crate::adapter::kind("TextInput")
+        && matches!(
+            node.props.get("lines"),
+            None | Some(Value::Unit | Value::Opt(None))
+        )
+}
+
+/// Whether the text field `key` of the tree `node` takes a press of its own: a field of one line
+/// that submits what it holds, so the key it declares commits the item typed there.
+fn field_takes_a_press(node: &UiNode, key: &str) -> bool {
+    node_at(node, key).is_some_and(|field| one_line(field) && field.events.contains_key("submit"))
+}
+
+/// The node of the tree `node` keyed `key`.
+fn node_at<'a>(node: &'a UiNode, key: &str) -> Option<&'a UiNode> {
+    if node.key == key {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| node_at(child, key))
+}
+
+/// Whether `widget`, or one of the children it holds, has the keyboard and takes typing.
+fn takes_typing(widget: &dyn Widget) -> bool {
+    (widget.is_focused() && widget.ime_content().is_some())
+        || widget.children().into_iter().any(takes_typing)
+}
+
+/// The node key of the text field in `node`'s tree that declares the press `pressed`: the entry
+/// at the end of a list, where the app's key puts the person rather than making an empty item.
+/// It answers before any control: a header or bar button that names the same key leads the
+/// person to the entry the app wrote for it.
+fn focus_field(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<String> {
+    if text_field(node) && declares(node, pressed) {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| focus_field(child, pressed))
 }
 
 /// The shortcut the control `key` declares in its `key` prop, as pressing it names one: a
@@ -2136,73 +2259,6 @@ fn shortcut_declared(node: &UiNode, key: &str) -> Option<ui::platform::Shortcut>
     node.children
         .iter()
         .find_map(|child| shortcut_declared(child, key))
-}
-
-/// The node key of the text field in `node`'s tree that declares the press `wanted`: the entry
-/// at the end of a list, where the app's key puts the person rather than making an empty item.
-/// It answers before any control: a header or bar button that names the same key leads the
-/// person to the entry the app wrote for it.
-fn focus_field(node: &UiNode, wanted: &ui::platform::Shortcut) -> Option<String> {
-    focus_field_where(node, &|declared| declared.same_press(wanted))
-}
-
-/// [`focus_field`] for any declaration `asks` takes.
-fn focus_field_where(
-    node: &UiNode,
-    asks: &dyn Fn(&ui::platform::Shortcut) -> bool,
-) -> Option<String> {
-    let field = node.kind == crate::adapter::kind("TextInput")
-        || node.kind == crate::adapter::kind("RichInput");
-    if field
-        && matches!(node.props.get("key"), Some(Value::Text(key)) if asks(&ui::platform::Shortcut::from(key.as_str())))
-    {
-        return Some(node.key.clone());
-    }
-    node.children
-        .iter()
-        .find_map(|child| focus_field_where(child, asks))
-}
-
-/// The first control in `node`'s tree whose declared key shortcut `asks` for, the content after
-/// the list first.
-fn shortcut_action_where(
-    node: &UiNode,
-    asks: &dyn Fn(&ui::platform::Shortcut) -> bool,
-) -> Option<(String, String)> {
-    fn walk(
-        node: &UiNode,
-        asks: &dyn Fn(&ui::platform::Shortcut) -> bool,
-        found: &mut Option<(String, String)>,
-    ) {
-        let declared = matches!(node.props.get("key"), Some(Value::Text(key)) if asks(&ui::platform::Shortcut::from(key.as_str())));
-        if declared {
-            // The event the control runs its action on, by its kind: a button's `press`, a menu
-            // item's `choose`.
-            for event in ["press", "choose"] {
-                if node.events.contains_key(event) {
-                    *found = Some((node.key.clone(), event.to_owned()));
-                    return;
-                }
-            }
-        }
-        for child in &node.children {
-            walk(child, asks, found);
-            if found.is_some() {
-                return;
-            }
-        }
-    }
-    // The row's action leads: the tree after the overview's list is the resource the person
-    // selected, whose header and content offer its actions.
-    let mut found = None;
-    for child in crate::shell::slot_children(node, "content") {
-        walk(child, asks, &mut found);
-        if found.is_some() {
-            return found;
-        }
-    }
-    walk(node, asks, &mut found);
-    found
 }
 
 impl AppWindow {
@@ -2325,14 +2381,43 @@ impl ui::widget::Decorator for AppWindow {
         {
             self.pointed_after = Some(self.fired);
         }
-        if self.hold_typing(event)
-            || self.enter_moves_on(event, ctx.modifiers.state())
-            || self.declared_shortcut(event, ctx.modifiers.state())
-        {
+        if self.hold_typing(event) || self.enter_moves_on(event, ctx.modifiers.state()) {
             *ctx.handled = true;
             return;
         }
-        self.body.handle_event(event, ctx);
+        // A field the keyboard is in takes the keys it uses, and says which they are by taking
+        // them: the rest are the app's.
+        let typing = self.typing();
+        if typing {
+            self.body.handle_event(event, ctx);
+            if *ctx.handled {
+                return;
+            }
+        }
+        let Some(press) = self.declared_shortcut(event, ctx.modifiers.state()) else {
+            if !typing {
+                self.body.handle_event(event, ctx);
+            }
+            return;
+        };
+        match press {
+            // The field the keyboard is in carries the key out as its own press does: Enter,
+            // which submits what it holds there.
+            Press::Commit => {
+                self.enter_press(ctx);
+            }
+            // The keyboard goes to the field the key leads to, which takes it from there.
+            Press::Lead(field) => {
+                self.focus_request = Some(field);
+                self.take_events();
+            }
+            // The control that declares the action runs it.
+            Press::Run(node_key, event) => {
+                self.act(UiEvent::Fire(node_key, event, None));
+                self.take_events();
+            }
+        }
+        *ctx.handled = true;
     }
 
     fn take_focus_request(&mut self) -> Option<String> {
