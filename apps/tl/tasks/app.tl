@@ -701,7 +701,7 @@ view task_card(t: Task, sections: List<Section>) {
                     key: a.key,
                     disabled: not a.available,
                     reason: if a.available { .none } else { .some(a.reason) },
-                    group: a.group,
+                    group: if a.frequent { .none } else { a.group },
                 ) {
                     on choose: a.run
                 }
