@@ -78,16 +78,20 @@ impl Studio {
         }
         ada_phone.open("so.tilo.chat");
         ada_phone.wait_for_window("so.tilo.chat");
+        // What a window writes reaches the workspace's host: the record Chat
+        // keeps its workspace in is one the site holds, and the people it
+        // introduces are read from there on every device.
+        site.wait_for_record_of("so.tilo.chat", &ada_laptop);
         // Each person's Chat shows the other once their windows have said who
         // they are in the workspace's shared record: what a conversation needs
         // before it can open.
         let ada_key = hex::encode(ada.public);
         let bob_key = hex::encode(bob.public);
-        for device in [&ada_laptop, &ada_phone] {
-            device.chat().wait_for_contact(&bob_key);
-        }
         for device in [&bob_laptop, &bob_phone] {
             device.chat().wait_for_contact(&ada_key);
+        }
+        for device in [&ada_laptop, &ada_phone] {
+            device.chat().wait_for_contact(&bob_key);
         }
         Self {
             site,

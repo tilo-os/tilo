@@ -90,6 +90,8 @@ impl Site {
     /// `owner`'s site: a relay of this machine governing the workspace `name`,
     /// listening on loopback with its directory and door served over HTTP.
     pub fn start(owner: &Person, name: &str) -> Self {
+        // The site runs in this process: its log is this test's stderr.
+        install_log();
         // The site keeps the keys of the channels it seals in the platform
         // secret store, which this process keeps in memory: a site without one
         // can host no sealed record, and its people's devices reach no plane.
@@ -285,6 +287,44 @@ impl Site {
             .expect("the workspace's app authors")
     }
 
+    /// The records of the workspace this site holds, by the app and record
+    /// they belong to: what its people wrote there, as their host keeps it.
+    pub fn records(&self) -> Vec<(String, String)> {
+        self.runtime
+            .block_on(self.workspaces.record_routes(&self.workspace))
+            .expect("the site's records")
+    }
+
+    /// What the site's copy of record `record` of `app` holds, saved, read
+    /// through the keys it holds as a member of the record's channel: `None`
+    /// while it holds no such record, or cannot open it yet.
+    pub fn record(&self, app: &str, record: &str) -> Option<Vec<u8>> {
+        self.runtime
+            .block_on(
+                self.workspaces
+                    .record_document(&self.workspace, app, record),
+            )
+            .ok()
+            .flatten()
+    }
+
+    /// Wait until the site holds a record of `app`: what a window of
+    /// `device`, which wrote in it, had reach the workspace's host. What that
+    /// device's session and app said comes with the failure: a write that
+    /// never left its device says why there.
+    pub fn wait_for_record_of(&self, app: &str, device: &Device) {
+        let held = Held {
+            site: self,
+            app,
+            device: Some(device),
+        };
+        tilo_test_env::wait_until(held, || {
+            self.records()
+                .iter()
+                .any(|(recorded, _)| recorded.as_str() == app)
+        });
+    }
+
     /// Wait until the workspace's governance lets `app` author its records:
     /// what the owner's device granting it there leaves the host holding, and
     /// what a member's device joins with.
@@ -355,6 +395,31 @@ impl Site {
             },
         );
         format!("{} bytes, {changes} changes, {read}", bytes.len())
+    }
+}
+
+/// What the site holds, named on the wait that found it short: the routes it
+/// kept are the difference between a write that never left its device and one
+/// the host has but nobody reads. With the device that wrote, its session's
+/// and its app's own words follow.
+struct Held<'a> {
+    site: &'a Site,
+    app: &'a str,
+    device: Option<&'a Device>,
+}
+
+impl std::fmt::Display for Held<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the site to hold a record of {} (it holds {:?})",
+            self.app,
+            self.site.records()
+        )?;
+        if let Some(device) = self.device {
+            write!(formatter, "\n{}", device.diagnostic())?;
+        }
+        Ok(())
     }
 }
 
@@ -449,6 +514,22 @@ fn door_responder(
     responder
 }
 
+/// The log of what runs in this test's own process — the site's relay above
+/// all — as `RUST_LOG` asks for it, warnings and worse by default: what the
+/// host did with a change a device published is only said there.
+fn install_log() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(std::io::stderr)
+            .try_init();
+    });
+}
+
 /// A person: the root their devices are certified under, and the identity this
 /// machine provisions them with before any of their devices run.
 pub struct Person {
@@ -506,13 +587,14 @@ impl Person {
         self.certify_with(paths, label, None)
     }
 
-    /// Certify the device key `paths` holds as this person's host: the device
-    /// that governs and hosts workspaces, as a home peer is.
+    /// Certify the device key `paths` holds as this person's site: the device
+    /// a site runs, which governs the workspaces it hosts and takes part in
+    /// their channels, so the records it keeps are sealed ones.
     pub fn certify_as_host(&self, paths: &IdentityPaths, label: &str) -> DeviceCert {
         self.certify_with(
             paths,
             label,
-            Some(tilo_user_identity::DeviceCapabilities::host()),
+            Some(tilo_user_identity::cloud_enrollment::host_capabilities()),
         )
     }
 
@@ -654,10 +736,22 @@ impl Device {
         IdentityPaths::under(self.home.path().join("identity"))
     }
 
+    /// Where this device's session and its apps log.
+    fn logs_dir(&self) -> PathBuf {
+        match std::env::var_os("TILO_APP_LOG_DIR") {
+            Some(dir) => std::path::PathBuf::from(dir).join(format!(
+                "{}-{}",
+                self.person.to_lowercase().replace(' ', "-"),
+                self.label.to_lowercase().replace(' ', "-")
+            )),
+            None => self.home.path().join("app-logs"),
+        }
+    }
+
     /// The device's own session file: what it logged, when something went
     /// wrong.
     pub fn log(&self) -> String {
-        std::fs::read_to_string(self.home.path().join("session.log")).unwrap_or_default()
+        std::fs::read_to_string(self.logs_dir().join("session.log")).unwrap_or_default()
     }
 
     /// What this device's session logged as a warning or an error, oldest
@@ -676,12 +770,62 @@ impl Device {
         log.lines().rev().take(20).collect::<Vec<_>>().join("\n")
     }
 
+    /// What this device shows and logged, for a step that never happened.
+    fn diagnostic(&self) -> String {
+        let mut apps = String::new();
+        if let Ok(entries) = std::fs::read_dir(self.logs_dir()) {
+            for entry in entries.flatten() {
+                let text =
+                    std::fs::read_to_string(entry.path()).unwrap_or_else(|error| error.to_string());
+                let interesting: Vec<&str> = text
+                    .lines()
+                    .filter(|line| {
+                        [
+                            "refused", "seal", "channel", "identity", "join", "WARN", "ERROR",
+                        ]
+                        .iter()
+                        .any(|word| line.contains(word))
+                    })
+                    .collect();
+                let shown = interesting
+                    .iter()
+                    .take(200)
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                apps.push_str(&format!("{}:\n{shown}\n", entry.path().display()));
+            }
+        }
+        let log: Vec<String> = self
+            .read_line_of_log()
+            .lines()
+            .filter(|line| !line.contains("reconciliation blocked"))
+            .map(str::to_owned)
+            .collect();
+        let tail = log
+            .iter()
+            .rev()
+            .take(40)
+            .rev()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!(
+            "windows: {}\nwhat its session warned:\n{}\nlast lines of its log:\n{tail}\n\
+             what its apps said:\n{apps}",
+            self.ask(&json!({"op": "windows"})),
+            self.warnings(),
+        )
+    }
+
     /// Run this device's session: its own home, its own identity root, its own
     /// state and its own control socket, as a device's session runs.
     fn spawn(&mut self, invitation: Option<&str>) {
         let root = self.home.path().to_path_buf();
         let control = self.control.clone();
-        let log = std::fs::File::create(root.join("session.log")).expect("a log for the session");
+        let logs = self.logs_dir();
+        std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
+        let log = std::fs::File::create(logs.join("session.log")).expect("a log for the session");
         let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-session"));
         command
             .args([
@@ -718,6 +862,7 @@ impl Device {
             // The session says at info why a join did not land: what a failed
             // step reads.
             .env("RUST_LOG", "info")
+            .env("TILO_APP_STDERR_DIR", &logs)
             .env_remove("TILO_TEST_CONTROL")
             .env_remove("TILO_AGENT_DOOR")
             .env_remove("TILO_ADMIN_CONTROL")
@@ -901,6 +1046,19 @@ impl Device {
         super::window::Window::open(self.directory(), app, title)
     }
 
+    /// Open the installed app `app` on this device's desk, as a person
+    /// starting it does: what an installed desktop opens from its applications
+    /// list.
+    pub fn open(&self, app: &str) {
+        let answer = self.act("applications", app, &json!({}));
+        assert!(
+            answer.get("err").is_none(),
+            "{} opens {app}: {answer}\n{}",
+            self.label,
+            self.read_line_of_log()
+        );
+    }
+
     /// Invoke `id` of `provider` on this device, as a program of the person's
     /// does, and return the receipt.
     pub fn act(&self, provider: &str, id: &str, args: &Value) -> Value {
@@ -981,12 +1139,31 @@ impl Device {
 
     /// Wait until a window of the app `app` is open on this device's desk.
     pub fn wait_for_window(&self, app: &str) {
-        tilo_test_env::wait_until(format!("{} shows a {app} window", self.label), || {
-            let answer = self.ask(&json!({"op": "windows"}));
-            answer["answer"]["windows"]
+        tilo_test_env::wait_until(NoWindow { device: self, app }, || {
+            self.ask(&json!({"op": "windows"}))["answer"]["windows"]
                 .as_array()
                 .is_some_and(|rows| rows.iter().any(|row| row["app_id"].as_str() == Some(app)))
         });
+    }
+}
+
+/// A device whose desk still shows no `app` window, named on the wait that
+/// found it short: what it shows, and what its session and its apps said.
+struct NoWindow<'a> {
+    device: &'a Device,
+    app: &'a str,
+}
+
+impl std::fmt::Display for NoWindow<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} to show a {} window; it shows {}\n{}",
+            self.device.label,
+            self.app,
+            self.device.ask(&json!({"op": "windows"})),
+            self.device.diagnostic()
+        )
     }
 }
 
@@ -1045,8 +1222,10 @@ impl Chat<'_> {
         match update["state"].as_str() {
             Some("succeeded") => update["output"]["value"].clone(),
             Some("failed") => panic!(
-                "{} Chat's {operation} failed: {}",
-                self.device.label, update["output"]["error"]
+                "{} Chat's {operation} failed: {}\n{answer}\n{}",
+                self.device.label,
+                update["output"]["error"],
+                self.device.diagnostic()
             ),
             other => panic!(
                 "{} Chat's {operation} ended as {other:?}: {answer}",
@@ -1066,11 +1245,21 @@ impl Chat<'_> {
         answer
     }
 
+    /// The key Chat names a conversation with `peer`, a person's root key,
+    /// by: the person's key in the workspace's people list, which is what the
+    /// app's direct actions take ([`ui::person_chat::person_key`]).
+    fn conversation_key(peer: &str) -> String {
+        ui::person_chat::person_key(peer)
+    }
+
     /// Open the conversation with `peer` in the app, as clicking their name
     /// does: what is on screen is read, so their messages stop counting as
     /// unread here.
     pub fn open(&self, peer: &str) {
-        self.invoke("open-direct-conversation", &json!({"public_key": peer}));
+        self.invoke(
+            "open-direct-conversation",
+            &json!({"public_key": Self::conversation_key(peer)}),
+        );
     }
 
     /// Send `text` to the person `peer`, as typing it in the conversation
@@ -1078,7 +1267,7 @@ impl Chat<'_> {
     pub fn send(&self, peer: &str, text: &str) {
         let answer = self.invoke(
             "send-direct-message",
-            &json!({"public_key": peer, "text": text}),
+            &json!({"public_key": Self::conversation_key(peer), "text": text}),
         );
         assert_eq!(
             answer["accepted"],
@@ -1091,7 +1280,10 @@ impl Chat<'_> {
     /// The conversation with `peer` as Chat reads it now: its messages in the
     /// order the app shows them, and how many of them its person has not read.
     pub fn conversation(&self, peer: &str) -> Conversation {
-        let answer = self.invoke("read-direct-conversation", &json!({"public_key": peer}));
+        let answer = self.invoke(
+            "read-direct-conversation",
+            &json!({"public_key": Self::conversation_key(peer)}),
+        );
         Conversation {
             messages: answer["messages"]
                 .as_array()
@@ -1121,7 +1313,10 @@ impl Chat<'_> {
     /// when it can read it, and why not when it refuses — a person who is in
     /// no workspace with this device's person has no conversation here.
     pub fn refusal(&self, peer: &str) -> Option<String> {
-        let answer = self.settled("read-direct-conversation", &json!({"public_key": peer}));
+        let answer = self.settled(
+            "read-direct-conversation",
+            &json!({"public_key": Self::conversation_key(peer)}),
+        );
         if let Some(refusal) = answer.get("err") {
             return Some(refusal["message"].as_str().unwrap_or_default().to_owned());
         }
@@ -1135,8 +1330,9 @@ impl Chat<'_> {
                     .unwrap_or_else(|| update.to_string()),
             ),
             other => panic!(
-                "{} Chat's read of {peer} ended as {other:?}: {answer}",
-                self.device.label
+                "{} Chat's read of {peer} ended as {other:?}: {answer}\n{}",
+                self.device.label,
+                self.device.diagnostic()
             ),
         }
     }
@@ -1149,10 +1345,11 @@ impl Chat<'_> {
         while let Some(refusal) = self.refusal(peer) {
             if std::time::Instant::now() >= deadline {
                 panic!(
-                    "{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
+                    "{DIAG}{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
                      what the session warned and failed at:\n{}",
                     self.device.label,
-                    self.device.warnings()
+                    self.device.warnings(),
+                    DIAG = self.device.diagnostic()
                 );
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1162,17 +1359,30 @@ impl Chat<'_> {
     /// Wait until the conversation with `peer` shows `texts` in that order,
     /// and nothing else.
     pub fn wait_for_texts(&self, peer: &str, texts: &[&str]) {
-        tilo_test_env::wait_until(
-            format!("{} shows {texts:?} from {peer}", self.device.label),
-            || {
-                self.reads(peer)
-                    && self
-                        .texts(peer)
-                        .iter()
-                        .map(String::as_str)
-                        .eq(texts.iter().copied())
-            },
-        );
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let held = if self.reads(peer) {
+                Some(self.texts(peer))
+            } else {
+                None
+            };
+            let matches = held
+                .as_ref()
+                .is_some_and(|shown| shown.iter().map(String::as_str).eq(texts.iter().copied()));
+            if matches {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "{DIAG}{} shows {held:?} from {peer} instead of {texts:?}\n\
+                     what the session warned and failed at:\n{}",
+                    self.device.label,
+                    self.device.warnings(),
+                    DIAG = self.device.diagnostic()
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 
     /// Whether the app answered a read of the conversation with `peer`: it

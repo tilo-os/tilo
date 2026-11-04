@@ -205,7 +205,7 @@ impl ChatApp {
     ) -> Result<ui::person_chat::Conversation, String> {
         self.person_contacts = self.direct_contacts();
         self.require_person_contact(public_key)?;
-        self.direct_records()?.read(public_key)
+        self.direct_records()?.open(public_key)
     }
 
     /// What a read answered, as the effect's value.
