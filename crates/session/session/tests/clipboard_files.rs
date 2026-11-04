@@ -389,8 +389,13 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         paths.len(),
         turns.len()
     );
+    // How many turns the paste spans is the machine's pace against the
+    // worker's, so all the count says is that the loop kept turning after the
+    // paste was asked: a paste carried inside the turn that asked for it would
+    // leave no turn at all. The turns' own times are what show none of them
+    // carried a copy.
     assert!(
-        turns.len() > 20,
+        !turns.is_empty(),
         "the loop kept turning while the paste ran: {} turns over {copied:?}",
         turns.len()
     );
