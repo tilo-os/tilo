@@ -1035,6 +1035,33 @@ impl Shared {
                 DeskGesture::StepStrip(steps) => {
                     Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps)
                 }
+                // The deck is the desk's own drawing: the fingers move it
+                // here, where the frame is, rather than through a published
+                // action that would arrive a pass later.
+                DeskGesture::StripDeckDrag { travel } => {
+                    self.desktop.with_widgets(|host| {
+                        if host.wants_hand_on_deck() {
+                            host.drag_strip_deck(travel);
+                        } else {
+                            host.begin_strip_deck(travel);
+                        }
+                    });
+                    continue;
+                }
+                DeskGesture::StepStripFrom { travel, steps } => {
+                    self.desktop.with_widgets(|host| {
+                        host.end_strip_deck(travel);
+                    });
+                    if steps != 0 {
+                        // A finger chose the strip: the change it makes is
+                        // drawn sliding, not landed as a chord's would be.
+                        ui::motion::note_source(ui::tokens::MotionSource::Gesture);
+                        invocations.push(
+                            Invocation::new(CHROME_RESOURCE, "step-strip").with("steps", steps),
+                        );
+                    }
+                    continue;
+                }
                 DeskGesture::SwitchWorkspace(delta) => {
                     Invocation::new(CHROME_RESOURCE, "switch-workspace").with("delta", delta)
                 }
