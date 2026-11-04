@@ -434,7 +434,11 @@ fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
     let today = day(2026, 6, 30); // a Tuesday
     speak("en-US");
     for (when, english, _) in [
-        (day(2026, 6, 20), "Overdue", "Überfällig"),
+        (
+            day(2026, 6, 20),
+            "Jun 20 · Overdue",
+            "20. Juni · Überfällig",
+        ),
         (day(2026, 6, 30), "Today", "Heute"),
         (day(2026, 7, 1), "Tomorrow", "Morgen"),
         (day(2026, 7, 2), "Thursday", "Donnerstag"),
@@ -447,7 +451,11 @@ fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
     }
     speak("de-DE");
     for (when, _, german) in [
-        (day(2026, 6, 20), "Overdue", "Überfällig"),
+        (
+            day(2026, 6, 20),
+            "Jun 20 · Overdue",
+            "20. Juni · Überfällig",
+        ),
         (day(2026, 6, 30), "Today", "Heute"),
         (day(2026, 7, 1), "Tomorrow", "Morgen"),
         (day(2026, 7, 2), "Thursday", "Donnerstag"),
@@ -461,13 +469,13 @@ fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
 }
 
 /// A day gone by is the only day read in the overdue tone, and it is read so across midnight,
-/// the end of the week and the end of the year.
+/// the end of the week and the end of the year, saying which day it was.
 #[test]
 fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     let midnight = || chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
     speak("en-US");
     let fact = H24.day_fact(day(2026, 6, 29), Some(midnight()), day(2026, 6, 30));
-    assert_eq!(fact.text, "Yesterday 00:00");
+    assert_eq!(fact.text, "Jun 29 00:00 · Overdue");
     assert_eq!(fact.tone, crate::widget::Tone::Danger);
     let fact = H24.day_fact(day(2026, 6, 30), Some(midnight()), day(2026, 6, 30));
     assert_eq!(fact.text, "Today 00:00");
@@ -477,7 +485,7 @@ fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
     assert_eq!(fact.tone, crate::widget::Tone::Neutral);
     assert_eq!(
         H24.day_fact(day(2026, 12, 31), None, day(2027, 1, 1)).text,
-        "Overdue"
+        "Dec 31, 2026 · Overdue"
     );
 }
 
@@ -512,7 +520,7 @@ fn a_done_day_reads_as_the_day_it_happened_in_english_and_german() {
 }
 
 /// A day and the time of it are one fact: today's time stands with "Today", the week ahead's
-/// with its weekday, and a day gone by keeps its own name under the overdue tone.
+/// with its weekday, and a day gone by says its date under the overdue tone.
 #[test]
 fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
     let today = day(2026, 6, 30);
@@ -548,29 +556,29 @@ fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
         (
             day(2025, 6, 29),
             (9, 0),
-            "Jun 29, 2025 09:00",
-            "29. Juni 2025 09:00",
+            "Jun 29, 2025 09:00 · Overdue",
+            "29. Juni 2025 09:00 · Überfällig",
             Tone::Danger,
         ),
         (
             day(2026, 6, 29),
             (14, 30),
-            "Yesterday 14:30",
-            "Gestern 14:30",
+            "Jun 29 14:30 · Overdue",
+            "29. Juni 14:30 · Überfällig",
             Tone::Danger,
         ),
         (
             day(2026, 6, 25),
             (7, 5),
-            "Thu 07:05",
-            "Do. 07:05",
+            "Jun 25 07:05 · Overdue",
+            "25. Juni 07:05 · Überfällig",
             Tone::Danger,
         ),
         (
             day(2026, 6, 10),
             (7, 5),
-            "Jun 10 07:05",
-            "10. Juni 07:05",
+            "Jun 10 07:05 · Overdue",
+            "10. Juni 07:05 · Überfällig",
             Tone::Danger,
         ),
     ];

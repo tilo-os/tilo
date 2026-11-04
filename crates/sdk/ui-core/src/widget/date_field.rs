@@ -1,9 +1,10 @@
 //! `DateField`: a day, shown as one fact and picked in a popover.
 //!
 //! The field reads as a chip: the calendar icon and the day as the person reads a day
-//! ([`crate::format::day_fact_today`]: "Overdue", "Today", "Tomorrow", "Thursday", "Jun 29",
-//! with the time of day it is due at when it has one — "Today 9:00 AM"), or "Add date" in the
-//! quieter ink while it holds none, and the chevron every choice control wears. Pressing it
+//! ([`crate::format::day_fact_today`]: "Jun 29 · Overdue", "Today", "Tomorrow", "Thursday",
+//! with the time of day it is due at when it has one — "Today 9:00 AM"), in the tone the fact
+//! stands in, or "Add date" in the quieter ink while it holds none, and the chevron every
+//! choice control wears. Pressing it
 //! opens a [`DatePicker`] in a popover anchored to the chip; picking a day sets the date and
 //! closes it. A field whose date may be empty adds "Clear date" under the calendar.
 //!
@@ -27,7 +28,8 @@ use crate::icons::Icon;
 use crate::widget::arrange::Stack;
 use crate::widget::binding::{BoxedBinding, Pulled, derived};
 use crate::widget::{
-    AppModel, Button, ButtonRole, DatePicker, Decorator, Element, ModelPath, PopoverButton, Widget,
+    AppModel, Button, ButtonRole, DatePicker, Decorator, Element, ModelPath, PopoverButton, Tone,
+    Widget,
 };
 
 #[path = "date_field_component.rs"]
@@ -172,10 +174,11 @@ impl DateField {
     /// Say what the chip stands for now, on the chip it already is: what it shows, and what a
     /// screen reader hears of it.
     fn show_label(&mut self) {
-        let label = Self::label(self.value, self.at);
+        let (label, tone) = Self::fact(self.value, self.at);
         let spoken = Self::spoken(self.label.as_deref(), self.value, self.at);
         let chip = self.inner.button_mut();
         chip.set_label(label, self.value.is_none());
+        chip.set_tone(tone);
         chip.set_accessible_name(&spoken);
     }
 
@@ -212,14 +215,28 @@ impl DateField {
         true
     }
 
-    /// What the field reads as: the day and the time it is due at ("Today 9:00 AM", "Overdue"),
-    /// or "Add date" while it holds none.
+    /// What the field reads as, and the tone it says it in: the day and the time it is due at
+    /// ("Today 9:00 AM", "Jun 29 · Overdue"), or "Add date" while it holds none.
+    #[must_use]
+    pub fn fact(value: Option<NaiveDate>, at: Option<NaiveTime>) -> (String, Tone) {
+        value.map_or_else(
+            || {
+                (
+                    crate::i18n::widget_format("date-field-add", &[]),
+                    Tone::Neutral,
+                )
+            },
+            |day| {
+                let fact = crate::format::day_fact_today(day, at);
+                (fact.text, fact.tone)
+            },
+        )
+    }
+
+    /// What the field reads as: [`Self::fact`]'s words.
     #[must_use]
     pub fn label(value: Option<NaiveDate>, at: Option<NaiveTime>) -> String {
-        value.map_or_else(
-            || crate::i18n::widget_format("date-field-add", &[]),
-            |day| crate::format::day_fact_today(day, at).text,
-        )
+        Self::fact(value, at).0
     }
 
     /// What a screen reader hears of the chip: what the day is for and the day it holds
@@ -289,9 +306,11 @@ fn field(
         .on_view(move || on_clear.set(Some(None)));
         content = content.push(Box::new(clear));
     }
-    let chip = Button::new(id, &DateField::label(value, at))
+    let (fact, tone) = DateField::fact(value, at);
+    let chip = Button::new(id, &fact)
         .with_icon(Icon::Calendar)
-        .showing_choice();
+        .showing_choice()
+        .tone(tone);
     let chip = if value.is_some() {
         chip
     } else {
@@ -376,6 +395,15 @@ mod tests {
             "Today",
             "a day with no time says only the day"
         );
+    }
+
+    #[test]
+    fn a_late_day_reads_in_the_overdue_tone() {
+        let today = crate::clock::today();
+        let tomorrow = today.succ_opt().expect("a day");
+        let late = today.pred_opt().expect("a day");
+        assert_eq!(DateField::fact(Some(tomorrow), None).1, Tone::Neutral);
+        assert_eq!(DateField::fact(Some(late), None).1, Tone::Danger);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::widget::ControlSize;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::{AppModel, ModelPath, Tone};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -75,6 +75,9 @@ pub struct Button {
     /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
     /// ink a field shows an empty value in.
     placeholder: bool,
+    /// What the face says means something ([`Self::tone`]): the icon and the label take the
+    /// tone's colour, the face under them stays the role's.
+    content_tone: Option<Tone>,
     /// A media transport's control (previous, play/pause, next), drawn as
     /// its [`crate::widget::TransportFace`] at that face's side.
     transport: Option<(crate::widget::TransportControl, f64)>,
@@ -209,6 +212,7 @@ impl Button {
             faces: Vec::new(),
             avatar: None,
             placeholder: false,
+            content_tone: None,
             transport: None,
             badge: None,
             count: None,
@@ -461,6 +465,25 @@ impl Button {
         self.placeholder = true;
         self.dirty = true;
         self
+    }
+
+    /// What the face says means something ([`Tone::Neutral`] is no tone): the icon and the
+    /// label take the tone's colour, so a fact that is late reads late in the chip that states
+    /// it, while the face stays the role's.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.set_tone(tone);
+        self
+    }
+
+    /// Say what the face says means something, in place, as [`Self::tone`] does.
+    pub fn set_tone(&mut self, tone: Tone) {
+        let tone = (tone != Tone::Neutral).then_some(tone);
+        if tone == self.content_tone {
+            return;
+        }
+        self.content_tone = tone;
+        self.dirty = true;
     }
 
     /// It opens something over itself: it wears the trailing chevron every choice control
@@ -1228,6 +1251,7 @@ impl FaceSizer {
             faces: &[],
             avatar: None,
             placeholder: false,
+            tone: None,
             badge: None,
             label,
             hint: None,
@@ -1260,6 +1284,8 @@ struct FaceContent<'a> {
     avatar: Option<(&'a str, &'a str)>,
     /// The label names no value yet: painted in the secondary ink.
     placeholder: bool,
+    /// What the content marks means: its colour, where the face's own ink would stand.
+    tone: Option<Tone>,
     badge: Option<&'a str>,
     label: &'a str,
     hint: Option<String>,
@@ -1380,6 +1406,7 @@ impl FaceContent<'_> {
         ink: vello::peniko::Color,
         hint_ink: vello::peniko::Color,
     ) {
+        let ink = self.tone.map_or(ink, |tone| tone.colour(ctx.theme));
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
             if !self.faces.is_empty() {
@@ -1723,6 +1750,8 @@ impl FacePaint<'_> {
 pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
+    /// What the face says means something; the icon and the label take its colour.
+    tone: Option<Tone>,
     icon: Option<crate::icons::Icon>,
     role: ButtonRole,
     confirms: bool,
@@ -1738,6 +1767,7 @@ impl<'a> ButtonFace<'a> {
         Self {
             rect,
             label,
+            tone: None,
             icon: None,
             role: ButtonRole::Secondary,
             confirms: false,
@@ -1759,6 +1789,13 @@ impl<'a> ButtonFace<'a> {
     #[must_use]
     pub fn role(mut self, role: ButtonRole) -> Self {
         self.role = role;
+        self
+    }
+    /// What the face says means something ([`Tone::Neutral`] is no tone): the
+    /// icon and the label take the tone's colour.
+    #[must_use]
+    pub fn tone(mut self, tone: Tone) -> Self {
+        self.tone = (tone != Tone::Neutral).then_some(tone);
         self
     }
     /// The confirmation step of a destructive action, the one place a
@@ -1844,6 +1881,7 @@ impl<'a> ButtonFace<'a> {
             faces: &[],
             avatar: None,
             placeholder: false,
+            tone: None,
             badge: None,
             label: &label,
             hint: self.shortcut.as_ref().map(shortcut_text),
@@ -1909,6 +1947,7 @@ impl<'a> ButtonFace<'a> {
                 faces: &[],
                 avatar: None,
                 placeholder: false,
+                tone: self.tone,
                 badge: None,
                 label,
                 hint: self.shortcut.as_ref().map(shortcut_text),
@@ -2009,6 +2048,7 @@ impl Button {
                     .as_ref()
                     .map(|(name, identity)| (name.as_str(), identity.as_str())),
                 placeholder: self.placeholder,
+                tone: None,
                 badge: None,
                 label: &label,
                 hint,
@@ -2345,6 +2385,7 @@ impl Widget for Button {
                     .as_ref()
                     .map(|(name, identity)| (name.as_str(), identity.as_str())),
                 placeholder: self.placeholder,
+                tone: self.content_tone,
                 badge: self.badge.as_deref(),
                 label: &label,
                 hint,

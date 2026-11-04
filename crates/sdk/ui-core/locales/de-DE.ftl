@@ -619,6 +619,7 @@ day-yesterday = Gestern
 day-today = Heute
 day-tomorrow = Morgen
 day-overdue = Überfällig
+day-past = { $when } · { $overdue }
 day-at-time = { $day } { $time }
 history-day-this-week = Diese Woche
 history-day-earlier = Früher

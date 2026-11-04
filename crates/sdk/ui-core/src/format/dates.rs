@@ -10,26 +10,46 @@ use crate::widget::Tone;
 
 impl Formats {
     /// The **day fact** style: a calendar day as a heading, a row's trailing fact or a card
-    /// reads it, by how far `day` is from `today`. A day gone by is `Overdue`, in the overdue
-    /// tone; today and tomorrow are named; the week ahead its weekday (`Thursday`); this year
-    /// the month and day (`Jun 29`); other years the full date (`Jun 29, 2025`). Given a
-    /// `time`, the day and the time read as one fact (`Today 09:00`, `Thu 14:30`, `Jun 29
-    /// 09:00`); a day gone by keeps its own name there (`Yesterday 14:30`), in the overdue
-    /// tone, because a fact says when it is, not which heading it is under.
+    /// reads it, by how far `day` is from `today`. A day gone by says which day it was and that
+    /// it is `Overdue` (`Jun 29 · Overdue`), in the overdue tone; today and tomorrow are named;
+    /// the week ahead its weekday (`Thursday`); this year the month and day (`Jun 29`); other
+    /// years the full date (`Jun 29, 2025`). Given a `time`, the day and the time read as one
+    /// fact (`Today 09:00`, `Thu 14:30`, `Jun 29 09:00`); a day gone by keeps its date there
+    /// too (`Jun 29 14:30 · Overdue`), because a fact says when it is, and "Yesterday" alone
+    /// would not say which day of the month is late.
     ///
     /// The day is the person's own: `today` is [`crate::clock::today`].
     #[must_use]
     pub fn day_fact(&self, day: NaiveDate, time: Option<NaiveTime>, today: NaiveDate) -> DayFact {
         let days = day.signed_duration_since(today).num_days();
-        let tone = if days < 0 {
-            Tone::Danger
-        } else {
-            Tone::Neutral
-        };
+        if days < 0 {
+            let named = if day.year() == today.year() {
+                self.month_day(day)
+            } else {
+                self.month_day_year(day)
+            };
+            let when = match time {
+                Some(time) => widget_format(
+                    "day-at-time",
+                    &[("day", named.into()), ("time", self.time(&time).into())],
+                ),
+                None => named,
+            };
+            return DayFact {
+                text: widget_format(
+                    "day-past",
+                    &[
+                        ("when", when.into()),
+                        ("overdue", widget_format("day-overdue", &[]).into()),
+                    ],
+                ),
+                tone: Tone::Danger,
+            };
+        }
+        let tone = Tone::Neutral;
         let Some(time) = time else {
             return DayFact {
                 text: match days {
-                    ..0 => widget_format("day-overdue", &[]),
                     0 => super::near_day(0).unwrap_or_default(),
                     1 => super::near_day(1).unwrap_or_default(),
                     2..=6 => self.weekday_name(day.weekday()),
@@ -41,8 +61,7 @@ impl Formats {
         };
         let named = match days {
             0 | 1 => super::near_day(days),
-            -1 => super::near_day(-1),
-            -6..=-2 | 2..=6 => Some(self.weekday_short(day.weekday())),
+            2..=6 => Some(self.weekday_short(day.weekday())),
             _ if day.year() == today.year() => Some(self.month_day(day)),
             _ => Some(self.month_day_year(day)),
         };

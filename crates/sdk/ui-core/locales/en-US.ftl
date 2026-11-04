@@ -623,6 +623,7 @@ day-tomorrow = Tomorrow
 # A date fact as a list heading, a row's trailing fact, a chip or a card reads it: a day gone
 # by, and a day and the time of it as one fact.
 day-overdue = Overdue
+day-past = { $when } · { $overdue }
 day-at-time = { $day } { $time }
 history-day-this-week = This week
 history-day-earlier = Earlier
