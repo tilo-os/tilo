@@ -118,7 +118,7 @@ fn refusals(device: &Device) -> Vec<Value> {
                 .flat_map(|entry| {
                     entry["refused"]
                         .as_array()
-                        .map(|refused| refused.as_slice())
+                        .map(Vec::as_slice)
                         .unwrap_or_default()
                         .iter()
                         .cloned()

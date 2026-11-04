@@ -67,7 +67,9 @@ impl Window {
         connection.display().get_registry(&queue.handle(), ());
         let mut seen = Seen::default();
         let qh = queue.handle();
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(30))
+            .expect("a window's deadline");
         // The session's globals, then the window's configuration: what a
         // toolkit reads before it draws its first frame.
         let surface = loop {
@@ -97,7 +99,7 @@ impl Window {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        let buffer = paint(&connection, &mut queue, &seen, &surface);
+        let buffer = paint(&connection, &queue, &seen, &surface);
         // The compositor maps a toplevel on the commit that gives it
         // contents.
         let _ = connection.flush();
@@ -132,7 +134,7 @@ fn exchange(connection: &Connection, queue: &mut EventQueue<Seen>, seen: &mut Se
 /// Attach one colour's buffer to `surface` and commit it.
 fn paint(
     connection: &Connection,
-    queue: &mut EventQueue<Seen>,
+    queue: &EventQueue<Seen>,
     seen: &Seen,
     surface: &WlSurface,
 ) -> WlBuffer {
@@ -141,8 +143,9 @@ fn paint(
 
     let qh = queue.handle();
     let (width, height) = (320i32, 200i32);
-    let stride = width * 4;
-    let len = usize::try_from(stride * height).expect("a window's size");
+    let stride = width.checked_mul(4).expect("a window's stride");
+    let size = stride.checked_mul(height).expect("a window's size");
+    let len = usize::try_from(size).expect("a window's size");
     let fd = rustix::fs::memfd_create("tilo-window-test", rustix::fs::MemfdFlags::CLOEXEC)
         .expect("a buffer's memory");
     let mut file = std::fs::File::from(fd);
@@ -153,7 +156,7 @@ fn paint(
         .shm
         .as_ref()
         .expect("the session's shared memory")
-        .create_pool(file.as_fd(), stride * height, &qh, ());
+        .create_pool(file.as_fd(), size, &qh, ());
     let buffer = pool.create_buffer(
         0,
         width,
@@ -183,7 +186,12 @@ fn display(device: &Path) -> PathBuf {
         .filter(|path| {
             path.file_name()
                 .and_then(std::ffi::OsStr::to_str)
-                .is_some_and(|name| name.starts_with("wayland-") && !name.ends_with(".lock"))
+                .is_some_and(|name| {
+                    name.starts_with("wayland-")
+                        && std::path::Path::new(name)
+                            .extension()
+                            .is_none_or(|extension| extension != "lock")
+                })
         })
         .collect();
     found.sort();
