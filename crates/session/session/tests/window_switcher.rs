@@ -109,13 +109,18 @@ fn desk_tree() -> DesktopTree {
 
 /// The default session — the Rust chrome, not the opt-in shell — on the desk above.
 fn session() -> Session {
+    session_on(WIDTH, HEIGHT)
+}
+
+/// [`session`] drawing on a display `width` by `height`: a small one holds fewer cards.
+fn session_on(width: i32, height: i32) -> Session {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        &[OutputConfig::new("HEADLESS-1", width, height)],
     )
     .expect("session");
     // A held Tab repeats on a desktop; here a key is pressed once, so a slow step does not
@@ -451,6 +456,87 @@ fn a_press_off_the_panel_ends_the_walk_where_it_stood() {
         "Notes",
         "a press outside the panel switches nothing"
     );
+}
+
+/// A workspace holding more windows than the display holds cards shows the page the walk has
+/// reached, so the card the walk stands on is always on screen.
+#[test]
+fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
+    const SMALL: (i32, i32) = (640, 400);
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_on(SMALL.0, SMALL.1);
+    let handle = session.handle().clone();
+    let mut tree = handle.read(Clone::clone);
+    let mut workspace = tree.workspaces[0].clone();
+    workspace.strips = vec![Strip {
+        id: StripId(5),
+        name: "Many".into(),
+        window_groups: (0..14)
+            .map(|at| {
+                let id = 100 + at;
+                group(
+                    id,
+                    window(id + 100, &format!("Window {at}"), "so.tilo.notes"),
+                )
+            })
+            .collect(),
+    }];
+    // This workspace alone: the walk never crosses another's windows, so another workspace here
+    // would only be a window the page could not show.
+    tree.workspaces = vec![workspace];
+    tree.active_strip.insert(WorkspaceSlot(1), StripId(5));
+    tree.active_group.insert(StripId(5), 100);
+    handle.replace_tree(tree);
+    session.step(REFRESH).expect("a turn of the session");
+    assert_eq!(desk(&session).windows.len(), 14);
+
+    hold_alt_tab(&mut session);
+    let page = session.window_switcher().card_rects();
+    assert!(
+        page.len() < 14,
+        "a page holds fewer cards than the workspace has windows: {} cards",
+        page.len()
+    );
+    assert!(
+        page.iter().any(|(at, _)| *at == 0),
+        "the walk opens on the window before the one in front, on its page"
+    );
+    let (screen_w, screen_h) = (f64::from(SMALL.0), f64::from(SMALL.1));
+    for (at, card) in &page {
+        assert!(
+            card.x0 >= 0.0 && card.y0 >= 0.0,
+            "card {at} stands on the display: {card:?}"
+        );
+        assert!(
+            card.x1 <= screen_w && card.y1 <= screen_h,
+            "card {at} stays inside the display: {card:?}"
+        );
+    }
+
+    // End walks to the last window: the page turns with it.
+    key(&mut session, KEY_END, true);
+    key(&mut session, KEY_END, false);
+    assert_eq!(
+        panel(&session).expect("up").selected,
+        13,
+        "End chose the last"
+    );
+    let last = session.window_switcher().card_rects();
+    assert!(
+        last.iter().any(|(at, _)| *at == 13),
+        "the page turned to the window the walk reached: {last:?}"
+    );
+    assert_ne!(
+        page.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+        last.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+        "the last window's page is another page"
+    );
+    shot(&mut session, "switcher-last-page");
+    key(&mut session, KEY_ENTER, true);
+    key(&mut session, KEY_ENTER, false);
+    until(&mut session, "Enter goes to the last window", |session| {
+        front(session) == "Window 13"
+    });
 }
 
 /// Alt+Tab with one window open does nothing: there is nowhere to walk, and no panel stands
