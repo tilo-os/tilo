@@ -3,7 +3,9 @@ use super::{
     CommitBinding, Deserialize, MAX_BYTES, MAX_ENTRIES, NativeCommittedView, NeighbourMsg,
     Serialize, decode_entries, state,
 };
-use crate::owner::{limits as store, record};
+use crate::owner::limits as store;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::owner::record;
 use serde::ser::{SerializeSeq, SerializeStruct};
 use std::io::{self, Write};
 
@@ -240,6 +242,7 @@ pub(crate) fn validate(
     }
     Ok(())
 }
+#[cfg(not(target_arch = "wasm32"))]
 fn digits(value: u64) -> usize {
     value.to_string().len()
 }
@@ -247,6 +250,7 @@ fn digits(value: u64) -> usize {
 /// already holds, and the digits those may yet grow: its file is written
 /// within [`store::MAX_AUTHORITY_BYTES`] less this, so the next publication
 /// fits.
+#[cfg(not(target_arch = "wasm32"))]
 fn extra(workspace: &record::StoredWorkspace) -> Result<usize, String> {
     let Some(publication) = &workspace.publication else {
         return Ok(0);
@@ -276,10 +280,12 @@ fn extra(workspace: &record::StoredWorkspace) -> Result<usize, String> {
 }
 
 /// Refuse a workspace record that leaves no room in its file for the
-/// recovery its own publication reserves.
+/// recovery its own publication reserves: a page keeps no such file, so
+/// only a device's file writer asks this.
 ///
 /// # Errors
 /// `workspace` does not fit its file's cap together with its reserve.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn preflight_workspace(workspace: &record::StoredWorkspace) -> Result<(), String> {
     let limit = store::MAX_AUTHORITY_BYTES
         .checked_sub(extra(workspace)?)

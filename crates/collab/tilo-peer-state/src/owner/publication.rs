@@ -13,6 +13,7 @@ use web_time::SystemTime;
 mod reservation;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use reservation::check_actual_projection_bound;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use reservation::preflight_workspace;
 
 /// A key holder sealing a record's merged history — `seal(app, record,
