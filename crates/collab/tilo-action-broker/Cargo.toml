@@ -57,9 +57,6 @@ tilo-automation = { path = "../automation" }
 settings-store = { path = "../../system/settings-store" }
 tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-user-identity = { path = "../tilo-user-identity" }
-# The relay session client; the relay daemon is a dev-dependency only.
-tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
-tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 postcard = { workspace = true, features = ["alloc", "use-std"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -78,8 +75,6 @@ hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 # Paused time: the process-binding tests prove no clock decides a launch.
 tokio = { workspace = true, features = ["test-util"] }
-# Integration tests start a real relay.
-tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }
 iroh.workspace = true
 tempfile.workspace = true
