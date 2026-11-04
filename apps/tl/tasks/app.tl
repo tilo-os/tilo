@@ -968,6 +968,7 @@ scenario "a project board" -> Project {
     let booked = tasks.sections.insert(Section(name: "Booked", project: flat))
     tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
     tasks.items.insert(Task(title: "Ask Mia about the sofa", project: flat, due: 2026-07-01))
+    tasks.items.insert(Task(title: "Ring the letting agent", project: flat, due: 2026-06-29))
     tasks.items.insert(
         Task(
             title: "Order boxes and tape",
