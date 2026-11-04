@@ -41,21 +41,31 @@ pub fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
-/// Flush every write this filesystem has cached: one group commit for a batch
-/// of copies, rather than one per file.
+/// Flush every write the filesystem holding `path` has cached: one group
+/// commit for a batch of copies, rather than one per file. Only Linux commits
+/// one filesystem by descriptor; elsewhere the commit is every filesystem's,
+/// which includes this one.
 ///
 /// # Errors
 /// Returns what the filesystem says.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
-    let file = File::open(path)?;
-    #[cfg(unix)]
-    {
-        rustix::fs::syncfs(&file).map_err(io::Error::from)
-    }
-    #[cfg(not(unix))]
-    {
-        file.sync_all()
-    }
+    rustix::fs::syncfs(&File::open(path)?).map_err(io::Error::from)
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+pub(crate) fn sync_filesystem(_path: &Path) -> io::Result<()> {
+    rustix::fs::sync();
+    Ok(())
+}
+
+/// The web's filesystem caches nothing past the file a copy wrote.
+///
+/// # Errors
+/// Returns what the filesystem says.
+#[cfg(not(unix))]
+pub(crate) fn sync_filesystem(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
 }
 
 /// Flush the folder `path` is in.
