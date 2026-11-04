@@ -1522,7 +1522,7 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     let mut session = Session::new(TASKS, "../tl/tasks", "ada", |_| {});
     // A task, added through the entry the window shows.
     let mut entries = Vec::new();
-    named(session.window.root(), "Draft", &mut entries);
+    named(session.window.root(), "New task", &mut entries);
     let entry = *entries.first().expect("the inbox shows its entry");
     session.window.click_at(entry.center().x, entry.center().y);
     session.window.type_text("Water the plants");
@@ -1597,53 +1597,228 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     );
 }
 
-/// The accessibility node of the window's first virtual list: the headings it carries and the
-/// rows under them.
-fn list_nodes(widget: &dyn Widget) -> Option<ui::a11y::AccessNode> {
-    if widget.name() == "DescribedList"
-        && let Some(list) = widget
-            .as_any()
-            .and_then(|any| any.downcast_ref::<ui::widget::DescribedList>())
-            .and_then(ui::widget::DescribedList::list)
-    {
-        return Widget::accessibility(list);
-    }
-    widget.children().into_iter().find_map(list_nodes)
+/// The node key of the entry at the end of the window's list: the field a person adds from.
+fn entry_key(session: &mut Session) -> String {
+    let tree = session
+        .hosted()
+        .view()
+        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .expect("the window has a tree");
+    find(&tree, &|node| {
+        node.kind == "ui.TextInput"
+            && matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(placeholder)) if placeholder == "New task")
+    })
+    .unwrap_or_else(|| panic!("the list ends in its entry: {tree:?}"))
+    .key
+    .clone()
 }
 
-/// The task open beside the list is the list's selected row, and a task nobody has named yet
-/// shows its place: a row named for its empty title, under the heading for the days it does
-/// not have.
+/// A task is a row once its title is committed: the bar offers no "New task" button where
+/// the list ends in its own entry, and pressing there leaves the entry, not a nameless row.
 #[test]
-fn a_new_task_shows_a_row_named_for_its_empty_title_under_no_day_and_is_selected() {
+fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
     let mut session = Session::tasks();
+    let tree = session
+        .hosted()
+        .view()
+        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .expect("the window has a tree");
+    assert!(
+        find(&tree, &|node| {
+            node.kind == "ui.Button"
+                && matches!(node.props.get("label"), Some(tilo_ui_host::Value::Text(label)) if label == "New task")
+        })
+        .is_none(),
+        "the list's entry is how a task is added, so the bar keeps no button for it"
+    );
+
     let mut found = Vec::new();
     named(session.window.root(), "New task", &mut found);
-    let button = *found.last().expect("the window offers New task");
+    let field = *found.last().expect("the window ends in its entry");
     session
         .window
-        .click_at(button.center().x, button.center().y);
+        .click_at(field.center().x, field.center().y);
     session.settle();
-
-    let list = list_nodes(session.window.root()).expect("the window shows its list");
-    let heading = list
-        .children
-        .iter()
-        .position(|node| {
-            node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("No date")
-        })
-        .expect("a task with no day stands under the heading for the ones without");
-    let row = &list.children[heading.saturating_add(1)];
-    assert_eq!(row.role, ui::a11y::Role::ListItem);
-    assert_eq!(
-        row.name.as_deref(),
-        Some("Title"),
-        "a row of a task nobody has named yet shows the field its title is typed in"
-    );
     assert!(
-        row.state.selected,
-        "the row of the task open beside the list is the selected one"
+        session.titles().is_empty(),
+        "nothing is made for a task nobody has named"
     );
+}
+/// What the list's entry shows: what is typed there, until it commits or is cleared.
+fn entry(session: &mut Session) -> String {
+    let key = entry_key(session);
+    widget_by_id(session.window.root(), &key)
+        .expect("the entry is laid out")
+        .as_any()
+        .and_then(|any| any.downcast_ref::<ui::widget::TextInput>())
+        .map_or_else(String::new, |input| input.value().to_owned())
+}
+
+/// The record's heads: what the app has written, as its changes name it.
+fn heads(session: &Session) -> Vec<String> {
+    session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance")
+        .record()
+        .doc()
+        .clone()
+        .get_heads()
+        .into_iter()
+        .map(|head| format!("{head:?}"))
+        .collect()
+}
+
+/// The accessible nodes of the window, each with the widget that draws it.
+fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
+    fn nodes<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
+        out.push(node);
+        for child in &node.children {
+            nodes(child, out);
+        }
+    }
+    fn walk(session_node: &ui::headless::InspectionNode, out: &mut Vec<ui::a11y::AccessNode>) {
+        if let Some(access) = &session_node.semantics {
+            let mut found = Vec::new();
+            nodes(access, &mut found);
+            out.extend(found.into_iter().cloned());
+        }
+        for child in &session_node.children {
+            walk(child, out);
+        }
+    }
+    let snapshot = session.window.harness().inspection();
+    let mut out = Vec::new();
+    walk(&snapshot.root, &mut out);
+    out
+}
+
+/// Where a person clicks to go to the sidebar's place `label`: the rail draws its rows itself, so
+/// they are found in what the window says to assistive technology rather than as widgets.
+fn place_at(session: &mut Session, label: &str) -> (f64, f64) {
+    let rect = accessible(session)
+        .into_iter()
+        .filter(|node| node.role == ui::a11y::Role::TreeItem)
+        .filter(|node| node.name.as_deref() == Some(label))
+        .find_map(|node| node.bounds)
+        .unwrap_or_else(|| panic!("the sidebar shows the place {label:?}"));
+    (
+        f64::midpoint(rect.x0, rect.x1),
+        f64::midpoint(rect.y0, rect.y1),
+    )
+}
+
+/// Where the window shows `label`, laid out.
+fn shown_at(session: &mut Session, label: &str) -> (f64, f64) {
+    let mut found = Vec::new();
+    named(session.window.root(), label, &mut found);
+    let rect = *found
+        .last()
+        .unwrap_or_else(|| panic!("the window shows {label:?}"));
+    (rect.center().x, rect.center().y)
+}
+
+/// The window's primary action takes the person to the list's entry, and nothing is made by it
+/// or by what is typed there: a task exists once Enter commits its title, and the entry clears
+/// for the next one.
+#[test]
+fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "the key makes no task on its own"
+    );
+    assert_eq!(entry(&mut session), "", "the entry starts empty");
+
+    // What is typed lands in the entry, so the keyboard is there, and it is still a draft.
+    session.window.type_text("Water the plants");
+    session.settle();
+    assert_eq!(entry(&mut session), "Water the plants");
+    assert!(
+        session.titles().is_empty(),
+        "what is typed is a draft, not a row"
+    );
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Water the plants"],
+        "Enter makes the one task"
+    );
+    assert_eq!(entry(&mut session), "", "the entry clears for the next one");
+}
+
+/// A draft nobody commits leaves nothing: Escape empties it, and leaving it empty makes no task
+/// and writes nothing at all — no row, no change in the record's history.
+#[test]
+fn an_entry_left_empty_makes_no_task_and_no_history() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    let before = heads(&mut session);
+
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Water the plants");
+    session.settle();
+    session.window.press_key(NamedKey::Escape);
+    session.settle();
+    assert_eq!(entry(&mut session), "", "Escape empties the entry");
+
+    // Leaving it empties it: the click goes to the place the person came from.
+    let (x, y) = shown_at(&mut session, "Inbox");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(session.titles().is_empty(), "no task was made");
+    assert_eq!(heads(&mut session), before, "and nothing was written");
+}
+
+/// The place a task is added in is its default: the entry at the end of Today's list adds one
+/// due today, which is what puts it in that list.
+#[test]
+fn the_entry_adds_a_task_due_today_in_the_today_list() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    let (x, y) = place_at(&mut session, "Today");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(session.titles().is_empty(), "Today starts empty");
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Call the bank");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Call the bank"],
+        "a task added on Today is due today, so it stands in that list"
+    );
+}
+
+/// Undo takes back a task the entry made, as it takes back any other change: the row goes, and
+/// the create is one step the record takes back whole.
+#[test]
+fn undo_removes_a_task_the_entry_made() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert_eq!(session.titles(), ["Water the plants"]);
+
+    // The person's Undo: the window's key, which the record answers.
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "undo removes the task the entry made"
+    );
+    assert_eq!(entry(&mut session), "", "and leaves the entry empty");
 }
 
 /// The actions the tasks app offers the person at this window, as the window's catalogue
@@ -1790,11 +1965,19 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
 
 #[test]
 fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
+    use ui::winit::keyboard::NamedKey;
     let _settled = ui::motion::testing::settled();
     let mut session = Session::live_tasks();
-    // Choosing the app's New task in the window's palette inserts a task at the app, which
-    // opens it, so its own actions reach the palette with their key.
+    // The app's New task is the list's entry: choosing it in the window's palette puts the
+    // keyboard there, and what is typed and committed is the task the app makes. Opened, that
+    // task offers its own actions with their key.
     choose(&mut session, "New task");
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    let (x, y) = shown_at(&mut session, "Water the plants");
+    session.window.click_at(x, y);
+    session.settle();
     let actions = offered(&mut session);
     let complete = actions
         .iter()
@@ -2000,10 +2183,15 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    let mut found = Vec::new();
-    named(session.window.root(), "New task", &mut found);
-    let rect = *found.last().expect("the header offers New task");
-    let (x, y) = (rect.center().x, rect.center().y);
+    // A task added from the list's entry, then opened: its own window is in front.
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Water the plants");
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    let (x, y) = shown_at(session, "Water the plants");
     session.window.click_at(x, y);
     session.settle();
     let open = palette_rows(session, "");
@@ -2131,10 +2319,11 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
         Some(&tilo_ui_host::Value::Text("Nothing is done yet".to_owned())),
         "and it says why"
     );
-    let new_task = button("New task");
-    assert_eq!(
-        new_task.props.get("enabled"),
-        Some(&tilo_ui_host::Value::Int(1)),
-        "an action that can run is enabled"
+    let new_task = buttons.iter().find(|button| {
+        button.props.get("label") == Some(&tilo_ui_host::Value::Text("New task".to_owned()))
+    });
+    assert!(
+        new_task.is_none(),
+        "the list's entry is the one add, so the header draws no New task button"
     );
 }

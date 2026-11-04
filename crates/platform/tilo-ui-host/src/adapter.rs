@@ -463,7 +463,23 @@ impl Source for NodeSource<'_> {
 
     fn binding(&mut self, name: &str) -> Option<BoundValue> {
         let Some(binding) = self.node.binding.as_ref() else {
-            return shown_value(self.node, self.description, self.reconciler, name);
+            if let Some(shown) = shown_value(self.node, self.description, self.reconciler, name) {
+                return Some(shown);
+            }
+            // A text field the view gave no value is its own draft, keyed by where it stands:
+            // the entry at the end of a list keeps what is typed into it across the app's own
+            // changes, and commits it through its submit.
+            let ty = &self.description.binding(name)?.ty;
+            if *ty != Type::Text || self.node.kind != kind("TextInput") {
+                return None;
+            }
+            let key = self.node.key.clone();
+            return Some(BoundValue::Text(Bound {
+                state: self.reconciler.text_state(&key),
+                edits: None,
+                name: String::new(),
+                path: Vec::new(),
+            }));
         };
         let named = match self.node.props.get("bind") {
             Some(Value::Text(bound)) => bound == name,

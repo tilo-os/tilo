@@ -659,6 +659,54 @@ fn a_plain_declared_key_runs_it_alone() {
     assert!(fired.is_empty(), "`q` declares nothing: {fired:?}");
 }
 
+/// The window's primary action is where a person comes to add a list's next item: run from the
+/// bar with nothing typed, it puts the keyboard in the list's entry, which declares the action's
+/// key, rather than making an item nobody typed — even though the header's menu row names the
+/// same key.
+#[test]
+fn the_primary_action_puts_the_keyboard_in_the_entry_that_declares_its_key() {
+    use wire::Event;
+    let mut page = bound_page(
+        "ui.TextInput",
+        &[
+            ("key", Value::text("Ctrl+n")),
+            ("entry", Value::Bool(true)),
+            ("placeholder", Value::text("New task")),
+        ],
+        Value::text(""),
+    );
+    // The primary action's row in the header's menu, as `std.header` draws it with an entry.
+    let mut row = UiNode::empty("ui.Button", "menu");
+    row.props
+        .insert("label".to_owned(), Value::text("New task"));
+    row.props.insert("key".to_owned(), Value::text("Ctrl+n"));
+    row.events.insert("press".to_owned(), Event::default());
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        tree.children.insert(0, row);
+    }
+    page.push(ToUi::Actions(wire::ActionCatalogue::All(catalogue_of(
+        "New task",
+        Some("Ctrl+n"),
+    ))));
+    let (mut app, mut harness) = drawn(&page);
+    let address = tilo_actions::ActionAddress::new("tasks:1", "new");
+    drawn_window(&mut harness).invoke_action(address, None);
+    let made: Vec<ToApp> = told(&mut app)
+        .into_iter()
+        .filter(|message| matches!(message, ToApp::Invoke { .. } | ToApp::Fire { .. }))
+        .collect();
+    assert!(
+        made.is_empty(),
+        "nothing is made until it is typed: {made:?}"
+    );
+    harness.relayout();
+    assert_eq!(
+        drawn_window(&mut harness).focused_field().as_deref(),
+        Some("field"),
+        "the keyboard is in the entry, where the item is typed"
+    );
+}
+
 /// A page whose one described control `kind` is bound to a note's field and shows `value`,
 /// with `props` as the view set them.
 fn bound_page(kind: &str, props: &[(&str, Value)], value: Value) -> Vec<ToUi> {

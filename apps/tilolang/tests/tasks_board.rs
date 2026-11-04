@@ -131,6 +131,103 @@ fn names(lane: &[String]) -> Vec<&str> {
         .collect()
 }
 
+/// The fields a board draws for a person to add from: each lane's entry, where it is drawn.
+fn entries(app: &mut TestApp<TlApp>) -> Vec<ui::kurbo::Rect> {
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    all.into_iter()
+        .filter(|node| node.widget == "TextInput")
+        .filter(|node| {
+            node.semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.as_deref())
+                == Some("New task")
+        })
+        .map(|node| {
+            ui::kurbo::Rect::new(
+                node.rect[0],
+                node.rect[1],
+                node.rect[0] + node.rect[2],
+                node.rect[1] + node.rect[3],
+            )
+        })
+        .collect()
+}
+
+/// A lane adds at its foot, in its own place: each lane ends in its entry rather than carrying an
+/// add in its heading, and what is typed in one makes a card of that lane.
+#[test]
+fn a_lanes_foot_adds_a_card_to_the_lane_it_is_in() {
+    let _settled = ui::motion::testing::settled();
+    let mut app = staged(DESKTOP);
+    let packing_x = rect_of(&mut app, "Pack the kitchen")[0];
+    let booked_x = rect_of(&mut app, "Book the van")[0];
+    let bedroom_x = rect_of(&mut app, "Measure the new bedroom")[0];
+    // One entry per lane, at the lane's foot under its cards.
+    let found: Vec<ui::kurbo::Rect> = entries(&mut app)
+        .into_iter()
+        .filter(|rect| {
+            [packing_x, booked_x, bedroom_x]
+                .iter()
+                .any(|x| (rect.x0 - x).abs() < 1.0)
+        })
+        .collect();
+    assert_eq!(
+        found.len(),
+        3,
+        "the three lanes each end in their entry: {found:?}"
+    );
+    for x in [packing_x, booked_x, bedroom_x] {
+        let lowest = cards(&mut app)
+            .into_iter()
+            .filter(|(_, rect)| (rect[0] - x).abs() < 1.0)
+            .map(|(_, rect)| rect[1] + rect[3])
+            .fold(0.0, f64::max);
+        assert!(
+            found
+                .iter()
+                .any(|rect| (rect.x0 - x).abs() < 1.0 && rect.y0 > lowest),
+            "the lane at {x} ends in its entry, under its cards: {found:?}"
+        );
+    }
+    let heading = accessible(&mut app).into_iter().any(|node| {
+        node.role == ui::a11y::Role::Button && node.name.as_deref() == Some("New task")
+    });
+    assert!(!heading, "a lane's heading carries no add of its own");
+
+    // Typed into the Packing lane's entry, the card lands in Packing.
+    let entry = found
+        .iter()
+        .find(|rect| (rect.x0 - packing_x).abs() < 1.0)
+        .expect("the Packing lane ends in its entry");
+    app.harness().click_at(
+        f64::midpoint(entry.x0, entry.x1),
+        f64::midpoint(entry.y0, entry.y1),
+    );
+    app.harness().type_text("Buy tape");
+    app.harness().key("Enter");
+    settle(&mut app);
+    // The task it made opens in its own window: the project's board, with the new card in the
+    // lane typed in, is a click away.
+    click_item(&mut app, "Move flat");
+    settle(&mut app);
+    let added = cards(&mut app)
+        .into_iter()
+        .find(|(name, _)| name.contains("Buy tape"))
+        .unwrap_or_else(|| {
+            let names: Vec<String> = accessible(&mut app)
+                .into_iter()
+                .filter_map(|node| node.name)
+                .collect();
+            panic!("the lane shows the card that was typed: {names:?}")
+        });
+    assert!(
+        (added.1[0] - packing_x).abs() < 1.0,
+        "the card is in the lane typed in: {added:?}"
+    );
+}
+
 #[test]
 fn a_card_dragged_within_its_lane_and_into_another_lands_where_it_was_dropped() {
     let _settled = ui::motion::testing::settled();

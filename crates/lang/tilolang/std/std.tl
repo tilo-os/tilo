@@ -22,6 +22,8 @@ view list<R, T, S>(
     place: Text = "",
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty"),
+    entry: Option<(Text) -> Action> = .none,
+    entry_placeholder: Text = phrase("tilolang-add"),
     row: (T) -> View,
 ) {
     window query: Text = place
@@ -31,6 +33,9 @@ view list<R, T, S>(
     let shown = items.matching(query)
     let title = places.find(p -> p.query == query)?.label
         ?? if places.is_empty() { meta(of).title } else { everything }
+    // A view with an entry adds there: its primary action stands in the header's menu, not as
+    // the header's button, so the list keeps the one way to make an item.
+    let adding = if let commit = entry { true } else { false }
     // An empty list offers the primary action while nothing was made yet: on the place a
     // window starts on, or on all of the items. One another filter emptied says only that.
     let primary = if query == "" or query == place {
@@ -65,17 +70,24 @@ view list<R, T, S>(
         }
         overview_actions: {
             if kind.opens {
-                std.header(offered, sort: sort)
+                std.header(offered, sort: sort, entry: adding)
             }
         }
         actions: {
             if not kind.opens {
-                std.header(offered, sort: sort)
+                std.header(offered, sort: sort, entry: adding)
             }
         }
         overview: {
             if kind.opens {
-                std.rows(shown, empty, primary, kind.icon) { x ->
+                std.rows(
+                    shown,
+                    empty,
+                    primary,
+                    kind.icon,
+                    entry: entry,
+                    entry_placeholder: entry_placeholder,
+                ) { x ->
                     row(x)
                 }
             }
@@ -84,7 +96,14 @@ view list<R, T, S>(
             if kind.opens {
                 ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
             } else {
-                std.rows(shown, empty, primary, kind.icon) { x ->
+                std.rows(
+                    shown,
+                    empty,
+                    primary,
+                    kind.icon,
+                    entry: entry,
+                    entry_placeholder: entry_placeholder,
+                ) { x ->
                     row(x)
                 }
             }
@@ -111,10 +130,57 @@ view rows<T>(
     parent_title: Option<(T) -> Option<Text>> = .none,
     progress: Option<(T) -> Option<Text>> = .none,
     all_done: Bool = false,
+    entry: Option<(Text) -> Action> = .none,
+    entry_placeholder: Text = phrase("tilolang-add"),
     row: (T) -> View,
 ) {
     let all_done = all_done and not items.is_empty()
-    if items.is_empty() {
+    // The entry at the list's end is its one way to add: the view's primary action keeps its
+    // key there instead of making an item nobody typed, an empty list says nothing over it,
+    // and what is typed is what the list gains.
+    if let commit = entry {
+        ui.Docked {
+            foot: {
+                stack {
+                    // Everything here is done with: the rows fold under the entry that adds
+                    // the next one.
+                    if all_done {
+                        rows_list(
+                            items,
+                            icon,
+                            group,
+                            closed,
+                            closed_title,
+                            parent,
+                            parent_title,
+                            progress,
+                        ) { x ->
+                            row(x)
+                        }
+                    }
+                    std.add_entry(primary, entry_placeholder, commit)
+                }
+            }
+            if all_done {
+                ui.EmptyState(phrase("tilolang-all-done"), icon: icon, inline: true)
+            } else if items.is_empty() {
+                ui.EmptyState(empty, icon: icon)
+            } else {
+                rows_list(
+                    items,
+                    icon,
+                    group,
+                    closed,
+                    closed_title,
+                    parent,
+                    parent_title,
+                    progress,
+                ) { x ->
+                    row(x)
+                }
+            }
+        }
+    } else if items.is_empty() {
         if let a = primary {
             ui.EmptyState(empty, icon: icon, action: a.label) {
                 on act: a.run
@@ -145,6 +211,17 @@ view rows<T>(
         rows_list(items, icon, group, closed, closed_title, parent, parent_title, progress) { x ->
             row(x)
         }
+    }
+}
+
+/// The entry at a list's end: what is typed and Entered there — or left there with — makes an
+/// item of it, through `commit`; nothing typed makes nothing, and Escape leaves none. Its
+/// `primary` is the type's create action: its key puts the keyboard in this entry (the window's
+/// primary surface presses it) instead of making an item nobody typed.
+view add_entry(primary: Option<host.Action>, placeholder: Text, commit: (Text) -> Action) {
+    let key: Option<Text> = if let a = primary { a.key } else { .none }
+    ui.TextInput(placeholder: placeholder, entry: true, key: key) {
+        on submit(title: Text): commit(title)
     }
 }
 
@@ -297,10 +374,17 @@ view outline<T>(
 /// command the app marked `frequent` as a button of its own, and all the rest behind the
 /// header's one menu, as a desktop bar holds them. The primary action comes first among
 /// them so that a narrow window gives way with the menus, never with the one main thing to
-/// do. The window's header lays them out: what does not fit gives way to where the system
+/// do. A view with an `entry` at its list's end adds there, so its primary action is not a
+/// button of the header: it stands first in the header's menu, and its key puts the keyboard in
+/// the entry. The window's header lays them out: what does not fit gives way to where the system
 /// lists the window's actions (the desktop bar's window menu), else behind the header's own
 /// door, so every action stays reachable at every width.
-view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra: View) {
+view header<S>(
+    offered: List<host.Action>,
+    sort: Option<State<S>> = .none,
+    entry: Bool = false,
+    extra: View,
+) {
     if let s = sort {
         ui.MenuButton(phrase("tilolang-sort"), icon: .arrow_up_down, icon_only: true) {
             for c in cases(S) {
@@ -312,8 +396,10 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
     }
     ui.SearchButton()
     extra
+    // The view with an entry at its list's end adds there: the primary action keeps its key on
+    // that entry, so the header does not press it, and stays in the menu where its label shows.
     for a in offered {
-        if a.primary {
+        if a.primary and not entry {
             ui.Button(
                 a.label,
                 icon: a.icon,
@@ -352,7 +438,7 @@ view header<S>(offered: List<host.Action>, sort: Option<State<S>> = .none, extra
         }
     }
     for a in offered {
-        if not a.primary and not a.frequent {
+        if (not a.primary or entry) and not a.frequent {
             ui.Button(
                 a.label,
                 icon: a.icon,
@@ -394,24 +480,31 @@ view document<R>(of: R, content: View) {
 /// page's own controls. A `fill` page is exactly the window's height and scrolls inside its
 /// own parts, which is what a board's lanes need; a page that grows with what it holds (a grid
 /// of cards, a gallery) leaves it off. A page with nothing on it (`empty`) says so and offers
-/// its primary action.
+/// its primary action, unless an `entry` in its parts adds instead.
 view page<R>(
     of: R,
     canvas: Bool = false,
     fill: Bool = false,
     empty: Bool = false,
+    entry: Bool = false,
     header: View,
     content: View,
 ) {
     ui.NavShell(content_kind: .page, title: meta(of).title) {
         actions: {
-            std.header(actions(of)) {
+            std.header(actions(of), entry: entry) {
                 header
             }
         }
         content: {
             if empty {
-                if let a = actions(of).find(a -> a.primary and a.available) {
+                // A page whose lanes or parts hold their own entry adds there, not here.
+                let primary: Option<host.Action> = if entry {
+                    .none
+                } else {
+                    actions(of).find(a -> a.primary and a.available)
+                }
+                if let a = primary {
                     ui.EmptyState(phrase("tilolang-empty"), icon: meta(of).icon, action: a.label) {
                         on act: a.run
                     }

@@ -109,13 +109,15 @@ impl Board {
     }
 
     /// Add a lane keyed `key`, headed by `header`, holding `cards` (each
-    /// with its key) in order.
+    /// with its key) in order, and `foot` standing at the lane's end under them: what adds to
+    /// the lane, always in reach while the cards scroll above it.
     #[must_use]
     pub fn lane(
         mut self,
         key: impl Into<String>,
         header: Element,
         cards: Vec<(String, Element)>,
+        foot: Option<Element>,
     ) -> Self {
         let mut cards_column = Column::new()
             .with_no_padding()
@@ -140,6 +142,11 @@ impl Board {
             .with_rhythm(Rhythm::Related)
             .push(header)
             .push(Box::new(scrolling));
+        // What adds to the lane stands at its foot, under the cards, whichever of them shows.
+        let column = match foot {
+            Some(foot) => column.push(foot),
+            None => column,
+        };
         // The lane's width is a card's comfortable measure, set at layout
         // from the theme (`Board::size_lanes`).
         let lane = Container::new()
@@ -613,11 +620,13 @@ mod tests {
                 "todo",
                 Box::new(Text::new("Todo")),
                 vec![("a".into(), card()), ("b".into(), card())],
+                None,
             )
             .lane(
                 "done",
                 Box::new(Text::new("Done")),
                 vec![("c".into(), card())],
+                None,
             )
             .on_drop(move |drop| sink.borrow_mut().push(drop))
     }
@@ -638,7 +647,7 @@ mod tests {
         let cards: Vec<(String, Element)> = (0..8)
             .map(|index| (format!("card-{index}"), card()))
             .collect();
-        let board = Board::new().lane("todo", Box::new(Text::new("Todo")), cards);
+        let board = Board::new().lane("todo", Box::new(Text::new("Todo")), cards, None);
         let host = harness(board);
         let root = host.root::<Board>();
         let shown = root.card_rects(0);
@@ -682,7 +691,7 @@ mod tests {
         let mut lanes = Board::new();
         for key in ["todo", "doing", "done"] {
             let header = Box::new(Text::new(key)) as Element;
-            lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())]);
+            lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())], None);
         }
         let host =
             crate::headless::FrameHarness::for_root(crate::State::new(), lanes, (pane, 600), theme);

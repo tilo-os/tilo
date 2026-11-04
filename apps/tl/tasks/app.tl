@@ -150,10 +150,10 @@ migration action adopt_steps(tasks: Tasks) {
     }
 }
 
-/// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
-/// when ("Call the landlord tomorrow 9am"), that is its due day and moment and the rest its
-/// title; without, a task added `today` is due today. An empty entry adds nothing. It is the
-/// entry's, not a command: the entry is how a task is added.
+/// Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`.
+/// When it says when ("Call the landlord tomorrow 9am"), that is its due day and moment and the
+/// rest its title; without, a task added on Today is due today. An entry with nothing in it
+/// adds nothing. It is the entry's, not a command: the entry is how a task is added.
 internal action quick_add(
     tasks: Tasks,
     entry: Text,
@@ -169,9 +169,10 @@ internal action quick_add(
     }
 }
 
-/// Starts a task in the inbox: one to type into, or one under the title a program or an agent
-/// gives it. The entry is how a person says what the task is.
-primary action new_task(tasks: Tasks, title: Text = "") -> Task (
+/// Adds a task under the title a program or an agent gives it: no task stands without one. A
+/// person adds one by typing it in the entry at the end of the list, which is what this
+/// action's key and its menu row bring them to.
+primary action new_task(tasks: Tasks, title: Text) -> Task (
     icon: .plus,
     label: "New task",
     key: "Ctrl+N",
@@ -204,10 +205,10 @@ action check(t: Task, done: Bool = not t.done) (
     }
 }
 
-/// Adds a subtask under a task: a task of its own, in its project and section, with an empty
-/// title for the person to type. It stands with its siblings, and a task that was done opens
-/// again: there is work under it now.
-action add_subtask(tasks: Tasks, t: Task, title: Text = "") -> Task (
+/// Adds a subtask under a task: a task of its own, in its project and section, under the title
+/// given. It stands with its siblings, and a task that was done opens again: there is work under
+/// it now.
+action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task (
     label: "Add subtask",
     icon: .list_tree,
     key: "Ctrl+Shift+N",
@@ -427,14 +428,15 @@ destructive action remove_section(s: Section) (icon: .trash, label: "Delete sect
     tasks.sections.remove(s)
 }
 
-/// Adds a task at the end of a lane of a project's board: `s` names the lane, none for the
-/// first. It is a project's primary action, so its window's New task adds to the first lane.
-primary action add_to(p: Project, s: Option<Section> = .none) -> Task (
+/// Adds a task to a project, at the end of the lane `s` of its board (none for the first), under
+/// the title the entry that adds there carries: a project's primary action, so that entry is
+/// where its key and its menu row bring the person.
+primary action add_to(p: Project, title: Text, s: Option<Section> = .none) -> Task (
     icon: .plus,
     label: "New task",
     key: "Ctrl+N",
 ) {
-    tasks.items.insert(Task(title: "", project: p, section: s))
+    tasks.items.insert(Task(title: title, project: p, section: s))
 }
 
 /// Puts a task into a lane of its project's board, `s` (none for the first lane), at the place
@@ -521,11 +523,10 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
 
 /// The tasks window: Inbox, Today, Upcoming and Done, each the tasks the filter of that name
 /// holds of, and the projects, each showing its tasks where they are. The place chosen is the
-/// window's, so everyone looking sees the same list; what is typed in the entry at its foot is
+/// window's, so everyone looking sees the same list; what is typed in the entry at its end is
 /// each person's own until Enter adds it.
 view home(t: Tasks) {
     window place: Text = "is:inbox"
-    lens draft: Text
     // The sidebar's places are the schema's: this type's filters that are on or off, and a
     // place per project. A priority is picked in search, not chosen as a place.
     let side = places(Task, in: t)
@@ -546,46 +547,24 @@ view home(t: Tasks) {
             std.sidebar(side, place)
         }
         overview_actions: {
-            std.header(actions(t))
+            std.header(actions(t), entry: true)
         }
         overview: {
-            ui.Docked {
-                foot: {
-                    stack {
-                        // On Today, what is added is due today unless it says when.
-                        if place == "is:today" {
-                            ui.TextInput(value: draft, placeholder: "New task for today") {
-                                on submit: quick_add(t, draft, .none, true).then(set(draft, ""))
-                            }
-                        } else if let p = project {
-                            ui.TextInput(value: draft, placeholder: "New task in {p.name}") {
-                                on submit: quick_add(t, draft, project).then(set(draft, ""))
-                            }
-                        } else {
-                            ui.TextInput(value: draft, placeholder: "New task") {
-                                on submit: quick_add(t, draft).then(set(draft, ""))
-                            }
-                        }
-                    }
-                }
-                std.rows(
-                    shown,
-                    "No tasks here",
-                    .none,
-                    .some("list-checks"),
-                    group: .due,
-                    closed: .folded,
-                    parent: .parent,
-                    parent_title: x -> x.parent?.title,
-                    progress: x -> subtask_count(x),
-                    all_done: if let c = chosen { c.count == 0 } else { false },
-                ) { x ->
-                    if x.title == "" {
-                        titled_row(x)
-                    } else {
-                        task_row(x, .day)
-                    }
-                }
+            std.rows(
+                shown,
+                "No tasks here",
+                .none,
+                .some("list-checks"),
+                group: .due,
+                closed: .folded,
+                parent: .parent,
+                parent_title: x -> x.parent?.title,
+                progress: x -> subtask_count(x),
+                all_done: if let c = chosen { c.count == 0 } else { false },
+                entry: text -> quick_add(t, text, project, place == "is:today"),
+                entry_placeholder: "New task",
+            ) { x ->
+                task_row(x, .day)
             }
         }
         content: {
@@ -597,45 +576,33 @@ view home(t: Tasks) {
 /// A project's window: its tasks, in order, with the entry that adds to it at their foot; or,
 /// shown as a board (its Board toggle), the same tasks as a lane per section.
 view project_page(p: Project) {
-    lens draft: Text
     if p.board {
         project_board(p)
     } else {
-        project_list(p, draft)
+        project_list(p)
     }
 }
 
 /// A project's tasks as a list, with the entry that adds to it at their foot.
-view project_list(p: Project, draft: State<Text>) {
+view project_list(p: Project) {
     let shown = tasks_of(p)
     ui.NavShell(content_kind: .document, overview_title: p.name, overview_count: shown.len()) {
         overview_actions: {
-            std.header(actions(p))
+            std.header(actions(p), entry: true)
         }
         overview: {
-            ui.Docked {
-                foot: {
-                    stack {
-                        ui.TextInput(value: draft, placeholder: "New task in {p.name}") {
-                            on submit: quick_add(tasks, draft, p).then(set(draft, ""))
-                        }
-                    }
-                }
-                std.rows(
-                    shown,
-                    "No tasks yet",
-                    .none,
-                    .some("folder"),
-                    parent: .parent,
-                    parent_title: x -> x.parent?.title,
-                    progress: x -> subtask_count(x),
-                ) { x ->
-                    if x.title == "" {
-                        titled_row(x)
-                    } else {
-                        task_row(x, .project)
-                    }
-                }
+            std.rows(
+                shown,
+                "No tasks yet",
+                .none,
+                .some("folder"),
+                parent: .parent,
+                parent_title: x -> x.parent?.title,
+                progress: x -> subtask_count(x),
+                entry: text -> quick_add(tasks, text, p),
+                entry_placeholder: "New task in {p.name}",
+            ) { x ->
+                task_row(x, .project)
             }
         }
         content: {
@@ -649,22 +616,28 @@ view project_list(p: Project, draft: State<Text>) {
 /// its menu, which also holds its actions, and opens in a window of its own.
 view project_board(p: Project) {
     let sections = sections_of(p)
-    std.page(p, canvas: true, fill: true) {
+    // A lane adds at its foot, in its own place: typing there puts the task in that lane.
+    let primary = actions(p).find(a -> a.primary and a.available)
+    std.page(p, canvas: true, fill: true, entry: true) {
         ui.Scroll(across: true) {
             ui.Board(name: p.name) {
                 let loose = lane_of(p, .none)
-                ui.BoardLane(title: "No section", count: loose.count(), action: "New task") {
-                    on act: add_to(p, .none)
+                ui.BoardLane(title: "No section", count: loose.count()) {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
+                    foot: {
+                        std.add_entry(primary, "New task", text -> add_to(p, text, .none))
+                    }
                     for t in loose {
                         task_card(t, sections)
                     }
                 }
                 for s in sections {
                     let cards = lane_of(p, .some(s))
-                    ui.BoardLane(s, title: s.name, count: cards.count(), action: "New task") {
-                        on act: add_to(p, .some(s))
+                    ui.BoardLane(s, title: s.name, count: cards.count()) {
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
+                        foot: {
+                            std.add_entry(primary, "New task", text -> add_to(p, text, .some(s)))
+                        }
                         for t in cards {
                             task_card(t, sections)
                         }
@@ -707,11 +680,7 @@ view task_card(t: Task, sections: List<Section>) {
                 }
             }
         }
-        if t.title == "" {
-            titled_row(t)
-        } else {
-            task_row(t, .project)
-        }
+        task_row(t, .project)
     }
 }
 
@@ -731,12 +700,6 @@ view task_row(t: Task, place: RowPlace) {
         mark: t.priority,
         avatar: t.assignee,
     )
-}
-
-/// A task added without a title yet: the field to type it in, which takes the keyboard, so the
-/// row a New task or an Add subtask made is where the person says what it is.
-view titled_row(t: Task) {
-    ui.TextInput(bind: t.title, placeholder: "New task", autofocus: true)
 }
 
 /// A task as the system shows it on a surface of its own — a result, a notice — where no page

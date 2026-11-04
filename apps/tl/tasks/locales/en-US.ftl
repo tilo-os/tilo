@@ -134,10 +134,10 @@ d-ymvliuk3 = Adopt steps
     .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
 
 d-u7a3fue4 = Quick add
-    .doc = Adds what was typed in a quick add entry as a task, to the inbox or to `p`.
+    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`.
 
 d-rs3ubifz = New task
-    .doc = Starts a task in the inbox: one to type into, or one under the title a program or an agent gives it.
+    .doc = Adds a task under the title a program or an agent gives it: no task stands without one.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
@@ -146,7 +146,7 @@ d-vwgro4iv = Complete
     .doc = Checks a task off with every task under it, or opens it again with the tasks it is under.
 
 d-fykojijd = Add subtask
-    .doc = Adds a subtask under a task: a task of its own, in its project and section, with an empty title for the person to type.
+    .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
 
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
@@ -221,7 +221,7 @@ d-vi6srojh = Delete section
     .doc = Deletes a section; its tasks go to the project's first lane.
 
 d-pcn3xgni = New task
-    .doc = Adds a task at the end of a lane of a project's board: `s` names the lane, none for the first.
+    .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under the title the entry that adds there carries: a project's primary action, so that entry is where its key and its menu row bring the person.
 
 d-scjlkb6d = Place
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
@@ -264,27 +264,21 @@ d-swaiyhcf = Show board~present
 
 d-i2mhsb3h = Home
     .w-tasks = Tasks
-    .w-new-task-for-today = New task for today
-    .w-new-task-in = New task in { $name }
-    .w-new-task = New task
     .w-no-task-selected = No task selected
 
 d-asnonvwl = Project page
-    .w-new-task-in = New task in { $name }
+
+d-7froalwb = Project list
     .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
     .w-no-section = No section
-    .w-new-task = New task
 
 d-hc5ndp4x = Task card
     .w-move-to-no-section = Move to No section
     .w-move-to = Move to { $name }
 
 d-w63ba6ad = Task row
-
-d-fbmxxndm = Titled row
-    .w-new-task = New task
 
 d-rj4l44km = Task summary
 
@@ -307,15 +301,21 @@ d-i2mhsb3h-row2 = Home for x
 
 d-i2mhsb3h-row3 = Home for x
 
-d-asnonvwl-row0 = Project page for x
+d-i2mhsb3h-row4 = Home for x
 
-d-asnonvwl-row1 = Project page for x
+d-i2mhsb3h-row5 = Home for x
+
+d-7froalwb-row0 = Project list for x
+
+d-7froalwb-row1 = Project list for x
+
+d-7froalwb-row2 = Project list for x
+
+d-7froalwb-row3 = Project list for x
 
 d-gu3twlv2-row0 = Project board for s
-    .w-new-task = New task
 
 d-gu3twlv2-row1 = Project board for s
-    .w-new-task = New task
 
 d-mtmufg3w-row0 = Task page for p
 

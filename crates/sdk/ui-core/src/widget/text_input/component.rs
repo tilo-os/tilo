@@ -29,9 +29,19 @@ pub struct TextInputProps {
     pub changed_by: Option<Person>,
     /// What the text was before that change, said when the field is hovered.
     pub previous: Option<String>,
-    /// Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the
-    /// text rather than breaking its line; Shift+Enter still breaks a wrapping field's line.
-    #[component(event)]
+    /// The entry at the end of a list: what is typed makes an item when Enter or leaving the
+    /// field commits it, and the field clears; nothing typed leaves nothing (Escape, or leaving
+    /// it empty). Its own draft, not a record: the item exists once it is committed.
+    pub entry: bool,
+    /// The plain key that focuses this control while its window has the keyboard, as the app
+    /// declared it (`key: "Ctrl+N"`): a window's primary action brings the person to the list's
+    /// entry rather than making an empty item. Never drawn here.
+    #[component(data)]
+    pub key: Option<String>,
+    /// Enter was pressed: what was typed is done (a list's entry), carried with it. With it,
+    /// Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping
+    /// field's line.
+    #[component(event(value = String))]
     pub submit: Event,
 }
 
@@ -46,6 +56,8 @@ impl Default for TextInputProps {
             autofocus: false,
             changed_by: None,
             previous: None,
+            entry: false,
+            key: None,
             submit: Event::None,
         }
     }
@@ -78,6 +90,8 @@ impl Described for TextInput {
             autofocus,
             changed_by,
             previous,
+            entry,
+            key: _,
             submit,
         } = props;
         let change = changed_by.map(|by| {
@@ -117,8 +131,11 @@ impl Described for TextInput {
                 .multiline(true)
                 .with_enter_submits(true);
         }
+        if entry {
+            input = input.with_entry(true);
+        }
         if !submit.is_none() {
-            input = input.on_submit_view(move |_| submit.fire(None));
+            input = input.on_submit(move |text| submit.fire(Some(Value::Text(text.to_owned()))));
         }
         input
     }

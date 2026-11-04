@@ -29,6 +29,9 @@ tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
 tilolang-empty = Noch nichts hier
+# What a list's entry at its end says while it is empty.
+tilolang-add = Etwas hinzufügen
+
 # The title over the items of a list that are done with, folded away after the rest.
 tilolang-done = Erledigt
 # The heading over the items of a list that name no group of their own.

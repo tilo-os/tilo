@@ -42,9 +42,10 @@ primary action new_column(b: Board) -> Column (icon: .plus, label: "New column")
     b.columns.insert(Column(title: "Untitled"))
 }
 
-/// Adds a card at the foot of a column.
-action new_card(col: Column) -> Card (icon: .plus, label: "New card") {
-    col.cards.insert(Card(title: "Untitled"))
+/// Adds a card at the foot of a column, under the title typed in the entry that adds there: a
+/// card is named where it is made, not left "Untitled".
+action new_card(col: Column, title: Text) -> Card (icon: .plus, label: "New card") {
+    col.cards.insert(Card(title: title))
 }
 
 /// Moves a card to the foot of a column.
@@ -75,14 +76,13 @@ view board(b: Board) {
         ui.Scroll(across: true) {
             ui.Board {
                 for col in b.columns {
-                    ui.BoardLane(
-                        col,
-                        title: col.title,
-                        count: col.cards.len(),
-                        action: "New card",
-                    ) {
-                        on act: new_card(col)
+                    // A column adds at its foot, in its own place: typing there puts the card
+                    // in that column.
+                    ui.BoardLane(col, title: col.title, count: col.cards.len()) {
                         on drop(moved: Card): move_to(moved, col)
+                        foot: {
+                            std.add_entry(.none, "New card", title -> new_card(col, title))
+                        }
                         for card in col.cards {
                             card_tile(b, col, card)
                         }

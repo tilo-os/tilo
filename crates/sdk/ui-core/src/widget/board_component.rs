@@ -47,12 +47,17 @@ pub struct BoardLaneProps {
     pub title: Option<String>,
     /// How many cards the lane holds, beside its heading.
     pub count: Option<i64>,
-    /// The label of the one action that adds to the lane, at the end of its heading: "New
-    /// card".
+    /// The label of the one action that adds to the lane, at its foot under the cards: "New
+    /// card". Drawn there, not in the heading, so the lane has one add and it is where the
+    /// cards end; a lane that gives a `foot` of its own says it there instead.
     pub action: Option<String>,
     /// The cards, in order.
     #[component(slot(default))]
     pub cards: Vec<BoardCardProps>,
+    /// What stands at the lane's foot, under its cards: the entry that adds to the lane. It
+    /// stays in reach while the cards scroll above it.
+    #[component(slot)]
+    pub foot: Option<Element>,
     /// The lane's action was pressed.
     #[component(event)]
     pub act: Event,
@@ -262,6 +267,7 @@ impl Described for Board {
                 count,
                 action,
                 cards,
+                foot,
                 act,
                 drop,
             } = lane;
@@ -270,18 +276,19 @@ impl Described for Board {
                 Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
                 None => heading,
             };
-            let heading = match action {
-                Some(label) => {
-                    let button = crate::widget::Button::new(&format!("{lane_key}-act"), &label)
-                        .with_icon(Icon::Plus);
-                    heading.action(match act {
-                        Event::None => button,
-                        Event::Action(binding) => button.on_action(binding),
-                        Event::View(intent) => button.on_view(intent.sender()),
-                    })
-                }
-                None => heading,
-            };
+            // The one add stands at the lane's foot, where the cards end, not in its heading:
+            // a lane gives its own entry there, or the label of its adding action.
+            let foot = foot.or_else(|| {
+                let label = action?;
+                let button = crate::widget::Button::new(&format!("{lane_key}-act"), &label)
+                    .with_icon(Icon::Plus);
+                let button = match act {
+                    Event::None => button,
+                    Event::Action(binding) => button.on_action(binding),
+                    Event::View(intent) => button.on_view(intent.sender()),
+                };
+                Some(Box::new(button) as Element)
+            });
             let mut widgets = Vec::with_capacity(cards.len());
             let mut order = Vec::with_capacity(cards.len());
             for props in cards {
@@ -296,7 +303,7 @@ impl Described for Board {
                 widgets.push((card_key, widget));
             }
             lane_drops.insert(lane_key.clone(), (drop, order));
-            board = board.lane(lane_key, heading.into_element(), widgets);
+            board = board.lane(lane_key, heading.into_element(), widgets, foot);
         }
         board.on_drop(
             move |BoardDrop {

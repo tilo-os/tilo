@@ -522,12 +522,24 @@ fn a_lanes_header_counts_the_cards_it_holds() {
     let booked = call(&ada, "new_section", vec![project.clone()]);
     call(&ada, "rename_section", vec![booked, Value::text("Booked")]);
     // Two in no section, one in Packing, and in Booked nothing yet.
-    let boxes = call(&ada, "add_to", vec![project.clone(), Value::none()]);
-    let tape = call(&ada, "add_to", vec![project.clone(), Value::none()]);
+    let boxes = call(
+        &ada,
+        "add_to",
+        vec![project.clone(), Value::text("Order boxes"), Value::none()],
+    );
+    let tape = call(
+        &ada,
+        "add_to",
+        vec![project.clone(), Value::text("Order tape"), Value::none()],
+    );
     let kitchen = call(
         &ada,
         "add_to",
-        vec![project.clone(), Value::some(packing.clone())],
+        vec![
+            project.clone(),
+            Value::text("Clean the kitchen"),
+            Value::some(packing.clone()),
+        ],
     );
     // A step under the kitchen's task is no card of its own, a done task is no card, and a
     // task of another project is none here.
@@ -540,10 +552,22 @@ fn a_lanes_header_counts_the_cards_it_holds() {
             Value::text("Wipe the shelves"),
         ],
     );
-    let books = call(&ada, "add_to", vec![project.clone(), Value::some(packing)]);
+    let books = call(
+        &ada,
+        "add_to",
+        vec![
+            project.clone(),
+            Value::text("Pack the books"),
+            Value::some(packing),
+        ],
+    );
     call(&ada, "check", vec![books, Value::Bool(true)]);
     let van = call(&ada, "new_project", vec![root]);
-    call(&ada, "add_to", vec![van, Value::none()]);
+    call(
+        &ada,
+        "add_to",
+        vec![van, Value::text("Book the van"), Value::none()],
+    );
     ada.commit();
     let Value::Ref(at) = &project else {
         panic!("a resource: {project:?}")
@@ -942,11 +966,13 @@ fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)>
 
 /// The home list's row that presents `item`: its place, its key, and what its box draws.
 fn home_row_of(view: &mut ViewInstance, item: &str) -> (usize, String, bool) {
-    home_list_rows(view)
+    let row = home_list_rows(view)
         .into_iter()
-        .find(|(_, _, of, _)| of == item)
-        .map(|(place, key, _, checked)| (place, key, checked))
-        .unwrap_or_else(|| panic!("no row presents {item}"))
+        .find(|(_, _, of, _)| of == item);
+    match row {
+        Some((place, key, _, checked)) => (place, key, checked),
+        None => panic!("no row presents {item}"),
+    }
 }
 
 /// The row the home list draws for `item`, as a tree.
@@ -1044,11 +1070,7 @@ fn a_task_filed_out_of_the_inbox_keeps_its_row_until_the_view_is_left() {
         "new_task",
         vec![root.clone(), Value::text("Pack the books")],
     );
-    call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Buy oat milk")],
-    );
+    call(&ada, "new_task", vec![root, Value::text("Buy oat milk")]);
     ada.commit();
     let mut view = ada.view(APP);
     let of = target(&packed).expect("a task");
@@ -1716,7 +1738,8 @@ fn button_command(node: &UiNode) -> Command {
 fn spec_commands() -> Vec<&'static str> {
     vec![
         "Complete",
-        "Add subtask",
+        // It asks for the title it makes the task under: a task is never made unnamed.
+        "Add subtask…",
         "Today",
         "Tomorrow",
         "Next week",
@@ -1865,10 +1888,10 @@ fn a_tasks_page_menu_offers_what_its_row_does() {
     assert_eq!(behind_the_door, row, "the row and the page offer one menu");
 }
 
-/// Adding a subtask from a menu makes it right under the task, after the steps it already has,
-/// untitled, with a field that takes the keyboard so it can be named as it appears.
+/// Adding a subtask from a menu asks for its title and makes it right under the task, after the
+/// steps it already has, named: no task stands unnamed for a person to leave behind.
 #[test]
-fn adding_a_subtask_from_a_menu_names_it_inline_under_its_row() {
+fn adding_a_subtask_from_a_menu_asks_for_its_title_and_names_it_under_its_row() {
     let (mut ada, root) = workspace();
     let parent = call(
         &ada,
@@ -1881,12 +1904,28 @@ fn adding_a_subtask_from_a_menu_names_it_inline_under_its_row() {
         vec![root.clone(), parent.clone(), Value::text("Outline")],
     );
     ada.commit();
-    let made = call(&ada, "add_subtask", vec![root, parent.clone()]);
+    // The menu reads as asking for the title the task is made under.
+    let mut view = ada.view(APP);
+    let add = row_commands(&mut view, &parent)
+        .into_iter()
+        .find(|command| command.label.starts_with("Add subtask"))
+        .unwrap_or_else(|| panic!("the task's menu offers the add"));
+    assert_eq!(
+        add.label, "Add subtask…",
+        "the title is asked for, not left for a row to be named in"
+    );
+    // What the form collects is the title it adds: named, under the task, after the steps it
+    // already has.
+    let made = call(
+        &ada,
+        "add_subtask",
+        vec![root, parent.clone(), Value::text("Collect the quotes")],
+    );
     ada.commit();
     assert_eq!(
         read(&ada, &made, "title"),
-        Value::text(""),
-        "it opens untitled, to be named"
+        Value::text("Collect the quotes"),
+        "it stands under the title given"
     );
     assert_eq!(
         target(&read(&ada, &made, "parent")),
@@ -1898,22 +1937,10 @@ fn adding_a_subtask_from_a_menu_names_it_inline_under_its_row() {
         [
             Value::text("Write the launch post"),
             Value::text("Outline"),
-            Value::text(""),
+            Value::text("Collect the quotes"),
         ],
         "and after the steps it already has"
     );
-    let mut view = ada.view(APP);
-    let row = home_row(&mut view, &made);
-    let field = all(row, "ui.TextInput")
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| panic!("the untitled subtask draws a field: {row:?}"));
-    assert!(
-        flag(field, "autofocus"),
-        "the field takes the keyboard as the row appears: {:?}",
-        field.props
-    );
-    assert_eq!(text_of(field, "placeholder").as_deref(), Some("New task"));
 }
 
 /// What a person can do to a task is offered wherever actions are listed; the one gesture alone

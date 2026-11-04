@@ -389,11 +389,30 @@ impl AppWindow {
     /// The person chose `address` from the window's command palette with `argument`: the app
     /// runs it as their own step. `argument` is the palette's collected text or canonical JSON
     /// arguments, as a prompt or typed form encodes them.
+    ///
+    /// An action whose key a text field of the view declares (a list's entry) is pressed where
+    /// that field stands: the press puts the keyboard in it, as the key does, rather than
+    /// making an empty item the person never typed.
     pub fn invoke_action(
         &mut self,
         address: tilo_actions::ActionAddress,
         argument: Option<String>,
     ) {
+        if argument.is_none()
+            && let Some(key) = self
+                .actions()
+                .iter()
+                .find(|action| action.address == address)
+                .and_then(|action| action.state.shortcut.as_deref())
+            && let Some(field) = self
+                .built
+                .as_ref()
+                .and_then(|built| focus_field(built, &ui::platform::Shortcut::from(key)))
+        {
+            self.focus_request = Some(field);
+            self.flush();
+            return;
+        }
         self.tell(ToApp::Invoke { address, argument });
     }
 
@@ -1457,6 +1476,16 @@ impl AppWindow {
             return false;
         }
         let conventions = ui::platform::PlatformConventions::default();
+        let declared = self.built.as_ref().and_then(|built| {
+            let pressed =
+                ui::platform::Shortcut::pressed(&key.logical_key, modifiers, conventions)?;
+            focus_field(built, &pressed)
+        });
+        if let Some(field) = declared {
+            self.focus_request = Some(field);
+            self.take_events();
+            return true;
+        }
         let Some((node_key, event)) = self
             .built
             .as_ref()
@@ -1474,6 +1503,16 @@ impl AppWindow {
     /// person's key.
     pub fn run_shortcut(&mut self, key: &str) -> bool {
         let wanted = ui::platform::Shortcut::from(key);
+        let declared = self
+            .built
+            .as_ref()
+            .and_then(|built| focus_field(built, &wanted));
+        if let Some(field) = declared {
+            self.focus_request = Some(field);
+            self.take_events();
+            self.flush();
+            return true;
+        }
         let Some((node_key, event)) = self
             .built
             .as_ref()
@@ -2057,6 +2096,31 @@ fn shortcut_action_declared(
     wanted: &ui::platform::Shortcut,
 ) -> Option<(String, String)> {
     shortcut_action_where(node, &|declared| declared.same_press(wanted))
+}
+
+/// The node key of the text field in `node`'s tree that declares the press `wanted`: the entry
+/// at the end of a list, where the app's key puts the person rather than making an empty item.
+/// It answers before any control: a header or bar button that names the same key leads the
+/// person to the entry the app wrote for it.
+fn focus_field(node: &UiNode, wanted: &ui::platform::Shortcut) -> Option<String> {
+    focus_field_where(node, &|declared| declared.same_press(wanted))
+}
+
+/// [`focus_field`] for any declaration `asks` takes.
+fn focus_field_where(
+    node: &UiNode,
+    asks: &dyn Fn(&ui::platform::Shortcut) -> bool,
+) -> Option<String> {
+    let field = node.kind == crate::adapter::kind("TextInput")
+        || node.kind == crate::adapter::kind("RichInput");
+    if field
+        && matches!(node.props.get("key"), Some(Value::Text(key)) if asks(&ui::platform::Shortcut::from(key.as_str())))
+    {
+        return Some(node.key.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| focus_field_where(child, asks))
 }
 
 /// The first control in `node`'s tree whose declared key shortcut `asks` for, the content after
