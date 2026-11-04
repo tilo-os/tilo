@@ -203,13 +203,9 @@ impl Checker<'_> {
         if d.name == "RichInput" && !given.contains("speakers") && !given.contains("people") {
             self.drawer_props(n);
         }
-        // The control's own block builds slots of its own: one that pairs a time of day with a
-        // day keeps the pairing for itself.
-        let kept = self.st.ui.paired.take();
         if let Some(block) = &c.block {
             self.component_block(n, d, block, span);
         }
-        self.st.ui.paired = kept;
         n
     }
 
@@ -311,15 +307,23 @@ impl Checker<'_> {
             Imp::UiPropH,
             vec![node, Ex::str("bind"), Ex::str(&b.name)],
         ));
-        // A day the type pairs a time of day with is picked by two controls that read as one
-        // fact: the day's, and the time's right after it.
-        self.paired_control(d, value, &ty, key);
+        // A day the type pairs a time of day with reads as one fact: the day's control says the
+        // time of day beside the day, and picks it in its own popover.
+        self.paired_control(n, d, value, &ty, key);
     }
 
-    /// The time of day control a day's control is followed by, when the day's type pairs one
-    /// with it (`at: Option<Time> (time of: due)`): the toolkit's `TimePicker` bound to that
-    /// time, placed after the day's control by [`super::ui::Checker::ui_call`].
-    fn paired_control(&mut self, d: &Description, value: &ast::Expr, ty: &Ty, key: &Ex) {
+    /// The day's control `n` takes the time of day its type pairs with it: the record `b` of
+    /// the type `info`, its field `day`. The chip says the day and the time it is due at as one
+    /// fact, and the toolkit's `TimeField` picks it inside the day's popover, in its `time` slot
+    /// — never as a second control beside it.
+    fn paired_control(
+        &mut self,
+        n: LocalId,
+        d: &Description,
+        value: &ast::Expr,
+        ty: &Ty,
+        key: &Ex,
+    ) {
         if d.name != "DateField" || !matches!(ty, Ty::Date | Ty::Option(_)) {
             return;
         }
@@ -337,46 +341,87 @@ impl Checker<'_> {
             return;
         };
         let env = self.env;
-        let Some((time, id, doc)) = env
-            .type_info(&record)
-            .and_then(|info| info.field(&name.name))
-            .and_then(|day| {
-                let info = env.type_info(&record)?;
-                info.fields.iter().find(|field| {
-                    field
-                        .role
-                        .as_ref()
-                        .and_then(crate::types::FieldRole::time_of)
-                        == Some(day.name.as_str())
-                })
-            })
-            .map(|field| (field.name.clone(), field.id.clone(), field.doc.clone()))
-        else {
+        let Some(info) = env.type_info(&record).cloned() else {
             return;
         };
-        let node = self.new_node(
-            &toolkit::kind("TimePicker"),
+        let Some(day) = info.field(&name.name).cloned() else {
+            return;
+        };
+        self.date_control(&Ex::local(n, Ty::View), key, &b, &day, &info, value.span);
+    }
+
+    /// Give the day's control `node` the time of day the type pairs with `day`
+    /// (`at: Option<Time> (time of: due)`): what the chip says after the day, and the control
+    /// that picks it, in the day's popover above its calendar.
+    pub(super) fn date_control(
+        &mut self,
+        node: &Ex,
+        key: &Ex,
+        b: &Ex,
+        day: &crate::resolve::FieldInfo,
+        info: &crate::resolve::TypeInfo,
+        span: Span,
+    ) {
+        let Some(time) = info.fields.iter().find(|field| {
+            field.derived.is_none()
+                && field
+                    .role
+                    .as_ref()
+                    .and_then(crate::types::FieldRole::time_of)
+                    == Some(day.name.as_str())
+        }) else {
+            return;
+        };
+        // What the chip says after the day: the time of day it is due at.
+        let at = self.field_read(
+            b.clone(),
+            &ast::Ident {
+                name: time.name.clone(),
+                span,
+            },
+        );
+        self.emit(host(Imp::UiPropH, vec![node.clone(), Ex::str("at"), at]));
+        // The control that picks it: bound to the time of day, as the day's is to the day.
+        let env = self.env;
+        let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("TimeField")) else {
+            return;
+        };
+        let Some(binding) = d.bindings.first() else {
+            return;
+        };
+        let n = self.new_node(
+            &toolkit::kind(&d.name),
             Ex::host(
                 Imp::StrConcat,
                 vec![key.clone(), Ex::str("#time")],
                 Ty::Text,
             ),
         );
-        let view = Ex::local(node, Ty::View);
+        let picker = Ex::local(n, Ty::View);
+        self.emit(host(
+            Imp::UiBind,
+            vec![picker.clone(), b.clone(), Ex::str(&time.id)],
+        ));
         self.emit(host(
             Imp::UiPropH,
-            vec![
-                view.clone(),
-                Ex::str("label"),
-                Ex::str(&crate::resolve::variant_label(&time, &doc)),
-            ],
+            vec![picker.clone(), Ex::str("bind"), Ex::str(&binding.name)],
         ));
-        self.emit(host(Imp::UiBind, vec![view.clone(), b, Ex::str(&id)]));
+        // It stands in the day's popover, above the calendar: the day's `time` slot.
+        let slot = self.new_node(
+            "slot",
+            Ex::host(
+                Imp::StrConcat,
+                vec![key.clone(), Ex::str("#time-slot")],
+                Ty::Text,
+            ),
+        );
+        let held = Ex::local(slot, Ty::View);
         self.emit(host(
             Imp::UiPropH,
-            vec![view, Ex::str("bind"), Ex::str("value")],
+            vec![held.clone(), Ex::str("name"), Ex::str("time")],
         ));
-        self.st.ui.paired = Some(node);
+        self.emit(host(Imp::UiChild, vec![held.clone(), picker]));
+        self.emit(host(Imp::UiChild, vec![node.clone(), held]));
     }
 
     /// Whether `value` names somewhere a control can be bound to: a field, or a piece of the
@@ -1143,7 +1188,7 @@ fn names_cases(ty: &Type) -> bool {
 
 /// The language's types a binding of the description's `ty` takes: a moment is a Date, a Time,
 /// or one that may be none.
-fn binding_types(ty: &Type) -> Vec<Ty> {
+pub(super) fn binding_types(ty: &Type) -> Vec<Ty> {
     match ty {
         Type::Text => vec![Ty::Text],
         Type::Bool => vec![Ty::Bool],

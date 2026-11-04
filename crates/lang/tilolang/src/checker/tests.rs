@@ -376,10 +376,21 @@ view task(t: Task) {\n    field(\"Due\") {\n        ui.DateField(bind: t.due, op
         .unwrap_or_else(|| panic!("the day's field in {calls:#?}"));
     let time = calls
         .iter()
-        .position(|c| c == "node ui.TimePicker")
-        .unwrap_or_else(|| panic!("the time of the day, after it: {calls:#?}"));
-    assert!(day < time, "the time follows the day: {calls:#?}");
+        .position(|c| c == "node ui.TimeField")
+        .unwrap_or_else(|| panic!("the time of the day, in its own popover: {calls:#?}"));
+    assert!(day < time, "the time stands in the day's row: {calls:#?}");
     assert_eq!(count(&calls, "bind"), 2, "the day and its time: {calls:#?}");
+    assert!(
+        has(&calls, "node slot"),
+        "the day's `time` slot: {calls:#?}"
+    );
+    assert!(has(&calls, "prop name"), "the slot is named: {calls:#?}");
+    assert!(has(&calls, "prop at"), "the chip says the time: {calls:#?}");
+    let names = strings(func(&m, "task"));
+    assert!(
+        names.contains(&"time".to_string()),
+        "the slot's name: {names:?}"
+    );
     // A day the type pairs no time with is picked by its field alone.
     let (m, _) = lower(
         "type Task {\n    due: Option<Date> = .none\n}\n\
@@ -387,6 +398,25 @@ view task(t: Task) {\n    field(\"Due\") {\n        ui.DateField(bind: t.due, op
     );
     let calls = ui_calls(func(&m, "task"));
     assert!(!has(&calls, "node ui.TimePicker"), "{calls:#?}");
+}
+
+/// An item's page opens on what the item is: its title is the document's own title, in place
+/// and in its large type, and it takes the width the done checkbox leaves so a long one wraps
+/// beside it — never a small field of a form.
+#[test]
+fn a_page_opens_on_its_title_as_the_documents() {
+    let (m, _) = lower(
+        "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n}\n\
+view task(t: Task) {\n    std.document(t) {\n        opening(t)\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "task"));
+    assert!(has(&calls, "node ui.TextInput"), "{calls:#?}");
+    assert!(
+        has(&calls, "prop title"),
+        "the item's title is the document's: {calls:#?}"
+    );
+    assert!(has(&calls, "prop fill"), "{calls:#?}");
+    assert!(has(&calls, "node ui.Checkbox"), "{calls:#?}");
 }
 
 #[test]
@@ -739,7 +769,7 @@ fn a_body_held_as_rich_text_binds_like_any_field() {
 #[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
-        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    let who = p.name\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts {\n                \"Name\": who\n                \"VIP\": p.vip\n            }\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    lens tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "person"));
     for want in [
@@ -749,7 +779,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
         "node choice",
         "on pick.about",
         "node ui.Section",
-        "node ui.PropertyList",
+        "node ui.PersonField",
         "node form",
         "node field",
         "node ui.Toggle",

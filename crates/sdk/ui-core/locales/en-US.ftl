@@ -902,10 +902,14 @@ history-preview-after = Earlier version, read-only
 history-preview-before = Before this change, read-only
 history-preview-now = Back to now
 
-# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
-date-field-none = No date
+# A form's date field: what it reads as with no date, its calendar, the button that empties it,
+# and the row that picks the time of day the date is due at.
+date-field-add = Add date
 date-field-calendar = Calendar
 date-field-clear = Clear date
+time-field-name = Time of day
+time-field-add = Add time
+time-field-remove = Remove time
 
 # A form's person field: what it reads as with nobody picked, and the entry that picks you.
 person-field-none = No one

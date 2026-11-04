@@ -463,6 +463,31 @@ impl Button {
         self
     }
 
+    /// It opens something over itself: it wears the trailing chevron every choice control
+    /// wears, so a row of them reads as one kind of thing.
+    #[must_use]
+    pub fn showing_choice(mut self) -> Self {
+        self.opens_menu = true;
+        self.dirty = true;
+        self
+    }
+
+    /// Show `label`, and whether it stands for no value yet: what the control is for changed
+    /// elsewhere (a field following its binding), so the face changes in place and keeps what
+    /// stands on it.
+    pub fn set_label(&mut self, label: impl Into<String>, placeholder: bool) {
+        let label = label.into();
+        if label == self.label && placeholder == self.placeholder {
+            return;
+        }
+        if label != self.label {
+            self.layout_dirty = true;
+        }
+        self.label = label;
+        self.placeholder = placeholder;
+        self.dirty = true;
+    }
+
     /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
     /// new things wait behind the control (unread notifications, new mail), as an app icon's
     /// count stands on it. Only an icon-only face shows it. The count stays inside the face,

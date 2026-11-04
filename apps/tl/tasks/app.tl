@@ -742,47 +742,15 @@ view task_outline_row(t: Task, project: Option<Project>) {
     )
 }
 
-/// A task's window: whether it is done and its title, when it is due, its project, how much it
-/// matters, who is doing it, its subtasks, its notes, and what happened to it.
+/// A task's window: its title and whether it is done, what is written about it, its subtasks,
+/// its facts — when it is due, its project, how much it matters, who is doing it — as chips,
+/// and what happened to it.
 view task_page(t: Task) {
     lens step: Text
     std.document(t) {
-        row(gap: .related, align: .center) {
-            checkbox(bind: t.done) {
-                on check: check(t)
-            }
-            input(bind: t.title, placeholder: "Title", fill)
+        opening(t) {
+            on check: check(t)
         }
-        field("Due") {
-            ui.DateField(bind: t.due, optional: true)
-        }
-        field("Project") {
-            ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
-                ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
-                    on choose: unfile(t)
-                }
-                for p in tasks.projects {
-                    ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
-                        on choose: file(t, p)
-                    }
-                }
-            }
-        }
-        field("Priority") {
-            ui.MenuButton(t.priority.label(), icon: .flag) {
-                for a in actions(t).filter(a -> a.group == .some("Priority")) {
-                    ui.MenuItem(
-                        a.label,
-                        icon: a.icon,
-                        disabled: not a.available,
-                        reason: if a.available { .none } else { .some(a.reason) },
-                    ) {
-                        on choose: a.run
-                    }
-                }
-            }
-        }
-        field("Assignee", bind: t.assignee)
         section("Subtasks") {
             // A task with no subtasks puts no tree up, and the walk over the tasks under this
             // one is made only once there is one.
@@ -806,7 +774,30 @@ view task_page(t: Task) {
                 on submit: add_subtask(tasks, t, step).then(set(step, ""))
             }
         }
-        ui.BlockEditor(bind: t.notes, placeholder: "Add notes")
+        facts(t) {
+            ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
+                ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
+                    on choose: unfile(t)
+                }
+                for p in tasks.projects {
+                    ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
+                        on choose: file(t, p)
+                    }
+                }
+            }
+            ui.MenuButton(t.priority.label(), icon: .flag) {
+                for a in actions(t).filter(a -> a.group == .some("Priority")) {
+                    ui.MenuItem(
+                        a.label,
+                        icon: a.icon,
+                        disabled: not a.available,
+                        reason: if a.available { .none } else { .some(a.reason) },
+                    ) {
+                        on choose: a.run
+                    }
+                }
+            }
+        }
         std.history(t)
     }
 }

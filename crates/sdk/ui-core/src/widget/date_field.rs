@@ -1,24 +1,33 @@
-//! `DateField`: a form's date, shown as the date and picked in a popover.
+//! `DateField`: a day, shown as one fact and picked in a popover.
 //!
-//! The field reads as a control with the calendar icon and the date in the person's format (or
-//! "No date"). Pressing it opens a [`DatePicker`] in a popover anchored to the field; picking a
-//! day sets the date and closes it. A field whose date may be empty adds "Clear date" under the
-//! calendar, as Calendar's due-date popover does.
+//! The field reads as a chip: the calendar icon and the day as the person reads a day
+//! ([`crate::format::day_fact_today`]: "Overdue", "Today", "Tomorrow", "Thursday", "Jun 29",
+//! with the time of day it is due at when it has one — "Today 9:00 AM"), or "Add date" in the
+//! quieter ink while it holds none, and the chevron every choice control wears. Pressing it
+//! opens a [`DatePicker`] in a popover anchored to the chip; picking a day sets the date and
+//! closes it. A field whose date may be empty adds "Clear date" under the calendar.
+//!
+//! The time of day the day is due at is picked in the same popover, in the field's `time` slot:
+//! the type pairs one with the day (`at: Option<Time> (time of: due)`), so the two are one fact
+//! and one control, never a second chip beside it. What the chip says comes from the `at` the
+//! owner shows it, through [`DateField::set_at`]: the field itself changes nothing but the day.
 //!
 //! The owner learns of a change through [`DateField::on_change`] and tells the field a date from
-//! elsewhere with [`DateField::set_value`]; the field never holds the authoritative value. A
-//! described component's field follows the day its binding holds ([`DateField::from_state`]).
+//! elsewhere with [`DateField::set_value`], which changes the chip in place and never builds the
+//! popover again (what it holds — the calendar, the time row — stays what it was). The field
+//! never holds the authoritative value. A described component's field follows the day its
+//! binding holds ([`DateField::from_state`]).
 
 use std::cell::Cell;
 use std::rc::Rc;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveTime};
 
 use crate::icons::Icon;
 use crate::widget::arrange::Stack;
 use crate::widget::binding::{BoxedBinding, Pulled, derived};
 use crate::widget::{
-    AppModel, Button, ButtonRole, DatePicker, Decorator, ModelPath, PopoverButton, Widget,
+    AppModel, Button, ButtonRole, DatePicker, Decorator, Element, ModelPath, PopoverButton, Widget,
 };
 
 #[path = "date_field_component.rs"]
@@ -41,10 +50,15 @@ enum Waiting {
 /// See the [module docs](self).
 pub struct DateField {
     inner: PopoverButton<Stack>,
-    id: String,
     value: Option<NaiveDate>,
+    /// The time of day the day is due at, when its type pairs one with it: what the chip says
+    /// after the day, and nothing the field itself picks.
+    at: Option<NaiveTime>,
     optional: bool,
     picked: Picked,
+    /// The day the calendar shows and highlights: the day the person picked, and the one the
+    /// owner set from elsewhere, so the calendar never disagrees with the chip.
+    shown: crate::LocalState<NaiveDate>,
     on_change: Option<Box<dyn FnMut(Option<NaiveDate>)>>,
     /// The bound day the field follows, when a view binds it.
     bound: Option<BoxedBinding<Option<NaiveDate>>>,
@@ -56,13 +70,26 @@ impl DateField {
     /// A field showing `value`, which the person may clear when `optional`.
     #[must_use]
     pub fn new(id: &str, value: Option<NaiveDate>, optional: bool) -> Self {
+        Self::built(id, value, None, optional, Vec::new(), None)
+    }
+
+    fn built(
+        id: &str,
+        value: Option<NaiveDate>,
+        at: Option<NaiveTime>,
+        optional: bool,
+        time: Vec<Element>,
+        label: Option<&str>,
+    ) -> Self {
         let picked: Picked = Rc::default();
+        let shown = crate::LocalState::new(value.unwrap_or_else(crate::clock::today));
         Self {
-            inner: field(id, value, optional, &picked),
-            id: id.to_owned(),
+            inner: field(id, value, at, optional, &picked, &shown, time, label),
             value,
+            at,
             optional,
             picked,
+            shown,
             on_change: None,
             bound: None,
             waiting: Waiting::Nothing,
@@ -70,12 +97,27 @@ impl DateField {
     }
 
     /// A field following the day `state` holds as its ISO text (`""` for no date), which the
-    /// person may clear when `optional`: a day set there shows in place.
-    pub(super) fn from_state(id: &str, state: &crate::LocalState<String>, optional: bool) -> Self {
+    /// person may clear when `optional`, with `time` standing in its popover as the control
+    /// that picks `at`, the time of day the day is due at: a day set there shows in place.
+    pub(super) fn from_state(
+        id: &str,
+        state: &crate::LocalState<String>,
+        optional: bool,
+        at: Option<&str>,
+        time: Vec<Element>,
+        label: Option<&str>,
+    ) -> Self {
         let (day, binding) = derived(state, |text| crate::component::moment_day(text));
-        let mut field = Self::new(id, day, optional);
+        let at = time_in(at);
+        let mut field = Self::built(id, day, at, optional, time, label);
         field.bound = Some(binding);
         field
+    }
+
+    /// What the popover holds, which the `time` slot changes in place: the time row, the
+    /// calendar, "Clear date".
+    pub(super) fn popover_content_mut(&mut self) -> &mut Stack {
+        self.inner.popover_mut().content_mut()
     }
 
     /// Call `f` with the date the person picked, or `None` when they cleared it.
@@ -91,19 +133,44 @@ impl DateField {
         self.value
     }
 
+    /// The time of day the chip shows after the day.
+    #[must_use]
+    pub fn at(&self) -> Option<NaiveTime> {
+        self.at
+    }
+
     /// Whether the person may clear the date.
     #[must_use]
     pub fn is_optional(&self) -> bool {
         self.optional
     }
 
-    /// Show `value`, a date set elsewhere. An open popover stays open on the day it shows.
+    /// Show `value`, a date set elsewhere: the chip and the calendar follow it in place.
     pub fn set_value(&mut self, value: Option<NaiveDate>) {
-        if value == self.value || self.inner.is_open() {
+        if value == self.value {
             return;
         }
         self.value = value;
-        self.inner = field(&self.id, value, self.optional, &self.picked);
+        self.shown.set(value.unwrap_or_else(crate::clock::today));
+        self.show_label();
+    }
+
+    /// Show `at`, the time of day the day is due at, set elsewhere: only what the chip says
+    /// changes.
+    pub fn set_at(&mut self, at: Option<NaiveTime>) {
+        if at == self.at {
+            return;
+        }
+        self.at = at;
+        self.show_label();
+    }
+
+    /// Say what the chip stands for now, on the chip it already is.
+    fn show_label(&mut self) {
+        let label = Self::label(self.value, self.at);
+        self.inner
+            .button_mut()
+            .set_label(label, self.value.is_none());
     }
 
     /// Take what the person picked: close the popover, show the date and report it.
@@ -116,8 +183,7 @@ impl DateField {
         self.waiting = Waiting::Nothing;
         self.inner.close();
         if value != self.value {
-            self.value = value;
-            self.inner = field(&self.id, value, self.optional, &self.picked);
+            self.set_value(value);
             if let Some(on_change) = &mut self.on_change {
                 on_change(value);
             }
@@ -140,33 +206,62 @@ impl DateField {
         true
     }
 
-    /// What the field reads as: the date, or "No date".
+    /// What the field reads as: the day and the time it is due at ("Today 9:00 AM", "Overdue"),
+    /// or "Add date" while it holds none.
     #[must_use]
-    pub fn label(value: Option<NaiveDate>) -> String {
+    pub fn label(value: Option<NaiveDate>, at: Option<NaiveTime>) -> String {
         value.map_or_else(
-            || crate::i18n::widget_format("date-field-none", &[]),
-            crate::format::date,
+            || crate::i18n::widget_format("date-field-add", &[]),
+            |day| crate::format::day_fact_today(day, at).text,
         )
     }
 }
 
-/// The field's button and its popover: the calendar, and "Clear date" when `optional`.
+/// The time of day `text` names: the time of day a field holds (`09:00`), or the time of day an
+/// instant falls on; `None` for no time.
+pub(crate) fn time_in(text: Option<&str>) -> Option<NaiveTime> {
+    let text = text?;
+    if let Ok(time) = NaiveTime::parse_from_str(text.trim(), "%H:%M") {
+        return Some(time);
+    }
+    // ignored-failure: a value that is no time is shown as no time
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|at| at.with_timezone(&chrono::Local).time())
+}
+
+/// The chip and its popover: the time the day is due at (the `time` slot), the calendar, and
+/// "Clear date" when the date may be empty.
 fn field(
     id: &str,
     value: Option<NaiveDate>,
+    at: Option<NaiveTime>,
     optional: bool,
     picked: &Picked,
+    shown: &crate::LocalState<NaiveDate>,
+    time: Vec<Element>,
+    label: Option<&str>,
 ) -> PopoverButton<Stack> {
     let today = crate::clock::local_now().date_naive();
     let on_day = Rc::clone(picked);
-    let picker = DatePicker::new(value.unwrap_or(today))
+    let calendar = label.map_or_else(
+        || crate::i18n::widget_format("date-field-calendar", &[]),
+        str::to_owned,
+    );
+    let picker = DatePicker::from_state(shown)
         .with_today(today)
-        .with_accessible_name(crate::i18n::widget_format("date-field-calendar", &[]))
+        .with_accessible_name(&calendar)
         .on_view(format!("{id}-calendar"), move |day| {
             on_day.set(Some(Some(day)))
         });
-    let mut content = Stack::stack().push(Box::new(picker));
-    if optional && value.is_some() {
+    // The time comes first: a day and the time it is due at read as one fact, and the row that
+    // picks the time stands with the day it belongs to, over the calendar.
+    let mut content = Stack::stack();
+    for view in time {
+        content = content.push(view);
+    }
+    content = content.push(Box::new(picker));
+    if optional {
         let on_clear = Rc::clone(picked);
         let clear = Button::new(
             &format!("{id}-clear"),
@@ -176,9 +271,20 @@ fn field(
         .on_view(move || on_clear.set(Some(None)));
         content = content.push(Box::new(clear));
     }
-    Button::new(id, &DateField::label(value))
+    let chip = Button::new(id, &DateField::label(value, at))
         .with_icon(Icon::Calendar)
-        .with_popover(content)
+        .showing_choice();
+    let chip = if value.is_some() {
+        chip
+    } else {
+        chip.with_placeholder()
+    };
+    let chip = if let Some(label) = label {
+        chip.with_accessible_name(label)
+    } else {
+        chip
+    };
+    chip.with_popover(content)
 }
 
 impl Decorator for DateField {
@@ -231,7 +337,7 @@ mod tests {
         let mut field = DateField::new("due", None, true).on_change(move |value| {
             seen.set(Some(value));
         });
-        assert_eq!(DateField::label(None), "No date");
+        assert_eq!(DateField::label(None, None), "Add date");
         field.picked.set(Some(day));
         assert!(field.take_pick());
         assert_eq!(field.value(), day);
@@ -243,21 +349,55 @@ mod tests {
     }
 
     #[test]
+    fn a_day_with_its_time_reads_as_one_fact() {
+        let nine = NaiveTime::from_hms_opt(9, 0, 0);
+        let day = crate::clock::today();
+        assert_eq!(
+            DateField::label(Some(day), nine),
+            crate::format::day_fact_today(day, nine).text,
+            "the chip says the day as the platform reads a day, with its time"
+        );
+        assert_eq!(
+            DateField::label(Some(day), None),
+            "Today",
+            "a day with no time says only the day"
+        );
+    }
+
+    #[test]
     fn a_date_from_elsewhere_is_shown_without_being_reported() {
         let reported: Rc<Cell<bool>> = Rc::default();
         let seen = Rc::clone(&reported);
         let mut field = DateField::new("due", None, false).on_change(move |_| seen.set(true));
-        let day = NaiveDate::from_ymd_opt(2026, 11, 2);
-        field.set_value(day);
-        assert_eq!(field.value(), day);
+        let day = NaiveDate::from_ymd_opt(2026, 11, 2).expect("a day");
+        field.set_value(Some(day));
+        assert_eq!(field.value(), Some(day));
         assert!(!field.take_pick());
         assert!(!reported.get());
+        assert_eq!(
+            field.shown.with(|shown| *shown),
+            day,
+            "the calendar follows the day the field shows"
+        );
+    }
+
+    #[test]
+    fn a_time_from_elsewhere_changes_only_what_the_chip_says() {
+        let day = NaiveDate::from_ymd_opt(2026, 6, 30);
+        let mut field = DateField::new("due", day, true);
+        field.set_at(NaiveTime::from_hms_opt(9, 0, 0));
+        assert_eq!(field.at(), NaiveTime::from_hms_opt(9, 0, 0));
+        assert_eq!(
+            field.value(),
+            day,
+            "the day a time is set for stays the day it was"
+        );
     }
 
     #[test]
     fn a_bound_day_shows_and_one_set_while_the_calendar_is_open_waits_for_it() {
         let state = crate::LocalState::new("2026-06-30".to_owned());
-        let mut field = DateField::from_state("due", &state, true);
+        let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None);
         assert_eq!(
             field.value(),
             NaiveDate::from_ymd_opt(2026, 6, 30),

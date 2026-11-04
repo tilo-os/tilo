@@ -232,10 +232,7 @@ view notebook(nb: Notebook) {
 view note(n: Note) {
     std.document(n) {
         section("About") {
-            facts {
-                "Title": n.title
-                "Pinned": n.pinned
-            }
+            facts(n)
         }
         button(pin(n))
     }
@@ -263,8 +260,8 @@ fn the_native_vocabulary_is_canonical_and_round_trips() {
 
 #[test]
 fn facts_on_one_line_and_lists_in_braces_print_canonically() {
-    let src = "app t.x \"X\"\nview v(l: L) {\n    facts { \"a\": 1; \"b\": l.x }\n    list(l.items) { i -> text(i.t) }\n}\n";
-    let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts {\n        \"a\": 1\n        \"b\": l.x\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
+    let src = "app t.x \"X\"\nview v(l: L) {\n    facts(l) { text(\"a\") }\n    list(l.items) { i -> text(i.t) }\n}\n";
+    let want = "app t.x \"X\"\n\nview v(l: L) {\n    facts(l) {\n        text(\"a\")\n    }\n    list(l.items) { i ->\n        text(i.t)\n    }\n}\n";
     assert_eq!(print_of(src), want);
 }
 

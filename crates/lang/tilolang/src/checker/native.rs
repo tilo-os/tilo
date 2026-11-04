@@ -45,6 +45,10 @@ impl Checker<'_> {
             // `field(label, bind: t.assignee)`: the form's labelled row, its control the
             // toolkit's field for the bound value's type. A person is picked with `PersonField`.
             "field" if args.iter().any(is_bind) => Some(self.bound_field(p, c, args)),
+            // A resource's page, from what its type declares: what it opens with, and its facts
+            // as one row of chips.
+            "opening" => Some(self.opening(c, args)),
+            "facts" => Some(self.facts(c, args)),
             _ => None,
         }
     }
@@ -1213,54 +1217,354 @@ impl Checker<'_> {
         f
     }
 
-    // ---- facts ----------------------------------------------------------------------------
+    // ---- a resource's page ----------------------------------------------------------------
 
-    /// `"Due": d.due` in `facts { }`: a `fact` node with its `label` and `value`.
-    pub(super) fn fact(
+    /// The record a page part is about: `of` as the record it names, with its type.
+    fn page_of(
         &mut self,
-        node: ast::NodeId,
-        label: &ast::Expr,
-        value: &ast::Expr,
-        parent: LocalId,
+        prim: &str,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Option<(Ex, crate::resolve::TypeInfo)> {
+        let mut of = None;
+        for a in args {
+            if a.name.is_none() && self.is_flag(None, &a.value) {
+                continue;
+            }
+            if a.name.is_none() && of.is_none() {
+                of = Some(&a.value);
+                continue;
+            }
+            let name = a.name.as_ref().map_or_else(String::new, |n| n.name.clone());
+            self.err(
+                "E063",
+                a.value.span,
+                if name.is_empty() {
+                    format!("`{prim}` takes one resource, the one whose page it is part of")
+                } else {
+                    format!("`{prim}` has no argument `{name}`: it takes the resource alone")
+                },
+            );
+            let _ = self.expr(&a.value, None);
+        }
+        let Some(of) = of else {
+            self.err(
+                "E022",
+                span,
+                format!("`{prim}` takes the resource whose page it is part of: `{prim}(t)`"),
+            );
+            return None;
+        };
+        let b = self.expr(of, None);
+        let Ty::Record(key) = b.ty.clone() else {
+            if !b.ty.is_error() {
+                let t = self.show(&b.ty);
+                self.err(
+                    "E063",
+                    of.span,
+                    format!("`{prim}` takes a resource, whose page it is part of; this is {t}"),
+                );
+            }
+            return None;
+        };
+        let info = self.env.type_info(&key)?.clone();
+        Some((b, info))
+    }
+
+    /// The field of `info` with the role `wanted`, when the type declares one.
+    fn role_field(
+        info: &crate::resolve::TypeInfo,
+        wanted: impl Fn(&crate::types::FieldRole) -> bool,
+    ) -> Option<&crate::resolve::FieldInfo> {
+        info.fields.iter().find(|field| {
+            // A derived field is no stored value: nothing binds it.
+            field.derived.is_none() && field.role.as_ref().is_some_and(&wanted)
+        })
+    }
+
+    /// Bind `node` to the field `field` of the record `b`, as `bind: b.field` does: the
+    /// component's binding, and the field the host merges it into.
+    fn bind_part(
+        &mut self,
+        node: &Ex,
+        d: &crate::toolkit::Description,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
         span: Span,
     ) {
-        if self.st.ui.parent != "facts" {
+        let Some(binding) = d.bindings.first() else {
+            return;
+        };
+        if !super::component::binding_types(&binding.ty).contains(&field.ty) {
+            let t = self.show(&field.ty);
             self.err(
-                "E098",
+                "E062",
                 span,
-                "a fact `\"Label\": value` stands in `facts { }`",
+                format!(
+                    "`{}` is a field of type {t}, which no control binds",
+                    field.name
+                ),
             );
             return;
         }
-        let key = self.stmt_key(node);
-        let n = self.new_node(&crate::toolkit::kind("Property"), key);
-        let l = self.expr_as(label, &Ty::Text);
-        self.prop(Ex::local(n, Ty::View), "label", l, label.span);
-        let v = self.expr(value, None);
-        let shown = match &v.ty {
-            Ty::Text
-            | Ty::Int
-            | Ty::Float
-            | Ty::Bool
-            | Ty::Principal
-            | Ty::Date
-            | Ty::Time
-            | Ty::Identifier
-            | Ty::Error => true,
-            Ty::Option(inner) => matches!(**inner, Ty::Date | Ty::Time),
-            _ => false,
-        };
-        if shown {
-            // A Date or a Time also sets `value:as` (see `prop`).
-            self.prop(Ex::local(n, Ty::View), "value", v, value.span);
-        } else {
-            let t = self.show(&v.ty);
-            self.err("E098", value.span, format!("a fact's value is Text, a number, a Bool, a Principal, a Date or a Time, and this is {t}; show it as text with `\"{{...}}\"`"));
-        }
         self.emit(host(
-            Imp::UiChild,
-            vec![Ex::local(parent, Ty::View), Ex::local(n, Ty::View)],
+            Imp::UiBind,
+            vec![node.clone(), b.clone(), Ex::str(&field.id)],
         ));
+        self.emit(host(
+            Imp::UiPropH,
+            vec![node.clone(), Ex::str("bind"), Ex::str(&binding.name)],
+        ));
+    }
+
+    /// `opening(of) { on check: ... }`: what the resource's page opens with — the item as its
+    /// name, whether it is done, and what is written about it. The field marked `(title)` is
+    /// drawn as the page's title, with the control that says the item is done beside it, level
+    /// with the first line of a title of several; the field marked `(body)` is the item's notes
+    /// under its title, its placeholder the field's own name. A type that marks neither opens
+    /// with nothing.
+    fn opening(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+        let key = self.node_key(c);
+        let stack = self.new_node("stack", key.clone());
+        let node = Ex::local(stack, Ty::View);
+        self.prop_text(node.clone(), "gap", Ex::str("related"));
+        let Some((b, info)) = self.page_of("opening", args, c.call.span) else {
+            return stack;
+        };
+        let done = Self::role_field(&info, crate::types::FieldRole::is_done)
+            .filter(|field| field.ty == Ty::Bool)
+            .cloned();
+        let title = Self::role_field(&info, crate::types::FieldRole::is_title)
+            .filter(|field| field.ty == Ty::Text)
+            .cloned();
+        let body = Self::role_field(&info, crate::types::FieldRole::is_body).cloned();
+        if done.is_some() || title.is_some() {
+            let row = self.new_node("row", concat(key.clone(), Ex::str("#heading")));
+            let line = Ex::local(row, Ty::View);
+            self.prop_text(line.clone(), "gap", Ex::str("related"));
+            self.prop_text(line.clone(), "align", Ex::str("start"));
+            // The checkbox says the item is done; what its press does is the view's, as a
+            // checkbox of its own takes it.
+            if let Some(done) = done {
+                let env = self.env;
+                if let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("Checkbox")) {
+                    let n = self.new_node(
+                        &crate::toolkit::kind(&d.name),
+                        concat(key.clone(), Ex::str("#done")),
+                    );
+                    let view = Ex::local(n, Ty::View);
+                    self.bind_part(&view, d, &b, &done, c.call.span);
+                    for s in c.block.iter().flatten() {
+                        if let UiKind::On {
+                            event,
+                            param,
+                            at,
+                            action,
+                        } = &s.kind
+                            && event.name == "check"
+                        {
+                            self.component_event(
+                                n,
+                                d,
+                                event,
+                                (param.as_ref(), at.as_ref()),
+                                action,
+                            );
+                            continue;
+                        }
+                        self.err(
+                            "E063",
+                            s.span,
+                            "`opening` takes one `on check: action(...)`: what checking the item off does beyond its `(done)` field",
+                        );
+                    }
+                    self.emit(host(Imp::UiChild, vec![line.clone(), view]));
+                }
+            }
+            if let Some(title) = title {
+                let env = self.env;
+                if let Some(d) = env.toolkit.and_then(|toolkit| toolkit.get("TextInput")) {
+                    let n = self.new_node(
+                        &crate::toolkit::kind(&d.name),
+                        concat(key.clone(), Ex::str("#title")),
+                    );
+                    let view = Ex::local(n, Ty::View);
+                    self.bind_part(&view, d, &b, &title, c.call.span);
+                    let label = Ex::str(&crate::resolve::variant_label(&title.name, &title.doc));
+                    self.emit(host(
+                        Imp::UiPropH,
+                        vec![view.clone(), Ex::str("placeholder"), label],
+                    ));
+                    // The item's title is the document's, in place and in its large type, so
+                    // the page opens on what the item is rather than on a field of a form.
+                    self.emit(host(
+                        Imp::UiPropI,
+                        vec![view.clone(), Ex::str("title"), Ex::int(1)],
+                    ));
+                    // It takes the width the checkbox leaves, so a long title wraps there.
+                    self.emit(host(
+                        Imp::UiPropF,
+                        vec![
+                            view.clone(),
+                            Ex::str("fill"),
+                            Ex::new(Ek::Float(1.0), Ty::Float),
+                        ],
+                    ));
+                    self.emit(host(Imp::UiChild, vec![line.clone(), view]));
+                }
+            }
+            self.emit(host(Imp::UiChild, vec![node.clone(), line]));
+        } else {
+            for s in c.block.iter().flatten() {
+                self.err(
+                    "E063",
+                    s.span,
+                    "`opening` takes `on check: action(...)` for a type with a `(done)` field",
+                );
+            }
+        }
+        if let Some(body) = body {
+            let env = self.env;
+            let wanted = match body.ty {
+                Ty::RichText => Some("BlockEditor"),
+                Ty::Text => Some("TextInput"),
+                _ => None,
+            };
+            if let Some(d) =
+                wanted.and_then(|name| env.toolkit.and_then(|toolkit| toolkit.get(name)))
+            {
+                let n = self.new_node(
+                    &crate::toolkit::kind(&d.name),
+                    concat(key, Ex::str("#body")),
+                );
+                let view = Ex::local(n, Ty::View);
+                self.bind_part(&view, d, &b, &body, c.call.span);
+                if body.ty == Ty::Text {
+                    self.emit(host(
+                        Imp::UiPropI,
+                        vec![view.clone(), Ex::str("lines"), Ex::int(6)],
+                    ));
+                }
+                let label = Ex::str(&crate::resolve::variant_label(&body.name, &body.doc));
+                self.emit(host(
+                    Imp::UiPropH,
+                    vec![view.clone(), Ex::str("placeholder"), label],
+                ));
+                self.emit(host(Imp::UiChild, vec![node, view]));
+            } else {
+                let t = self.show(&body.ty);
+                self.err(
+                    "E098",
+                    c.call.span,
+                    format!(
+                        "a `(body)` field is rich text or text, and `{}` is {t}",
+                        body.name
+                    ),
+                );
+            }
+        }
+        stack
+    }
+
+    /// `facts(of) { ... }`: the facts of the resource as one row of chips — the same height,
+    /// the same chevron, no labels, wrapping — each derived from what the field is: the day a
+    /// date field names, with the time of day its type pairs with it, and the person a
+    /// principal field names. The block adds the chips only the view can offer (the project's,
+    /// the enum's cases), in the same row.
+    fn facts(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
+        let key = self.node_key(c);
+        let row = self.new_node("row", key.clone());
+        let node = Ex::local(row, Ty::View);
+        self.prop_text(node.clone(), "gap", Ex::str("tight"));
+        self.prop_text(node.clone(), "align", Ex::str("center"));
+        self.emit(host(
+            Imp::UiPropI,
+            vec![node.clone(), Ex::str("wrap"), Ex::int(1)],
+        ));
+        if let Some((b, info)) = self.page_of("facts", args, c.call.span) {
+            for field in info.fields.iter().filter(|field| field.derived.is_none()) {
+                let chip = match &field.ty {
+                    Ty::Date => self.date_chip(&key, &b, field, &info, c.call.span),
+                    Ty::Option(inner) if **inner == Ty::Date => {
+                        self.date_chip(&key, &b, field, &info, c.call.span)
+                    }
+                    Ty::Principal => self.person_chip(&key, &b, field, c.call.span),
+                    Ty::Option(inner) if **inner == Ty::Principal => {
+                        self.person_chip(&key, &b, field, c.call.span)
+                    }
+                    _ => None,
+                };
+                if let Some(chip) = chip {
+                    self.emit(host(Imp::UiChild, vec![node.clone(), chip]));
+                }
+            }
+        }
+        if let Some(block) = &c.block {
+            self.child_block("facts", block, row);
+        }
+        row
+    }
+
+    /// The chip that shows the day `field` names, with the time of day its type pairs with it:
+    /// the day, and inside its calendar, the time it is due at ([`super::component::Checker::date_control`]).
+    fn date_chip(
+        &mut self,
+        key: &Ex,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
+        info: &crate::resolve::TypeInfo,
+        span: Span,
+    ) -> Option<Ex> {
+        let env = self.env;
+        let d = env.toolkit.and_then(|toolkit| toolkit.get("DateField"))?;
+        let n = self.new_node(
+            &crate::toolkit::kind(&d.name),
+            concat(key.clone(), Ex::str("#date")),
+        );
+        let view = Ex::local(n, Ty::View);
+        self.bind_part(&view, d, b, field, span);
+        // A date that may be empty can be cleared.
+        if matches!(field.ty, Ty::Option(_)) {
+            self.emit(host(
+                Imp::UiPropI,
+                vec![view.clone(), Ex::str("optional"), Ex::int(1)],
+            ));
+        }
+        self.date_control(&view, key, b, field, info, span);
+        Some(view)
+    }
+
+    /// The chip that shows the person `field` names: the toolkit's person field, which offers
+    /// the workspace's people and the person looking, never a copy an app keeps.
+    fn person_chip(
+        &mut self,
+        key: &Ex,
+        b: &Ex,
+        field: &crate::resolve::FieldInfo,
+        span: Span,
+    ) -> Option<Ex> {
+        let env = self.env;
+        let d = env.toolkit.and_then(|toolkit| toolkit.get("PersonField"))?;
+        let n = self.new_node(
+            &crate::toolkit::kind(&d.name),
+            concat(key.clone(), Ex::str("#person")),
+        );
+        let view = Ex::local(n, Ty::View);
+        self.bind_part(&view, d, b, field, span);
+        let people = Ty::List(Box::new(Ty::Principal));
+        self.prop(
+            view.clone(),
+            "people",
+            Ex::host(Imp::WorkspaceMembers, Vec::new(), people),
+            span,
+        );
+        self.prop(
+            view.clone(),
+            "me",
+            Ex::host(Imp::Viewer, Vec::new(), Ty::Principal),
+            span,
+        );
+        Some(view)
     }
 }
 

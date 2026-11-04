@@ -15,8 +15,7 @@ pub struct Prim {
     /// nothing of its own.
     pub component: Option<&'static str>,
     /// The toolkit component whose kind this primitive builds, when that is not its own name:
-    /// `button` builds a `ui.Button` and `facts` a `ui.PropertyList`, each with arguments of its
-    /// own.
+    /// `button` builds a `ui.Button`, each with arguments of its own.
     pub builds: Option<&'static str>,
 }
 
@@ -92,8 +91,11 @@ pub const PRIMS: &[Prim] = &[
         component: None,
         builds: None,
     },
-    // The facts of a resource, one `"Label": value` per line, as a `ui.PropertyList` of them.
-    prim_as("facts", "PropertyList", &[], &[]),
+    // A resource's page, from what its type declares: what it opens with (whether it is done
+    // and the field marked `(title)`, then the field marked `(body)`), and its facts — one row
+    // of chips, each from the field it shows, with the view's own chips in its block.
+    prim_of("opening", &["of"], &[]),
+    prim_of("facts", &["of"], &[]),
     // Native controls that are no component: a form's fields, and the control for a view state
     // of an enum's cases.
     prim_of("form", &[], &[]),

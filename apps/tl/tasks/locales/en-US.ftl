@@ -285,11 +285,9 @@ d-rj4l44km = Task summary
 d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
-    .w-title = Title
-    .w-inbox = Inbox
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask
-    .w-add-notes = Add notes
+    .w-inbox = Inbox
 
 d-i2mhsb3h-row0 = Home for p
 
@@ -317,11 +315,11 @@ d-gu3twlv2-row0 = Project board for s
 
 d-gu3twlv2-row1 = Project board for s
 
-d-mtmufg3w-row0 = Task page for p
+d-mtmufg3w-row0 = Task page for x
 
-d-mtmufg3w-row1 = Task page for a
+d-mtmufg3w-row1 = Task page for p
 
-d-mtmufg3w-row2 = Task page for x
+d-mtmufg3w-row2 = Task page for a
 
 d-mtmufg3w-row3-row0 = Task page for c
 

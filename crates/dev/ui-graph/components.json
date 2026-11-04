@@ -1417,8 +1417,15 @@
     },
     {
       "name": "DateField",
-      "doc": "A form's date, shown in the person's format and picked from a calendar that opens over it. A date that may be empty can be cleared.",
+      "doc": "A day, shown as the person reads a day (with the time it is due at) and picked from a calendar that opens over it. A date that may be empty can be cleared, and the time it is due at is picked in the same popover, in the `time` slot.",
       "props": [
+        {
+          "name": "at",
+          "doc": "The time of day the day is due at, when its type pairs one with it (`9:00`): what the chip says after the day. The field picks it in its `time` slot; it only says it here.",
+          "type": {
+            "option": "text"
+          }
+        },
         {
           "name": "label",
           "doc": "Its spoken name: what the date is for.",
@@ -1430,6 +1437,14 @@
           "name": "optional",
           "doc": "The date may be cleared: the calendar offers \"Clear date\".",
           "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "time",
+          "doc": "The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.",
+          "accepts": "view",
+          "many": true
         }
       ],
       "events": [
@@ -4699,6 +4714,28 @@
       "semantics": {
         "role": "TextInput",
         "label": "placeholder"
+      }
+    },
+    {
+      "name": "TimeField",
+      "doc": "The time of day a day is due at: the hour and the minute it is due at, with \"Remove time\" beside them, or a quiet \"Add time\" while it has none. It stands in the `time` slot of a [`DateField`](crate::widget::DateField), so the day and its time read as one fact.",
+      "events": [
+        {
+          "name": "change",
+          "doc": "A time was picked or removed: carries the time of day, or nothing for a removed one.",
+          "value": "time"
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The moment, as a bound field holds it (`09:00`, or the ISO text of an instant), and where a picked time of day goes.",
+          "type": "time",
+          "merge": "register"
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {

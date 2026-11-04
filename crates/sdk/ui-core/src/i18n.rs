@@ -1631,8 +1631,8 @@ mod tests {
         assert_eq!(I18nManager::current_locale(), "en-US");
         assert_eq!(I18nManager::lookup_plain("d-new"), "New");
         assert_eq!(
-            I18nManager::lookup_plain("date-field-none"),
-            "No date",
+            I18nManager::lookup_plain("date-field-add"),
+            "Add date",
             "the toolkit's own words follow the window's language"
         );
     }

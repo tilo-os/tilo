@@ -209,8 +209,14 @@ impl Checker<'_> {
                 UiKind::Match { scrutinee, arms } => {
                     self.match_ui(scrutinee, arms, parent, s.span);
                 }
-                UiKind::Fact { node, label, value } => {
-                    self.fact(*node, label, value, parent, s.span);
+                UiKind::Fact { label, value, .. } => {
+                    self.err(
+                        "E098",
+                        s.span,
+                        "a fact is a chip derived from the field it shows: `facts(t) { ... }` holds the chips only the view can offer, never a `\"Label\": value`",
+                    );
+                    let _ = self.expr(label, None);
+                    let _ = self.expr(value, None);
                 }
                 UiKind::Slot { name, .. } => {
                     self.err(
@@ -390,10 +396,6 @@ impl Checker<'_> {
                     self.err("E060", span, format!("`{name}` is a variable of type {}; only a View variable can be placed in a view", self.show(&ty)));
                     return self.dead_node();
                 }
-                if self.st.ui.parent == "facts" {
-                    self.err("E098", span, "`facts { }` holds facts, one `\"Label\": value` per line; put other content outside it");
-                    return self.dead_node();
-                }
                 if let Some(msg) = removed_prim(name) {
                     self.err("E096", span, msg);
                     for a in args {
@@ -501,15 +503,6 @@ impl Checker<'_> {
                 vec![Ex::local(p, Ty::View), Ex::local(node, Ty::View)],
                 Ty::Unit,
             )));
-            // A day's control picks the time of day it is due at too, where its type pairs one
-            // with it: the time picker stands right after it.
-            if let Some(time) = self.st.ui.paired.take() {
-                self.emit(Stmt::Eval(Ex::host(
-                    Imp::UiChild,
-                    vec![Ex::local(p, Ty::View), Ex::local(time, Ty::View)],
-                    Ty::Unit,
-                )));
-            }
         }
         node
     }

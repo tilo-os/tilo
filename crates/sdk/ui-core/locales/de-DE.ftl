@@ -895,10 +895,14 @@ history-preview-after = Frühere Version, schreibgeschützt
 history-preview-before = Vor dieser Änderung, schreibgeschützt
 history-preview-now = Zurück zu jetzt
 
-# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
-date-field-none = Kein Datum
+# A form's date field: what it reads as with no date, its calendar, the button that empties it,
+# and the row that picks the time of day the date is due at.
+date-field-add = Datum hinzufügen
 date-field-calendar = Kalender
 date-field-clear = Datum entfernen
+time-field-name = Tageszeit
+time-field-add = Zeit hinzufügen
+time-field-remove = Zeit entfernen
 
 person-field-none = Niemand
 person-field-me = Ich

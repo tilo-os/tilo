@@ -179,10 +179,6 @@ pub(crate) struct UiPlace {
     parts: bool,
     /// Whether it is in a composer: text typed here is one person's until it is sent.
     composer: bool,
-    /// The control a day's control is followed by, when the day's type pairs a time of day with
-    /// it (`at: Option<Time> (time of: due)`): the time picker bound to that time, placed right
-    /// after the day's control.
-    paired: Option<LocalId>,
 }
 
 /// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.

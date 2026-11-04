@@ -110,6 +110,7 @@ view controls(c: Controls) {
             ui.DateField(value: c.starts, label: .some("Starts"), optional: false)
             ui.DateField(value: c.ends, label: .some("Ends"), optional: true)
             ui.DatePicker(value: c.starts)
+            ui.TimeField(value: c.clock)
             ui.TimePicker(value: c.clock, label: .some("At"))
         }
         ui.Section("Colours") {

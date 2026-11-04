@@ -739,7 +739,7 @@ fn e098_controls_and_facts_misused() {
     expect("E098", &with_t("view v(x: T) {\n    choice(bind: x.b)\n}"));
     expect(
         "E098",
-        &with_t("view v(x: T) {\n    facts {\n        text(x.t)\n    }\n}"),
+        &with_t("view v(x: T) {\n    facts(x) {\n        \"Name\": x.t\n    }\n}"),
     );
     expect(
         "E098",
@@ -752,7 +752,7 @@ fn e098_controls_and_facts_misused() {
         ),
     );
     ok(&with_t(
-        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    lens k: K = .a\n    stack {\n        choice(bind: k)\n        facts {\n            \"Name\": x.t; \"Count\": x.n\n        }\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
+        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    lens k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
     ));
 }
 
@@ -842,10 +842,10 @@ fn dates_and_times_are_checked() {
 #[test]
 fn dated_props_say_what_they_are() {
     let c = compile_body(&format!(
-        "{DATED}type L {{\n    tasks: Collection<Task>\n}}\nview v(l: L) {{\n    list(l.tasks) {{ t ->\n        row(t.title, meta: t.due, secondary: t.start)\n    }}\n}}\nview d(t: Task) {{\n    stack {{\n        text(t.start)\n        facts {{\n            \"Due\": t.due\n            \"Done\": t.done_at\n        }}\n    }}\n}}"
+        "{DATED}type L {{\n    tasks: Collection<Task>\n}}\nview v(l: L) {{\n    list(l.tasks) {{ t ->\n        row(t.title, meta: t.due, secondary: t.start)\n    }}\n}}\nview d(t: Task) {{\n    stack {{\n        text(t.start)\n        facts(t)\n    }}\n}}"
     ));
     let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());
-    assert!(has("meta:as") && has("secondary:as") && has("value:as"));
+    assert!(has("meta:as") && has("secondary:as"));
     crate::common::validate(&c.wasm);
 }
 
