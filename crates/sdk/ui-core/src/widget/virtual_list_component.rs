@@ -1002,7 +1002,7 @@ fn row_menu(list: &dyn Widget, at: Option<Point>, select: &Event) -> Vec<MenuEnt
     };
     let key = match at {
         Some(point) => list.key_at_point(point),
-        None => list.focused_key().cloned(),
+        None => list.focused_row_key(),
     };
     let Some(key) = key else {
         return Vec::new();

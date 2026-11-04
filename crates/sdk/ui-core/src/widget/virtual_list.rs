@@ -1620,14 +1620,7 @@ impl<M: ListModel> VirtualList<M> {
     /// there would, keeping it focused. Whether it moved: a move the list
     /// refuses, or one past either end, moves nothing.
     fn move_focused(&mut self, up: bool) -> bool {
-        let focused_row = self
-            .mounted
-            .iter()
-            .find(|row| row.widget.is_focused())
-            .map(|row| row.key.clone());
-        let Some(source) =
-            focused_row.or_else(|| self.focused_key.clone().filter(|_| self.is_focused))
-        else {
+        let Some(source) = self.focused_row_key() else {
             return false;
         };
         let Some(index) = self.model.index_of(&source) else {

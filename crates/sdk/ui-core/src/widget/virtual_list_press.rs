@@ -65,13 +65,7 @@ impl<M: ListModel> VirtualList<M> {
         if self.on_context.is_none() {
             return false;
         }
-        let focused = self
-            .mounted
-            .iter()
-            .find(|row| row.widget.is_focused())
-            .map(|row| row.key.clone())
-            .or_else(|| self.focused_key.clone().filter(|_| self.is_focused));
-        let Some(key) = focused else {
+        let Some(key) = self.focused_row_key() else {
             return false;
         };
         let Some(index) = self.model.index_of(&key) else {
