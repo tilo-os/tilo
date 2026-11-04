@@ -3562,6 +3562,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                 if !delegated {
                     let actions_visible = self.row_actions_visible(key);
                     let mut text_color = text_color;
+                    let mut struck = false;
                     let mut label_max = self.rect.x1 - label_x - gap;
                     if let (TreeRowKey::Node(id), Some(description)) = (
                         key,
@@ -3573,6 +3574,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                     }
                     if let Some(decoration) = &decoration {
                         if decoration.tone == TreeRowTone::Secondary {
+                            text_color = tokens.colors.text_dim;
+                        }
+                        // A row checked off as done reads done, as a list row does: its label
+                        // is struck through in the secondary ink, so what is left to do stands
+                        // out from what is not.
+                        struck = decoration.checkbox == Some(true);
+                        if struck {
                             text_color = tokens.colors.text_dim;
                         }
                         if let (TreeRowKey::Node(id), Some(checked)) = (key, decoration.checkbox) {
@@ -3690,6 +3698,20 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
                         None,
                         style,
                     );
+                    if struck && !label.is_empty() {
+                        let (label_w, _) = text_renderer.measure_style(&label, None, style);
+                        let through = text_y + f64::from(line_h) / 2.0;
+                        scene.stroke(
+                            &Stroke::new(1.0),
+                            transform,
+                            text_color.with_alpha_factor(opacity),
+                            None,
+                            &vello::kurbo::Line::new(
+                                (label_x, through),
+                                (label_x + f64::from(label_w), through),
+                            ),
+                        );
+                    }
                     if let Some(secondary) = &secondary {
                         let (label_w, _) = text_renderer.measure_style(&label, None, &text_style);
                         let x = label_x + f64::from(label_w) + gap;
