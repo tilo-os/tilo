@@ -59,8 +59,11 @@
 #
 # The window opens at 1280x800 logical pixels; set TILO_WINIT_SIZE=WxH
 # (physical pixels) to choose another size. A headless session renders a
-# 1280x800 output (TILO_HEADLESS_SIZE overrides it) only when tilo-control
-# asks for a snapshot.
+# 1280x800 output; set TILO_HEADLESS_SIZE=WxH to choose another size, and
+# TILO_HEADLESS_SCALE=S (or TILO_HEADLESS_PANEL_MM=WxH, the panel's physical
+# size, from which the scale is derived) to have it draw at that density —
+# the same the DRM backend takes from its connector, so a HiDPI panel's
+# desktop can be driven and photographed headless.
 #
 # dist/dev/nested-session-build.sh builds everything with cargo, into
 # target/nested-session. Re-running repackages only apps
@@ -664,9 +667,18 @@ fi
 # connects for it and hands the connection over as WAYLAND_SOCKET.
 host_client=()
 if ((headless)); then
-    backend=(--backend headless)
+    backend=(--backend headless --size "$TILO_HEADLESS_SIZE")
+    if [[ -n ${TILO_HEADLESS_PANEL_MM:-} ]]; then
+        backend+=(--panel-mm "$TILO_HEADLESS_PANEL_MM")
+        density=", ${TILO_HEADLESS_PANEL_MM} mm panel"
+    elif [[ -n ${TILO_HEADLESS_SCALE:-} ]]; then
+        backend+=(--scale "$TILO_HEADLESS_SCALE")
+        density=" at ${TILO_HEADLESS_SCALE}x"
+    else
+        density=""
+    fi
     display_env=(-u WAYLAND_DISPLAY -u DISPLAY)
-    say "starting the session headless at ${TILO_HEADLESS_SIZE} (log: $logs/session.log)"
+    say "starting the session headless at ${TILO_HEADLESS_SIZE}${density} (log: $logs/session.log)"
 else
     backend=(--backend nested)
     display_env=(-u DISPLAY -u WAYLAND_DISPLAY)

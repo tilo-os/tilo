@@ -1,5 +1,5 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--shell screen] [--host-desktop]
+//! [--size WxH] [--scale S|--panel-mm WxH] [--shell screen] [--host-desktop]
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
@@ -203,6 +203,10 @@ fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitC
 struct CommandLine {
     backend: Backend,
     size: (u16, u16),
+    /// The scale a headless output draws at (`--scale`), or the physical size
+    /// of its panel (`--panel-mm`), which decides the scale
+    /// ([`tilo_compositor::panel_scale`]). `None` draws at 1.
+    headless: HeadlessPanel,
     reach: Reach,
     /// Whether the tilolang shell runs, when the command line asked for it.
     shell: bool,
@@ -239,6 +243,18 @@ fn device_owner() -> std::io::Result<bool> {
     )
 }
 
+/// The density a headless output comes up at: a scale named outright, or the
+/// panel's physical size, from which the scale is derived as a real
+/// connector's is.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HeadlessPanel {
+    /// Physical pixels per logical pixel.
+    Scale(f64),
+    /// The panel's physical size across and down, in millimetres.
+    Millimetres((u32, u32)),
+}
+
 /// The command line `ours` parsed, or `None` when it names a backend there
 /// is not.
 #[cfg(target_os = "linux")]
@@ -265,6 +281,35 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
         .and_then(|size| size.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
+    // A headless output's density, as DRM takes its own from the connector:
+    // a scale named outright, or the panel's physical size, from which the
+    // scale is derived. Without either it draws at 1.
+    let headless = match (value("--scale"), value("--panel-mm")) {
+        (Some(scale), _) => match scale.parse::<f64>() {
+            Ok(scale) if scale.is_finite() && scale > 0.0 => HeadlessPanel::Scale(scale),
+            _ => {
+                eprintln!("tilo-session: --scale takes a positive number");
+                return None;
+            }
+        },
+        (None, Some(mm)) => match mm.split_once('x') {
+            Some((w, h)) => match (w.parse::<u32>(), h.parse::<u32>()) {
+                (Ok(w), Ok(h)) if w > 0 && h > 0 => HeadlessPanel::Millimetres((w, h)),
+                _ => {
+                    eprintln!("tilo-session: --panel-mm takes WxH in whole millimetres");
+                    return None;
+                }
+            },
+            None => {
+                eprintln!("tilo-session: --panel-mm takes WxH in whole millimetres");
+                return None;
+            }
+        },
+        (None, None) => HeadlessPanel::Scale(1.0),
+    };
+    if !matches!(backend, Backend::Headless) && headless != HeadlessPanel::Scale(1.0) {
+        eprintln!("tilo-session: --scale and --panel-mm are for a headless session");
+    }
     let bus = |flag: &str| match value(flag).map(String::as_str) {
         None => Bus::Default,
         Some("none") => Bus::None,
@@ -344,6 +389,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
     Some(CommandLine {
         backend,
         size,
+        headless,
         reach,
         shell,
         admit_repl,
@@ -373,6 +419,7 @@ fn start(
     let CommandLine {
         backend,
         size,
+        headless,
         reach,
         shell,
         admit_repl,
@@ -485,7 +532,7 @@ fn start(
     let agent_door = options.agent_door.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
-    let mut session = match start_session(backend, options, size) {
+    let mut session = match start_session(backend, options, size, headless) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -530,18 +577,21 @@ fn start_session(
     backend: Backend,
     options: tilo_session::Options,
     size: (u16, u16),
+    headless: HeadlessPanel,
 ) -> Result<tilo_session::Session, tilo_compositor::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
     use tilo_session::Session;
     match backend {
-        Backend::Headless => Session::headless(
-            options,
-            &[OutputConfig::new(
-                "HEADLESS-1",
-                i32::from(size.0),
-                i32::from(size.1),
-            )],
-        ),
+        Backend::Headless => {
+            let output = OutputConfig::new("HEADLESS-1", i32::from(size.0), i32::from(size.1));
+            // The scale a real connector starts at: the one named, or the one
+            // its panel's density argues for, as DRM derives it.
+            let output = match headless {
+                HeadlessPanel::Scale(scale) => output.with_scale(scale),
+                HeadlessPanel::Millimetres(mm) => output.panel(mm),
+            };
+            Session::headless(options, &[output])
+        }
         Backend::Drm => Session::drm(options, DisplayConfig::default()),
         Backend::Nested => Session::nested(
             options,
