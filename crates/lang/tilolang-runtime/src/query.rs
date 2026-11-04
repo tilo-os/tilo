@@ -741,7 +741,6 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
     })
 }
 
-/// `-received` or `received`: the field by name, and whether the latest or last comes first.
 /// The order a place's role gives its list, when the query is that place and nothing else: what
 /// is due soonest first in the agenda and in what is due later, and what was finished last
 /// first in the logbook. `None` for a place whose role says nothing about order (the inbox's)
@@ -780,6 +779,7 @@ fn role_order(terms: &[Term], ty: &TypeMeta) -> Option<Order> {
     Some(order)
 }
 
+/// `-received` or `received`: the field by name, and whether the latest or last comes first.
 fn order_of(sort: &str, ty: &TypeMeta) -> Result<Order, String> {
     let (name, descending) = match sort.strip_prefix('-') {
         Some(name) => (name, true),
