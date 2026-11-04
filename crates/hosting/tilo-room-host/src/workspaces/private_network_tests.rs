@@ -783,51 +783,89 @@ async fn a_pages_session_carries_the_same_private_door() {
         hex::encode(alice.user_public_key),
         hex::encode(bob.user_public_key),
     );
-    let ask = |cert: &DeviceCert, operation, poll: Duration| {
-        let (door, cert, workspace) = (door.clone(), cert.clone(), created.workspace.clone());
-        async move {
-            let until = async {
-                tokio::time::sleep(poll).await;
-                Ok(())
-            };
-            door.serve(&cert, &cert.device_public_key, &workspace, operation, until)
-                .await
-        }
-    };
+    a_page_reads_the_pair(&door, &created.workspace, &alice, &b).await;
+    a_page_watch_wakes_on_a_message(&door, &workspaces, &created.workspace, &alice, &bob, &a, &b)
+        .await;
+    drop((workspaces, door));
+    relay.shutdown().await;
+}
+
+/// What the page's session reads of its pair: the other person among its
+/// contacts, and a conversation opened on the pair's record.
+async fn a_page_reads_the_pair(
+    door: &PrivateProtocol,
+    workspace: &str,
+    alice: &DeviceCert,
+    b: &str,
+) {
     let quick = Duration::from_millis(50);
-    let PrivateReply::Contacts(contacts) = ask(&alice, PrivateOperation::Contacts, quick).await
+    let PrivateReply::Contacts(contacts) =
+        page_ask(door, workspace, alice, PrivateOperation::Contacts, quick).await
     else {
         panic!("contacts");
     };
     assert!(contacts.iter().any(|contact| contact.public_key == b));
     assert!(matches!(
-        ask(&alice, PrivateOperation::Open { peer: b.clone() }, quick).await,
+        page_ask(
+            door,
+            workspace,
+            alice,
+            PrivateOperation::Open { peer: b.to_owned() },
+            quick
+        )
+        .await,
         PrivateReply::Conversation(_)
     ));
+}
+
+/// A page's watch is a poll whose time running out answers the unchanged
+/// cursor, and a change wakes it at once.
+async fn a_page_watch_wakes_on_a_message(
+    door: &PrivateProtocol,
+    workspaces: &Workspaces,
+    workspace: &str,
+    alice: &DeviceCert,
+    bob: &DeviceCert,
+    a: &str,
+    b: &str,
+) {
+    let quick = Duration::from_millis(50);
     // Nothing new within the poll: the cursor it was given.
-    let unchanged = ask(
-        &bob,
+    let unchanged = page_ask(
+        door,
+        workspace,
+        bob,
         PrivateOperation::Watch {
-            peer: a.clone(),
+            peer: a.to_owned(),
             after_sequence: 0,
         },
         quick,
     )
     .await;
     assert!(matches!(unchanged, PrivateReply::Changed(0)));
-    let watching = tokio::spawn(ask(
-        &bob,
-        PrivateOperation::Watch {
-            peer: a.clone(),
-            after_sequence: 0,
-        },
-        Duration::from_secs(60),
-    ));
-    wait_for_watch(&workspaces, &created.workspace, &bob, &a).await;
-    let sent = ask(
-        &alice,
+    let watching = {
+        let (door, cert, workspace) = (door.clone(), bob.clone(), workspace.to_owned());
+        tokio::spawn(async move {
+            page_ask(
+                &door,
+                &workspace,
+                &cert,
+                PrivateOperation::Watch {
+                    peer: a.to_owned(),
+                    after_sequence: 0,
+                },
+                Duration::from_secs(60),
+            )
+            .await
+        })
+    };
+    wait_for_watch(workspaces, workspace, bob, a).await;
+    let sent = page_ask(
+        door,
+        workspace,
+        alice,
         PrivateOperation::Send {
-            peer: b.clone(),
+            peer: b.to_owned(),
             invocation: uuid::Uuid::new_v4(),
             text: BODY.into(),
         },
@@ -840,10 +878,12 @@ async fn a_pages_session_carries_the_same_private_door() {
         .unwrap();
     assert!(matches!(changed, PrivateReply::Changed(1)));
     let read = conversation(
-        ask(
-            &bob,
+        page_ask(
+            door,
+            workspace,
+            bob,
             PrivateOperation::Read {
-                peer: a.clone(),
+                peer: a.to_owned(),
                 after_sequence: 0,
                 limit: 50,
             },
@@ -854,8 +894,24 @@ async fn a_pages_session_carries_the_same_private_door() {
     assert_eq!(read.messages.len(), 1);
     assert_eq!(read.messages[0].text, BODY);
     assert_eq!(read.messages[0].sender, a);
-    drop((workspaces, door));
-    relay.shutdown().await;
+}
+
+/// What the private door answers a page whose session proved `cert`: the
+/// operation's reply, after `poll` at the longest for a watch with nothing
+/// new to say.
+async fn page_ask(
+    door: &PrivateProtocol,
+    workspace: &str,
+    cert: &DeviceCert,
+    operation: PrivateOperation,
+    poll: Duration,
+) -> PrivateReply {
+    let until = async {
+        tokio::time::sleep(poll).await;
+        Ok(())
+    };
+    door.serve(cert, &cert.device_public_key, workspace, operation, until)
+        .await
 }
 
 /// What the workspace's people see of one another through the private door once

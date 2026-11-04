@@ -8153,21 +8153,24 @@ impl AppBrokerState {
     }
 
     fn refresh_workspace_context_services(&self) -> Result<(), String> {
-        fn same_roster(
-            left: &[ui::collaboration::Collaborator],
-            right: &[ui::collaboration::Collaborator],
-        ) -> bool {
-            left.len() == right.len()
-                && left.iter().zip(right).all(|(left, right)| {
-                    left.id == right.id
-                        && left.name == right.name
-                        && left.packed_colour() == right.packed_colour()
-                        && left.is_agent == right.is_agent
-                        && left.is_self == right.is_self
-                })
+        for (channel, peer_id, admitted) in self.native_context_targets()? {
+            let route = CrdtRoute::from_channel_key(&channel);
+            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
+                self.drop_context_subscriber(&channel, peer_id, &admitted)?;
+                self.publish_certified_people(&route.cluster_id);
+                continue;
+            };
+            if self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)? {
+                self.publish_certified_people(&route.cluster_id);
+            }
         }
+        Ok(())
+    }
 
-        let targets = self
+    /// Every native context subscription as its channel, its subscriber and
+    /// the admission it was let in by.
+    fn native_context_targets(&self) -> Result<Vec<(String, u64, AdmittedJoinIdentity)>, String> {
+        Ok(self
             .channels
             .lock()
             .map_err(|_| "native context subscriptions unavailable")?
@@ -8184,81 +8187,109 @@ impl AppBrokerState {
                     })
                     .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        for (channel, peer_id, admitted) in targets {
-            let route = CrdtRoute::from_channel_key(&channel);
-            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
-                let mut channels = self
-                    .channels
-                    .lock()
-                    .map_err(|_| "native context subscriptions unavailable")?;
-                if let Some(subscribers) = channels.get_mut(&channel) {
-                    subscribers.context.retain(|subscriber| {
-                        subscriber.peer_id != peer_id
-                            || subscriber
-                                .native
-                                .as_ref()
-                                .is_none_or(|native| native.admitted != admitted)
-                    });
-                }
-                drop(channels);
-                self.publish_certified_people(&route.cluster_id);
-                continue;
-            };
-            let roster = self.native_membership_roster(&route, &current)?;
-            let pairs = self.native_pairs(&route, &current);
-            let mut channels = self
-                .channels
-                .lock()
-                .map_err(|_| "native context subscriptions unavailable")?;
-            let mut changed = false;
-            if let Some(subscribers) = channels.get_mut(&channel) {
-                subscribers.context.retain_mut(|subscriber| {
-                    let Some(native) = subscriber.native.as_mut() else {
-                        return true;
-                    };
-                    if subscriber.peer_id != peer_id || native.admitted != admitted {
-                        return true;
-                    }
-                    // A pair the governance admitted or cut: the person's
-                    // windows read and follow its record from now on, or
-                    // stop.
-                    if let Some(pairs) = &pairs
-                        && native.pairs != *pairs
-                        && subscriber
-                            .tx
-                            .send(ContextUpdate::PersonPairs(pairs.clone()))
-                            .is_err()
-                    {
-                        return false;
-                    }
-                    if let Some(pairs) = &pairs {
-                        native.pairs.clone_from(pairs);
-                    }
-                    if same_roster(&native.roster, &roster) {
-                        return true;
-                    }
-                    changed = true;
-                    if subscriber
-                        .tx
-                        .send(ContextUpdate::Snapshot {
-                            collaborators: roster.clone(),
-                            permissions: Vec::new(),
-                        })
-                        .is_err()
-                    {
-                        return false;
-                    }
-                    native.roster.clone_from(&roster);
-                    true
-                });
-            }
-            drop(channels);
-            if changed {
-                self.publish_certified_people(&route.cluster_id);
-            }
+            .collect())
+    }
+
+    /// Drop a subscriber of `channel` whose admission `admitted` no longer
+    /// revalidates, and leave any other subscriber that joined under another
+    /// admission of the same peer alone.
+    fn drop_context_subscriber(
+        &self,
+        channel: &str,
+        peer_id: u64,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<(), String> {
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?;
+        if let Some(subscribers) = channels.get_mut(channel) {
+            subscribers.context.retain(|subscriber| {
+                subscriber.peer_id != peer_id
+                    || subscriber
+                        .native
+                        .as_ref()
+                        .is_none_or(|native| native.admitted != *admitted)
+            });
         }
         Ok(())
+    }
+
+    /// Tell one native context subscriber what its workspace's governance now
+    /// admits: the pairs it follows, then the roster. Returns whether the
+    /// roster changed.
+    fn tell_context_subscriber(
+        &self,
+        route: &CrdtRoute,
+        channel: &str,
+        peer_id: u64,
+        admitted: &AdmittedJoinIdentity,
+        current: &AdmittedJoinIdentity,
+    ) -> Result<bool, String> {
+        fn same_roster(
+            left: &[ui::collaboration::Collaborator],
+            right: &[ui::collaboration::Collaborator],
+        ) -> bool {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left.id == right.id
+                        && left.name == right.name
+                        && left.packed_colour() == right.packed_colour()
+                        && left.is_agent == right.is_agent
+                        && left.is_self == right.is_self
+                })
+        }
+
+        let roster = self.native_membership_roster(route, current)?;
+        let pairs = self.native_pairs(route, current);
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?;
+        let mut changed = false;
+        if let Some(subscribers) = channels.get_mut(channel) {
+            subscribers.context.retain_mut(|subscriber| {
+                let Some(native) = subscriber.native.as_mut() else {
+                    return true;
+                };
+                if subscriber.peer_id != peer_id || native.admitted != *admitted {
+                    return true;
+                }
+                // A pair the governance admitted or cut: the person's
+                // windows read and follow its record from now on, or
+                // stop.
+                if let Some(pairs) = &pairs
+                    && native.pairs != *pairs
+                    && subscriber
+                        .tx
+                        .send(ContextUpdate::PersonPairs(pairs.clone()))
+                        .is_err()
+                {
+                    return false;
+                }
+                if let Some(pairs) = &pairs {
+                    native.pairs.clone_from(pairs);
+                }
+                if same_roster(&native.roster, &roster) {
+                    return true;
+                }
+                changed = true;
+                if subscriber
+                    .tx
+                    .send(ContextUpdate::Snapshot {
+                        collaborators: roster.clone(),
+                        permissions: Vec::new(),
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+                native.roster.clone_from(&roster);
+                true
+            });
+        }
+        drop(channels);
+        Ok(changed)
     }
 
     /// Re-check every membership surface and native context subscriber,

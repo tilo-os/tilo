@@ -90,7 +90,7 @@ async fn call_host(
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     workspace_id: u64,
-) -> Option<(crate::workspaces::Workspaces, String)> {
+) -> Option<CallHost> {
     if !subscribed.contains(&workspace_id) {
         return None;
     }
@@ -119,10 +119,6 @@ async fn call_host(
 /// Handle a call envelope for a subscribed workspace: its calls are held
 /// by this relay's workspace authority, or as a workspace it carries; see
 /// [`crate::workspaces`].
-#[allow(
-    clippy::too_many_lines,
-    reason = "one envelope's arms, each answering a variant of the call frame above"
-)]
 pub(super) async fn handle_voice(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -137,71 +133,36 @@ pub(super) async fn handle_voice(
         | Envelope::VoiceCalls { workspace_id } => *workspace_id,
         _ => return Ok(None),
     };
-    let workspaces = call_host(peer, session, subscribed, workspace_id).await;
-    let refusal = "calls require a subscription to the room";
+    let host = call_host(peer, session, subscribed, workspace_id).await;
     Ok(match env {
         Envelope::VoiceCall {
             request, operation, ..
-        } => {
-            let result = match &workspaces {
-                Some((workspaces, workspace)) => {
-                    workspaces.voice_call(workspace, peer, &operation).await
-                }
-                None => Err(refusal.into()),
-            };
-            Some(Envelope::VoiceCallResult {
-                workspace_id,
-                request,
-                result,
-            })
-        }
+        } => Some(Envelope::VoiceCallResult {
+            workspace_id,
+            request,
+            result: call_answer(host.as_ref(), peer, &operation).await,
+        }),
         Envelope::VoiceJoin {
             call,
             participation,
             ..
-        } => {
-            let result = match &workspaces {
-                Some((workspaces, workspace)) => {
-                    workspaces
-                        .voice_join(
-                            workspace,
-                            peer,
-                            call,
-                            participation,
-                            session.outbound.clone(),
-                        )
-                        .await
-                }
-                None => Err(refusal.into()),
-            };
-            Some(match result {
-                Ok(grant) => Envelope::VoiceGranted {
-                    workspace_id,
-                    grant: Box::new(grant),
-                },
-                Err(reason) => {
-                    // Why a call drops: a beat for a participation the host
-                    // forgot, or a fresh join it refused.
-                    tracing::info!(
-                        call = %hex::encode(call),
-                        beat = participation.is_some(),
-                        %reason,
-                        "voice join refused"
-                    );
-                    Envelope::VoiceRefused {
-                        workspace_id,
-                        call,
-                        reason,
-                    }
-                }
-            })
-        }
+        } => Some(
+            join_answer(
+                host.as_ref(),
+                workspace_id,
+                peer,
+                session,
+                call,
+                participation,
+            )
+            .await,
+        ),
         Envelope::VoiceLeave {
             call,
             participation,
             ..
         } => {
-            if let Some((workspaces, _)) = &workspaces {
+            if let Some((workspaces, _)) = &host {
                 workspaces.voice_leave(peer, call, participation);
             }
             None
@@ -212,24 +173,100 @@ pub(super) async fn handle_voice(
             showing,
             ..
         } => {
-            if let Some((workspaces, _)) = &workspaces {
+            if let Some((workspaces, _)) = &host {
                 workspaces.voice_show(peer, call, participation, showing);
             }
             None
         }
         Envelope::VoiceCalls { .. } => Some(Envelope::VoiceCallList {
             workspace_id,
-            result: match &workspaces {
-                Some((workspaces, workspace)) => {
-                    workspaces
-                        .voice_calls(workspace, peer, session.outbound.clone())
-                        .await
-                }
-                None => Err(refusal.into()),
-            },
+            result: calls_answer(host.as_ref(), peer, session).await,
         }),
         _ => None,
     })
+}
+
+/// Where a peer's calls in one workspace are held: the workspace authority
+/// that governs them there and the workspace as calls name it.
+type CallHost = (crate::workspaces::Workspaces, String);
+
+/// Why a peer holds no calls in a workspace: it does not subscribe to it, or
+/// it watches it without taking part.
+const CALLS_REFUSED: &str = "calls require a subscription to the workspace";
+
+/// The answer to a call's change: the call as governance now records it, or
+/// the reason this peer may not change it.
+async fn call_answer(
+    host: Option<&CallHost>,
+    peer: &AuthenticatedPeer,
+    operation: &tilo_relay_protocol::voice::CallOperation,
+) -> Result<tilo_relay_protocol::voice::CallState, String> {
+    match host {
+        Some((workspaces, workspace)) => workspaces.voice_call(workspace, peer, operation).await,
+        None => Err(CALLS_REFUSED.into()),
+    }
+}
+
+/// The answer to a join: the participation's grant, or a refusal, which is
+/// worth a line in the host's log: a beat for a participation it forgot, or a
+/// fresh join it refused.
+async fn join_answer(
+    host: Option<&CallHost>,
+    workspace_id: u64,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    call: [u8; 32],
+    participation: Option<[u8; 32]>,
+) -> Envelope {
+    let result = match host {
+        Some((workspaces, workspace)) => {
+            workspaces
+                .voice_join(
+                    workspace,
+                    peer,
+                    call,
+                    participation,
+                    session.outbound.clone(),
+                )
+                .await
+        }
+        None => Err(CALLS_REFUSED.into()),
+    };
+    match result {
+        Ok(grant) => Envelope::VoiceGranted {
+            workspace_id,
+            grant: Box::new(grant),
+        },
+        Err(reason) => {
+            tracing::info!(
+                call = %hex::encode(call),
+                beat = participation.is_some(),
+                %reason,
+                "voice join refused"
+            );
+            Envelope::VoiceRefused {
+                workspace_id,
+                call,
+                reason,
+            }
+        }
+    }
+}
+
+/// The calls a peer may see in the workspace, or the reason it may see none.
+async fn calls_answer(
+    host: Option<&CallHost>,
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+) -> Result<Vec<tilo_relay_protocol::voice::CallSummary>, String> {
+    match host {
+        Some((workspaces, workspace)) => {
+            workspaces
+                .voice_calls(workspace, peer, session.outbound.clone())
+                .await
+        }
+        None => Err(CALLS_REFUSED.into()),
+    }
 }
 
 /// Handle an inbound `Presence`: fan it out to every other subscriber.

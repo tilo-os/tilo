@@ -149,11 +149,25 @@ fn the_surviving_surfaces_speak_the_persons_language() {
         }
     }
 
-    // A sheet names the resource it publishes: the name its declaration
-    // gives it, read through the catalogue the moment it is published. Each
-    // card is put up the way the session puts it up, and read off what it
-    // offers.
+    // A sheet names the resource it publishes, in the person's language.
     speak("de-DE");
+    sheets_name_themselves(&session);
+
+    // The same cards on an English desktop say what they declare.
+    speak("en-US");
+    let power = session.power_menu().expect("the power menu mounted");
+    power.presentation().open(false);
+    assert_eq!(named(&session, "power.session").as_deref(), Some("Power"));
+    assert_eq!(
+        named(&session, "uninstall.question").as_deref(),
+        Some("Uninstall")
+    );
+}
+
+/// A sheet names the resource it publishes: the name its declaration gives it,
+/// read through the catalogue the moment it is published. Each card is put up
+/// the way the session puts it up, and read off what it offers.
+fn sheets_name_themselves(session: &tilo_session::Session) {
     let power = session.power_menu().expect("the power menu mounted");
     power.presentation().open(false);
     let settings = session.workspace_settings().expect("settings mounted");
@@ -196,19 +210,9 @@ fn the_surviving_surfaces_speak_the_persons_language() {
         ("uninstall.question", "Deinstallieren"),
     ] {
         assert_eq!(
-            named(&session, kind).as_deref(),
+            named(session, kind).as_deref(),
             Some(german),
             "a German desktop reads `{kind}` in German"
         );
     }
-
-    // The same cards on an English desktop say what they declare.
-    speak("en-US");
-    let power = session.power_menu().expect("the power menu mounted");
-    power.presentation().open(false);
-    assert_eq!(named(&session, "power.session").as_deref(), Some("Power"));
-    assert_eq!(
-        named(&session, "uninstall.question").as_deref(),
-        Some("Uninstall")
-    );
 }
