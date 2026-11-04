@@ -3274,6 +3274,81 @@
       }
     },
     {
+      "name": "BarChip",
+      "doc": "One bar control that stands for people: their faces, a label and a press. A chip with faces opens who is here, an invite opens the host's own invite flow; a press reaches the view's `press` event, which is the same action the palette, scripts and agents invoke.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the chip is for assistive technology (and its tooltip when it shows only a glyph).",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "The words beside the faces: \"Editing\", \"Invite\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the faces: a watch, an invitation.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "trailing",
+          "doc": "A trailing glyph: the chevron of a chip that opens a panel.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "who",
+          "doc": "Who it stands for, in order: the faces it shows, then a count for everyone past them.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "The chip's panel is open: it holds the whole lift.",
+          "type": "bool"
+        },
+        {
+          "name": "focused",
+          "doc": "Keyboard focus. The ring shows only while focus is visible.",
+          "type": "bool"
+        },
+        {
+          "name": "label_width",
+          "doc": "The most the label may grow to before it elides.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "A person whose presence colour washes the chip's body: who the state it says is about.",
+          "type": {
+            "option": "principal"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "A press: the chip's own action."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "name"
+      }
+    },
+    {
       "name": "DisclosureRow",
       "doc": "A row whose body opens in place under it: a device's details, a run's log, a setting's options. Its chevron turns as it opens, and what follows moves down with it. A press on the row, Enter or Space opens and closes it.",
       "props": [
