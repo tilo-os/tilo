@@ -259,14 +259,24 @@ view rows_list<T>(
             let heading: Option<Date> = if let g = group { g(x) } else { .none }
             let tail = if let c = closed { c(x) } else { false }
             // The row just over this one in its group, as the list shows them: the same
-            // heading, on this side of the fold, under the same parent. That is the place the
-            // actions offered on the row get, and none for the first of a group.
-            let above = shown
-                .take(shown.index_of(x) ?? 0)
-                .filter(
-                    y -> if let g = group { g(y) == heading } else { true } and if let c = closed { c(y) == tail } else { true } and if let p = parent { p(y) == p(x) } else { true },
-                )
-                .last()
+            // heading (the items naming none stand together under the list's own), on this
+            // side of the fold, under the same parent. That is the place the actions offered
+            // on the row get, and none for the first of a group. A group's rows come
+            // together, so one row back is the row over it; a tree's rows of one parent are
+            // not kept together, so those it looks back through.
+            let at = shown.index_of(x) ?? 0
+            let above: Option<T> = if nested {
+                shown
+                    .take(at)
+                    .filter(
+                        y -> if let g = group { g(y) == heading } else { true } and if let c = closed { c(y) == tail } else { true } and if let p = parent { p(y) == p(x) } else { true },
+                    )
+                    .last()
+            } else if let p = shown.take(at).last() {
+                if if let g = group { g(p) == heading } else { true } and if let c = closed { c(p) == tail } else { true } and if let q = parent { q(p) == q(x) } else { true } {
+                    .some(p)
+                } else { .none }
+            } else { .none }
             let offered = actions(x, above)
             let under: Option<T> = if let p = parent { p(x) } else { .none }
             let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
