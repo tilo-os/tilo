@@ -568,6 +568,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
         Arc::new(|| {}),
         None,
         Vec::new(),
+        None,
     )
     .expect("a loopback endpoint binds");
     sync.connect(exit.addr.clone());
@@ -727,6 +728,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         Arc::new(|| {}),
         None,
         desk_vpn.served(),
+        None,
     )
     .expect("this device's endpoint binds");
     // The laptop's endpoint, serving nothing but its own planes: the route
@@ -741,6 +743,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         Arc::new(|| {}),
         None,
         Vec::new(),
+        None,
     )
     .expect("the laptop's endpoint binds");
     // The person's phone: an endpoint that proves which of their devices it

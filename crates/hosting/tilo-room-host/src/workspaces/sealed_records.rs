@@ -271,6 +271,22 @@ impl crate::compaction::ParticipantKeys for Workspaces {
 }
 
 impl Workspaces {
+    /// Take part in the channel of `record` of `app` in `workspace`: this host's
+    /// device asks the channel's participants for access and holds its keys once
+    /// one admits it. `false` when it takes part in no channel of the workspace,
+    /// or is no reader of this one. Asked before the workspace is locked, since
+    /// the ask waits on the channel's service for the group to admit this device.
+    pub(crate) async fn join_channel(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Some(device) = self.device_keys() else {
+            return false;
+        };
+        let route = collab_types::ChannelRoute::new(app, record);
+        matches!(
+            device.channel_keys(workspace, &route, true).await,
+            Some(Ok(_))
+        )
+    }
+
     /// Seal the records the workspaces this relay takes part in hold in the clear, from
     /// now on: the host's operator decided it (the relay's `reseal`).
     #[cfg(feature = "agents")]

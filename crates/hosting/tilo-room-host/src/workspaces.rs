@@ -214,6 +214,12 @@ struct GovernedWorkspace {
     unkept: bool,
     /// Whether writing them through is due already ([`Workspaces::keep_soon`]).
     keeping: bool,
+    /// The channels of this workspace's records whose participants this host
+    /// is asking to admit it, by app and record: a burst of writes to a
+    /// record the host holds no keys of yet asks once
+    /// ([`Workspaces::join_soon`]).
+    #[cfg(any(feature = "agents", feature = "web"))]
+    asking: std::collections::BTreeSet<(String, String)>,
     /// The workspace's document started over from a base at an admission, and
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Workspaces::settle`]).
@@ -359,6 +365,8 @@ impl GovernedWorkspace {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
+            #[cfg(any(feature = "agents", feature = "web"))]
+            asking: std::collections::BTreeSet::new(),
             rebased: false,
             admissions_since_base: None,
             answered: HashMap::new(),
@@ -419,6 +427,8 @@ impl GovernedWorkspace {
             desktop_segments: collab_types::DocumentReassembler::default(),
             unkept: false,
             keeping: false,
+            #[cfg(any(feature = "agents", feature = "web"))]
+            asking: std::collections::BTreeSet::new(),
             rebased: false,
             admissions_since_base: None,
             answered: HashMap::new(),
@@ -1732,7 +1742,103 @@ impl Workspaces {
                     return;
                 }
             };
+            #[cfg(any(feature = "agents", feature = "web"))]
+            workspaces
+                .found_retained(&workspace, &state, &retained)
+                .await;
             workspaces.recall_retained(&mut *state.lock().await, retained);
+        });
+    }
+
+    /// Found every record of `workspace` that `retained` holds a write of and
+    /// this host holds none of, from the record's first retained write
+    /// ([`Self::absorb`]): the copy of a record the host was admitted to a
+    /// channel of after its members started writing it has to start
+    /// somewhere, and its later writes build on the first. A record found
+    /// first from a later write would refuse that one for the changes it
+    /// lacks, and never be founded.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    async fn found_retained(
+        &self,
+        workspace: &str,
+        state: &tokio::sync::Mutex<GovernedWorkspace>,
+        retained: &[crate::workspace_records::RetainedBody],
+    ) {
+        let mut first: std::collections::BTreeMap<
+            (String, String),
+            &crate::workspace_records::RetainedBody,
+        > = std::collections::BTreeMap::new();
+        for retained in retained {
+            // What the relay's own device wrote the governor holds already, or
+            // took in as it came ([`Self::recall_retained`]).
+            if retained.author == self.inner.host.cert.device_public_key {
+                continue;
+            }
+            let Ok(neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                record_id,
+                envelope,
+                ..
+            }) = postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&retained.body)
+            else {
+                continue;
+            };
+            // A record the host may read in the clear was founded when its
+            // first write was handed to the governor: only a sealed one waits
+            // for the group to admit this host's device.
+            if envelope.encryption.is_none() {
+                continue;
+            }
+            first.entry((app_id, record_id)).or_insert(retained);
+        }
+        if first.is_empty() {
+            return;
+        }
+        let missing: Vec<_> = {
+            let workspace = state.lock().await;
+            first
+                .into_iter()
+                .filter(|((app, record), _)| !workspace.peer().holds_document(app, record))
+                .map(|(_, retained)| retained)
+                .collect()
+        };
+        for retained in missing {
+            if let Err(error) = self
+                .absorb(workspace, retained.author, &retained.body)
+                .await
+            {
+                tracing::warn!(%workspace, %error, "governed room did not found a record its members wrote");
+            }
+        }
+    }
+
+    /// Ask the participants of `app`'s `record`'s channel in `workspace` to
+    /// admit this host's device ([`Self::join_channel`]), apart from whatever
+    /// asked for it: the group's answer arrives as another write of the
+    /// workspace, which waits for the writes ahead of it, a notice in this
+    /// one's queue included. Once it is admitted, what the relay retains of
+    /// the record is replayed ([`Self::replay_soon`]), so its copy starts
+    /// from its first write. Asked once per record until the first answer.
+    #[cfg(any(feature = "agents", feature = "web"))]
+    fn join_soon(&self, workspace: &mut GovernedWorkspace, app: String, record: String) {
+        if !workspace.asking.insert((app.clone(), record.clone())) {
+            return;
+        }
+        let name = workspace.workspace().to_owned();
+        let workspaces = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            let Some(inner) = workspaces.upgrade() else {
+                return;
+            };
+            let workspaces = Self { inner };
+            let joined = workspaces.join_channel(&name, &app, &record).await;
+            let Ok(workspace) = workspaces.workspace(&name).await else {
+                return;
+            };
+            workspace.lock().await.asking.remove(&(app, record));
+            if joined {
+                workspaces.replay_soon(name);
+            }
         });
     }
 
@@ -1829,15 +1935,19 @@ impl Workspaces {
             return Ok(());
         }
         let sealed = envelope.encryption.is_some();
-        // Only the record's channel members read a sealed write: unless this
-        // relay takes part in that channel, it retains the write and the governor
-        // keeps no copy. A record that starts sealed, as each new part of a
-        // chained record does, is followed like any other where it does.
+        // Only the record's channel members read a sealed write: a record that
+        // starts sealed, as each new part of a chained record does, is followed
+        // like any other where this host takes part in its channel. One it may
+        // read and holds no keys of yet is joined, and the write is taken in
+        // when the group admits this host's device: the record's copy starts
+        // from its first write, so it is not kept by not asking.
         #[cfg(any(feature = "agents", feature = "web"))]
         let readable = !sealed || workspace.takes_part_in_channel(&app_id, &record_id).await;
         #[cfg(not(any(feature = "agents", feature = "web")))]
         let readable = !sealed;
         if !readable {
+            #[cfg(any(feature = "agents", feature = "web"))]
+            self.join_soon(&mut workspace, app_id, record_id);
             return Ok(());
         }
         let now = SystemTime::now();

@@ -858,6 +858,9 @@ impl Client {
     /// once it binds, so they come in here; [`Self::serves`] says what was
     /// taken.
     ///
+    /// `documents` is where what admission takes in from another device goes,
+    /// so the apps this device runs show what everyone wrote.
+    ///
     /// # Errors
     /// The endpoint could not be bound.
     pub fn start(
@@ -869,6 +872,7 @@ impl Client {
         wake: Arc<dyn Fn() + Send + Sync>,
         questions: Option<tilo_service::Questions>,
         beside: tilo_network_actor::local_host::Protocols,
+        documents: Option<PeerDocuments>,
     ) -> std::io::Result<Self> {
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
@@ -911,7 +915,7 @@ impl Client {
                     enrollments,
                     ready,
                     wake,
-                    Serving::new(bound_endpoint, plane_link, serving, beside),
+                    Serving::new(bound_endpoint, plane_link, serving, beside, documents),
                 );
             })?;
         let (publisher, endpoint, reachability) = bound
@@ -2347,6 +2351,57 @@ fn endpoint_for(
     Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
 }
 
+/// Where an admitted peer's app document goes so this device's apps see it as
+/// they see this device's own writes: the broker's channels, which record it
+/// and answer an app's subscription, and its fan-out, which shows it to the
+/// apps that hold its route open.
+#[derive(Clone)]
+pub struct PeerDocuments {
+    channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
+    fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+}
+
+impl PeerDocuments {
+    /// Hand peer app documents to the broker's `channels` and show them to the
+    /// apps through `fanout`.
+    #[must_use]
+    pub fn new(
+        channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
+        fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+    ) -> Self {
+        Self { channels, fanout }
+    }
+
+    /// Hand one admitted input's app document to this device's apps on its
+    /// route. Answers whether it waits on the workspace's host: a write sealed
+    /// before its writer caught up with the channel's latest membership change
+    /// is taken from the host's replay.
+    fn deliver(
+        &self,
+        input: &native_ingress::Input,
+        report: &tilo_peer_state::AdmissionReport,
+    ) -> bool {
+        let Some(write) = input.app_write(report) else {
+            return false;
+        };
+        let author = input.author();
+        let delivered = tilo_action_broker::collab_inbound::deliver(
+            &self.channels,
+            &self.fanout,
+            tilo_action_broker::collab_inbound::RemoteDocument {
+                app_id: write.app_id,
+                cluster_id: write.cluster_id,
+                record_id: write.record_id,
+                author: write.author,
+                replayed: write.replayed,
+                envelope: write.envelope,
+            },
+            |_| format!("peer@{}", hex::encode(author)),
+        );
+        delivered == tilo_action_broker::collab_inbound::Delivery::SealedBehind
+    }
+}
+
 /// Hear the peer actor: what it says reaches the session, and what a workspace's
 /// host says after this device joined it — the workspace's state as it stands, its
 /// people and everything its apps recorded — is taken in where this device's
@@ -2355,11 +2410,15 @@ fn endpoint_for(
 /// The replay goes in on a thread of its own, in the order the host said it,
 /// so it never holds up what the session shows, and each run of one session
 /// in one commit, as a host replays a workspace in one go.
+///
+/// What admission takes in from another device is handed to this device's apps
+/// through `documents`, so a record an app holds shows what everyone wrote.
 fn heard(
     identity: Option<HostIdentity>,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Option<Arc<ChannelLink>>,
+    documents: Option<PeerDocuments>,
 ) -> (
     tokio::sync::mpsc::Sender<NetEvent>,
     tokio::task::JoinHandle<()>,
@@ -2368,7 +2427,8 @@ fn heard(
     let (admissions, attending) = match identity {
         Some(identity) => {
             let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-            let attending = tokio::spawn(async move { take_in(hear, &identity, link).await });
+            let attending =
+                tokio::spawn(async move { take_in(hear, &identity, link, documents).await });
             (Some(say), Some(attending))
         }
         None => (None, None),
@@ -2395,6 +2455,7 @@ async fn take_in(
     mut replayed: tokio::sync::mpsc::UnboundedReceiver<native_ingress::Input>,
     identity: &HostIdentity,
     link: Option<Arc<ChannelLink>>,
+    documents: Option<PeerDocuments>,
 ) {
     while let Some(input) = replayed.recv().await {
         let mut waiting = vec![input];
@@ -2416,12 +2477,12 @@ async fn take_in(
                 .first()
                 .is_some_and(|first: &native_ingress::Input| !first.same_session(&input))
             {
-                admit(run, identity, link.as_deref()).await;
+                admit(run, identity, link.as_deref(), documents.as_ref()).await;
                 run = Vec::new();
             }
             run.push(input);
         }
-        admit(run, identity, link.as_deref()).await;
+        admit(run, identity, link.as_deref(), documents.as_ref()).await;
     }
 }
 
@@ -2430,6 +2491,7 @@ async fn admit(
     inputs: Vec<native_ingress::Input>,
     identity: &HostIdentity,
     link: Option<&ChannelLink>,
+    documents: Option<&PeerDocuments>,
 ) {
     let Some(workspace) = inputs.first().map(native_ingress::Input::workspace) else {
         return;
@@ -2447,10 +2509,13 @@ async fn admit(
         }
     };
     let mut replay_wanted = false;
-    for (_, report) in admitted.inputs {
+    for (input, report) in admitted.inputs {
         match report {
             Ok(report) => {
                 replay_wanted |= report.replay_wanted;
+                if let Some(documents) = documents {
+                    replay_wanted |= documents.deliver(&input, &report);
+                }
             }
             Err(error) => {
                 tracing::warn!(%error, %workspace, "a workspace's state was not taken in");

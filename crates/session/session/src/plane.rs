@@ -301,6 +301,10 @@ pub struct Sealed {
     /// The broker's side of the workspaces' sealed records: the channel
     /// service gates a sealed record crossing it.
     pub broker: std::sync::Arc<Mutex<BrokerChannels>>,
+    /// What the broker shows the apps that hold a record's route open: the
+    /// collaboration plane hands it what another device wrote, and the broker
+    /// shows it as it shows this device's own writes.
+    pub fanout: std::sync::Arc<FanoutState>,
     /// Where an endpoint follows when a route's keys change, when this
     /// session's channel service runs.
     pub keys: Option<ChannelKeyProvider>,
@@ -1255,6 +1259,7 @@ mod tests {
             native_media: None,
             sealed: Sealed {
                 broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
+                fanout: std::sync::Arc::new(FanoutState::new()),
                 keys: None,
             },
             own_device: None,

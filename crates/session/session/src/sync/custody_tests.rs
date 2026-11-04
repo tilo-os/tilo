@@ -180,6 +180,7 @@ impl Device {
             std::sync::Arc::new(|| ()),
             None,
             Vec::new(),
+            None,
         )
         .expect("the session's plane starts");
         Self {

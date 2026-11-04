@@ -2379,20 +2379,49 @@ impl StatePeer {
             collab_types::check_appearances(&changes, shows.as_deref())
                 .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
         }
-        // A member's empty record, made where the workspace lets its app author
-        // and its writer change it: nothing in it needs a checkpoint. Made
-        // once: a record the workspace holds is never started over, nor its
-        // retained checkpoint replaced by an empty one.
-        let member_genesis = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
+        // A record's genesis is not a checkpoint: it is started empty, so
+        // there is no retained history for the workspace to acknowledge.
+        // Whoever the workspace lets start the record may start it, and a
+        // device that already holds the record takes a second start of it as
+        // the nothing it is: two devices that start the same record each
+        // publish their own genesis, and they merge into the one empty
+        // record.
+        let empty = matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes));
+        let genesis = empty && !route_existed;
+        if genesis
             && !self.signed_by_owner(&source)
-            && self.may_create_record(&member, &route, authorization_time);
-        if member_genesis && route_existed {
-            return Err("the record exists already".into());
-        }
-        if let DocumentMutation::Snapshot(bytes) = &mutation
-            && !local_app
-            && !member_genesis
+            && !self.may_create_record(&member, &route, authorization_time)
         {
+            return self.defer(
+                source,
+                NeighbourMsg::AppDocument {
+                    peer,
+                    app_id: route.app,
+                    cluster_id,
+                    record_id: route.record,
+                    envelope,
+                },
+                Held {
+                    retained_replay,
+                    prerequisite: MissingPrerequisite::RecordCheckpoint,
+                    now,
+                },
+            );
+        }
+        // A snapshot one of the workspace owner's devices publishes is the
+        // checkpoint the workspace governs, with its coverage row fixing the
+        // history it retains. Any other writer publishes the record as it
+        // holds it, which is its own change and merges like one: a document
+        // is merged into what a device holds, never put in its place, so
+        // nothing of the record is lost by taking it.
+        let governed_checkpoint = matches!(&mutation, DocumentMutation::Snapshot(_))
+            && !local_app
+            && !genesis
+            && self.signed_by_owner(&source);
+        if governed_checkpoint {
+            let DocumentMutation::Snapshot(bytes) = &mutation else {
+                return Err("only a whole document is a checkpoint".into());
+            };
             let entries = crate::coverage::entries(
                 self.core
                     .workspace_doc
@@ -2487,7 +2516,7 @@ impl StatePeer {
                     .or_default();
                 *floor = (*floor).max(*sequence);
             }
-        } else if !route_existed && !member_genesis {
+        } else if !route_existed && !genesis {
             return self.defer(
                 source,
                 NeighbourMsg::AppDocument {
@@ -2569,7 +2598,7 @@ impl StatePeer {
         self.core.documents.insert(route.clone(), candidate);
         // Pending drains catch rejection and keep the outer candidate. Install
         // checkpoint freshness only after every fallible admission step succeeds.
-        if !local_app && !member_genesis && matches!(mutation, DocumentMutation::Snapshot(_)) {
+        if governed_checkpoint {
             self.core.checkpoint_times.insert(route, now);
         }
         Ok(AdmissionReport::new(
@@ -2815,8 +2844,19 @@ impl StatePeer {
             envelope: Box::new(op),
         };
         let coverage = if let DocumentMutation::Snapshot(bytes) = &mutation {
+            // A record's genesis is not a checkpoint: it is started empty, so
+            // there is no retained history for the workspace to acknowledge.
+            // Two devices that start the same record each publish their own
+            // genesis, and they merge into the one empty record; two coverage
+            // rows for one route would not, since a route's checkpoint row
+            // keeps the writer it was first acknowledged with.
+            if !self.core.documents.contains_key(&route) && empty_genesis(bytes) {
+                return Ok((message, None));
+            }
+            // The workspace governs the checkpoints its owner's devices
+            // publish, and only theirs: a record any other writer publishes
+            // is that writer's own change, merged into what a device holds.
             if !self.signed_by_owner(author.as_bytes()) {
-                self.check_member_genesis(&route, bytes, *author.as_bytes(), now)?;
                 return Ok((message, None));
             }
             let snapshot = AutoCommit::load(bytes).map_err(err)?;

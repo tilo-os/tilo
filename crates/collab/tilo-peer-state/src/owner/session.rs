@@ -642,7 +642,10 @@ impl Input {
             app_id: app_id.clone(),
             cluster_id: cluster_id.clone(),
             record_id: record_id.clone(),
-            author: self.standing().ok()?,
+            author: match self.standing() {
+                Ok(standing) => standing,
+                Err(_) => return None,
+            },
             replayed: self.retained,
             envelope: (**envelope).clone(),
         })

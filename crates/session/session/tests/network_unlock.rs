@@ -205,6 +205,7 @@ impl Devices {
                 Arc::new(|| {}),
                 Some(questions.clone()),
                 Vec::new(),
+                None,
             )
             .expect("this device's endpoint binds"),
         );
@@ -227,6 +228,7 @@ impl Devices {
                 Arc::new(|| {}),
                 None,
                 Vec::new(),
+                None,
             )
             .expect("the phone's endpoint binds"),
         );

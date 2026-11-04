@@ -261,11 +261,15 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
 /// `beside` is what else this device answers on its endpoint — its exit for
 /// the person's other devices. A caller that hands its own client
 /// ([`Options::sync`]) has already said what that endpoint serves.
+///
+/// `documents` is where what admission takes in from another device goes, so
+/// the apps this session runs show what everyone wrote.
 pub(crate) fn start_collaboration(
     options: &Options,
     continuity: fabric::Continuity,
     engine: Option<std::sync::Arc<engine::Engine>>,
     beside: tilo_network_actor::local_host::Protocols,
+    documents: Option<sync::PeerDocuments>,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -305,6 +309,7 @@ pub(crate) fn start_collaboration(
         options.wake.handle(),
         options.questions.clone(),
         beside,
+        documents,
     ) {
         Ok(sync) => {
             if let Some(personal) = personal {

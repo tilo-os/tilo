@@ -2392,6 +2392,7 @@ mod transfers_between_devices {
             Arc::new(|| {}),
             None,
             Vec::new(),
+            None,
         )
         .expect("a loopback endpoint binds");
         // The fabric names a device by the key its session proves.

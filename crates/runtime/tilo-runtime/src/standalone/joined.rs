@@ -609,17 +609,13 @@ impl Joined {
     /// reaches this device's apps on its route. Answers whether the workspace's
     /// host should replay what it retains ([`tilo_peer_state::ReceiveOutcome::replay_wanted`]).
     fn admit(&self, input: Input) -> bool {
-        let workspace = input.workspace();
         let Some((input, report)) = Input::admit_batch(vec![input], &self.custody).inputs.pop()
         else {
             return false;
         };
         let report = match report {
             Ok(report) => report,
-            Err(error) => {
-                tracing::warn!(%error, %workspace, "joined workspace admission denied");
-                return false;
-            }
+            Err(_) => return false,
         };
         let replay = report.summary().replay_wanted;
         let Some(write) = input.app_write(&report) else {

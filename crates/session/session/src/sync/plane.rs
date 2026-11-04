@@ -54,6 +54,7 @@ impl Serving {
         link: Option<Arc<ChannelLink>>,
         actions: Arc<std::sync::OnceLock<DeviceActions>>,
         protocols: tilo_network_actor::local_host::Protocols,
+        documents: Option<super::PeerDocuments>,
     ) -> Self {
         Self {
             bound: Bound { endpoint },
@@ -61,6 +62,7 @@ impl Serving {
                 link,
                 actions,
                 protocols,
+                documents,
             },
         }
     }
@@ -77,6 +79,9 @@ pub(crate) struct Beside {
     /// the endpoint binds: an endpoint's protocols are fixed once it is
     /// bound, so whatever answers on it is here from the first pass.
     pub(crate) protocols: tilo_network_actor::local_host::Protocols,
+    /// Where what admission takes in from another device is handed to this
+    /// device's apps: `None` on a session that serves no apps.
+    pub(crate) documents: Option<super::PeerDocuments>,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
@@ -209,6 +214,7 @@ async fn listening(
         link,
         actions,
         protocols,
+        documents,
     }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
@@ -269,7 +275,7 @@ async fn listening(
         reachability.clone(),
         served,
     );
-    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link);
+    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link, documents);
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }

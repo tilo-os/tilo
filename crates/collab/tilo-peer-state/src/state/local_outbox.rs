@@ -56,7 +56,11 @@ impl StatePeer {
             record: record_id.clone(),
         };
         let Some(document) = self.core.documents.get(&route) else {
-            return Err("retained local publication route is not admitted".into());
+            return Err(format!(
+                "retained local publication route {}/{} is not admitted",
+                route.app, route.record
+            )
+            .into());
         };
         let mutation = match collab_types::validate_whole_document_payload_route(
             app_id, cluster_id, record_id, envelope,

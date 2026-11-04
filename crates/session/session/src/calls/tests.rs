@@ -136,6 +136,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
         Arc::new(|| {}),
         None,
         Vec::new(),
+        None,
     )
     .expect("a loopback endpoint binds")
 }

@@ -1242,6 +1242,12 @@ impl Session {
         let channels_broker = std::sync::Arc::new(std::sync::Mutex::new(
             tilo_action_broker::collab_core::BrokerChannels::default(),
         ));
+        // What the broker shows the apps that hold a record's route open: the
+        // collaboration plane hands it what another device wrote, so a record
+        // an app holds shows everyone's writes, and the broker below shows
+        // this device's own.
+        let channels_fanout =
+            std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
         let channel_link = channels::ChannelLink::new();
         let channels = engine.as_ref().and_then(|engine| {
             channels::Channels::open(
@@ -1252,7 +1258,16 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        let sync = start_collaboration(&options, continuity.clone(), engine.clone(), beside);
+        let sync = start_collaboration(
+            &options,
+            continuity.clone(),
+            engine.clone(),
+            beside,
+            Some(sync::PeerDocuments::new(
+                std::sync::Arc::clone(&channels_broker),
+                std::sync::Arc::clone(&channels_fanout),
+            )),
+        );
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
@@ -1593,6 +1608,7 @@ impl Session {
                 engine: engine.as_ref().map(std::sync::Arc::clone),
                 sealed: plane::Sealed {
                     broker: std::sync::Arc::clone(&channels_broker),
+                    fanout: std::sync::Arc::clone(&channels_fanout),
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
                 content: Some(std::sync::Arc::clone(&record_content)),
