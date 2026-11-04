@@ -223,6 +223,8 @@ impl RefusalReason {
             || reason.contains("limit")
             || reason.contains("quota")
             || reason.contains("capacity")
+            || reason.contains("too many")
+            || reason.contains("too much")
         {
             Self::Full
         } else if reason.contains("admits")
@@ -234,6 +236,7 @@ impl RefusalReason {
             || reason.contains("no membership")
             || reason.contains("may not")
             || reason.contains("cannot")
+            || reason.contains("layout")
         {
             Self::Forbidden
         } else {
@@ -871,6 +874,44 @@ mod tests {
     #[test]
     fn peer_handle_is_fnv1a_of_the_device_key() {
         assert_eq!(peer_handle(&[7; 32]), 0xf160_fd08_b6d9_aac5);
+    }
+
+    /// A receiving device's own words about why it refused a write read as the
+    /// class the person is shown, for the wordings the store and the workspace
+    /// actually refuse with.
+    #[test]
+    fn a_receivers_words_read_as_the_class_it_is() {
+        for (words, class) in [
+            ("device revoked", RefusalReason::Revoked),
+            ("certificate expired", RefusalReason::Expired),
+            ("certificate not current", RefusalReason::Expired),
+            (
+                "identity is absent from admitted roster",
+                RefusalReason::NotCertified,
+            ),
+            (
+                "document change held: its app surface is not here yet",
+                RefusalReason::MissingDependency,
+            ),
+            (
+                "signed operation conflicts with exact admitted sequence",
+                RefusalReason::Conflict,
+            ),
+            ("exact admission index quota exceeded", RefusalReason::Full),
+            ("too many changes; slow down", RefusalReason::Full),
+            (
+                "record read forbidden: notes/main",
+                RefusalReason::Forbidden,
+            ),
+            (
+                "the workspace's layout is personal, as a public workspace's is: \
+                 it takes no member's windows or layout",
+                RefusalReason::Forbidden,
+            ),
+            ("something else entirely", RefusalReason::Malformed),
+        ] {
+            assert_eq!(RefusalReason::of(words), class, "{words}");
+        }
     }
 
     /// Workspace id shared by every fixture that names one.
