@@ -1062,6 +1062,12 @@ impl Plane {
         self.broker.app_action_broker().map(std::sync::Arc::new)
     }
 
+    /// The route to one window's app, for the step of a move it is asked for:
+    /// what answers on the window's continuation channel.
+    pub(crate) fn handoff(&self) -> tilo_action_broker::collab_broker::SessionFollowDispatcher {
+        self.broker.follow_dispatcher()
+    }
+
     /// The broker a program the person admitted as an agent is served
     /// through, while it takes work.
     pub(crate) fn agent_broker(

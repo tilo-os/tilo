@@ -282,14 +282,24 @@ unlock-approved = Approved unlocking { $item }
 unlock-denied = Declined to unlock { $item }
 unlock-history-unknown-device = a device this computer cannot name
 
-## What a window moved to another workspace asks, and what it says when the app
-## did not start where the person put it.
+## What a window moved to another workspace asks, what it says when the app did
+## not start where the person put it, and what it says when the record the window
+## shows could not go along.
 window-move-app-name = Workspaces
 window-move-ask-title = Move { $app } to { $workspace }?
 window-move-ask-what = The app starts again there, with the access that workspace gives it, and opens the record that workspace keeps.
+window-move-ask-carries = The app starts again there, with the access that workspace gives it, and takes what the window shows along, edits and all. What it leaves behind says where it went.
 window-move-ask-they-see = Everyone in { $workspace } can see the window and what it opens.
 window-move-ask-you-leave = In { $workspace } it stops running, and what that workspace keeps stays there.
 window-move-ask-carry = Move it
 window-move-ask-stay = Leave it
 window-move-failed-title = { $app } did not start in { $workspace }
 window-move-failed-body = The window stayed in { $workspace }.
+window-move-record-failed-title = { $app } could not take what it shows to { $workspace }
+window-move-record-failed-body = The window stayed in { $workspace }: { $reason }.
+window-move-reason-busy = the window's app still has it open
+window-move-reason-record = its record cannot be moved to that workspace
+window-move-reason-storage = this computer could not keep it there
+window-move-reason-no-window = the app opened no window there
+window-move-reason-no-start = the app did not start there
+window-move-bringing-edits = The window comes back with what was written after it moved.

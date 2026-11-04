@@ -286,14 +286,24 @@ unlock-approved = Entsperrung für { $item } freigegeben
 unlock-denied = Entsperrung für { $item } abgelehnt
 unlock-history-unknown-device = ein Gerät, das dieser Rechner nicht benennen kann
 
-## Was ein in einen anderen Arbeitsbereich verschobenes Fenster fragt und was es
-## sagt, wenn die App dort nicht gestartet ist.
+## Was ein in einen anderen Arbeitsbereich verschobenes Fenster fragt, was es
+## sagt, wenn die App dort nicht gestartet ist, und was es sagt, wenn der Eintrag,
+## den das Fenster zeigt, nicht mitkommen konnte.
 window-move-app-name = Arbeitsbereiche
 window-move-ask-title = { $app } nach { $workspace } verschieben?
 window-move-ask-what = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und öffnet den Eintrag, den dieser Arbeitsbereich führt.
+window-move-ask-carries = Die App startet dort neu, mit dem Zugriff, den dieser Arbeitsbereich ihr gibt, und nimmt mit, was das Fenster zeigt, samt Änderungen. Was zurückbleibt, sagt, wohin es ging.
 window-move-ask-they-see = Alle in { $workspace } sehen das Fenster und was es öffnet.
 window-move-ask-you-leave = In { $workspace } läuft sie dann nicht mehr, und was dieser Arbeitsbereich führt, bleibt dort.
 window-move-ask-carry = Verschieben
 window-move-ask-stay = Lassen
 window-move-failed-title = { $app } ist in { $workspace } nicht gestartet
 window-move-failed-body = Das Fenster blieb in { $workspace }.
+window-move-record-failed-title = { $app } konnte nicht nach { $workspace } mitnehmen, was es zeigt
+window-move-record-failed-body = Das Fenster blieb in { $workspace }: { $reason }.
+window-move-reason-busy = die App des Fensters hat es noch geöffnet
+window-move-reason-record = sein Eintrag lässt sich nicht in diesen Arbeitsbereich verschieben
+window-move-reason-storage = dieser Rechner konnte ihn dort nicht ablegen
+window-move-reason-no-window = die App hat dort kein Fenster geöffnet
+window-move-reason-no-start = die App ist dort nicht gestartet
+window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Verschieben geschrieben wurde.

@@ -18,14 +18,36 @@
 //! The continuation channel is served here too: a window's checkpoint and
 //! handoff reports reach the session that runs it rather than a refusal, and
 //! what they say is about the window, never about the record noted beside it.
+//! The answers are kept here until the pass that asked for them takes them up
+//! ([`Continuations::take_handoffs`]): they arrive on the broker's own thread,
+//! which decides nothing about a move.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 
+use collab_types::handoff::HandoffReport;
 use tilo_action_broker::route::CrdtRoute;
 use tilo_action_broker::services::ContinuationServices;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
+
+/// How many of a window's answers wait to be taken up before the oldest are
+/// let go: a step of a move is asked one at a time, and a session that stopped
+/// taking them up has no move to finish.
+const WAITING: usize = 256;
+
+/// One answer a window's app gave about a handoff step, and whose it is.
+#[derive(Clone, Debug)]
+pub(crate) struct HandoffNote {
+    /// The workspace the window runs in, as its app names it.
+    pub(crate) workspace: String,
+    /// The package that runs the window's app.
+    pub(crate) app: String,
+    /// The window's instance: the tab it fills.
+    pub(crate) instance: u64,
+    /// What it answered.
+    pub(crate) report: HandoffReport,
+}
 
 /// The record one window shows, and the workspace its window is in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +60,8 @@ pub(crate) struct Showing {
 #[derive(Default)]
 pub(crate) struct Continuations {
     shown: Mutex<BTreeMap<u64, Showing>>,
+    /// What the windows' apps answered about a handoff step, oldest first.
+    handoffs: Mutex<VecDeque<HandoffNote>>,
 }
 
 impl Continuations {
@@ -116,6 +140,12 @@ impl Continuations {
             .unwrap_or_default();
         Some((record, kind))
     }
+
+    /// Take up what the windows' apps answered about a handoff step since the
+    /// last pass: what a move under way waits on.
+    pub(crate) fn take_handoffs(&self) -> Vec<HandoffNote> {
+        self.handoffs.lock_recover().drain(..).collect()
+    }
 }
 
 /// The desk's reading of the notes: what the surface asks of the window a
@@ -160,13 +190,28 @@ impl ContinuationServices for Continuations {
         instance: u64,
         message: Vec<u8>,
     ) -> Result<(), String> {
-        tracing::debug!(
-            %workspace,
-            %app,
+        let Some(report) = HandoffReport::decode(&message) else {
+            tracing::warn!(
+                %workspace,
+                %app,
+                instance,
+                bytes = message.len(),
+                "a window's answer to a handoff does not decode"
+            );
+            return Ok(());
+        };
+        tracing::debug!(%workspace, %app, instance, ?report, "a window answered a handoff");
+        let mut waiting = self.handoffs.lock_recover();
+        if waiting.len() >= WAITING {
+            waiting.pop_front();
+        }
+        waiting.push_back(HandoffNote {
+            workspace: workspace.to_string(),
+            app,
             instance,
-            bytes = message.len(),
-            "a window answered a handoff"
-        );
+            report,
+        });
+        drop(waiting);
         Ok(())
     }
 }

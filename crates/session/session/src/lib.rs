@@ -161,6 +161,7 @@ mod wifi_continuity;
 mod window_motion;
 mod window_move;
 mod window_share;
+mod window_transfer;
 mod window_warmth;
 mod workspace_gate;
 mod workspace_settings;
@@ -1867,7 +1868,7 @@ impl Session {
             owner_session: owner_session::SessionFollow::default(),
             display_confirm,
             notices: notices.clone(),
-            moves: window_move::Moves::new(notices.clone()),
+            moves: window_move::Moves::new(notices.clone(), std::sync::Arc::clone(&notes)),
             clock,
             tray,
             wallpapers,
