@@ -432,7 +432,6 @@ async fn members_writes_the_node_took_in_survive_a_hard_stop() {
         .await
         .path
         .clone();
-    let key = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities()).0;
 
     // What a hard stop leaves on disk, copied (the workspace file before the
     // files it names) and opened as the next start opens it.
