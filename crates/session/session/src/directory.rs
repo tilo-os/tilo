@@ -450,6 +450,10 @@ pub(crate) struct Store {
     /// The workspaces joined since the session last took them, for the desk
     /// to add.
     joined: std::cell::RefCell<Vec<Joined>>,
+    /// The name a site listed each workspace under, by its id: a join whose
+    /// slot is made only once the host admits it keeps the name it was
+    /// listed by ([`Store::listed_name`]).
+    names: std::cell::RefCell<BTreeMap<String, String>>,
     asks: std::cell::RefCell<Option<mpsc::Sender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::Receiver<Answer>>>,
     /// What wakes the session's loop as the worker answers, so a directory
@@ -689,6 +693,9 @@ impl Store {
                     match granted {
                         Ok(granted) => {
                             self.failures.borrow_mut().remove(&key);
+                            self.names
+                                .borrow_mut()
+                                .insert(granted.workspace.clone(), name.clone());
                             tracing::info!(
                                 target: JOIN_FLOW_TARGET,
                                 workspace = %granted.workspace,
@@ -726,6 +733,9 @@ impl Store {
                     *self.joining.borrow_mut() = None;
                     match granted {
                         Ok(granted) => {
+                            self.names
+                                .borrow_mut()
+                                .insert(granted.workspace.clone(), name.clone());
                             tracing::info!(
                                 target: JOIN_FLOW_TARGET,
                                 workspace = %granted.workspace,
@@ -764,6 +774,13 @@ impl Store {
             }
         }
         answered
+    }
+
+    /// The name the site listed `workspace` under, once a join was granted:
+    /// a slot the desk makes when the host admits this device shows the
+    /// workspace by the name it was chosen under, not its id.
+    pub(crate) fn listed_name(&self, workspace: &str) -> Option<String> {
+        self.names.borrow().get(workspace).cloned()
     }
 
     /// What became of the last read or join, when it went wrong.

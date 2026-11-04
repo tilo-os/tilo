@@ -68,6 +68,10 @@ pub enum DirectoryEffect {
     /// Read the directories again
     #[effect(own_device, kind = "read")]
     Refresh,
+    /// Clear what the sheet says about the last join, once the person has
+    /// read it
+    #[effect(own_device, kind = "read")]
+    ClearNote,
     /// Close the sheet
     #[effect(own_device, kind = "read")]
     Done,

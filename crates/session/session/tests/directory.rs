@@ -745,6 +745,235 @@ fn a_door_that_refuses_says_why_where_the_person_now_is() {
     );
 }
 
+#[test]
+fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
+    let _settled = ui::motion::testing::settled();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    let (_identity, _person) = this_computer(&mut env);
+    let responder = joining_site(CLUB_WORKSPACE, vec![club_entry(now_ms())], |_| {
+        Reply::status(403)
+            .header("content-type", "application/json")
+            .body(r#"{"error":"the workspace takes people by invitation only"}"#)
+    });
+    let _config = community_site(&mut env, &responder.url());
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    open_directory(&mut session);
+    ask_to_join(&mut session, CLUB_WORKSPACE);
+    wait_until(&mut session, "the door answered", |session| {
+        listing(session, "Book club").action == ListingAction::TryAgain
+    });
+    // Choosing Join closed the sheet when the join started: the refusal
+    // reaches the person as a banner, in the door's own words.
+    wait_until(&mut session, "the refusal is said as a banner", |session| {
+        session
+            .notifications()
+            .log()
+            .history()
+            .iter()
+            .any(|notice| notice.body.contains("by invitation only"))
+    });
+    let said: Vec<String> = session
+        .notifications()
+        .log()
+        .history()
+        .iter()
+        .map(|notice| format!("{}: {}", notice.title, notice.body))
+        .collect();
+    assert!(
+        said.iter()
+            .any(|notice| notice.contains("Book club") && notice.contains("by invitation only")),
+        "the host's own refusal, in its own words: {said:?}"
+    );
+    assert!(
+        !held(&session)
+            .iter()
+            .any(|(_, _, workspace)| workspace == CLUB_WORKSPACE),
+        "and no workspace was added: no empty one to arrive in"
+    );
+}
+
+#[test]
+fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    // This computer's certificate lasted a day, and it ran out twelve hours
+    // ago: custody starts holding one the host would refuse for having run
+    // out.
+    let (person_hex, expired_paths) = expired_throwaway_identity(&mut home);
+    let person = hex::decode(&person_hex)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+        .expect("the person's root key");
+    let expired = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
+        .expect("the expired certificate");
+    assert!(
+        expired
+            .expires_at_ns
+            .is_some_and(|expires| expires <= tilo_clock::unix_now_ns()),
+        "this computer starts with an expired certificate"
+    );
+    let lounge = Lounge::start(person, "Coffee's on");
+    let _config = community_site(home.env(), &lounge.entry);
+    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    // The renewal is this session's own: it resolves the identity from the
+    // environment the test set, so a certificate issued to the device that
+    // joins is renewed, never a sibling test's.
+    let mut session = collaborative_session(state.path());
+    session.step(Duration::from_millis(1)).unwrap();
+    open_directory(&mut session);
+    ask_to_join(&mut session, &lounge.workspace);
+    wait_until_the_lounge_is_here(&mut session, &lounge);
+    // What the join presented was the renewal, not the certificate that had
+    // run out: custody holds a certificate issued since, and the workspace
+    // holds this device under it.
+    let presented = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
+        .expect("the presented certificate");
+    assert!(
+        presented.issued_at_ns > expired.issued_at_ns,
+        "the certificate the join presented was issued after the expired one"
+    );
+    assert!(
+        presented
+            .expires_at_ns
+            .is_some_and(|expires| expires > tilo_clock::unix_now_ns()),
+        "and it has not run out"
+    );
+    let active = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+    });
+    assert_eq!(
+        active.as_deref(),
+        Some(lounge.workspace.as_str()),
+        "the person lands in the lounge: the renewal was admitted"
+    );
+}
+
+/// A throwaway identity in `home`, with its certificate replaced by one
+/// issued a day and a half ago — expired, as a session that slept past it
+/// left it. Returns the person's root key in hex and the paths its keys and
+/// certificate live under, which live as long as `home` does.
+fn expired_throwaway_identity(
+    home: &mut tilo_test_env::TestHome,
+) -> (String, tilo_user_identity::IdentityPaths) {
+    use tilo_identity_host::provisioning::IdentityStorage;
+    let system = home.root().join("system");
+    let paths = tilo_user_identity::IdentityPaths::under(&system);
+    let identity_dir = home.config().join("tilo").join("identity");
+    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        &identity_dir,
+        &paths,
+        IdentityStorage::Files,
+    )
+    .expect("this computer's throwaway identity");
+    // The throwaway certificate lasts a day; issue it a day and a half ago,
+    // so it has run out.
+    let identity = runtime_identity::load_from_path(identity_dir.join("primary.json"))
+        .expect("this computer's identity");
+    let held = tilo_user_identity::persist::read_device_cert(&paths.device_cert)
+        .expect("the throwaway certificate");
+    let mut aged = tilo_user_identity::DeviceCert {
+        user_public_key: held.user_public_key,
+        device_public_key: held.device_public_key,
+        device_label: held.device_label.clone(),
+        capabilities: held.capabilities,
+        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(36 * 60 * 60 * 1_000_000_000),
+        expires_at_ns: Some(tilo_clock::unix_now_ns().saturating_sub(12 * 60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+    };
+    let digest = tilo_user_identity::device_cert_signing_digest(&aged).expect("a digest to sign");
+    aged.signature = identity
+        .sign(&digest)
+        .expect("the aged certificate is signed");
+    tilo_user_identity::verify_device_cert(&aged).expect("the aged certificate verifies");
+    tilo_user_identity::persist::write_device_cert(&paths.device_cert, &aged)
+        .expect("the aged certificate");
+    tilo_user_identity::persist::write_device_cert(
+        &paths.device_cert_for_user(&identity.group_public_key()),
+        &aged,
+    )
+    .expect("the aged certificate where the identity keeps it");
+    home.env().set("TILO_IDENTITY_ROOT", &system);
+    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
+        ui::local_identity::LocalIdentity {
+            group_public_key: aged.user_public_key,
+            display_name: "Ada".to_owned(),
+            avatar_color: [40, 80, 120],
+        },
+    ))));
+    (hex::encode(aged.user_public_key), paths)
+}
+
+fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let (_root, person) = this_computer_with_an_identity(&mut home);
+    // The door welcomes this person with an invitation, and the host takes
+    // that invitation back before the enrollment can spend it: the join gets
+    // past the door and is refused where the workspace is taken in.
+    let lounge = Lounge::start_with(person, "Coffee's on", true);
+    let _config = community_site(home.env(), &lounge.entry);
+    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let mut session = collaborative_session(state.path());
+    session.step(Duration::from_millis(1)).unwrap();
+    open_directory(&mut session);
+    let desk_before: Vec<(String, String, String)> = held(&session);
+    let in_front_before = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot));
+    ask_to_join(&mut session, &lounge.workspace);
+    // The person chose Join, so the sheet closes as it starts (see
+    // `follow_directory`): what became of the join is said where they are.
+    wait_until(&mut session, "the host refused the enrollment", |session| {
+        listing(session, "Lounge").action == ListingAction::TryAgain
+    });
+    // The person stays where they were: no empty workspace was ever shown to
+    // arrive in, and none was taken away again.
+    let in_front_after = session
+        .handle()
+        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot));
+    assert_eq!(
+        in_front_after, in_front_before,
+        "the person is where they were: the workspace in front did not move"
+    );
+    assert_eq!(
+        held(&session),
+        desk_before,
+        "and the desk holds exactly what it held before the join"
+    );
+    assert!(
+        !held(&session)
+            .iter()
+            .any(|(_, _, workspace)| workspace == &lounge.workspace),
+        "the refused workspace is on no desk here"
+    );
+    // The failure reaches the person as a banner, in the door's own words,
+    // not as protocol text and not as an empty workspace they land in.
+    wait_until(&mut session, "the refusal is said as a banner", |session| {
+        session
+            .notifications()
+            .log()
+            .history()
+            .iter()
+            .any(|notice| notice.title.contains("join") || notice.body.contains("Lounge"))
+    });
+    let said: Vec<String> = session
+        .notifications()
+        .log()
+        .history()
+        .iter()
+        .map(|notice| format!("{}: {}", notice.title, notice.body))
+        .collect();
+    assert!(
+        said.iter()
+            .any(|notice| notice.contains("Lounge") && notice.contains("refused")),
+        "the refusal, in the host's own words: {said:?}"
+    );
+}
+
 /// A session that takes part in the collaboration plane, keeping the workspaces
 /// it holds beside `state`.
 fn collaborative_session(state: &std::path::Path) -> Session {
@@ -803,20 +1032,24 @@ fn grant_for(owner_key: &ed25519_dalek::SigningKey, workspace: &str, label: &str
 }
 
 /// This computer's person: an identity of its own in `home`'s
-/// configuration, and a device certified for it under a key root of the
-/// test's own. Returns the root's directory, and the person's key.
+/// configuration, and a device certified for it under a key root, kept in
+/// `home` too so it lives as long as the test. Returns the root to hold, and
+/// the person's key.
 fn this_computer_with_an_identity(
     home: &mut tilo_test_env::TestHome,
-) -> (tempfile::TempDir, [u8; 32]) {
-    let root = tempfile::tempdir().expect("a directory for this computer's identity");
+) -> (std::path::PathBuf, [u8; 32]) {
+    // The keys live under the test's own home, not a second temporary
+    // directory: the session's renewal resolves them from the environment,
+    // and nothing may delete them while it runs.
+    let root = home.root().join("system");
     let identity_dir = home.config().join("tilo").join("identity");
     tilo_identity_host::provisioning::ensure_collaboration_identity(
         &identity_dir,
-        &tilo_user_identity::IdentityPaths::under(root.path()),
+        &tilo_user_identity::IdentityPaths::under(&root),
         tilo_identity_host::provisioning::IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    home.env().set("TILO_IDENTITY_ROOT", root.path());
+    home.env().set("TILO_IDENTITY_ROOT", &root);
     let person = runtime_identity::list_identities(&identity_dir)
         .expect("this computer's identities")
         .into_iter()
@@ -936,6 +1169,15 @@ impl Drop for Lounge {
 impl Lounge {
     /// The lounge's workspace, whose chat already holds `written`.
     fn start(person: [u8; 32], written: &str) -> Self {
+        Self::start_with(person, written, false)
+    }
+
+    /// [`Self::start`], with the door's invitation taken back before the
+    /// enrollment spends it when `withdraw_invitation`: the host's door lets
+    /// the person in, and the host refuses the enrollment that follows. That
+    /// is the join that reached a host which no longer admits the invitation
+    /// it answered with, so no workspace is ever held.
+    fn start_with(person: [u8; 32], written: &str, withdraw_invitation: bool) -> Self {
         let state = tempfile::tempdir().expect("a directory for the lounge's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -944,7 +1186,7 @@ impl Lounge {
             .expect("a runtime for the lounge's host");
         let host = LoungeHost::start(&runtime, state.path());
         let page = host.page(&runtime, written);
-        let (door, entry) = host.door(&runtime, person);
+        let (door, entry) = host.door(&runtime, person, withdraw_invitation);
         Self {
             page: Some(page),
             relay: Some(host.relay),
@@ -1126,7 +1368,16 @@ impl LoungeHost {
     /// workspaces it serves, and the door it admits `person` at, where a page
     /// spends the one-time token and is given an invitation only they can
     /// redeem. Returns the door and the site's entry.
-    fn door(&self, runtime: &tokio::runtime::Runtime, person: [u8; 32]) -> (Responder, String) {
+    ///
+    /// With `withdraw_invitation` the invitation the door answers with is
+    /// taken back before the enrollment can spend it: the host refuses the
+    /// enrollment that follows the door's welcome.
+    fn door(
+        &self,
+        runtime: &tokio::runtime::Runtime,
+        person: [u8; 32],
+        withdraw_invitation: bool,
+    ) -> (Responder, String) {
         let origin = Arc::new(Mutex::new(String::new()));
         let served_origin = Arc::clone(&origin);
         let page_of_the_site = page_of(vec![DirectoryEntry {
@@ -1192,6 +1443,24 @@ impl LoungeHost {
                         ),
                     )
                     .expect("an invitation for this person");
+                    if withdraw_invitation {
+                        // The host takes back the invitation it answered
+                        // with: the door welcomed the person, and the
+                        // enrollment that follows is refused.
+                        block_on_within(
+                            &answer,
+                            "the lounge to take its invitation back",
+                            workspaces.cancel(
+                                &workspace,
+                                &host_cert,
+                                tilo_workspace_join::invitations::CancelInvitationRequest {
+                                    request_id: [0x71; 32],
+                                    invite_id: issued.invite_id,
+                                },
+                            ),
+                        )
+                        .expect("the lounge takes its invitation back");
+                    }
                     json(
                         serde_json::json!({
                             "invitation": tilo_workspace_join::encode_invitation_text(
@@ -1410,7 +1679,7 @@ fn owner_on_desk(session: &Session, workspace: &str) -> Option<String> {
 fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Coffee's on");
     let _config = community_site(home.env(), &lounge.entry);
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
@@ -1437,6 +1706,13 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the lounge has not removed them");
+    // The slot is made once the host admits the device, and the person lands
+    // in it: wait for the desk to show it, as the person would see it.
+    wait_until(&mut session, "the lounge is on the desk", |session| {
+        held(session)
+            .iter()
+            .any(|(_, _, workspace)| workspace == &lounge.workspace)
+    });
     let joined = held(&session)
         .into_iter()
         .find(|(_, _, workspace)| workspace == &lounge.workspace)
@@ -1467,7 +1743,7 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
 fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Pulled up a chair");
     let _config = community_site(home.env(), &lounge.entry);
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
@@ -1512,6 +1788,17 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the workspace has not removed them");
+    // The slot is made once the host admits the device, and the person lands
+    // in it: wait for the desk to show it, as the person would see it.
+    wait_until(
+        &mut session,
+        "the linked workspace is on the desk",
+        |session| {
+            held(session)
+                .iter()
+                .any(|(_, _, workspace)| workspace == &lounge.workspace)
+        },
+    );
     let joined = held(&session)
         .into_iter()
         .find(|(_, _, workspace)| workspace == &lounge.workspace)
@@ -1543,7 +1830,7 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Coffee's on");
     // The site's people left the workspace's desktop as two strips of
     // windows; another member wrote them before this computer joined.
@@ -1925,7 +2212,7 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     // which the test keeps in memory.
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Coffee's on");
     let _config = community_site(home.env(), &lounge.entry);
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
@@ -1973,7 +2260,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, person) = this_computer_with_an_identity(&mut home);
+    let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Pulled up a chair");
     let _config = community_site(home.env(), &lounge.entry);
     let state = tempfile::tempdir().expect("a directory for this computer's desk");

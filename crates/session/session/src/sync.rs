@@ -2546,6 +2546,23 @@ async fn redeem(
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = workspace_topic_id(request.workspace_id);
+    // A certificate due for renewal is renewed before it is presented: a
+    // device that slept past the hour its certificate ran out presents the
+    // renewal, not the certificate the host refuses. A renewal loop that is
+    // not running has nothing to renew with, and the enrollment answers with
+    // the certificate custody already holds.
+    let renewing = tokio::task::spawn_blocking(|| {
+        tilo_onboarding_host::firstboot::renew_due_device_certificates()
+    })
+    .await;
+    if let Ok(Err(error)) = renewing {
+        tracing::warn!(
+            target: tilo_startup_metrics::JOIN_FLOW_TARGET,
+            workspace = %request.workspace_id,
+            %error,
+            "renewal: the certificate due before this join could not be renewed; presenting what custody holds"
+        );
+    }
     // The workspace is joined as this computer's person: the device's own
     // certificate signs the enrollment, so there is nothing to pick here.
     identity.current_native_material(topic)?;

@@ -365,6 +365,17 @@ pub(crate) fn verify_now(identity_dir: &Path) -> std::io::Result<()> {
 pub(crate) fn settle(identity_dir: &Path) -> Result<(), String> {
     reconcile(identity_dir)?;
     firstboot::keep_device_certificates_renewed(identity_dir);
+    // A certificate that ran out while this device slept is renewed here,
+    // at the start of the session, before anything presents it: a join, an
+    // enrollment, a host asked to share a workspace. A renewal that fails
+    // is tried again by the loop, and by the join that needs it.
+    if let Err(error) = firstboot::renew_due_device_certificates() {
+        tracing::warn!(
+            target: tilo_startup_metrics::JOIN_FLOW_TARGET,
+            %error,
+            "renewal: this session starts with a certificate due and could not renew it yet"
+        );
+    }
     Ok(())
 }
 
