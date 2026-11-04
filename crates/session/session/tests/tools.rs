@@ -14,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::fmt::Write as _;
 use std::fs;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -155,14 +157,8 @@ fn session(
 }
 
 /// Run frames until `done` holds.
-fn until(session: &mut Session, what: &str, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..400 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("{what} did not happen");
+fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
+    common::until(session, what, done);
 }
 
 /// The workspace in front, as the session holds it.

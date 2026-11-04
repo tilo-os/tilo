@@ -139,13 +139,9 @@ fn press(session: &mut Session, effect: &str, args: Value) {
 /// Let the session run until `done` holds.
 #[track_caller]
 fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..500 {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked for", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The agent's own seat, as its control connection reads it.
@@ -163,15 +159,9 @@ fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Val
     pump(session, |_| questions.pending().len() == 1);
     press(session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(session, PortalEffect::CONFIRM.id, json!({}));
-    let mut served = None;
-    for _ in 0..500 {
-        session.step(Duration::from_millis(2)).expect("step");
-        if let Ok(answer) = program.served.try_recv() {
-            served = Some(answer);
-            break;
-        }
-    }
-    served.expect("the program at the door is served")
+    common::wait_for(session, "the program at the door to be served", |_| {
+        program.served.try_recv().ok()
+    })
 }
 
 /// A frame of the seat's viewport, written as a PNG at `path`.
@@ -285,14 +275,14 @@ fn an_admitted_agents_control_connection_is_served_as_its_own_seat() {
 
     // The program leaves: the seat is no longer served on this pid.
     program.end();
-    let mut refused = json!(null);
-    for _ in 0..300 {
-        session.step(Duration::from_millis(2)).expect("step");
-        refused = seat_of(&mut session, &socket);
-        if refused["err"]["code"] == "not_allowed" {
-            break;
-        }
-    }
+    let refused = common::wait_for(
+        session,
+        "the program's seat to stop being served",
+        |session| {
+            let refused = seat_of(session, &socket);
+            (refused["err"]["code"] == "not_allowed").then_some(refused)
+        },
+    );
     assert_eq!(
         refused["err"]["code"], "not_allowed",
         "an ended agent's program has no seat: {refused}"

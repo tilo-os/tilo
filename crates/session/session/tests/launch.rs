@@ -14,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::fs;
 
 use std::io::{BufRead as _, Write as _};
@@ -113,13 +115,7 @@ fn session(socket: &std::path::Path) -> (Session, Rc<Apps>) {
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..400 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("{what} did not happen");
+    common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {

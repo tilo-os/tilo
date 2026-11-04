@@ -16,6 +16,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -76,13 +78,9 @@ fn ask(questions: &Questions, app: Option<&str>, label: &str, kind: &str, detail
 /// Let the session run until `done` holds.
 #[track_caller]
 fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..500 {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked for", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The dialog the portal sheet shows, once the question went up.

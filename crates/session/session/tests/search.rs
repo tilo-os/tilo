@@ -14,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -114,13 +116,9 @@ fn session_over(
 
 /// Run frames until `done` holds.
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..200 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked for", |session| {
+        done(session).then_some(())
+    });
 }
 
 fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
@@ -620,14 +618,15 @@ fn search_settled(search: &ResourceSpec) -> bool {
 /// Step until the open search is over: it names `query` when one is given,
 /// and is no longer filling in.
 fn await_search(session: &mut Session, query: Option<&str>) {
-    for _ in 0..SEARCH_FRAME_CAP {
-        session.step(Duration::from_millis(1)).expect("step");
-        let over = open_search(session).is_some_and(|search| {
-            search_settled(&search) && query.is_none_or(|query| search.label == query)
-        });
-        if over {
-            return;
-        }
+    let over = common::wait_maybe(session, |session| {
+        open_search(session)
+            .is_some_and(|search| {
+                search_settled(&search) && query.is_none_or(|query| search.label == query)
+            })
+            .then_some(())
+    });
+    if over.is_some() {
+        return;
     }
     let state = open_search(session).map(|search| {
         (
@@ -643,8 +642,9 @@ fn await_search(session: &mut Session, query: Option<&str>) {
         )
     });
     panic!(
-        "the search for {query:?} is still filling in after {SEARCH_FRAME_CAP} frames: \
-         open search (typed, searching, rows) = {state:?}"
+        "the search for {query:?} is still filling in after {:?}: \
+         open search (typed, searching, rows) = {state:?}",
+        tilo_test_env::hang_bound()
     );
 }
 

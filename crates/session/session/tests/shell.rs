@@ -18,6 +18,8 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
+mod common;
+
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -70,20 +72,8 @@ fn desk(session: &Session) -> DeskReading {
 
 /// Run frames until `done` holds.
 #[track_caller]
-fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..2000 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the shell's refusals: {:?}; effects handed {:?} served {:?}; the session says: {:?}",
-        session.shell_refusals(),
-        session.shell_work().map(|work| work.handed),
-        session.shell_work().map(|work| work.served),
-        session.accessible_labels()
-    );
+fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
+    common::until(session, "the shell's answer", done);
 }
 
 /// Whether the bar says `words`: a control's label carries what it shows and
@@ -257,12 +247,9 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     });
     keep(&mut session, "shell-bar-workspace-menu");
     press(&mut session, &first.workspace);
-    for _ in 0..300 {
-        session.step(Duration::from_millis(1)).unwrap();
-        if session.handle().read(|tree| tree.active.0.to_string()) == first_key {
-            break;
-        }
-    }
+    common::until(&mut session, "the first workspace in front", |session| {
+        session.handle().read(|tree| tree.active.0.to_string()) == first_key
+    });
     assert_eq!(
         session.handle().read(|tree| tree.active.0.to_string()),
         first_key,
@@ -1450,18 +1437,10 @@ fn session_where(
 /// Run frames, taking in what the services report, until `done` holds.
 #[track_caller]
 fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..2000 {
+    common::wait_for(session, "the services' reading", |session| {
         session.settle_services();
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the session says: {:?}; the shell refused: {:?}",
-        session.accessible_labels(),
-        session.shell_refusals()
-    );
+        done(session).then_some(())
+    });
 }
 
 /// A press on the dock's launcher calls the desk's own `show-surface`: the launcher comes up.
@@ -1733,16 +1712,15 @@ const PROBE: (u32, u32) = (1100, 200);
 /// the panel has drawn the frame its last action asked for.
 fn drawn(session: &mut Session) -> tilo_compositor::Screenshot {
     let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
-    for _ in 0..600 {
+    common::wait_for(session, "the screen to settle", |session| {
         session.settle_services();
         session.step(Duration::from_millis(16)).expect("step");
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
-        if frame.rgba == last.rgba {
-            return frame;
-        }
-        last = frame;
-    }
-    panic!("the screen never settled");
+        (frame.rgba == last.rgba).then(|| {
+            last = frame;
+            frame
+        })
+    })
 }
 
 // ---- each press of the shell's reaches the session ------------------------------------------

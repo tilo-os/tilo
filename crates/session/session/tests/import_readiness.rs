@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Read as _;
@@ -91,13 +93,7 @@ fn readiness_socket(runtime: &Path, display: &str) -> PathBuf {
 /// Run the session until `done` holds: a launched app starts on a worker of
 /// its own, so the loop keeps drawing while it gets there.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
-    for _ in 0..600 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done() {
-            return;
-        }
-    }
-    panic!("{what} did not happen");
+    common::wait_for(session, what, |_| done().then_some(()));
 }
 
 /// The installed folder importer reads the answer from this session and no

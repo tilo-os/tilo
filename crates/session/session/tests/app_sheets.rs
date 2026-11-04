@@ -21,8 +21,9 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
@@ -177,17 +178,8 @@ fn row(session: &Session, title: &str) -> Option<ResourceSpec> {
 
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
-fn until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(60))
-        .expect("a deadline");
-    loop {
-        session.step(Duration::from_millis(10)).unwrap();
-        if done(session) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what}");
-    }
+fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
+    common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Press the question's `action`, as the person does.

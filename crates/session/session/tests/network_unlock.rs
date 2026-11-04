@@ -27,7 +27,7 @@
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iroh::RelayMode;
 use iroh::endpoint::{Endpoint, RecvStream, SendStream};
@@ -50,10 +50,6 @@ use tilo_unlock_protocol::{
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths};
 
-/// How long the loopback sessions have to come up and carry what they carry.
-const DEADLINE: Duration = Duration::from_secs(30);
-/// One pass of the sessions' loop.
-const PASS: Duration = Duration::from_millis(20);
 /// What the sheet lists a disk-unlock request as.
 const KIND: &str = "network.device-unlock";
 /// The boot asking, the same boot across reconnects.
@@ -293,11 +289,10 @@ impl Devices {
             .expect("a certified device's session keeps a fabric")
     }
 
-    /// Let both sessions run until `done`, and fail the test when it takes
-    /// longer than the loopback devices should need.
+    /// Let both sessions run until `done`: the suite's one wait, whose bound is
+    /// the suite's.
     fn carry(&mut self, mut done: impl FnMut(&Self) -> bool) {
-        let deadline = Instant::now() + DEADLINE;
-        loop {
+        tilo_test_env::wait_until("the devices' sessions carried it", || {
             self.session
                 .step(Duration::from_millis(1))
                 .expect("the session steps");
@@ -305,15 +300,8 @@ impl Devices {
                 .step(Duration::from_millis(1))
                 .expect("the phone's session steps");
             self.phone.follow();
-            if done(self) {
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the devices' sessions carried it"
-            );
-            std::thread::sleep(PASS);
-        }
+            done(self)
+        });
     }
 
     /// Wait until the desk's fabric carries the phone's enrolment.

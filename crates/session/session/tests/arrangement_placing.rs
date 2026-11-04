@@ -20,6 +20,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -124,13 +126,9 @@ fn step(session: &mut Session) {
 
 /// Run a frame until `done`, so what a change asked of the session lands.
 fn settle(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..50 {
-        step(session);
-        if done(session) {
-            return;
-        }
-    }
-    panic!("the change did not land");
+    common::wait_for(session, "the change to land", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// The arrangement the session's record holds now.

@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -109,20 +111,22 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     let resource = format!("question:portal:{REQUEST}");
     // The question wakes the loop: a turn that would wait a minute ends
     // when it is asked.
-    let mut question = None;
+    let deadline = tilo_test_env::hang_deadline();
     let asked = std::time::Instant::now();
-    for _ in 0..20 {
+    let question = loop {
         session.step(std::time::Duration::from_secs(60)).unwrap();
-        question = session.read(&resource);
-        if question.is_some() {
-            break;
+        if let Some(question) = session.read(&resource) {
+            break question;
         }
-    }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the portal's question never woke the session"
+        );
+    };
     assert!(
         asked.elapsed() < std::time::Duration::from_secs(60),
         "the question woke the session"
     );
-    let question = question.expect("the request is published as a question");
     assert_eq!(question["kind"], json!("portal.file-chooser"));
     assert_eq!(question["app_id"], json!("org.example.Editor"));
     assert_eq!(question["details"]["title"], json!("Open a note"));
@@ -153,16 +157,9 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
     node.children.iter().find_map(|child| control(child, name))
 }
 
-/// Steps `session` until `asked` answers, for two seconds of session time at
-/// most.
-fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
-    for _ in 0..2000 {
-        session.step(std::time::Duration::from_millis(1)).unwrap();
-        if let Some(answer) = asked(session) {
-            return Some(answer);
-        }
-    }
-    None
+/// Steps `session` until `asked` answers, or the suite's hang bound runs out.
+fn until<T>(session: &mut Session, asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
+    common::wait_maybe(session, asked)
 }
 
 /// An app's notification with its own image is shown by the banners and

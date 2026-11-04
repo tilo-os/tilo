@@ -17,6 +17,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -57,16 +59,7 @@ fn session(runs: &Arc<AgentRuns>) -> Session {
 /// Run frames until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..2000 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the session says: {:?}",
-        session.accessible_labels()
-    );
+    common::until(session, "what the test asked for", done);
 }
 
 fn says(session: &Session, words: &str) -> bool {

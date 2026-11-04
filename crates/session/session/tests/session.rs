@@ -202,7 +202,7 @@ fn pump(
     clients: &mut [&mut TestClient],
     mut done: impl FnMut(&mut Session, &[&mut TestClient]) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         for client in clients.iter_mut() {
             client.exchange();
@@ -216,7 +216,9 @@ fn pump(
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "condition not reached"
+            "gave up waiting for the session and its client after {:?}; it looks hung \
+             (set TILO_TEST_HANG_BOUND_SECS to wait longer)",
+            tilo_test_env::hang_bound()
         );
     }
 }
@@ -470,23 +472,12 @@ fn band_colour(session: &mut Session) -> [u8; 4] {
         .unwrap()
 }
 
-/// Step the session until `done` holds, for up to three seconds of its
-/// clock.
+/// Step the session and exchange with `client` until `done` holds: the bound
+/// is the suite's hang bound, so a busy machine slows the wait instead of
+/// failing it.
 #[track_caller]
-fn within(
-    session: &mut Session,
-    client: &mut TestClient,
-    mut done: impl FnMut(&mut Session) -> bool,
-) {
-    let until = std::time::Instant::now() + Duration::from_secs(3);
-    while std::time::Instant::now() < until {
-        client.exchange();
-        session.step(Duration::from_millis(4)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached in time");
+fn within(session: &mut Session, client: &mut TestClient, done: impl FnMut(&mut Session) -> bool) {
+    pump(session, &mut [client], |session, _| done(session));
 }
 
 /// Wait for the size the desktop configures the window to, draw it at that

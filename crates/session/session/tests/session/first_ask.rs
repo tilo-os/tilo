@@ -74,19 +74,27 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
             break taken;
         }
         assert!(
-            waited < Duration::from_secs(5),
-            "the session never took the window's connection"
+            waited < tilo_test_env::hang_bound(),
+            "the session never took the window's connection after {waited:?}"
         );
-        let wait = wait_for(&mut session);
+        let wait = wait_for(&mut session).expect("an idle desk has a wait to give");
         let started = Instant::now();
         session.step(wait).expect("step");
-        waited += started.elapsed();
+        let step = started.elapsed();
+        waited += step;
+        if let Ok(taken) = takes.try_recv() {
+            // The connection ended the step it arrived in: a loop that looked
+            // only at the end of its wait would have run the whole wait, and
+            // that is the poll this rules out. How long the asking thread
+            // waited is the machine's answer, not the session's.
+            assert!(
+                step < wait,
+                "the session ran its whole {wait:?} wait and took the connection after it: {step:?}"
+            );
+            break taken;
+        }
     };
     asking.join().expect("the asking thread");
-    assert!(
-        latency < Duration::from_millis(50),
-        "a window's first ask waited {} ms on an idle desk",
-        latency.as_millis()
-    );
+    assert!(takes.try_recv().is_err(), "one ask, one taking");
     eprintln!("a window's first ask on an idle desk: {latency:?}");
 }

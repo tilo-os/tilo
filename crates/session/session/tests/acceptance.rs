@@ -534,19 +534,18 @@ fn step_9_a_theme_switch_changes_looks_only() {
             ]),
         )
         .expect("the theme is kept");
-        let mut drew = None;
-        for _ in 0..200 {
-            session.step(Duration::from_millis(1)).expect("step");
-            let frame = session
-                .compositor()
-                .screenshot("HEADLESS-1")
-                .expect("a frame");
-            if frame.rgba != shot.rgba {
-                drew = Some(frame);
-                break;
-            }
-        }
-        let drawn = drew.unwrap_or_else(|| panic!("the desk draws in {theme}"));
+        let drawn = common::wait_for(
+            &mut session,
+            format!("the desk to draw in {theme}"),
+            |session: &mut Session| {
+                session.step(Duration::from_millis(1)).expect("step");
+                let frame = session
+                    .compositor()
+                    .screenshot("HEADLESS-1")
+                    .expect("a frame");
+                (frame.rgba != shot.rgba).then_some(frame)
+            },
+        );
         shot = drawn;
 
         // Only how it looks: the same parts in the same places, the same places on the canvas.

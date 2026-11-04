@@ -14,6 +14,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::time::Duration;
@@ -63,16 +65,9 @@ fn session(places: &[(i32, i32)]) -> Session {
 /// Run frames until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..2000 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the parts say: {:?}",
-        session.shell_parts()
-    );
+    common::wait_for(session, "what the test asked of the session", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// Where the part on `output` stands, `(x, y, w, h)`, and whether it stepped aside: `None`
@@ -346,20 +341,12 @@ fn pump(
     client: &mut TestClient,
     mut done: impl FnMut(&mut Session, &TestClient) -> bool,
 ) {
-    for _ in 0..500 {
+    common::wait_for(session, "what the test asked of the session", |session| {
         client.exchange();
-        session.step(Duration::from_millis(2)).expect("step");
+        let answer = done(session, client);
         client.exchange();
-        if done(session, client) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the parts say {:?}, the windows {:?}, fullscreen on {:?}",
-        session.shell_parts(),
-        session.compositor().windows(),
-        session.compositor().fullscreen_outputs()
-    );
+        answer.then_some(())
+    });
 }
 
 /// The test window, by id and logical rectangle, once it is mapped.

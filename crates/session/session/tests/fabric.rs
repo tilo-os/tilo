@@ -33,8 +33,6 @@ use tilo_session::fabric::Continuity;
 use tilo_session::sync::{Client, OwnPresence};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-/// How long the loopback sessions have to come up and carry what they carry.
-const DEADLINE: Duration = Duration::from_secs(30);
 /// One pass of the session's loop, as the session runs it on its own clock.
 const PASS: Duration = Duration::from_millis(20);
 
@@ -101,10 +99,12 @@ fn pass(devices: &[&Device]) {
     }
 }
 
-/// Run the sessions' passes until `done` holds, or the deadline passes:
-/// whether `done` held.
+/// Run the sessions' passes until `done` holds: whether it held before the
+/// suite's hang bound ran out.
 fn until(devices: &[&Device], mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + DEADLINE;
+    // The bound is the suite's own, so a busy machine slows the passes instead
+    // of failing them.
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         pass(devices);
         if done() {

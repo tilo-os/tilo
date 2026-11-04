@@ -631,7 +631,7 @@ mod tests {
         let first = list(&tree, PERSON, None, 0);
         assert!(publisher.publish(&first));
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published");
         assert_eq!(published_count(&seen), 1);
         let written: FsAuthority =
@@ -642,7 +642,7 @@ mod tests {
             "an unchanged list is not published again"
         );
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("idle");
         assert_eq!(published_count(&seen), 1);
     }
@@ -662,7 +662,7 @@ mod tests {
         tree.workspaces[0].revoke_sandbox(&id);
         publisher.publish(&list(&tree, PERSON, None, 0));
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published");
         let last = published_count(&seen);
         let newest: FsAuthority =
@@ -700,10 +700,15 @@ mod tests {
             dir.path().join("sockets"),
         );
         publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None, 0));
-        let _ = publisher.wait_until_idle(Duration::from_millis(200));
+        // The first attempt must have been refused; the file it writes is what
+        // says the worker got that far, so nothing here waits on the clock.
+        let acl = dir.path().join("config/fs-capabilities.json");
+        tilo_test_env::wait_until("the first attempt reaching the daemon's file", || {
+            acl.is_file()
+        });
         std::fs::write(&gate, b"").unwrap();
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published once the daemon served");
         assert_eq!(published_count(&seen), 1);
         assert_eq!(

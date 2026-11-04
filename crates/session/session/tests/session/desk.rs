@@ -120,13 +120,9 @@ pub(super) fn light_session() -> Session {
 /// Run frames until `done` holds, with no client to pump.
 #[track_caller]
 fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..300 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the capture asked of the desk", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// Hold this test's wall clock at the capture instant, as the launcher holds

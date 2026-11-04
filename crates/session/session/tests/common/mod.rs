@@ -76,13 +76,80 @@ pub fn private_home() -> tempfile::TempDir {
 
 /// Run frames until `done` holds; `false` when it never did.
 pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
-    for _ in 0..600 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return true;
+    steps_until(session, |session| done(session).then_some(())).is_some()
+}
+
+/// Step the session's loop until `probe` answers, or the suite's hang bound
+/// runs out: one wait, whose only bound is the bound every other test helper
+/// uses.
+fn steps_until<T>(
+    session: &mut Session,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        if let Some(answer) = probe(session) {
+            return Some(answer);
         }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        session.step(Duration::from_millis(1)).expect("step");
+        std::thread::yield_now();
     }
-    false
+}
+
+/// Step the session's loop until `probe` answers, and return its answer.
+///
+/// The wait ends the moment the condition holds; its only bound is the suite's
+/// hang bound (`TILO_TEST_HANG_BOUND_SECS`, two minutes by default), so a busy
+/// machine makes the wait longer instead of failing it. A condition that never
+/// holds fails naming `what`, with the shell's refusals and what it shows as the
+/// report: every wait in the session's tests goes through here or
+/// [`tilo_test_env::wait_for`], never a frame count or a guessed deadline.
+#[track_caller]
+pub fn wait_for<T>(
+    session: &mut Session,
+    what: impl std::fmt::Display,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> T {
+    match steps_until(session, &mut probe) {
+        Some(answer) => answer,
+        None => panic!(
+            "gave up waiting for {what} after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer).\n\
+             the shell's refusals: {:?}\nthe session says: {:?}",
+            tilo_test_env::hang_bound(),
+            session.shell_refusals(),
+            session.accessible_labels()
+        ),
+    }
+}
+
+/// [`wait_for`] without failing: whatever `probe` answers before the suite's
+/// hang bound runs out, for a test that asserts on its own observation (and
+/// says what it saw) rather than taking the helper's message.
+#[track_caller]
+pub fn wait_maybe<T>(
+    session: &mut Session,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    steps_until(session, |session| probe(session))
+}
+
+/// Wait for `probe` to answer while `step` drives what the test waits on: a
+/// client's exchange, a set of devices' passes, a proxy's connection. The same
+/// one bound and report as [`wait_for`], for the waits that are not the
+/// session's own frames.
+#[track_caller]
+pub fn wait_stepping<T>(
+    what: impl std::fmt::Display,
+    mut step: impl FnMut(),
+    mut probe: impl FnMut() -> Option<T>,
+) -> T {
+    tilo_test_env::wait_for(what, || {
+        step();
+        probe()
+    })
 }
 
 /// Run frames until `done` holds.
@@ -90,7 +157,8 @@ pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool
 pub fn until(session: &mut Session, what: &str, done: impl FnMut(&mut Session) -> bool) {
     assert!(
         reached(session, done),
-        "{what}: not reached; the shell's refusals: {:?}; the session says: {:?}",
+        "{what}: not reached in {:?}; the shell's refusals: {:?}; the session says: {:?}",
+        tilo_test_env::hang_bound(),
         session.shell_refusals(),
         session.accessible_labels()
     );
@@ -472,13 +540,9 @@ impl Repl {
 
     /// The answer to the last request, running the session until it is in.
     pub fn answer(&self, session: &mut Session) -> Value {
-        for _ in 0..30_000 {
-            if let Ok(answer) = self.answers.try_recv() {
-                return answer;
-            }
-            session.step(Duration::from_millis(1)).expect("step");
-        }
-        panic!("the door never answered");
+        wait_for(session, "the door's answer", |_| {
+            self.answers.try_recv().ok()
+        })
     }
 
     /// Send `method` with `params` and wait for its answer.
@@ -578,13 +642,9 @@ pub fn control(session: &mut Session, socket: &Path, request: &Value) -> Value {
             .send(serde_json::from_str::<Value>(&line).expect("a JSON answer"))
             .unwrap();
     });
-    for _ in 0..30_000 {
-        if let Ok(answer) = answered.try_recv() {
-            return answer;
-        }
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    panic!("the test-control socket never answered");
+    wait_for(session, "the test-control socket's answer", |_| {
+        answered.try_recv().ok()
+    })
 }
 
 /// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and

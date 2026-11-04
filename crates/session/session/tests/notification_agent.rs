@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -43,25 +45,15 @@ fn private_home() -> tempfile::TempDir {
 /// Run the session until `done` says so.
 #[track_caller]
 fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..2000 {
-        if done(session) {
-            return;
-        }
-        session.step(Duration::from_millis(2)).expect("step");
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked for", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// What `done` reads, once the session reaches it.
 #[track_caller]
-fn until<T>(session: &mut Session, mut done: impl FnMut(&Session) -> Option<T>) -> T {
-    for _ in 0..2000 {
-        if let Some(value) = done(session) {
-            return value;
-        }
-        session.step(Duration::from_millis(2)).expect("step");
-    }
-    panic!("condition not reached");
+fn until<T>(session: &mut Session, done: impl FnMut(&Session) -> Option<T>) -> T {
+    common::wait_for(session, "what the test asked for", done)
 }
 
 /// The resource publishing `action` among everything the session publishes.

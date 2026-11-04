@@ -235,13 +235,7 @@ fn reading(state: Option<ActiveState>) -> VpnReading {
 
 /// Wait for `condition`, or fail saying what was waited for.
 fn wait_for(what: &str, condition: impl Fn() -> bool) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(20))
-        .expect("a deadline");
-    while !condition() {
-        assert!(Instant::now() < deadline, "waited for {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    tilo_test_env::wait_until(what, condition);
 }
 
 /// What Settings reads: the status a running session published, read as the
@@ -526,11 +520,10 @@ impl FabricLink for KnownDevices {
 
 /// Step the session until `done` holds, or fail saying what was waited for.
 fn step_until(session: &mut Session, what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
-    while !done() {
-        assert!(Instant::now() < deadline, "waited for {what}");
+    tilo_test_env::wait_for(what, || {
         session.step(Duration::from_millis(10)).expect("a frame");
-    }
+        done().then_some(())
+    });
 }
 
 /// The person chooses to route their home network through their other
@@ -686,22 +679,11 @@ const PHONE: &str = "Phone";
 /// Step both sessions until `done` holds, or fail saying what was waited
 /// for: two of the person's devices, each with its own pass.
 fn step_both_until(one: &mut Session, other: &mut Session, what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now().checked_add(DEADLINE).expect("a deadline");
-    loop {
-        if done() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "waited for {what}: the status says {:?}",
-            published_status()
-        );
+    tilo_test_env::wait_for(what, || {
         one.step(Duration::from_millis(10)).expect("a frame");
-        if done() {
-            return;
-        }
         other.step(Duration::from_millis(10)).expect("a frame");
-    }
+        done().then_some(())
+    });
 }
 
 /// This device is an exit while the person turns it on, and only for their
