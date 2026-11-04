@@ -8,9 +8,8 @@
 //!
 //! A place also has two things the desk's windows do not carry: the view it
 //! shows its resource through, and whether the person pinned it. The desk's
-//! document keeps both beside the desk ([`Marks`]), so one
-//! record answers what the arrangement is, on this device and across a
-//! restart.
+//! document keeps both beside the desk ([`Marks`]), so one record answers what
+//! the arrangement is, on this device and across a restart.
 //!
 //! Each arranging action ([`ArrangementAction`]) is one change of the desk,
 //! attributed to whoever asked for it — the person's own input included — and
@@ -613,6 +612,13 @@ impl Arrangement {
     #[must_use]
     pub fn strips(&self) -> Strips {
         own_arrangement::read(&self.doc)
+    }
+
+    /// The changes the arrangement is at: a caller that keeps its choices with
+    /// the desk writes them when these move, not every frame.
+    #[must_use]
+    pub fn heads(&mut self) -> Vec<ChangeHash> {
+        self.doc.get_heads()
     }
 
     /// What the person chose for places the desk's windows do not carry: the

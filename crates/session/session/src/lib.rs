@@ -457,6 +457,9 @@ struct Shared {
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what an arranging action that is not their own waits for.
     underway: Rc<Cell<arrangement::Busy>>,
+    /// The arrangement's changes when its choices were last kept with the desk,
+    /// so a frame that changed nothing writes nothing.
+    marked: RefCell<Vec<ui::automerge::ChangeHash>>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
@@ -1882,6 +1885,7 @@ impl Session {
             clipboard: Rc::new(mount::clipboard::Clipboard::new(options.wake.handle())),
             arrangement,
             underway: busy,
+            marked: RefCell::new(Vec::new()),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,

@@ -442,8 +442,15 @@ impl crate::Shared {
     /// two are what its windows do not carry. Written when they move, not every
     /// frame.
     pub(crate) fn keep_arrangement(&self) {
-        let marks = self.arrangement.borrow().marks();
+        let mut arrangement = self.arrangement.borrow_mut();
+        let heads = arrangement.heads();
+        if *self.marked.borrow() == heads {
+            return;
+        }
+        let marks = arrangement.marks();
+        drop(arrangement);
         self.activity.keep_arrangement_marks(&marks);
+        *self.marked.borrow_mut() = heads;
     }
 }
 

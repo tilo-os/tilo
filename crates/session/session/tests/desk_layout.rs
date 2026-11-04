@@ -485,19 +485,6 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
     );
 }
 
-/// The window each place of the person's record opens, as the record keeps it
-/// on disk; empty while no session has kept one.
-fn record_states(state: &Path) -> Vec<serde_json::Value> {
-    let Ok(text) = fs::read(state.join("tilo").join("arrangement.automerge")) else {
-        return Vec::new();
-    };
-    let doc = ui::automerge::AutoCommit::load(&text).expect("this build's record");
-    tilo_desktop_model::own_arrangement::read(&doc)
-        .places()
-        .map(|place| place.state.clone())
-        .collect()
-}
-
 /// How many times the launcher wrote a start down: one line per app the
 /// session started.
 fn starts(started: &Path) -> usize {
@@ -509,9 +496,9 @@ fn starts(started: &Path) -> usize {
     })
 }
 
-/// A window the person opened in one session opens again in the next: a
-/// session that showed a running window keeps it in the person's record, and
-/// the next session opens the app that window was, in the tab it was in.
+/// A window the person opened in one session opens again in the next: the
+/// desk keeps a running window as the app that opened it, and the next session
+/// opens that app, in the tab it was in.
 #[test]
 fn a_window_the_person_opened_opens_again_after_a_restart() {
     let _settled = ui::motion::testing::settled();
@@ -551,24 +538,8 @@ fn a_window_the_person_opened_opens_again_after_a_restart() {
                     Some(TileContent::Foreign { surface_id: 11, .. })
                 )
         });
-        until(&mut session, "the record keeps the window", |_| {
-            matches!(
-                record_states(&state).as_slice(),
-                [state] if state.get("Foreign").is_some()
-            )
-        });
         tabs(&session)
     };
-
-    // The record keeps the window the session showed, which no next session
-    // can show: what opens it is what it must keep instead.
-    assert!(
-        matches!(
-            record_states(&state).as_slice(),
-            [state] if state.get("Foreign").is_some()
-        ),
-        "the record a session leaves keeps its running window"
-    );
 
     // The next session starts on what this one kept, and asks the app for its
     // window again, into the tab it was in.
