@@ -1742,8 +1742,12 @@ mod tests {
 
         type Catalogs = &'static [(&'static str, &'static str)];
         let cases: &[(&str, &str, Catalogs, Catalogs)] = &[
+            // The active language answers before the source does, the
+            // toolkit's own words included: its German catalogue is part of
+            // every manager, so a key the host only has in its source reads
+            // in the toolkit's German rather than in English.
             (
-                "app locale and source override the shared toolkit fallback",
+                "the active language answers before the source, toolkit words included",
                 "de-DE",
                 &[
                     (
@@ -1754,8 +1758,8 @@ mod tests {
                 ],
                 &[
                     ("history-mode-title", "Verlauf"),
-                    ("standalone-search-title", "App search"),
-                    ("proposal-accept", "Apply"),
+                    ("standalone-search-title", "Suchen"),
+                    ("proposal-accept", "Übernehmen"),
                 ],
             ),
             (

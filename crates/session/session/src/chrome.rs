@@ -221,6 +221,7 @@ type Seen = (
     u32,
     bool,
     Option<u64>,
+    u64,
 );
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -310,6 +311,7 @@ impl SessionChrome {
                 0,
                 false,
                 None,
+                u64::MAX,
             )),
             revision: Cell::new(0),
         }
@@ -349,6 +351,9 @@ impl DesktopChromeSource for SessionChrome {
             self.signals.unread(),
             self.signals.quiet(),
             identify.as_ref().map(|ask| ask.id),
+            // The bar says its words in the person's language: another one
+            // relabels it as any other change to what it shows does.
+            ui::I18nManager::revision(),
         );
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);

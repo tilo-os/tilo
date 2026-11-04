@@ -86,6 +86,11 @@ label = "Copy follows the house language and glossary"
 run = "python3 tools/policy/check_copy_language.py"
 
 [[step]]
+name = "catalogue-coverage"
+label = "Every translation says every word of its source catalogue"
+run = "python3 tools/policy/check_catalogue_coverage.py"
+
+[[step]]
 name = "action-keywords"
 label = "The other words actions declare for search are plain words"
 run = "python3 tools/policy/check_action_keywords.py"

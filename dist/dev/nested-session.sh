@@ -417,6 +417,16 @@ if [[ -n $env_runtime_id && ! -d $system_store/pkgs/${env_runtime_id#tapp:} ]]; 
 fi
 
 # --- 7. Apps -------------------------------------------------------------------
+# The translations the build packed, where a device keeps the ones the person
+# installed: the launcher binds this directory into every app it starts, so a
+# session started here speaks its language in the apps it launches, as an
+# installed device does, rather than showing each app in its source language.
+language_packs=$state/data/tilo/language-packs
+if [[ -d $build_out/language-packs ]]; then
+    rm -rf "$language_packs"
+    mkdir -p "$(dirname "$language_packs")"
+    cp -a "$build_out/language-packs" "$language_packs"
+fi
 stamps=$state/stamps
 mkdir -p "$stamps" "$TILO_APPS_DATA_DIR"
 installed=$("$bin/tilo-install" list 2>/dev/null || true)

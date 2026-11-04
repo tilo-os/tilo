@@ -276,6 +276,13 @@ done < <(cat "$target/$thin_profile/runtime-engines"
          ((${#selected[@]})) && python3 tools/apps/app_release.py --apps "${selected[*]}" | jq -r '.catalog[].binary')
 [[ ! -d $env_runtime ]] || cp -rp "$env_runtime" "$out/env-runtime"
 [[ ! -d $chromium_engine/runtime/chromium ]] || cp -rp "$chromium_engine/runtime/chromium" "$out/chromium-engine"
+# The tree's translations, packed as the OS image packs them: every language a
+# catalogue is translated into, one directory per language, beside the apps
+# that read them. An app package carries its source language alone, so without
+# these a session started from this build shows every app in English whatever
+# language the session speaks.
+python3 tools/apps/language_packs.py build . "$out/language-packs" \
+    || { echo "cannot build the language packs" >&2; exit 1; }
 # The runtime bundle carries the exact libstd the runtime links, so the
 # session needs no local Rust toolchain.
 needed_std=$(readelf -dW "$out/thin-app/libruntime_dylib.so" \

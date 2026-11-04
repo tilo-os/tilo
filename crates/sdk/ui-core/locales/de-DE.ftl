@@ -5,6 +5,7 @@ tab-held-by = Fenster von { $name }
 tab-controls-desktop = Steuert deinen Desktop
 tab-dev-build = Entwicklungsversion von { $installer }
 tab-shared-with = Geteilt mit { $place }
+standalone-search-title = Suchen
 
 history-mode-title = Verlauf
 history-mode-close = Verlauf schließen
@@ -1072,6 +1073,23 @@ attention-deferred = { $count } beiseitegelegt
 attention-pill-one = { $count } wartet
 attention-pill = { $count } warten
 action-document-replaced = Diese Aktion wurde nicht ausgeführt, weil ihr Dokument erneut geöffnet oder ersetzt wurde. Versuche es im aktuellen Dokument erneut.
+
+# One-shot action proposals: one model call's answer, before it is written.
+proposal-model-on-device = { $model }, läuft auf diesem Gerät
+proposal-model-hosted = { $model }, läuft auf einem anderen Rechner
+proposal-context-selection = Die Auswahl
+proposal-context-document = Das Dokument
+proposal-context-too-many = Das ist zu viel Kontext für einen Schritt. Wähle weniger.
+# $name is the part, $limit how many kilobytes one part may carry.
+proposal-context-too-long = { $name } ist länger als { $limit } KB. Wähle weniger.
+proposal-diff-more =
+    { $count ->
+        [one] Eine weitere Zeile wird nicht gezeigt
+       *[other] { $count } weitere Zeilen werden nicht gezeigt
+    }
+proposal-accept = Übernehmen
+proposal-reject = Verwerfen
+proposal-decisions = Diese Änderung übernehmen oder verwerfen
 
 # Spoken when Ctrl+Super+Enter (or both volume keys held) turns the screen reader on or off.
 screen-reader-turned-on = Bildschirmleser an

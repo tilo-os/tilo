@@ -118,6 +118,8 @@ impl Session {
         // What the session itself does before the frame: the desk, the apps
         // and the overlays this pass lays out.
         let pass = Instant::now();
+        // The person's language, before this pass resolves any of its words.
+        self.follow_language();
         // Add folders: answered whether the identity ceremony is over, and the
         // review the person left opens once it is.
         self.follow_folder_import();

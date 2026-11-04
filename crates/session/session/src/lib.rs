@@ -781,6 +781,9 @@ pub struct Session {
     /// The temperature and colour every app window is told, as the settings
     /// and wallpapers last said them.
     warmth: window_warmth::Windows,
+    /// The language the session's own surfaces speak, as the person's
+    /// settings last said it.
+    language: mount::language::Language,
     /// The person's warmth and when it shows, and the panel following the
     /// light in the room while they asked for it.
     night_light: night_light::NightLight,
@@ -2017,6 +2020,7 @@ impl Session {
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
             warmth,
+            language: mount::language::Language::new(),
             night_light,
             auto_brightness,
             keyboard_preference: options.config.on_screen_keyboard,

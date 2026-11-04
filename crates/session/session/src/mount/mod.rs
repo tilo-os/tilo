@@ -14,6 +14,7 @@ pub(crate) mod doors;
 pub mod drives;
 pub mod firstboot;
 pub(crate) mod host_shell;
+pub(crate) mod language;
 pub(crate) mod overview;
 pub(crate) mod panels;
 pub(crate) mod power;
