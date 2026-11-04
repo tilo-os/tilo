@@ -95,7 +95,9 @@ pub enum Request {
     /// One page of the conversation with `public_key` as the old private
     /// store keeps it, read for the import into the pair's record. People are
     /// named as the workspace names them here, on every target, whichever
-    /// store holds the old conversation.
+    /// store holds the old conversation. What answers it only reads: the
+    /// conversations' own writes go to their pair records, and this door goes
+    /// with the stored conversations, the release after the import.
     Import {
         public_key: String,
         after_sequence: u64,
