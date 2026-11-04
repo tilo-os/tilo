@@ -203,6 +203,15 @@ impl SearchField {
         Self::with_input(TextInput::local())
     }
 
+    /// A search input bound to `state`: what the person types updates it,
+    /// and a change to it through any clone shows here, as
+    /// [`TextInput::from_state`] does for an ordinary field. A view that
+    /// filters a list as the query is typed reads it from the same state.
+    #[must_use]
+    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+        Self::with_input(TextInput::from_state(state))
+    }
+
     /// The in-content filter: Enter and "Search everywhere" escalate the
     /// query to the platform search of this app, and the count slot is
     /// reserved so the text never runs under the count.
