@@ -120,8 +120,9 @@ default view task_page for Task
 default view project_list for Project
 
 /// A project's window opens on its tasks and switches to its board, the same tasks as a lane
-/// per section.
-views project_list, project_board for Project
+/// per section. The switch names the project already, so each view it offers says only what it
+/// adds: a list of tasks, or their columns.
+views project_list (icon: .list), project_board (icon: .columns_2) for Project
 
 row view task_summary for Task
 
@@ -549,8 +550,11 @@ view home(t: Tasks) {
     let found = t.items.matching(place)
     let shown = if role == "" { found.sort_by(.due) } else { found }
     let title = chosen?.label ?? "Tasks"
-    // A role that counts says how many wait in it; the list says how many it holds.
-    let count = if chosen?.counts ?? false { chosen?.count ?? 0 } else { shown.len() }
+    // A role that counts says how many wait in it. Only the places that count say a number:
+    // a project's place is its own list, not a tally.
+    let header_count: Option<Int> = if chosen?.counts ?? false {
+        .some(chosen?.count ?? 0)
+    } else { .none }
     // A project's place adds to that project, in the place's own list.
     let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
     // The entry says where what is typed will go.
@@ -561,7 +565,7 @@ view home(t: Tasks) {
         content_kind: .document,
         sidebar_title: "Tasks",
         overview_title: title,
-        overview_count: count,
+        overview_count: header_count,
     ) {
         // What the place leaves open, as its sidebar says it: the rows of what is done with
         // fold under the list, not into its count.
@@ -597,7 +601,7 @@ view home(t: Tasks) {
 /// bar switches it to the project's board, the same tasks as a lane per section.
 view project_list(p: Project) {
     let shown = tasks_of(p)
-    ui.NavShell(content_kind: .document, overview_title: p.name, overview_count: shown.len()) {
+    ui.NavShell(content_kind: .document, overview_title: p.name) {
         overview: {
             std.rows(
                 shown,

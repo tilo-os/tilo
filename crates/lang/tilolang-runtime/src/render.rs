@@ -302,7 +302,7 @@ impl Core {
         // The host's surfaces are read while the view's frame still stands: the actions they
         // show are the declarations of what it rendered, presented as the view presents them.
         let surfaced = match &root {
-            Ok(Value::Node(root)) => self.surfaces(*root, args),
+            Ok(Value::Node(root)) => self.surfaces(*root, args, &target.export),
             _ => Ok(()),
         };
         let frame = self.frames.borrow_mut().pop();

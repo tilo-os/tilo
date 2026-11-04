@@ -77,6 +77,18 @@ impl TypeInfo {
     }
 }
 
+/// One view of a `views` declaration: its name, and the short label and icon it is offered by
+/// in a window's switch (`views project_list, project_board (icon: .columns) for Project`).
+#[derive(Clone, Debug)]
+pub struct ViewsInfo {
+    pub name: String,
+    /// `(label: "Board")`: what the switch names it, when that is not the view's label with the
+    /// type's name left off.
+    pub label: Option<String>,
+    /// `(icon: .columns)`: the platform's icon for it.
+    pub icon: Option<String>,
+}
+
 /// One variant of a declared enum and its payload fields.
 #[derive(Clone, Debug)]
 pub struct VariantInfo {

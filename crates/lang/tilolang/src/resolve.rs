@@ -60,9 +60,9 @@ pub struct Env {
     pub states: Vec<StateInfo>,
     /// `row view v for T`: the type and the view's name.
     pub row_views: Vec<(TypeKey, String)>,
-    /// `views a, b for T`: the type, the views' names in the order written, and where the
+    /// `views a, b for T`: the type, the views in the order written, and where the
     /// declaration stands.
-    pub views_of: Vec<(TypeKey, Vec<String>, Span)>,
+    pub views_of: Vec<(TypeKey, Vec<crate::resolve::ViewsInfo>, Span)>,
     /// The functions of action parameters' defaults, numbered after the presentation views.
     pub defaults: Vec<DefaultFn>,
     /// The toolkit's components, the package `ui`.
@@ -2492,7 +2492,7 @@ impl Resolver<'_> {
             .iter()
             .filter_map(|(key, views, span)| {
                 let (_, default) = self.env.default_views.iter().find(|(k, _)| k == key)?;
-                (!views.contains(default)).then(|| {
+                (!views.iter().any(|v| &v.name == default)).then(|| {
                     (
                         *span,
                         format!(

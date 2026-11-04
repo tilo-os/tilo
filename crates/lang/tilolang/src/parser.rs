@@ -814,9 +814,9 @@ impl<'a> Parser<'a> {
         if self.at_views() {
             self.bump();
             let node = self.node();
-            let mut views = vec![self.ident("the name of a view")?];
+            let mut views = vec![self.views_entry()?];
             while self.eat(&Tok::Comma) {
-                views.push(self.ident("the name of a view")?);
+                views.push(self.views_entry()?);
             }
             self.expect_kw("for")?;
             let ty = self.type_expr()?;
@@ -947,6 +947,18 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_at(1), Tok::Ident(_))
             && matches!(self.peek_at(2), Tok::Colon)
             && !matches!(self.peek_at(3), Tok::Ident(_) | Tok::LParen)
+    }
+
+    /// One view of a `views` declaration: its name, and the options it is offered by
+    /// (`views list_, board (icon: .columns) for Project`).
+    fn views_entry(&mut self) -> PResult<crate::ast::ViewsEntry> {
+        let view = self.ident("the name of a view")?;
+        let opts = if self.at_variant_opts() {
+            self.action_opts()?
+        } else {
+            Vec::new()
+        };
+        Ok(crate::ast::ViewsEntry { view, opts })
     }
 
     fn use_decl(&mut self, start: Span) -> PResult<UseDecl> {

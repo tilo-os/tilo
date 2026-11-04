@@ -52,6 +52,20 @@ const ACTIONS: &str = "actions";
 /// The word a "…" is named by: the one the shell gives its own More button.
 const MORE: &str = "window-toolbar-more";
 
+/// What a switch names the view labelled `full` of the type labelled `ty`: the view's label
+/// with the type's name left off, so a Project's views read "List" and "Board" under a strip
+/// the type already names. The full label stands when the type's name is not part of it.
+fn switch_label(full: &str, ty: Option<&str>) -> String {
+    let Some(rest) = ty.and_then(|ty| full.strip_prefix(ty)).map(str::trim) else {
+        return full.to_owned();
+    };
+    let mut chars = rest.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => full.to_owned(),
+    }
+}
+
 /// Where each field of a `host.Action` stands, as [`crate::platform`] offers it.
 const LABEL: usize = 0;
 const ICON: usize = 1;
@@ -75,7 +89,12 @@ impl Core {
     /// # Errors
     ///
     /// An action whose presentation view traps, or a tree the arena does not hold.
-    pub(crate) fn surfaces(&self, root: usize, args: &[Value]) -> Result<(), RuntimeError> {
+    pub(crate) fn surfaces(
+        &self,
+        root: usize,
+        args: &[Value],
+        shown: &str,
+    ) -> Result<(), RuntimeError> {
         let subject = match args.first() {
             Some(Value::Ref(subject)) => Some(subject.clone()),
             _ => None,
@@ -106,15 +125,15 @@ impl Core {
         let overview = self.slot(shell, OVERVIEW)?.is_some();
         let entry = self.declare_entry_key(shell, &acted)?;
         if overview {
-            if let Some(switch) = self.view_switch(&subject)? {
+            if let Some(switch) = self.view_switch(&subject, shown)? {
                 self.put_at_in_slot(shell, OVERVIEW_ACTIONS, switch)?;
             }
             self.fill_bar(shell, OVERVIEW_ACTIONS, listed, &acted, entry.as_deref())?;
         } else if self.has_title(shell, &subject) {
-            let switch = self.view_switch(&subject)?;
+            let switch = self.view_switch(&subject, shown)?;
             self.put_under_title(shell, &subject, &acted, switch)?;
         } else {
-            if let Some(switch) = self.view_switch(&subject)? {
+            if let Some(switch) = self.view_switch(&subject, shown)? {
                 self.put_at_in_slot(shell, ACTIONS, switch)?;
             }
             self.fill_bar(shell, ACTIONS, listed, &acted, entry.as_deref())?;
@@ -239,11 +258,14 @@ impl Core {
     }
 
     /// The switch over the views of the resource the window shows, when its type offers more
-    /// than one view that draws it whole: a labelled tab per view, the one the window shows
-    /// chosen, and a press choosing another for the window, which
-    /// [`render`](crate::render) reads where it draws the resource. `None` for a type with one
-    /// view, which stands as the window itself.
-    fn view_switch(&self, subject: &RefValue) -> Result<Option<usize>, RuntimeError> {
+    /// than one view that draws it whole: a tab per view, the one the window shows chosen, and a
+    /// press choosing another for the window, which [`render`](crate::render) reads where it
+    /// draws the resource. `None` for a type with one view, which stands as the window itself.
+    ///
+    /// `shown` is the view the window draws the resource through now, so the switch shows what
+    /// is on screen whatever chose it. The type's name names the strip, and each tab says only
+    /// what the view adds to it: a Project's views read "List" and "Board".
+    fn view_switch(&self, subject: &RefValue, shown: &str) -> Result<Option<usize>, RuntimeError> {
         let views = { self.registry.borrow().views_of_type(&subject.target.ty) };
         if views.len() < 2 {
             return Ok(None);
@@ -252,15 +274,16 @@ impl Core {
             .with_view(|vs| Ok(vs.window.clone()))
             .map_err(trapped)?;
         let state = format!("{VIEW_STATE}{}", subject.target.id_string());
-        let chosen = self.chosen_index(&window, &state, &subject.target.ty, &views);
+        let chosen = self.chosen_index(&window, &state, &subject.target.ty, &views, shown);
         let base = format!("{window}~views");
         let mut tabs = empty("ui.ViewTabs", &base);
         tabs.props.insert(
             "selected".to_owned(),
             Value::Opt(Some(Box::new(Value::Int(chosen)))),
         );
-        if let Some(label) = self.type_label(&subject.target.ty) {
-            tabs.props.insert("label".to_owned(), Value::text(&label));
+        let type_label = self.type_label(&subject.target.ty);
+        if let Some(label) = &type_label {
+            tabs.props.insert("label".to_owned(), Value::text(label));
         }
         tabs.events.insert(
             "change".to_owned(),
@@ -276,25 +299,46 @@ impl Core {
         );
         let at = self.push(tabs)?;
         for (index, (id, name)) in views.iter().enumerate() {
-            let label = self.words.borrow().word(
+            let (label, icon) = {
+                let registry = self.registry.borrow();
+                registry.view_shown(&subject.target.ty, id)
+            };
+            let full = self.words.borrow().word(
                 &tilolang::messages::key_of(id),
                 &[],
                 &tilolang::messages::label(name),
             );
+            let label = label.unwrap_or_else(|| switch_label(&full, type_label.as_deref()));
             let mut segment = empty("ui.Segment", &format!("{base}~view-{index}"));
             segment
                 .props
                 .insert("label".to_owned(), Value::text(&label));
+            if let Some(icon) = icon {
+                segment.props.insert("icon".to_owned(), Value::text(&icon));
+            }
             let child = self.push(segment)?;
             self.insert(at, usize::MAX, child)?;
         }
         Ok(Some(at))
     }
 
-    /// Which of `views` the window shows `ty`'s resource through, as the person chose: their
-    /// choice, else the type's default view, else the first. The choice is read from the
-    /// window's state, so the bar runs again when another tab is chosen.
-    fn chosen_index(&self, window: &str, state: &str, ty: &str, views: &[(String, String)]) -> i64 {
+    /// Which of `views` the window shows `ty`'s resource through: the view it draws the
+    /// resource through now, else the person's choice, else the type's default view, else the
+    /// first. The choice is read from the window's state, so the bar runs again when another
+    /// tab is chosen.
+    fn chosen_index(
+        &self,
+        window: &str,
+        state: &str,
+        ty: &str,
+        views: &[(String, String)],
+        shown: &str,
+    ) -> i64 {
+        // What the window draws now comes first: a window opened straight onto a view shows
+        // that view chosen, before any choice or default of its own.
+        if let Some(index) = views.iter().position(|(id, _)| id == shown) {
+            return i64::try_from(index).unwrap_or_default();
+        }
         let key = StateKey {
             window: window.to_owned(),
             principal: None,

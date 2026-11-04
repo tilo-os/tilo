@@ -918,6 +918,21 @@ impl NavModel {
         self.nodes.get(&id).map(|node| node.key.as_str())
     }
 
+    /// The key of the item whose place names the resource `id`: a place key ends with the id
+    /// of the resource it shows (`project:<id>`), or is the id itself. No item for a resource
+    /// no place names.
+    fn item_naming(&self, id: &str) -> Option<&str> {
+        self.nodes.values().find_map(|node| {
+            let names = matches!(node.kind, NavNodeKind::Item { .. })
+                && (node.key == id
+                    || node
+                        .key
+                        .strip_suffix(id)
+                        .is_some_and(|rest| rest.ends_with(':') || rest.ends_with('/')));
+            names.then_some(node.key.as_str())
+        })
+    }
+
     fn item_id(&self, key: &str) -> Option<NodeId> {
         self.nodes.iter().find_map(|(id, node)| {
             (node.key == key && matches!(node.kind, NavNodeKind::Item { .. })).then_some(*id)
@@ -1795,6 +1810,17 @@ impl NavList {
         if let Some(node) = node {
             self.tree.reveal(node);
         }
+    }
+
+    /// Choose the place that names the resource `id`, without reporting it, when the list has
+    /// one: the place follows the content the window shows. Answers whether it chose one, and
+    /// leaves the selection as it was when no place names `id`.
+    pub fn select_naming(&mut self, id: &str) -> bool {
+        let Some(key) = self.tree.model().item_naming(id).map(str::to_owned) else {
+            return false;
+        };
+        self.set_selected(Some(&key));
+        true
     }
 
     fn select_quietly(&mut self, id: Option<&str>) -> Option<NodeId> {

@@ -234,7 +234,8 @@ pub struct Segment {
     /// What the segment shows when its full label does not fit its share
     /// of the strip ("Mon" for "Monday").
     pub short: Option<String>,
-    /// A glyph shown instead of the label ([`Segment::icon`]).
+    /// A glyph shown before the label on a tab, and instead of it on any
+    /// other strip ([`Segment::icon`]).
     pub icon: Option<Icon>,
     /// The segment's keyboard shortcut, named after the label in its
     /// tooltip.
@@ -255,8 +256,8 @@ impl Segment {
         }
     }
 
-    /// A segment that shows `icon` (a list or grid view), named `name` for
-    /// assistive technology.
+    /// A segment that shows `icon` (a list or grid view), before its name on
+    /// a tab and instead of it on any other strip; `name` is its label.
     pub fn icon(icon: Icon, name: impl Into<String>) -> Self {
         Self {
             label: name.into(),
@@ -1111,6 +1112,8 @@ struct StripMetrics {
     gap: f64,
     /// The edge of a segment's icon: the label's line.
     icon: f64,
+    /// Between a segment's icon and its label.
+    icon_gap: f64,
     track_radius: f64,
     thumb_radius: f64,
     label: TextStyle,
@@ -1129,6 +1132,7 @@ impl StripMetrics {
             pad_x: f64::from(theme.tokens.spacing.s3),
             gap: f64::from(theme.tokens.spacing.s2),
             icon: f64::from(label.line_height_px()).round(),
+            icon_gap: f64::from(theme.tokens.spacing.s1),
             track_radius: f64::from(radii.control),
             thumb_radius: f64::from(radii.concentric(radii.control, inset)),
             label,
@@ -1170,13 +1174,15 @@ impl StripMetrics {
     }
 
     /// A tab's natural width: its label and the padding either side of it,
-    /// inside the lift that marks the chosen tab.
-    fn tab_natural(&self, label: &str, text: &mut TextRenderer) -> f64 {
+    /// inside the lift that marks the chosen tab, after its icon when it
+    /// has one.
+    fn tab_natural(&self, label: &str, icon: bool, text: &mut TextRenderer) -> f64 {
         let w = f64::from(
             text.measure_style(label, None, &self.label.clone().strong())
                 .0,
         );
-        (w + 2.0 * self.pad_x).ceil()
+        let lead = if icon { self.icon + self.icon_gap } else { 0.0 };
+        (lead + w + 2.0 * self.pad_x).ceil()
     }
 
     /// Each segment's `(full, short)` natural widths in `style`.
@@ -1189,12 +1195,13 @@ impl StripMetrics {
         segments
             .iter()
             .map(|segment| {
-                if style == SegmentedStyle::Tabs && segment.icon.is_none() {
-                    let full = self.tab_natural(&segment.label, text);
+                if style == SegmentedStyle::Tabs {
+                    let icon = segment.icon.is_some();
+                    let full = self.tab_natural(&segment.label, icon, text);
                     let short = segment
                         .short
                         .as_deref()
-                        .map_or(full, |short| self.tab_natural(short, text));
+                        .map_or(full, |short| self.tab_natural(short, icon, text));
                     return (full, short);
                 }
                 let icon = segment.icon.is_some();
@@ -1430,7 +1437,8 @@ impl<'a> SegmentedFace<'a> {
     }
 
     /// A strip of [`Segment`]s: a segment whose label does not fit its rect
-    /// shows its short form, an icon segment its icon.
+    /// shows its short form, a tab its icon before its label, and any other
+    /// strip's icon segment its icon alone.
     pub fn of_segments(segments: &'a [Rect], items: &'a [Segment], selected: usize) -> Self {
         let mut face = Self::new(segments, &[], selected);
         face.items = items
@@ -1768,17 +1776,35 @@ impl ToggleGroup {
                 text_renderer.draw_style(scene, &shown, ink, label_transform, None, &label_style);
                 continue;
             }
+            let tabs = face.style == SegmentedStyle::Tabs;
+            let pad = metrics.pad_x.min(seg.width() / 4.0);
+            // A tab with an icon sets its icon before its label; any other
+            // strip's icon segment is its glyph alone.
+            let mut lead = pad;
             if let Some(icon) = item.icon {
                 let edge = metrics.icon.min(seg.height());
+                let at = if tabs {
+                    Rect::new(
+                        seg.x0 + pad,
+                        seg.center().y - edge / 2.0,
+                        seg.x0 + pad + edge,
+                        seg.center().y + edge / 2.0,
+                    )
+                } else {
+                    Rect::from_center_size(seg.center(), (edge, edge))
+                };
                 crate::icons::draw_icon(
                     scene,
                     transform,
-                    Rect::from_center_size(seg.center(), (edge, edge)),
+                    at,
                     icon,
                     ink,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
-                continue;
+                if !tabs {
+                    continue;
+                }
+                lead = pad + metrics.icon + metrics.icon_gap;
             }
             if item.label.is_empty() {
                 continue;
@@ -1788,9 +1814,6 @@ impl ToggleGroup {
             } else {
                 &metrics.label
             };
-            let tabs = face.style == SegmentedStyle::Tabs;
-            let pad = metrics.pad_x.min(seg.width() / 4.0);
-            let lead = pad;
             let room = (seg.width() - lead - pad).max(1.0);
             let full_w = f64::from(text_renderer.measure_style(item.label, None, style).0);
             let label = match item.short {

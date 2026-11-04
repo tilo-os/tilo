@@ -1047,7 +1047,10 @@ impl Printer<'_> {
                 let views = d
                     .views
                     .iter()
-                    .map(|view| view.name.clone())
+                    .map(|view| {
+                        let opts = self.opts(&view.opts);
+                        format!("{}{}", view.view.name, opts_text(&opts))
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.line(&format!("views {views} for {}", print_type(&d.ty)));

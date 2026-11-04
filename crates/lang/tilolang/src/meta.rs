@@ -124,6 +124,24 @@ pub struct ViewsMeta {
     pub ty: String,
     /// The views' ids.
     pub views: Vec<String>,
+    /// The views whose declaration says how a window's switch offers them, by id: the rest are
+    /// offered by their names, with the type's name left off.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shown: Vec<ViewShownMeta>,
+}
+
+/// How a view of a type is offered in a window's switch, when its declaration says
+/// (`views project_list (label: "List", icon: .list), project_board for Project`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewShownMeta {
+    /// The view's id.
+    pub view: String,
+    /// The short label the switch shows, in the words the app wrote it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The icon beside it, as a kebab-case name of the platform's set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
 }
 
 /// A named root: its name and its type's id.
@@ -773,6 +791,17 @@ impl PackageMeta {
             .find(|v| v.ty == ty)
             .map(|v| v.views.iter().map(String::as_str).collect())
             .unwrap_or_default()
+    }
+
+    /// How the switch offers the view `view` (an id) of the type `ty` (an id): the short label
+    /// and the icon its declaration names, `None` for each it does not.
+    #[must_use]
+    pub fn view_shown(&self, ty: &str, view: &str) -> (Option<&str>, Option<&str>) {
+        self.views_of
+            .iter()
+            .find(|v| v.ty == ty)
+            .and_then(|v| v.shown.iter().find(|s| s.view == view))
+            .map_or((None, None), |s| (s.label.as_deref(), s.icon.as_deref()))
     }
 
     /// The id of the row view of the type `ty` (an id), when the package declares one.

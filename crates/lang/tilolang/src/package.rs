@@ -439,7 +439,20 @@ fn build_meta(
             ty: type_id(key),
             views: views
                 .iter()
-                .filter_map(|view| Some(env.own_callable(view)?.id.clone()))
+                .filter_map(|view| Some(env.own_callable(&view.name)?.id.clone()))
+                .collect(),
+            shown: views
+                .iter()
+                .filter_map(|view| {
+                    let id = env.own_callable(&view.name)?.id.clone();
+                    (view.label.is_some() || view.icon.is_some()).then(|| {
+                        crate::meta::ViewShownMeta {
+                            view: id,
+                            label: view.label.clone(),
+                            icon: view.icon.clone(),
+                        }
+                    })
+                })
                 .collect(),
         })
         .collect();

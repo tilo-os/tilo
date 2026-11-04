@@ -59,7 +59,8 @@ pub struct SegmentProps {
     pub label: String,
     /// What it shows when its full label does not fit its share: "Mon" for "Monday".
     pub short: Option<String>,
-    /// A glyph instead of the label.
+    /// A glyph: before the label on a tab ([`ViewTabs`]), and instead of it on
+    /// any other strip, named by the label either way.
     pub icon: Option<Icon>,
     /// Its keyboard shortcut, named in its tooltip: "B", "Shift+R".
     pub hint: Option<String>,

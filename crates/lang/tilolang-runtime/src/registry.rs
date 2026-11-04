@@ -503,6 +503,19 @@ impl Registry {
             .collect()
     }
 
+    /// How a window's switch offers the view `view` (its id) of the type `ty`: the short label
+    /// and icon its declaration names for it, `None` for each it does not say.
+    pub fn view_shown(&self, ty: &str, view: &str) -> (Option<String>, Option<String>) {
+        let Some(ty) = self.type_id(ty) else {
+            return (None, None);
+        };
+        let Some(pkg) = self.types.get(&ty).and_then(|hash| self.package(hash)) else {
+            return (None, None);
+        };
+        let (label, icon) = pkg.meta.view_shown(&ty, view);
+        (label.map(str::to_owned), icon.map(str::to_owned))
+    }
+
     /// The views of `ty` a person or an agent can apply or name (`shown_as`), whether or not a
     /// window switches between them: a declared view of one resource and nothing else, but not a
     /// row. A view no declaration names is the app's own helper, which the app places itself and

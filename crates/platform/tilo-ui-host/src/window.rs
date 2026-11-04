@@ -895,13 +895,20 @@ impl AppWindow {
     }
 
     /// Select, in each list of the overview, the row of the view shown after it: the app keeps
-    /// no selection beside it.
+    /// no selection beside it. The sidebar's place follows what the content shows the same way:
+    /// a place names the resource it shows by the id alone, so the window chooses the one that
+    /// names the shown resource, and leaves the app's own choice when none does.
     fn select_shown(&mut self) {
         let shown = self.detail.as_ref().map(|detail| detail.target.id_string());
-        if let Some(shell) = self.shell()
-            && let Some(list) = shell.overview_list_mut()
-        {
-            list.select_presenting(shown.as_deref());
+        if let Some(shell) = self.shell() {
+            if let Some(shown) = &shown
+                && let Some(sidebar) = shell.sidebar_mut::<ui::widget::NavList>()
+            {
+                sidebar.select_naming(shown);
+            }
+            if let Some(list) = shell.overview_list_mut() {
+                list.select_presenting(shown.as_deref());
+            }
         }
     }
 

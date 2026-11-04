@@ -235,9 +235,17 @@ pub struct DefaultViewDecl {
 pub struct ViewsDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
-    pub views: Vec<Ident>,
+    pub views: Vec<ViewsEntry>,
     pub ty: TypeExpr,
     pub span: Span,
+}
+
+/// One view of a `views` declaration, with the short label and icon it is offered by:
+/// `project_board (icon: .columns)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewsEntry {
+    pub view: Ident,
+    pub opts: Vec<ActionOpt>,
 }
 
 /// `scenario "a week of notes" { ... }`: statements that fill a workspace with sample data for
