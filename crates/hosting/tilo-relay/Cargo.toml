@@ -247,9 +247,6 @@ tilo-room-host = { path = "../tilo-room-host", features = ["test-support"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-# The shell-selection fixture, the selection construction counter and the
-# barriers inside selection that the store, peer and persistence tests use.
-tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }

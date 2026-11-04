@@ -20677,7 +20677,6 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
- "tilo-relay-shell",
  "tilo-resource",
  "tilo-room-host",
  "tilo-rt",
