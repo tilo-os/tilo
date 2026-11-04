@@ -1778,8 +1778,12 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
 /// saying which of the two is still missing when they do not.
 fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
     // The join is the site's door, the workspace's keys and its roster arriving
-    // from other runtimes, so the bound is the suite's, not a second count.
-    let here = common::wait_maybe(session, |session| {
+    // from other runtimes, and the session gives a host its own patience to
+    // answer them: the wait spans that patience and the suite's hang bound
+    // after it, so a host answering slowly is waited for rather than called
+    // hung, and the session's note on a join that did not happen is what the
+    // test reports when the wait runs out.
+    let here = common::wait_maybe_past(session, tilo_session::sync::JOIN_PATIENCE, |session| {
         let held = session.held_workspaces();
         let people = session.people(&lounge.workspace);
         (held.iter().any(|workspace| workspace == &lounge.workspace)

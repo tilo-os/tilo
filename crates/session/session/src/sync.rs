@@ -76,6 +76,17 @@ const REDEEM_WITHIN: Duration = Duration::from_secs(120);
 /// person is told a join did not happen rather than left waiting on it.
 const SETTLE_WITHIN: Duration = Duration::from_secs(30);
 
+/// How long a join may take before the person is told it did not happen: the
+/// host's answer may take [`REDEEM_WITHIN`], and taking the granted workspace
+/// in [`SETTLE_WITHIN`] after it. A test waiting for a join waits past this,
+/// so what it reports is the join's outcome, never its own patience running
+/// out first.
+pub const JOIN_PATIENCE: Duration = Duration::from_secs(
+    REDEEM_WITHIN
+        .as_secs()
+        .saturating_add(SETTLE_WITHIN.as_secs()),
+);
+
 /// How long the session waits for this device's endpoint to bind before it
 /// starts without one: a desktop with no one else on it, rather than a session
 /// that never opens.

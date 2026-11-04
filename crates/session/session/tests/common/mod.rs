@@ -84,9 +84,20 @@ pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool
 /// uses.
 fn steps_until<T>(
     session: &mut Session,
+    probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    steps_within(session, tilo_test_env::hang_bound(), probe)
+}
+
+/// Step the session's loop until `probe` answers, or `within` runs out.
+fn steps_within<T>(
+    session: &mut Session,
+    within: std::time::Duration,
     mut probe: impl FnMut(&mut Session) -> Option<T>,
 ) -> Option<T> {
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = std::time::Instant::now()
+        .checked_add(within)
+        .expect("the wait's bound fits in an Instant");
     loop {
         if let Some(answer) = probe(session) {
             return Some(answer);
@@ -134,6 +145,25 @@ pub fn wait_maybe<T>(
     mut probe: impl FnMut(&mut Session) -> Option<T>,
 ) -> Option<T> {
     steps_until(session, |session| probe(session))
+}
+
+/// [`wait_maybe`] for a wait that spans a step the product itself times out:
+/// `patience` is how long the product allows that step, and the suite's hang
+/// bound is added after it, so a host that takes longer than the suite's bound
+/// but less than the product's patience is not reported as hung — the wait
+/// ends when the product says what became of the step, and its own message is
+/// what the test reports when the wait runs out.
+#[track_caller]
+pub fn wait_maybe_past<T>(
+    session: &mut Session,
+    patience: Duration,
+    mut probe: impl FnMut(&mut Session) -> Option<T>,
+) -> Option<T> {
+    steps_within(
+        session,
+        patience.saturating_add(tilo_test_env::hang_bound()),
+        |session| probe(session),
+    )
 }
 
 /// Run frames until `done` holds.

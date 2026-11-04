@@ -50,6 +50,31 @@ fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
+/// The CPU time this thread has run so far: what a turn of the loop itself
+/// spent, without the time a loaded machine kept it off a core.
+fn thread_cpu() -> Duration {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, writable timespec for the call's duration.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut now) };
+    assert_eq!(status, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID)");
+    Duration::new(
+        u64::try_from(now.tv_sec).unwrap(),
+        u32::try_from(now.tv_nsec).unwrap(),
+    )
+}
+
+/// One turn of the loop and the CPU it spent, which is the turn's own time:
+/// the clock's time it took says as much about the machine's load as about
+/// the loop.
+fn turn(session: &mut Session) -> Duration {
+    let started = thread_cpu();
+    step(session);
+    thread_cpu().saturating_sub(started)
+}
+
 /// Step the session until `done`, so a paste on its own thread has time to
 /// finish. The steps move the session's clock on, not the machine's: the paste
 /// copies on its own thread, so the suite's hang bound is what ends the wait,
@@ -240,8 +265,11 @@ fn replacing_sends_the_name_that_was_there_to_the_trash() {
     let mut session = session();
     copy(&mut session, &[source.join("note.txt")], false);
     paste_into(&mut session, &destination, Some("replace"));
+    // A replacement sends what was there to the Trash before the new file
+    // lands, so the name is gone for a moment: the wait asks what the name
+    // holds, not whether it can be read.
     until(&mut session, "the paste finished", |_| {
-        read(&destination.join("note.txt")) == b"the new one"
+        fs::read(destination.join("note.txt")).is_ok_and(|now| now == b"the new one")
     });
     until(&mut session, "the receipt went", |_| {
         !receipt(&home).exists()
@@ -325,16 +353,10 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     let paths = tree(&source.join("big"), 12000);
 
     let mut session = session();
-    // What a turn costs on this machine before the paste starts: a loaded one
+    // What a turn's own work costs before the paste starts: a loaded machine
     // takes every turn slowly, and the test is about the paste being spread
     // over turns, not about the machine being idle.
-    let mut before: Vec<Duration> = (0..5)
-        .map(|_| {
-            let turn = Instant::now();
-            step(&mut session);
-            turn.elapsed()
-        })
-        .collect();
+    let mut before: Vec<Duration> = (0..5).map(|_| turn(&mut session)).collect();
     before.sort_unstable();
     let pace = before.get(before.len() / 2).copied().unwrap_or_default();
     copy(&mut session, &[source.join("big")], false);
@@ -342,9 +364,7 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
     paste_into(&mut session, &destination, None);
     let mut turns: Vec<Duration> = Vec::new();
     while !destination.join("big").exists() && started.elapsed() < tilo_test_env::hang_bound() {
-        let turn = Instant::now();
-        step(&mut session);
-        turns.push(turn.elapsed());
+        turns.push(turn(&mut session));
     }
     let copied = started.elapsed();
     until(&mut session, "the receipt went", |_| {
@@ -364,7 +384,8 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         .unwrap_or_default();
     let max = sorted.last().copied().unwrap_or_default();
     println!(
-        "paste of {} files took {copied:?} over {} turns; turn p50 {p50:?}, p95 {p95:?}, max {max:?}",
+        "paste of {} files took {copied:?} over {} turns; turn CPU p50 {p50:?}, p95 {p95:?}, \
+         max {max:?}",
         paths.len(),
         turns.len()
     );
@@ -374,25 +395,20 @@ fn a_big_folder_is_pasted_without_a_single_slow_turn_of_the_loop() {
         turns.len()
     );
     // A turn that waits on the disk stands out from the turns around it by
-    // whole seconds, while a loaded machine only ever takes a turn off the CPU
-    // for a few of its own turns' worth: so the bound is the loop's own pace,
-    // never a wall-clock figure of this machine.
+    // whole seconds, and a turn that copies files spends the CPU for them: a
+    // turn's own time is the CPU it spent, which a machine that holds it off a
+    // core for tens of milliseconds does not change.
+    let quiet = pace.max(Duration::from_millis(50));
     assert!(
-        p50 < pace.max(Duration::from_millis(50)),
-        "the loop's usual turn kept its time: p50 {p50:?} of {} turns, over {copied:?}, \
-         against {pace:?} a turn before the paste",
+        p50 < quiet,
+        "the loop's usual turn kept its time: p50 {p50:?} of CPU over {} turns, over \
+         {copied:?} in all, against {pace:?} a turn before the paste",
         turns.len()
     );
-    // A single turn off the CPU on a busy machine is not the loop waiting on
-    // the disk: a turn that carries part of the paste spends a share of what
-    // the paste as a whole takes, so the allowance for the worst turn is a
-    // quarter of the paste's own time, and the turns whose turn it was.
-    let quiet = (copied / 4)
-        .max(Duration::from_millis(50))
-        .max(p95.saturating_mul(4));
     assert!(
         max < quiet,
-        "no turn waited on the disk: max {max:?} of {} turns, p50 {p50:?}, p95 {p95:?}, over {copied:?}",
+        "no turn carried a copy: max {max:?} of CPU over {} turns, p50 {p50:?}, p95 {p95:?}, \
+         in {copied:?} in all",
         turns.len()
     );
 }
