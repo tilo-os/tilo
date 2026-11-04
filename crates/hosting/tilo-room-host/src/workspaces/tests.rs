@@ -259,6 +259,49 @@ async fn assert_view_reader_refused(
     );
 }
 
+/// Publish `revoked` while a reader of `source` waits on the governed workspace
+/// lock: the reader must recheck admission behind that same lock and be refused.
+#[cfg(feature = "agents")]
+async fn publish_a_revocation_with_a_reader_waiting(
+    workspaces: &Workspaces,
+    workspace: &str,
+    workspace_id: u64,
+    caller: &tilo_actions::remote::Caller,
+    source: &tilo_peer_state::document_frame::DocumentRoute,
+    revoked: tilo_user_identity::RevocationEntry,
+    key: &SigningKey,
+) {
+    let queued_read = workspaces.resource_view_document(workspace_id, caller, source);
+    tokio::pin!(queued_read);
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let mut workspace = state.lock().await;
+    // Poll the actual reader to Pending while the governed workspace lock is held.
+    // It must recheck admission after acquiring this same lock.
+    assert!(
+        std::future::poll_fn(|cx| {
+            use std::future::Future;
+            std::task::Poll::Ready(queued_read.as_mut().poll(cx).is_pending())
+        })
+        .await
+    );
+    let now = SystemTime::now();
+    let mut candidate = workspace.peer().clone();
+    candidate
+        .governance_mut()
+        .publish_governed_revocations(&[revoked], key, now)
+        .unwrap();
+    let collaboration = workspace.collaboration().clone();
+    workspace
+        .commit(candidate, key, now, |_, _| Ok(collaboration))
+        .unwrap();
+    drop(workspace);
+    drop(state);
+    assert_eq!(
+        queued_read.await.err().unwrap(),
+        "resource read not permitted"
+    );
+}
+
 #[cfg(feature = "agents")]
 #[tokio::test]
 async fn view_read_policy_requires_current_certified_person_and_observes_revocation() {
@@ -333,37 +376,16 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         signature: [0; 64],
     };
     tilo_user_identity::sign_revocation_entry(&mut revoked, &identity_key).unwrap();
-    {
-        let queued_read = workspaces.resource_view_document(created.workspace_id, &caller, &source);
-        tokio::pin!(queued_read);
-        let state = workspaces.workspace(&created.workspace).await.unwrap();
-        let mut workspace = state.lock().await;
-        // Poll the actual reader to Pending while the governed workspace lock is held.
-        // It must recheck admission after acquiring this same lock.
-        assert!(
-            std::future::poll_fn(|cx| {
-                use std::future::Future;
-                std::task::Poll::Ready(queued_read.as_mut().poll(cx).is_pending())
-            })
-            .await
-        );
-        let now = SystemTime::now();
-        let mut candidate = workspace.peer().clone();
-        candidate
-            .governance_mut()
-            .publish_governed_revocations(&[revoked], &key, now)
-            .unwrap();
-        let collaboration = workspace.collaboration().clone();
-        workspace
-            .commit(candidate, &key, now, |_, _| Ok(collaboration))
-            .unwrap();
-        drop(workspace);
-        drop(state);
-        assert_eq!(
-            queued_read.await.err().unwrap(),
-            "resource read not permitted"
-        );
-    }
+    publish_a_revocation_with_a_reader_waiting(
+        &workspaces,
+        &created.workspace,
+        created.workspace_id,
+        &caller,
+        &source,
+        revoked,
+        &key,
+    )
+    .await;
     assert_view_reader_refused(&workspaces, created.workspace_id, &caller, &source).await;
     drop(workspaces);
     relay.shutdown().await;

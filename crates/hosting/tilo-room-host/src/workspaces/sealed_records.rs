@@ -316,7 +316,7 @@ impl Workspaces {
                         }
                         Err(error) => {
                             tracing::warn!(workspace = %workspace.workspace(), %app, %record,
-                            %error, "a record's channel was not opened")
+                            %error, "a record's channel was not opened");
                         }
                     }
                 }
