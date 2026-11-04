@@ -152,8 +152,12 @@ impl<'a> TextBlockFace<'a> {
             return 0.0;
         }
         f64::from(
-            text.measure_style(self.text, Some(crate::num::f32_of_f64(width.max(0.0))), self.style)
-                .1,
+            text.measure_style(
+                self.text,
+                Some(crate::num::f32_of_f64(width.max(0.0))),
+                self.style,
+            )
+            .1,
         )
     }
 

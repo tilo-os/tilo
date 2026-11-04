@@ -326,6 +326,12 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Button(role)` | primary, secondary, quiet, destructive |
 | `IconButton` | square, small or default; its constructor requires the accessible name, which is its tooltip |
 | `BarControlFace` | the top bar's and window bars' control: plain at rest, lifts on hover and while open, 28 high |
+| `BarChip` | a bar control holding a face stack, a label and a press: the bar's people, invite, sharing and strip-name pills |
+| `StatusCluster` | the bar's status cluster: square slots for the bell, volume, link and battery, a count badge and the critical-battery wash |
+| `AgendaPopoverFace` | the clock's overlay: a title, a reading, a drag handle and its pause, add and close controls, on the floating material |
+| `NotificationListView` | retained notifications under group headings, with paging, per-row controls and the cleared band |
+| `TextLineFace`, `TextBlockFace` | one line of words, or wrapped running text, in a role: the shared way to paint text on a surface a host owns |
+| `paint_control_row` | a Control's fill, edge and focus ring: the list language Quick Settings and the notification centre share |
 | `Chip` | people, tags and filters only |
 | `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |

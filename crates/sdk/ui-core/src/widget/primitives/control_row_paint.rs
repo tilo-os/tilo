@@ -50,13 +50,7 @@ pub fn paint_control_row(
         return;
     }
     let radius = control_radius(theme, rect);
-    crate::surface::card(
-        scene,
-        transform,
-        rect,
-        radius,
-        control_fill(theme, hovered),
-    );
+    crate::surface::card(scene, transform, rect, radius, control_fill(theme, hovered));
     if focused {
         paint_focus_ring(scene, transform, rect, radius, theme);
     }

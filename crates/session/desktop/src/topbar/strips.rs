@@ -6,10 +6,10 @@
 //!
 //! The workspace's new name, asked for in the workspace menu, is typed in
 //! place of its name here.
-use super::{
-    Affine, BAR_CONTROL_PX, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome,
-    at, t,
-};
+use super::{Affine, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome, t};
+/// The strip's separator: the chevron that opens the strip switcher.
+static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
+
 use crate::text_entry::{self, Edit, Mods};
 use tilo_desktop_model::{DesktopTree, StripId};
 use ui::text_render::TextStyle;
@@ -126,43 +126,27 @@ impl TopBarChrome {
             return;
         };
         let (x0, x1) = span;
-        let style = Self::strip_text_style(theme);
         let gap = Self::strip_name_gap(theme);
-        let name_x = x0 + gap + STRIP_CHEVRON_PX + gap;
-        if x1 - name_x < BAR_CONTROL_PX {
+        // The separator and the name are one bar chip: a chevron and the
+        // label, opening the strip switcher.
+        let chip = ui::widget::BarChipFace::new(&name, &[])
+            .icons(STRIP_GLYPH)
+            .label(&name)
+            .label_width((x1 - x0 - gap - STRIP_CHEVRON_PX - gap).max(0.0))
+            .hovered(self.hovered_control().as_deref() == Some(Self::CONTROL_STRIP_NAME))
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_STRIP_NAME),
+            );
+        let width = chip.width(text_renderer, theme);
+        if x1 - x0 < width {
             return;
         }
-        let name =
-            text_renderer.elide_to_width_style(&name, ui::num::f32_of_f64(x1 - name_x), &style);
-        let (name_w, name_h) = text_renderer.measure_style(&name, None, &style);
-        let colors = &theme.tokens.colors;
-        let chevron_x = x0 + gap;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                chevron_x,
-                center_y - STRIP_CHEVRON_PX / 2.0,
-                chevron_x + STRIP_CHEVRON_PX,
-                center_y + STRIP_CHEVRON_PX / 2.0,
-            ),
-            ui::icons::Icon::ChevronRight,
-            colors.text_dim,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_style(
-            scene,
-            &name,
-            colors.text_primary,
-            at(transform, (name_x, center_y - f64::from(name_h) / 2.0)),
-            None,
-            &style,
-        );
-        self.ws_strip_rect = Rect::new(
-            x0,
-            center_y - BAR_CONTROL_PX / 2.0,
-            name_x + f64::from(name_w) + gap,
-            center_y + BAR_CONTROL_PX / 2.0,
+        self.ws_strip_rect = ui::widget::BarChipFace::place(x0, center_y, width, theme);
+        let _ = chip.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            self.ws_strip_rect,
+            theme.tokens.colors.surfaces.base,
         );
     }
 

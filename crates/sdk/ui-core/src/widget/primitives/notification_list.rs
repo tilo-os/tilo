@@ -267,7 +267,8 @@ impl<'a> NotificationListView<'a> {
                         crate::widget::Interaction {
                             hovered: hovered(row_rect),
                             pressed: false,
-                            focused: self.action_focus == Some(NotificationListControl::Fold(index)),
+                            focused: self.action_focus
+                                == Some(NotificationListControl::Fold(index)),
                             disabled: false,
                         },
                     );
@@ -310,7 +311,14 @@ impl<'a> NotificationListView<'a> {
                         paint_severity_rail(ctx, row_rect, tone);
                     }
                     if hovered(row_rect) || self.focused == Some(index) {
-                        paint_row_controls(ctx, controls, *agent, self.cursor, self.action_focus, index);
+                        paint_row_controls(
+                            ctx,
+                            controls,
+                            *agent,
+                            self.cursor,
+                            self.action_focus,
+                            index,
+                        );
                     }
                     layout.rows.push(row_rect);
                     layout.controls.push(controls);
@@ -370,7 +378,8 @@ impl<'a> NotificationListView<'a> {
         let related = f64::from(theme.tokens.spacing.rhythm.related);
         let style = theme.text(Role::Caption);
         let (_, h) = ctx.text.measure_style(label, None, &style);
-        let band_h = ButtonFace::height(ControlSize::Small, theme).max(f64::from(h) + 2.0 * related);
+        let band_h =
+            ButtonFace::height(ControlSize::Small, theme).max(f64::from(h) + 2.0 * related);
         let band = Rect::new(rect.x0, y, rect.x1, y + band_h);
         ctx.scene.fill(
             Fill::NonZero,
@@ -396,7 +405,12 @@ impl<'a> NotificationListView<'a> {
             .role(ButtonRole::Secondary)
             .control_size(ControlSize::Small);
         let width = undo_face.intrinsic_width(ctx.text, theme);
-        let undo = Rect::new(band.x1 - related - width, band.y0, band.x1 - related, band.y1);
+        let undo = Rect::new(
+            band.x1 - related - width,
+            band.y0,
+            band.x1 - related,
+            band.y1,
+        );
         Button::paint(
             ctx.scene,
             ctx.transform,
@@ -437,11 +451,17 @@ impl<'a> NotificationListView<'a> {
             }
             if row.contains(point) {
                 let index = start + offset;
-                return Some(if self.rows.get(index).is_some_and(NotificationListRow::is_group) {
-                    NotificationListControl::Fold(index)
-                } else {
-                    NotificationListControl::Open(index)
-                });
+                return Some(
+                    if self
+                        .rows
+                        .get(index)
+                        .is_some_and(NotificationListRow::is_group)
+                    {
+                        NotificationListControl::Fold(index)
+                    } else {
+                        NotificationListControl::Open(index)
+                    },
+                );
             }
         }
         None
@@ -512,9 +532,7 @@ fn paint_row_controls(
         NotificationListControl::Dismiss(index),
         "Dismiss",
     );
-    if agent
-        && let Some(agent) = controls.agent
-    {
+    if agent && let Some(agent) = controls.agent {
         paint(
             agent,
             Icon::Send,
@@ -551,7 +569,10 @@ mod tests {
         }
     }
 
-    fn layout(rows: &[NotificationListRow], view: NotificationListView<'_>) -> NotificationListLayout {
+    fn layout(
+        rows: &[NotificationListRow],
+        view: NotificationListView<'_>,
+    ) -> NotificationListLayout {
         let theme = Theme::dark();
         let mut text = crate::text_render::TextRenderer::new();
         let mut scene = vello::Scene::new();
@@ -564,7 +585,10 @@ mod tests {
         let rows = [item("One"), item("Two")];
         let painted = layout(&rows, NotificationListView::new(&rows, 0));
         assert_eq!(painted.rows.len(), 2);
-        assert!(painted.rows[0].y1 <= painted.rows[1].y0, "rows stack without overlap");
+        assert!(
+            painted.rows[0].y1 <= painted.rows[1].y0,
+            "rows stack without overlap"
+        );
     }
 
     #[test]

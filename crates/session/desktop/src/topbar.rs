@@ -20,7 +20,7 @@ use ui::widget::{AppModel, ModelPath};
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
@@ -31,12 +31,10 @@ use crate::chrome::{
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
 use ui::TextRole;
-use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::TextStyle;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::ButtonRole;
 use ui::widget::Widget;
 
 mod arrival_notice;
@@ -53,7 +51,7 @@ mod wave_notice;
 mod workspace;
 
 use clock::{clock_overlay_drag_region, time_bucket_secs, until_next_time_bucket};
-use controls::{FocusOrigin, TrayBell, navigates, paint_bar_selector};
+use controls::{FocusOrigin, TrayBell, navigates};
 pub use reveal::{Finger, Reveals};
 use sharing::{FaceLook, roster_colors};
 pub use space::BarSpace;
@@ -152,9 +150,6 @@ const CENTER_INSET_PX: f64 = 12.0;
 /// opening its menu): a control's 16.
 const SMALL_GLYPH_PX: f64 = 16.0;
 
-/// Diameter of the bar's status glyphs: a control's 16.
-const BAR_GLYPH_PX: f64 = 16.0;
-
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
@@ -162,7 +157,7 @@ const BAR_GLYPH_PX: f64 = 16.0;
 )]
 mod clock_overlay_geometry_tests {
     use super::clock::{
-        CLOCK_OVERLAY_HEIGHT, clamp_clock_overlay, clock_overlay_controls, clock_overlay_width,
+        CLOCK_OVERLAY_HEIGHT, clamp_clock_overlay, clock_overlay_width,
         released_clock_touch_control,
     };
     use super::*;
@@ -204,17 +199,23 @@ mod clock_overlay_geometry_tests {
     fn overlay_and_controls_fit_a_phone_width() {
         let width = clock_overlay_width(220.0);
         assert_eq!(width, 204.0);
-        let controls = clock_overlay_controls(Rect::new(
-            8.0,
-            48.0,
-            8.0 + width,
-            48.0 + CLOCK_OVERLAY_HEIGHT,
-        ));
-        for control in controls {
+        // The popover's own layout at the phone's width: every action is at
+        // least a finger's target inside the panel, as the shared popover
+        // sizes them.
+        let theme = Theme::default();
+        let panel = Rect::new(8.0, 48.0, 8.0 + width, 48.0 + CLOCK_OVERLAY_HEIGHT);
+        let entry = ui::widget::AgendaEntry::new("Tea", "2:05");
+        let labels = ui::widget::AgendaLabels::of(&entry);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        let mut ctx = ui::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let (layout, _) =
+            ui::widget::AgendaPopoverFace::new(&entry, &labels).paint(&mut ctx, panel);
+        for control in [layout.toggle, layout.add, layout.close] {
             assert!(control.x0 >= 8.0);
             assert!(control.x1 <= 212.0);
-            assert!(control.width() >= 44.0);
-            assert!(control.height() >= 44.0);
+            assert!(control.width() >= 44.0, "{control:?}");
+            assert!(control.height() >= 44.0, "{control:?}");
         }
     }
 
@@ -357,42 +358,9 @@ fn timestamp_bucket(t: i64) -> u64 {
     }
 }
 
-/// Widens a small loop index/count to `f64` for draw-time geometry math.
-/// Every call site is a draw-loop counter or a collaborator/slot count
-/// bounded well under 2^53, so the integer is exactly representable.
-fn small_count_to_f64(n: usize) -> f64 {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "bounded well under 2^53 by every caller (loop index or small on-screen count)"
-    )]
-    {
-        n as f64
-    }
-}
-
-/// `transform * Affine::translate(xy)`, used at every glyph draw site
-/// below. Vello's `Affine::mul` is plain matrix composition with no
-/// side effects, but it is a custom `Mul` impl rather than primitive
-/// integer arithmetic, which is what trips the lint at each call site.
-/// A logical pointer position as the whole-pixel coordinates a tray item's
-/// `Activate`/`ContextMenu` call carries.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "rounded and clamped into i32's range before the cast"
-)]
 fn pointer_coordinates(point: Point) -> (i32, i32) {
     let whole = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
     (whole(point.x), whole(point.y))
-}
-
-fn at(transform: Affine, xy: (f64, f64)) -> Affine {
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "Affine::mul is pure matrix composition (translate here), not primitive integer arithmetic that can silently wrap"
-    )]
-    {
-        transform * Affine::translate(xy)
-    }
 }
 
 /// Free function so [`TopBarChrome::needs_redraw`] can key on the
@@ -1253,36 +1221,18 @@ impl TopBarChrome {
     /// which would otherwise show as a line of light along the display's top
     /// and ends a pixel inside the bezel.
     fn draw_bar_body(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let body = vello::kurbo::RoundedRect::from_rect(self.rect, 0.0);
-        ui::backdrop::fill_role_flush(
-            scene,
-            transform,
-            &body,
-            ui::tokens::SurfaceRole::Bar,
-            theme.finish(ui::tokens::SurfaceRole::Bar),
-            theme,
-            ui::chrome::panel_ground(theme),
-            ui::part_paint::Sides::TOP
-                .union(ui::part_paint::Sides::LEADING)
-                .union(ui::part_paint::Sides::TRAILING),
-        );
-        let (width, ink) = ui::surface::border(theme).unwrap_or_else(|| {
-            (
-                1.0,
-                if theme.finish(ui::tokens::SurfaceRole::Bar).hairline() {
-                    ui::chrome::chrome_hairline(theme)
-                } else {
-                    vello::peniko::Color::TRANSPARENT
-                },
-            )
-        });
-        let rule = Rect::new(
-            self.rect.x0,
-            self.rect.y1 - width,
-            self.rect.x1,
-            self.rect.y1,
-        );
-        scene.fill(Fill::NonZero, transform, ink, None, &rule);
+        // The bar's body is the shared `Chrome` body: the theme's bar finish
+        // over the desktop, in the panel ground it falls back to, and its
+        // foot's edge from the theme — never geometry or a finish of its own.
+        // The bar spans its display edge to edge, so the sides at the
+        // screen's own edges (the top and both ends) are flush: the body
+        // draws no rim there, or it would show as a line of light a pixel
+        // inside the bezel.
+        let ground = ui::widget::SurfaceLevel::Floating.color(theme);
+        let flush = ui::part_paint::Sides::TOP
+            .union(ui::part_paint::Sides::LEADING)
+            .union(ui::part_paint::Sides::TRAILING);
+        ui::widget::paint_bar_body(scene, transform, self.rect, theme, ground, flush);
     }
 
     /// A window maximizing over the bar's display (`shown` false) or

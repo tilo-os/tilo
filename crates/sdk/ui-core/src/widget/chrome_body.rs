@@ -144,18 +144,24 @@ pub fn paint_bar_body(
     rect: Rect,
     theme: &Theme,
     ground: Color,
+    flush: crate::part_paint::Sides,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
     let body = RoundedRect::from_rect(rect, 0.0);
-    crate::backdrop::fill_role(
+    // The sides that stand on the display's own edge are flush: the body
+    // draws no rim, edge or hairline there, so no pixel of another colour
+    // shows between it and the screen's edge.
+    crate::backdrop::fill_role_flush(
         scene,
         transform,
         &body,
         crate::tokens::SurfaceRole::Bar,
+        theme.finish(crate::tokens::SurfaceRole::Bar),
         theme,
         ground,
+        flush,
     );
     let (width, ink) = crate::surface::border(theme).unwrap_or_else(|| {
         (

@@ -3,8 +3,8 @@
 //! activates, and the focus ring that says the keyboard is here.
 
 use super::{
-    Affine, AppTrayRequest, BAR_CONTROL_PX, ChromeIntent, Fill, Point, Rect, RoundedRect, Scene,
-    Theme, TopBarChrome, WindowEvent, pointer_coordinates, t, t_args,
+    Affine, AppTrayRequest, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, Theme, TopBarChrome,
+    WindowEvent, pointer_coordinates, t, t_args,
 };
 
 impl TopBarChrome {
@@ -304,16 +304,14 @@ impl TopBarChrome {
         if rect.is_zero_area() {
             return;
         }
-        let ring = RoundedRect::from_rect(
-            rect.inset(-2.0),
-            ui::chrome::ChromeRole::Selector.radius(theme, rect.height() + 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
+        // The shared focus ring: the bar's controls show the same ring every
+        // other focusable control does, on the keyboard only.
+        ui::widget::paint_focus_ring(
+            scene,
             transform,
-            theme.border_focus,
-            None,
-            &ring,
+            rect,
+            ui::chrome::ChromeRole::Selector.radius(theme, rect.height()),
+            theme,
         );
     }
 
@@ -506,27 +504,6 @@ pub(super) struct TrayBell {
     /// The host has no quick settings, so the cluster is the bell itself:
     /// always shown, and what the cluster is named.
     pub(super) only: bool,
-}
-
-/// Paint a bar control's lift at `shape` in `state`: the design system's
-/// bar control ([`ui::widget::BarControlFace::fill`]), plain at rest, half a
-/// lift under the pointer, a whole lift while pressed or open. The bar has
-/// no surface of its own: its controls stand on the desktop ground and lift
-/// off that.
-pub(super) fn paint_bar_selector(
-    scene: &mut Scene,
-    transform: Affine,
-    shape: &RoundedRect,
-    state: ui::chrome::SelectionState,
-    theme: &Theme,
-) {
-    let face = ui::widget::BarControlFace::new("")
-        .open(state.active)
-        .pressed(state.pressed)
-        .hovered(state.hover);
-    if let Some(fill) = face.fill(theme, theme.tokens.colors.surfaces.base) {
-        scene.fill(Fill::NonZero, transform, fill, None, shape);
-    }
 }
 
 /// Whether `key` moves keyboard focus through the bar: the keys whose use

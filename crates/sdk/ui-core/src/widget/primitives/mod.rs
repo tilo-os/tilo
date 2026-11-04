@@ -52,19 +52,19 @@ mod surface;
 mod surfaces_component;
 mod text_stack;
 
+pub use agenda_popover::{
+    AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace, AgendaPopoverLayout,
+};
+pub use bar_chip::{BarChipFace, BarChipLayout};
+pub use bar_chip_component::{BarChip, BarChipProps};
+pub use bar_control::{BarControlFace, IconButton};
+pub use control_row_paint::{control_fill, control_radius, paint_control_row, paint_severity_rail};
+pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState};
+pub use facts::{Fact, FactProps, Facts, FactsFace, FactsProps};
 pub use notification_list::{
     NotificationListControl, NotificationListLayout, NotificationListRow, NotificationListView,
     NotificationRowControls,
 };
-pub use agenda_popover::{
-    AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace, AgendaPopoverLayout,
-};
-pub use control_row_paint::{control_fill, control_radius, paint_control_row, paint_severity_rail};
-pub use bar_chip::{BarChipFace, BarChipLayout};
-pub use bar_chip_component::{BarChip, BarChipProps};
-pub use bar_control::{BarControlFace, IconButton};
-pub use disclosure_row::{DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState};
-pub use facts::{Fact, FactProps, Facts, FactsFace, FactsProps};
 pub use surfaces_component::{
     DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, FloatingPanelProps,
     ModalProps, PopoverButtonProps, PopoverProps,
@@ -81,6 +81,5 @@ pub use surface::{
     DensityRegion, Surface, SurfaceLevel, paint_document_sheet, paint_see_through, paint_surface,
 };
 pub use text_stack::{
-    StackSize, TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace,
-    TextStackProps,
+    StackSize, TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
 };

@@ -9,9 +9,14 @@
 //! invite button stays beside them however many people are present, and
 //! invites in one step: the host's own invite flow, not the list.
 use super::{
-    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, RoundedRect, SMALL_GLYPH_PX, Scene, Stroke,
-    TextRenderer, TextRole, TextWeight, Theme, TopBarChrome, at, paint_bar_selector, t_args,
+    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, Theme, TopBarChrome, t,
+    t_args,
 };
+
+/// The people button's glyph: the cluster of who is here.
+static USERS_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::Users];
+/// The invite seat's glyph: a person-plus in the empty seat.
+static INVITE_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::UserPlus];
 
 impl TopBarChrome {
     pub(super) const CONTROL_INVITE: &'static str = "topbar:invite";
@@ -81,38 +86,38 @@ impl TopBarChrome {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
+        text_renderer: &mut TextRenderer,
         center_y: f64,
         right_x: f64,
     ) -> f64 {
-        let colors = &theme.tokens.colors;
-        let seat = BAR_CONTROL_PX;
-        let pill = Rect::new(
-            right_x - seat,
-            center_y - seat / 2.0,
-            right_x,
-            center_y + seat / 2.0,
-        );
+        use ui::widget::BarChipFace;
+        let seat = f64::from(ui::tokens::Metrics::BASE.min_pointer_target);
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
-            && self.last_cursor.is_some_and(|point| pill.contains(point));
-        paint_bar_selector(
-            scene,
-            transform,
-            &RoundedRect::from_rect(pill, seat / 2.0),
-            ui::chrome::SelectionState::new(false, hovered, false),
-            theme,
-        );
-        let glyph = SMALL_GLYPH_PX;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(pill.center(), (glyph, glyph)),
-            ui::icons::Icon::Users,
-            if hovered {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            && self.last_cursor.is_some_and(|point| {
+                Rect::new(
+                    right_x - seat,
+                    center_y - seat / 2.0,
+                    right_x,
+                    center_y + seat / 2.0,
+                )
+                .contains(point)
+            });
+        // The people button is one bar chip: its glyph, its own lift and its
+        // press, the same control the faces beside it compose.
+        let name = t("topbar-show-collaborators");
+        let chip = BarChipFace::new(&name, &[])
+            .icons(USERS_GLYPH)
+            .hovered(hovered)
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+            );
+        let width = chip.width(text_renderer, theme);
+        let pill = BarChipFace::place(right_x - width, center_y, width, theme);
+        let _ = chip.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            pill,
+            theme.tokens.colors.surfaces.base,
         );
         self.people_button_rect = pill;
         pill.x0 - f64::from(theme.tokens.spacing.s1)
@@ -127,6 +132,7 @@ impl TopBarChrome {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
+        text_renderer: &mut TextRenderer,
         center_y: f64,
         right_x: f64,
     ) -> f64 {
@@ -134,43 +140,25 @@ impl TopBarChrome {
             self.invite_rect = Rect::ZERO;
             return right_x;
         }
-        let colors = &theme.tokens.colors;
-        let seat = BAR_CONTROL_PX;
-        let pill = Rect::new(
-            right_x - seat,
-            center_y - seat / 2.0,
-            right_x,
-            center_y + seat / 2.0,
-        );
-        let chip = vello::kurbo::Circle::new(pill.center(), seat / 2.0 - 0.5);
-        // Plain at rest, lifting under the pointer like every bar control.
+        use ui::widget::BarChipFace;
+        // The invite is one bar chip: a person-plus glyph in the seat the
+        // next person takes, lifting under the pointer like every other bar
+        // control. Its words are its accessible name.
         let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_INVITE);
-        paint_bar_selector(
-            scene,
-            transform,
-            &RoundedRect::from_rect(pill, seat / 2.0),
-            ui::chrome::SelectionState::new(false, hovered, false),
-            theme,
-        );
-        scene.stroke(
-            &Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
-            transform,
-            ui::surface::edge_on(colors.surfaces.raised),
-            None,
-            &chip,
-        );
-        let glyph = SMALL_GLYPH_PX;
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(pill.center(), (glyph, glyph)),
-            ui::icons::Icon::UserPlus,
-            if hovered {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            },
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        let name = t("topbar-invite");
+        let chip = BarChipFace::new(&name, &[])
+            .icons(INVITE_GLYPH)
+            .hovered(hovered)
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_INVITE),
+            );
+        let width = chip.width(text_renderer, theme);
+        let pill = BarChipFace::place(right_x - width, center_y, width, theme);
+        let _ = chip.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            pill,
+            theme.tokens.colors.surfaces.base,
         );
         self.invite_rect = pill;
         pill.x0 - f64::from(theme.tokens.spacing.s2)
@@ -241,32 +229,25 @@ impl TopBarChrome {
         if watching == 0 {
             return Rect::ZERO;
         }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
+        // Pages are a count, not faces: a bar chip with its words and no
+        // glyph, so it stands and lifts like every other control while it
+        // opens who is here too.
         let label = t_args("topbar-watching-count", &[("count", watching.into())]);
-        let style = tokens
-            .typography
-            .style(TextRole::Caption)
-            .with_weight(TextWeight::Medium);
-        let (label_w, label_h) = text_renderer.measure_style(&label, None, &style);
-        let pad = f64::from(tokens.spacing.s2);
-        // Plain dim text, no chip: pages are a count, not faces.
-        let pill = Rect::new(
-            right_x - f64::from(label_w) - pad * 2.0,
-            center_y - BAR_CONTROL_PX / 2.0,
-            right_x,
-            center_y + BAR_CONTROL_PX / 2.0,
-        );
-        text_renderer.draw_style(
-            scene,
-            &label,
-            colors.text_dim,
-            at(
-                transform,
-                (pill.x0 + pad, center_y - f64::from(label_h) / 2.0),
-            ),
-            None,
-            &style,
+        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_COLLABORATORS)
+            && self.last_cursor.is_some_and(|point| point.x <= right_x);
+        let chip = ui::widget::BarChipFace::new(&label, &[])
+            .label(&label)
+            .hovered(hovered)
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+            );
+        let width = chip.width(text_renderer, theme);
+        let pill = ui::widget::BarChipFace::place(right_x - width, center_y, width, theme);
+        let _ = chip.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            pill,
+            theme.tokens.colors.surfaces.base,
         );
         pill
     }
@@ -301,7 +282,8 @@ impl TopBarChrome {
         (center_y, right_x): (f64, f64),
     ) -> f64 {
         let gap = f64::from(theme.tokens.spacing.s2);
-        let right_x = self.draw_invite_button(scene, transform, theme, center_y, right_x);
+        let right_x =
+            self.draw_invite_button(scene, transform, theme, text_renderer, center_y, right_x);
         let watching =
             self.draw_watching_chip(scene, transform, theme, text_renderer, center_y, right_x);
         let right_x = if watching.is_zero_area() {
@@ -315,7 +297,7 @@ impl TopBarChrome {
             || self.collaborator_overflow > 0
             || !watching.is_zero_area();
         let right_x = if anyone {
-            self.draw_people_button(scene, transform, theme, center_y, right_x)
+            self.draw_people_button(scene, transform, theme, text_renderer, center_y, right_x)
         } else {
             self.people_button_rect = Rect::ZERO;
             right_x
