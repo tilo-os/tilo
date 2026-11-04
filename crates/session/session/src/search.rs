@@ -629,6 +629,36 @@ impl SessionSearch {
 }
 
 impl SearchHost for SessionSearch {
+    /// The apps this session opens: every app of this device's lists, Tilo's
+    /// own and the machine's, each by the launch its own row starts. A
+    /// window group's new tab and the empty desk's launchpad search the
+    /// applications alone, and the session's tile source lists none — the
+    /// session is what starts them — so this is what those searches offer.
+    fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        let lists = self.current_lists();
+        lists
+            .applications
+            .iter()
+            .map(|app| tilo_desktop_search::providers::AppEntry {
+                id: app.id.clone(),
+                title: app.title.clone(),
+                category: app.category.clone(),
+                description: app.description.clone(),
+            })
+            .chain(
+                lists
+                    .host_apps
+                    .iter()
+                    .map(|app| tilo_desktop_search::providers::AppEntry {
+                        id: format!("{}{}", host_apps::HOST_APP_PREFIX, app.desktop_id),
+                        title: app.name.clone(),
+                        category: app.generic_name.clone(),
+                        description: app.comment.clone(),
+                    }),
+            )
+            .collect()
+    }
+
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
         let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);

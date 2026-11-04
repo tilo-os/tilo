@@ -171,12 +171,20 @@ pub trait SearchHost {
     /// What to search beyond the desktop's own, in the workspace
     /// `workspace`, narrowed to it unless `scope` reaches every workspace
     /// ([`Scope::Everywhere`]): then the rows of every workspace are offered
-    /// too, each saying which workspace it is in. Only a search over the
-    /// workspace asks the host at all: an app's own search and a window
-    /// group's applications are the desktop's. Called as search opens,
+    /// too, each saying which workspace it is in. Called as search opens,
     /// inside the desktop's update pass: it reads what the host keeps, never
-    /// the desktop's own tree.
+    /// the desktop's own tree. A search over the workspace and one over
+    /// every workspace ask it; an app's own search and the applications
+    /// alone ([`Self::applications`]) do not.
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed;
+    /// The apps this host opens, each an id a launch accepts, whether or not
+    /// a search is over a workspace: a window group's new tab and the empty
+    /// desk's launchpad list the applications alone, and the apps a person
+    /// can open from there are this host's. A host whose tile source already
+    /// lists them answers nothing here.
+    fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        Vec::new()
+    }
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
@@ -922,9 +930,19 @@ impl DesktopSurface {
 
     /// The applications alone, each listed: what a window group's new tab
     /// may show, the empty desk's launchpad.
+    ///
+    /// Its source is the desktop's tile source and the host's own apps
+    /// ([`SearchHost::applications`]): a session's tile source lists no app,
+    /// because the session is what starts them, so without the host's list
+    /// the applications scope would list nothing and the person could not
+    /// open anything from it.
     fn applications_search_data(&self, scope: &Scope) -> SearchData {
+        let mut applications = self.tiles.search_applications();
+        if let Some(host) = self.shared.borrow().search_host.clone() {
+            applications.extend(host.applications());
+        }
         SearchData {
-            applications: self.tiles.search_applications(),
+            applications,
             scope: scope.clone(),
             ..SearchData::default()
         }

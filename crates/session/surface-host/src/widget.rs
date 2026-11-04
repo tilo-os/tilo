@@ -652,7 +652,12 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.keyboard.as_ref().is_some_and(|wants| wants())
+        // A palette the tree presents is over everything it draws, whatever
+        // the tree's own state says: the palette takes the keys a person
+        // types, not the window the tree stands under. Without this the
+        // session's keys went to the window behind `tilo.host:search`'s
+        // palette, and nothing reached its field.
+        self.host.palette_shown() || self.keyboard.as_ref().is_some_and(|wants| wants())
     }
 
     fn key(&mut self, key: &HostKey) {
