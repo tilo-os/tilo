@@ -103,7 +103,7 @@ window or a place.
 
 ```
 view note_list(nb: Notebook) {
-    window sort: NoteOrder = .recent    // shared: how the workspace shows this list
+    window sort: NoteOrder = .recent    // personal: how this window shows the list
     lens expanded: Set<Tag>             // personal: which groups I opened
     stack { for n in nb.notes.sort_by(n -> sort.key(n)) { note_row(n) } }
 }
