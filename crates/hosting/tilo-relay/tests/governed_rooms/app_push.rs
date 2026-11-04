@@ -5,9 +5,31 @@
 //! governance. Every member reads the version the room runs from its
 //! governance.
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
+use tilo_relay_session::workspaces::WorkspaceSummary;
 use tilo_relay_session::workspaces::govern::{self, WorkspaceLink};
 
 use super::*;
+
+/// The room's link as its host publishes it, reached on the socket the relay listens on:
+/// a device pushing from this machine dials the address the room announces, so a test's relay
+/// is reached on the loopback address of the port it bound, never through the host's own
+/// outside address.
+fn room_link(relay: &tilo_relay::Relay, room: &WorkspaceSummary) -> WorkspaceLink {
+    let port = relay
+        .bound_sockets()
+        .first()
+        .expect("the relay's endpoint listens somewhere")
+        .port();
+    WorkspaceLink {
+        relay: relay.node_addr().id,
+        direct: Some(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            port,
+        ))),
+        workspace_id: room.workspace_id,
+        workspace: room.workspace.clone(),
+    }
+}
 
 fn release(
     publisher: [u8; 32],
@@ -38,16 +60,7 @@ async fn a_developer_pushes_an_app_version_and_a_bot_program_into_a_running_room
     let workspaces = relay.workspaces().unwrap();
     let room = workspaces.create("Lounge").await.unwrap();
     super::members::admit(&relay, &host, &laptop, &room.workspace).await;
-    let address = relay.node_addr();
-    let link: WorkspaceLink = WorkspaceLink {
-        relay: address.id,
-        direct: address.ip_addrs().next().copied(),
-        workspace_id: room.workspace_id,
-        workspace: room.workspace.clone(),
-    }
-    .to_string()
-    .parse()
-    .unwrap();
+    let link: WorkspaceLink = room_link(&relay, &room).to_string().parse().unwrap();
     let push = |action: &'static str, argument: serde_json::Map<String, serde_json::Value>| {
         let link = link.clone();
         let (cert, key) = (laptop.cert.clone(), laptop.sk.clone());
@@ -264,13 +277,7 @@ async fn a_member_follows_the_version_the_room_runs_and_its_held_edit_goes_in() 
 
     // Ada hands the room her v2 package and makes it the room's version.
     let package = b"a developer's v2 build of the fixture app".repeat(9000);
-    let address = relay.node_addr();
-    let link = WorkspaceLink {
-        relay: address.id,
-        direct: address.ip_addrs().next().copied(),
-        workspace_id: room.workspace_id,
-        workspace: room.workspace.clone(),
-    };
+    let link = room_link(&relay, &room);
     let client = govern::connect(&link, laptop.cert.clone(), laptop.sk.clone())
         .await
         .unwrap();
