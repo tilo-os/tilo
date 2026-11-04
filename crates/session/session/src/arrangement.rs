@@ -24,7 +24,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
-use collab_types::presence::UserId;
 use serde_json::Value as Json;
 use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
@@ -37,7 +36,6 @@ use tilo_desktop_model::{
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
 use ui::automerge::{AutoCommit, ChangeHash};
-use ui::state::UndoLog;
 
 use crate::i18n::t;
 
@@ -406,11 +404,11 @@ pub struct Arrangement {
     person: String,
     /// The record as [`own_arrangement`] keeps it.
     doc: AutoCommit,
-    /// The record's history: each arranging action is one undo step of
-    /// whoever made it.
-    undo: UndoLog,
-    /// The desk whose windows the arrangement places.
+    /// The desk whose windows the arrangement places, and the document that
+    /// keeps it: the record the workspace shares, whose own changes are its
+    /// history.
     handle: DesktopHandle,
+    desk: crate::activity::Activity,
     /// The resources the session publishes now, by id: what a place made
     /// from a resource reads its app and views from ([`Catalog`]).
     catalog: Rc<RefCell<Catalog>>,
@@ -436,12 +434,14 @@ pub struct Arrangement {
 impl Arrangement {
     /// `person`'s arrangement in `doc`: their desk as `keep` shows it,
     /// migrated into the record when the record holds none yet, with
-    /// `records` naming the record each place shows.
+    /// `records` naming the record each place shows, and `desk` the document
+    /// its changes are recorded in.
     #[must_use]
-    pub fn new(
+    pub(crate) fn new(
         person: &str,
         mut doc: AutoCommit,
         handle: DesktopHandle,
+        desk: crate::activity::Activity,
         keep: &DesktopTree,
         records: &BTreeMap<TabId, String>,
         marks: &Marks,
@@ -520,12 +520,11 @@ impl Arrangement {
         if changed && let Err(error) = own_arrangement::write(&mut doc, &revived) {
             tracing::warn!(%error, "the windows to open again could not be kept");
         }
-        let undo = UndoLog::new(&mut doc);
         Self {
             person: person.to_owned(),
             doc,
-            undo,
             handle,
+            desk,
             catalog: Rc::new(RefCell::new(Catalog::default())),
             waiting: RefCell::new(VecDeque::new()),
             seen: RefCell::new(None),
@@ -862,21 +861,9 @@ impl Arrangement {
     /// The last step of the record's history, as who made it and what it
     /// did: what a history view names it by.
     #[must_use]
-    pub fn last_step(&mut self) -> Option<(String, String)> {
-        let entry = self
-            .undo
-            .next_undo_as(&self.doc, Some(&user(&self.person)))?;
-        let step = entry.step?;
-        // Who asked for it: the invoker the step records, else the person
-        // whose record it is.
-        let who = step
-            .invoker
-            .map_or_else(|| self.person.clone(), |invoker| invoker.actor);
-        let what = match step.what {
-            Some(tilo_actions::Did::Verb(call)) => call.action.action,
-            _ => String::new(),
-        };
-        Some((who, what))
+    pub fn last_step(&self) -> Option<(String, String)> {
+        let person = self.person.clone();
+        self.desk.last_step(&person)
     }
 
     /// The person's own change, made as their gesture's end says: their own
@@ -889,28 +876,34 @@ impl Arrangement {
         self.write(&person, action, true)
     }
 
-    /// Undo `person`'s last change of the arrangement. Whether there was one.
+    /// Undo `person`'s last change of the arrangement: one step of the
+    /// desk's own history, taken back in the desk it was made in. Whether
+    /// there was one.
     pub fn undo(&mut self, person: &str) -> bool {
-        let stepped = self
-            .undo
-            .undo_as(&mut self.doc, Some(&user(person)), None, None)
-            .is_some();
+        let stepped = self.desk.undo_desk(person);
         if stepped {
-            self.place();
+            self.take_the_desk_back();
         }
         stepped
     }
 
     /// Redo `person`'s last undone change of the arrangement.
     pub fn redo(&mut self, person: &str) -> bool {
-        let stepped = self
-            .undo
-            .redo_as(&mut self.doc, Some(&user(person)), None, None)
-            .is_some();
+        let stepped = self.desk.redo_desk(person);
         if stepped {
-            self.place();
+            self.take_the_desk_back();
         }
         stepped
+    }
+
+    /// Show the desk the step took it back to, and take it in as it stands
+    /// now: the record is the desk, so undoing in the desk is undoing in the
+    /// record.
+    fn take_the_desk_back(&mut self) {
+        if let Some(tree) = self.desk.take_restored() {
+            self.handle.replace_tree(tree);
+        }
+        self.observe();
     }
 
     /// Make `action` one change of the record: written, attributed to `asked`
@@ -921,7 +914,6 @@ impl Arrangement {
         action: &ArrangementAction,
         place: bool,
     ) -> Result<(), String> {
-        let before: Vec<ChangeHash> = self.doc.get_heads();
         let mut strips = own_arrangement::read(&self.doc);
         // An agent arranges the person's desk like the person does, except
         // where they pinned something: a pinned place is theirs to move
@@ -936,34 +928,39 @@ impl Arrangement {
             ui::automerge::transaction::CommitOptions::default()
                 .with_message(Self::step_message(asked, action)),
         );
-        // The step is the person's to take back, whoever acted for them; who
-        // it was is the step's invoker, which history names.
-        let person = self.person.clone();
-        self.undo.record_committed_action_authored(
-            &mut self.doc,
-            before,
-            None,
-            None,
-            Some(user(&person)),
-        );
         if place {
             self.place();
+            // The desk is the record the workspace shares, and its own
+            // changes are its history: the change this action made says who
+            // asked for it and what they did, and is one step of the
+            // person's to take back.
+            let tree = self.handle.read(Clone::clone);
+            self.desk.record_action(
+                &tree,
+                crate::activity::now_seconds(),
+                &Self::step_context(asked, action),
+            );
         }
         Ok(())
     }
 
-    /// The message the step `action` commits under: what it did, and who
-    /// asked for it.
-    fn step_message(asked: &str, action: &ArrangementAction) -> String {
-        let context = tilo_actions::ActionContext {
+    /// What `action`, asked for by `asked`, is: who asked and what they did,
+    /// as the change of the desk it makes names it.
+    fn step_context(asked: &str, action: &ArrangementAction) -> tilo_actions::ActionContext {
+        tilo_actions::ActionContext {
             invoker: Some(tilo_actions::ActionInvoker::actor(asked.to_owned())),
             what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
                 tilo_actions::ActionKey::new("so.tilo.session", "arrangement", verb(action)),
                 std::iter::empty(),
             ))),
             ..tilo_actions::ActionContext::default()
-        };
-        context
+        }
+    }
+
+    /// The message the step `action` commits under: what it did, and who
+    /// asked for it.
+    fn step_message(asked: &str, action: &ArrangementAction) -> String {
+        Self::step_context(asked, action)
             .change_message()
             .unwrap_or_else(|| format!("arrange: {}", verb(action)))
     }
@@ -1012,7 +1009,6 @@ impl Arrangement {
             return;
         };
         *self.seen.borrow_mut() = Some(became.clone());
-        let before: Vec<ChangeHash> = self.doc.get_heads();
         let mut strips = own_arrangement::read(&self.doc);
         let mut changed = adopt_structure(&mut strips, &became);
         for action in actions_between(&was, &became) {
@@ -1032,14 +1028,6 @@ impl Arrangement {
         self.doc.commit_with(
             ui::automerge::transaction::CommitOptions::default()
                 .with_message("arrange: the desk's own change"),
-        );
-        let person = self.person.clone();
-        self.undo.record_committed_action_authored(
-            &mut self.doc,
-            before,
-            None,
-            None,
-            Some(user(&person)),
         );
     }
 
@@ -1367,11 +1355,6 @@ fn verb(action: &ArrangementAction) -> &'static str {
         ArrangementAction::Pin { .. } => "pin",
         ArrangementAction::Place { .. } | ArrangementAction::PlaceFound { .. } => "place",
     }
-}
-
-/// The person `person`, as the history names them.
-fn user(person: &str) -> UserId {
-    UserId(person.to_owned())
 }
 
 /// The person's arranging actions, published as every other action is: a

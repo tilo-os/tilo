@@ -290,6 +290,47 @@ impl Activity {
         self.0.desk.record_now(tree, time)
     }
 
+    /// Record `tree` as `asked`'s arranging action: one change of the desk
+    /// whose own entry names who asked and what they did. Whether the desk
+    /// changed at all.
+    pub(crate) fn record_action(
+        &self,
+        tree: &DesktopTree,
+        time: i64,
+        asked: &tilo_actions::ActionContext,
+    ) -> bool {
+        self.0.desk.record_action(tree, time, asked)
+    }
+
+    /// Take back `person`'s last step of the desk, and put the desk it leaves
+    /// where the session takes it up ([`Self::take_restored`]). Whether there
+    /// was a step.
+    pub(crate) fn undo_desk(&self, person: &str) -> bool {
+        self.rewind(person, false)
+    }
+
+    /// Bring back the last step of the desk `person` took back.
+    pub(crate) fn redo_desk(&self, person: &str) -> bool {
+        self.rewind(person, true)
+    }
+
+    fn rewind(&self, person: &str, redo: bool) -> bool {
+        let stepped = if redo {
+            self.0.desk.redo(person)
+        } else {
+            self.0.desk.undo(person)
+        };
+        if stepped && let Some(tree) = self.0.desk.tree() {
+            *self.0.restored.borrow_mut() = Some(tree);
+        }
+        stepped
+    }
+
+    /// The last step of the desk's history, as who made it and what it did.
+    pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
+        self.0.desk.last_step(person)
+    }
+
     /// The arrangement's own choices the desk's document keeps: the view each
     /// place shows its resource through and the places the person pinned,
     /// `None` on a desk that has kept none yet.
@@ -993,6 +1034,72 @@ mod tests {
         assert!(
             feed.mutations,
             "the desk's own layout is the person's to undo"
+        );
+    }
+
+    /// An arrangement action is one step of the desk's own history: the
+    /// person takes exactly that step back, and the desk it takes them back
+    /// to is staged for the pass to apply.
+    #[test]
+    fn an_arrangements_action_is_one_step_the_person_takes_back() {
+        let mut desk = Desk::new();
+        desk.open_history();
+        desk.rename("Plans");
+        desk.frame();
+        assert_eq!(desk.name(), "Plans");
+
+        // An agent moves the desk as the person asked it to: the change it
+        // made is recorded as that action, not as a change of the desk's own.
+        desk.rename("Lounge");
+        let tree = desk.handle.read(Clone::clone);
+        let asked = tilo_actions::ActionContext {
+            invoker: Some(tilo_actions::ActionInvoker::actor(
+                "agent-task:reading".to_owned(),
+            )),
+            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall::new(
+                tilo_actions::ActionKey::new("so.tilo.session", "arrangement", "move"),
+                std::iter::empty(),
+            ))),
+            ..tilo_actions::ActionContext::default()
+        };
+        assert!(
+            desk.activity.record_action(&tree, now_seconds(), &asked),
+            "the desk keeps the move"
+        );
+        assert_eq!(
+            desk.activity.last_step("ada"),
+            Some(("agent-task:reading".to_owned(), "move".to_owned())),
+            "the step names who asked and what they did"
+        );
+
+        // The person takes it back: the move is undone, and the rename before
+        // it is still there — the two are separate steps.
+        assert!(desk.activity.undo_desk("ada"), "the person takes it back");
+        let restored = desk
+            .activity
+            .take_restored()
+            .expect("the desk to take the step back is staged for the pass");
+        assert_eq!(
+            restored
+                .active_workspace()
+                .map(|workspace| workspace.name.as_str()),
+            Some("Plans"),
+            "exactly the move is undone"
+        );
+        assert!(
+            desk.activity.undo_desk("ada"),
+            "the rename before it is its own step"
+        );
+        let restored = desk
+            .activity
+            .take_restored()
+            .expect("and the desk before it is staged too");
+        assert_eq!(
+            restored
+                .active_workspace()
+                .map(|workspace| workspace.name.as_str()),
+            Some("Studio"),
+            "the desk the session started on"
         );
     }
 

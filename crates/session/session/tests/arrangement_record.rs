@@ -922,37 +922,52 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
 #[test]
 fn a_place_that_does_not_read_back_keeps_its_tab_saying_why() {
     let _settled = ui::motion::testing::settled();
-    let mut session = session();
-    step(&mut session);
-    let tab = open_window(&mut session, "org.example.Notes");
-    step(&mut session);
-    assert!(
-        arrangement(&session).strip_of(tab).is_some(),
-        "the arrangement holds the place"
-    );
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
 
-    // The arrangement a newer build wrote for that place, as this one reads it:
+    // The arrangement a newer build kept for that place, as this one reads it:
     // a live window it cannot open again.
+    let tab = 9u64;
+    let placed = Strips {
+        workspaces: vec![tilo_desktop_model::own_arrangement::PlacedWorkspace {
+            id: tilo_desktop_model::WorkspaceSlot(1),
+            name: "Home".into(),
+        }],
+        rows: vec![tilo_desktop_model::own_arrangement::Row {
+            id: tilo_desktop_model::StripId(7),
+            workspace: tilo_desktop_model::WorkspaceSlot(1),
+            name: "Writing".into(),
+            shell: "so.tilo.shell.strips".into(),
+        }],
+        strips: vec![tilo_desktop_model::own_arrangement::Strip {
+            id: 7,
+            workspace: tilo_desktop_model::WorkspaceSlot(1),
+            row: tilo_desktop_model::StripId(7),
+            width: tilo_desktop_model::WindowWidth::Normal,
+            maximized: false,
+            active: Some(tab),
+            canvas: None,
+            shell: "so.tilo.shell.strips".into(),
+            places: vec![tilo_desktop_model::own_arrangement::Place {
+                id: tab,
+                shows: "org.example.Notes".into(),
+                view: String::new(),
+                record: String::new(),
+                state: serde_json::json!({"Foreign": {"label": "Notes"}}),
+                title: "Notes".into(),
+                pinned: false,
+                shell: "so.tilo.shell.strips".into(),
+            }],
+        }],
+        foreign: Vec::new(),
+    };
     let mut doc = ui::automerge::AutoCommit::new();
-    let mut strips = arrangement(&session);
-    for strip in &mut strips.strips {
-        for place in &mut strip.places {
-            if place.id == tab {
-                place.state = serde_json::json!({"Foreign": {"label": "Notes"}});
-            }
-        }
-    }
-    own_arrangement::write(&mut doc, &strips).expect("the arrangement");
-    let tree = session.handle().read(Clone::clone);
-    let mut seated = tilo_session::arrangement::Arrangement::new(
-        ADA,
-        doc,
-        session.handle().clone(),
-        &tree,
-        &std::collections::BTreeMap::new(),
-        &tilo_session::arrangement::Marks::default(),
-    );
-    seated.place_now();
+    own_arrangement::write(&mut doc, &placed).expect("the arrangement");
+    let path = state.join("tilo");
+    std::fs::create_dir_all(&path).expect("the state directory");
+    std::fs::write(path.join("arrangement.automerge"), doc.save()).expect("the record is kept");
+
+    let mut session = session_in(Some(state));
     step(&mut session);
 
     // The place is still theirs: a build that reads the state opens the window

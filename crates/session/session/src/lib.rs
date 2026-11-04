@@ -1140,6 +1140,7 @@ impl Session {
             &options.person,
             record,
             handle.clone(),
+            activity.clone(),
             &kept_desk,
             &std::collections::BTreeMap::new(),
             &marks,

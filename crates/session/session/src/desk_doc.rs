@@ -31,7 +31,10 @@ use std::time::{Duration, Instant};
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc as _, ScalarValue, Value};
+use collab_types::presence::UserId;
+use tilo_actions::{ActionContext, Did};
 use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION, desktop_doc};
+use ui::state::UndoLog;
 
 use crate::arrangement::Marks;
 use crate::desk_migration::Adopted;
@@ -194,6 +197,13 @@ pub(crate) fn refuse(notice: &StateNotice) {
 /// The desk's document, and where it is kept.
 pub(crate) struct DeskDoc {
     doc: Rc<RefCell<AutoCommit>>,
+    /// The desk's history as this session drives it: each change of the desk
+    /// is one step of the person's, and the next undo takes back all of the
+    /// last one.
+    undo: RefCell<UndoLog>,
+    /// The person here, whose the desk is: their changes are theirs to take
+    /// back.
+    person: String,
     /// Where the document is kept; a session without a state directory keeps
     /// it in memory alone, and one that did not open the desk on disk keeps
     /// nothing at all.
@@ -219,18 +229,18 @@ impl DeskDoc {
     pub(crate) fn load(state: Option<&Path>, old_desk: Option<&Path>, person: &str) -> Self {
         let actor = actor_of_person(person);
         let Some(state) = state else {
-            return Self::keeping(AutoCommit::new(), None, actor, None);
+            return Self::keeping(AutoCommit::new(), None, actor, person, None);
         };
         let at = path(state);
         let mut doc = match read(&at) {
             Read::Document(doc) => *doc,
-            Read::Refused(notice) => return Self::refusing(notice, actor),
+            Read::Refused(notice) => return Self::refusing(notice, actor, person),
             // No document yet: the desk older sessions kept here moves into
             // one before the files it came from go.
             Read::Nothing => match crate::desk_migration::adopt(state, &at, actor.clone()) {
                 Adopted::Document(doc) => *doc,
                 Adopted::Nothing => AutoCommit::new(),
-                Adopted::Refused(notice) => return Self::refusing(notice, actor),
+                Adopted::Refused(notice) => return Self::refusing(notice, actor, person),
             },
         };
         // A device that ran the shell kept its desk nowhere this session
@@ -247,7 +257,7 @@ impl DeskDoc {
             }
             None => None,
         };
-        Self::keeping(doc, Some(at), actor, notice)
+        Self::keeping(doc, Some(at), actor, person, notice)
     }
 
     /// A document this session writes, kept at `path` when it has one.
@@ -255,11 +265,15 @@ impl DeskDoc {
         mut doc: AutoCommit,
         path: Option<PathBuf>,
         actor: automerge::ActorId,
+        person: &str,
         notice: Option<StateNotice>,
     ) -> Self {
         doc.set_actor(actor);
+        let undo = UndoLog::new(&mut doc);
         Self {
             doc: Rc::new(RefCell::new(doc)),
+            undo: RefCell::new(undo),
+            person: person.to_owned(),
             path,
             refused: None,
             notice,
@@ -269,12 +283,15 @@ impl DeskDoc {
 
     /// An empty desk that keeps nothing: the desk on disk is this build's to
     /// leave alone.
-    fn refusing(notice: StateNotice, actor: automerge::ActorId) -> Self {
+    fn refusing(notice: StateNotice, actor: automerge::ActorId, person: &str) -> Self {
         refuse(&notice);
         let mut doc = AutoCommit::new();
         doc.set_actor(actor);
+        let undo = UndoLog::new(&mut doc);
         Self {
             doc: Rc::new(RefCell::new(doc)),
+            undo: RefCell::new(undo),
+            person: person.to_owned(),
             path: None,
             refused: Some(notice),
             notice: None,
@@ -312,18 +329,43 @@ impl DeskDoc {
     /// the drag or the burst of switches is over: a resize writes the view on
     /// every frame, and those are not changes of the desk.
     pub(crate) fn record(&self, desktop: &DesktopTree, time: i64) -> bool {
-        self.write(desktop, time, true)
+        self.write(desktop, time, true, None)
     }
 
     /// [`Self::record`], and write even how the desk looks now: what ends the
     /// session, which the next one starts from.
     pub(crate) fn record_now(&self, desktop: &DesktopTree, time: i64) -> bool {
-        self.write(desktop, time, false)
+        self.write(desktop, time, false, None)
     }
 
-    fn write(&self, desktop: &DesktopTree, time: i64, wait_out_a_drag: bool) -> bool {
+    /// Record `desktop` as it stands as `asked`'s arranging action: one change
+    /// of the desk whose own entry says who asked and what they did, so the
+    /// history names it and the step is the person's to take back. It is a
+    /// change of the desk and never a frame of a drag: an action asked for is
+    /// written as it is made. Whether the desk changed at all.
+    pub(crate) fn record_action(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        asked: &ActionContext,
+    ) -> bool {
+        self.write(desktop, time, false, Some(asked))
+    }
+
+    fn write(
+        &self,
+        desktop: &DesktopTree,
+        time: i64,
+        wait_out_a_drag: bool,
+        asked: Option<&ActionContext>,
+    ) -> bool {
         let mut doc = self.doc.borrow_mut();
         stamp_schema(&mut doc);
+        let before = doc.get_heads();
+        // A document with no desk holds one after this change: the desk is
+        // being opened, here or as it arrived from the workspace, and that is
+        // no change of the person's to take back.
+        let opened = !desktop_doc::holds(&doc);
         let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
         if doc.pending_ops() == 0 {
             return false;
@@ -332,14 +374,79 @@ impl DeskDoc {
             doc.rollback();
             return false;
         }
-        doc.commit_with(CommitOptions::default().with_time(time));
+        let mut options = CommitOptions::default().with_time(time);
+        if let Some(message) = asked.and_then(ActionContext::change_message) {
+            options = options.with_message(message);
+        }
+        doc.commit_with(options);
+        // One change of the desk is one step of the person's: what they did
+        // here is theirs to take back, whichever of their agents asked; so is
+        // a change asked for that only moves the view, a width or a
+        // maximization, which is a step like any other when an action asks
+        // for it. How the desk looks alone, unasked, is no step: those
+        // changes ride with the change before or after them. Nor is the desk
+        // as it was opened.
+        if !opened && (asked.is_some() || !looks_only) {
+            self.undo.borrow_mut().record_committed_action_authored(
+                &mut doc,
+                before,
+                None,
+                None,
+                Some(user(&self.person)),
+            );
+        }
         if looks_only {
             self.looks_at.set(Some(std::time::Instant::now()));
         }
+        self.keep(&mut doc);
+        true
+    }
+
+    /// Write `doc` where this device keeps it, away from the frame.
+    fn keep(&self, doc: &mut AutoCommit) {
         if let Some(at) = &self.path {
             tilo_durable_writer::keep(at.clone(), doc.save());
         }
-        true
+    }
+
+    /// Take back `person`'s last change of the desk. Whether there was one.
+    pub(crate) fn undo(&self, person: &str) -> bool {
+        self.rewind(|undo, doc| undo.undo_as(doc, Some(&user(person)), None, None).is_some())
+    }
+
+    /// Bring back the last change of the desk `person` took back.
+    pub(crate) fn redo(&self, person: &str) -> bool {
+        self.rewind(|undo, doc| undo.redo_as(doc, Some(&user(person)), None, None).is_some())
+    }
+
+    fn rewind(&self, step: impl FnOnce(&mut UndoLog, &mut AutoCommit) -> bool) -> bool {
+        let mut doc = self.doc.borrow_mut();
+        let stepped = {
+            let mut undo = self.undo.borrow_mut();
+            step(&mut undo, &mut doc)
+        };
+        if stepped {
+            self.keep(&mut doc);
+        }
+        stepped
+    }
+
+    /// The last step of the desk's history, as who made it and what it did:
+    /// what the history names it by.
+    pub(crate) fn last_step(&self, person: &str) -> Option<(String, String)> {
+        let doc = self.doc.borrow();
+        let entry = self.undo.borrow().next_undo_as(&doc, Some(&user(person)))?;
+        let step = entry.step?;
+        // Who asked for it: the invoker the step records, else the person
+        // whose desk it is.
+        let who = step
+            .invoker
+            .map_or_else(|| person.to_owned(), |invoker| invoker.actor);
+        let what = match step.what {
+            Some(Did::Verb(call)) => call.action.action,
+            _ => String::new(),
+        };
+        Some((who, what))
     }
 
     /// Whether how the desk looks was kept so lately that what is written now
@@ -459,6 +566,11 @@ impl crate::Shared {
 /// ([`ui::history_source::actor_handle`]).
 pub(crate) fn actor_of_person(person: &str) -> automerge::ActorId {
     automerge::ActorId::from(person.as_bytes())
+}
+
+/// The person `person`, as the history names them.
+fn user(person: &str) -> UserId {
+    UserId(person.to_owned())
 }
 
 /// What the file at `path` holds.
