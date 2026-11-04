@@ -12,6 +12,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
 
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use tilo_compositor::HostKey;
 use winit::event::Modifiers;
@@ -23,6 +24,55 @@ use crate::{Placement, ime_event, key_event, modifiers_state, mouse_input};
 /// The colour a widget tree draws on: nothing, so the desktop shows through
 /// wherever it painted nothing.
 const TRANSPARENT: Color = Color::TRANSPARENT;
+
+/// The display's frame grid: when the next frame of what only moves is due,
+/// locked to the cadence the displays run at rather than to the loop's turns.
+#[derive(Clone, Copy, Debug)]
+struct Cadence {
+    /// How long the displays hold a frame; nil until one says, when every turn
+    /// is a frame, as a tree with no display under it drew before.
+    interval: Duration,
+    /// When the next frame is due, once one was drawn.
+    next: Option<Instant>,
+}
+
+impl Cadence {
+    /// Every turn is a frame until a display says how long it holds one.
+    const fn new() -> Self {
+        Self {
+            interval: Duration::ZERO,
+            next: None,
+        }
+    }
+
+    /// The displays hold each frame for `interval`.
+    fn set_interval(&mut self, interval: Duration) {
+        self.interval = interval;
+    }
+
+    /// Whether a turn at `now` comes before the grid: a frame it drew of what
+    /// only moves would show nothing the last one did not.
+    fn early(&self, now: Instant) -> bool {
+        self.next.is_some_and(|next| now < next)
+    }
+
+    /// When a frame of what only moves is next due: the grid while it holds,
+    /// and now once it has passed.
+    fn due(&self, now: Instant) -> Instant {
+        self.next.unwrap_or(now).max(now)
+    }
+
+    /// A frame was drawn at `now`: the grid moves on one display frame. A
+    /// frame drawn late skips the deadlines it missed instead of queueing
+    /// frames to catch up.
+    fn drawn(&mut self, now: Instant) {
+        let from = match self.next {
+            Some(next) if now < next => next,
+            _ => now,
+        };
+        self.next = Some(from.checked_add(self.interval).unwrap_or(from));
+    }
+}
 
 /// What a widget tree's next frame is for.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -85,6 +135,9 @@ pub struct WidgetHost {
     /// host to ask (a command queued on the desk's handle): the frame that
     /// answers it.
     asked: Rc<std::cell::Cell<bool>>,
+    /// The display's grid: what the tree moves through is drawn once per
+    /// display frame, so the screens show as many frames as they run at.
+    cadence: Cadence,
 }
 
 impl WidgetHost {
@@ -130,6 +183,7 @@ impl WidgetHost {
             previews: None,
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
+            cadence: Cadence::new(),
         }
     }
 
@@ -230,12 +284,10 @@ impl WidgetHost {
         if self.owed != Owed::Nothing || self.asked.replace(false) {
             return true;
         }
-        let frame = self.host.frame_schedule();
-        frame.queued_work
-            || frame.needs_animation_frame
-            || frame
-                .next_wake_deadline
-                .is_some_and(|deadline| deadline <= ui::time::now())
+        self.host.frame_schedule().queued_work
+            || self
+                .next_deadline()
+                .is_some_and(|deadline| deadline <= Instant::now())
     }
 
     /// Where the tree is shown.
@@ -623,19 +675,37 @@ impl SurfaceHost for WidgetHost {
         self.input(&WindowEvent::Ime(ime_event(event)));
     }
 
-    /// A frame is due now while the tree moves, and a change it owes the
-    /// compositor is one too; else the earliest deadline the tree sets.
+    /// A frame is due now for a change it owes the compositor; what only
+    /// moves is due on the display's grid, one frame per refresh; else the
+    /// earliest deadline the tree sets.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         let schedule = self.host.frame_schedule();
-        if schedule.needs_animation_frame || self.owed != Owed::Nothing {
-            return Some(std::time::Instant::now());
+        if self.owed != Owed::Nothing {
+            return Some(Instant::now());
+        }
+        if schedule.needs_animation_frame {
+            return Some(self.cadence.due(Instant::now()));
         }
         schedule.next_wake_deadline
+    }
+
+    fn set_frame_interval(&mut self, interval: Duration) {
+        self.cadence.set_interval(interval);
     }
 
     fn prepare_frame(&mut self) -> bool {
         if self.asked.replace(false) {
             self.owe();
+        }
+        let now = Instant::now();
+        // What only moves draws on the display's grid: a turn that comes
+        // before the next display frame has nothing new to show, and drawing
+        // it would put more frames on the screen than it runs at.
+        if self.owed == Owed::Nothing
+            && self.cadence.early(now)
+            && self.host.frame_schedule().needs_animation_frame
+        {
+            return false;
         }
         // Translucent material records what lies below it; the compositor
         // blurs that and hands it back (`set_backdrops`). The images are
@@ -701,6 +771,70 @@ impl SurfaceHost for WidgetHost {
         };
         self.retained.presented(&self.scene, parts, key);
         self.frames.present(&self.scene, damage.as_deref());
+        self.cadence.drawn(now);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::arithmetic_side_effects,
+        reason = "test fixtures"
+    )]
+
+    use super::Cadence;
+    use std::time::{Duration, Instant};
+
+    const FRAME: Duration = Duration::from_micros(16_667);
+
+    #[test]
+    fn a_tree_with_no_display_under_it_draws_every_turn() {
+        let cadence = Cadence::new();
+        let now = Instant::now();
+        assert!(!cadence.early(now), "nothing paces a tree with no display");
+        assert_eq!(cadence.due(now), now, "the first frame is due at once");
+    }
+
+    #[test]
+    fn one_frame_is_due_per_display_frame() {
+        let mut cadence = Cadence::new();
+        cadence.set_interval(FRAME);
+        let drawn = Instant::now();
+        cadence.drawn(drawn);
+        assert!(
+            cadence.early(drawn + Duration::from_millis(1)),
+            "a turn before the grid shows nothing new"
+        );
+        assert!(
+            !cadence.early(drawn + FRAME),
+            "the frame is due at the grid"
+        );
+        assert_eq!(cadence.due(drawn), drawn + FRAME);
+    }
+
+    #[test]
+    fn a_frame_drawn_late_skips_the_deadlines_it_missed() {
+        let mut cadence = Cadence::new();
+        cadence.set_interval(FRAME);
+        let drawn = Instant::now();
+        cadence.drawn(drawn);
+        // Three display frames later: the grid moves on from now, it does not
+        // queue the two frames that went by.
+        let late = drawn + FRAME * 3;
+        cadence.drawn(late);
+        assert_eq!(cadence.due(late), late + FRAME);
+    }
+
+    #[test]
+    fn past_the_grid_a_frame_is_due_now() {
+        let mut cadence = Cadence::new();
+        cadence.set_interval(FRAME);
+        let drawn = Instant::now();
+        cadence.drawn(drawn);
+        let idle = drawn + Duration::from_secs(5);
+        assert!(!cadence.early(idle));
+        assert_eq!(cadence.due(idle), idle);
     }
 }

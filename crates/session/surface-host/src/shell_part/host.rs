@@ -223,6 +223,10 @@ impl SurfaceHost for ShellPart {
             .min()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.widgets.set_frame_interval(interval);
+    }
+
     fn prepare_frame(&mut self) -> bool {
         let input = std::mem::take(&mut self.input);
         // A surface the desk shows, or a menu it opened, makes the part cover the outputs:

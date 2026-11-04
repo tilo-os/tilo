@@ -177,6 +177,10 @@ impl SurfaceHost for People {
         self.host.borrow().next_deadline()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.host.borrow_mut().set_frame_interval(interval);
+    }
+
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {
         self.host.borrow_mut().set_backdrops(images);
     }
@@ -351,6 +355,10 @@ impl SurfaceHost for Host {
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
         self.0.borrow().next_deadline()
+    }
+
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.0.borrow_mut().set_frame_interval(interval);
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_compositor::BackdropImage>>) {

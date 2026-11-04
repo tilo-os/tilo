@@ -608,6 +608,10 @@ impl SurfaceHost for DesktopHost {
         self.desk.borrow().host.next_deadline()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.desk.borrow_mut().host.set_frame_interval(interval);
+    }
+
     fn window_pictures(&self) -> Vec<tilo_compositor::WindowPicture> {
         self.desk.borrow().host.window_pictures()
     }

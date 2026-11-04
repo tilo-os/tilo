@@ -2915,3 +2915,58 @@ fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_cho
         "the desktop answers its own chord again"
     );
 }
+
+/// A hosted surface that only records how long the display holds a frame.
+struct Paced {
+    heard: Rc<RefCell<Vec<Duration>>>,
+}
+
+impl SurfaceHost for Paced {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn set_frame_interval(&mut self, interval: Duration) {
+        self.heard.borrow_mut().push(interval);
+    }
+}
+
+#[test]
+fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
+    compositor
+        .add_output(&OutputConfig {
+            refresh_mhz: 144_000,
+            ..OutputConfig::new("HEADLESS-1", 640, 480)
+        })
+        .unwrap();
+    compositor.add_host(Box::new(Paced {
+        heard: Rc::clone(&heard),
+    }));
+    compositor.render().unwrap();
+    assert_eq!(
+        heard.borrow().last().copied(),
+        Some(Duration::from_nanos(1_000_000_000_000 / 144_000)),
+        "the surface draws on the display's grid"
+    );
+    // The fastest display sets the grid: a frame kept for the slow one shows
+    // on the fast one later than it runs.
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 640, 480))
+        .unwrap();
+    compositor.render().unwrap();
+    assert_eq!(
+        heard.borrow().last().copied(),
+        Some(Duration::from_nanos(1_000_000_000_000 / 144_000)),
+        "the shortest interval is the one the screens are shown at"
+    );
+}

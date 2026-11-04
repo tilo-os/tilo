@@ -1793,7 +1793,12 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         let mut drew = false;
+        // The displays hold each frame for this long: a surface whose content
+        // only moves draws one frame per one of these, so what the person sees
+        // runs at the screens' rate rather than at the loop's.
+        let interval = self.data.state.frame_interval();
         for host in &mut self.data.state.hosts {
+            host.set_frame_interval(interval);
             drew |= host.prepare_frame();
         }
         if drew {

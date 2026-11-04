@@ -352,6 +352,10 @@ impl SurfaceHost for Setup {
         self.up().then(|| self.widgets().next_deadline()).flatten()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.widgets_mut().set_frame_interval(interval);
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.widgets().cursor()
     }

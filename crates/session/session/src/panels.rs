@@ -185,6 +185,10 @@ impl SurfaceHost for Banners {
         self.host.next_deadline()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.host.set_frame_interval(interval);
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }
@@ -380,6 +384,10 @@ impl SurfaceHost for Readout {
         self.host.next_deadline()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.host.set_frame_interval(interval);
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }
@@ -478,6 +486,10 @@ impl<T: SurfaceHost> SurfaceHost for Held<T> {
 
     fn next_deadline(&self) -> Option<std::time::Instant> {
         self.0.borrow().next_deadline()
+    }
+
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.0.borrow_mut().set_frame_interval(interval);
     }
 
     fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {

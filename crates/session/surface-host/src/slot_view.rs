@@ -749,6 +749,16 @@ impl SurfaceHost for SlotView {
         open.turn();
         open.draw()
     }
+
+    fn next_deadline(&self) -> Option<std::time::Instant> {
+        self.open.as_ref()?.widgets.next_deadline()
+    }
+
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        if let Some(open) = self.open.as_mut() {
+            open.widgets.set_frame_interval(interval);
+        }
+    }
 }
 
 /// Where the reading puts the view, in the desk's coordinates, when it puts it anywhere.

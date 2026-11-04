@@ -340,6 +340,10 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         self.drawn().then(|| self.host.next_deadline()).flatten()
     }
 
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.host.set_frame_interval(interval);
+    }
+
     fn cursor(&self) -> tilo_compositor::CursorIcon {
         self.host.cursor()
     }

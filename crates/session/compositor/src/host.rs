@@ -346,13 +346,20 @@ pub trait SurfaceHost {
     }
 
     /// When this surface next needs a frame with no input to bring one: now
-    /// while what it shows moves or a wake it took has not drawn yet, else
-    /// the earliest deadline its content sets (a banner's exit, a caret's
-    /// blink). The loop waits no longer than this; `None` leaves it to the
+    /// when a wake it took has not drawn yet, else the earliest deadline its
+    /// content sets (a banner's exit, a caret's blink). A surface whose
+    /// content only moves draws on the display's cadence the compositor gave
+    /// it ([`SurfaceHost::set_frame_interval`]), not once per turn of the
+    /// loop. The loop waits no longer than this; `None` leaves it to the
     /// loop's own idle.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         None
     }
+
+    /// How long the displays this surface is shown on hold each frame: a
+    /// frame of its own is due once per one of these, so the screens show as
+    /// many frames as they run at and not one per turn of the loop.
+    fn set_frame_interval(&mut self, _interval: std::time::Duration) {}
 
     /// The outputs' logical rectangles `(x, y, w, h)`, now and whenever
     /// one is added, removed or moved: a surface covering the desktop

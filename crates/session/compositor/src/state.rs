@@ -532,6 +532,18 @@ impl State {
         self.rearrange();
     }
 
+    /// How long the displays hold each frame, the shortest one among them:
+    /// what the frames of the surfaces above them are paced to.
+    pub(crate) fn frame_interval(&self) -> std::time::Duration {
+        self.space
+            .outputs()
+            .filter_map(|output| output.current_mode().map(|mode| mode.refresh))
+            .filter(|refresh| *refresh > 0)
+            .map(crate::output::refresh_interval)
+            .min()
+            .unwrap_or_else(|| crate::output::refresh_interval(0))
+    }
+
     /// The logical rectangles of every output.
     pub(crate) fn output_geometries(&self) -> Vec<Rectangle<i32, Logical>> {
         self.space
