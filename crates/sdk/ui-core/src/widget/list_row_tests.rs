@@ -1343,6 +1343,16 @@ fn a_checked_rows_title_is_struck_through_and_muted() {
 }
 
 #[test]
+fn a_toned_meta_is_spoken_once() {
+    // A late day draws as a span in the danger tone: one fact, one span, said once.
+    let node = ListRowFace::new("Ring the letting agent")
+        .meta("Overdue since Jun 29")
+        .meta_spans(&[("Overdue since Jun 29", Tone::Danger)])
+        .accessibility(Rect::new(0.0, 0.0, 320.0, 40.0), "late");
+    assert_eq!(node.value.as_deref(), Some("Overdue since Jun 29"));
+}
+
+#[test]
 fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
     use crate::time::testing::with_monotonic_time;
     use crate::time::{Duration, Instant};

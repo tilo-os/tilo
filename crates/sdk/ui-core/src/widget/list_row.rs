@@ -856,12 +856,14 @@ impl<'a> ListRowFace<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         let count = self.count.map(|count| count.to_string());
+        // A toned meta draws as spans of its own words: the row says it once.
+        let meta = self.meta.filter(|_| self.meta_spans.is_empty());
         let mut value: Vec<&str> = self.tags.iter().map(|(label, _)| *label).collect();
         value.extend(
             [
                 self.subtitle,
                 self.secondary,
-                self.meta,
+                meta,
                 (!spans.is_empty()).then_some(spans.as_str()),
                 self.value.map(|(value, _)| value),
                 count.as_deref(),
