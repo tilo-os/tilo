@@ -946,8 +946,8 @@ mod members;
 #[path = "governed_rooms/governance_actions.rs"]
 mod governance_actions;
 
-#[path = "governed_rooms/spectators.rs"]
-mod spectators;
+#[path = "governed_rooms/visitors.rs"]
+mod visitors;
 
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;

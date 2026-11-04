@@ -421,8 +421,8 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         .enter(&workspace.workspace, &owner)
         .await
         .unwrap();
-    // The spectator person is a viewer of the workspace, as its host makes it,
-    // and every watching page is one of its devices.
+    // Another person is a viewer of the workspace, as an invitation makes
+    // them, and one of their devices joins; their other device does not.
     let invitation = workspaces
         .issue(
             &workspace.workspace,
@@ -480,7 +480,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
                 destinations: tilo_net::proxy::host::Destinations::Any,
                 budgets: tilo_net::proxy::host::Budgets {
                     visitor_bytes: None,
-                    room_bytes: Some(26),
+                    room_bytes: Some(52),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -496,24 +496,21 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(plain_accept_loop(listener, web));
     let owner_token = browser(addr, &owner_key, &owner).await;
-    let watching = browser(addr, &watch_key, &watch).await;
-    relay
-        .admit_spectators(
-            workspace.workspace_id,
-            crate::workspace_access::Spectators {
-                root: watcher.verifying_key().to_bytes(),
-                seats: 4,
-                public: true,
-            },
-        )
-        .await
-        .unwrap();
+    let visiting = browser(addr, &watch_key, &watch).await;
 
     let target = test_http::Responder::start(vec![
         test_http::Reply::status(200)
             .header("Content-Type", "application/json")
             .header("Set-Cookie", "tracker=1")
             .body("[{\"title\":\"Trending\"}]"),
+        test_http::Reply::status(200)
+            .header("Content-Type", "application/json")
+            .header("Set-Cookie", "tracker=1")
+            .body("[{\"title\":\"Trending\"}]"),
+        test_http::Reply::status(206)
+            .header("Content-Type", "video/mp4")
+            .header("Content-Range", "bytes 0-3/9000000")
+            .body("mp4!"),
         test_http::Reply::status(206)
             .header("Content-Type", "video/mp4")
             .header("Content-Range", "bytes 0-3/9000000")
@@ -534,13 +531,9 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         async move { exchange(addr, &head, b"").await }
     };
 
-    // Nobody signed in, a made-up session and a watching page are refused,
-    // in a way the page can read.
-    for token in [
-        None,
-        Some(hex::encode([5; 32])),
-        Some(hex::encode(watching)),
-    ] {
+    // Nobody signed in and a made-up session are refused, in a way the page
+    // can read.
+    for token in [None, Some(hex::encode([5; 32]))] {
         let (status, head, _) = fetch(token, "https://app.example").await;
         assert_eq!(status, 401, "{head}");
         assert_eq!(
@@ -583,8 +576,22 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     assert_eq!(seen.header("x-tilo-session"), None);
     assert_eq!(seen.header("origin"), None);
 
+    // A page of a member with the Viewer role reads through the host like any
+    // other: what it may load is bounded by its device's and its workspace's
+    // budgets, never by its role.
+    let (status, head, body) = fetch(Some(hex::encode(visiting)), "https://app.example").await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(body, b"[{\"title\":\"Trending\"}]");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("https://app.example")
+    );
+    let seen = target.next_request();
+    assert_eq!(seen.target, "/api/v1/trending");
+    assert_eq!(seen.header("x-tilo-session"), None);
+
     // A media element sends no headers of its own: its GET names the proxy
-    // and the session in the query, and only a member's session is served.
+    // and the session in the query.
     let media = |token: [u8; 32]| {
         let proxy = tilo_net::proxy::Proxy {
             endpoint: tilo_net::Url::parse("http://host/peer/v1/fetch").unwrap(),
@@ -601,11 +608,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         );
         async move { exchange(addr, &head, b"").await }
     };
-    let (status, _, _) = media(watching).await;
-    assert_eq!(
-        status, 401,
-        "a watching page streams nothing through the host"
-    );
     let (status, head, body) = media(owner_token).await;
     assert_eq!(status, 206, "{head}");
     assert_eq!(body, b"mp4!");
@@ -613,6 +615,14 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         header_value(&head, "access-control-allow-origin"),
         Some("https://app.example")
     );
+    assert_eq!(
+        target.next_request().header("range"),
+        Some("bytes=0-2097151"),
+        "an open-ended range is asked a piece at a time"
+    );
+    let (status, head, body) = media(visiting).await;
+    assert_eq!(status, 206, "{head}");
+    assert_eq!(body, b"mp4!");
     assert_eq!(
         target.next_request().header("range"),
         Some("bytes=0-2097151"),

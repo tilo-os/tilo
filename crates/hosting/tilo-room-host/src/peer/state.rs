@@ -556,6 +556,15 @@ pub(super) async fn handle_delta(
         // Neither kept nor forwarded, as above.
         return Ok(None);
     }
+    if let Envelope::Delta { delta, .. } = &env
+        && let Some(reason) =
+            crate::surfaces::role_refusal(delta, standings.as_deref(), *author_device_public_key)
+    {
+        // Neither kept nor forwarded: a viewer's role writes nothing a
+        // document change could carry.
+        tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a change a viewer's role writes nothing of");
+        return Ok(None);
+    }
     let observed = match (&env, session.compactor) {
         (Envelope::Delta { delta, .. }, Some(compactor)) => compactor.observe(delta),
         _ => None,

@@ -103,7 +103,7 @@ impl Workspace {
 }
 
 #[test]
-fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_and_spectators() {
+fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_and_visitors() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -153,8 +153,8 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         OperatorEvent::PreAdmitRefused { .. }
     ));
 
-    // A watching page's device becomes the spectator person: not the owner,
-    // no capabilities, short-lived.
+    // A visiting page's device becomes the visitor person's: not the
+    // owner's, no capabilities, short-lived.
     room.tell(&OperatorCommand::Spectate {
         device_public_key: "66".repeat(32),
     });
@@ -165,7 +165,7 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         )
     });
     let OperatorEvent::SpectatorCertified { certificate, .. } = event else {
-        panic!("the spectator was refused: {event:?}");
+        panic!("the visiting page's device was refused: {event:?}");
     };
     assert_eq!(certificate.device_public_key, [0x66; 32]);
     assert_ne!(hex::encode(certificate.user_public_key), user_public_key);
@@ -173,7 +173,7 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     assert!(!certificate.capabilities.can_own_workspaces);
     room.stop();
 
-    // Restarted: the same room, and the same spectator person.
+    // Restarted: the same room, and the same visitor person.
     let mut room = start(&state, &root_file, &secrets).unwrap();
     let OperatorEvent::Started {
         workspace: Some(again),
@@ -196,7 +196,7 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         )
     })
     else {
-        panic!("the spectator was refused after a restart");
+        panic!("the visiting page's device was refused after a restart");
     };
     assert_eq!(second.user_public_key, certificate.user_public_key);
     room.stop();
@@ -245,7 +245,7 @@ fn pre_admit_all(room: &mut Workspace, visitors: std::ops::Range<usize>) -> Dura
 /// Visitors arriving in bursts, as a launch brings them: every
 /// pre-admission of a burst is asked at once, burst after burst into a room
 /// that keeps the open grants of those before. The room service waits ten
-/// seconds for each answer before it turns that visitor into a spectator,
+/// seconds for each answer before it turns that visitor away,
 /// and answered one at a time each answer waited for its own write, which
 /// grew with the grants already open: the third burst of 300 ran past the
 /// wait. Side by side, a burst shares its writes.
@@ -414,7 +414,6 @@ fn page(
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
-    watching: bool,
 ) -> tilo_browser_peer::PeerHandle {
     tilo_browser_peer::PeerHandle::start(
         tilo_browser_peer::PeerConfig {
@@ -422,7 +421,6 @@ fn page(
             cert,
             host_cert: host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
-            watching,
             background: false,
         },
         std::sync::Arc::new(key),
@@ -430,8 +428,9 @@ fn page(
     )
 }
 
-/// Ask the room to certify a fresh page device as its spectator person, as
-/// the room service's `/spectate` does for the homepage embed.
+/// Ask the room to certify a fresh page device as the workspace's visitor
+/// person, as the room service's `/spectate` does for the homepage embed, and
+/// admit it there as that member's device.
 fn spectate(room: &mut Workspace) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
     let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
         getrandom::SysRng,
@@ -446,7 +445,7 @@ fn spectate(room: &mut Workspace) -> (ed25519_dalek::SigningKey, tilo_user_ident
         )
     }) {
         OperatorEvent::SpectatorCertified { certificate, .. } => (key, certificate),
-        other => panic!("the spectator was refused: {other:?}"),
+        other => panic!("the visiting page's device was refused: {other:?}"),
     }
 }
 
@@ -481,11 +480,15 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
     (sibling_key, sibling_cert)
 }
 
+/// Wait until `visiting` reads `route` with every one of `channels`, and return
+/// the page's copy of it.
 async fn assert_page_reads_the_chat(
-    watcher: &tilo_browser_peer::PeerHandle,
+    who: &str,
+    visiting: &tilo_browser_peer::PeerHandle,
     workspace_id: u64,
     route: &tilo_peer_state::document_frame::DocumentRoute,
-) {
+    channels: &[&str],
+) -> automerge::AutoCommit {
     use collab_types::DocumentMutation;
     use tilo_automerge::ApplyIncoming;
     use tilo_browser_peer::PeerEvent;
@@ -494,9 +497,9 @@ async fn assert_page_reads_the_chat(
     let mut doc = automerge::AutoCommit::new();
     let events = std::sync::Mutex::new(Vec::new());
     wait_for(
-        "the watching page to read the chat's starting channel",
+        &format!("{who}'s page to read the chat's channels {channels:?}"),
         || {
-            for event in watcher.drain() {
+            for event in visiting.drain() {
                 match &event {
                     PeerEvent::Ready { workspace_id: at } if *at == workspace_id => {
                         ready = true;
@@ -520,27 +523,37 @@ async fn assert_page_reads_the_chat(
                     other => format!("{other:?}"),
                 });
             }
-            (ready && chat_channels(&doc)?.iter().any(|name| name == "general")).then_some(())
+            let read = chat_channels(&doc)?;
+            (ready
+                && channels
+                    .iter()
+                    .all(|wanted| read.iter().any(|name| name == wanted)))
+            .then_some(())
         },
         || {
             format!(
                 "{:?}; status {:?}",
                 events.lock().unwrap(),
-                watcher.status()
+                visiting.status()
             )
         },
     )
     .await;
-    let status = watcher.status();
+    let status = visiting.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
+    doc
 }
 
 /// The homepage embed's path through the real room process: a page whose
-/// device the room certified as its spectator person subscribes, reads the
-/// room's chat with its starting channel, and has every write refused; the owner's root
-/// still admits none of its other devices by itself.
+/// device the room certified as its visitor person's subscribes, reads the
+/// room's chat with its starting channel, and has every write refused as the
+/// viewer it is; the owner's root still admits none of its other devices by
+/// itself. The same room, telling its visitors they are its editors, takes
+/// the next page's write in: what a visitor may change is the role its
+/// workspace gives visitors, and nothing else about the page changes.
 #[test]
-fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothing() {
+fn a_persistent_rooms_visitor_page_reads_the_room_and_writes_what_the_workspace_lets_visitors_write()
+ {
     use collab_types::DocumentMutation;
     use tilo_browser_peer::PeerEvent;
     use tilo_peer_state::document_frame::DocumentRoute;
@@ -571,7 +584,7 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
         panic!("no governed room announced")
     };
     let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
-    let (watching_key, watching_cert) = spectate(&mut room);
+    let (visiting_key, visiting_cert) = spectate(&mut room);
     let (writing_key, writing_cert) = spectate(&mut room);
     let (sibling_key, sibling_cert) = unenrolled_owner_device();
 
@@ -587,24 +600,26 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
 
-        let watcher = page(plain, watching_key, watching_cert, &host_cert, true);
-        watcher.join(workspace_id).unwrap();
-        watcher.open_route(route.clone()).unwrap();
-        assert_page_reads_the_chat(&watcher, workspace_id, &route).await;
+        let visiting = page(plain, visiting_key, visiting_cert, &host_cert);
+        visiting.join(workspace_id).unwrap();
+        visiting.open_route(route.clone()).unwrap();
+        assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
 
-        // A page of the spectator person that does not say it only watches
-        // still writes nothing: the host refuses it.
-        let writer = page(plain, writing_key, writing_cert, &host_cert, false);
+        // Another page of the visitor person holds the role its workspace
+        // gives visitors, a viewer's: it reads the room and writes nothing.
+        let writer = page(plain, writing_key, writing_cert, &host_cert);
         writer.join(workspace_id).unwrap();
+        writer.open_route(route.clone()).unwrap();
+        assert_page_reads_the_chat("writer", &writer, workspace_id, &route, &["general"]).await;
         writer
             .publish(
                 route.clone(),
-                &DocumentMutation::Incremental(b"a spectator's edit".to_vec()),
+                &DocumentMutation::Incremental(b"a visitor's edit".to_vec()),
             )
             .unwrap();
         let mut committed = false;
         let refused = wait_for(
-            "the spectator's write to be refused",
+            "the visitor's write to be refused",
             || {
                 committed |= writer
                     .drain()
@@ -614,17 +629,14 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
                     .status()
                     .failures
                     .into_iter()
-                    .find(|failure| failure.message == "a spectator only watches this room")
+                    .find(|failure| failure.message.contains("not granted"))
             },
             || format!("{:?}", writer.status()),
         )
         .await;
-        assert!(
-            !committed,
-            "the spectator's write was committed: {refused:?}"
-        );
+        assert!(!committed, "the visitor's write was committed: {refused:?}");
 
-        let other = page(plain, sibling_key, sibling_cert, &host_cert, false);
+        let other = page(plain, sibling_key, sibling_cert, &host_cert);
         other.join(workspace_id).unwrap();
         let refused = wait_for(
             "the sibling device to be refused",
@@ -648,14 +660,80 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
 
         other.close();
         writer.close();
-        watcher.close();
+        visiting.close();
+    });
+    room.stop();
+
+    // The same room, visitors as its editors: a page of the same visitor
+    // person joins as it did before, and its write is taken in.
+    let mut room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--chat-channel",
+            "general",
+            "--web-plain",
+            &web_plain,
+            "--visitor-role",
+            "editor",
+        ],
+    )
+    .unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(same),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    else {
+        panic!("no governed room announced")
+    };
+    assert_eq!(same, id, "the same room opens");
+    let (editor_key, editor_cert) = spectate(&mut room);
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let host_cert = tilo_browser_peer::host_info(&Plain(plain))
+            .await
+            .unwrap()
+            .host_cert;
+        let catalogue = tilo_agent_participant::AppCatalogue::native();
+        let route = DocumentRoute {
+            app_id: CHAT.into(),
+            cluster_id: same.clone(),
+            record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
+        };
+        let editor = page(plain, editor_key, editor_cert, &host_cert);
+        editor.join(workspace_id).unwrap();
+        editor.open_route(route.clone()).unwrap();
+        assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
+        editor
+            .publish(
+                route.clone(),
+                &DocumentMutation::Incremental(b"an editor's edit".to_vec()),
+            )
+            .unwrap();
+        let refused = wait_for(
+            "the editor's write to be committed",
+            || {
+                let events = editor.drain();
+                let committed = events
+                    .iter()
+                    .any(|event| matches!(event, PeerEvent::Committed { .. }));
+                committed.then(|| editor.status().failures)
+            },
+            || format!("{:?}", editor.status()),
+        )
+        .await;
+        assert!(
+            refused.is_empty(),
+            "an editor's write was refused: {refused:?}"
+        );
+        editor.close();
     });
     room.stop();
 }
 
 /// A room service stops its room hard (`podman rm -f`): killed after it
 /// decided things and wrote them, and killed again while it starts. Each
-/// next start opens the same room, settles its chat and lets a watching
+/// next start opens the same room, settles its chat and lets a visiting
 /// page read it.
 #[test]
 fn a_persistent_room_reopens_after_hard_stops() {
@@ -725,11 +803,11 @@ fn a_persistent_room_reopens_after_hard_stops() {
             cluster_id: id.clone(),
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
-        let watcher = page(plain, key, cert, &host_cert, true);
-        watcher.join(workspace_id).unwrap();
-        watcher.open_route(route.clone()).unwrap();
-        assert_page_reads_the_chat(&watcher, workspace_id, &route).await;
-        watcher.close();
+        let visiting = page(plain, key, cert, &host_cert);
+        visiting.join(workspace_id).unwrap();
+        visiting.open_route(route.clone()).unwrap();
+        assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
+        visiting.close();
     });
     room.stop();
 }

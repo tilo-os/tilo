@@ -285,7 +285,12 @@ async fn commit_refusal(
         tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
         return Some(reason);
     }
-    desktop_refusal(ws, author, delta).await
+    if let Some(reason) = desktop_refusal(ws, author, delta).await {
+        return Some(reason);
+    }
+    let reason = crate::surfaces::role_refusal(bytes, standings.as_deref(), author)?;
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+    Some(reason)
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a

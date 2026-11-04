@@ -372,7 +372,7 @@ pub(crate) fn visitor_root(
     Ok(root)
 }
 
-/// A certificate for one watching browser's in-memory device key: the
+/// A certificate for one visiting browser's in-memory device key: the
 /// visitor person, valid for [`VISITOR_CERT_SECS`], no capabilities.
 pub(crate) fn visitor_cert(
     visitor: &SigningKey,
