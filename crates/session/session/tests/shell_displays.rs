@@ -437,7 +437,7 @@ delegate_noop!(Seen: ignore WlShmPool);
 delegate_noop!(Seen: ignore WlBuffer);
 delegate_noop!(Seen: ignore WlSurface);
 
-/// The shell on a HiDPI display draws at that display's scale: its part
+/// The shell on a `HiDPI` display draws at that display's scale: its part
 /// paints the pixels the panel shows, so the bar and the desk are as crisp
 /// as the display allows rather than one scale's worth stretched over
 /// twice the area.
