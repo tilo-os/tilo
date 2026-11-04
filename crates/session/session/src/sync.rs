@@ -752,6 +752,11 @@ pub struct Client {
             tilo_user_identity::DeviceCert,
         )>,
     >,
+    /// The person's own store this session keeps for their other devices:
+    /// what the broker keeps their own records in as well, served on this
+    /// device's endpoint from the pass it binds. `None` on a session that has
+    /// no state to keep it in.
+    personal_store: RefCell<Option<crate::personal::Personal>>,
     /// Where this device's endpoint is reached, as other devices dial it.
     endpoint: EndpointAddr,
     /// This device's endpoint itself, once it has bound: what the session's
@@ -933,6 +938,7 @@ impl Client {
             content: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
             personal: RefCell::new(Vec::new()),
+            personal_store: RefCell::new(None),
             endpoint,
             endpoint_handle,
             fabric,
@@ -1341,6 +1347,20 @@ impl Client {
     pub(crate) fn attach_content(&self, content: Arc<content::Plane>) {
         content.bind(self.outgoing.clone(), self.publisher());
         self.content.replace(Some(content));
+    }
+
+    /// Take the person's own store, opened where this session keeps its
+    /// state, to their other devices: what the broker keeps their own
+    /// records in, and what a sibling's writes reach this session's apps
+    /// through.
+    pub(crate) fn attach_personal(&self, personal: crate::personal::Personal) {
+        self.personal_store.replace(Some(personal));
+    }
+
+    /// The person's own store this session keeps, once it has one.
+    #[must_use]
+    pub(crate) fn personal(&self) -> Option<std::cell::Ref<'_, crate::personal::Personal>> {
+        std::cell::Ref::filter_map(self.personal_store.borrow(), Option::as_ref).ok()
     }
 
     /// Keep what reached here of the devices a workspace's content can be
@@ -2134,6 +2154,7 @@ impl Client {
                 content: RefCell::new(None),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
                 personal: RefCell::new(Vec::new()),
+                personal_store: RefCell::new(None),
                 endpoint: EndpointAddr::new(publisher),
                 endpoint_handle: Arc::new(std::sync::OnceLock::new()),
                 fabric: None,

@@ -274,6 +274,21 @@ pub(crate) fn start_collaboration(
         return None;
     }
     let identity = sync::device_identity();
+    // The person's own store is answered on the session's endpoint, so it is
+    // opened before that endpoint binds and handed over with the rest.
+    let personal = identity.as_ref().and_then(|identity| {
+        match crate::personal::Personal::open(options, identity) {
+            Ok(personal) => Some(personal),
+            Err(error) => {
+                tracing::warn!(%error, "this session keeps no store of the person's own");
+                None
+            }
+        }
+    });
+    let mut beside = beside;
+    if let Some(personal) = &personal {
+        beside.push(personal.protocol());
+    }
     let own = sync::OwnPresence {
         label: options.person.clone(),
         user: identity
@@ -291,7 +306,12 @@ pub(crate) fn start_collaboration(
         options.questions.clone(),
         beside,
     ) {
-        Ok(sync) => Some(Rc::new(sync)),
+        Ok(sync) => {
+            if let Some(personal) = personal {
+                sync.attach_personal(personal);
+            }
+            Some(Rc::new(sync))
+        }
         Err(error) => {
             tracing::warn!(%error, "the collaboration plane");
             None

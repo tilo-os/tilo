@@ -27,7 +27,6 @@ mod joined;
 mod media_import;
 #[cfg(test)]
 mod media_import_tests;
-mod personal;
 mod workspace;
 mod workspaces;
 
@@ -35,7 +34,6 @@ use crate::{
     BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, Joiner, RuntimeServices, apps, profile, unix,
 };
 use joined::{Joined, RecordCreation, Refusal};
-use personal::PersonalDoor;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -60,7 +58,7 @@ use tilo_identity_host::{
     provisioning::IdentityStorage,
 };
 use tilo_peer_state::owner_commit::OwnerCommitService;
-use tilo_peer_state::{PeerPersonal, PersonalStore, PersonalSync};
+use tilo_peer_state::{PeerPersonal, PersonalSync};
 use tilo_store_link::StoreService;
 use workspace::{ProfileGrants, ProfileWorkspace};
 use workspaces::Workspaces;
@@ -68,8 +66,6 @@ use workspaces::Workspaces;
 /// Durable collaboration history, where the desktop session keeps it under
 /// the profile's `XDG_STATE_HOME`.
 const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
-/// The person's own documents on this device, beside the workspaces.
-const PERSONAL_STORE: &str = "state/tilo/personal/documents";
 /// Where the workspace host this runtime runs keeps its workspaces: the
 /// directory profiles already keep it in.
 const HOST_STORE: &str = "room-host";
@@ -95,8 +91,11 @@ pub struct Standalone {
     /// The person's own documents, opened on their identity root.
     _personal: PeerPersonal,
     /// The store open to the person's other devices for as long as this
-    /// runtime runs.
-    _personal_door: PersonalDoor,
+    /// runtime runs, and the workspaces' store answered on the same router.
+    _personal_door: tilo_action_broker::personal::Door,
+    _personal_router: iroh::protocol::Router,
+    /// The workspaces this device keeps, served on that same router.
+    _store_link: Option<StoreService>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -152,9 +151,6 @@ impl Standalone {
         let actor = identity.principal_id();
         stage("saving the workspace");
         workspace.adopt(&actor)?;
-        stage("opening the personal store");
-        let (personal, personal_key) =
-            personal_store(root, identity.user_public_key, &workspace_id)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &workspace_id));
         serve_device_grants(root, &apps);
@@ -172,15 +168,14 @@ impl Standalone {
             place_own_workspace(root, &workspace, &joined, &channel_keys.keys, (&apps, dev))?;
         }
         stage("opening the person's store to their other devices");
-        let (personal_sync, personal_door) = PersonalDoor::serve(
-            joined.endpoint(),
-            (personal.clone(), personal_key),
-            &identity,
-            &actor,
-            Arc::clone(&channels),
-            Arc::clone(&fanout),
-            workspace_store(root, &joined, &workspace)?,
-        );
+        let personal = serve_personally(PersonalServing {
+            root,
+            identity: &identity,
+            workspace: (&workspace_id, &workspace),
+            joined: &joined,
+            channels: Arc::clone(&channels),
+            fanout: Arc::clone(&fanout),
+        })?;
         let workspaces = Arc::new(Workspaces::new(&workspace, &joined));
         let identity_socket = root.join(IDENTITY_SOCKET);
         stage("starting the identity service");
@@ -204,7 +199,7 @@ impl Standalone {
                 joined: &joined,
                 keys: &channel_keys.keys,
                 device,
-                personal: personal_sync,
+                personal: personal.sync.clone(),
             },
             workspaces,
             channels,
@@ -232,8 +227,10 @@ impl Standalone {
             blob_socket: root.join(BLOB_SOCKET),
             _files: files,
             _media: media,
-            _personal: personal,
-            _personal_door: personal_door,
+            _personal: personal.sync.store(),
+            _personal_door: personal.door,
+            _personal_router: personal.router,
+            _store_link: personal.store_link,
             _lock: lock,
         })
     }
@@ -839,6 +836,87 @@ fn serve_device_grants(root: &Path, apps: &apps::Apps) {
     let _ = (root, apps);
 }
 
+/// What the person's own store is served with: the profile's state it is kept
+/// in, the identity this device acts as, and the workspace this runtime runs.
+struct PersonalServing<'a> {
+    root: &'a Path,
+    identity: &'a tilo_identity_host::registry::IdentityProfile,
+    /// The workspace this runtime runs, by its id and as it holds it.
+    workspace: (&'a str, &'a ProfileWorkspace),
+    joined: &'a Joined,
+    channels: Arc<Mutex<BrokerChannels>>,
+    fanout: Arc<FanoutState>,
+}
+
+/// The person's own store, and what serves it to their other devices.
+struct PersonalParts {
+    sync: PersonalSync,
+    door: tilo_action_broker::personal::Door,
+    /// The endpoint's accept loop, answering the store's link and the
+    /// workspaces' alike.
+    router: iroh::protocol::Router,
+    /// The workspaces this device keeps, answered on that same router.
+    store_link: Option<StoreService>,
+}
+
+/// Open the person's own store on the identity this device acts as, and serve
+/// it to their other devices from the endpoint this runtime runs: the store
+/// and the workspaces this device keeps answer on one router, so neither
+/// protocol is answered by a router the other one dropped.
+///
+/// # Errors
+///
+/// The store kept beside the profile's state is not this device's to open, or
+/// the workspaces this device keeps cannot be served.
+fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
+    let PersonalServing {
+        root,
+        identity,
+        workspace: (workspace_id, workspace),
+        joined,
+        channels,
+        fanout,
+    } = serving;
+    let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace_id)?;
+    let state = root.join("state");
+    let sync = PersonalSync::new(
+        tilo_action_broker::personal::open(
+            &state,
+            identity.user_public_key,
+            device,
+            SystemTime::now(),
+        )
+        .map_err(io::Error::other)?,
+        key,
+    );
+    let store_link = workspace_store(root, joined, workspace)?;
+    let runtime = tilo_rt::app().handle();
+    let router = {
+        let _entered = runtime.enter();
+        let mut router = iroh::protocol::Router::builder(joined.endpoint())
+            .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
+        if let Some(workspaces) = &store_link {
+            router = router.accept(tilo_store_link::ALPN, workspaces.handler());
+        }
+        router.spawn()
+    };
+    let door = tilo_action_broker::personal::Door::serve(
+        runtime,
+        joined.endpoint(),
+        sync.clone(),
+        &tilo_action_broker::personal::Person::of(identity.id.clone(), identity.user_public_key),
+        &state,
+        channels,
+        fanout,
+    );
+    Ok(PersonalParts {
+        sync,
+        door,
+        router,
+        store_link,
+    })
+}
+
 /// The broker's channel state, with the profile's durable collaboration
 /// history. Without it scrollback is limited to memory, as in the desktop
 /// session, and the host still serves.
@@ -852,27 +930,6 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
-}
-
-/// The person's own documents on this device: kept beside the profile's
-/// workspaces, opened on the identity `root` this device acts for. A store an
-/// earlier start kept is read back; the first start opens it empty.
-fn personal_store(
-    profile: &Path,
-    identity_root: [u8; 32],
-    workspace: &str,
-) -> io::Result<(PeerPersonal, ed25519_dalek::SigningKey)> {
-    let (key, device) = tilo_identity_host::broker::trusted_current_device(workspace)?;
-    let now = SystemTime::now();
-    let path = profile.join(PERSONAL_STORE);
-    let store = match std::fs::read(&path) {
-        Ok(bytes) => PersonalStore::restore(&bytes, &device, now).map_err(io::Error::other)?,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            PersonalStore::open(identity_root, device, now).map_err(io::Error::other)?
-        }
-        Err(error) => return Err(error),
-    };
-    Ok((PeerPersonal::new(store), key))
 }
 
 /// This device's collaboration identity, provisioned in `storage` on first

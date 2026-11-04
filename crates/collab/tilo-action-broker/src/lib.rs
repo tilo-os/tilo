@@ -17,6 +17,7 @@ mod evidence_signer;
 mod governance_pump;
 pub mod local_document_action;
 pub mod owner_commits;
+pub mod personal;
 pub mod policy_clock;
 pub mod policy_schedule;
 pub mod published_authorization;

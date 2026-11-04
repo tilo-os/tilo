@@ -261,6 +261,17 @@ pub(crate) fn start_action_plane(
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
     ));
+    // The person's own records this session keeps, open to their other
+    // devices: what the broker keeps them in as well as the desktop, and what
+    // a sibling's writes reach this session's apps through.
+    let personal = sync
+        .and_then(crate::sync::Client::personal)
+        .map(|personal| personal.sync().clone());
+    // What the broker hands the apps that have a record open, shared with
+    // that store: a write of a sibling's reaches an app here on the route
+    // this device's own writes do.
+    let fanout = std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
+    let channels = std::sync::Arc::clone(&sealed.broker);
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -298,8 +309,19 @@ pub(crate) fn start_action_plane(
             // What a person copies or cuts in Files, pasted here, and what
             // the loop puts on the desktop's clipboard for another app.
             file_clipboard: std::sync::Arc::clone(&file_clipboard),
+            personal,
+            fanout: std::sync::Arc::clone(&fanout),
         },
     )?;
+    // The store's link is answered by this session's own endpoint, in `sync`:
+    // the door takes it from there, once the broker is up to hand what a
+    // sibling writes to the apps that have the record open.
+    let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
+        (Some(sync), Some(endpoint)) => sync
+            .personal()
+            .map(|personal| personal.serve(tilo_rt::app().handle(), endpoint, channels, fanout)),
+        _ => None,
+    };
     // What arrives on this device's action plane is answered by the broker
     // that now serves: another of the person's devices runs nothing here the
     // person in front of it could not.
@@ -316,6 +338,7 @@ pub(crate) fn start_action_plane(
         calls,
         calls_service,
         file_clipboard,
+        _personal: personal,
     }))
 }
 

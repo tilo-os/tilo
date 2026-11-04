@@ -362,6 +362,14 @@ pub struct Hosted {
     /// Files' clipboard: what a person copied or cut there, pasted into a
     /// folder of this desktop's, and what it put on the desktop's clipboard.
     pub file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
+    /// The person's own store, which the broker keeps their own records in as
+    /// well as in this desktop: what their other devices' records reach this
+    /// session's apps through. `None` on a session that keeps none.
+    pub personal: Option<tilo_peer_state::PersonalSync>,
+    /// What the broker hands the apps that have a record open: shared with
+    /// the person's store, so a write of theirs reaches an app here on the
+    /// same route this device's own writes do.
+    pub fanout: std::sync::Arc<FanoutState>,
 }
 
 /// Where a session keeping its state at `state` keeps what its broker admits.
@@ -394,6 +402,7 @@ pub fn serve(
 ) -> std::io::Result<BrokerHandle> {
     let membership: WorkspaceAuthorityHandle = std::sync::Arc::clone(&hosted.desk) as _;
     let channels = std::sync::Arc::clone(&hosted.sealed.broker);
+    let fanout = std::sync::Arc::clone(&hosted.fanout);
     // The identity store's device-certificate checks, on this session's one
     // policy origin: the broker decides a join and a retained action against
     // them, and the services answer an app's question about a device with them.
@@ -436,7 +445,7 @@ pub fn serve(
         config.as_ref(),
         services,
         channels,
-        std::sync::Arc::new(FanoutState::new()),
+        fanout,
     )
 }
 
@@ -711,6 +720,8 @@ fn seams(
         task_programs,
         nearby,
         file_clipboard,
+        personal,
+        fanout: _,
     } = hosted;
     let shortcut_library: std::sync::Arc<dyn ShortcutLibraryServices> = shortcuts;
     // What each window this session runs shows, kept with its launches: read
@@ -927,10 +938,10 @@ fn seams(
         workspace_nodes: Seam::unserved(
             "a node's workspace is reached through the desk's own sharing, not by an app",
         ),
-        personal: Seam::unserved(
-            "this session keeps no personal-scope store: the person's records travel with \
-             their workspaces",
-        ),
+        // The person's own records, kept in their store as well as in this
+        // desktop: what an app writes of its own scope reaches their other
+        // devices, and what those wrote reaches the app here.
+        personal: Seam::when(personal),
         // The steps only this session may take for the person: the
         // workspace's activity the Activity app reads, pairing a nearby
         // device, and administering their identities and the devices trusted
@@ -1019,6 +1030,9 @@ pub(crate) struct Plane {
     /// Files' clipboard, whose copies the loop puts on the desktop's
     /// clipboard: what the person pastes into any other app.
     pub(crate) file_clipboard: std::sync::Arc<crate::file_clipboard::NativeFileClipboard>,
+    /// The person's own store open to their other devices, held so its links
+    /// and the writes it keeps end with the session.
+    pub(crate) _personal: Option<tilo_action_broker::personal::Door>,
 }
 
 impl Plane {
@@ -1233,6 +1247,8 @@ mod tests {
             file_clipboard: std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
                 std::sync::Arc::new(|| ()),
             )),
+            personal: None,
+            fanout: std::sync::Arc::new(FanoutState::new()),
         }
     }
 
