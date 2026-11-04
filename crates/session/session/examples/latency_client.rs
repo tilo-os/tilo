@@ -13,7 +13,10 @@
 //! (`wl_surface.set_buffer_scale`), as a client on a 200 % panel does, so its
 //! buffer can match the display pixel for pixel. It prints
 //! `READY <width>x<height>` once its first frame is committed and exits when
-//! the window is closed.
+//! the window is closed. It draws one size on every session (`640x480`),
+//! whatever size the session asks it to take, and says so as its largest
+//! size, so the session that answers a key composites the same number of
+//! pixels on each.
 //!
 //! Two lines per key say how long it took on this client's own clock:
 //! `CLIENT-KEY n=<key> key_to_commit_us=<us>`, from the key's dispatch to the
@@ -82,8 +85,6 @@ struct Client {
     window: Window,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     buffer: Option<Buffer>,
-    width: u32,
-    height: u32,
     configured: bool,
     exit: bool,
     /// Cells typed so far; the buffer always shows exactly these.
@@ -132,6 +133,10 @@ const BACKGROUND: [u8; 4] = [0x20, 0x20, 0x20, 0xFF];
 const INK: [u8; 4] = [0xE0, 0xE0, 0xE0, 0xFF];
 /// Bounds the frame callbacks waited on if a session never answers one.
 const MAX_SHOWING: usize = 64;
+/// The window it asks for: one size on every session, so what a session
+/// composites for a key is the same amount of pixels on each.
+const WINDOW_W: u32 = 640;
+const WINDOW_H: u32 = 480;
 
 fn main() {
     let mut app_id = "so.tilo.latency-client".to_owned();
@@ -173,8 +178,17 @@ fn main() {
     let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
     window.set_title("latency client");
     window.set_app_id(app_id);
+    // Only the largest size, never a smallest: a desk reads a client that
+    // pins both to one value as a dialog and floats it over its parent
+    // instead of giving it a tab, and a benchmark needs the same tab on
+    // every session.
+    window.set_max_size(Some((WINDOW_W, WINDOW_H)));
     window.commit();
-    let pool = SlotPool::new(256 * 256 * 4, &shm).expect("shm pool");
+    let pool = SlotPool::new(
+        usize::try_from(WINDOW_W * WINDOW_H * 4).expect("pool bytes"),
+        &shm,
+    )
+    .expect("shm pool");
     let dmabuf = dmabufs.then(|| {
         let state = DmabufState::new(&globals, &qh);
         assert!(
@@ -196,8 +210,6 @@ fn main() {
         window,
         keyboard: None,
         buffer: None,
-        width: 256,
-        height: 256,
         configured: false,
         exit: false,
         typed: 0,
@@ -274,7 +286,7 @@ fn paint_cells(
 impl Client {
     /// The buffer's size: the surface's, in buffer pixels.
     fn buffer_size(&self) -> (u32, u32) {
-        (self.width * self.scale, self.height * self.scale)
+        (WINDOW_W * self.scale, WINDOW_H * self.scale)
     }
 
     /// The grid cell the `index`th typed key fills, as `(column, line)`.
@@ -531,22 +543,18 @@ impl WindowHandler for Client {
         _: &Connection,
         qh: &QueueHandle<Self>,
         _: &Window,
-        configure: WindowConfigure,
+        _: WindowConfigure,
         _: u32,
     ) {
         self.buffer = None;
-        self.width = configure
-            .new_size
-            .0
-            .map_or(self.width, std::num::NonZeroU32::get);
-        self.height = configure
-            .new_size
-            .1
-            .map_or(self.height, std::num::NonZeroU32::get);
+        // The size the session asks for is not taken: the surface keeps one
+        // size on every session, so what a session composites for a key is
+        // the same number of pixels on each.
         self.draw(qh, false);
         if !self.configured {
             self.configured = true;
-            println!("READY {}x{}", self.width, self.height);
+            let (width, height) = self.buffer_size();
+            println!("READY {width}x{height}");
             std::io::stdout().flush().expect("flush");
         }
     }
