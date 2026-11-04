@@ -167,6 +167,7 @@ impl SlotBar {
     }
 
     /// Whether the row stands across the top of the window.
+    #[cfg(target_os = "linux")]
     pub(super) fn shows(&self) -> bool {
         self.row.is_shown()
     }
