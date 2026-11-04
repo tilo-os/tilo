@@ -34,6 +34,11 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_search::providers::settings::SETTINGS_APP;
 use tilo_session::{AppActions, AppLists, Lists, Options, SearchOptions, Session};
 
+/// The host search door every window and the shell publish: what a window's
+/// search control, its toolbar's magnifier and Ctrl+K run
+/// (`tilo_ui::search::SearchRequest`).
+const HOST_SEARCH: &str = "tilo.host:search";
+
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
 /// An action host that keeps what it was asked to run.
@@ -1163,4 +1168,200 @@ fn a_downloaded_program_is_found_and_starts_and_one_whose_file_is_gone_says_so()
         row.presentation.and_then(|shown| shown.detail),
         Some("Can't find this app".to_owned())
     );
+}
+
+/// A host app of the machine, as its desktop entry names it.
+fn host_app_lists() -> AppLists {
+    AppLists {
+        host_apps: vec![tilo_desktop_search::providers::host_apps::HostAppEntry {
+            desktop_id: "Alacritty.desktop".into(),
+            name: "Alacritty".into(),
+            generic_name: Some("Terminal".into()),
+            ..tilo_desktop_search::providers::host_apps::HostAppEntry::default()
+        }],
+        ..AppLists::default()
+    }
+}
+
+/// Type `text` as the keyboard attached to the seat types it: each character
+/// by the key this seat's layout puts it on, as `tilo-control type` does.
+fn type_at_the_seat(session: &mut Session, text: &str) {
+    for ch in text.chars() {
+        assert!(
+            session.compositor().type_char(ch).expect("input"),
+            "the seat's layout types {ch:?}"
+        );
+        for _ in 0..2 {
+            session.step(Duration::from_millis(12)).expect("step");
+        }
+    }
+    for _ in 0..20 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+}
+
+/// The palette `tilo.host:search` opens takes what the person types: it is
+/// over everything its own tree draws, so the keys go to its field and not to
+/// the window the desk shows under it. Typing an action's words finds its row.
+#[test]
+fn the_palette_the_host_search_opens_takes_the_keys() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+    // The host search door, as `so.tilo.session` publishes it: what a
+    // window's search control, its toolbar's magnifier and Ctrl+K run.
+    invoke(&mut session, HOST_SEARCH, "open", serde_json::json!({}));
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    type_at_the_seat(&mut session, "alacritty");
+    // The palette answers the query it holds: nothing it lists is called
+    // that, so its list says so. A palette that never took the keys says
+    // nothing at all.
+    assert!(
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "No results for \u{201c}alacritty\u{201d}"),
+        "the opened palette's field holds what was typed: {:?}",
+        session.accessible_labels()
+    );
+}
+
+/// The desktop's own search finds the machine's apps by name, however it is
+/// opened: the field's scope chip names the workspace the search reaches
+/// into, and that never hides what the person can open.
+#[test]
+fn the_desk_search_finds_a_host_app_by_name_whichever_way_it_opens() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            search: SearchOptions {
+                lists: Lists::fixed(host_app_lists()),
+                ..SearchOptions::default()
+            },
+            apps: Some(Rc::new(Host::default())),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
+    session.compositor().set_key_repeat(KeyRepeat {
+        delay: Duration::from_secs(60),
+        rate: 0,
+    });
+    session.step(Duration::from_millis(1)).expect("step");
+
+    // Opened with nothing typed, as the desk's `search` verb does: the field
+    // shows the Workspace scope chip.
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    type_at_the_seat(&mut session, "alacritty");
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE)
+            .is_some_and(|search| search.label == "alacritty")
+    });
+    await_search(&mut session, Some("alacritty"));
+    assert!(
+        titled(&session, "Alacritty").is_some(),
+        "an app the person can open is found by its name from the search in the workspace scope: {:?}",
+        rows(&session)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Choosing that row starts the app: the launch reaches the launcher.
+#[test]
+fn choosing_the_host_app_found_by_search_starts_it() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            search: SearchOptions {
+                lists: Lists::fixed(host_app_lists()),
+                ..SearchOptions::default()
+            },
+            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).expect("step");
+    search_for(&mut session, "alacritty");
+    let app = titled(&session, "Alacritty").expect("the app's row");
+    invoke(
+        &mut session,
+        app.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.started.borrow().is_empty());
+    assert_eq!(
+        host.started.borrow().as_slice(),
+        ["Alacritty.desktop"],
+        "the app the row names starts"
+    );
+}
+
+/// The applications a window group's new tab may show, and the empty desk's
+/// launchpad opens: each app this device has, by its name.
+#[test]
+fn the_applications_scope_lists_a_host_app() {
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            search: SearchOptions {
+                lists: Lists::fixed(host_app_lists()),
+                ..SearchOptions::default()
+            },
+            apps: Some(Rc::clone(&host) as Rc<dyn AppActions>),
+            collab: false,
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).expect("step");
+    // The launchpad's "Open an app": the applications alone.
+    session.handle().open_search(
+        ui::search::Scope::WindowGroup(None),
+        Some("alacritty".to_owned()),
+    );
+    until(&mut session, |session| {
+        find(&session.resources(), SEARCH_RESOURCE).is_some()
+    });
+    await_search(&mut session, Some("alacritty"));
+    let app = titled(&session, "Alacritty").unwrap_or_else(|| {
+        panic!(
+            "an app the person can open is listed by the applications' own search: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        )
+    });
+    // And it opens: the row's launch is the one the session starts.
+    invoke(
+        &mut session,
+        app.id.as_str(),
+        "choose-search-row",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.started.borrow().is_empty());
+    assert_eq!(host.started.borrow().as_slice(), ["Alacritty.desktop"]);
 }
