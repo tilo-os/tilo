@@ -236,6 +236,23 @@ pub struct Tab {
     /// Written only by [`Tab::set_window_title`] and [`Tab::rename`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_title: Option<String>,
+    /// The view the tab shows its record through; empty for the app's own
+    /// default view.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub view: String,
+    /// Whether the person pinned the tab: an agent arranges a pinned tab
+    /// nowhere, so what the person fixed stays where they put it.
+    #[serde(default, skip_serializing_if = "is_unpinned")]
+    pub pinned: bool,
+}
+
+/// Whether a flag is off: a flag that is off is not written at all.
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
+fn is_unpinned(pinned: &bool) -> bool {
+    !*pinned
 }
 
 impl Tab {
@@ -330,6 +347,8 @@ impl Tab {
             title: self.title.clone(),
             tile,
             app_title: self.app_title.clone(),
+            view: self.view.clone(),
+            pinned: self.pinned,
         }
     }
 }
@@ -418,6 +437,8 @@ mod tab_name_tests {
                 surface_id: 3,
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }
     }
 

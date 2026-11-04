@@ -438,6 +438,8 @@ mod tests {
                         label: "Calculator".into(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 active_tab: 30,
                 width: WindowWidth::Fraction(800),

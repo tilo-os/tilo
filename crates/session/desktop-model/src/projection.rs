@@ -1009,6 +1009,8 @@ mod tests {
                     label: name.into(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: id,
             width: crate::width::WindowWidth::Normal,

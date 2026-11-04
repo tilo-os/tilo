@@ -30,6 +30,8 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         match strip.window_groups.iter_mut().find(|g| g.id == *group) {
             Some(existing) => existing.tabs.push(entry),

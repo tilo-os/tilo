@@ -122,7 +122,9 @@ impl GovernancePump {
 mod tests {
     use super::*;
     use crate::channel_encryption::testing::{Directory, Policy};
-    use crate::channel_encryption::{ChannelEncryption, ChannelEncryptionConfig, InboundChannelGovernance};
+    use crate::channel_encryption::{
+        ChannelEncryption, ChannelEncryptionConfig, InboundChannelGovernance,
+    };
     use crate::collab_core::BrokerChannels;
     use channel_crypto::VaultKey;
     use ed25519_dalek::SigningKey;

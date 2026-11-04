@@ -49,6 +49,8 @@ impl TileSource for Notices {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 
@@ -89,6 +91,8 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

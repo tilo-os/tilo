@@ -36,7 +36,6 @@ use tilo_actions::{ActionContext, Did};
 use tilo_desktop_model::{DesktopTree, STATE_SCHEMA_VERSION, desktop_doc};
 use ui::state::UndoLog;
 
-use crate::arrangement::Marks;
 use crate::desk_migration::Adopted;
 use crate::desk_migration::shell;
 use crate::i18n::{t, t_args};
@@ -48,13 +47,22 @@ pub(crate) const FILE: &str = "desk.automerge";
 /// that does not know the shape leaves the desk alone rather than guess.
 const SCHEMA_KEY: &str = "schema";
 
-/// The key the arrangement's own choices are kept under: the view each place
-/// shows its resource through, and the places the person pinned. The
-/// arrangement itself is the desk this document holds, and these two are what
-/// its windows do not carry. A document without the key has kept no
-/// arrangement yet: the session reads one from the desk, or from the record a
-/// build before this one kept beside it, and writes the key from then on.
+/// The key an older build kept the arrangement's view choices and pins under,
+/// beside a desk whose windows carried neither. The view each of those places
+/// shows is now the window's own and the pin too, so the key is read once,
+/// into the windows it names, and deleted.
 const MARKS_KEY: &str = "arrangement_marks_v1";
+
+/// The marks [`MARKS_KEY`] held.
+#[derive(Default, serde::Deserialize)]
+struct Marks {
+    /// The view a place shows, by the place's id.
+    #[serde(default)]
+    views: std::collections::BTreeMap<u64, String>,
+    /// The places the person pinned.
+    #[serde(default)]
+    pins: std::collections::BTreeSet<u64>,
+}
 
 /// How long a drag or a burst of switches waits for its last frame before how
 /// the desk looks is written.
@@ -257,6 +265,7 @@ impl DeskDoc {
             }
             None => None,
         };
+        adopt_marks(&mut doc);
         Self::keeping(doc, Some(at), actor, person, notice)
     }
 
@@ -365,7 +374,7 @@ impl DeskDoc {
         // A document with no desk holds one after this change: the desk is
         // being opened, here or as it arrived from the workspace, and that is
         // no change of the person's to take back.
-        let opened = !desktop_doc::holds(&doc);
+        let opened = !desktop_doc::holds(&*doc);
         let looks_only = desktop_doc::seed_of_the_view(&mut doc, &relaunchable(desktop));
         if doc.pending_ops() == 0 {
             return false;
@@ -487,34 +496,6 @@ impl DeskDoc {
         self.doc.borrow().base_heads()
     }
 
-    /// The arrangement's own choices this document keeps, `None` on a desk
-    /// that has kept none yet: the session then reads the arrangement from the
-    /// desk itself, or from the record a build before this one kept beside it.
-    pub(crate) fn arrangement_marks(&self) -> Option<Marks> {
-        let doc = self.doc.borrow();
-        let (Value::Scalar(scalar), _) = doc.get(ROOT, MARKS_KEY).ok().flatten()? else {
-            return None;
-        };
-        let ScalarValue::Str(text) = scalar.as_ref() else {
-            return None;
-        };
-        // ignored-failure: marks that do not read are a desk another build wrote, and the next keep writes marks this one reads
-        serde_json::from_str(text).ok()
-    }
-
-    /// Keep `marks` as the arrangement's, when they differ from the ones the
-    /// document holds. Whether anything was written.
-    pub(crate) fn keep_arrangement_marks(&self, marks: &Marks) -> bool {
-        let Ok(text) = serde_json::to_string(marks) else {
-            tracing::warn!("the arrangement's choices do not write");
-            return false;
-        };
-        if self.arrangement_marks().as_ref() == Some(marks) {
-            return false;
-        }
-        self.write_metadata(|doc| doc.put(ROOT, MARKS_KEY, text.as_str()).is_ok())
-    }
-
     /// The names this device's changes are known by, by actor (hex).
     pub(crate) fn authors(&self) -> std::collections::BTreeMap<String, String> {
         desktop_doc::author_names(&self.doc.borrow())
@@ -542,23 +523,45 @@ impl crate::Shared {
             .record_desk_now(&tree, crate::activity::now_seconds());
         tilo_durable_writer::global().flush();
     }
+}
 
-    /// Keep the arrangement's own choices with the desk: the view each place
-    /// shows its resource through and the places the person pinned. The
-    /// arrangement itself is the desk, which [`Self::keep_desk`] writes; these
-    /// two are what its windows do not carry. Written when they move, not every
-    /// frame.
-    pub(crate) fn keep_arrangement(&self) {
-        let mut arrangement = self.arrangement.borrow_mut();
-        let heads = arrangement.heads();
-        if *self.marked.borrow() == heads {
-            return;
+/// Read the arrangement's marks (`MARKS_KEY`) into the desk's own windows —
+/// the view each place shows, whether the person pinned it — and delete them.
+/// A document a build before this one wrote keeps them there: the desk itself
+/// has no other way to know them, and its windows carry them from now on.
+fn adopt_marks(doc: &mut AutoCommit) {
+    let Some(marks) = marks_key(doc) else {
+        return;
+    };
+    let mut tree = DesktopTree::default();
+    desktop_doc::rebuild(doc, &mut tree);
+    for workspace in &mut tree.workspaces {
+        for strip in &mut workspace.strips {
+            for group in &mut strip.window_groups {
+                for tab in &mut group.tabs {
+                    if let Some(view) = marks.views.get(&tab.id) {
+                        tab.view.clone_from(view);
+                    }
+                    tab.pinned = marks.pins.contains(&tab.id);
+                }
+            }
         }
-        let marks = arrangement.marks();
-        drop(arrangement);
-        self.activity.keep_arrangement_marks(&marks);
-        *self.marked.borrow_mut() = heads;
     }
+    desktop_doc::seed(doc, &tree);
+    let _ = doc.delete(ROOT, MARKS_KEY);
+    doc.commit();
+}
+
+/// The marks the document holds, if it holds any this build reads.
+fn marks_key(doc: &AutoCommit) -> Option<Marks> {
+    let (Value::Scalar(scalar), _) = doc.get(ROOT, MARKS_KEY).ok().flatten()? else {
+        return None;
+    };
+    let ScalarValue::Str(text) = scalar.as_ref() else {
+        return None;
+    };
+    // ignored-failure: marks that do not read are a desk another build wrote, and its windows are what this one goes by
+    serde_json::from_str(text).ok()
 }
 
 /// The actor `person` writes the desk's changes as: their handle itself, so a
@@ -666,4 +669,85 @@ pub(crate) fn relaunchable(desktop: &DesktopTree) -> DesktopTree {
         }
     }
     desktop
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
+    use tilo_desktop_model::{StripId, WindowWidth, Workspace, WorkspaceId, WorkspaceSlot};
+
+    /// A desk of one workspace, one strip and one window.
+    fn desk() -> (DesktopTree, u64) {
+        let mut workspace = Workspace::in_workspace(
+            WorkspaceSlot(1),
+            WorkspaceId::parse("00000000-0000-4000-8000-000000000042").expect("an id"),
+            "Desk",
+        );
+        let mut strip = Strip::new(StripId(1), "A");
+        let tab = Tab {
+            id: 9,
+            title: "Notes".into(),
+            tile: TileContent::LocalApp {
+                app_id: "org.example.Notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+            app_title: None,
+            view: String::new(),
+            pinned: false,
+        };
+        strip.window_groups = vec![WindowGroup {
+            id: 1,
+            tabs: vec![tab],
+            active_tab: 9,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        }];
+        workspace.strips = vec![strip];
+        (
+            DesktopTree {
+                workspaces: vec![workspace],
+                active: WorkspaceSlot(1),
+                ..DesktopTree::default()
+            },
+            9,
+        )
+    }
+
+    /// The view and the pins a build before this one kept beside the desk are
+    /// read into the desk's own windows once, and then gone.
+    #[test]
+    fn the_marks_a_build_before_this_one_kept_move_into_the_desks_windows() {
+        let (tree, tab) = desk();
+        let mut doc = AutoCommit::new();
+        desktop_doc::seed(&mut doc, &tree);
+        doc.put(
+            ROOT,
+            MARKS_KEY,
+            format!(r#"{{"views":{{"{tab}":"editor"}},"pins":[{tab}]}}"#).as_str(),
+        )
+        .expect("a document that takes the marks");
+        doc.commit();
+
+        adopt_marks(&mut doc);
+        let mut back = DesktopTree::default();
+        desktop_doc::rebuild(&doc, &mut back);
+        let shown = &back.workspaces[0].strips[0].window_groups[0].tabs[0];
+        assert_eq!(shown.view, "editor", "the window shows the view it did");
+        assert!(shown.pinned, "and stays where the person pinned it");
+        assert!(
+            doc.get(ROOT, MARKS_KEY).ok().flatten().is_none(),
+            "the marks they were read from are gone"
+        );
+
+        // What is kept now is the desk's own: read again, it says the same.
+        let saved = AutoCommit::load(&doc.save()).expect("the desk's document");
+        let mut again = DesktopTree::default();
+        desktop_doc::rebuild(&saved, &mut again);
+        let shown = &again.workspaces[0].strips[0].window_groups[0].tabs[0];
+        assert_eq!(shown.view, "editor", "the view survives the document");
+        assert!(shown.pinned, "and the pin");
+    }
 }

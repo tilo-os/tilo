@@ -33,6 +33,8 @@ fn windows_tabs(minter: &mut IdMinter, windows: usize) -> Vec<Tab> {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
         .collect()
 }
@@ -831,6 +833,8 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
         }
     }
@@ -1366,6 +1370,8 @@ fn workspace_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -1944,6 +1950,8 @@ fn a_windows_own_icon_is_on_its_tab() {
             surface_id: 91,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     };
     let tree = seed_tree(&mut minter, "Desk", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));

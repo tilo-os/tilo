@@ -254,7 +254,6 @@ impl Session {
         // The desk this turn drew is the desk kept: its records are written
         // here, where a change made by this turn's layout goes with it.
         self.shared.keep_desk();
-        self.shared.keep_arrangement();
         // The picture is the workspace in front's, which a change covering one workspace lands on.
         let active = self
             .shared

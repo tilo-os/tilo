@@ -463,9 +463,6 @@ struct Shared {
     /// Whether the person is mid-gesture or typing, as the compositor last
     /// said: what an arranging action that is not their own waits for.
     underway: Rc<Cell<arrangement::Busy>>,
-    /// The arrangement's changes when its choices were last kept with the desk,
-    /// so a frame that changed nothing writes nothing.
-    marked: RefCell<Vec<ui::automerge::ChangeHash>>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
     /// The overview's pictures and the clock they fly on, which its panel
@@ -1117,20 +1114,12 @@ impl Session {
         // The person's arrangement: the desk this session holds, which the
         // workspace shares as its own desk record. A device that has kept none
         // yet reads it from the desk, or from the record a build before this
-        // one kept beside it — laid out once, and gone. What the desk's windows
-        // do not carry — the view a place shows and whether it is pinned — is
-        // kept with the desk ([`desk_doc::DeskDoc::arrangement_marks`]).
-        let marks = activity.arrangement_marks();
-        let record = if marks.is_some() {
-            ui::automerge::AutoCommit::new()
-        } else {
-            options
-                .state
-                .as_deref()
-                .and_then(arrangement::take_kept)
-                .unwrap_or_default()
-        };
-        let marks = marks.unwrap_or_default();
+        // one kept beside it — laid out once, and gone.
+        let record = options
+            .state
+            .as_deref()
+            .and_then(arrangement::take_kept)
+            .unwrap_or_default();
         let kept_desk = handle.read(Clone::clone);
         // What each window shows, as its app's record is held here: the
         // session's own, read from the broker every pass and noted beside the
@@ -1143,7 +1132,6 @@ impl Session {
             activity.clone(),
             &kept_desk,
             &std::collections::BTreeMap::new(),
-            &marks,
         );
         arrangement.reads_records(std::sync::Arc::clone(&notes));
         let arrangement = Rc::new(RefCell::new(arrangement));
@@ -1905,7 +1893,6 @@ impl Session {
             clipboard: Rc::new(mount::clipboard::Clipboard::new(options.wake.handle())),
             arrangement,
             underway: busy,
-            marked: RefCell::new(Vec::new()),
             settings: mount::settings_sync::SettingsSync::new(),
             overview,
             dictation,

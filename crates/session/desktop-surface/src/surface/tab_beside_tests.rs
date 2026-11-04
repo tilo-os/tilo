@@ -28,6 +28,8 @@ impl TileSource for Apps {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 }

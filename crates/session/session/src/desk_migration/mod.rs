@@ -258,6 +258,8 @@ mod tests {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let studio = seed_tree(&mut minter, FIRST_NAME, vec![notes]);
         let mut plans = studio.clone();

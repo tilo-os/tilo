@@ -317,6 +317,8 @@ mod admitted_history_tests {
                         label: "Notes".into(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
             }],
         }];

@@ -77,6 +77,8 @@ fn tab(id: u64, label: &str, app: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

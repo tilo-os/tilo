@@ -25,6 +25,8 @@ impl TileSource for Apps {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 }
@@ -49,6 +51,8 @@ impl Desk {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let tree = seed_tree(&mut minter, "Desk", vec![chat]);
         let (surface, handle) = DesktopSurface::new(tree, 9, Box::new(Apps));

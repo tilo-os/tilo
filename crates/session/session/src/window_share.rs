@@ -714,6 +714,8 @@ impl WindowShares {
                         host_label: host_label.clone(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 active_tab: tab,
                 width: WindowWidth::Normal,

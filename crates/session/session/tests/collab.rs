@@ -58,6 +58,8 @@ fn desk() -> DesktopTree {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     };
     let mut strip = Strip::new(StripId::from(1), "Main");
     strip.window_groups.push(WindowGroup {

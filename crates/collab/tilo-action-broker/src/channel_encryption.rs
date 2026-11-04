@@ -1495,7 +1495,6 @@ impl ChannelKeyAccess {
     }
 }
 
-
 /// Where the identity service finds this session's channel encryption
 /// service. The broker that owns the service can start after the identity
 /// service (onboarding defers it), so the slot is filled when it does.
@@ -3333,7 +3332,6 @@ mod tests {
         ));
         assert!(governed.peers.is_empty());
     }
-
 
     include!("channel_encryption_personal_cluster_tests.rs");
 }

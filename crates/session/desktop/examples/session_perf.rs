@@ -267,6 +267,8 @@ fn fixture(
                             note: String::new(),
                         },
                         app_title: None,
+                        view: String::new(),
+                        pinned: false,
                     });
                 }
                 groups.push(WindowGroup {

@@ -260,6 +260,8 @@ impl TileSource for Windows {
                     label: app.to_owned(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             });
         }
         if let Some(app) = app.strip_prefix(CRASHED_PREFIX) {
@@ -278,6 +280,8 @@ impl TileSource for Windows {
                     label: app.to_owned(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             });
         }
         if let Some(window_id) = app.strip_prefix(LAUNCH_PREFIX) {
@@ -294,6 +298,8 @@ impl TileSource for Windows {
                     surface_id: window.id,
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
         } else {
             // A Tilo package or one of the machine's apps: this session starts
@@ -327,6 +333,8 @@ impl TileSource for Windows {
                     label: app.to_owned(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
         }
     }

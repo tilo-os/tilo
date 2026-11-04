@@ -32,6 +32,8 @@ fn tab(id: u64, title: &str) -> Tab {
             label: title.into(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

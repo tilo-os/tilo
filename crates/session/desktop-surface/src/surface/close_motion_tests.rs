@@ -56,6 +56,8 @@ impl Desk {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);

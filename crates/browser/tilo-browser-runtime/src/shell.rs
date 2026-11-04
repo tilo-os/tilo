@@ -1847,6 +1847,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
             .collect::<Vec<_>>();
         let authors = [(tabs[0].id, GUEST), (tabs[1].id, OTHER_GUEST)]

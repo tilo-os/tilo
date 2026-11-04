@@ -425,6 +425,8 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: tab,
             width: WindowWidth::Wide,

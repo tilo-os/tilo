@@ -63,6 +63,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

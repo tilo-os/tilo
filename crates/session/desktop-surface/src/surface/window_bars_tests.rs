@@ -92,6 +92,8 @@ fn each_apps_slots_stand_in_its_windows_bar_and_a_press_reaches_it() {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
         .collect();
     let apps: Vec<(&'static str, Rc<RefCell<Vec<ToolbarEvent>>>)> =

@@ -61,6 +61,8 @@ fn peer_tab(minter: &mut IdMinter) -> Tab {
             missing: None,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

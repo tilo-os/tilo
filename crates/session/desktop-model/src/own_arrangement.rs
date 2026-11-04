@@ -527,11 +527,11 @@ fn place_of(tab: &Tab, records: &BTreeMap<TabId, String>) -> Place {
     Place {
         id: tab.id,
         shows: canonical_app_id(&tab.tile).unwrap_or_default(),
-        view: String::new(),
+        view: tab.view.clone(),
         record: records.get(&tab.id).cloned().unwrap_or_default(),
         state: serde_json::to_value(&tab.tile).unwrap_or(serde_json::Value::Null),
         title: tab.title.clone(),
-        pinned: false,
+        pinned: tab.pinned,
         shell: SHELL.to_owned(),
     }
 }
@@ -548,6 +548,8 @@ fn tab_of(place: &Place) -> Tab {
         title: place.title.clone(),
         tile,
         app_title: None,
+        view: place.view.clone(),
+        pinned: place.pinned,
     }
 }
 

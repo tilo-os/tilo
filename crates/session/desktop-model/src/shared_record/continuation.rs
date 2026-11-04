@@ -158,6 +158,8 @@ mod tests {
                         note: String::new(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 active_tab: *id,
                 width: WindowWidth::Normal,

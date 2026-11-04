@@ -62,7 +62,11 @@ fn seen(tile: &TileContent) -> Seen<'_> {
 
 /// Whether `a` and `b` are the same window to every device.
 fn same_content(a: &Tab, b: &Tab) -> bool {
-    a.title == b.title && a.app_title == b.app_title && seen(&a.tile) == seen(&b.tile)
+    a.title == b.title
+        && a.app_title == b.app_title
+        && a.view == b.view
+        && a.pinned == b.pinned
+        && seen(&a.tile) == seen(&b.tile)
 }
 
 /// `tile` as the record holds it: no surface handle, which means nothing on
@@ -407,6 +411,8 @@ fn shown(record: &Tab, local: Option<&Tab>, device: &str) -> Tab {
         title: record.title.clone(),
         tile,
         app_title: record.app_title.clone(),
+        view: record.view.clone(),
+        pinned: record.pinned,
     }
 }
 

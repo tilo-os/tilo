@@ -1771,6 +1771,8 @@ mod tests {
                         label: "Notes".into(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 width: WindowWidth::Fraction(1000),
                 maximized: false,

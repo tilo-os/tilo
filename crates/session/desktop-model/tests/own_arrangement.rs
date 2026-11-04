@@ -41,7 +41,7 @@ fn saved_desk() -> (DesktopTree, BTreeMap<TabId, String>) {
                     }, {
                         "id": 14, "active_tab": 15, "width": "Wide",
                         "tabs": [
-                            {"id": 15, "title": "Mail",
+                            {"id": 15, "title": "Mail", "view": "reader", "pinned": true,
                              "tile": {"LocalApp": {"app_id": "so.tilo.lang.mail", "label": "Mail",
                                                     "note": ""}}}
                         ]
@@ -123,6 +123,15 @@ fn a_kept_desk_migrates_with_every_window_strip_and_canvas_place() {
         arrangement.place(15).unwrap().record,
         "member:ab:tilolang.room",
         "the record a place shows goes with it"
+    );
+    // The view a window shows its record through, and whether the person
+    // pinned it, are the window's own and go with it.
+    let pinned = arrangement.place(15).expect("the pinned place");
+    assert_eq!(pinned.view, "reader", "the view it shows");
+    assert!(pinned.pinned, "and the pin on it");
+    assert!(
+        !arrangement.place(13).expect("the other place").pinned,
+        "a window the person did not pin stays unpinned"
     );
     // The canvas place the desk held is the strip's.
     assert_eq!(

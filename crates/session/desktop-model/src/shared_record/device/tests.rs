@@ -144,6 +144,8 @@ fn notes(id: u64) -> Tab {
             surface_id: id,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -157,6 +159,8 @@ fn editor(id: u64) -> Tab {
             surface_id: 77,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

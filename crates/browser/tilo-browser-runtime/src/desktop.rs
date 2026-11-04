@@ -1283,6 +1283,8 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

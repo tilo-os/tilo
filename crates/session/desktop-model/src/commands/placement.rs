@@ -241,6 +241,8 @@ mod tests {
                             label: "t".into(),
                         },
                         app_title: None,
+                        view: String::new(),
+                        pinned: false,
                     })
                     .collect();
                 WindowGroup {
@@ -397,6 +399,8 @@ mod tests {
                     label: "a".into(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             width: WindowWidth::Normal,
             maximized: false,

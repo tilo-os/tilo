@@ -44,6 +44,8 @@ mod workspace_activity {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             });
             let mut layout = tilo_desktop_model::Workspace::in_workspace(
                 tilo_desktop_model::WorkspaceSlot(1),

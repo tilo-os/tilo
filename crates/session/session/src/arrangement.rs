@@ -6,10 +6,10 @@
 //! one. What only one device decides — which window is in front, the width a
 //! strip has on its screen — stays device-local, as the desk keeps it.
 //!
-//! A place also has two things the desk's windows do not carry: the view it
-//! shows its resource through, and whether the person pinned it. The desk's
-//! document keeps both beside the desk ([`Marks`]), so one record answers what
-//! the arrangement is, on this device and across a restart.
+//! A place also shows its resource through a view, and the person may pin it.
+//! Both are the window's own ([`tilo_desktop_model::Tab`]), so the desk's
+//! record answers what the arrangement is, on this device and across a
+//! restart.
 //!
 //! Each arranging action ([`ArrangementAction`]) is one change of the desk,
 //! attributed to whoever asked for it — the person's own input included — and
@@ -35,7 +35,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::Published;
-use ui::automerge::{AutoCommit, ChangeHash};
+use ui::automerge::AutoCommit;
 
 use crate::i18n::t;
 
@@ -57,22 +57,6 @@ pub const PLACE_KIND: &str = "arrangement.place";
 pub const STRIP_KIND: &str = "arrangement.strip";
 /// The kind of a row's own resource.
 pub const ROW_KIND: &str = "arrangement.row";
-
-/// What a person chose for places the desk's own windows do not hold: the view
-/// each place shows its resource through, and the places they pinned. The
-/// desk's document keeps them beside the desk (`arrangement_marks_v1`), so one
-/// record answers what the arrangement is, on this device and across a restart.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Marks {
-    /// The view a place shows, by the place's id; a place without one shows
-    /// its app's default.
-    #[serde(default)]
-    pub views: BTreeMap<u64, String>,
-    /// The places the person pinned, so an agent's arrangement leaves them
-    /// alone (shell.md §5).
-    #[serde(default)]
-    pub pins: std::collections::BTreeSet<u64>,
-}
 
 /// What a place, a strip or a row of the arrangement is published as a resource of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -444,21 +428,11 @@ impl Arrangement {
         desk: crate::activity::Activity,
         keep: &DesktopTree,
         records: &BTreeMap<TabId, String>,
-        marks: &Marks,
     ) -> Self {
-        // Nothing kept: the desk is the arrangement, and the choices the
-        // desk's windows do not carry (`marks`) go with it.
+        // Nothing kept: the desk is the arrangement.
         let mut kept = own_arrangement::read(&doc);
         if kept.is_empty() {
             kept = Strips::from_tree(keep, records);
-            for strip in &mut kept.strips {
-                for place in &mut strip.places {
-                    if let Some(view) = marks.views.get(&place.id) {
-                        place.view.clone_from(view);
-                    }
-                    place.pinned = marks.pins.contains(&place.id);
-                }
-            }
             if let Err(error) = own_arrangement::write(&mut doc, &kept) {
                 tracing::warn!(%error, "the desk could not be read as the arrangement");
             }
@@ -500,6 +474,8 @@ impl Arrangement {
                     title: place.title.clone(),
                     tile,
                     app_title: None,
+                    view: place.view.clone(),
+                    pinned: place.pinned,
                 }
                 .relaunchable();
                 if matches!(&relaunchable.tile, TileContent::LocalApp { app_id, .. }
@@ -621,31 +597,6 @@ impl Arrangement {
     #[must_use]
     pub fn strips(&self) -> Strips {
         own_arrangement::read(&self.doc)
-    }
-
-    /// The changes the arrangement is at: a caller that keeps its choices with
-    /// the desk writes them when these move, not every frame.
-    #[must_use]
-    pub fn heads(&mut self) -> Vec<ChangeHash> {
-        self.doc.get_heads()
-    }
-
-    /// What the person chose for places the desk's windows do not carry: the
-    /// view each shows its resource through and the places they pinned, as the
-    /// arrangement holds them now. The desk's document keeps these beside the
-    /// desk ([`Marks`]).
-    #[must_use]
-    pub fn marks(&self) -> Marks {
-        let mut marks = Marks::default();
-        for place in self.strips().places() {
-            if !place.view.is_empty() {
-                marks.views.insert(place.id, place.view.clone());
-            }
-            if place.pinned {
-                marks.pins.insert(place.id);
-            }
-        }
-        marks
     }
 
     /// The desk's windows by tab id, as a place shows one: the app it shows, what the window

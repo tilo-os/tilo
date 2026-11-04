@@ -109,6 +109,8 @@ fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab,
         width: tilo_desktop_model::WindowWidth::Normal,
@@ -393,6 +395,19 @@ fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
                 .map(|place| place.view.as_str()),
             Some("editor"),
             "the arrangement holds the view it shows"
+        );
+        // The desk's own window carries both now: nothing is kept beside it.
+        let desk = ui::automerge::AutoCommit::load(
+            &std::fs::read(state.join("tilo").join("desk.automerge")).expect("the desk's document"),
+        )
+        .expect("the desk's document reads");
+        use automerge::ReadDoc as _;
+        assert!(
+            desk.get(ui::automerge::ROOT, "arrangement_marks_v1")
+                .ok()
+                .flatten()
+                .is_none(),
+            "the view and the pin are the window's own"
         );
         place
     };

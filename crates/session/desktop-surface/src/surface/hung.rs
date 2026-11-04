@@ -571,6 +571,8 @@ mod tests {
                 surface_id: window,
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let id = tab.id;
         let tree = super::super::seed_tree(&mut minter, "Desk", vec![tab]);

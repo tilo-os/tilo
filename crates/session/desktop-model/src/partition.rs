@@ -426,6 +426,8 @@ mod tests {
                     label: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: id.saturating_mul(10),
             width: WindowWidth::Normal,

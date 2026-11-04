@@ -603,6 +603,8 @@ mod tests {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let tab_id = tab.id;
         let tree = tilo_desktop_surface::seed_tree(&mut minter, "Lounge", vec![tab]);

@@ -607,6 +607,8 @@ fn keyboard_tab(id: u64) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -620,6 +622,8 @@ fn notes_tab(id: u64) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

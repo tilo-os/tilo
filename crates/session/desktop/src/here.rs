@@ -1301,6 +1301,8 @@ mod tests {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let mut main = Strip::new(StripId(1), "Main");
         main.window_groups.push(WindowGroup {

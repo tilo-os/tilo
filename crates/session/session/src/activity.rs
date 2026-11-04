@@ -331,19 +331,6 @@ impl Activity {
         self.0.desk.last_step(person)
     }
 
-    /// The arrangement's own choices the desk's document keeps: the view each
-    /// place shows its resource through and the places the person pinned,
-    /// `None` on a desk that has kept none yet.
-    pub(crate) fn arrangement_marks(&self) -> Option<crate::arrangement::Marks> {
-        self.0.desk.arrangement_marks()
-    }
-
-    /// Keep the arrangement's own choices with the desk's document. Whether
-    /// anything was written.
-    pub(crate) fn keep_arrangement_marks(&self, marks: &crate::arrangement::Marks) -> bool {
-        self.0.desk.keep_arrangement_marks(marks)
-    }
-
     /// The workspace a change the model wrote back leaves the desk at, if
     /// one is waiting.
     pub(crate) fn take_restored(&self) -> Option<DesktopTree> {
@@ -927,6 +914,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             };
             let tree = seed_tree(&mut minter, "Studio", vec![notes]);
             let workspace = tree.active;

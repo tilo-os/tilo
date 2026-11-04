@@ -1342,6 +1342,8 @@ mod tests {
                 surface_id: 77,
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
         let (_surface, handle) =

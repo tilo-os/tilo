@@ -306,6 +306,18 @@ fn write_tab(doc: &mut AutoCommit, entry: &ObjId, tab: &Tab) {
         None => delete_if_present(doc, entry, "app_title"),
     }
     put_json_if_changed(doc, entry, "tile_json", &tab.tile);
+    if tab.view.is_empty() {
+        delete_if_present(doc, entry, "view");
+    } else {
+        let _ = doc.put_str_if_changed(entry, "view", &tab.view);
+    }
+    if tab.pinned {
+        if doc.bool_at(entry, "pinned") != Some(true) {
+            let _ = doc.put(entry, "pinned", true);
+        }
+    } else {
+        delete_if_present(doc, entry, "pinned");
+    }
 }
 
 fn write_group(doc: &mut AutoCommit, entry: &ObjId, group: &WindowGroup) {
@@ -917,6 +929,8 @@ struct DocTab {
     title: String,
     app_title: Option<String>,
     tile_json: Vec<u8>,
+    view: String,
+    pinned: bool,
 }
 
 /// The tabs under a group entry.
@@ -933,6 +947,8 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<DocTab> {
                 title: doc.str_at(&entry, "title").unwrap_or_default(),
                 app_title: doc.str_at(&entry, "app_title"),
                 tile_json: doc.bytes_at(&entry, "tile_json").unwrap_or_default(),
+                view: doc.str_at(&entry, "view").unwrap_or_default(),
+                pinned: doc.bool_at(&entry, "pinned").unwrap_or(false),
             })
         })
         .collect()
@@ -941,11 +957,26 @@ fn group_tabs(doc: &AutoCommit, group_entry: &ObjId) -> Vec<DocTab> {
 /// Fold a document group's tabs into `strip`'s group `group_id`, creating
 /// it with local presentation defaults when the strip does not have it.
 fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
-    let hydrate = |entry: &DocTab| Tab {
-        id: entry.id,
-        title: entry.title.clone(),
-        tile: tile_from_blob(&entry.tile_json, &entry.title),
-        app_title: entry.app_title.clone(),
+    // The view a window shows and whether it is pinned are the record's: they
+    // are the same on every device that shows the window, so the document's
+    // answer is taken over whatever this device had.
+    let marks = |mut tab: Tab, entry: &DocTab| {
+        tab.view.clone_from(&entry.view);
+        tab.pinned = entry.pinned;
+        tab
+    };
+    let hydrate = |entry: &DocTab| {
+        marks(
+            Tab {
+                id: entry.id,
+                title: entry.title.clone(),
+                tile: tile_from_blob(&entry.tile_json, &entry.title),
+                app_title: entry.app_title.clone(),
+                view: String::new(),
+                pinned: false,
+            },
+            entry,
+        )
     };
     let Some(group) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
         let tabs: Vec<Tab> = doc_tabs.iter().map(hydrate).collect();
@@ -965,14 +996,12 @@ fn fold_group(strip: &mut Strip, group_id: GroupId, doc_tabs: &[DocTab]) {
     }
     let tabs: Vec<Tab> = doc_tabs
         .iter()
-        .map(|entry| {
-            group
-                .tabs
-                .iter()
-                .find(|t| t.id == entry.id)
-                .cloned()
-                .unwrap_or_else(|| hydrate(entry))
-        })
+        .map(
+            |entry| match group.tabs.iter().find(|t| t.id == entry.id).cloned() {
+                Some(tab) => marks(tab, entry),
+                None => hydrate(entry),
+            },
+        )
         .collect();
     if group.tabs.is_empty()
         || group
