@@ -143,37 +143,40 @@ impl Rows {
         match (self, other) {
             (
                 Self::Coll {
-                    coll: mine,
-                    listing: here,
-                    kept: kept_here,
+                    coll: mine_coll,
+                    listing: mine_listing,
+                    kept: kept_coll_mine,
                 },
                 Self::Coll {
-                    coll: theirs,
-                    listing: there,
-                    kept: kept_there,
+                    coll: theirs_coll,
+                    listing: theirs_listing,
+                    kept: kept_coll_theirs,
                 },
             ) => {
-                mine == theirs
-                    && kept_here == kept_there
-                    && (Rc::ptr_eq(here, there)
+                mine_coll == theirs_coll
+                    && kept_coll_mine == kept_coll_theirs
+                    && (Rc::ptr_eq(mine_listing, theirs_listing)
                         // A listing that checks its items as it reads them knows only the most
                         // it can have: as many rows as before, and not sure it has them all,
                         // keeps the rows built and lets the host ask, rather than read them
                         // all to say they are the same.
-                        || (!here.len_is_exact() && here.len() == there.len())
-                        || (here.len_is_exact() && there.len_is_exact() && here == there))
+                        || (!mine_listing.len_is_exact()
+                            && mine_listing.len() == theirs_listing.len())
+                        || (mine_listing.len_is_exact()
+                            && theirs_listing.len_is_exact()
+                            && mine_listing == theirs_listing))
             }
             (
                 Self::List {
                     values: mine_values,
-                    kept: kept_here,
+                    kept: kept_mine,
                 },
                 Self::List {
                     values: theirs_values,
-                    kept: kept_there,
+                    kept: kept_theirs,
                 },
             ) => {
-                kept_here == kept_there
+                kept_mine == kept_theirs
                     && (Rc::ptr_eq(mine_values, theirs_values) || mine_values == theirs_values)
             }
             _ => false,
