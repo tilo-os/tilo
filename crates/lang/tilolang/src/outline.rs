@@ -28,6 +28,7 @@
 //! declares that one's actions itself, as it declares a type's any other action.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 
 use crate::ast::{self, Item, TypeExprKind};
 use crate::parser::parse_file_at;
@@ -112,11 +113,10 @@ impl Plan {
                 }
             })
             .collect();
-        let inherit: String = self
-            .inherits
-            .iter()
-            .map(|field| format!(", {field}: t.{field}"))
-            .collect();
+        let mut inherit = String::new();
+        for field in &self.inherits {
+            let _ = write!(inherit, ", {field}: t.{field}");
+        }
         TEMPLATE
             .replace("%item%", &self.item)
             .replace("%holder%", &self.holder)

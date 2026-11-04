@@ -126,23 +126,25 @@ action add(n: Notebook, title: Text) -> Note {
                     .or_default()
                     .push((item, title));
             }
-            fn walk(
-                at: Option<&str>,
-                depth: usize,
-                children: &HashMap<Option<String>, Vec<(String, String)>>,
-                out: &mut Vec<(String, usize)>,
-            ) {
-                let Some(kids) = children.get(&at.map(str::to_owned)) else {
-                    return;
-                };
-                for (item, title) in kids {
-                    out.push((title.clone(), depth));
-                    walk(Some(item), depth + 1, children, out);
-                }
-            }
             let mut out = Vec::new();
             walk(None, 0, &children, &mut out);
             out
+        }
+    }
+
+    /// Each note, then the notes under it, depth first, with the depth it stands at.
+    fn walk(
+        at: Option<&str>,
+        depth: usize,
+        children: &HashMap<Option<String>, Vec<(String, String)>>,
+        out: &mut Vec<(String, usize)>,
+    ) {
+        let Some(kids) = children.get(&at.map(str::to_owned)) else {
+            return;
+        };
+        for (item, title) in kids {
+            out.push((title.clone(), depth));
+            walk(Some(item), depth.saturating_add(1), children, out);
         }
     }
 
@@ -165,7 +167,7 @@ action add(n: Notebook, title: Text) -> Note {
             ],
             "a new subtask stands with its siblings, under the note it was made under"
         );
-        assert_eq!(n.under(&one), first.item.clone());
+        assert_eq!(n.under(&one).as_deref(), first.item.as_deref());
         // It keeps what the one it stands under is in, which `(inherit)` marks.
         let Value::Opt(Some(inner)) = n.read(&one, "notebook") else {
             panic!("a subtask is in the notebook it was made in");
@@ -218,7 +220,7 @@ action add(n: Notebook, title: Text) -> Note {
             "indent",
             vec![Value::resource(&a), Value::some(Value::resource(&top))],
         );
-        assert_eq!(n.under(&a), top.item.clone());
+        assert_eq!(n.under(&a).as_deref(), top.item.as_deref());
         // `Ctrl+[`: back beside the note it was under, just after it.
         n.call("outdent", vec![Value::resource(&a)]);
         assert_eq!(n.under(&a), None);
@@ -245,7 +247,7 @@ action add(n: Notebook, title: Text) -> Note {
                 Value::none(),
             ],
         );
-        assert_eq!(n.under(&a), b.item.clone());
+        assert_eq!(n.under(&a).as_deref(), b.item.as_deref());
         assert_eq!(
             lines(&n.outline()),
             [

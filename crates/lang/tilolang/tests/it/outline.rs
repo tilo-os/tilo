@@ -108,8 +108,8 @@ fn a_nested_item_type_gets_its_tree_actions_from_its_fields() {
     let indent = action(&meta, "indent");
     assert_eq!(indent.label, "Indent");
     assert_eq!(indent.key.as_deref(), Some("Ctrl+]"));
-    assert_eq!(
-        indent.params[1].place, true,
+    assert!(
+        indent.params[1].place,
         "the row over it supplies the item it moves under"
     );
     let outdent = action(&meta, "outdent");
