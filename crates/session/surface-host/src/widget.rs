@@ -358,16 +358,18 @@ impl WidgetHost {
         true
     }
 
-    /// A rectangle of the tree's physical pixels, as the desktop's logical
-    /// `(x, y, w, h)`.
+    /// A rectangle of the tree's own logical pixels, as the desktop's
+    /// logical `(x, y, w, h)`: the tree lays itself out in logical pixels
+    /// whatever scale it is drawn at, so only where the surface stands is
+    /// added. Dividing by the display's scale as well would halve every
+    /// control on a 2 display, and a press at its centre would land past it.
     fn logical(&self, rect: vello::kurbo::Rect) -> (f64, f64, f64, f64) {
         let (ox, oy) = self.placement.origin;
-        let scale = self.placement.scale;
         (
-            f64::from(ox) + rect.x0 / scale,
-            f64::from(oy) + rect.y0 / scale,
-            rect.width() / scale,
-            rect.height() / scale,
+            f64::from(ox) + rect.x0,
+            f64::from(oy) + rect.y0,
+            rect.width(),
+            rect.height(),
         )
     }
 
