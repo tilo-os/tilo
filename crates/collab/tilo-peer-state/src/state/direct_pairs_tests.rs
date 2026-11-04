@@ -378,7 +378,6 @@ fn a_pair_is_announced_once_by_a_device_in_it() {
 fn a_pair_signed_where_its_devices_key_is_kept_is_recorded_as_the_same_pair() {
     let (mut peer, authority, _, _, now) = seeded();
     let first = add_member_with(&mut peer, &authority, now, 5, 6);
-    let second_root = SigningKey::from_bytes(&[7; 32]);
     let second = add_member_with(&mut peer, &authority, now, 7, 8);
     let people = [hex::encode(first.2), hex::encode(second.2)];
     let (pair, unsigned, digest) =

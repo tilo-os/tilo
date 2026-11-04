@@ -70,6 +70,10 @@ fn take(peer: &mut ChannelPeer, vault: &VaultKey) -> Vec<MlsGovernanceFrame> {
     frames
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "async Relay::shutdown consumes the relay; the suggested later drop is a use-after-move"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
     // Alice runs the host her workspace lives on, and her desktop is another
@@ -155,7 +159,7 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_pair_record() {
             answer
                 .await
                 .ok()
-                .and_then(|pairs| pairs.ok())
+                .and_then(Result::ok)
                 .and_then(|pairs| pairs.get(&wanted).cloned())
         }
     })
