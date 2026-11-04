@@ -56,6 +56,7 @@ mod close_motion_tests;
 mod displays;
 mod history;
 mod hung;
+mod launch;
 mod live_shares;
 mod liveness;
 mod notices;
@@ -1659,10 +1660,12 @@ impl DesktopSurface {
                         shared.tree.active_strip.insert(workspace, strip);
                     }
                     Admitted::Workspace(workspace) => shared.tree.active = workspace,
-                    Admitted::Launch(app) => match launch(self.tiles.as_mut(), &mut shared, &app) {
-                        Some(op) => ops.push(op),
-                        None => continue,
-                    },
+                    Admitted::Launch(app) => {
+                        match launch::open(self.tiles.as_mut(), &mut shared, &app) {
+                            Some(op) => ops.push(op),
+                            None => continue,
+                        }
+                    }
                     // The tab lands right after the one it was asked to open
                     // beside, inside its window group.
                     Admitted::TabOpenBeside(ids, app, background) if live(&shared.tree, ids) => {
@@ -2245,45 +2248,6 @@ impl DesktopSurface {
             ..current
         })
     }
-}
-
-/// Put a window for `app` after the focused one of the shown strip.
-fn launch(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -> Option<RowOp> {
-    let (tab_id, group_id) = (shared.minter.mint(), shared.minter.mint());
-    let workspace = shared.tree.active_workspace()?;
-    let strip = navigation::active_strip(&shared.tree, workspace)?;
-    let tab = tiles.launch(workspace, tab_id, app)?;
-    let after = shared.tree.active_group_for(strip);
-    let model = shared
-        .tree
-        .workspaces
-        .iter_mut()
-        .flat_map(|w| w.strips.iter_mut())
-        .find(|s| s.id == strip)?;
-    let index = after
-        .and_then(|id| model.window_groups.iter().position(|g| g.id == id))
-        .map_or(model.window_groups.len(), |position| {
-            position.saturating_add(1)
-        });
-    model.window_groups.insert(
-        index,
-        tilo_desktop_model::WindowGroup {
-            id: group_id,
-            tabs: vec![tab.clone()],
-            active_tab: tab.id,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        },
-    );
-    shared.tree.set_active_group(strip, group_id);
-    shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
-    Some(RowOp::Open {
-        strip,
-        group: group_id,
-        index,
-        tab,
-    })
 }
 
 impl DesktopSurface {
