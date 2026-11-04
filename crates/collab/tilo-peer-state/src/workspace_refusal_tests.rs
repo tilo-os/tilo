@@ -105,7 +105,7 @@ fn a_verdict_is_kept_only_in_the_slice_of_the_device_that_made_it() {
     let b_cert = certificate(&peer, &b_key);
     let mut theirs = peer.clone();
     let message = write(&mut theirs, &b_key, now, "value");
-    let before = peer.admitted_workspace().map(AutoCommit::clone);
+    let before = peer.admitted_workspace().cloned();
     peer.workspace_mut()
         .refuse_write(&a_cert, &message, "no permission", &a_key, now)
         .unwrap();

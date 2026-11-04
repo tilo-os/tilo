@@ -587,6 +587,67 @@ fn written_hashes(change: &collab_types::DocumentMutation) -> Vec<[u8; 32]> {
         .collect()
 }
 
+/// Two stores meeting over a link: `a` serves its records, `b` dials, and
+/// both are up until the meeting parts.
+struct Meeting {
+    a_endpoint: Endpoint,
+    b_endpoint: Endpoint,
+    router: iroh::protocol::Router,
+    link: tokio::task::JoinHandle<Result<(), String>>,
+}
+
+impl Meeting {
+    /// Serve `a`'s store and dial it as `b`, each device at its own key.
+    async fn of(
+        a: &PersonalSync,
+        a_key: &SigningKey,
+        b: &PersonalSync,
+        b_key: &SigningKey,
+    ) -> Self {
+        let a_endpoint = endpoint(a_key).await;
+        let router = iroh::protocol::Router::builder(a_endpoint.clone())
+            .accept(PERSONAL_ALPN, a.clone())
+            .spawn();
+        let b_endpoint = endpoint(b_key).await;
+        let link = tokio::spawn({
+            let b = b.clone();
+            let b_endpoint = b_endpoint.clone();
+            let a_addr = addr(&a_endpoint);
+            async move { b.connect(&b_endpoint, a_addr).await }
+        });
+        Self {
+            a_endpoint,
+            b_endpoint,
+            router,
+            link,
+        }
+    }
+
+    /// Part the two: the link ends, the server stops serving, and the dialling
+    /// device's endpoint closes.
+    async fn part(self) {
+        self.link.abort();
+        let _ = self.link.await;
+        self.router.shutdown().await.unwrap();
+        self.b_endpoint.close().await;
+        self.a_endpoint.close().await;
+    }
+}
+
+/// The device `cert` certifies, opening the store its identity keeps at
+/// `root_key` as it stands now.
+fn device_store(
+    root_key: [u8; 32],
+    cert: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> PersonalSync {
+    PersonalSync::new(
+        PersonalStore::open(root_key, cert.clone(), now).unwrap(),
+        key.clone(),
+    )
+}
+
 /// A write a device refuses reaches its author, whose own history then says
 /// where the write is not: on the link that carried the write, and, after
 /// both stores restart from what they kept, on the next link. A device the
@@ -598,31 +659,13 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
     let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
     let now = SystemTime::now();
-
-    let a = PersonalSync::new(
-        PersonalStore::open(root_key, a_cert.clone(), now).unwrap(),
-        a_key.clone(),
-    );
-    let b = PersonalSync::new(
-        PersonalStore::open(root_key, b_cert.clone(), now).unwrap(),
-        b_key.clone(),
-    );
+    let a = device_store(root_key, &a_cert, &a_key, now);
+    let b = device_store(root_key, &b_cert, &b_key, now);
     a.publish(|store, key, now| store.publish(APP, RECORD, &record("theme", "dark"), key, now))
         .unwrap();
 
-    let a_endpoint = endpoint(&a_key).await;
-    let mut a_router = iroh::protocol::Router::builder(a_endpoint.clone())
-        .accept(PERSONAL_ALPN, a.clone())
-        .spawn();
-    let b_endpoint = endpoint(&b_key).await;
-    let mut link = tokio::spawn({
-        let b = b.clone();
-        let b_endpoint = b_endpoint.clone();
-        let a_addr = addr(&a_endpoint);
-        async move { b.connect(&b_endpoint, a_addr).await }
-    });
-
     // B catches up on the record, and A holds B's certificate.
+    let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
     until(&b, |store| store.holds_document(APP, RECORD)).await;
     until(&a, |store| {
         store
@@ -631,8 +674,7 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
             .any(|cert| cert.device_public_key == b_key.verifying_key().to_bytes())
     })
     .await;
-    link.abort();
-    let _ = (&mut link).await;
+    meeting.part().await;
 
     // The person's identity takes B's device away, and A hears it from a
     // sibling's hello while B is away: A says nothing of it to B yet.
@@ -657,12 +699,7 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
 
     // B links again: A's record takes none of the write, A files its verdict,
     // and B hears it on the stream that carried the write.
-    link = tokio::spawn({
-        let b = b.clone();
-        let b_endpoint = b_endpoint.clone();
-        let a_addr = addr(&a_endpoint);
-        async move { b.connect(&b_endpoint, a_addr).await }
-    });
+    let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
     until(&b, |store| !store.write_refusals().is_empty()).await;
     let heard = b.store().write_refusals();
     assert_eq!(heard.len(), 1, "one verdict, one author: {heard:?}");
@@ -682,10 +719,7 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     // The verdict is kept, not only said: both stores restart from the bytes
     // they kept, B's from before it heard anything.
     let a_kept = a.store().durable().unwrap();
-    link.abort();
-    let _ = (&mut link).await;
-    a_router.shutdown().await.unwrap();
-    b_endpoint.close().await;
+    meeting.part().await;
     let a = PersonalSync::new(
         PersonalStore::restore(&a_kept, &a_cert, now).unwrap(),
         a_key.clone(),
@@ -700,17 +734,7 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     );
 
     // The next link teaches B from what A kept: no live receipt was needed.
-    let a_endpoint = endpoint(&a_key).await;
-    a_router = iroh::protocol::Router::builder(a_endpoint.clone())
-        .accept(PERSONAL_ALPN, a.clone())
-        .spawn();
-    let b_endpoint = endpoint(&b_key).await;
-    link = tokio::spawn({
-        let b = b.clone();
-        let b_endpoint = b_endpoint.clone();
-        let a_addr = addr(&a_endpoint);
-        async move { b.connect(&b_endpoint, a_addr).await }
-    });
+    let meeting = Meeting::of(&a, &a_key, &b, &b_key).await;
     until(&b, |store| {
         store
             .write_refusals()
@@ -728,9 +752,5 @@ async fn a_refused_write_reaches_its_author_over_the_link_and_the_next_one() {
     );
     // What the person took away stays out of B's hands too.
     assert!(!b.store().holds_document(APP, RECORD));
-
-    link.abort();
-    let _ = link.await;
-    a_router.shutdown().await.unwrap();
-    b_endpoint.close().await;
+    meeting.part().await;
 }
