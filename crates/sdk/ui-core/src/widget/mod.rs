@@ -3303,12 +3303,14 @@ pub use context_menu::{
 };
 mod row_menu;
 pub use primitives::{
-    BarControlFace, DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton,
-    DensityRegion, DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact,
-    FactProps, Facts, FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
-    FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
-    ModalProps, PopoverButtonProps, PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace,
-    TextStackProps, paint_see_through, paint_surface,
+    AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace, AgendaPopoverLayout, BarChip,
+    BarChipFace, BarChipLayout, BarChipProps, BarControlFace, DeclaredModal, DeclaredPanel,
+    DeclaredPopover, DeclaredPopoverButton, DensityRegion, DisclosureGroup, DisclosureRow,
+    DisclosureRowProps, DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps,
+    FloatingPanel, FloatingPanelFace, FloatingPanelLayout, FloatingPanelProps, IconButton, KeyHint,
+    KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps, ModalProps, PopoverButtonProps,
+    PopoverProps, Surface, SurfaceLevel, TextStack, TextStackFace, TextStackProps,
+    paint_see_through, paint_surface,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
