@@ -2718,6 +2718,10 @@ fn a_project_place_shows_its_tasks_and_adds_into_it_in_the_same_window() {
         Some(&Value::text("Groceries")),
         "and the window's page is titled after it"
     );
+    assert!(
+        !shell.props.contains_key("overview_count"),
+        "a project's place is its own list, not a tally"
+    );
     let entry = key_of(&view, "ui.TextInput", &|node| {
         node.props.get("placeholder") == Some(&Value::text("New task in Groceries"))
     });
