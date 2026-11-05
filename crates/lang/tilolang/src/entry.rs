@@ -73,7 +73,8 @@ pub struct Part {
 /// What the text says the action will make.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Parsed {
-    /// The title: the words no other parameter took.
+    /// The title: the words no other parameter took, and empty when the text was nothing but
+    /// parts and space: then the entry makes nothing.
     pub title: String,
     /// What the parameters take, by their place in the action's parameters.
     pub fills: Vec<(usize, Filled)>,
@@ -310,19 +311,15 @@ pub fn read(
         }
     }
 
-    // The title: the words no parameter took. An entry that is only parts keeps the text as
-    // typed, so that something is still made of it.
-    let title: Vec<&str> = words
+    // The title: the words no parameter took. An entry that is only parts names nothing, and
+    // [`Parsed::title`] is empty: there is nothing to make of it.
+    let title = words
         .iter()
         .zip(&used)
         .filter(|(_, used)| !**used)
         .map(|(w, _)| w.raw.as_str())
-        .collect();
-    let title = if title.is_empty() {
-        text.trim().to_owned()
-    } else {
-        title.join(" ")
-    };
+        .collect::<Vec<_>>()
+        .join(" ");
     parts.sort_by_key(|(from, _)| *from);
     Parsed {
         title,
@@ -436,6 +433,19 @@ mod tests {
         assert_eq!(due.without, "call landlord 10am @bo");
         let who = &parsed.parts[2];
         assert_eq!(who.without, "call landlord fri 10am");
+    }
+
+    #[test]
+    fn what_is_only_parts_or_space_names_nothing() {
+        for text in ["fri 10am @bo", "   ", ""] {
+            let parsed = story(text, &tasks(), &look());
+            assert_eq!(parsed.title, "", "`{text}` names nothing");
+        }
+        // The parts are still read: the entry shows what it took out, and makes nothing.
+        assert_eq!(story("fri 10am @bo", &tasks(), &look()).parts.len(), 3);
+        // Words nothing took are the title, around the parts.
+        assert_eq!(story(" @bo ", &tasks(), &look()).title, "");
+        assert_eq!(story(" milk @bo ", &tasks(), &look()).title, "milk");
     }
 
     #[test]

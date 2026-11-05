@@ -43,9 +43,10 @@ primary action new_column(b: Board) -> Column (icon: .plus, label: "New column")
 }
 
 /// Adds a card at the foot of a column, under the title typed in the entry that adds there: a
-/// card is named where it is made, not left "Untitled".
-action new_card(col: Column, title: Text (entry) = "") (icon: .plus, label: "New card") {
-    if title != "" { col.cards.insert(Card(title: title)) }
+/// card is named where it is made, not left "Untitled". An entry with nothing but space in it
+/// makes no card: it never runs this.
+action new_card(col: Column, title: Text (entry) = "") -> Card (icon: .plus, label: "New card") {
+    col.cards.insert(Card(title: title))
 }
 
 /// Moves a card to the foot of a column.

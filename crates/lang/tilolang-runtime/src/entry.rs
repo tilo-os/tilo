@@ -68,27 +68,35 @@ impl Core {
     /// takes title the item, and the rest are its day, its moment, who it is for and what it is
     /// of. An action with no entry parameter, or whose call gave it, is left as it is, as is
     /// every action `then` joins to one that is filled.
-    pub(crate) fn entry_fill(&self, aref: &mut ActionRef, text: &str) -> HResult<()> {
+    ///
+    /// Whether the entry makes anything: text that is nothing but space and what the other
+    /// parameters take ("fri 10am @bo") names no item, so the action does not run.
+    pub(crate) fn entry_fill(&self, aref: &mut ActionRef, text: &str) -> HResult<bool> {
         if aref.action == THEN_ACTION {
+            let mut makes = true;
             for arg in &mut aref.args {
                 if let Value::Action(inner) = arg {
-                    self.entry_fill(inner, text)?;
+                    makes = self.entry_fill(inner, text)? && makes;
                 }
             }
-            return Ok(());
+            return Ok(makes);
         }
         let Some((meta, app)) = self.action_meta(&aref.action) else {
             // Not a declaration of a loaded package: the run says so.
-            return Ok(());
+            return Ok(true);
         };
         let Some((slot, _)) = meta.params.iter().enumerate().find(|(_, p)| p.entry) else {
-            return Ok(());
+            return Ok(true);
         };
         if slot < aref.args.len() {
             // The call gave it: the entry fills nothing.
-            return Ok(());
+            return Ok(true);
         }
         let (parsed, params) = self.read_entry(aref, text)?;
+        if parsed.title.trim().is_empty() {
+            // Nothing typed but what other parameters take makes no item.
+            return Ok(false);
+        }
         let mut given: Vec<Option<Value>> = (0..params.len())
             .map(|i| aref.args.get(i).cloned())
             .collect();
@@ -117,7 +125,7 @@ impl Core {
         aref.args = self
             .complete_args(&aref.action, given)
             .map_err(|e| HostFail::Trap(e.to_string()))?;
-        Ok(())
+        Ok(true)
     }
 
     /// The declaration of the action `id`, and the app that declares it.

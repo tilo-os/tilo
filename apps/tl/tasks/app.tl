@@ -158,8 +158,9 @@ migration action adopt_steps(tasks: Tasks) {
 /// the lane `s` of its board. The entry fills `title` with the words nothing else takes, and
 /// what they say of the task's other fields fills those: "Call the landlord fri 10am @Bo" is a
 /// task due Friday at ten, for Bo. Without a day said, a task added on Today is due today. An
-/// entry with nothing in it adds nothing. It is the entry's, not a command: the entry is how a
-/// task is added there, and the task joins the list in place rather than opening.
+/// entry with nothing but space in it makes no task: it never runs this. It is the entry's, not
+/// a command: the entry is how a task is added there, and the task joins the list in place
+/// rather than opening.
 internal action quick_add(
     tasks: Tasks,
     p: Option<Project> = .none,
@@ -169,15 +170,13 @@ internal action quick_add(
     at: Option<Time> = .none,
     assignee: Option<Principal> = .none,
     title: Text (entry) = "",
-) {
+) -> Task {
     let due: Option<Date> = if let d = due {
         .some(d)
     } else if today { dated("today", now).day } else { .none }
-    if title != "" {
-        tasks.items.insert(
-            Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
-        )
-    }
+    tasks.items.insert(
+        Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
+    )
 }
 
 /// Adds a task under the title a program or an agent gives it: no task stands without one. A

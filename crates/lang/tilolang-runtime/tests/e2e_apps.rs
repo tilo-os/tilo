@@ -1703,9 +1703,118 @@ mod cases {
         );
     }
 
+    /// An entry whose text is nothing but space, or only what other parameters take, names no
+    /// item: Enter makes nothing, writes nothing, and leaves what is typed where it is.
+    #[test]
+    fn an_entry_with_no_words_of_its_own_fires_nothing() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+        w.rt.set_name_host(Names);
+        w.rt.set_members(
+            vec![
+                tilolang_runtime::members::Member::person("me", "owner"),
+                tilolang_runtime::members::Member::person("bo", "editor"),
+            ],
+            None,
+        );
+        let list = w.create("Tasks");
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        let entry = of_kind(v.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| on(field, "entry"))
+            .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())))
+            .key
+            .clone();
+        let before = w.rt.history(&list.doc).unwrap().len();
+        for text in ["", "   ", "@bo", "fri", "fri 10am @bo"] {
+            v.edit(&entry, &Value::text(text)).unwrap();
+            v.poll_patches().unwrap();
+            v.fire_with(&entry, "submit", Some(&Value::text(text)))
+                .unwrap_or_else(|e| panic!("`{text}` is no refusal, just nothing: {e}"));
+            v.poll_patches().unwrap();
+            assert_eq!(
+                v.bound_value(&entry),
+                Some(Value::text(text)),
+                "`{text}` leaves what is typed where it is"
+            );
+        }
+        assert!(
+            items(&w, &list, "items").is_empty(),
+            "nothing of the entry's own, no task: {}",
+            dump(v.tree())
+        );
+        assert_eq!(
+            w.rt.history(&list.doc).unwrap().len(),
+            before,
+            "and nothing written"
+        );
+
+        // A word of its own makes the task, with the parts beside it.
+        v.edit(&entry, &Value::text("milk @bo")).unwrap();
+        v.poll_patches().unwrap();
+        v.fire_with(&entry, "submit", Some(&Value::text("milk @bo")))
+            .unwrap();
+        v.poll_patches().unwrap();
+        let made = items(&w, &list, "items");
+        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+        assert_eq!(text_of(&w, &made[0], "title"), "milk");
+        assert_eq!(
+            v.bound_value(&entry),
+            Some(Value::text("")),
+            "the entry is cleared once the task it made is listed"
+        );
+    }
+
+    /// An agent calling the create action itself gets the record it made: the entry's
+    /// emptiness is the entry's, not the action's.
+    #[test]
+    fn an_agent_calling_a_create_action_gets_its_record() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+        let list = w.create("Tasks");
+        let made = returned_ref(w.call(
+            &apps.todo,
+            "quick_add",
+            vec![
+                res(&list),
+                Value::none(),
+                Value::none(),
+                Value::Bool(false),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text("Water the plants"),
+            ],
+        ));
+        assert_eq!(text_of(&w, &made, "title"), "Water the plants");
+        assert_eq!(
+            items(&w, &list, "items"),
+            vec![made],
+            "the record it returned is the one the list holds"
+        );
+        // The same through the entry: the task the person typed.
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        let entry = of_kind(v.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| on(field, "entry"))
+            .unwrap()
+            .key
+            .clone();
+        v.fire_with(&entry, "submit", Some(&Value::text("Buy oat milk")))
+            .unwrap();
+        v.poll_patches().unwrap();
+        assert_eq!(
+            items(&w, &list, "items").len(),
+            2,
+            "the entry's task joins the agent's: {}",
+            dump(v.tree())
+        );
+    }
+
     /// The names people go by, as the workspace's host gives them.
     struct Names;
-
     impl tilolang_runtime::NameHost for Names {
         fn name(&self, who: &Principal) -> String {
             match who.0.as_str() {
