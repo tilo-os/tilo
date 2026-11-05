@@ -407,8 +407,9 @@ impl Published for ActivityLayer {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        self.host.invoke(address, arguments)
+        self.host.invoke(address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
