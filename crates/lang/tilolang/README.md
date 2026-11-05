@@ -231,9 +231,9 @@ its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers t
 `actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
 `host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
 keeps its versions) and which `.fields` it changed. A resource can be made from another one:
-an invocation carries the resource it is made from (the host sets it, an agent's door names
-it), the change records it, and the resource it created says so,
-`created(r)?.from` — an `Option<host.Resource>`. `changes(of: run)` is every version a run
+an invocation carries the resource it is made from when the host or the invoker names one, the
+change records it, and the resource it created says so, `created(r)?.from` — an
+`Option<host.Resource>`. `changes(of: run)` is every version a run
 made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
 person looking has not seen yet. The UI host marks those where views show them, with no code
 of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
