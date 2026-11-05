@@ -2398,6 +2398,13 @@
           "positional": true
         },
         {
+          "name": "prefix",
+          "doc": "A quiet word before the title, on the same line and in the weaker ink: where an item came from, what it answers. The title shares its line, so a row that says one takes the room left after it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "item",
           "doc": "The resource the row shows, which activating the row opens.",
           "type": {

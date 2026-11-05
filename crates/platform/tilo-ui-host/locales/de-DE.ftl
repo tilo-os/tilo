@@ -69,7 +69,8 @@ tilolang-thread-replies = { $count ->
    *[other] { $count } Antworten
 }
 tilolang-make = Erstellen
-tilolang-origin = Aus { $title }
+tilolang-from = Aus
+tilolang-linked = Daraus entstanden
 
 app-activate-window = Dieses Fenster anzeigen
 app-activate-window-description = Die Plattform bitten, das vorhandene Fenster anzuzeigen, ohne den Dokumentbesitzer zu wechseln.

@@ -1304,12 +1304,12 @@ impl Checker<'_> {
         ));
     }
 
-    /// `opening(of) { on check: ... }`: what the resource's page opens with — the item as its
-    /// name, whether it is done, and what is written about it. The field marked `(title)` is
-    /// drawn as the page's title, with the control that says the item is done beside it, level
-    /// with the first line of a title of several; the field marked `(body)` is the item's notes
-    /// under its title, its placeholder the field's own name. A type that marks neither opens
-    /// with nothing.
+    /// `opening(of) { ... }`: what the resource's page opens with — the item as its name,
+    /// whether it is done, and what is written about it. The field marked `(title)` is drawn as
+    /// the page's title, with the control that says the item is done beside it, level with the
+    /// first line of a title of several; what the block draws stands under the title and over
+    /// the notes; the field marked `(body)` is the item's notes, its placeholder the field's own
+    /// name. A type that marks neither opens with what the block draws.
     fn opening(&mut self, c: &UiCall, args: &[ast::Arg]) -> LocalId {
         let key = self.node_key(c);
         let stack = self.new_node("stack", key.clone());
@@ -1325,6 +1325,26 @@ impl Checker<'_> {
             .filter(|field| field.ty == Ty::Text)
             .cloned();
         let body = Self::role_field(&info, crate::types::FieldRole::is_body).cloned();
+        // The block draws under the title and over what is written about the item: a line
+        // saying where it came from, a banner, whatever the page opens with. Its one event is
+        // `on check`, which asks what checking the item off does.
+        let mut content = Vec::new();
+        for s in c.block.iter().flatten() {
+            match &s.kind {
+                UiKind::On { event, .. } if event.name != "check" => {
+                    self.err(
+                        "E063",
+                        s.span,
+                        format!(
+                            "`opening` takes `on check: action(...)`; `on {}` belongs to a control in what it draws",
+                            event.name
+                        ),
+                    );
+                }
+                UiKind::On { .. } => {}
+                _ => content.push(s.clone()),
+            }
+        }
         // Whether the heading opens with the box that says the item is done: what is written
         // about it then stands one row lead in, under the text the title leads to, the box in
         // the gutter to its left.
@@ -1365,13 +1385,7 @@ impl Checker<'_> {
                                 (param.as_ref(), at.as_ref()),
                                 action,
                             );
-                            continue;
                         }
-                        self.err(
-                            "E063",
-                            s.span,
-                            "`opening` takes one `on check: action(...)`: what checking the item off does beyond its `(done)` field",
-                        );
                     }
                     self.emit(host(Imp::UiChild, vec![line.clone(), view]));
                 }
@@ -1411,12 +1425,19 @@ impl Checker<'_> {
             self.emit(host(Imp::UiChild, vec![node.clone(), line]));
         } else {
             for s in c.block.iter().flatten() {
-                self.err(
-                    "E063",
-                    s.span,
-                    "`opening` takes `on check: action(...)` for a type with a `(done)` field",
-                );
+                if let UiKind::On { event, .. } = &s.kind
+                    && event.name == "check"
+                {
+                    self.err(
+                        "E063",
+                        s.span,
+                        "`opening` takes `on check: action(...)` for a type with a `(done)` field",
+                    );
+                }
             }
+        }
+        if !content.is_empty() {
+            self.ui_stmts(&content, stack);
         }
         if let Some(body) = body {
             let env = self.env;

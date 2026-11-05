@@ -306,8 +306,20 @@ impl ListRowFace<'_> {
 
         // Title (with its tags), subtitle and secondary text.
         let text_x = geo.text_x;
+        // A quiet word before the title shares its line, in the weaker ink, and takes its room
+        // from the title.
+        if let Some(prefix) = &self.prefix {
+            ctx.text(
+                prefix,
+                &title_style,
+                theme.text_dim,
+                Point::new(text_x, text_top),
+                None,
+            );
+        }
+        let title_x = text_x + self.prefix_width(ctx.text, &m);
         let mut y = text_top;
-        let mut last_end = text_x;
+        let mut last_end = title_x;
         for line in &lines {
             for span in found_spans(line, self.found) {
                 let (Some(before), Some(word)) = (line.get(..span.start), line.get(span.clone()))
@@ -315,7 +327,7 @@ impl ListRowFace<'_> {
                     continue;
                 };
                 let start =
-                    text_x + f64::from(ctx.text.measure_style(before, None, &title_style).0);
+                    title_x + f64::from(ctx.text.measure_style(before, None, &title_style).0);
                 let (width, height) = ctx.text.measure_style(word, None, &title_style);
                 let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
                 crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
@@ -327,8 +339,8 @@ impl ListRowFace<'_> {
             } else {
                 theme.text_primary
             };
-            ctx.text(line, &title_style, ink, Point::new(text_x, y), None);
-            last_end = text_x + f64::from(ctx.text.measure_style(line, None, &title_style).0);
+            ctx.text(line, &title_style, ink, Point::new(title_x, y), None);
+            last_end = title_x + f64::from(ctx.text.measure_style(line, None, &title_style).0);
             if self.struck {
                 let through = y + title_line / 2.0;
                 ctx.scene.stroke(
@@ -336,7 +348,7 @@ impl ListRowFace<'_> {
                     ctx.transform,
                     ink,
                     None,
-                    &vello::kurbo::Line::new((text_x, through), (last_end, through)),
+                    &vello::kurbo::Line::new((title_x, through), (last_end, through)),
                 );
             }
             y += title_line;
@@ -426,9 +438,9 @@ impl ListRowFace<'_> {
         }
     }
 
-    /// The width the title is set in: its column, less the tags after it. The title keeps at
-    /// least half its line; the tags take the rest and drop off before the title elides
-    /// further.
+    /// The width the title is set in: its column, less the quiet word before it and the tags
+    /// after it. The title keeps at least half its line; the tags take the rest and drop off
+    /// before the title elides further.
     fn title_room(
         &self,
         geo: &RowGeometry,
@@ -436,10 +448,21 @@ impl ListRowFace<'_> {
         theme: &Theme,
         m: &RowMetrics,
     ) -> f32 {
-        let title_width = (geo.title_right - geo.text_x).max(0.0);
+        let title_width = (geo.title_right - geo.text_x - self.prefix_width(text, m)).max(0.0);
         let tags_w = self.tags_width(text, theme, m);
         let accessories = tags_w.min(title_width / 2.0);
         crate::num::f32_of_f64((title_width - accessories).max(0.0))
+    }
+
+    /// The room the row's quiet word before the title takes, with the gap after it: none for
+    /// a row that names none.
+    fn prefix_width(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
+        match &self.prefix {
+            Some(prefix) => {
+                f64::from(text.measure_style(prefix, None, &self.title_style(m)).0) + m.tag_gap
+            }
+            None => 0.0,
+        }
     }
 
     /// The marks, in the facts column, on the column's edge: the last fact of a row.

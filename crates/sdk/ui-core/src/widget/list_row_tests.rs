@@ -125,6 +125,25 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
 }
 
 #[test]
+fn a_quiet_word_before_the_title_shares_its_line_and_takes_its_room() {
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let rect = Rect::new(0.0, 0.0, 200.0, 36.0);
+    let plain = ListRowFace::new("Book the van");
+    assert!(!plain.title_elided(rect, &mut text, &theme), "it fits");
+    assert!(
+        (face_height(&plain, 1.0) - face_height(&plain.clone().prefix("From"), 1.0)).abs() < 0.5,
+        "the word shares the title's line"
+    );
+    let long = ListRowFace::new("Book the van")
+        .prefix("From the message Bo sent about the move flat on Saturday morning");
+    assert!(
+        long.title_elided(rect, &mut text, &theme),
+        "the title keeps only the room the word leaves it"
+    );
+}
+
+#[test]
 fn a_row_without_its_avatar_leaves_no_room_for_one() {
     // Facts are a flowing run: a row with no avatar takes no room for one, so the facts it
     // has run on to the row's shared trailing edge instead of stopping at a hole.

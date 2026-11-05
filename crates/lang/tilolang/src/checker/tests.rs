@@ -449,6 +449,28 @@ view task(t: Task) {\n    std.document(t) {\n        opening(t)\n    }\n}",
 }
 
 #[test]
+fn a_page_opens_with_what_its_block_draws_under_the_title() {
+    let (m, _) = lower(
+        "type Task {\n    title: Text (title)\n    notes: RichText (body)\n}\n\
+view task(t: Task) {\n    std.document(t) {\n        opening(t) {\n            ui.Text(\"From\")\n        }\n    }\n}",
+    );
+    let calls = ui_calls(func(&m, "task"));
+    let at = |needle: &str| {
+        calls
+            .iter()
+            .position(|call| call == needle)
+            .unwrap_or_else(|| panic!("no `{needle}` in {calls:#?}"))
+    };
+    let title = at("node ui.TextInput");
+    let line = at("node ui.Text");
+    let notes = at("node ui.BlockEditor");
+    assert!(
+        title < line && line < notes,
+        "what the block draws stands under the title and over the notes: {calls:#?}"
+    );
+}
+
+#[test]
 fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
     let (m, _) = lower(
         "type Draft {\n    text: Text\n}\n/// Send.\nprimary action send_draft(d: Draft) (icon: .send) {\n    d.text = \"\"\n}\nview draft_bar(d: Draft) {\n    stack {\n        input(bind: d.text)\n        button(send_draft(d))\n    }\n}",

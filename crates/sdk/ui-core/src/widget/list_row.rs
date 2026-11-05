@@ -399,6 +399,8 @@ enum RowMark {
 #[derive(Clone, Debug)]
 pub struct ListRowFace<'a> {
     title: &'a str,
+    /// A quiet word before the title, on its line.
+    prefix: Option<&'a str>,
     title_lines: u8,
     title_family: Option<&'a FontChoice>,
     /// The words a search found the row by, marked where the title has them.
@@ -466,6 +468,7 @@ impl<'a> ListRowFace<'a> {
     pub fn new(title: &'a str) -> Self {
         Self {
             title,
+            prefix: None,
             title_lines: 1,
             title_family: None,
             found: &[],
@@ -549,6 +552,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn found(mut self, words: &'a [&'a str]) -> Self {
         self.found = words;
+        self
+    }
+
+    /// A quiet word before the title, on its line and in the weaker ink: where the item came
+    /// from. The title takes the room left after it.
+    #[must_use]
+    pub fn prefix(mut self, word: &'a str) -> Self {
+        self.prefix = Some(word);
         self
     }
 
@@ -886,10 +897,18 @@ impl<'a> ListRowFace<'a> {
     /// The name a row is announced by: its badge, then its title.
     fn spoken_name(&self) -> String {
         let title = self.shown_title();
-        match self.leading {
-            Some(RowLeading::Badge(badge)) => format!("{badge} {title}"),
-            _ => title.into_owned(),
+        // The row says its quiet word and its badge before its title, as it draws them there.
+        let mut name = String::new();
+        if let Some(RowLeading::Badge(badge)) = &self.leading {
+            name.push_str(badge);
+            name.push(' ');
         }
+        if let Some(prefix) = &self.prefix {
+            name.push_str(prefix);
+            name.push(' ');
+        }
+        name.push_str(&title);
+        name
     }
 
     /// The row's accessibility node: a list item named by its badge and
@@ -1133,6 +1152,8 @@ impl RowPart {
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
+    /// A quiet word before the title, on its line: where an item came from.
+    prefix: Option<String>,
     /// Whether a layout pass has built the row.
     laid_out: bool,
     /// Whether the last paint cut the title short; the tooltip then shows it
@@ -1249,6 +1270,7 @@ impl ListRow {
     fn new_owned(id: String, title: String) -> Self {
         Self {
             title,
+            prefix: None,
             laid_out: false,
             title_elided: false,
             two_line_title: false,
@@ -2207,6 +2229,9 @@ impl ListRow {
             .interaction(interaction);
         if self.answers_pointer() {
             face.min_target = f64::from(self.environment.minimum_collection_row());
+        }
+        if let Some(prefix) = &self.prefix {
+            face = face.prefix(prefix);
         }
         if let Some(pose) = self.check_pose {
             face = face.check_pose(pose);

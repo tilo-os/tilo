@@ -770,18 +770,18 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
     )
 }
 
-/// A task's window: its title and whether it is done, what is written about it, its subtasks,
-/// its facts — when it is due, its project, how much it matters, who is doing it — as chips,
-/// and what happened to it.
+/// A task's window: its title and whether it is done, where it came from, what is written about
+/// it, its subtasks, what was made from it, its facts — when it is due, its project, how much it
+/// matters, who is doing it — as chips, and what happened to it.
 view task_page(t: Task) {
     lens step: Text
     std.document(t) {
         opening(t) {
+            std.origin(t)
             on check: check(t)
         }
         // What follows the heading stands in its body, under the text its title leads to.
         std.body() {
-            std.origin(t)
             section("Subtasks") {
                 // A task with no subtasks puts no tree up, and the walk over the tasks under
                 // this one is made only once there is one.
@@ -810,6 +810,7 @@ view task_page(t: Task) {
                     on submit: add_subtask(tasks, t, step).then(set(step, ""))
                 }
             }
+            std.linked(t)
             facts(t) {
                 ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
                     ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
@@ -822,7 +823,6 @@ view task_page(t: Task) {
                     }
                 }
             }
-            std.linked(t)
             std.history(t)
         }
     }

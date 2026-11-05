@@ -507,39 +507,36 @@ view thread_chip<T>(thread: T, count: Int) {
     }
 }
 
-/// What `of` was made from, when an action made it from another resource: that resource's title
-/// as a line that opens it. A resource made on its own shows nothing.
+/// What `of` was made from, when an action made it from another resource: one quiet row under
+/// the title, naming where it came from in a word and that resource's title, its type's glyph
+/// before it, which opens it. A resource made on its own shows nothing.
 view origin<R>(of: R) {
     if let made = created(of), f = made.from {
-        ui.Link(
-            meta(f).title,
-            label: phrase("tilolang-origin", title: meta(f).title),
-            item: f,
-            role: .caption,
-        )
+        let kind = meta(f)
+        // The glyph the app gives the type, and a link for a type whose app gives none.
+        let glyph: Option<Text> = if let i = kind.icon { .some(i) } else { .some("link") }
+        ui.ListRow(kind.title, prefix: phrase("tilolang-from"), item: f, icon: glyph)
     }
 }
 
-/// What `linked(of)` returns, each a card that opens it: drawn through its type's row view, so
-/// its state shows there (a done item shows done), above its type's name. Links by a field are
-/// left out: the page of the resource holding the field draws that reference, as its own
-/// section of related things, so drawing it here again would show it twice. The cards stand in
-/// columns, as cards do (`grid`'s own minimum width): a card's width is its column's, so a row
-/// view inside one is never squeezed below the room its text needs.
+/// What `linked(of)` returns, under one heading: each in its type's own row, so its state shows
+/// there (a done item shows done) and pressing it opens it; a type with no row of its own is a
+/// row saying its title under the glyph of its app. Links by a field are left out: the page of
+/// the resource holding the field draws that reference, as its own section of related things, so
+/// drawing it here again would show it twice.
 view linked<R>(of: R) {
     let links = linked(of).filter(l -> l.how != .field)
     if not links.is_empty() {
-        grid(gap: .related) {
+        section(phrase("tilolang-linked")) {
             for l in links {
-                ui.Card(item: l.of) {
-                    stack(gap: .tight) {
-                        if meta(l.of).row {
-                            show(l.of, row: true)
-                        } else {
-                            text(meta(l.of).title)
-                        }
-                        text(meta(l.of).type_name, role: .caption, secondary: true)
-                    }
+                let kind = meta(l.of)
+                if kind.row {
+                    show(l.of, row: true)
+                } else {
+                    let glyph: Option<Text> = if let i = kind.icon {
+                        .some(i)
+                    } else { .some("link") }
+                    ui.ListRow(kind.title, item: l.of, icon: glyph)
                 }
             }
         }

@@ -23,6 +23,10 @@ pub struct ListRowProps {
     /// What the item is: its title. A row that names none shows its item's.
     #[component(positional)]
     pub title: String,
+    /// A quiet word before the title, on the same line and in the weaker ink: where an item came
+    /// from, what it answers. The title shares its line, so a row that says one takes the room
+    /// left after it.
+    pub prefix: Option<String>,
     /// The resource the row shows, which activating the row opens.
     pub item: Option<ResourceId>,
     /// The line under the title: the start of the item's content, the last message.
@@ -79,6 +83,7 @@ impl ListRowProps {
         Some(Self {
             key: self.key.clone(),
             title: self.title.clone(),
+            prefix: self.prefix.clone(),
             item: self.item.clone(),
             secondary: self.secondary.clone(),
             meta: self.meta.clone(),
@@ -171,6 +176,7 @@ impl ListRow {
         let ListRowProps {
             key: _,
             title,
+            prefix,
             item: _,
             secondary,
             meta,
@@ -192,6 +198,7 @@ impl ListRow {
         let shown = |text: Option<String>| text.filter(|text| !text.is_empty());
         let badge = shown(badge);
         self.title = title;
+        self.prefix = shown(prefix);
         self.secondary = shown(secondary);
         self.meta = shown(meta);
         self.meta_spans = match shown(self.meta.clone()) {

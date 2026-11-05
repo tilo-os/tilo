@@ -75,7 +75,8 @@ tilolang-thread-replies = { $count ->
    *[other] { $count } replies
 }
 tilolang-make = Make
-tilolang-origin = From { $title }
+tilolang-from = From
+tilolang-linked = Made from this
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
