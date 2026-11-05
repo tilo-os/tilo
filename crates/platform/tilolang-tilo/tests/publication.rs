@@ -335,6 +335,7 @@ fn the_planner_takes_the_arguments_as_published() {
             resource: Some(&root.id_string()),
             args: args.as_object().unwrap(),
             caller: None,
+            from: None,
         })
     };
     let resized = plan(&id("resize"), serde_json::json!({"size": "large"})).unwrap();

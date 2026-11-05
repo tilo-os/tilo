@@ -88,3 +88,12 @@ view note_row(n: Note) {
 view item_row(i: Item) {
     row(i.title)
 }
+
+/// What links to a note: how it is linked, and the linked resource's title.
+view links(n: Note) {
+    stack {
+        for l in linked(n) {
+            text("{l.how} {meta(l.of).title}")
+        }
+    }
+}

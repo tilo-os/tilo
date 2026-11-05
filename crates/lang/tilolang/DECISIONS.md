@@ -225,6 +225,26 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   because someone checked its last step elsewhere is redrawn there, though the change named
   only the step.
 
+## What links to a resource
+
+- **`linked(r)` is three answers, in one order.** A resource links to another when an action
+  made it from there (`created(r)?.from` of it names that one), when a reference field of it
+  names it (the register's value, through options, lists, tuples and enums), or when its rich
+  text mentions it (`RichText::references`). Each is a `host.Link`: `of` the resource and `how`
+  `created_from`, `field` or `mention`, in that order, then by what is linked. It is a system
+  query, not a declaration: no type declares it and no app takes part.
+- **The index keeps both ways.** Each resource's outgoing set is a pseudo-field (`$links`) of
+  the pairs, kept with the fields it is derived from (`store::LINKS`), and each target holds
+  the reverse list of what links to it; `Store::linked` reads the target's list, so its cost is
+  what links to `r`, never the size of the workspace (a test at 1k and at 10k items reads the
+  same). The runtime's in-memory store has no index and answers by walking the log; that path is
+  for tests, and documented as such.
+- **A change tells its readers.** A resource's outgoing set is derived where its fields are: a
+  rich text written, a field set or cleared, a resource removed, and a resource made (the
+  `created_from` pair, from the change's source). The entries move with it, and the keys are
+  named as the changes that made them (`Derive::links`, `derived_keys`), so a view of
+  `linked(r)` runs again when one more resource is made from or names `r`.
+
 ## Packages of several files
 
 - **A package is a directory.** Every `.tl` file directly in it is part of the one module
@@ -467,6 +487,12 @@ search.md, "What a type declares" and "Types, references and paths".
   that wrote the resource itself (a field, or its insertion), not one of its items. The runtime
   records each change's resources and time with it (`ChangeNote::touched`, `::at`; on Tilo,
   `DynAction::changed` and `Authorship::at`, read back from the record's changes).
+- **What a resource was made from is a change's fact.** An invocation carries the resource it
+  is made from when it has one (`Runtime::invoke_action_from`, `Journal.from`; on Tilo a plan
+  names it, `PlanRequest.from`, and the change records it as `Authorship.from`), and the first
+  version of a resource says it: `created(r)?.from`, an `Option<host.Resource>`. It is not a
+  field anyone declares or writes — every type has it, and an action writes none. A store
+  without a record of changes keeps it nowhere and answers nothing.
 - **A scenario's `as` block is a change of its own.** `as who at time { ... }` commits what came
   before, then the block, as `who` at `time`; history names the scenario as the action, since
   seed data is the scenario's doing. Rolling back on a failure undoes the last block only.

@@ -673,10 +673,16 @@ impl HostInner {
             self.admit_agent(caller);
         }
         let first = self.store.next_ticket();
-        let outcome = self
-            .runtime
-            .invoke_action(&invoker, (request.action_id, args.clone()))
-            .map_err(|error| error.to_string())?;
+        let outcome = match request.from {
+            Some(from) => {
+                self.runtime
+                    .invoke_action_from(&invoker, (request.action_id, args.clone()), from)
+            }
+            None => self
+                .runtime
+                .invoke_action(&invoker, (request.action_id, args.clone())),
+        }
+        .map_err(|error| error.to_string())?;
         self.returned_by(request.action_id, &outcome);
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
@@ -708,7 +714,7 @@ impl HostInner {
                 chain: Vec::new(),
                 module: package.id.0.clone(),
                 at: None,
-                from: None,
+                from: request.from.cloned(),
             },
             edits: Vec::new(),
         };

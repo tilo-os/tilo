@@ -10,6 +10,7 @@
 use crate::abi::Imp;
 use crate::ids::{IdsLock, SeededEntropy, declared_names};
 use crate::ir::{Ek, Expr, Func, Module, Stmt};
+use crate::types::Ty;
 
 /// The package `body` (under a fixed header) lowered to IR, and its ids.
 fn lower(body: &str) -> (Module, IdsLock) {
@@ -1003,6 +1004,41 @@ fn workspace_members_and_members_of_a_resource_are_principals_with_kind_and_role
         "type W {\n    members: Int\n}\nfn f(workspace: W) -> Int {\n    workspace.members\n}",
     );
     assert!(local.is_empty(), "{local:#?}");
+}
+
+#[test]
+fn linked_and_made_from_are_read_from_the_log() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text\n}\nfn links(n: Note) -> List<host.Link> {\n    linked(n)\n}\nfn made_from(n: Note) -> Option<host.Resource> {\n    created(n)?.from\n}",
+    );
+    let links = func(&m, "links");
+    assert!(host_imports(links).contains(&Imp::Links));
+    let mut link_ty = None;
+    visit(links, &mut |e| {
+        if matches!(&e.kind, Ek::Host(Imp::Links, _)) {
+            link_ty = Some(e.ty.clone());
+        }
+    });
+    assert_eq!(
+        link_ty,
+        Some(Ty::List(Box::new(super::platform::host_ty("Link")))),
+        "`linked(r)` is a list of what links and how"
+    );
+    // What it was made from is a fact of the version that made it.
+    let made = func(&m, "made_from");
+    assert!(host_imports(made).contains(&Imp::VersionEnd));
+    let mut from = false;
+    visit(made, &mut |e| {
+        if let Ek::Host(Imp::TupleGetH, _) = &e.kind
+            && e.ty == Ty::Option(Box::new(Ty::Record(super::resource_key())))
+        {
+            from = true;
+        }
+    });
+    assert!(from, "`created(r)?.from` is an optional resource");
+    // A resource is what it takes.
+    let found = diagnostics("fn f() -> Int {\n    linked(1).len()\n}");
+    assert!(found.iter().any(|d| d.code == "E020"), "{found:#?}");
 }
 
 #[test]

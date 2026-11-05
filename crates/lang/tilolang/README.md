@@ -230,11 +230,20 @@ oldest first. `v.is(edit)` asks whether the action `edit` made it, by the action
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
 `actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
 `host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
-keeps its versions) and which `.fields` it changed. `changes(of: run)` is every version a run
+keeps its versions) and which `.fields` it changed. A resource can be made from another one:
+an invocation carries the resource it is made from (the host sets it, an agent's door names
+it), the change records it, and the resource it created says so,
+`created(r)?.from` — an `Option<host.Resource>`. `changes(of: run)` is every version a run
 made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
 person looking has not seen yet. The UI host marks those where views show them, with no code
 of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 (task-legibility.md).
+
+**What links to a resource.** `linked(r)` is every resource that links to `r`, a
+`List<host.Link>`: `.of` is the resource and `.how` how it links, `created_from` for one made
+from `r`, `mention` for one whose rich text names it, and `field` for one whose reference field
+points at it. It is read from the index, at the cost of what links to `r` and not of the
+workspace's size, and a view that reads it runs again when what links to `r` changes.
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`

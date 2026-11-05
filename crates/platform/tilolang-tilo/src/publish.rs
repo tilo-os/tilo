@@ -19,6 +19,7 @@ use tilo_actions::{
 use crate::action::DynAction;
 use crate::background::{Pending, Poll, Waker};
 use tilolang_runtime::meta::{ActionMeta, Meta};
+use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -76,6 +77,10 @@ pub struct PlanRequest<'a> {
     pub args: &'a serde_json::Map<String, Json>,
     /// Who invokes, when it is not the person at the window.
     pub caller: Option<&'a Caller>,
+    /// The resource the invocation is made from, when it is made from one: what the resources
+    /// it creates were made from (`created(r)?.from`, `linked(r)`). A "make from this" menu,
+    /// send-to, or an agent working from what it read sets it.
+    pub from: Option<&'a ResourceRef>,
 }
 
 /// Runs a tilolang action as a planner and records what it wrote.
@@ -166,6 +171,9 @@ pub fn action_type(
             resource: subject.get::<String>().map(String::as_str),
             args: &json,
             caller: caller.as_ref(),
+            // The published action is invoked on its subject; what it is made from is the
+            // caller's to name, and only a caller that plans an action itself can.
+            from: None,
         };
         planner
             .plan(&request)
