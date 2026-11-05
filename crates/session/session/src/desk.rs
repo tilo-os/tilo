@@ -165,9 +165,9 @@ pub(crate) fn desk(
                 Box::new(surface),
                 handle.clone(),
                 CollaborationLaunchpad::new(),
+                Rc::clone(&asks),
                 beneath,
             )
-            .with_asks(Rc::clone(&asks))
             .with_wallpaper(move |workspace| pictures.picture(workspace))
             .with_reveals(Rc::clone(&band_reveals)),
         )

@@ -32,15 +32,20 @@ pub fn desktop_navigation_snapshot(id: u64) -> Result<Option<String>, JsValue> {
 /// Offer what only the page can do for the person (`[{id, title,
 /// subtitle?}]` JSON; in place of earlier ones): desktop search lists them
 /// beside the desktop's commands, and choosing one reaches the page as a
-/// host request `{action: id}`.
+/// host request `{action: id}`. The empty desk's welcome verbs are the
+/// desktop's own and are added here, so a page and a session offer the same
+/// rows.
 ///
 /// # Errors
 ///
 /// Rejects a closed or single-application mount or malformed JSON.
 #[wasm_bindgen]
 pub fn desktop_set_host_actions(id: u64, actions: &str) -> Result<(), JsValue> {
-    let actions: Vec<tilo_desktop_surface::HostAction> =
+    let mut actions: Vec<tilo_desktop_surface::HostAction> =
         serde_json::from_str(actions).map_err(error)?;
+    actions.extend(tilo_desktop::launchpad::LaunchpadAction::host_actions(
+        tilo_desktop::launchpad::WorkspaceScope::default(),
+    ));
     with_mount(id, |m| {
         let desktop = m
             .desktop

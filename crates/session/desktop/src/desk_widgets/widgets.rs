@@ -2582,6 +2582,7 @@ mod tests {
             Box::new(StubSurface),
             handle,
             crate::launchpad::CollaborationLaunchpad::new(),
+            Rc::new(RefCell::new(Vec::new())),
             vec![Box::new(widgets)],
         );
         let mut taffy: TaffyTree<()> = TaffyTree::new();

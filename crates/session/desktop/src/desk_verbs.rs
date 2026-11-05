@@ -189,10 +189,11 @@ pub fn desk_resource(
 /// The launchpad's resource: each card a resource of its own that offers
 /// the desk's launchpad verb, bound to the card it stands for.
 ///
-/// The cards are the launchpad's own controls: they submit their verb, and
-/// what a card starts is a thing search already lists by its own name. So
-/// they are listed for agents and scripts, never as palette rows — "Notes"
-/// in search opens Notes, and never asks which launchpad card to choose.
+/// A card is one declaration ([`crate::launchpad::LaunchpadAction`]): the
+/// host publishes it as a host action, which is how the palette and the
+/// catalogue of actions name it, and this lists the same verb to agents and
+/// scripts that invoke an action by the resource it is published on. Both
+/// reach the verb through the host's one door.
 #[must_use]
 pub fn launchpad_resource() -> ResourceSpec {
     let cards = crate::launchpad::LaunchpadAction::ALL

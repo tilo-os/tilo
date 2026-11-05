@@ -158,11 +158,11 @@ fn every_row_offers_a_verb_of_the_desktop() {
 }
 
 #[test]
-fn the_launchpad_cards_are_its_controls_and_never_palette_rows() {
-    // A card submits the launchpad verb for what the empty desk shows. What
-    // a card starts, search already lists by its own name, so a palette
-    // offering the cards puts "Notes" there twice, once as a way to pick a
-    // card.
+fn the_launchpad_cards_are_its_controls_for_scripts() {
+    // A card submits the launchpad verb for what the empty desk shows, and a
+    // script or an agent invokes the same verb by the row this resource
+    // publishes. People reach the verbs through their host actions, which is
+    // what the palette lists, so this resource is never the palette's door.
     let launchpad = launchpad_resource();
     assert!(
         !launchpad.children.is_empty(),

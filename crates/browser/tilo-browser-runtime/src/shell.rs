@@ -575,6 +575,7 @@ impl BrowserShell {
             Box::new(surface),
             handle.clone(),
             launchpad,
+            Rc::clone(&asks),
             vec![Box::new(hints.announcer())],
         );
         // The desktop's shortcut table keeps the native defaults: the page
@@ -1075,10 +1076,16 @@ impl BrowserShell {
                     let _ = self.page_intent(intent);
                 }
                 DesktopAsk::HostAction(id) => {
-                    self.requests.borrow_mut().push(HostRequest::Action(id));
+                    // The empty desk's welcome verbs are the desktop's own,
+                    // carried out here; every other host action goes to the
+                    // page that published it.
+                    if let Some(card) = LaunchpadAction::from_host_id(&id) {
+                        self.launchpad(card);
+                    } else {
+                        self.requests.borrow_mut().push(HostRequest::Action(id));
+                    }
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
-                DesktopAsk::Launchpad(action) => self.apply_launchpad(action),
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }
@@ -1489,7 +1496,10 @@ impl BrowserShell {
         changed
     }
 
-    fn apply_launchpad(&self, action: LaunchpadAction) {
+    /// A verb of the empty desk's launchpad, as its card, its host action
+    /// and its resource action all ask for it: the app action the verb
+    /// declares, what only the page can do, and else the app itself.
+    fn launchpad(&self, action: LaunchpadAction) {
         match action {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),

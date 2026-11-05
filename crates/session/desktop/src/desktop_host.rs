@@ -45,7 +45,7 @@ use crate::desk_widgets::music::MusicAction;
 use crate::display_identify::DisplayIdentify;
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::fullscreen_hint::FullscreenHint;
-use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
+use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadPress};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
 use crate::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
@@ -135,8 +135,6 @@ pub enum DesktopAsk {
     LeftWorkspace(String),
     /// The person asked to report a problem.
     ReportProblem,
-    /// The person chose a card of the empty desk's launchpad.
-    Launchpad(LaunchpadAction),
     /// A desktop shortcut the layers have no part in (search, quick
     /// settings, locking, the magnifier, …): the host's to carry out.
     Shortcut(ShortcutAction),
@@ -165,10 +163,15 @@ pub fn desk_is_empty(tree: &DesktopTree) -> bool {
     })
 }
 
-/// The launchpad, shown while the desk shown has no windows.
+/// The launchpad, shown while the desk shown has no windows. What a person
+/// chooses on it leaves as the host action its card declares
+/// ([`LaunchpadAction::host_id`]), the same door every other host action
+/// comes through.
 struct EmptyWorkspace {
     launchpad: CollaborationLaunchpad,
     shown: Rc<Cell<bool>>,
+    handle: DesktopHandle,
+    asks: Rc<RefCell<Vec<DesktopAsk>>>,
 }
 
 impl Widget for EmptyWorkspace {
@@ -238,6 +241,19 @@ impl Widget for EmptyWorkspace {
 
     fn is_layout_dirty(&self) -> bool {
         false
+    }
+
+    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ui::automerge::ObjId) {
+        match self.launchpad.take_press() {
+            Some(LaunchpadPress::Card(card)) => self
+                .asks
+                .borrow_mut()
+                .push(DesktopAsk::HostAction(card.host_id())),
+            Some(LaunchpadPress::OpenApp) => {
+                self.handle.open_search(Scope::WindowGroup(None), None);
+            }
+            None => {}
+        }
     }
 
     fn name(&self) -> &'static str {
@@ -326,12 +342,13 @@ impl DeskLayer {
 
     /// The desk over `surface` (whose host side is `handle`), with
     /// `launchpad` on a desk with no windows and `beneath` (a host's own
-    /// layers) under both.
+    /// layers) under both, putting what it asks into `asks`.
     #[must_use]
     pub fn new(
         surface: Box<dyn Widget>,
         handle: DesktopHandle,
         launchpad: CollaborationLaunchpad,
+        asks: Rc<RefCell<Vec<DesktopAsk>>>,
         beneath: Vec<Box<dyn Widget>>,
     ) -> Self {
         let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
@@ -359,6 +376,8 @@ impl DeskLayer {
             .push(Box::new(EmptyWorkspace {
                 launchpad,
                 shown: Rc::clone(&empty),
+                handle: handle.clone(),
+                asks: Rc::clone(&asks),
             }))
             .push(surface);
         Self {
@@ -368,7 +387,7 @@ impl DeskLayer {
             handle,
             empty,
             workspace: Cell::new(workspace),
-            asks: Rc::default(),
+            asks,
             rect: Rect::ZERO,
         }
     }
@@ -392,14 +411,6 @@ impl DeskLayer {
     /// What the person asked of the host since the last call.
     pub fn take_asks(&mut self) -> Vec<DesktopAsk> {
         std::mem::take(&mut *self.asks.borrow_mut())
-    }
-
-    /// Put the desk's asks in `asks`, shared with a host that reads them
-    /// outside the widget tree the desk is drawn in.
-    #[must_use]
-    pub fn with_asks(mut self, asks: Rc<RefCell<Vec<DesktopAsk>>>) -> Self {
-        self.asks = asks;
-        self
     }
 
     /// Take the pictures the desk shows, looked up by the workspace in
@@ -448,7 +459,9 @@ impl DeskLayer {
                     .into_iter()
                     .find(|action| action.slug() == card)
                 {
-                    self.asks.borrow_mut().push(DesktopAsk::Launchpad(card));
+                    self.asks
+                        .borrow_mut()
+                        .push(DesktopAsk::HostAction(card.host_id()));
                 } else {
                     return false;
                 }
@@ -570,18 +583,6 @@ impl Widget for DeskLayer {
         let mut changed = self.empty.replace(empty) != empty;
         changed |= self.area.update(state, path);
         changed
-    }
-
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ui::automerge::ObjId) {
-        for child in self.children_mut() {
-            child.settle(edits, path);
-        }
-        if crate::launchpad::take_open_app(edits, path) {
-            self.handle.open_search(Scope::WindowGroup(None), None);
-        }
-        if let Some(action) = LaunchpadAction::take(edits, path) {
-            self.asks.borrow_mut().push(DesktopAsk::Launchpad(action));
-        }
     }
 
     fn build_layout(

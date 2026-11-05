@@ -11,6 +11,7 @@ use tilo_desktop::desktop_host::{
     DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT,
     SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
+use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::Slot;
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::ShortcutAction;
@@ -71,7 +72,6 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {
                     self.tray_request(&key, request);
                 }
-                DesktopAsk::Launchpad(action) => self.launchpad(action),
                 DesktopAsk::Shortcut(action) => self.shortcut(action),
                 DesktopAsk::HostAction(action) => self.host_action(&action),
                 DesktopAsk::Music(action) => self.music(action),
@@ -127,14 +127,19 @@ impl Shared {
     /// conversation comes up with its composer ready, as the desk's Message
     /// did in the browser.
     fn message_person(&self, key: &str) {
-        let action = tilo_desktop::launchpad::LaunchpadAppAction::message_person(key);
-        // A conversation belongs to a workspace: the one in front, where the
-        // person is talking to someone they see there.
+        self.invoke_app_action(LaunchpadAppAction::message_person(key));
+    }
+
+    /// Do what an app action names, in the workspace in front (where the
+    /// person sees what the action works on): the app starts when it is
+    /// closed and its action arrives ready to act. A launchpad card and a
+    /// person's card ask for their app actions this way.
+    pub(crate) fn invoke_app_action(&self, action: LaunchpadAppAction) {
         let Some(workspace) = self.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         }) else {
-            tracing::warn!("a Message from a card reached no workspace");
+            tracing::warn!(app = %action.display_name, "an app action reached no workspace");
             return;
         };
         let target = tilo_desktop_search::Target::Invoke(Box::new(
@@ -214,6 +219,13 @@ impl Shared {
     /// about workspaces, what answering a question about the person
     /// themselves does ([`identity::answered`]).
     fn host_action(&self, id: &str) {
+        // The empty desk's own verbs: each card publishes a host action, and
+        // choosing it anywhere — the card, the palette, an agent — does what
+        // the card does.
+        if let Some(card) = LaunchpadAction::from_host_id(id) {
+            self.launchpad(card);
+            return;
+        }
         match id {
             NEW_WORKSPACE => self.new_workspace(),
             WORKSPACE_SETTINGS => self.open_workspace_settings(),
@@ -336,7 +348,7 @@ impl Shared {
     }
 
     /// Show workspace settings for the workspace in front.
-    fn open_workspace_settings(&self) {
+    pub(crate) fn open_workspace_settings(&self) {
         workspace_settings::open(
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),

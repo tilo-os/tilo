@@ -677,10 +677,16 @@ pub(crate) fn host(
 }
 
 impl crate::Shared {
-    /// A card of the empty desk's launchpad: its app, else the desktop's
-    /// search, which finds what to open.
+    /// A verb of the empty desk's launchpad, as its card, its host action
+    /// and its resource action all ask for it: the app action the verb
+    /// declares, what only the session can do, and else the app itself.
     pub(crate) fn launchpad(&self, action: LaunchpadAction) {
+        if let Some(app_action) = action.app_action() {
+            return self.invoke_app_action(app_action);
+        }
         match action {
+            // Bringing people in happens in this workspace's settings.
+            LaunchpadAction::Invite => self.open_workspace_settings(),
             LaunchpadAction::Activity => self
                 .intents
                 .borrow_mut()

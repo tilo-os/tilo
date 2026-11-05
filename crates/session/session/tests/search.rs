@@ -26,7 +26,9 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{DoorError, ResourceSpec};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
-use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
+use tilo_desktop::desk_verbs::{
+    CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, launchpad_card_id,
+};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_desktop_search::providers::PublishedActions;
@@ -448,6 +450,133 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
             .map(|row| row.label)
             .collect::<Vec<_>>()
     );
+}
+
+/// The empty desk's welcome verbs are declared actions, so search offers
+/// the ones that bring people in or catch them up before anything is typed,
+/// and typing finds all six by the name on their cards. The cards that open
+/// an app are looked for by the app's own name: search already lists that
+/// app, and two rows to it say less than one.
+#[test]
+fn the_empty_search_offers_the_desks_welcome_verbs_and_typing_finds_them_all() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.step(Duration::from_millis(1)).expect("step");
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
+    await_search(&mut session, None);
+    let titles: Vec<String> = rows(&session)
+        .into_iter()
+        .filter(|row| row.kind == SEARCH_ROW_KIND)
+        .map(|row| row.label)
+        .collect();
+    for offered in ["Start a call", "Invite people", "Catch up"] {
+        assert!(
+            titles.iter().any(|title| title == offered),
+            "the empty search offers {offered}: {titles:?}"
+        );
+    }
+    for kept_back in ["Discuss", "Notes", "Tasks"] {
+        assert!(
+            !titles.contains(&kept_back.to_owned()),
+            "the empty search opens no app by a card's name ({kept_back}): {titles:?}"
+        );
+    }
+    // Typed, every one of them is found.
+    for (typed, found) in [
+        ("discuss", "Discuss"),
+        ("notes", "Notes"),
+        ("tasks", "Tasks"),
+        ("start a call", "Start a call"),
+        ("invite people", "Invite people"),
+        ("catch up", "Catch up"),
+    ] {
+        search_for(&mut session, typed);
+        assert!(
+            titled(&session, found).is_some(),
+            "typing {typed:?} finds {found}: {:?}",
+            rows(&session)
+                .into_iter()
+                .map(|row| row.label)
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A welcome card, the verb an agent reads in the catalogue and the row
+/// search lists are one declaration: what the card does, the published verb
+/// does. Starting a call opens Chat on the workspace and asks it to call;
+/// inviting opens the workspace's settings, where people are added.
+#[test]
+fn a_welcome_card_does_what_its_published_action_does() {
+    use tilo_sheets::Seat as _;
+    use ui::window_targets::TargetAction;
+
+    let _settled = ui::motion::testing::settled();
+    let host = Rc::new(Host::default());
+    let mut session = session(Rc::clone(&host));
+    session.step(Duration::from_millis(1)).expect("step");
+
+    // The verb published for agents: Meet's own card, by the resource action
+    // the catalogue lists.
+    invoke(
+        &mut session,
+        &launchpad_card_id("meet"),
+        "launchpad",
+        serde_json::json!({}),
+    );
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    let published = host.invoked.borrow().clone();
+    let [(target, _)] = published.as_slice() else {
+        panic!("one invocation, not {published:?}");
+    };
+    assert!(
+        target.provider.ends_with(":so.tilo.chat"),
+        "the verb reaches Chat: {target:?}"
+    );
+    assert_eq!(
+        (
+            target.address.resource.as_str(),
+            target.address.action.as_str()
+        ),
+        ("chat.workspace", "start-call"),
+        "Chat starts a call in the workspace: {target:?}"
+    );
+
+    // The card on the desk, pressed, asks Chat for the same thing. The
+    // empty desk and its cards are the desktop surface's own: the session's
+    // door names them as the controls an assistive technology presses.
+    let card = session
+        .controls()
+        .into_iter()
+        .find_map(|(name, rect)| (name == "Start a call").then_some(rect))
+        .expect("the desk shows the card its verb is named on");
+    assert!(
+        card.2 > 0.0 && card.3 > 0.0,
+        "the card stands somewhere the person can reach: {card:?}"
+    );
+    host.invoked.borrow_mut().clear();
+    session
+        .press_action("Start a call", TargetAction::Activate)
+        .expect("the card is pressed");
+    until(&mut session, |_| !host.invoked.borrow().is_empty());
+    assert_eq!(
+        host.invoked.borrow().clone(),
+        published,
+        "the card runs the verb it declares"
+    );
+
+    // Inviting brings someone into this workspace: its settings are open.
+    invoke(
+        &mut session,
+        &launchpad_card_id("invite"),
+        "launchpad",
+        serde_json::json!({}),
+    );
+    until(&mut session, |session| {
+        session
+            .workspace_settings()
+            .is_some_and(|settings| settings.presentation().is_open())
+    });
 }
 
 #[test]

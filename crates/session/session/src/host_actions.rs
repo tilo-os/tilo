@@ -1,16 +1,19 @@
-//! What only the session can do, published to the surfaces that offer it:
-//! about workspaces (making one, joining one, leaving this one, and its
-//! settings) and about the session itself (locking the screen, logging out,
-//! restarting the computer, shutting it down). The workspace menu lists the
-//! workspace rows, the Tilo menu the session's, and search both.
+//! The host actions a session publishes to the surfaces that offer them:
+//! what only the session can do about workspaces (making one, joining one,
+//! leaving this one, and its settings) and about the session itself (locking
+//! the screen, logging out, restarting the computer, shutting it down), and
+//! the empty desk's welcome verbs, which the launchpad declares and its cards
+//! show. The workspace menu lists the workspace rows, the Tilo menu the
+//! session's, and search all of them.
 //!
-//! Each row is named once, here: its name, the sentence describing it, its
-//! own picture, and whether search may offer it before anything is typed.
+//! Each row is named once: its name, the sentence describing it, its own
+//! picture, and whether search may offer it before anything is typed.
 
 use tilo_desktop::desktop_host::{
     JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART,
     SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
+use tilo_desktop::launchpad::{LaunchpadAction, WorkspaceScope};
 use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
 use tilo_sheets::power::{Offers, PowerEffect};
 use ui::icons::Icon;
@@ -33,10 +36,11 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
     ),
 ];
 
-/// Offer what only the session can do: the workspace rows always, and the
-/// session's own rows where this session can carry them out — a session in
-/// a window of another desktop neither restarts nor shuts its host down,
-/// and one that cannot be unlocked again is not offered locking.
+/// Offer the session's host actions: the workspace rows always, the empty
+/// desk's welcome verbs, and the session's own rows where this session can
+/// carry them out — a session in a window of another desktop neither
+/// restarts nor shuts its host down, and one that cannot be unlocked again
+/// is not offered locking.
 ///
 /// `can_join` is whether a workspace can be joined here at all, which is
 /// whether this session holds the directory a workspace is joined from.
@@ -96,6 +100,10 @@ pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool) {
         Icon::Settings,
         HostActionSource::Workspace,
     ));
+    // The empty desk's welcome verbs, declared by the launchpad that shows
+    // them: the desk's cards, search and the catalogue agents read all read
+    // these rows.
+    actions.extend(LaunchpadAction::host_actions(WorkspaceScope::default()));
     for (effect, id, title) in SESSION_ROWS {
         if offers.offers(effect) {
             actions.push(HostAction {
