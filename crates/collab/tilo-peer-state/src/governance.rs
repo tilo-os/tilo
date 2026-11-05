@@ -132,7 +132,9 @@ pub fn admit_invited_member(
         .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
         .transpose()
         .map_err(|error| error.to_string())?;
-    if prior.as_ref().is_some_and(|old| old.device_cert != *cert) {
+    if prior.as_ref().is_some_and(|old| {
+        old.device_cert != *cert && !crate::state::supersedes(&old.device_cert, cert)
+    }) {
         return Err("governed certificate conflict".into());
     }
     let mut candidate = document.clone();

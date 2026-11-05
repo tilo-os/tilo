@@ -617,6 +617,7 @@ impl StatePeer {
         }
         if let Some(old) = self.core.certificates.get(&cert.device_public_key)
             && old.as_ref() != &cert
+            && !supersedes(old.as_ref(), &cert)
         {
             return Err("certificate conflict".into());
         }
@@ -3841,6 +3842,20 @@ impl PeerPublicationMut<'_> {
         Ok(messages)
     }
 }
+/// Whether `held` and `incoming` are one device's certificate, the later one
+/// replacing the earlier: the same device key under the same person, granting
+/// no more, and issued no earlier. A workspace keeps the certificate it holds
+/// for a device, and a device certified again — its person's root re-signing
+/// it, at the same instant or later — is the same member, not a conflict.
+pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
+    held.device_public_key == incoming.device_public_key
+        && held.user_public_key == incoming.user_public_key
+        && incoming
+            .capabilities
+            .grants_no_more_than(&held.capabilities)
+        && incoming.issued_at_ns >= held.issued_at_ns
+}
+
 pub(crate) use governed_rows::{
     GovernedIdentity, RedemptionReceipt, WorkspaceDelegation, WorkspaceDelegationPermissions,
 };

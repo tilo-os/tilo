@@ -473,6 +473,7 @@ impl PeerGovernanceMut<'_> {
         }
         if let Some(old) = self.peer.core.certificates.get(&cert.device_public_key)
             && old.as_ref() != cert
+            && !super::supersedes(old.as_ref(), cert)
         {
             return Err("certificate conflict".into());
         }
