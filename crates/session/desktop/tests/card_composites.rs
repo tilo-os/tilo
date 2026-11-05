@@ -126,8 +126,8 @@ fn chrome_host(
         Placement {
             origin: (0, 0),
             size: (
-                (f64::from(size.0) / scale).round() as u32,
-                (f64::from(size.1) / scale).round() as u32,
+                ui::num::u32_of_f64((f64::from(size.0) / scale).round()),
+                ui::num::u32_of_f64((f64::from(size.1) / scale).round()),
             ),
             scale,
         },
@@ -153,12 +153,20 @@ fn send_chord(host: &mut WidgetHost) {
         )));
 }
 
+/// How far apart, in card pixels, the card's samples stand.
+const SAMPLE_STEP: f64 = 8.0;
+
 /// The card the palette stands in, drawn over the output at `scale`.
 fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
     compositor
         .add_output(
-            &OutputConfig::new("HEADLESS-1", size.0 as i32, size.1 as i32).with_scale(scale),
+            &OutputConfig::new(
+                "HEADLESS-1",
+                i32::try_from(size.0).unwrap_or(i32::MAX),
+                i32::try_from(size.1).unwrap_or(i32::MAX),
+            )
+            .with_scale(scale),
         )
         .unwrap();
     let (mut host, handle, mut desk) = chrome_host(&mut compositor, scale, size);
@@ -172,7 +180,7 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     let card = {
         let search = handle.search_palette();
         let search = search.borrow();
-        search.palette().expect("the palette is up").get_rect()
+        search.palette().unwrap().get_rect()
     };
     compositor.add_host(Box::new(host));
     let mut shot = None;
@@ -184,28 +192,33 @@ fn assert_palette_shows(scale: f64, size: (u32, u32)) {
     // The card's own ground is opaque, so somewhere inside it the output
     // differs from the scrim at the edge of the display.
     let corner = shot.pixel(4, 4).unwrap();
-    let mut differing = 0;
-    let mut samples = 0;
+    let mut differing = 0u32;
+    let mut samples = 0u32;
     let inner = card.inflate(-24.0, -24.0);
-    let mut y = inner.y0;
-    while y < inner.y1 {
-        let mut x = inner.x0;
-        while x < inner.x1 {
-            let pixel = shot.pixel((x * scale) as u32, (y * scale) as u32).unwrap();
+    let columns = ui::num::usize_of_f64((inner.width() / SAMPLE_STEP).ceil());
+    let rows = ui::num::usize_of_f64((inner.height() / SAMPLE_STEP).ceil());
+    for row in 0..rows {
+        let y = inner.y0 + ui::num::f64_of_usize(row) * SAMPLE_STEP;
+        for column in 0..columns {
+            let x = inner.x0 + ui::num::f64_of_usize(column) * SAMPLE_STEP;
+            let pixel = shot
+                .pixel(
+                    ui::num::u32_of_f64(x * scale),
+                    ui::num::u32_of_f64(y * scale),
+                )
+                .unwrap();
             if pixel != corner {
-                differing += 1;
+                differing = differing.saturating_add(1);
             }
-            samples += 1;
-            x += 8.0;
+            samples = samples.saturating_add(1);
         }
-        y += 8.0;
     }
     assert!(
         samples > 100,
         "the card is {card:?}, large enough to sample"
     );
     assert!(
-        differing * 2 > samples,
+        differing.saturating_mul(2) > samples,
         "the card shows over the scrim at scale {scale}: {differing} of {samples} pixels \
          differ from {corner:?}"
     );
