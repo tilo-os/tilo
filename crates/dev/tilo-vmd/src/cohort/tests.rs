@@ -190,14 +190,9 @@ fn package_named(
     let payload = work.join("payload");
     fs::create_dir_all(payload.join("bin")).unwrap();
     let binary = payload.join("bin/fixture");
-    fs::write(
-        &binary,
-        app_elf_needing(
-            app_needs(case),
-            matches!(case, "arch" | "empty_isa_foreign"),
-        ),
-    )
-    .unwrap();
+    let foreign = matches!(case, "arch" | "empty_isa_foreign");
+    let elf = app_elf_needing(app_needs(case), foreign);
+    fs::write(&binary, elf).unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
     let dual = matches!(case, "dual_isa" | "service");
     let isa = if matches!(case, "empty_isa" | "empty_isa_foreign") {

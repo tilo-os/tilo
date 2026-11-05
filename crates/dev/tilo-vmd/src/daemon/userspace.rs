@@ -107,9 +107,11 @@ impl Daemon {
             .as_ref()
             .and_then(|manifest| manifest.get(&member.component))
             .ok_or_else(|| {
-                DaemonError::InvalidParams(
-                    "userspace cohort: required canonical component is absent".into(),
-                )
+                DaemonError::InvalidParams(format!(
+                    "userspace cohort: this daemon's component manifest does not know {}: swap vmd \
+                     from the cohort's tree first",
+                    member.component
+                ))
             })?;
         if component.info.scope != Scope::Session || component.info.reboot {
             return Err(DaemonError::InvalidParams(
