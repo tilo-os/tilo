@@ -203,16 +203,16 @@ fn slug_of(entry: &str) -> String {
 /// Hand a sign-in with Discord that came back to the host to the workspace's
 /// Discord bridge, as an event of its connector: the bridge offers the
 /// account to the person who started it. Nothing secret is in it: the
-/// state and the token arrive hashed.
+/// state and the token arrive hashed. Whether the bridge got it.
 pub(super) async fn hand_to_discord(
     discord: Option<&Arc<tilo_connector::ConnectorProcess>>,
     authorized: &super::discord_sign_in::Authorized,
-) {
+) -> bool {
     let Some(discord) = discord else {
         tracing::warn!(
             "a sign-in with Discord came back, but the workspace runs no Discord bridge"
         );
-        return;
+        return false;
     };
     let event = discord::event::Authorized {
         user_id: authorized.user_id.clone(),
@@ -226,13 +226,17 @@ pub(super) async fn hand_to_discord(
     };
     let id = discord::event::event_id::authorized(&event.link_check);
     let Ok(serde_json::Value::Object(payload)) = serde_json::to_value(&event) else {
-        return;
+        return false;
     };
-    if let Err(error) = discord
+    match discord
         .emit(discord::event::source::AUTHORIZED, &id, payload)
         .await
     {
-        tracing::error!(%error, "could not hand a sign-in with Discord to the bridge");
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, "could not hand a sign-in with Discord to the bridge");
+            false
+        }
     }
 }
 

@@ -169,15 +169,16 @@ impl Http {
             return error(StatusCode::NOT_FOUND, "not found");
         };
         match sign_in.callback(query).await {
-            Ok(authorized) => {
-                // Handed over before the browser is sent on: the page it lands
-                // on asks the workspace for the offer at once.
-                hand_to_discord(self.discord.as_ref(), &authorized).await;
+            // Handed over before the browser is sent on: the page it lands on
+            // asks the workspace for the offer at once, so a sign-in the
+            // bridge never got is not one the person is told worked.
+            Ok(authorized) if hand_to_discord(self.discord.as_ref(), &authorized).await => {
                 redirect(&discord_sign_in::back_to_tilo(
                     entry,
                     Some(&authorized.token),
                 ))
             }
+            Ok(_) => failed_page(Failed::Discord.said(), entry),
             Err(Failed::Declined) => redirect(&discord_sign_in::back_to_tilo(entry, None)),
             Err(failed) => failed_page(failed.said(), entry),
         }
