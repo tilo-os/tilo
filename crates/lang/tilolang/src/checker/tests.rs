@@ -1104,3 +1104,57 @@ fn a_time_shows_as_the_toolkits_relative_time() {
     assert!(has(&calls, "prop at:as"), "{calls:#?}");
     assert!(has(&calls, "prop secondary"), "{calls:#?}");
 }
+
+/// A view that writes a list of filters as a type (`let side: List<Filter<Task>>`) holds
+/// filters: the written type resolves in a view as it does in an action, so the places a
+/// window draws are the ones the app names.
+#[test]
+fn a_views_list_of_filters_is_a_list_of_filters() {
+    let (m, _) = lower(
+        r#"
+type Task {
+    title: Text (title)
+    done: Bool (done) = false
+    search {
+        filter "Inbox" = not done (icon: .inbox)
+        filter "Done" = done
+    }
+}
+type Tasks { items: Collection<Task> }
+root tasks: Tasks
+default view home for Tasks
+view home(t: Tasks) {
+    window place: Filter<Task> = Task.inbox
+    let side: List<Filter<Task>> = [Task.inbox, Task.done]
+    let chosen = side.find(f -> f == place)
+    text(chosen?.label ?? "x")
+}
+"#,
+    );
+    let key = crate::types::TypeKey {
+        app: "t.x".to_owned(),
+        name: "Task".to_owned(),
+    };
+    let filter = Ty::Filter(key);
+    let home = func(&m, "home");
+    assert!(
+        home.locals.contains(&Ty::List(Box::new(filter.clone()))),
+        "the written type is the list it names: {:#?}",
+        home.locals
+    );
+    assert!(
+        home.locals
+            .iter()
+            .any(|t| *t == Ty::Option(Box::new(filter.clone()))),
+        "and choosing one asks the list for it: {:#?}",
+        home.locals
+    );
+    assert!(
+        !home
+            .locals
+            .iter()
+            .any(|t| *t == Ty::List(Box::new(Ty::Error)) || *t == Ty::Option(Box::new(Ty::Error))),
+        "and neither is a list of it: {:#?}",
+        home.locals
+    );
+}

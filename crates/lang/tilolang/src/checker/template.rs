@@ -230,6 +230,22 @@ impl Checker<'_> {
                     "Set" => Ty::Set(inner),
                     "Map" => Ty::Map(inner),
                     "Collection" => Ty::Collection(inner),
+                    // `Filter<T>`: a filter of the type `T` names, as outside a template.
+                    "Filter" => match *inner {
+                        Ty::Record(key) => Ty::Filter(key),
+                        other if other.is_error() => Ty::Error,
+                        other => {
+                            let t = other.display(&self.env.app);
+                            self.err(
+                                "E013",
+                                te.span,
+                                format!(
+                                    "`Filter<T>` is the filters of a type's items; `{t}` is no resource type"
+                                ),
+                            );
+                            Ty::Error
+                        }
+                    },
                     _ => Ty::Error,
                 }
             }
