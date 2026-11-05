@@ -257,8 +257,10 @@ fn event_face<'a>(event: &'a Event, time: &'a str, theme: &Theme) -> ListRowFace
 /// A task row: its checkbox leads and completes it; its project's colour
 /// follows the title as a swatch mark.
 fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> ListRowFace<'a> {
-    let mut face =
-        ListRowFace::new(&task.title).leading(RowLeading::Checkbox { checked: task.done });
+    let mut face = ListRowFace::new(&task.title).leading(RowLeading::Checkbox {
+        checked: task.done,
+        icon: None,
+    });
     if let Some(project) = task.project.and_then(|id| source.model.project(id)) {
         face = face.swatch_mark(project.color.color(theme));
     }

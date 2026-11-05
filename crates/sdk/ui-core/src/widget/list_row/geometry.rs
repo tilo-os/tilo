@@ -98,12 +98,14 @@ impl ListRowFace<'_> {
         let own = match self.leading {
             None if self.nested => (m.icon, m.icon),
             None => (0.0, 0.0),
-            Some(
-                RowLeading::Icon(_)
-                | RowLeading::Checkbox { .. }
-                | RowLeading::Swatch(_)
-                | RowLeading::Signal(_),
-            ) => (m.icon, m.icon),
+            Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
+                (m.icon, m.icon)
+            }
+            // A box says whether it is done, and a glyph after it what kind of thing it is.
+            Some(RowLeading::Checkbox { icon, .. }) => match icon {
+                Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
+                None => (m.icon, m.icon),
+            },
             Some(
                 RowLeading::Avatar(_)
                 | RowLeading::Thumbnail(_)
@@ -641,9 +643,18 @@ impl ListRowFace<'_> {
         let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
         match self.leading {
-            Some(RowLeading::Checkbox { .. }) => {
+            Some(RowLeading::Checkbox { icon: None, .. }) => {
                 // The whole leading column, row-tall: a box is a small target.
                 Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1)
+            }
+            Some(RowLeading::Checkbox { icon: Some(_), .. }) => {
+                // Only the box takes the press: the glyph after it is what the row is.
+                Rect::new(
+                    geo.leading.x0 - m.bleed,
+                    rect.y0,
+                    geo.leading.x0 + m.icon,
+                    rect.y1,
+                )
             }
             _ => geo.leading,
         }

@@ -3149,24 +3149,28 @@ fn tree_component_source(
 ) -> (String, Vec<ScreenMessage>) {
     let accessible_name = ScreenMessage::new(name, "accessible-name", title_from_name(name));
     let mut source = format!(
-        r#"use ui::selection::KeySelection;
-use ui::widget::tree_view::{{NodeId, TreeModel, TreeView}};
+        r#"use std::hash::Hash;
+use std::rc::Rc;
+use ui::selection::KeySelection;
+use ui::widget::virtual_list::{{ListModel, VirtualList}};
+use ui::widget::{{Element, TreeMarks}};
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct {type_name}Config {{
+pub struct {type_name}Config<K: Clone + Eq + Hash> {{
     pub accessible_name: String,
-    pub expanded: Vec<NodeId>,
-    pub selection: KeySelection<NodeId>,
+    /// Rows the tree starts folded away: every other branch is open.
+    pub folded: Vec<K>,
+    pub selection: KeySelection<K>,
     pub multi_select: bool,
     pub viewport_height: f32,
     pub estimated_row_height: f32,
 }}
 
-impl Default for {type_name}Config {{
+impl<K: Clone + Eq + Hash> Default for {type_name}Config<K> {{
     fn default() -> Self {{
         Self {{
             accessible_name: "{name}-accessible-name".into(),
-            expanded: Vec::new(),
+            folded: Vec::new(),
             selection: KeySelection::new(),
             multi_select: true,
             viewport_height: 360.0,
@@ -3175,25 +3179,36 @@ impl Default for {type_name}Config {{
     }}
 }}
 
-/// Build one reusable `{name}` over any app, database, CRDT, or paged tree model.
+/// Build one reusable `{name}` over any resident, database, or paged tree: the list's own tree
+/// mode, which stands each row a step in under the row it belongs to, folds a branch away at
+/// its disclosure, and reads a paged model's rows as they arrive.
 ///
-/// A paged model's children on their way ([`TreeModel::child_state`]) keep
-/// their rows with the tree's own placeholder, and a failed one retries when
-/// activated. The concrete return type deliberately preserves `TreeView`'s
-/// row-delegate, model-notification, selection, and reorder configuration
-/// methods.
-pub fn {module_name}<M: TreeModel + 'static>(
+/// The model says what stands under what ([`ListModel::tree_at`]) and which rows take
+/// subtasks ([`ListModel::has_subtasks`]); the row delegate builds the row of one, given the
+/// depth it stands at. The concrete return type preserves `VirtualList` activation,
+/// notification, measurement, scrolling, selection, and reorder methods for app-specific
+/// configuration.
+pub fn {module_name}<M: ListModel + 'static>(
     id: &str,
     model: M,
-    config: &{type_name}Config,
-) -> TreeView<(), M> {{
-    TreeView::from_model(model)
-        .with_id(id)
-        .with_expanded(config.expanded.iter().copied())
-        .with_selection(config.selection.clone())
-        .multi_select(config.multi_select)
-        .with_viewport(config.viewport_height, config.estimated_row_height)
-        .with_accessible_name(&config.accessible_name)
+    config: &{type_name}Config<M::Key>,
+    mut row_delegate: impl FnMut(&M, usize, &M::Key, u32) -> Element + 'static,
+    encode_key: impl Fn(&M::Key) -> String + 'static,
+) -> VirtualList<M> {{
+    let marks = Rc::new(TreeMarks::<M::Key>::default());
+    marks.restore_folded(config.folded.iter().cloned());
+    let depth = Rc::clone(&marks);
+    VirtualList::with_selection_delegate(model, config.estimated_row_height, move |model, index, key, _| {{
+        row_delegate(model, index, key, depth.depth(key))
+    }})
+    .with_tree(marks)
+    .with_indent_guides()
+    .with_id(id)
+    .with_accessible_name(&config.accessible_name)
+    .with_semantic_key(encode_key)
+    .with_viewport_height(config.viewport_height)
+    .multi_select(config.multi_select)
+    .with_selection(config.selection.clone())
 }}
 "#
     );
@@ -3209,60 +3224,54 @@ mod tests {{
     use super::*;
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
-    use ui::widget::{{Button, Text, TreeNode}};
+    use ui::widget::{{ListRow, VecListModel}};
 
     #[test]
-    fn component_keeps_tree_behavior_and_delegated_controls() {{
-        let model = TreeNode::branch(
-            1,
-            "Workspace",
-            (),
-            vec![TreeNode::branch(
-                2,
-                "Projects",
-                (),
-                vec![TreeNode::leaf(3, "Desktop app", ())],
-            )],
-        );
+    fn component_keeps_tree_behavior_and_rows_its_delegate_builds() {{
+        let mut model = VecListModel::empty();
+        for (id, label, parent, branch) in [
+            (1_u64, "Workspace", None, true),
+            (2, "Projects", Some(1), true),
+            (3, "Desktop app", Some(2), false),
+        ] {{
+            let _ = model.push(id, (label, parent, branch));
+        }}
+        let model = model
+            .with_parents(|row| row.1)
+            .with_branches(|row| row.2);
         let config = {type_name}Config {{
-            expanded: vec![1, 2],
+            folded: Vec::new(),
             ..{type_name}Config::default()
         }};
-        let activated = ui::LocalState::new(None::<String>);
-        let rows_activated = activated.clone();
-        let tree = {module_name}("example-tree", model, &config)
-            .with_row_delegate(move |model, id, _depth| {{
-                let label = model.label(id).unwrap_or_default();
-                let activated = rows_activated.clone();
-                Box::new(ui::row![
-                    Text::new(label),
-                    Button::new(&format!("more-{{id}}"), "More")
-                        .on_view(move || activated.set(Some(id.to_string()))),
-                ])
-            }})
-            .reorderable();
+        let tree = {module_name}(
+            "example-tree",
+            model,
+            &config,
+            |model, index, key, depth| {{
+                let label = model.item(index).map_or_else(String::new, |row| row.0.to_owned());
+                Box::new(ListRow::new(key.to_string(), label).depth(depth))
+            }},
+            |key: &u64| format!("node:{{key}}"),
+        );
         let mut app = ui::headless::FrameHarness::new(
             ui::State::new(),
             Box::new(tree),
             (560, 360),
         );
 
-        app.perform_semantic_named("example-tree", Some("node:2"), &Action::Collapse)
+        app.perform_semantic_named("example-tree", Some("key:node:2"), &Action::Collapse)
             .expect("branch remains collapsible");
-        app.perform_semantic_named("example-tree", Some("node:2"), &Action::Expand)
+        app.perform_semantic_named("example-tree", Some("key:node:2"), &Action::Expand)
             .expect("branch remains expandable");
-        app.perform_semantic_named("example-tree", Some("node:3"), &Action::Activate)
+        app.perform_semantic_named("example-tree", Some("key:node:3"), &Action::Activate)
             .expect("stable model node remains selectable");
         app.expect(
             &SemanticExpectation::named("example-tree")
-                .semantic_target("node:3")
+                .semantic_target("key:node:3")
                 .role(Role::TreeItem)
                 .selected(true),
         )
         .expect("selected row semantics");
-        app.perform_named("more-3", &Action::Activate)
-            .expect("delegated control remains independently interactive");
-        assert_eq!(activated.get().as_deref(), Some("3"));
     }}
 }}
 "#
@@ -9510,7 +9519,7 @@ fn prompt_component_template(
 ) -> Result<ComponentTemplate> {
     writeln!(
         output,
-        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any TreeModel with professional virtualized behavior\n  4) list     Any ListModel with sparse variable-height rows\n  5) table    Any TableModel with app-defined columns and cells\n  6) text     Styled text with polygon flow or a custom layout engine"
+        "\nComponent template:\n  1) display  Typed props rendered as heading and detail\n  2) form     Typed local state bound to labeled controls\n  3) tree     Any ListModel shown as a tree with indent, fold and reorder\n  4) list     Any ListModel with sparse variable-height rows\n  5) table    Any TableModel with app-defined columns and cells\n  6) text     Styled text with polygon flow or a custom layout engine"
     )
     .context("showing component template choices")?;
     loop {

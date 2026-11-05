@@ -2518,6 +2518,11 @@
           "name": "dense",
           "doc": "The row stands dense: one quiet line at the caption's size with the small glyph, as tall as that line and its inset, for a reference under content rather than a list of items.",
           "type": "bool"
+        },
+        {
+          "name": "quiet",
+          "doc": "The row reads as subordinate to the rows around it: its title in the weaker ink, as an outline's quieter branch does.",
+          "type": "bool"
         }
       ],
       "slots": [
@@ -6988,11 +6993,11 @@
     },
     {
       "name": "TreeViewRow",
-      "doc": "What one row of a tree shows besides its label: a leading glyph, a tone, trailing text and what assistive technology says of it.",
+      "doc": "What one row of a tree shows besides its label: a leading glyph, the tone its title reads in, trailing text and what assistive technology says of it.",
       "props": [
         {
           "name": "icon",
-          "doc": "A leading glyph: the kind of thing it is.",
+          "doc": "A leading glyph: the kind of thing it is. Beside a checkbox it stands after the box, so a checked-off task still says what it is.",
           "type": {
             "option": "icon"
           }

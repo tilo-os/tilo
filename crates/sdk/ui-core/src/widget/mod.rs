@@ -3533,14 +3533,10 @@ pub mod image_viewer;
 mod image_viewer_component;
 pub use image_viewer::ImageViewer;
 pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
-pub mod tree_view;
-mod tree_view_component;
-pub use tree_view::{
-    TreeChildState, TreeClickActivation, TreeHeadingAction, TreeLoadReason, TreeLoadRequest,
-    TreeModel, TreeModelChange, TreeMove, TreeNode, TreeRowAction, TreeRowDecoration, TreeRowIcon,
-    TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
-};
-pub use tree_view_component::{
+mod tree_component;
+#[cfg(test)]
+pub(crate) use tree_component::items_tree;
+pub use tree_component::{
     DescribedTreeView, TreeTone, TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
 };
 mod row_selection;

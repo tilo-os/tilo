@@ -32,7 +32,7 @@ use crate::widget::ChangeMarkProps;
 
 /// The height a row is reckoned at before it is laid out: a row with a secondary line.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
-const ROW_ESTIMATE: f32 = 56.0;
+pub(crate) const ROW_ESTIMATE: f32 = 56.0;
 
 /// The height a message of a transcript is reckoned at before it is measured.
 // ratchet-allow(pixel_const): a height reckoned before layout measures it, not spacing
@@ -647,7 +647,7 @@ impl DescribedList {
 
 /// Whether the selection being made comes from a click or a tap the person just made, rather
 /// than the keyboard or an assistive technology.
-fn by_hand() -> bool {
+pub(crate) fn by_hand() -> bool {
     matches!(
         crate::motion::recent_input(crate::time::now()),
         Some(crate::tokens::MotionSource::Pointer | crate::tokens::MotionSource::Gesture)

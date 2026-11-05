@@ -328,7 +328,10 @@ fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
     let outer = Rect::new(0.0, 0.0, 264.0, 57.0);
     let face = ListRowFace::new("Order boxes and tape")
         .card()
-        .leading(RowLeading::Checkbox { checked: false })
+        .leading(RowLeading::Checkbox {
+            checked: false,
+            icon: None,
+        })
         .meta("Thursday")
         .mark(Icon::Flag)
         .mark_tone(Tone::Warning);
@@ -394,7 +397,10 @@ fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
     // A leading checkbox hangs on the centred line, as it hangs on the title's line.
     let boxed = ListRowFace::new("Screenshots for the docs")
         .card()
-        .leading(RowLeading::Checkbox { checked: false });
+        .leading(RowLeading::Checkbox {
+            checked: false,
+            icon: None,
+        });
     let geo = boxed.geometry(grown, &m, &mut text, &theme);
     assert!(
         (geo.leading.center().y - grown.center().y).abs() < 0.5,
@@ -829,7 +835,10 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         RowLeading::Avatar(AvatarFace::new("Ada", "ada").square()),
         RowLeading::Thumbnail(&image),
         RowLeading::Media(MediaArt::Placeholder, MediaAspect::Wide),
-        RowLeading::Checkbox { checked: true },
+        RowLeading::Checkbox {
+            checked: true,
+            icon: None,
+        },
         RowLeading::Swatch(theme.tokens.colors.semantic.info),
         RowLeading::Signal(crate::widget::SignalLevel::Good),
         RowLeading::Paint(&painter),
