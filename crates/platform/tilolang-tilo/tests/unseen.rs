@@ -140,7 +140,7 @@ fn mark_of(view: &mut ViewInstance, resource: &str) -> Option<UiNode> {
 }
 
 #[test]
-fn bo_changes_mark_ad_as_row_and_place_and_her_own_changes_never_do() {
+fn bo_changes_mark_adas_row_and_place_and_her_own_changes_never_do() {
     let (mut ada, mut bo, root) = workspace();
     let rent = call(
         &ada,

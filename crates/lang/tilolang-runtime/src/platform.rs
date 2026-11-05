@@ -465,7 +465,7 @@ impl Core {
             .view_states
             .borrow()
             .slots_of(crate::seen::SEEN_WINDOW, person);
-        // The person's marks are what the count is made of: it moves when any of them does.
+        // The count moves when any of the person's marks does.
         for (key, value, generation) in &marks {
             self.note_state_read(key.clone(), *generation, value);
         }
