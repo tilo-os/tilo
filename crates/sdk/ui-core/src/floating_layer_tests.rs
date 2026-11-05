@@ -496,3 +496,25 @@ fn a_cards_parts_fit_the_height_card_size_reserves() {
         }
     }
 }
+
+/// A window dragged smaller than a card is no reason to crash the session:
+/// the card is placed as far inside as the work area reaches.
+#[test]
+fn a_work_area_shorter_than_a_card_still_places_it() {
+    for (width, height) in [(1280.0, 800.0), (320.0, 90.0), (200.0, 60.0), (40.0, 30.0)] {
+        let placement = screen(width, height);
+        let held = cards(&[tall(Kind::Timer, "a"), tall(Kind::Music, "b")]);
+        for corner in [Corner::BottomRight, Corner::TopLeft] {
+            let layer = place(&placement, corner, &held, true);
+            for card in &layer.cards {
+                assert!(
+                    card.rect.x0 >= placement.work.x0 - 0.5
+                        && card.rect.y0 >= placement.work.y0 - 0.5,
+                    "{width}x{height} {corner:?}: {:?} starts in {:?}",
+                    card.rect,
+                    placement.work
+                );
+            }
+        }
+    }
+}

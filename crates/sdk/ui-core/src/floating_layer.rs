@@ -451,8 +451,9 @@ fn clamp_axis(origin: f64, length: f64, low: f64, high: f64) -> f64 {
     if inside >= low {
         origin.clamp(low, inside)
     } else {
-        // Longer than the work area: at least a reachable strip stays inside.
-        origin.clamp(high - REACHABLE, low)
+        // Longer than the work area: at least a reachable strip stays inside,
+        // as far as the work area is that tall at all.
+        origin.clamp(low, (high - REACHABLE).max(low))
     }
 }
 
