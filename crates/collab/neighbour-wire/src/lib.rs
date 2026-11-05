@@ -746,6 +746,28 @@ pub enum NeighbourMsg {
     /// workspace's. Appended to preserve every existing Postcard
     /// discriminant.
     WriteRefusals { refusals: Vec<WriteRefusal> },
+    /// Where the workspaces one of the person's devices holds are hosted:
+    /// each workspace by id, with its host's own signed
+    /// hint (`tilo_workspace_join::TransportHint`, postcard) as the device
+    /// reaching it dials it. Travels only on the session between two of the
+    /// person's devices, so a device that holds none of the person's
+    /// workspaces yet learns where each lives. Appended to preserve every
+    /// existing Postcard discriminant.
+    PersonalHosts {
+        user_public_key: [u8; 32],
+        hosts: Vec<PersonalHost>,
+    },
+}
+
+/// Where one of the person's workspaces is hosted, as their other devices
+/// dial it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalHost {
+    /// The workspace's id, a canonical lowercase UUID.
+    pub workspace: String,
+    /// The host's signed hint, postcard encoded.
+    #[serde(with = "serde_bytes")]
+    pub hint: Vec<u8>,
 }
 
 impl NeighbourMsg {
@@ -808,7 +830,8 @@ impl NeighbourMsg {
             | Self::SurfaceKeyframeRequest { .. }
             | Self::LivePresence { .. }
             | Self::SurfaceViewRequest { .. }
-            | Self::WriteRefusals { .. } => false,
+            | Self::WriteRefusals { .. }
+            | Self::PersonalHosts { .. } => false,
         }
     }
 
@@ -847,6 +870,7 @@ impl NeighbourMsg {
             Self::SurfaceViewRequest { .. } => "SurfaceViewRequest",
             Self::RecordContentLacks { .. } => "RecordContentLacks",
             Self::WriteRefusals { .. } => "WriteRefusals",
+            Self::PersonalHosts { .. } => "PersonalHosts",
         }
     }
 }

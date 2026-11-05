@@ -23,7 +23,7 @@ use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use super::{Client, Enrolling, Entry, OwnPresence};
+use super::{Client, Enrolling, Entering, Entry, OwnPresence};
 use crate::channels::ChannelLink;
 use crate::engine::Engine;
 use crate::fabric::Continuity;
@@ -69,17 +69,22 @@ impl Drop for Host {
 }
 
 impl Host {
+    /// A host of the person whose root key is `[0x71; 32]`.
     fn start() -> Self {
+        Self::of(&SigningKey::from_bytes(&[0x71; 32]))
+    }
+
+    /// A host of the person `owner_key`, on this machine.
+    fn of(owner_key: &SigningKey) -> Self {
         let state = tempfile::tempdir().expect("the host's directory");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .expect("the host's runtime");
-        let owner_key = SigningKey::from_bytes(&[0x71; 32]);
         let host_key = SigningKey::from_bytes(&[0x72; 32]);
         let cert = certified(
-            &owner_key,
+            owner_key,
             &host_key,
             "The notes host",
             DeviceCapabilities {
@@ -142,6 +147,17 @@ impl Host {
             .expect("an invitation to the workspace");
         tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
     }
+
+    /// Where this host is reached for its workspace, as it signed it: what a
+    /// device of the person is told to dial.
+    fn host_hint(&self) -> tilo_peer_state::join::TransportHint {
+        self.runtime
+            .block_on(self.workspaces.hosts(&self.workspace))
+            .expect("the host signs its own address")
+            .into_iter()
+            .next()
+            .expect("the host serves its workspace")
+    }
 }
 
 /// One session's side of the workspace: its engine, and its plane.
@@ -152,12 +168,22 @@ struct Device {
 }
 
 impl Device {
-    /// A session of its own person's device, whose plane runs with its
-    /// workspaces' channel link as the session's does.
+    /// A session of a device of the person whose root key is `[seed; 32]`,
+    /// whose plane runs with its workspaces' channel link as the session's
+    /// does.
     fn start(seed: u8, label: &str) -> Self {
         let root = SigningKey::from_bytes(&[seed; 32]);
-        let key = SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
-        let cert = certified(&root, &key, label, DeviceCapabilities::member());
+        Self::of(
+            &root,
+            SigningKey::from_bytes(&[seed.wrapping_add(1); 32]),
+            label,
+        )
+    }
+
+    /// A session of `key`, a device certified by `root`: two of them are two
+    /// devices of one person.
+    fn of(root: &SigningKey, key: SigningKey, label: &str) -> Self {
+        let cert = certified(root, &key, label, DeviceCapabilities::member());
         let identity = tilo_network_actor::HostIdentity {
             device_cert: cert,
             device_signing_key: key,
@@ -219,6 +245,36 @@ impl Device {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the workspace's host answers the enrollment"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Enter the host's workspace as a further device of this person, at the
+    /// host's own signed address: nothing is invited here, and the workspace
+    /// answers with what it holds, so this device takes part in it from then
+    /// on. Answers the workspace, and how long the entry took.
+    fn enter(&self, host: &Host) -> (WorkspaceId, Duration) {
+        let workspace_id = WorkspaceId::parse(&host.workspace).expect("a workspace id");
+        let started = std::time::Instant::now();
+        self.plane
+            .enter(Entering {
+                slot: WorkspaceSlot::of_workspace(workspace_id),
+                workspace_id,
+                name: "Notes".into(),
+                host: host.host_hint(),
+            })
+            .expect("the plane takes the entry");
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Some(enrolled) = self.plane.take_enrolled().pop() {
+                assert!(enrolled.member, "the entry is one of the person's own");
+                enrolled.result.expect("the workspace admits this device");
+                return (workspace_id, started.elapsed());
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the workspace's host answers the entry"
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -308,4 +364,87 @@ fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Have `device`'s app write `invocation` into `workspace`, as the broker
+/// commits what an app did: the owner's custody leaves for the workspace's
+/// host, which hands it to the workspace's other devices.
+fn write(
+    runtime: &tokio::runtime::Runtime,
+    device: &Device,
+    workspace_id: WorkspaceId,
+    invocation: uuid::Uuid,
+) {
+    let publisher = crate::plane::owner_publisher(Some(std::sync::Arc::clone(&device.engine)));
+    assert!(
+        publisher.records_effects_for(&workspace_id.to_string()),
+        "the workspace's effect receipts are the owner's to commit"
+    );
+    runtime
+        .block_on(publisher.commit_owner(receipt(device, workspace_id, invocation), None))
+        .expect("the owner commits the app's write");
+    assert!(
+        holds_receipt(device, workspace_id, invocation),
+        "the write is the writing device's owner's"
+    );
+}
+
+/// Wait until `device`'s copy of the workspace holds the receipt of
+/// `invocation`, answering how long that took.
+fn wait_for(
+    device: &Device,
+    workspace_id: WorkspaceId,
+    invocation: uuid::Uuid,
+) -> std::time::Duration {
+    let started = std::time::Instant::now();
+    let deadline = tilo_test_env::hang_deadline();
+    while !holds_receipt(device, workspace_id, invocation) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the write reaches the workspace's other device"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    started.elapsed()
+}
+
+/// One person's further device takes their workspace in at its host without
+/// an invitation: a device certified by a member's root is that member's
+/// device, so the workspace admits it and answers with what it holds. What was
+/// written on the person's other device before this one came up is here, and
+/// what this one writes reaches the other.
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the host is both devices' host: it outlives every join made on it"
+)]
+fn a_person_s_further_device_enters_their_workspace_at_its_host() {
+    let root = SigningKey::from_bytes(&[0x71; 32]);
+    let host = Host::of(&root);
+    let laptop = Device::of(&root, SigningKey::from_bytes(&[0xa1; 32]), "The laptop");
+    let desktop = Device::of(&root, SigningKey::from_bytes(&[0xa2; 32]), "The desktop");
+    assert_eq!(laptop.person(), desktop.person(), "one person, two devices");
+    let workspace = laptop.join(&host, 0x01);
+
+    // What the laptop wrote before the desktop was up.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("the broker's runtime");
+    let earlier = uuid::Uuid::new_v4();
+    write(&runtime, &laptop, workspace, earlier);
+
+    // The desktop enters the workspace at its host: no invitation, and the
+    // workspace's whole history comes with the entry.
+    let (entered_workspace, entry) = desktop.enter(&host);
+    assert_eq!(entered_workspace, workspace);
+    let history = wait_for(&desktop, workspace, earlier);
+    eprintln!("entry {entry:?}, history {history:?}");
+
+    // And back: what the desktop writes reaches the laptop.
+    let later = uuid::Uuid::new_v4();
+    write(&runtime, &desktop, workspace, later);
+    let back = wait_for(&laptop, workspace, later);
+    eprintln!("back {back:?}");
 }

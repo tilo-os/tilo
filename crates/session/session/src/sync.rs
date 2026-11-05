@@ -672,6 +672,9 @@ pub(crate) enum Outgoing {
     Connect(EndpointAddr),
     /// Redeem an invitation into the workspace the desk made for it.
     Enroll(Enrolling),
+    /// Take one of the person's workspaces in as their further device, at the
+    /// host the list names.
+    Enter(Entering),
     /// Hear the person's other devices from now on.
     WatchSiblings,
     /// Say `msg` to each of the person's devices whose session is up.
@@ -732,11 +735,32 @@ pub struct Enrolling {
     pub(crate) renewal: Option<std::sync::Arc<crate::mount::renewal::FleetRenewal>>,
 }
 
-/// What became of an enrollment, and the workspace it was for.
+/// One of the person's workspaces this device holds nothing of yet: it takes
+/// the workspace in as a further device of their person, at the device hosting
+/// it. A device certified by a member's root is that member's device, so
+/// nothing has to be invited here ([`tilo_peer_state::owner::enroll::admit_as_member`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entering {
+    /// The slot the desk makes for it.
+    pub slot: DeskSlot,
+    /// The workspace the person's list names.
+    pub workspace_id: DeskWorkspaceId,
+    /// What the person's list calls it.
+    pub name: String,
+    /// Where the device hosting it is reached, as its host signed it.
+    pub host: tilo_peer_state::join::TransportHint,
+}
+
+/// What became of an enrollment or an entry, and the workspace it was for.
 #[derive(Debug)]
 pub struct Enrolled {
     pub slot: DeskSlot,
     pub workspace_id: DeskWorkspaceId,
+    /// Whether this device entered one of the person's own workspaces as their
+    /// further device, rather than redeeming an invitation into someone's.
+    pub member: bool,
+    /// The name the person's list gave it, when it was entered from there.
+    pub name: Option<String>,
     /// `Ok` once this device holds the workspace and takes part in it.
     pub result: Result<(), String>,
 }
@@ -808,6 +832,10 @@ pub struct Client {
     /// a device that just said hello has not heard this device's list yet,
     /// and a list said only when something changed here would never reach it.
     sibling_arrived: std::cell::Cell<bool>,
+    /// Where the workspaces the person's other devices hold are hosted, by
+    /// workspace id: the host hints they said with the list, so this device
+    /// enters a workspace at the device hosting it rather than guessing.
+    host_hints: RefCell<std::collections::BTreeMap<String, tilo_peer_state::join::TransportHint>>,
     /// The workspace lists the person's other devices sent since the last
     /// call, each with the certificate its device was heard by.
     personal: RefCell<
@@ -923,7 +951,7 @@ impl Client {
         entry: Entry,
         engine: Option<Arc<Engine>>,
         questions: Option<tilo_service::Questions>,
-        beside: tilo_network_actor::local_host::Protocols,
+        mut beside: tilo_network_actor::local_host::Protocols,
         documents: Option<PeerDocuments>,
     ) -> std::io::Result<Self> {
         let identity = entry.identity;
@@ -953,7 +981,6 @@ impl Client {
         let mut live = engine
             .as_ref()
             .map(|engine| crate::live::Live::new(Arc::clone(engine), Arc::clone(&wake)));
-        let mut beside = beside;
         if let Some(live) = &mut live {
             beside.extend(live.protocols());
         }
@@ -1015,6 +1042,7 @@ impl Client {
             desk: RefCell::new(None),
             content: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
+            host_hints: RefCell::new(std::collections::BTreeMap::new()),
             sibling_arrived: std::cell::Cell::new(false),
             personal: RefCell::new(Vec::new()),
             personal_store: RefCell::new(None),
@@ -1097,9 +1125,37 @@ impl Client {
             .map_err(|_| "the collaboration plane is gone".to_owned())
     }
 
-    /// Take what became of the enrollments asked for since the last call.
+    /// Take `request`'s workspace in as this person's further device, off the
+    /// loop: the workspace admits it at its host, what the workspace holds
+    /// before arrives with the answer, and this device takes part in it from
+    /// then on. What became of it is handed back by [`Self::take_enrolled`].
+    ///
+    /// # Errors
+    /// The plane takes no entry: this session holds no workspaces, or the
+    /// plane has stopped.
+    pub fn enter(&self, request: Entering) -> Result<(), String> {
+        if self.engine.is_none() {
+            return Err("this session keeps no workspaces to take in".into());
+        }
+        self.outgoing
+            .send(Outgoing::Enter(request))
+            .map_err(|_| "the collaboration plane is gone".to_owned())
+    }
+
+    /// Take what became of the enrollments and entries asked for since the
+    /// last call.
     pub fn take_enrolled(&self) -> Vec<Enrolled> {
         self.enrolled.try_iter().collect()
+    }
+
+    /// Where the workspace `workspace` is hosted, as a device of the person's
+    /// that holds it said: the host hint the person's other devices send with
+    /// their list. `None` while none of them said it yet.
+    pub(crate) fn host_hint(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_peer_state::join::TransportHint> {
+        self.host_hints.borrow().get(workspace).cloned()
     }
 
     /// What this session says of itself here now.
@@ -1711,13 +1767,42 @@ impl Client {
                     );
                 }
             }
+            NetEvent::SiblingMsg {
+                msg:
+                    NeighbourMsg::PersonalHosts {
+                        user_public_key,
+                        hosts,
+                    },
+                ..
+            } => {
+                // Only this person's workspaces are entered, and only through
+                // a host the workspace's own governance signed for.
+                if Some(*user_public_key) != self.user {
+                    return;
+                }
+                for host in hosts {
+                    match postcard::from_bytes::<tilo_peer_state::join::TransportHint>(&host.hint) {
+                        Ok(hint) => {
+                            self.host_hints
+                                .borrow_mut()
+                                .insert(host.workspace.clone(), hint);
+                        }
+                        Err(error) => tracing::warn!(
+                            workspace = %host.workspace,
+                            %error,
+                            "a device's host hint did not decode"
+                        ),
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     /// Say this person's workspaces to their other devices: every one of
     /// them whose session is up hears the list, and the ones this device has
-    /// and its sender does not are opened there.
+    /// and its sender does not are opened there, each with where its host is
+    /// reached, so the device that opens it enters it at its host.
     pub fn tell_personal(&self, update: &tilo_user_identity::DirectoryUpdate) {
         let Some(user) = self.user else {
             return;
@@ -1726,6 +1811,23 @@ impl Client {
             NeighbourMsg::PersonalWorkspaces {
                 user_public_key: user,
                 update: Box::new(update.clone()),
+            },
+        )));
+        let hosts = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.host_hints())
+            .unwrap_or_default();
+        if hosts.is_empty() {
+            return;
+        }
+        let _ = self.outgoing.send(Outgoing::TellSiblings(Box::new(
+            NeighbourMsg::PersonalHosts {
+                user_public_key: user,
+                hosts: hosts
+                    .into_iter()
+                    .map(|(workspace, hint)| neighbour_wire::PersonalHost { workspace, hint })
+                    .collect(),
             },
         )));
     }
@@ -2278,6 +2380,7 @@ impl Client {
                 desk: RefCell::new(None),
                 content: RefCell::new(None),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
+                host_hints: RefCell::new(std::collections::BTreeMap::new()),
                 sibling_arrived: std::cell::Cell::new(false),
                 personal: RefCell::new(Vec::new()),
                 personal_store: RefCell::new(None),
@@ -2723,7 +2826,7 @@ async fn carry_out(
             .await
             .is_ok(),
         // Redeemed beside this loop, which never waits on a host.
-        Outgoing::Enroll(_) => true,
+        Outgoing::Enroll(_) | Outgoing::Enter(_) => true,
         Outgoing::Stop => return None,
     })
 }
@@ -2786,33 +2889,86 @@ async fn redeem(
     // happen rather than left on a plane that stopped taking work.
     tokio::time::timeout(SETTLE_WITHIN, async {
         owner.install(&enrollment, std::time::SystemTime::now())?;
-        // The workspace is held here now: this device takes part in it, so what its
-        // people say and record reaches it as it happens, and the devices it
-        // admits are told to the plane.
-        if let Some(link) = link {
-            link.workspace_changed(request.workspace_id);
-        }
-        // The workspace's subscription comes before the session it carries: what the
-        // host says the moment this device joins is the workspace as it stands, and a
-        // workspace nobody listens to yet drops it.
-        plane
-            .send(NetCmd::JoinWorkspace {
-                ws: topic,
-                on_event: events.clone(),
-            })
-            .await
-            .map_err(|_| "the collaboration plane is gone".to_owned())?;
-        let connect = tilo_network_actor::native_ingress::Connect::new(owner, request.workspace_id)
-            .map_err(|error| format!("the workspace was not taken in: {error}"))?;
-        plane
-            .send(NetCmd::NativeConnect(connect, None))
-            .await
-            .map_err(|_| "the collaboration plane is gone".to_owned())?;
-        Ok::<(), String>(())
+        take_part_in(&owner, request.workspace_id, link, plane, events).await
     })
     .await
     .map_err(|_| "the workspace was not taken in time".to_owned())??;
     Ok(())
+}
+
+/// Take the workspace of `workspace_id` in as held here now: this device's
+/// channel service is told, the workspace is subscribed to, and this device's
+/// native ingress connects to it.
+async fn take_part_in(
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    workspace_id: DeskWorkspaceId,
+    link: Option<&ChannelLink>,
+    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    events: &tokio::sync::mpsc::Sender<NetEvent>,
+) -> Result<(), String> {
+    // The workspace is held here now: this device takes part in it, so what its
+    // people say and record reaches it as it happens, and the devices it
+    // admits are told to the plane.
+    if let Some(link) = link {
+        link.workspace_changed(workspace_id);
+    }
+    // The workspace's subscription comes before the session it carries: what the
+    // host says the moment this device joins is the workspace as it stands, and a
+    // workspace nobody listens to yet drops it.
+    plane
+        .send(NetCmd::JoinWorkspace {
+            ws: workspace_topic_id(workspace_id),
+            on_event: events.clone(),
+        })
+        .await
+        .map_err(|_| "the collaboration plane is gone".to_owned())?;
+    let connect = tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)
+        .map_err(|error| format!("the workspace was not taken in: {error}"))?;
+    plane
+        .send(NetCmd::NativeConnect(connect, None))
+        .await
+        .map_err(|_| "the collaboration plane is gone".to_owned())?;
+    Ok(())
+}
+
+/// Take one of the person's workspaces in as their further device, at the
+/// device hosting it: nothing is invited here — the workspace admits a device
+/// certified by a member's root as that member's device — and what the host
+/// answers carries the workspace's governance, its roster and the records it
+/// holds, so this device takes part in the workspace as it stands.
+async fn enter(
+    endpoint: iroh::Endpoint,
+    identity: HostIdentity,
+    engine: Arc<Engine>,
+    plane: &tokio::sync::mpsc::Sender<NetCmd>,
+    events: &tokio::sync::mpsc::Sender<NetEvent>,
+    request: Entering,
+    link: Option<&ChannelLink>,
+) -> Result<(), String> {
+    let topic = workspace_topic_id(request.workspace_id);
+    identity.current_native_material(topic)?;
+    let owner = engine.owner().clone();
+    let client = tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint);
+    tokio::time::timeout(
+        REDEEM_WITHIN,
+        tilo_peer_state::owner::enroll::admit_as_member(
+            client,
+            identity,
+            owner.clone(),
+            request.workspace_id,
+            topic,
+            request.host,
+            std::time::SystemTime::now(),
+        ),
+    )
+    .await
+    .map_err(|_| "the workspace's host did not answer".to_owned())??;
+    tokio::time::timeout(
+        SETTLE_WITHIN,
+        take_part_in(&owner, request.workspace_id, link, plane, events),
+    )
+    .await
+    .map_err(|_| "the workspace was not taken in time".to_owned())?
 }
 
 /// The certificate among `certs` that says who authored `update`, if the

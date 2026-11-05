@@ -986,7 +986,7 @@ impl JoinLedger {
         let role = workspace
             .peer
             .governance()
-            .verify_member_refresh(&membership, system_time(now))?;
+            .member_role(&membership, system_time(now))?;
         let invite_id = self
             .join_completions
             .iter()

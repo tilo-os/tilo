@@ -12,7 +12,8 @@ use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
 use super::{
-    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, heard, redeem,
+    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, enter, heard,
+    redeem,
 };
 
 /// The runtime the collaboration plane's thread runs on: two workers of its
@@ -142,44 +143,25 @@ pub(super) fn run(
         else {
             return;
         };
+        // What asks a workspace's host runs beside this loop, so what the
+        // session says meanwhile is still carried.
+        let asking = Asking {
+            landed: enrollments,
+            endpoint,
+            plane: actor.clone(),
+            events: events.clone(),
+            link,
+            engine,
+            identity,
+        };
         while let Some(command) = commands.recv().await {
             let command = match command {
-                // A redemption asks a host, waits for it and takes the workspace
-                // in: it runs beside this loop, which keeps carrying what the
-                // session says meanwhile.
                 Outgoing::Enroll(request) => {
-                    let slot = request.slot;
-                    let workspace_id = request.workspace_id;
-                    let landed = enrollments.clone();
-                    let (Some(engine), Some(identity)) = (engine.clone(), identity.clone()) else {
-                        let _ = landed.send(Enrolled {
-                            slot,
-                            workspace_id,
-                            result: Err("this session joins no workspaces".into()),
-                        });
-                        continue;
-                    };
-                    let endpoint = endpoint.clone();
-                    let plane = actor.clone();
-                    let events = events.clone();
-                    let channels = link.clone();
-                    tokio::spawn(async move {
-                        let result = redeem(
-                            endpoint,
-                            identity,
-                            engine,
-                            &plane,
-                            &events,
-                            request,
-                            channels.as_deref(),
-                        )
-                        .await;
-                        let _ = landed.send(Enrolled {
-                            slot,
-                            workspace_id,
-                            result,
-                        });
-                    });
+                    asking.ask(Ask::Invitation(request));
+                    continue;
+                }
+                Outgoing::Enter(request) => {
+                    asking.ask(Ask::Entry(Box::new(request)));
                     continue;
                 }
                 command => command,
@@ -199,6 +181,101 @@ pub(super) fn run(
         }
         actor_task.abort();
     });
+}
+
+/// What asking a workspace's host needs, held for the plane's loop: the loop
+/// never waits on a host, so an ask runs on its own task and hands what became
+/// of it back as an [`Enrolled`].
+struct Asking {
+    landed: std::sync::mpsc::Sender<Enrolled>,
+    endpoint: iroh::Endpoint,
+    plane: tokio::sync::mpsc::Sender<NetCmd>,
+    events: tokio::sync::mpsc::Sender<NetEvent>,
+    link: Option<Arc<ChannelLink>>,
+    engine: Option<Arc<Engine>>,
+    identity: Option<HostIdentity>,
+}
+
+/// One thing the plane asks a workspace's host for: someone's invitation
+/// redeemed into their workspace, or one of the person's own workspaces
+/// entered at the device hosting it.
+enum Ask {
+    Invitation(super::Enrolling),
+    Entry(Box<super::Entering>),
+}
+
+impl Asking {
+    /// Ask `ask` beside the loop, and hand what became of it back. A session
+    /// built without a workspace engine answers at once that it takes nothing
+    /// in.
+    fn ask(&self, ask: Ask) {
+        let (slot, workspace_id, member, name, missing) = match &ask {
+            Ask::Invitation(request) => (
+                request.slot,
+                request.workspace_id,
+                false,
+                None,
+                "this session joins no workspaces",
+            ),
+            Ask::Entry(request) => (
+                request.slot,
+                request.workspace_id,
+                true,
+                Some(request.name.clone()),
+                "this session keeps no workspaces",
+            ),
+        };
+        let landed = self.landed.clone();
+        let (Some(engine), Some(identity)) = (self.engine.clone(), self.identity.clone()) else {
+            let _ = landed.send(Enrolled {
+                slot,
+                workspace_id,
+                member,
+                name,
+                result: Err(missing.to_owned()),
+            });
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        let plane = self.plane.clone();
+        let events = self.events.clone();
+        let channels = self.link.clone();
+        tokio::spawn(async move {
+            let result = match ask {
+                Ask::Invitation(request) => {
+                    redeem(
+                        endpoint,
+                        identity,
+                        engine,
+                        &plane,
+                        &events,
+                        request,
+                        channels.as_deref(),
+                    )
+                    .await
+                }
+                Ask::Entry(request) => {
+                    enter(
+                        endpoint,
+                        identity,
+                        engine,
+                        &plane,
+                        &events,
+                        *request,
+                        channels.as_deref(),
+                    )
+                    .await
+                }
+            };
+            let _ = landed.send(Enrolled {
+                slot,
+                workspace_id,
+                member,
+                name,
+                result,
+            });
+        });
+    }
 }
 
 /// Bind this device's endpoint, serve the peer actor and its action plane on

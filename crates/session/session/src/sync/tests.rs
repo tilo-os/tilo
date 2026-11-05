@@ -164,6 +164,33 @@ fn named(sync: &Client, from: u8, name: &str) {
 /// and what to call it.
 /// The person the device `seed` is a device of, in the hex everyone here
 /// knows them by: the root key its certificate is signed with.
+/// The person `seed`'s root key, in the bytes their devices' certificates
+/// carry.
+fn root(seed: u8) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+        .verifying_key()
+        .to_bytes()
+}
+
+/// Where a device of the person `user` is reached for a workspace, as it
+/// signed it: `opaque` says which address.
+fn host_hint(
+    user: u8,
+    device_seed: u8,
+    opaque: &str,
+) -> (DeviceCert, tilo_peer_state::join::TransportHint) {
+    let (cert, key) = certified(user, device_seed, "The host");
+    let hint = tilo_peer_state::join::sign_transport_hint(
+        tilo_peer_state::join::TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
+        opaque,
+        cert.clone(),
+        key.verifying_key().to_bytes(),
+        &key,
+    )
+    .expect("a host signs its own address");
+    (cert, hint)
+}
+
 fn person(seed: u8) -> String {
     hex::encode(
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -899,4 +926,56 @@ fn payloads(sync: &Client) -> Vec<Payload> {
         .into_iter()
         .map(|frame| frame.payload)
         .collect()
+}
+
+#[test]
+fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
+    let (sync, _said) = session("Desk", Some(0x04));
+    let sync = sync.taking_part_as(&person(0x04));
+    assert!(
+        sync.host_hint(WORKSPACE).is_none(),
+        "no device of the person said where a workspace is reached yet"
+    );
+    let (cert, hint) = host_hint(0x04, 0x21, "one address");
+    sync.keep_personal(&NetEvent::SiblingMsg {
+        peer: device(0x11),
+        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
+        msg: NeighbourMsg::PersonalHosts {
+            user_public_key: root(0x04),
+            hosts: vec![neighbour_wire::PersonalHost {
+                workspace: WORKSPACE.to_owned(),
+                hint: postcard::to_stdvec(&hint).expect("a signed address"),
+            }],
+        },
+    });
+    let kept = sync
+        .host_hint(WORKSPACE)
+        .expect("the device's address for the workspace is kept");
+    assert_eq!(kept, hint);
+    assert!(
+        kept.host.device_public_key == cert.device_public_key,
+        "it is the device's own answer"
+    );
+}
+
+#[test]
+fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
+    let (sync, _said) = session("Desk", Some(0x04));
+    let sync = sync.taking_part_as(&person(0x04));
+    let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
+    sync.keep_personal(&NetEvent::SiblingMsg {
+        peer: device(0x12),
+        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
+        msg: NeighbourMsg::PersonalHosts {
+            user_public_key: root(0x05),
+            hosts: vec![neighbour_wire::PersonalHost {
+                workspace: WORKSPACE.to_owned(),
+                hint: postcard::to_stdvec(&hint).expect("a signed address"),
+            }],
+        },
+    });
+    assert!(
+        sync.host_hint(WORKSPACE).is_none(),
+        "another person's workspaces are theirs to enter, never this person's"
+    );
 }

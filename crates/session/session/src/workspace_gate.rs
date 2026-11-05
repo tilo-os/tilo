@@ -103,6 +103,7 @@ pub(crate) fn required_workspace_action(msg: &NeighbourMsg) -> Option<WorkspaceA
         NeighbourMsg::IdentityHello { .. }
         | NeighbourMsg::MediaCapabilities { .. }
         | NeighbourMsg::PersonalWorkspaces { .. }
+        | NeighbourMsg::PersonalHosts { .. }
         | NeighbourMsg::WriteRefusals { .. }
         // Retired generations, refused where they enter
         // (`NeighbourMsg::is_retired`): presence is a frame on the live plane,

@@ -81,7 +81,6 @@ struct OwnerWorkspace<'a> {
     workspace_id: u64,
     candidate: NativeCommittedView,
     staged: bool,
-    committed: bool,
 }
 
 impl OwnerWorkspace<'_> {
@@ -197,7 +196,6 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
             .map_err(JoinError::new)?;
         self.candidate = next;
         self.staged = false;
-        self.committed = true;
         Ok(())
     }
 }
@@ -252,10 +250,9 @@ impl OwnerJoinWorkspaces {
             workspace_id,
             candidate,
             staged: false,
-            committed: false,
         };
         let answer = decide(&mut held);
-        if held.staged && !held.committed {
+        if held.staged {
             held.publish()?;
         }
         answer

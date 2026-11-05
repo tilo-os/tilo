@@ -339,15 +339,19 @@ impl PeerGovernance<'_> {
             now_ns(now),
         )
     }
-    /// Check a verified membership refresh against current governance.
-    pub fn verify_member_refresh(
+    /// The role a member's device that proved `membership` holds now, as the
+    /// answer to it names it: the person's role in the workspace, which is
+    /// what the device takes part as. A device of the workspace's owner holds
+    /// the workspace as its owner, and an answer names the strongest
+    /// collaborator role for it: a member's answer carries a role, never the
+    /// owner's authority, which governance alone decides.
+    pub fn member_role(
         self,
         membership: &crate::join::VerifiedMembership,
         now: SystemTime,
     ) -> Result<crate::join::MemberRole, String> {
         let role = self.peer.current_membership_role(membership, now)?;
-        member_role_from_role(role)
-            .ok_or_else(|| "structural owner does not use collaborator refresh".into())
+        Ok(member_role_from_role(role).unwrap_or(crate::join::MemberRole::Moderator))
     }
 }
 impl PeerGovernanceMut<'_> {

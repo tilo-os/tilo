@@ -229,12 +229,19 @@ impl NativeCommittedView {
     pub fn continuity(&self) -> u64 {
         self.record.continuity
     }
-    /// Where the host this device enrolled through is reached.
+    /// Where the host that governs this workspace is reached: the hint its
+    /// enrollment carries, or, for a workspace this device holds as a further
+    /// device of its person, the one the host's own answer named.
     ///
     /// # Errors
-    /// The workspace's record holds no enrollment.
+    /// The workspace's record holds neither.
     pub fn transport_hint(&self) -> Result<&crate::join::TransportHint, String> {
-        Ok(&self.enrollment()?.transport_hint)
+        self.record
+            .enrollment
+            .as_ref()
+            .map(|enrollment| &enrollment.transport_hint)
+            .or_else(|| self.record.vouched.as_ref()?.hint.as_ref())
+            .ok_or_else(|| "the workspace's record holds no host hint".to_owned())
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
         let policy = self.peer.validated_media_policy().ok().flatten();

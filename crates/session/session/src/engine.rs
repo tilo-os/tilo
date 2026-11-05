@@ -531,6 +531,34 @@ impl Engine {
         self.owner.host_addr(workspace)
     }
 
+    /// The device hosting `workspace`: the one whose host orders its commits,
+    /// which is where the person's other devices enter it.
+    pub(crate) fn host_of(&self, workspace: WorkspaceId) -> Option<[u8; 32]> {
+        self.owner
+            .with_current(workspace, |view| {
+                Ok(view.workspace_host().device_public_key)
+            })
+            .ok()
+    }
+
+    /// Where the hosts of the workspaces this device holds are reached, by
+    /// workspace id, postcard encoded: what the person's other devices need to
+    /// enter a workspace listed here at the device that hosts it.
+    pub(crate) fn host_hints(&self) -> Vec<(String, Vec<u8>)> {
+        self.owner
+            .workspaces()
+            .into_iter()
+            .filter_map(|workspace| {
+                let hint = self
+                    .owner
+                    .with_current(workspace, |view| Ok(view.transport_hint().cloned()))
+                    .ok()?;
+                let bytes = postcard::to_stdvec(&hint).ok()?;
+                Some((workspace.to_string(), bytes))
+            })
+            .collect()
+    }
+
     /// Where a read asks the workspaces' hosts for a record they send only
     /// once asked: the plane this session's channels travel on.
     pub(crate) fn attach_link(&self, link: Arc<channels::ChannelLink>) {

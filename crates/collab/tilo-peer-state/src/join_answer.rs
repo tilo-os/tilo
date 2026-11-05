@@ -20,6 +20,7 @@ use ed25519_dalek::SigningKey;
 use std::future::Future;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
+use tilo_user_identity::DeviceCert;
 
 /// One workspace as its holder keeps it while it decides: locked, so nothing
 /// else changes it meanwhile.
@@ -248,8 +249,14 @@ impl<S: JoinWorkspaces> JoinAnswer<S> {
             }
             JoinTransportRequest::MembershipChallenge(request) => {
                 let nonce = store.nonce()?;
+                let key = store.key().clone();
                 store
                     .with_workspace(&workspace, |workspace| {
+                        // A further device of someone the workspace has in it
+                        // needs no invitation: the workspace admits it as that
+                        // member's device, and it proves the membership it was
+                        // admitted as.
+                        admit_member_device(workspace, &request.device_cert, &key, now)?;
                         let mut ledger = workspace.ledger().clone();
                         let challenge = ledger.membership_challenge(
                             &workspace.governed(),
@@ -312,6 +319,43 @@ fn complete(
     admit(workspace, &joins, key, now)?
         .pop()
         .unwrap_or_else(|| Err(JoinError::new("join bootstrap was not built")))
+}
+
+/// Admit `device` to the workspace before it is challenged, when the workspace
+/// has never admitted it: a device certified by the root of a person the
+/// workspace has in it is that person's device and needs no invitation, so it
+/// asks once and is let in. A device the workspace already holds, and a
+/// renewal of one it holds, is left to the exchange that answers for it.
+fn admit_member_device(
+    workspace: &mut dyn WorkspaceTxn,
+    device: &DeviceCert,
+    key: &SigningKey,
+    now: u64,
+) -> Result<(), JoinError> {
+    let held = workspace
+        .governed()
+        .peer
+        .certificates()
+        .iter()
+        .any(|cert| cert.device_public_key == device.device_public_key);
+    if held {
+        return Ok(());
+    }
+    let mut candidate = workspace.governed().peer.clone();
+    candidate
+        .governance_mut()
+        .admit_member_device(device, key, at(now))
+        .map_err(JoinError::new)?;
+    let ledger = workspace.ledger().clone();
+    workspace.commit_governance(candidate, now, &mut |_| Ok(ledger.clone()))?;
+    tracing::info!(
+        workspace = %workspace.workspace(),
+        person = %hex::encode(device.user_public_key),
+        device = %hex::encode(device.device_public_key),
+        outcome = "member device admitted",
+        "a member's device was admitted without an invitation"
+    );
+    Ok(())
 }
 
 /// The workspace's current state for a member that proved its membership. A
