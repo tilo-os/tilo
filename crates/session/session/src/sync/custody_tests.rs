@@ -23,7 +23,7 @@ use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
-use super::{Client, Enrolling, OwnPresence};
+use super::{Client, Enrolling, Entry, OwnPresence};
 use crate::channels::ChannelLink;
 use crate::engine::Engine;
 use crate::fabric::Continuity;
@@ -172,12 +172,14 @@ impl Device {
         );
         engine.attach_link(ChannelLink::new());
         let plane = Client::start(
-            Some(identity),
+            Entry {
+                identity: Some(identity),
+                own: OwnPresence::default(),
+                hosts: Vec::new(),
+                continuity: Continuity::default(),
+                wake: std::sync::Arc::new(|| ()),
+            },
             Some(std::sync::Arc::clone(&engine)),
-            OwnPresence::default(),
-            Vec::new(),
-            Continuity::default(),
-            std::sync::Arc::new(|| ()),
             None,
             Vec::new(),
             None,

@@ -55,7 +55,7 @@ use tilo_device_fabric::{
 };
 use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
 use tilo_session::fabric::Continuity;
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session, Vpn};
 use tilo_settings_service::SettingsService;
 
@@ -560,12 +560,14 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
 
     // This session's own endpoint, told where the other device is.
     let sync = Client::start(
+        Entry {
+            identity: None,
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        None,
-        OwnPresence::default(),
-        Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
         Vec::new(),
         None,
@@ -720,12 +722,14 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
         vpns: Vpns::Fed(VpnWatch::following(desk_vpns)),
     });
     let desk_sync = Client::start(
+        Entry {
+            identity: None,
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        None,
-        OwnPresence::default(),
-        Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
         desk_vpn.served(),
         None,
@@ -735,12 +739,14 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     // it carries is not one of them.
     let (_laptop_reading, laptop_vpns) = tokio::sync::watch::channel(reading(None));
     let laptop_sync = Client::start(
+        Entry {
+            identity: None,
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        None,
-        OwnPresence::default(),
-        Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
         Vec::new(),
         None,

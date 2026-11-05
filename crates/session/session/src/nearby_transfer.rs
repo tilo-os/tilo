@@ -2260,7 +2260,7 @@ mod transfers_between_devices {
 
     use super::{FILES_APP_ID, NearbyTransfer};
     use crate::fabric::Continuity;
-    use crate::sync::{Client, OwnPresence};
+    use crate::sync::{Client, Entry, OwnPresence};
 
     /// How long the loopback sessions have to carry the whole transfer.
     const DEADLINE: Duration = Duration::from_secs(60);
@@ -2378,18 +2378,20 @@ mod transfers_between_devices {
         };
         sign_device_cert(&mut cert, person).expect("the person signs their own device");
         let client = Client::start(
-            Some(HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            }),
+            Entry {
+                identity: Some(HostIdentity {
+                    device_cert: cert,
+                    device_signing_key: key,
+                    workspace_device_certs: HashMap::new(),
+                    workspace_revocations: HashMap::new(),
+                    identity_paths: None,
+                }),
+                own: OwnPresence::default(),
+                hosts: Vec::new(),
+                continuity: permitted(),
+                wake: Arc::new(|| {}),
+            },
             None,
-            OwnPresence::default(),
-            Vec::new(),
-            permitted(),
-            Arc::new(|| {}),
             None,
             Vec::new(),
             None,

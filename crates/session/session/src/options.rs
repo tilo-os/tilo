@@ -301,12 +301,14 @@ pub(crate) fn start_collaboration(
         ..sync::OwnPresence::default()
     };
     match sync::Client::start(
-        identity,
+        sync::Entry {
+            identity,
+            own,
+            hosts: sync::configured_hosts(),
+            continuity,
+            wake: options.wake.handle(),
+        },
         engine,
-        own,
-        sync::configured_hosts(),
-        continuity,
-        options.wake.handle(),
         options.questions.clone(),
         beside,
         documents,

@@ -840,18 +840,31 @@ impl Drop for Client {
     }
 }
 
+/// What this device brings as it enters the collaboration plane: the
+/// identity its endpoint runs on, where it dials, and how it hears back.
+pub struct Entry {
+    /// This device's collaboration identity, on whose key the endpoint runs:
+    /// with it, every workspace is told which device and which person is
+    /// here. Without one — a test, a stand-in session — the session is a
+    /// device nobody certified and stays anonymous in workspaces.
+    pub identity: Option<HostIdentity>,
+    /// What the person's settings say this device says of them here.
+    pub own: OwnPresence,
+    /// The hosts the person points this device at.
+    pub hosts: Vec<EndpointAddr>,
+    /// What the person's settings say may continue on their other devices,
+    /// kept current by the session's settings watch.
+    pub continuity: Continuity,
+    /// What tells the peer actor the network speaks.
+    pub wake: Arc<dyn Fn() + Send + Sync>,
+}
+
 impl Client {
     /// Take part in the collaboration plane: bind this device's endpoint,
     /// start the peer actor, and from then on hear the workspaces the session
     /// joins.
     ///
-    /// `identity` is this device's collaboration identity, on whose key the
-    /// endpoint runs: with it, every workspace is told which device and which
-    /// person is here. Without one — a test, a stand-in session — the
-    /// session is a device nobody certified and stays anonymous in workspaces.
-    ///
-    /// `continuity` is what the person's settings say may continue on their
-    /// other devices, kept current by the session's settings watch.
+    /// `entry` is this device as it enters.
     ///
     /// The session's channels, when `engine` keeps them, hear the workspaces'
     /// governance on this plane and tell it which devices each workspace admits:
@@ -868,22 +881,20 @@ impl Client {
     /// # Errors
     /// The endpoint could not be bound.
     pub fn start(
-        identity: Option<HostIdentity>,
+        entry: Entry,
         engine: Option<Arc<Engine>>,
-        own: OwnPresence,
-        hosts: Vec<EndpointAddr>,
-        continuity: Continuity,
-        wake: Arc<dyn Fn() + Send + Sync>,
         questions: Option<tilo_service::Questions>,
         beside: tilo_network_actor::local_host::Protocols,
         documents: Option<PeerDocuments>,
     ) -> std::io::Result<Self> {
+        let identity = entry.identity;
+        let wake = entry.wake;
         let (outgoing, commands) = tokio::sync::mpsc::unbounded_channel();
         let (arrivals, arrived) = std::sync::mpsc::channel();
         let (enrollments, enrolled) = std::sync::mpsc::channel();
         let (ready, bound) = std::sync::mpsc::channel();
         let (user, device) = certified_as(identity.as_ref());
-        let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), continuity);
+        let fabric = restored_fabric(identity.as_ref(), outgoing.clone(), entry.continuity);
         // What the actor serves for the session is installed before it starts:
         // every actor built from here on answers those doors.
         let updates = crate::network::install(fabric.as_ref(), questions);
@@ -943,7 +954,7 @@ impl Client {
                 workspaces: Vec::new(),
                 active: None,
             }),
-            own: RefCell::new(own),
+            own: RefCell::new(entry.own),
             here: Here::default(),
             said_at: Cell::new(Instant::now()),
             wave_seq: Cell::new(0),
@@ -984,7 +995,7 @@ impl Client {
         let _ = sync.outgoing.send(Outgoing::WatchSiblings);
         // The hosts next: a workspace joined before them is replayed to this
         // device when its host session comes up, never lost.
-        for host in hosts {
+        for host in entry.hosts {
             let _ = sync.outgoing.send(Outgoing::Connect(host));
         }
         Ok(sync)

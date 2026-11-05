@@ -41,7 +41,7 @@ use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_network_actor::HostIdentity;
 use tilo_service::{Answer, Question, Questions};
 use tilo_session::fabric::Continuity;
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_session::{Options, Session};
 use tilo_unlock_protocol::{
     BootId, BootKeyCert, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN,
@@ -197,12 +197,14 @@ impl Devices {
         let questions = Questions::new();
         let desk = Rc::new(
             Client::start(
-                tilo_session::sync::device_identity(),
+                Entry {
+                    identity: tilo_session::sync::device_identity(),
+                    own: OwnPresence::default(),
+                    hosts: Vec::new(),
+                    continuity: Continuity::default(),
+                    wake: Arc::new(|| {}),
+                },
                 None,
-                OwnPresence::default(),
-                Vec::new(),
-                Continuity::default(),
-                Arc::new(|| {}),
                 Some(questions.clone()),
                 Vec::new(),
                 None,
@@ -214,18 +216,20 @@ impl Devices {
         // holds.
         let phone = Rc::new(
             Client::start(
-                Some(HostIdentity {
-                    device_cert: person.phone_cert.clone(),
-                    device_signing_key: person.phone_key.clone(),
-                    workspace_device_certs: std::collections::HashMap::default(),
-                    workspace_revocations: std::collections::HashMap::default(),
-                    identity_paths: None,
-                }),
+                Entry {
+                    identity: Some(HostIdentity {
+                        device_cert: person.phone_cert.clone(),
+                        device_signing_key: person.phone_key.clone(),
+                        workspace_device_certs: std::collections::HashMap::default(),
+                        workspace_revocations: std::collections::HashMap::default(),
+                        identity_paths: None,
+                    }),
+                    own: OwnPresence::default(),
+                    hosts: Vec::new(),
+                    continuity: Continuity::default(),
+                    wake: Arc::new(|| {}),
+                },
                 None,
-                OwnPresence::default(),
-                Vec::new(),
-                Continuity::default(),
-                Arc::new(|| {}),
                 None,
                 Vec::new(),
                 None,

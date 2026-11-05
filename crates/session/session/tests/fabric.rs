@@ -30,7 +30,7 @@ use tilo_device_fabric::{
 };
 use tilo_network_actor::HostIdentity;
 use tilo_session::fabric::Continuity;
-use tilo_session::sync::{Client, OwnPresence};
+use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 /// One pass of the session's loop, as the session runs it on its own clock.
@@ -71,18 +71,20 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Device {
     };
     sign_device_cert(&mut cert, person).expect("the person signs their own device");
     let client = Client::start(
-        Some(HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        }),
+        Entry {
+            identity: Some(HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            }),
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        OwnPresence::default(),
-        Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
         Vec::new(),
         None,

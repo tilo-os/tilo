@@ -27,7 +27,7 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_network_actor::{HostIdentity, NetEvent, workspace_topic_id};
 
 use super::*;
-use crate::sync::{Client, OwnPresence};
+use crate::sync::{Client, Entry, OwnPresence};
 use crate::{ActionPlane, Options, Session};
 use tilo_live::plane::Join;
 use tilo_live::relay::{Denied, Peer, Relay, RelayAuthority, SessionAuthorization};
@@ -122,18 +122,20 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
     };
     tilo_user_identity::sign_device_cert(&mut cert, person).expect("the person signs their device");
     Client::start(
-        Some(HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        }),
+        Entry {
+            identity: Some(HostIdentity {
+                device_cert: cert,
+                device_signing_key: key,
+                workspace_device_certs: HashMap::new(),
+                workspace_revocations: HashMap::new(),
+                identity_paths: None,
+            }),
+            own: OwnPresence::default(),
+            hosts: Vec::new(),
+            continuity: Continuity::default(),
+            wake: Arc::new(|| {}),
+        },
         None,
-        OwnPresence::default(),
-        Vec::new(),
-        Continuity::default(),
-        Arc::new(|| {}),
         None,
         Vec::new(),
         None,
