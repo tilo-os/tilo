@@ -75,7 +75,16 @@ impl SystemdApply {
         session: &Session,
         uid: u32,
     ) -> Result<Vec<(String, String)>, DaemonError> {
-        let pid = self.session_pid(session).ok_or_else(|| {
+        // A board's seat stops one backend before it starts the next
+        // (tilo-seat-session), so for a moment neither unit has a main
+        // process while the seat is on its way to the other. The session is
+        // the account's either way, so it is waited for like any session.
+        let pid = match self.session_pid(session) {
+            Some(pid) => Some(pid),
+            None if !session.stand_in => wait_session_process(|| self.session_pid(session)),
+            None => None,
+        };
+        let pid = pid.ok_or_else(|| {
             DaemonError::InvalidParams("the admitted session has no live process".into())
         })?;
         cohort_process_environment(pid, uid)
@@ -275,6 +284,23 @@ fn session_process_pid(
             .or_else(headless_pid);
     }
     unit_pid(&session.unit)
+}
+
+/// A session's process once it has one, waiting out a seat that is switching
+/// backends. Bounded like [`SystemdApply::wait_session_ready`]: a session that
+/// never comes up is reported, not waited on forever.
+fn wait_session_process(mut find: impl FnMut() -> Option<u32>) -> Option<u32> {
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let started = std::time::Instant::now();
+    loop {
+        if let Some(pid) = find() {
+            return Some(pid);
+        }
+        if started.elapsed() >= WAIT {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// A unit's main process, when it runs one.
