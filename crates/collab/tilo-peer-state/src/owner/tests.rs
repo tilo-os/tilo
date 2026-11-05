@@ -270,6 +270,76 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
         .unwrap();
 }
 
+/// A write signed outside the owner turn the way every SDK document signer
+/// signs it: with the process-wide unordered sequence, not `floor + 1`.
+fn unordered_edit(joined: &Enrolled, topic: &str) -> OwnerCommitRequest {
+    use collab_types::{
+        DocumentMutation, Ed25519PublicKey, OpKind, SignedOp, document_artifact_id,
+        document_attestation_id, next_unordered_document_sequence, sign_op,
+    };
+    let changes = joined
+        .owner
+        .with_current(joined.workspace, |view| {
+            let mut chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            let before = chat.get_heads();
+            chat.put(ROOT, "topic", topic).unwrap();
+            chat.commit_edit("fixture", "topic");
+            Ok(chat.save_after(&before))
+        })
+        .unwrap();
+    let key = member();
+    let mutation = DocumentMutation::Incremental(changes);
+    let mut envelope = SignedOp::new_unsigned(
+        mutation.encode().unwrap(),
+        document_artifact_id(APP, WORKSPACE, ""),
+        Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+        document_attestation_id(APP, WORKSPACE, ""),
+        OpKind::Change,
+        joined.now,
+        next_unordered_document_sequence(joined.now),
+    );
+    sign_op(&mut envelope, &key).unwrap();
+    OwnerCommitRequest {
+        workspace: WORKSPACE.into(),
+        operation: CommitOperation::Document {
+            app: APP.into(),
+            record: String::new(),
+            envelope: Box::new(envelope),
+        },
+    }
+}
+
+#[test]
+fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence() {
+    let joined = enrolled();
+    let request = unordered_edit(&joined, "unordered edit");
+    joined
+        .owner
+        .commit_document(request.clone(), joined.now)
+        .unwrap();
+    let CommitOperation::Document { envelope, .. } = &request.operation else {
+        panic!("the unordered edit is a document write")
+    };
+    joined
+        .owner
+        .with_current(joined.workspace, |view| {
+            assert!(
+                view.peer()
+                    .lookup_exact_local_document(APP, "", envelope, joined.now)
+                    .map_err(|error| error.to_string())?
+                    .is_some(),
+                "the caller-signed write must leave exact admission evidence"
+            );
+            let chat = AutoCommit::load(&view.peer().document(APP, "").unwrap()).unwrap();
+            assert_eq!(
+                chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
+                Some("unordered edit")
+            );
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[test]
 fn an_uncertain_write_fences_every_workspace_until_reopened() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
