@@ -42,6 +42,7 @@ mod record;
 mod records;
 mod records_service;
 mod reflection;
+mod reminders;
 mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]

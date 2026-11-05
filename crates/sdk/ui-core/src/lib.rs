@@ -311,7 +311,6 @@ pub mod own_paint;
 pub mod published;
 pub mod reader_hud;
 pub mod record;
-pub mod reminders;
 pub mod remote_actions;
 pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

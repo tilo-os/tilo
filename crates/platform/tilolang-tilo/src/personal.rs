@@ -14,7 +14,12 @@
 //! $personal/<person>/views/<window>/<window|lens>/<state>  the value, as JSON
 //! $personal/<person>/seen/<resource>/{change,at}           the newest version they saw, and when
 //! $personal/<person>/runs/<run>                            a task run they reviewed
+//! $personal/<person>/reminded/<reminder>                   a reminder they were already told
 //! ```
+//!
+//! A reminder's mark is what keeps every device of one person from telling them the same
+//! reminder twice: whichever device rings it first writes the mark, and the others read it
+//! before they would ring ([`crate::reminders`]).
 //!
 //! Only the person an entry is about writes it: [`Keep::apply`] refuses a change whose invoking
 //! actor is not the entry's person, so a window keeps its own person's state and nobody
@@ -47,12 +52,15 @@ pub const VIEW_STATE: &str = "view-state";
 pub const SEEN: &str = "seen";
 /// The verb keeping the task runs a person reviewed.
 pub const RUNS: &str = "seen-runs";
+/// The verb keeping a reminder that was delivered to a person.
+pub const REMINDED: &str = "reminded";
 
 /// Where the record keeps its own state, apart from anything else it holds.
 const PERSONAL: &str = "$personal";
 const VIEWS: &str = "views";
 const SEEN_MARKS: &str = "seen";
 const REVIEWED: &str = "runs";
+const REMINDER_MARKS: &str = "reminded";
 
 /// One slot of the person's window or lens state, as the runtime keys it and as their record
 /// keeps it.
@@ -105,8 +113,17 @@ pub struct Reviewed {
     pub run: String,
 }
 
+/// One reminder a person was already told of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reminded {
+    /// Whose reminder it was.
+    pub person: String,
+    /// The reminder, as [`crate::reminders::Alarm::key`] names it.
+    pub reminder: String,
+}
+
 /// What the workspace's record of each person's own state holds: the window and lens state they
-/// set, what they have seen, and the task runs they reviewed.
+/// set, what they have seen, the task runs they reviewed, and the reminders they were told of.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonalState {
     /// How their windows show their resources, and where they are in them.
@@ -115,6 +132,8 @@ pub struct PersonalState {
     pub seen: Vec<Seen>,
     /// The task runs they reviewed.
     pub runs: Vec<Reviewed>,
+    /// The reminders delivered to them, on any of their devices.
+    pub told: Vec<Reminded>,
 }
 
 impl PersonalState {
@@ -141,13 +160,22 @@ impl PersonalState {
                 .filter(|reviewed| theirs(&reviewed.person))
                 .cloned()
                 .collect(),
+            told: self
+                .told
+                .iter()
+                .filter(|reminded| theirs(&reminded.person))
+                .cloned()
+                .collect(),
         }
     }
 
     /// Whether nobody set or saw anything here yet.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.slots.is_empty() && self.seen.is_empty() && self.runs.is_empty()
+        self.slots.is_empty()
+            && self.seen.is_empty()
+            && self.runs.is_empty()
+            && self.told.is_empty()
     }
 }
 
@@ -167,6 +195,7 @@ impl Resource for Personal {
             slots: slots(doc)?,
             seen: marks(doc)?,
             runs: reviewed(doc),
+            told: told(doc),
         })
     }
 
@@ -175,6 +204,7 @@ impl Resource for Personal {
             (VIEW_STATE, "Keep a view's state"),
             (SEEN, "Keep what is seen"),
             (RUNS, "Keep reviewed runs"),
+            (REMINDED, "Keep a reminder delivered"),
         ]
         .into_iter()
         .map(|(verb, label)| declaration(verb, label))
@@ -227,6 +257,8 @@ pub enum Keep {
     },
     /// The task runs `person` reviewed.
     Runs { person: String, runs: Vec<String> },
+    /// `person` was told the reminder `reminder`: no device of theirs tells it again.
+    Reminded { person: String, reminder: String },
 }
 
 impl Keep {
@@ -237,6 +269,7 @@ impl Keep {
             Self::View { .. } => VIEW_STATE,
             Self::Seen { .. } => SEEN,
             Self::Runs { .. } => RUNS,
+            Self::Reminded { .. } => REMINDED,
         }
     }
 
@@ -244,9 +277,10 @@ impl Keep {
     #[must_use]
     pub fn person(&self) -> &str {
         match self {
-            Self::View { person, .. } | Self::Seen { person, .. } | Self::Runs { person, .. } => {
-                person
-            }
+            Self::View { person, .. }
+            | Self::Seen { person, .. }
+            | Self::Runs { person, .. }
+            | Self::Reminded { person, .. } => person,
         }
     }
 
@@ -328,6 +362,10 @@ impl Action for Keep {
                 for run in runs {
                     doc.put(&reviewed, run.as_str(), true)?;
                 }
+            }
+            Self::Reminded { reminder, .. } => {
+                let told = ensure_map(doc, &person, REMINDER_MARKS)?;
+                doc.put(&told, reminder.as_str(), true)?;
             }
         }
         Ok(())
@@ -465,6 +503,21 @@ fn marks(doc: &Doc) -> Result<Vec<Seen>, ModelError> {
         }
     }
     Ok(marks)
+}
+
+/// The reminders people were told of.
+fn told(doc: &Doc) -> Vec<Reminded> {
+    let mut told = Vec::new();
+    for (person, held) in people(doc) {
+        let Some(reminded) = map_at(doc, &held, REMINDER_MARKS) else {
+            continue;
+        };
+        told.extend(doc.keys(&reminded).map(|reminder| Reminded {
+            person: person.clone(),
+            reminder,
+        }));
+    }
+    told
 }
 
 /// The task runs people reviewed.
@@ -726,6 +779,45 @@ mod tests {
     fn a_reading_the_platform_keeps_is_not_the_persons_state_and_is_not_kept() {
         let key = StateKey::runtime("tasks", None, "present");
         assert!(Keep::view(&key, &Value::text("ada")).is_err());
+    }
+
+    #[test]
+    fn a_reminder_a_person_was_told_is_kept_once_and_read_back_as_theirs_alone() {
+        let reminder = "tl:t.tasks:tasks/1@1793080800".to_owned();
+        let doc = kept(&[
+            (
+                "ada",
+                Keep::Reminded {
+                    person: "ada".to_owned(),
+                    reminder: reminder.clone(),
+                },
+            ),
+            (
+                "ada",
+                Keep::Reminded {
+                    person: "ada".to_owned(),
+                    reminder: reminder.clone(),
+                },
+            ),
+            (
+                "bo",
+                Keep::Reminded {
+                    person: "bo".to_owned(),
+                    reminder: "tl:t.tasks:tasks/2@1793080800".to_owned(),
+                },
+            ),
+        ]);
+        let state = Personal::read(&doc).expect("the record reads");
+        assert_eq!(
+            state.of("ada").told,
+            vec![Reminded {
+                person: "ada".to_owned(),
+                reminder: reminder.clone(),
+            }],
+            "one mark per reminder, however often it is kept"
+        );
+        assert_eq!(state.of("bo").told.len(), 1);
+        assert!(state.of("cy").told.is_empty());
     }
 
     #[test]
