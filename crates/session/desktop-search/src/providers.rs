@@ -1962,10 +1962,9 @@ mod tests {
         )]);
         assert_eq!(commands.query("close").len(), 1);
         assert!(commands.query("launch").is_empty());
-        // Nothing typed lists them too: what the workspace can do from here
-        // belongs to what it shows, under its windows and its records.
-        assert_eq!(commands.query("").len(), 1);
-        assert_eq!(commands.query("  ").len(), 1);
+        // Nothing typed leaves it out: closing this window is looked for by
+        // name, it is not offered to someone who typed nothing.
+        assert!(commands.query(" ").is_empty());
     }
 
     /// Every app of the manifest registry, as the portable desktop lists them.

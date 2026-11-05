@@ -999,12 +999,14 @@ fn all_results_entry(rest: usize) -> CommandEntry {
     .icon(ui::icons::Icon::ChevronDown)
 }
 
-/// Kinds a crowded card never leaves out: the answer to the question and
-/// the way to the web.
+/// Kinds a crowded card never leaves out: the answer to the question, the
+/// way to the web, and where the person was just at — Continue is what an
+/// empty card is for, so no budget may take it away.
 fn always_shown(kind: &ResourceKind) -> bool {
     [
         crate::providers::answers_kind(),
         crate::providers::web_kind(),
+        crate::providers::places::continue_kind(),
     ]
     .contains(kind)
         || *kind == crate::providers::ask_kind()
@@ -1401,6 +1403,10 @@ mod tests {
         search.restart("", ui::search::engine_generation());
         settled(&mut search);
         let entries = search.palette().visible_entries();
+        assert!(
+            entries.iter().any(|entry| entry.id == ALL_RESULTS_ID),
+            "the small card leaves a group to the all-results row: {entries:?}"
+        );
         assert!(
             entries
                 .iter()

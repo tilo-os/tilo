@@ -1215,15 +1215,13 @@ mod tests {
         assert_eq!(
             listed
                 .iter()
-                .filter(|row| row.contains(":Home"))
+                .filter(|row| row.ends_with(":Home"))
                 .collect::<Vec<_>>(),
-            ["continue:place:9"],
+            ["continue:Home"],
             "the window is listed once, as where the person continues: {listed:?}"
         );
         assert!(
-            !listed
-                .iter()
-                .any(|row| row.starts_with("desktop-windows:9")),
+            !listed.iter().any(|row| row == "desktop-windows:Home"),
             "the window wearing the same name is not listed beside it: {listed:?}"
         );
     }
