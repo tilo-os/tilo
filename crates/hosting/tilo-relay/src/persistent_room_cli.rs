@@ -44,6 +44,8 @@ const MINUTE_MS: u64 = 60 * 1000;
 /// Guests pruned in one governance change: the workspace is held while it
 /// commits, and each removal costs time in proportion to its members.
 const PRUNE_BATCH: usize = 100;
+/// `--author-app none`: the workspace authors nothing and is read-only.
+const NO_AUTHORED_APPS: &str = "none";
 
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
@@ -182,6 +184,9 @@ pub struct PersistentArgs {
     /// content, so a member whose role lets them change the workspace (a guest
     /// is an Editor) can talk in its Chat; repeatable. Settled at every
     /// start: an app named here no longer stops authoring the workspace.
+    /// Naming none authors every first-party app and every seeded one, since a
+    /// workspace's app list is its policy and a public workspace offers its
+    /// members every app; `none` authors none, and the workspace is read-only.
     #[arg(long = "author-app", value_name = "APP_ID")]
     pub author_apps: Vec<String>,
     /// A member with no session for this many days stops being one; they
@@ -1020,6 +1025,29 @@ pub(crate) async fn settle_strips(
         .map_err(|error| anyhow::anyhow!("give the shared desktop its strips: {error}"))
 }
 
+/// The apps the workspace's members write through: the ones `--author-app`
+/// names, or, naming none, every first-party app and every seeded one.
+fn authored_apps(args: &PersistentArgs) -> Vec<String> {
+    if args.author_apps.is_empty() {
+        let mut apps: Vec<String> = tilo_desktop_model::first_party::FIRST_PARTY_APPS
+            .iter()
+            .map(|app| (*app).to_owned())
+            .collect();
+        for app in &args.seed_apps {
+            if !apps.contains(app) {
+                apps.push(app.clone());
+            }
+        }
+        return apps;
+    }
+    // No app's id is `none`: the flag says the workspace is read-only.
+    args.author_apps
+        .iter()
+        .filter(|app| app.as_str() != NO_AUTHORED_APPS)
+        .cloned()
+        .collect()
+}
+
 /// Make exactly the operator's `apps` authors of the workspace, so its members
 /// write through them, and take authorship back from an app this host made
 /// an author at an earlier start and no longer names (kept in `authored`).
@@ -1304,7 +1332,7 @@ pub(crate) async fn run(
         &workspaces,
         &workspace,
         &host_cert,
-        &persistent.author_apps,
+        &authored_apps(&persistent),
         &state.join("authored-apps.json"),
     )
     .await?;
@@ -1806,6 +1834,28 @@ mod tests {
     fn the_workspace_is_named_after_the_room_capitalized() {
         assert_eq!(workspace_name("plaza"), "Plaza");
         assert_eq!(workspace_name(""), "");
+    }
+
+    #[test]
+    fn the_workspace_authors_every_first_party_app_unless_it_names_apps() {
+        let mut args = PersistentArgs {
+            seed_apps: vec!["so.tilo.chat".into()],
+            ..PersistentArgs::default()
+        };
+        let every = authored_apps(&args);
+        for app in tilo_desktop_model::first_party::FIRST_PARTY_APPS {
+            assert!(every.iter().any(|named| named.as_str() == *app), "{app}");
+        }
+        assert!(every.iter().any(|app| app == "so.tilo.chat"));
+        assert_eq!(
+            every.len(),
+            every.iter().collect::<BTreeSet<_>>().len(),
+            "an app is named once"
+        );
+        args.author_apps = vec!["so.tilo.chat".into()];
+        assert_eq!(authored_apps(&args), ["so.tilo.chat"]);
+        args.author_apps = vec![NO_AUTHORED_APPS.into()];
+        assert!(authored_apps(&args).is_empty(), "a read-only workspace");
     }
 
     fn store() -> tilo_secrets::SecretStore {

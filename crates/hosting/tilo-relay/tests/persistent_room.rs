@@ -238,9 +238,12 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
         "the same start settles the same"
     );
 
-    let (room, _) = started(&[]);
+    let (room, _) = started(&["--author-app", "none"]);
     room.stop();
-    assert!(authored().is_empty(), "an app no longer named is withdrawn");
+    assert!(
+        authored().is_empty(),
+        "a start that names no app withdraws the ones it named before"
+    );
 }
 
 /// Plain HTTP/1.1 to the room's loopback listener: the page's `fetch`.

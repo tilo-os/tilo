@@ -43,7 +43,7 @@ Optional, with these defaults:
 | `TILO_ROOMS_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
 | `TILO_ROOMS_FEEDBACK_CHANNEL` | none | the channel members report problems to |
 | `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
-| `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through |
+| `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through; `none` makes the workspace read-only |
 | `TILO_ROOMS_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
 | `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days without a session before a member stops being one |
 | `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
@@ -74,7 +74,7 @@ $TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT/
   relay/         the workspace's own state: identity, host key, records,
                  bots, blobs, seeded apps
   room-id        the workspace's UUID, kept across restarts
-  avatars/       avatars the hosts serves at /avatars/<name>
+  avatars/       avatars the host serves at /avatars/<name>
   secrets/       this host's secret store (TILO_SECRETS_DIR), sealed files
 ```
 
