@@ -72,13 +72,6 @@ mod tests {
         .ok();
         assert_eq!(label(&ws, &owner).as_deref(), Some("Cancel transfer"));
         assert_eq!(label(&ws, &recipient).as_deref(), Some("Accept ownership"));
-        let actions: Vec<String> = super::super::ownership_transfer_resource(&ws, &owner)
-            .actions
-            .iter()
-            .map(|action| action.label.clone())
-            .collect();
-        let (_, leads_to) = ownership_button(&ws, &owner).expect("the owner may cancel");
-        assert!(actions.contains(&leads_to), "{leads_to:?} in {actions:?}");
     }
 
     #[test]

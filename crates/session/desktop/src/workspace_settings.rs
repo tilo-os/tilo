@@ -1,42 +1,27 @@
-//! `WorkspaceSettings` — the contextual lens opened from the `TopBar`'s
-//! workspace-name button, with General / People / Agents / Privacy & Security /
-//! Apps & Files / Emoji tabs.
+//! What the workspace settings sheet reads and writes: the words for a
+//! workspace's roles, scopes and grants; the draft a permission is composed
+//! from and the mutation it becomes; a member's role and removal; admitting
+//! and summarising the agents and services that work in the workspace; who
+//! owns it; its emoji and its default apps.
 //!
-//! Members and Permissions are both views of [`Workspace::policy`]
-//! — the single list `decide_capability` consults, the sandbox turns
-//! into bwrap/Landlock rules, and the workspace replicates. A member's role
-//! *is* the verb on their membership capability
-//! ([`Workspace::role_of`]); nothing here keeps a parallel vocabulary
-//! that could drift from what is enforced.
+//! Members and permissions are both views of [`Workspace::policy`] — the
+//! single list `decide_capability` consults, the sandbox turns into
+//! bwrap/Landlock rules, and the workspace replicates. A member's role *is*
+//! the verb on their membership capability ([`Workspace::role_of`]); nothing
+//! here keeps a parallel vocabulary that could drift from what is enforced.
 //!
 //! Every mutation routes through [`Workspace::grant_as`] /
-//! [`Workspace::revoke_as`], which refuse callers failing
-//! [`Workspace::may_administer`]. Non-owners see the same information
-//! with controls painted disabled, not hidden.
+//! [`Workspace::revoke_as`] / [`Workspace::govern_as_at`], which refuse
+//! callers failing [`Workspace::may_administer`].
 
-use crate::authority::WorkspaceAuthority as _;
 use crate::i18n::{t, t_args};
 use tilo_action_policy::Refusal;
 use tilo_sort::CompactSort as _;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
-
-use ui::ColorCompat;
-use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use ui::overlay::FocusTrap;
-use ui::paint::PaintCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{AvatarFace, BadgeFace, Button, ButtonFace, ChipStyle, SegmentedFace, Tone};
 
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
-use tilo_desktop_model::{UserId, Workspace, WorkspaceSlot};
-use ui::TextRole;
-use ui::text_render::TextStyle;
-use ui::widget::ButtonRole;
+use tilo_desktop_model::{UserId, Workspace};
 
 pub mod agent_access;
 pub mod default_apps;
@@ -45,16 +30,14 @@ pub use default_apps::{
     DefaultAppChoice, default_app_choices, default_apps_status, next_user_default,
     next_workspace_default,
 };
-use default_apps::{default_app_labels, resource_kind_label};
 mod agents_pane;
 pub mod emoji_pane;
 pub mod people;
 mod people_pane;
 
-use agents_pane::agent_summary_parts;
 pub use agents_pane::{
-    AgentPreset, AgentRow, AgentSummary, admit_agent, admit_service_member, agent_authority_preset,
-    agent_preset_label, agent_summaries, agents_add_rect, agents_pane_rows,
+    AgentPreset, AgentSummary, admit_agent, agent_authority_preset, agent_preset_label,
+    agent_summaries,
 };
 
 pub use people_pane::{member_row_offers, ownership_button};
@@ -113,1776 +96,14 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
         .unwrap_or_else(|| app_id.to_string())
 }
 
-pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
-/// The stored action type documents carry; it keeps its spelling.
-pub const GOVERNANCE_ACTION_TYPE: &str = "tilo.room.governance.v1";
-
-/// One of the workspace's governance actions, as its published door builds it.
-/// Every one is decided at the workspace's own resource
-/// ([`tilo_desktop_model::governance_of`]) and rechecked by the host that
-/// governs the workspace before it writes anything.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum GovernanceOperation {
-    /// Give `subject` `answer` for actions of `kinds` at `node`, a path below
-    /// the workspace, for `lifetime` (until revoked when absent).
-    Grant {
-        subject: tilo_action_policy::Subject,
-        node: tilo_action_policy::TreePath,
-        kinds: tilo_action_policy::KindSet,
-        answer: tilo_action_policy::Answer,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        lifetime: Option<tilo_action_policy::Lifetime>,
-    },
-    /// Take back the grant `grant`.
-    Revoke { grant: String },
-    /// Save a named grant set: rules over paths below the workspace.
-    SavePreset {
-        name: String,
-        description: String,
-        rules: Vec<tilo_action_policy::Rule>,
-    },
-    /// Give `subject` the grants of the named set, until `expires_unix` when
-    /// it is not zero.
-    AssignPreset {
-        preset: String,
-        subject: tilo_action_policy::Subject,
-        expires_unix: u64,
-    },
-    /// Let application `app` use `action` on `target_app`'s resource
-    /// `resource` here, and nothing else of `target_app`.
-    GrantAppAction {
-        app: String,
-        target_app: String,
-        resource: String,
-        action: String,
-        /// `session` or `always`.
-        lifetime: String,
-    },
-    /// Take back every grant letting `app` use `action` on `target_app`'s
-    /// resource `resource`.
-    RevokeAppAction {
-        app: String,
-        target_app: String,
-        resource: String,
-        action: String,
-    },
-}
-
 pub use tilo_desktop_model::{
     APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
     PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, REVOKE_ACTION_ID,
 };
 
-impl GovernanceOperation {
-    #[must_use]
-    pub fn action_id(&self) -> &'static str {
-        match self {
-            Self::Grant { .. } => GRANT_ACTION_ID,
-            Self::Revoke { .. } => REVOKE_ACTION_ID,
-            Self::SavePreset { .. } => PRESET_SAVE_ACTION_ID,
-            Self::AssignPreset { .. } => PRESET_ASSIGN_ACTION_ID,
-            Self::GrantAppAction { .. } => APP_ACTION_GRANT_ACTION_ID,
-            Self::RevokeAppAction { .. } => APP_ACTION_REVOKE_ACTION_ID,
-        }
-    }
-}
-
-/// What applying a [`GovernanceOperation`] wrote, for the host to mirror into
-/// the workspace document.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct GovernanceApplied {
-    pub edit: tilo_desktop_model::grants::PolicyEdit,
-    /// The grant set saved, when the operation saved one.
-    pub preset: Option<tilo_action_policy::Preset>,
-}
-
-/// The node an app-action grant names: `action` on `target_app`'s resource
-/// `resource`, wherever in the app that resource sits, and nothing else of
-/// `target_app`.
-#[must_use]
-pub fn app_action_node(
-    target_app: &str,
-    resource: &str,
-    action: &str,
-) -> tilo_action_policy::TreePath {
-    tilo_action_policy::TreePath::root()
-        .app(target_app)
-        .rest()
-        .resource(resource)
-        .rest()
-        .action(action)
-}
-
-/// Apply `operation` to `ws` as `actor` at `now` (Unix seconds). The workspace's
-/// policy decides: the actor must hold the governance action and may hand
-/// out no more than they hold.
-///
-/// # Errors
-/// Why the operation was refused, worded for the person; nothing is applied
-/// then.
-pub fn apply_governance(
-    ws: &mut Workspace,
-    actor: &str,
-    operation: GovernanceOperation,
-    now: u64,
-) -> Result<GovernanceApplied, String> {
-    use tilo_action_policy::{Change, Grant, GrantId, Lifetime, Subject};
-    let changes = match operation {
-        GovernanceOperation::Grant {
-            subject,
-            node,
-            kinds,
-            answer,
-            lifetime,
-        } => vec![Change::Grant(
-            Grant::new(
-                format!("grant:{}", uuid::Uuid::new_v4()),
-                subject,
-                ws.node().join(&node),
-                kinds,
-                answer,
-                Subject::person(actor),
-            )
-            .with_lifetime(lifetime.unwrap_or(Lifetime::UntilRevoked)),
-        )],
-        GovernanceOperation::Revoke { grant } => vec![Change::Revoke(GrantId::new(grant))],
-        GovernanceOperation::SavePreset {
-            name,
-            description,
-            rules,
-        } => {
-            let preset = tilo_action_policy::Preset {
-                name,
-                description,
-                rules,
-            };
-            ws.save_preset_as_at(actor, preset.clone(), now)
-                .map_err(|error| error.to_string())?;
-            return Ok(GovernanceApplied {
-                preset: Some(preset),
-                ..GovernanceApplied::default()
-            });
-        }
-        GovernanceOperation::AssignPreset {
-            preset,
-            subject,
-            expires_unix,
-        } => {
-            let lifetime = if expires_unix == 0 {
-                Lifetime::UntilRevoked
-            } else {
-                Lifetime::Until(expires_unix.saturating_mul(1000))
-            };
-            let granted = ws
-                .assign_preset_as_at(actor, &preset, &subject, &lifetime, now)
-                .map_err(|error| error.to_string())?;
-            return Ok(GovernanceApplied {
-                edit: tilo_desktop_model::grants::PolicyEdit {
-                    granted,
-                    ..Default::default()
-                },
-                preset: None,
-            });
-        }
-        operation @ (GovernanceOperation::GrantAppAction { .. }
-        | GovernanceOperation::RevokeAppAction { .. }) => app_action_changes(ws, actor, operation)?,
-    };
-    let edit = ws
-        .govern_all_at(actor, changes, now)
-        .map_err(|refusal| refusal.to_string())?;
-    Ok(GovernanceApplied { edit, preset: None })
-}
-
-/// The policy changes an app-action grant or revocation makes in `ws`.
-fn app_action_changes(
-    ws: &Workspace,
-    actor: &str,
-    operation: GovernanceOperation,
-) -> Result<Vec<tilo_action_policy::Change>, String> {
-    use tilo_action_policy::{Change, Grant, KindSet, Lifetime, Subject};
-    Ok(match operation {
-        GovernanceOperation::GrantAppAction {
-            app,
-            target_app,
-            resource,
-            action,
-            lifetime,
-        } => {
-            let (app, target_app, resource, action) =
-                app_action_target(&app, &target_app, &resource, &action)?;
-            if target_app == tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID {
-                return Err("governing the workspace is granted to people, not apps".into());
-            }
-            let lifetime = match lifetime.trim().to_ascii_lowercase().as_str() {
-                "session" => Lifetime::Session(tilo_desktop_model::session_id().to_owned()),
-                "always" => Lifetime::UntilRevoked,
-                _ => return Err("lifetime must be session or always".into()),
-            };
-            // Enough for any action that at most changes the workspace undoably:
-            // an outside effect still asks.
-            vec![Change::Grant(
-                Grant::new(
-                    format!("app-action:{}", uuid::Uuid::new_v4()),
-                    Subject::App(app.to_owned()),
-                    ws.node()
-                        .join(&app_action_node(target_app, resource, action)),
-                    KindSet::READ_UNDOABLE,
-                    tilo_action_policy::Answer::Allow,
-                    Subject::person(actor),
-                )
-                .with_lifetime(lifetime),
-            )]
-        }
-        GovernanceOperation::RevokeAppAction {
-            app,
-            target_app,
-            resource,
-            action,
-        } => {
-            let (app, target_app, resource, action) =
-                app_action_target(&app, &target_app, &resource, &action)?;
-            let subject = Subject::App(app.to_owned());
-            let node = ws
-                .node()
-                .join(&app_action_node(target_app, resource, action));
-            ws.policy
-                .grants
-                .iter()
-                // The grants given for this action, whether through this
-                // operation or by answering the app's ask in place.
-                .filter(|grant| {
-                    grant.subject == subject && (grant.node == node || node.covers(&grant.node))
-                })
-                .map(|grant| Change::Revoke(grant.id.clone()))
-                .collect()
-        }
-        GovernanceOperation::Grant { .. }
-        | GovernanceOperation::Revoke { .. }
-        | GovernanceOperation::SavePreset { .. }
-        | GovernanceOperation::AssignPreset { .. } => {
-            return Err("not an app-action grant".into());
-        }
-    })
-}
-
-fn app_action_target<'a>(
-    app: &'a str,
-    target_app: &'a str,
-    resource: &'a str,
-    action: &'a str,
-) -> Result<(&'a str, &'a str, &'a str, &'a str), String> {
-    let named = (
-        app.trim(),
-        target_app.trim(),
-        resource.trim(),
-        action.trim(),
-    );
-    if named.0.is_empty() || named.1.is_empty() || named.2.is_empty() || named.3.is_empty() {
-        return Err(
-            "name the application, the other application, its resource and the action".into(),
-        );
-    }
-    Ok(named)
-}
-
-/// Whether `action` is one of the workspace's governance actions, which the
-/// workspace itself runs rather than an application.
-#[must_use]
-pub fn is_governance_action(action: &str) -> bool {
-    tilo_desktop_model::governance_of(action).is_some()
-}
-
-fn encoded_governance_operation(operation: &GovernanceOperation) -> tilo_actions::EncodedAction {
-    tilo_actions::EncodedAction::encode_operation(GOVERNANCE_ACTION_TYPE, operation).unwrap_or_else(
-        |error| tilo_actions::EncodedAction {
-            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-            payload: error.to_string().into_bytes(),
-        },
-    )
-}
-
-/// The JSON a value of `T` decodes from, for an argument a governance action
-/// takes whole.
-fn decoded<T: serde::de::DeserializeOwned>(
-    arguments: &tilo_actions::ActionArgs,
-    name: &str,
-) -> Option<T> {
-    serde_json::from_value(arguments.to_json().get(name)?.clone()).ok()
-}
-
-/// The kinds of action a grant covers: a set of the kinds, each read as
-/// people say it.
-fn kinds_schema() -> serde_json::Value {
-    use tilo_action_policy::ActionKind;
-    let kinds = ActionKind::ALL.map(|kind| kind.to_string());
-    let labels: serde_json::Map<String, serde_json::Value> = ActionKind::ALL
-        .into_iter()
-        .map(|kind| {
-            (
-                kind.to_string(),
-                kinds_phrase(tilo_action_policy::KindSet::of(kind)).into(),
-            )
-        })
-        .collect();
-    serde_json::json!({
-        "type": "array",
-        "minItems": 1,
-        "uniqueItems": true,
-        "items": {
-            "enum": kinds,
-            tilo_actions::CHOICE_LABELS_ANNOTATION: labels,
-        },
-    })
-}
-
-/// One value a person may pick for a parameter that picks from the
-/// workspace ([`tilo_actions::Pick`]): what it binds, how it reads, what
-/// more tells it apart (a grant's allowance, shown under its holder), and for
-/// a person, the key of their avatar.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Picked {
-    pub value: serde_json::Value,
-    pub label: String,
-    pub detail: Option<String>,
-    pub person: Option<String>,
-}
-
-/// What a person may pick for `pick` in `ws`, as `local_user` sees it, with
-/// `apps` naming apps and resources: the workspace's people, agents and
-/// apps; the whole workspace, each app and each resource; each grant they
-/// could revoke, by what it allows; or each existing resource of a kind, by
-/// its title, as a reference to it.
-pub fn picks(
-    ws: &Workspace,
-    local_user: &str,
-    apps: &dyn AppDirectory,
-    pick: tilo_actions::Pick,
-) -> Vec<Picked> {
-    use tilo_action_policy::{Level, TreePath};
-    match pick {
-        tilo_actions::Pick::Subject => grant_subjects(ws)
-            .into_iter()
-            .filter_map(|subject| {
-                Some(Picked {
-                    value: serde_json::to_value(subject.to_grantee()?).ok()?,
-                    label: subject.display(ws, local_user, apps),
-                    detail: None,
-                    person: (subject.kind == SubjectKind::Member).then(|| subject.id.clone()),
-                })
-            })
-            .collect(),
-        tilo_actions::Pick::Node => {
-            let mut app_ids: Vec<String> = grant_subjects(ws)
-                .into_iter()
-                .filter(|subject| subject.kind == SubjectKind::App)
-                .map(|subject| subject.id)
-                .collect();
-            let resources = apps.resources();
-            app_ids.extend(resources.iter().map(|(app, _)| app.clone()));
-            app_ids.compact_sort();
-            app_ids.dedup();
-            let nodes = std::iter::once(TreePath::root())
-                .chain(app_ids.iter().map(|app| TreePath::root().app(app)))
-                .chain(resources.iter().map(|(app, resource)| {
-                    TreePath::root()
-                        .app(app)
-                        .any(Level::Kind)
-                        .resource(resource)
-                }));
-            nodes
-                .map(|node| Picked {
-                    label: node_phrase(&node, apps),
-                    value: serde_json::Value::String(if node.is_root() {
-                        String::new()
-                    } else {
-                        node.to_string()
-                    }),
-                    detail: None,
-                    person: None,
-                })
-                .collect()
-        }
-        tilo_actions::Pick::Resource { kind } => {
-            let mut found: Vec<TitledResource> = apps
-                .titled_resources()
-                .into_iter()
-                .filter(|titled| titled.kind == kind)
-                .collect();
-            found.sort_by(|a, b| {
-                a.title
-                    .cmp(&b.title)
-                    .then_with(|| a.resource.cmp(&b.resource))
-            });
-            found
-                .into_iter()
-                .map(|titled| Picked {
-                    value: serde_json::json!({
-                        "app": titled.app,
-                        "kind": kind,
-                        "id": titled.resource,
-                        "label": titled.title,
-                    }),
-                    detail: Some(app_display_name(apps, &titled.app)),
-                    label: titled.title,
-                    person: None,
-                })
-                .collect()
-        }
-        tilo_actions::Pick::Grant => listed_capabilities(ws)
-            .into_iter()
-            .filter_map(|(subject, listed)| match listed {
-                Listed::Grant(grant) => Some(Picked {
-                    value: serde_json::Value::String(grant.id.as_str().to_owned()),
-                    label: subject.display(ws, local_user, apps),
-                    detail: Some(grant_allows(grant, apps)),
-                    person: None,
-                }),
-                Listed::Sandbox(_) => None,
-            })
-            .collect(),
-    }
-}
-
-/// The workspace's governance surface: granting, revoking, named grant sets and
-/// letting one app use another's action, published on the workspace's own
-/// resource so searches, agents and scripts reach them like any action.
-pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::ResourceSpec {
-    governance_resource_with_access(
-        ws,
-        ws.may_govern_at(
-            local_user,
-            tilo_action_policy::roles::governance::GRANT,
-            tilo_clock::unix_now(),
-        ),
-    )
-}
-
-/// Build the governance surface after an external authority boundary (the
-/// broker) has established that its caller may inspect governance actions.
-/// Each action is rechecked immediately before it writes.
-#[expect(
-    clippy::too_many_lines,
-    reason = "a declarative resource description listing every governance action"
-)]
-pub fn governance_resource_with_access(
-    ws: &Workspace,
-    can_govern: bool,
-) -> tilo_actions::ResourceSpec {
-    use tilo_actions::{
-        ActionContract, ActionParam, ConfirmationPolicy, OperationKind, ParamType, RiskLevel,
-    };
-
-    let mut root = tilo_actions::ResourceSpec::new(
-        tilo_desktop_model::governance_resource_id(&ws.id()),
-        tilo_action_policy::roles::ROOM_KIND,
-        t_args(
-            "workspace-settings-roles-resource",
-            &[("workspace", ws.name.clone().into())],
-        ),
-    );
-    if !can_govern {
-        return root;
-    }
-    let contract = ActionContract {
-        kind: tilo_action_policy::roles::GOVERNANCE_KIND,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        tags: vec!["workspace".into(), "permissions".into(), "roles".into()],
-        ..ActionContract::default()
-    };
-    let subject_param = || {
-        ActionParam::required_owned(
-            "subject",
-            ParamType::Object,
-            "Who: {\"person\": id}, {\"agent\": id}, {\"app\": package id} or {\"role\": \"viewer\"|\"commenter\"|\"editor\"}",
-        )
-        .picking(tilo_actions::Pick::Subject)
-    };
-    root.actions.push(
-        tilo_actions::ActionSpec::typed_operation(
-            GRANT_ACTION_ID,
-            t("workspace-settings-grant"),
-            t("workspace-settings-grant-placeholder"),
-            OperationKind::Effect,
-            GOVERNANCE_ACTION_TYPE,
-            vec![
-                subject_param(),
-                ActionParam::required_owned(
-                    "node",
-                    ParamType::Text,
-                    "Where, below the workspace: \"app:so.tilo.notes\", \"app:so.tilo.mail/**/action:send\", or \"\" for the whole workspace",
-                )
-                .picking(tilo_actions::Pick::Node),
-                ActionParam::required_owned(
-                    "kinds",
-                    ParamType::Array,
-                    "Which kinds of action: \"read\", \"undoable\", \"outside\"",
-                )
-                .with_schema(kinds_schema()),
-                ActionParam::required_owned("answer", ParamType::Text, "allow, ask or deny")
-                    .with_choices(["allow", "ask", "deny"]),
-            ],
-            |arguments| {
-                let (Some(subject), Some(node), Some(kinds), Some(answer)) = (
-                    decoded(arguments, "subject"),
-                    arguments
-                        .text("node")
-                        .and_then(|node| node.parse::<tilo_action_policy::TreePath>().ok()),
-                    decoded(arguments, "kinds"),
-                    decoded(arguments, "answer"),
-                ) else {
-                    return tilo_actions::EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"the grant does not name a subject, a node, kinds and an answer"
-                            .to_vec(),
-                    };
-                };
-                encoded_governance_operation(&GovernanceOperation::Grant {
-                    subject,
-                    node,
-                    kinds,
-                    answer,
-                    lifetime: None,
-                })
-            },
-        )
-        .with_description(t("workspace-settings-grant-description"))
-        .with_contract(contract.clone()),
-    );
-    root.actions.push(
-        tilo_actions::ActionSpec::typed_operation(
-            REVOKE_ACTION_ID,
-            t("workspace-settings-revoke"),
-            t("workspace-settings-revoke-placeholder"),
-            OperationKind::Effect,
-            GOVERNANCE_ACTION_TYPE,
-            vec![
-                ActionParam::required_owned(
-                    "grant",
-                    ParamType::Text,
-                    "The id of the grant to take back",
-                )
-                .picking(tilo_actions::Pick::Grant),
-            ],
-            |arguments| {
-                encoded_governance_operation(&GovernanceOperation::Revoke {
-                    grant: arguments.text("grant").unwrap_or_default().to_string(),
-                })
-            },
-        )
-        .with_description(t("workspace-settings-revoke-description"))
-        .with_contract(contract.clone()),
-    );
-    root.actions.push(
-        tilo_actions::ActionSpec::typed_operation(
-            PRESET_SAVE_ACTION_ID,
-            t("workspace-settings-role-save"),
-            t("workspace-settings-role-save-placeholder"),
-            OperationKind::Effect,
-            GOVERNANCE_ACTION_TYPE,
-            vec![
-                ActionParam::required_owned("name", ParamType::Text, "Unique grant set name"),
-                ActionParam::optional_owned(
-                    "description",
-                    ParamType::Text,
-                    "What this grant set is for",
-                ),
-                ActionParam::required_owned(
-                    "rules",
-                    ParamType::Array,
-                    "Rules: {\"node\": path below the workspace, \"kinds\": [\"read\"|\"undoable\"|\"outside\"], \"answer\": \"allow\"|\"ask\"|\"deny\"}",
-                )
-                .with_schema(serde_json::json!({"minItems": 1, "maxItems": 128})),
-            ],
-            |arguments| {
-                let Some(rules) = decoded(arguments, "rules") else {
-                    return tilo_actions::EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"grant set rules do not match the rule shape".to_vec(),
-                    };
-                };
-                encoded_governance_operation(&GovernanceOperation::SavePreset {
-                    name: arguments.text("name").unwrap_or_default().to_string(),
-                    description: arguments
-                        .text("description")
-                        .unwrap_or_default()
-                        .to_string(),
-                    rules,
-                })
-            },
-        )
-        .with_description(t("workspace-settings-role-save-description"))
-        .with_contract(contract.clone()),
-    );
-    let preset_names: Vec<String> = ws
-        .presets
-        .iter()
-        .map(|preset| preset.name.clone())
-        .collect();
-    let mut assign_params = vec![
-        ActionParam::required_owned(
-            "preset",
-            ParamType::Text,
-            "Exact name of a saved grant set, including one created by an earlier step",
-        ),
-        subject_param(),
-        ActionParam::optional_owned(
-            "expires_unix",
-            ParamType::Integer,
-            "Unix expiry; omit for a durable assignment",
-        ),
-    ];
-    if !preset_names.is_empty()
-        && let Some(preset) = assign_params.first_mut()
-    {
-        *preset = preset.clone().with_choices(preset_names);
-    }
-    root.actions.push(
-        tilo_actions::ActionSpec::typed_operation(
-            PRESET_ASSIGN_ACTION_ID,
-            t("workspace-settings-role-assign"),
-            t("workspace-settings-role-assign-placeholder"),
-            OperationKind::Effect,
-            GOVERNANCE_ACTION_TYPE,
-            assign_params,
-            |arguments| {
-                let Some(subject) = decoded(arguments, "subject") else {
-                    return tilo_actions::EncodedAction {
-                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-                        payload: b"the assignment does not name a subject".to_vec(),
-                    };
-                };
-                let expires_unix = arguments
-                    .integer("expires_unix")
-                    .and_then(|value| u64::try_from(value).ok())
-                    .unwrap_or_default();
-                encoded_governance_operation(&GovernanceOperation::AssignPreset {
-                    preset: arguments.text("preset").unwrap_or_default().to_string(),
-                    subject,
-                    expires_unix,
-                })
-            },
-        )
-        .with_description(t("workspace-settings-role-assign-description"))
-        .with_contract(contract.clone()),
-    );
-
-    let app_action_params = || {
-        vec![
-            ActionParam::required_owned(
-                "app",
-                ParamType::Text,
-                "Package id of the application that would use the action",
-            ),
-            ActionParam::required_owned(
-                "target_app",
-                ParamType::Text,
-                "Package id of the application that publishes the action",
-            ),
-            ActionParam::required_owned(
-                "resource",
-                ParamType::Text,
-                "Id of the resource that publishes the action",
-            ),
-            ActionParam::required_owned("action", ParamType::Text, "The action's id"),
-        ]
-    };
-    let mut grant_params = app_action_params();
-    grant_params.push(
-        ActionParam::required_owned("lifetime", ParamType::Text, "How long the grant lasts")
-            .with_choices(["session", "always"]),
-    );
-    root.actions.push(
-        tilo_actions::ActionSpec::typed_operation(
-            APP_ACTION_GRANT_ACTION_ID,
-            t("workspace-settings-app-action-grant"),
-            t("workspace-settings-app-action-placeholder"),
-            OperationKind::Effect,
-            GOVERNANCE_ACTION_TYPE,
-            grant_params,
-            |arguments| {
-                encoded_governance_operation(&GovernanceOperation::GrantAppAction {
-                    app: arguments.text("app").unwrap_or_default().to_string(),
-                    target_app: arguments.text("target_app").unwrap_or_default().to_string(),
-                    resource: arguments.text("resource").unwrap_or_default().to_string(),
-                    action: arguments.text("action").unwrap_or_default().to_string(),
-                    lifetime: arguments.text("lifetime").unwrap_or_default().to_string(),
-                })
-            },
-        )
-        .with_description(t("workspace-settings-app-action-grant-description"))
-        .with_contract(contract.clone()),
-    );
-    root.actions.push(
-        tilo_actions::ActionSpec::typed_operation(
-            APP_ACTION_REVOKE_ACTION_ID,
-            t("workspace-settings-app-action-revoke"),
-            t("workspace-settings-app-action-placeholder"),
-            OperationKind::Effect,
-            GOVERNANCE_ACTION_TYPE,
-            app_action_params(),
-            |arguments| {
-                encoded_governance_operation(&GovernanceOperation::RevokeAppAction {
-                    app: arguments.text("app").unwrap_or_default().to_string(),
-                    target_app: arguments.text("target_app").unwrap_or_default().to_string(),
-                    resource: arguments.text("resource").unwrap_or_default().to_string(),
-                    action: arguments.text("action").unwrap_or_default().to_string(),
-                })
-            },
-        )
-        .with_description(t("workspace-settings-app-action-revoke-description"))
-        .with_contract(contract),
-    );
-    root
-}
-
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum OwnershipTransferOperation {
-    Propose {
-        recipient: String,
-        expires_unix: u64,
-    },
-    Accept {
-        proposal_digest: String,
-    },
-    Cancel {
-        proposal_digest: String,
-    },
-}
-
-fn encoded_ownership_operation(
-    operation: &OwnershipTransferOperation,
-) -> tilo_actions::EncodedAction {
-    tilo_actions::EncodedAction::encode_operation(OWNERSHIP_TRANSFER_ACTION_TYPE, operation)
-        .unwrap_or_else(|error| tilo_actions::EncodedAction {
-            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-            payload: error.to_string().into_bytes(),
-        })
-}
-
-/// Publish the active workspace and its ownership ceremony as typed,
-/// resource-addressed operations for search, automation, and assistive tools.
-/// Generic member-role actions remain separate and never include Owner.
-pub fn ownership_transfer_resource(
-    ws: &Workspace,
-    local_user: &UserId,
-) -> tilo_actions::ResourceSpec {
-    let mut resource = tilo_actions::ResourceSpec::new(
-        format!("workspace:{}", ws.id()),
-        "workspace.governance",
-        t_args(
-            "workspace-settings-ownership-resource",
-            &[("workspace", ws.name.clone().into())],
-        ),
-    );
-    if ws.owner() == Some(local_user) {
-        resource.actions.push(ownership_proposal_action());
-    }
-    if let Some(pending) = &ws.pending_ownership_transfer {
-        let digest = pending.digest().map_or_else(|_| String::new(), hex::encode);
-        if public_key_member_id(pending.recipient) == *local_user {
-            resource.actions.push(ownership_accept_action(&digest));
-        }
-        if ws.owner() == Some(local_user) {
-            resource.actions.push(ownership_cancel_action(&digest));
-        }
-    }
-    resource
-}
-
-fn ownership_proposal_action() -> tilo_actions::ActionSpec {
-    use tilo_actions::{
-        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-        RiskLevel,
-    };
-
-    tilo_actions::ActionSpec::typed_operation(
-        "ownership.propose",
-        t("workspace-settings-ownership-propose"),
-        t("workspace-settings-ownership-propose-placeholder"),
-        OperationKind::Effect,
-        OWNERSHIP_TRANSFER_ACTION_TYPE,
-        vec![
-            ActionParam::required_owned(
-                "recipient",
-                ParamType::Text,
-                "Exact certified recipient identity",
-            ),
-            ActionParam::required_owned(
-                "expires_unix",
-                ParamType::Integer,
-                "Unix expiry chosen by the current owner",
-            ),
-        ],
-        |arguments| {
-            let expires_unix = arguments
-                .integer("expires_unix")
-                .and_then(|value| u64::try_from(value).ok())
-                .unwrap_or_default();
-            encoded_ownership_operation(&OwnershipTransferOperation::Propose {
-                recipient: arguments.text("recipient").unwrap_or_default().to_string(),
-                expires_unix,
-            })
-        },
-    )
-    .with_description(t("workspace-settings-ownership-propose-description"))
-    .with_contract(ActionContract {
-        kind: ActionKind::Outside,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
-        ..ActionContract::default()
-    })
-}
-
-fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, OperationKind, RiskLevel};
-
-    let operation = OwnershipTransferOperation::Accept {
-        proposal_digest: digest.to_string(),
-    };
-    tilo_actions::ActionSpec::operation(
-        "ownership.accept",
-        t("workspace-settings-ownership-accept"),
-        OperationKind::Effect,
-        OWNERSHIP_TRANSFER_ACTION_TYPE,
-        &operation,
-    )
-    .unwrap_or_else(|_| {
-        tilo_actions::ActionSpec::immediate_encoded(
-            "ownership.accept",
-            t("workspace-settings-ownership-accept"),
-            tilo_actions::ExecutionLocus::ClientLocal,
-            encoded_ownership_operation(&operation),
-        )
-    })
-    .with_description(t("workspace-settings-ownership-accept-description"))
-    .with_contract(ActionContract {
-        kind: ActionKind::Outside,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Phrase {
-            phrase: t("workspace-settings-ownership-accept-phrase"),
-        },
-        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
-        ..ActionContract::default()
-    })
-}
-
-fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, OperationKind, RiskLevel};
-
-    let operation = OwnershipTransferOperation::Cancel {
-        proposal_digest: digest.to_string(),
-    };
-    tilo_actions::ActionSpec::operation(
-        "ownership.cancel",
-        t("workspace-settings-ownership-cancel"),
-        OperationKind::Effect,
-        OWNERSHIP_TRANSFER_ACTION_TYPE,
-        &operation,
-    )
-    .unwrap_or_else(|_| {
-        tilo_actions::ActionSpec::immediate_encoded(
-            "ownership.cancel",
-            t("workspace-settings-ownership-cancel"),
-            tilo_actions::ExecutionLocus::ClientLocal,
-            encoded_ownership_operation(&operation),
-        )
-    })
-    .with_description(t("workspace-settings-ownership-cancel-description"))
-    .with_contract(ActionContract {
-        kind: ActionKind::Outside,
-        risk: RiskLevel::Low,
-        confirmation: ConfirmationPolicy::Confirm,
-        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
-        ..ActionContract::default()
-    })
-}
-
 fn public_key_member_id(key: collab_types::Ed25519PublicKey) -> UserId {
     hex::encode(key.as_bytes())
 }
-
-/// The right-pane drawer [`WorkspaceSettings::draw_body`] dispatches to.
-pub type PaneDrawer<'a> = dyn FnMut(&mut Scene, Affine, Rect, &mut TextRenderer, &Theme) + 'a;
-
-/// Compose `transform` with a translation to `(dx, dy)`. `Affine`'s `Mul`
-/// is pure `f64` matrix composition — it cannot overflow or panic — but
-/// `arithmetic_side_effects` can't see that for a non-primitive `Mul`
-/// impl, so every call site funnels through this one function instead of
-/// an `#[allow]` at each of them.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "Affine composition is float matrix multiplication; it cannot overflow or panic"
-)]
-fn at(transform: Affine, dx: f64, dy: f64) -> Affine {
-    transform * Affine::translate((dx, dy))
-}
-
-/// Width of the modal's left sidebar in CSS px: the docked navigation
-/// sidebar width (HIG §9.6, `Metrics::sidebar_width`), unscaled like the
-/// rest of this lens's geometry.
-pub const SIDEBAR_WIDTH: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64;
-
-const SIDEBAR_IDENTITY_TOP: f64 = 24.0;
-const NAV_ROW_HEIGHT: f64 = 40.0;
-const NAV_ROW_GAP: f64 = 4.0;
-/// Y origin (relative to the sidebar's top edge) of the first nav row —
-/// reserves room for the identity badge + caption.
-const NAV_ROWS_TOP: f64 = 120.0;
-
-/// Tab selector for the shell-owned `WorkspaceSettings` lens.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WsTab {
-    /// Workspace identity, invite link, collaborators.
-    #[default]
-    General,
-    /// Who is in the workspace, their role, and how many capabilities
-    /// they hold. Rendered from [`Workspace::roster`].
-    Members,
-    /// Non-human collaborators admitted to the workspace, kept visibly
-    /// separate from people and rendered from [`Workspace::agent_members`].
-    Agents,
-    /// Every capability the workspace has granted, and the affordance
-    /// to grant another. Rendered from [`Workspace::policy`].
-    Permissions,
-    /// Shared default-app policy plus this person's explicit override.
-    Apps,
-    /// The workspace's own emoji: every app of the workspace draws
-    /// `:name:` from them.
-    Emoji,
-}
-
-impl WsTab {
-    pub fn label(&self) -> String {
-        t(match self {
-            WsTab::General => "workspace-settings-tab-general",
-            WsTab::Members => "workspace-settings-tab-people",
-            WsTab::Agents => "workspace-settings-tab-agents",
-            WsTab::Permissions => "workspace-settings-tab-privacy-security",
-            WsTab::Apps => "workspace-settings-tab-apps-files",
-            WsTab::Emoji => "workspace-settings-tab-emoji",
-        })
-    }
-
-    /// Short labels for the same destinations when the lens promotes to a
-    /// narrow-screen sheet. This is responsive copy, not a second nav model.
-    pub fn compact_label(&self) -> String {
-        t(match self {
-            WsTab::General => "workspace-settings-tab-general",
-            WsTab::Members => "workspace-settings-tab-people",
-            WsTab::Agents => "workspace-settings-tab-agents",
-            WsTab::Permissions => "workspace-settings-tab-privacy",
-            WsTab::Apps => "workspace-settings-tab-apps",
-            WsTab::Emoji => "workspace-settings-tab-emoji",
-        })
-    }
-
-    /// Iteration order for the sidebar nav and tab strip. Every tab is
-    /// always reachable — a host must reach Permissions before any
-    /// grant exists.
-    pub fn all() -> [WsTab; WsTab::COUNT] {
-        [
-            WsTab::General,
-            WsTab::Members,
-            WsTab::Agents,
-            WsTab::Permissions,
-            WsTab::Apps,
-            WsTab::Emoji,
-        ]
-    }
-
-    /// How many tabs there are.
-    pub const COUNT: usize = 6;
-
-    /// Where the tab stands in [`Self::all`].
-    #[must_use]
-    pub fn index(self) -> usize {
-        Self::all()
-            .iter()
-            .position(|tab| *tab == self)
-            .unwrap_or_default()
-    }
-}
-
-/// The `WorkspaceSettings` lens state.
-#[derive(Debug)]
-pub struct WorkspaceSettings {
-    pub slot: WorkspaceSlot,
-    pub active_tab: WsTab,
-    focus_trap: FocusTrap,
-}
-
-impl WorkspaceSettings {
-    pub fn new(slot: WorkspaceSlot) -> Self {
-        let members = WsTab::all().into_iter().map(tab_focus_id).collect();
-        Self {
-            slot,
-            active_tab: WsTab::General,
-            focus_trap: FocusTrap::new(members),
-        }
-    }
-
-    pub fn focus_trap(&self) -> &FocusTrap {
-        &self.focus_trap
-    }
-
-    pub fn select_tab(&mut self, tab: WsTab) {
-        self.active_tab = tab;
-    }
-
-    /// Synonym for [`Self::select_tab`]. Retained for callers that
-    /// already use the imperative `set_*` form.
-    pub fn set_tab(&mut self, tab: WsTab) {
-        self.select_tab(tab);
-    }
-
-    pub fn active_tab(&self) -> WsTab {
-        self.active_tab
-    }
-
-    /// Does not check `ws.slot == self.slot`, so the caller can rename
-    /// any workspace it holds a reference to.
-    pub fn rename(&mut self, ws: &mut Workspace, new_name: &str) {
-        ws.name = new_name.to_string();
-    }
-
-    pub fn remove_collaborator(&mut self, ws: &mut Workspace, collab_id: &str) {
-        ws.collaborators.retain(|c| c.id != collab_id);
-    }
-
-    // -----------------------------------------------------------------
-    // Sidebar nav layout
-    // -----------------------------------------------------------------
-
-    /// The sidebar's bounds. `Rect::ZERO` when the modal isn't wide
-    /// enough to host the full sidebar.
-    pub fn sidebar_rect(&self, modal_rect: Rect) -> Rect {
-        if modal_rect.width() <= SIDEBAR_WIDTH {
-            return Rect::ZERO;
-        }
-        Rect::new(
-            modal_rect.x0,
-            modal_rect.y0,
-            modal_rect.x0 + SIDEBAR_WIDTH,
-            modal_rect.y1,
-        )
-    }
-
-    pub fn pane_rect(&self, modal_rect: Rect) -> Rect {
-        if modal_rect.width() <= SIDEBAR_WIDTH {
-            return modal_rect;
-        }
-        Rect::new(
-            modal_rect.x0 + SIDEBAR_WIDTH,
-            modal_rect.y0,
-            modal_rect.x1,
-            modal_rect.y1,
-        )
-    }
-
-    /// Per-row hit-test rects, one per [`WsTab`] in [`WsTab::all`] order.
-    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); WsTab::COUNT] {
-        let sidebar = self.sidebar_rect(modal_rect);
-        let inset_x0 = sidebar.x0 + 16.0;
-        let inset_x1 = sidebar.x1 - 16.0;
-        let tabs = WsTab::all();
-        std::array::from_fn(|i| {
-            // `i` is an index of the fixed tab array, below `WsTab::COUNT`.
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "i indexes the fixed tab array, below WsTab::COUNT"
-            )]
-            let y0 = sidebar.y0 + NAV_ROWS_TOP + i as f64 * (NAV_ROW_HEIGHT + NAV_ROW_GAP);
-            let y1 = y0 + NAV_ROW_HEIGHT;
-            let tab = tabs.get(i).copied().unwrap_or_default();
-            (tab, Rect::new(inset_x0, y0, inset_x1, y1))
-        })
-    }
-
-    /// Tab whose nav-row contains `point`, if any.
-    pub fn nav_hit_test(&self, modal_rect: Rect, point: Point) -> Option<WsTab> {
-        self.nav_rows(modal_rect)
-            .into_iter()
-            .find_map(|(tab, row)| row.contains(point).then_some(tab))
-    }
-
-    /// Paint the sidebar nav (always visible) and dispatch the right
-    /// pane to the per-tab drawer. `None` paints nothing on the right.
-    pub fn draw_body(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        modal_rect: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        pane_drawer: Option<&mut PaneDrawer<'_>>,
-    ) {
-        self.draw_sidebar(scene, transform, modal_rect, text_renderer, theme);
-
-        if let Some(drawer) = pane_drawer {
-            let pane = self.pane_rect(modal_rect);
-            drawer(scene, transform, pane, text_renderer, theme);
-        }
-    }
-
-    /// Paint the sidebar — identity card, nav rows, footer.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
-    )]
-    fn draw_sidebar(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        modal_rect: Rect,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let sidebar = self.sidebar_rect(modal_rect);
-        if sidebar.is_zero_area() {
-            return;
-        }
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-
-        // Sidebar surface reads distinct from the right pane — a quiet lift
-        // measured against the ground (HIG §9.2/§9.3), never a ramp slot —
-        // separated by a derived hairline rather than a declared border.
-        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &sidebar);
-        let border_x = sidebar.x1 - 0.5;
-        let border = Rect::new(border_x, sidebar.y0, border_x + 1.0, sidebar.y1);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            ui::chrome::shell::panel_border(theme),
-            None,
-            &border,
-        );
-
-        // Identity card, at the Control radius (16 is off the radius scale).
-        let identity_size = 56.0_f64;
-        let identity_rect = Rect::new(
-            sidebar.x0 + 24.0,
-            sidebar.y0 + SIDEBAR_IDENTITY_TOP,
-            sidebar.x0 + 24.0 + identity_size,
-            sidebar.y0 + SIDEBAR_IDENTITY_TOP + identity_size,
-        );
-        let identity_card = RoundedRect::from_rect(
-            identity_rect,
-            ui::chrome::ChromeRole::Control.radius(theme, identity_size),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.intent.accent,
-            None,
-            &identity_card,
-        );
-
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-title"),
-            colors.text_dim,
-            at(transform, sidebar.x0 + 24.0, identity_rect.y1 + 12.0),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-
-        for (tab, row) in self.nav_rows(modal_rect) {
-            let active = self.active_tab == tab;
-            // Selection is a lift (HIG §9.3), never an accent fill; the row
-            // is a Control and takes the Control radius.
-            let row_rr = RoundedRect::from_rect(
-                row,
-                ui::chrome::ChromeRole::Control.radius(theme, row.height()),
-            );
-            let tier =
-                ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(active));
-            if active {
-                scene.fill(Fill::NonZero, transform, tier.fill, None, &row_rr);
-                if let Some(border) = tier.border {
-                    scene.stroke(&Stroke::new(1.0), transform, border, None, &row_rr);
-                }
-            }
-            let label_color = if active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            // Centred on the measured line, not at a fixed offset (HIG §7a).
-            let label_style = tokens.typography.style(TextRole::Body);
-            let label = tab.label();
-            let (_, label_h) = text_renderer.measure_style(&label, None, &label_style);
-            text_renderer.draw_style(
-                scene,
-                &label,
-                label_color,
-                at(
-                    transform,
-                    row.x0 + 12.0,
-                    row.center().y - f64::from(label_h) / 2.0,
-                ),
-                None,
-                &label_style,
-            );
-        }
-
-        // Footer "Close Settings" row pinned to the bottom of the sidebar.
-        let footer_h = f64::from(tokens.metrics.bar_height);
-        let footer_y = sidebar.y1 - footer_h - 16.0;
-        let footer = Rect::new(
-            sidebar.x0 + 16.0,
-            footer_y,
-            sidebar.x1 - 16.0,
-            footer_y + footer_h,
-        );
-        let footer_rr = RoundedRect::from_rect(
-            footer,
-            ui::chrome::ChromeRole::Control.radius(theme, footer_h),
-        );
-        // The footer row's edge is derived against the sidebar lift it sits
-        // on (HIG §9.5), not a declared border over a lifted surface.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(colors.lift(0.35)),
-            None,
-            &footer_rr,
-        );
-        // The standard glyph on the row inset, centred on the row; the label
-        // centred on its measured line beside it.
-        let inset = f64::from(tokens.spacing.s3);
-        let glyph_size = f64::from(tokens.metrics.icon_md);
-        let glyph_rect = Rect::new(
-            footer.x0 + inset,
-            footer.center().y - glyph_size / 2.0,
-            footer.x0 + inset + glyph_size,
-            footer.center().y + glyph_size / 2.0,
-        );
-        draw_icon(
-            scene,
-            transform,
-            glyph_rect,
-            Icon::X,
-            colors.text_dim,
-            LUCIDE_DEFAULT_STROKE_PX,
-        );
-        let close_style = tokens.typography.style(TextRole::Caption);
-        let close_label = t("workspace-settings-close");
-        let (_, close_h) = text_renderer.measure_style(&close_label, None, &close_style);
-        text_renderer.draw_style(
-            scene,
-            &close_label,
-            colors.text_dim,
-            at(
-                transform,
-                glyph_rect.x1 + inset,
-                footer.center().y - f64::from(close_h) / 2.0,
-            ),
-            None,
-            &close_style,
-        );
-    }
-}
-
-/// Stable focus id for the tab button representing `tab`, used by the
-/// dialog's `FocusTrap`.
-fn tab_focus_id(tab: WsTab) -> u64 {
-    // Reserve a small id range so the modal's trap members can't collide
-    // with shell-level focusables.
-    const BASE: u64 = 0xFFFF_0000;
-    match tab {
-        WsTab::General => BASE,
-        WsTab::Members => BASE + 1,
-        WsTab::Agents => BASE + 2,
-        WsTab::Permissions => BASE + 3,
-        WsTab::Apps => BASE + 4,
-        WsTab::Emoji => BASE + 5,
-    }
-}
-
-// Shared chrome — cards, chips, section headers
-
-const PANE_PAD_X: f64 = 16.0;
-/// The pane's lead-in under the lens body top, completing the `s4` section
-/// step (HIG §7b) from the strip to the intro card.
-const PANE_PAD_TOP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
-/// The pane's bottom inset: the row-overflow guard and the footer copy keep
-/// one `s3` clear of the lens body's bottom edge. Only the top lead-in shrank
-/// to complete the section step; the bottom keeps its authored step.
-const PANE_PAD_BOTTOM: f64 = ui::tokens::Spacing::BASE.s3 as f64;
-/// Room for the intro's title and two lines of detail: German detail copy
-/// does not fit one line at the lens's width, and cutting it mid-sentence
-/// loses the explanation the intro exists for.
-const PANE_INTRO_HEIGHT: f64 = 76.0;
-const PANE_INTRO_DETAIL_LINES: usize = 2;
-const PANE_INTRO_GAP: f64 = 12.0;
-/// Two lines of text plus breathing room.
-const ROW_HEIGHT: f64 = 56.0;
-const ROW_GAP: f64 = 8.0;
-/// A section header band inside a pane: the Bar-control step (HIG §9.6).
-const SECTION_HEADER_HEIGHT: f64 = ui::tokens::Metrics::BASE.bar_control_height as f64;
-/// A composer control — picker, expiry segment, submit — is never smaller
-/// than the minimum pointer target (HIG §9.6).
-const CONTROL_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-/// Caption band above a control ("Until", "Who"): one `xs` line plus air.
-const COMPOSER_CAPTION_BAND: f64 = 18.0;
-/// The composer card: a caption band over one control row, inside `s3`
-/// padding — derived from the pieces rather than restated as a total.
-const COMPOSER_HEIGHT: f64 = ui::tokens::Spacing::BASE.s3 as f64
-    + ui::tokens::Spacing::BASE.s6 as f64
-    + CONTROL_HEIGHT
-    + ui::tokens::Spacing::BASE.s3 as f64;
-/// A narrow pane stacks the composer on two rows: one more control, its
-/// caption band, and an `s1` seam between the rows.
-const COMPOSER_COMPACT_EXTRA: f64 =
-    CONTROL_HEIGHT + COMPOSER_CAPTION_BAND + ui::tokens::Spacing::BASE.s1 as f64;
-const REVOKE_WIDTH: f64 = 80.0;
-/// Row buttons (revoke, role, review) are full pointer targets (HIG §9.6).
-const REVOKE_HEIGHT: f64 = ui::tokens::Metrics::BASE.min_pointer_target as f64;
-const AGENT_REVIEW_WIDTH: f64 = 112.0;
-const AGENT_ONBOARDING_HEIGHT: f64 = 34.0;
-const SUBMIT_WIDTH: f64 = 92.0;
-const EXPIRY_SEGMENT_WIDTH: f64 = 58.0;
-/// Alpha for a control the user has no authority to use — matches the
-/// permission prompt's dimmed-Revoke treatment.
-const DISABLED_ALPHA: f32 = 0.40;
-
-/// Below this the contextual lens is a narrow sheet. Controls keep their
-/// meaning, but multi-column policy rows and the permission composer promote
-/// onto a second line instead of escaping through the card edge.
-const COMPACT_PANE_WIDTH: f64 = 460.0;
-
-fn compact_pane(pane: Rect) -> bool {
-    pane.width() < COMPACT_PANE_WIDTH
-}
-
-/// Paint a section header — a small upper-case caption plus a count.
-fn draw_section_header(
-    scene: &mut Scene,
-    transform: Affine,
-    origin: Point,
-    label: &str,
-    count: Option<usize>,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let tokens = &theme.tokens;
-    let text = match count {
-        Some(n) => format!("{label} · {n}"),
-        None => label.to_string(),
-    };
-    text_renderer.draw_style(
-        scene,
-        &text,
-        tokens.colors.text_dim,
-        at(transform, origin.x, origin.y),
-        None,
-        &tokens.typography.style(TextRole::Caption),
-    );
-}
-
-/// Paint a row card — the surface every subject row sits on.
-fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
-    // Derived rest edge (HIG §9.5): measured against the card's own fill,
-    // so it registers on the raised tier in every palette — a declared
-    // `border_standard` is three shades from `raised` on the dark preset.
-    ui::surface::card(
-        scene,
-        transform,
-        rect,
-        f64::from(theme.tokens.radii.control),
-        theme.tokens.colors.surfaces.raised,
-    );
-}
-
-/// A concise explanation and live status at the top of each policy pane.
-/// It gives normal users orientation without hiding the full controls.
-fn draw_pane_intro(
-    ctx: &mut PaintCtx<'_>,
-    pane: Rect,
-    icon: Icon,
-    title: &str,
-    detail: &str,
-    status: &str,
-) {
-    let (scene, transform, text_renderer, theme) =
-        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let rect = Rect::new(
-        pane.x0 + PANE_PAD_X,
-        pane.y0 + PANE_PAD_TOP,
-        pane.x1 - PANE_PAD_X,
-        pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT,
-    );
-    ui::surface::card(
-        scene,
-        transform,
-        rect,
-        f64::from(tokens.radii.control),
-        colors.surfaces.raised,
-    );
-
-    let icon_rect = Rect::new(
-        rect.x0 + 14.0,
-        rect.center().y - 18.0,
-        rect.x0 + 50.0,
-        rect.center().y + 18.0,
-    );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.text_primary.with_alpha_factor(0.16),
-        None,
-        &RoundedRect::from_rect(icon_rect, f64::from(tokens.radii.control)),
-    );
-    draw_icon(
-        scene,
-        transform,
-        icon_rect.inset(-9.0),
-        icon,
-        colors.intent.accent_hover,
-        LUCIDE_DEFAULT_STROKE_PX,
-    );
-    let detail_style = tokens.typography.style(TextRole::Caption);
-    let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "settings-pane geometry is a small logical-pixel width"
-    )]
-    let lines = text_renderer.clamp_to_lines(
-        detail,
-        &detail_style,
-        detail_max as f32,
-        PANE_INTRO_DETAIL_LINES,
-    );
-    let title_h = f64::from(
-        text_renderer
-            .measure_style(title, None, &tokens.typography.style(TextRole::Caption))
-            .1,
-    );
-    let line_h = f64::from(detail_style.line_height_px());
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "at most PANE_INTRO_DETAIL_LINES lines"
-    )]
-    let block_h = title_h + 4.0 + line_h * lines.len() as f64;
-    let top = rect.y0 + ((rect.height() - block_h) / 2.0).max(8.0);
-    text_renderer.draw_style(
-        scene,
-        title,
-        colors.text_primary,
-        at(transform, rect.x0 + 62.0, top),
-        None,
-        &tokens.typography.style(TextRole::Caption),
-    );
-    let mut line_y = top + title_h + 4.0;
-    for line in &lines {
-        text_renderer.draw_style(
-            scene,
-            line,
-            colors.text_dim,
-            at(transform, rect.x0 + 62.0, line_y),
-            None,
-            &detail_style,
-        );
-        line_y += line_h;
-    }
-    draw_pill(
-        scene,
-        transform,
-        Point::new(rect.x1 - 14.0, rect.center().y),
-        status,
-        ChipStyle::Neutral,
-        text_renderer,
-        theme,
-    );
-}
-
-/// Paint a badge with `label` centred, in `style`. Returns the
-/// pill's rect so callers can lay out rightwards from its left edge.
-fn draw_pill(
-    scene: &mut Scene,
-    transform: Affine,
-    anchor: Point,
-    label: &str,
-    style: ChipStyle,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) -> Rect {
-    let w = BadgeFace::intrinsic_width(label, text_renderer, theme);
-    let h = BadgeFace::height(theme);
-    let rect = Rect::new(
-        anchor.x - w,
-        anchor.y - h / 2.0,
-        anchor.x,
-        anchor.y + h / 2.0,
-    );
-    BadgeFace::new(rect, label)
-        .style(style)
-        .paint(scene, transform, text_renderer, theme);
-    rect
-}
-
-/// Paint an avatar disc carrying `label`'s first character. The tint is
-/// derived from the label so the same subject keeps the same colour
-/// across frames without storing one.
-fn draw_avatar(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    label: &str,
-    square: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    // People use the shared avatar primitive so initials, palette choice,
-    // and contrast stay identical wherever a person appears. App subjects
-    // retain the square document-like treatment: it distinguishes an app
-    // principal from a human identity at a glance.
-    if !square {
-        AvatarFace::new(label, label).paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-            rect,
-        );
-        return;
-    }
-    let colors = &theme.tokens.colors;
-    let tint = subject_tint(label, theme);
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        tint.with_alpha_factor(0.30),
-        None,
-        &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
-    );
-    let initial: String = label
-        .chars()
-        .next()
-        .map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
-    let style = theme.text(TextRole::Caption);
-    let (tw, th) = text_renderer.measure_style(&initial, None, &style);
-    text_renderer.draw_style(
-        scene,
-        &initial,
-        colors.text_primary,
-        at(
-            transform,
-            rect.center().x - f64::from(tw) / 2.0,
-            rect.center().y - f64::from(th) / 2.0,
-        ),
-        None,
-        &style,
-    );
-}
-
-/// Deterministic per-subject tint drawn from the theme's accent ramp, so
-/// two subjects rarely share a colour and none is hard-coded.
-fn subject_tint(label: &str, theme: &Theme) -> Color {
-    let colors = &theme.tokens.colors;
-    let bucket = label
-        .bytes()
-        .fold(0u32, |a, b| a.wrapping_add(u32::from(b))) as usize
-        % 4;
-    match bucket {
-        0 => colors.intent.accent,
-        1 => colors.intent.accent_hover,
-        2 => colors.semantic.info,
-        _ => colors.semantic.success,
-    }
-}
-
-/// Paint a "cycler" control: a bordered field whose label advances to
-/// the next value on click, with a chevron affording that it cycles.
-fn draw_cycler(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    label: &str,
-    enabled: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
-    let track = RoundedRect::from_rect(rect, f64::from(tokens.radii.control));
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.surfaces.raised.with_alpha_factor(alpha),
-        None,
-        &track,
-    );
-    // The field's rest edge derives from its own fill (HIG §9.5) and
-    // fades with the disabled face so rest and disabled never look alike.
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        ui::surface::edge_on(colors.surfaces.raised).with_alpha_factor(alpha),
-        None,
-        &track,
-    );
-    let style = tokens.typography.style(TextRole::Caption);
-    let chevron = 14.0_f64;
-    let text_max = rect.width() - 12.0 - chevron - 10.0;
-    let shown = elide(label, &style, text_max, text_renderer);
-    let (_, th) = text_renderer.measure_style(&shown, None, &style);
-    text_renderer.draw_style(
-        scene,
-        &shown,
-        colors.text_primary.with_alpha_factor(alpha),
-        at(
-            transform,
-            rect.x0 + 10.0,
-            rect.center().y - f64::from(th) / 2.0,
-        ),
-        None,
-        &style,
-    );
-    let glyph = Rect::new(
-        rect.x1 - 8.0 - chevron,
-        rect.center().y - chevron / 2.0,
-        rect.x1 - 8.0,
-        rect.center().y + chevron / 2.0,
-    );
-    draw_icon(
-        scene,
-        transform,
-        glyph,
-        Icon::ChevronDown,
-        colors.text_dim.with_alpha_factor(alpha),
-        LUCIDE_DEFAULT_STROKE_PX,
-    );
-}
-
-/// Truncate `text` with an ellipsis so it fits `max_w` at `size`. Text
-/// that would overflow its field is a craft defect; clipping it is not
-/// a fix, so we measure and elide through the shared renderer helper.
-fn elide(text: &str, style: &TextStyle, max_w: f64, text_renderer: &mut TextRenderer) -> String {
-    text_renderer.elide_to_width_style(text, ui::num::f32_of_f64(max_w), style)
-}
-
-/// Paint a labelled micro-caption above a control.
-fn draw_control_caption(
-    scene: &mut Scene,
-    transform: Affine,
-    origin: Point,
-    label: &str,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    text_renderer.draw_style(
-        scene,
-        label,
-        theme.tokens.colors.text_dim,
-        at(transform, origin.x, origin.y),
-        None,
-        &theme.text(TextRole::Caption),
-    );
-}
-
-/// Paint a destructive button (Revoke). Dimmed when `enabled` is false
-/// so a viewer sees the control exists but cannot be used.
-fn draw_danger_button(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    label: &str,
-    enabled: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ButtonFace::new(rect, label)
-            .role(ButtonRole::Destructive)
-            .disabled(!enabled),
-    );
-}
-
-/// Paint the pane's one primary action.
-fn draw_primary_button(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    label: &str,
-    enabled: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ButtonFace::new(rect, label)
-            .role(ButtonRole::Primary)
-            .disabled(!enabled),
-    );
-}
-
-/// Paint a composed empty state — glyph, headline, caption.
-fn draw_empty_state(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    icon: Icon,
-    text: (&str, &str),
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let (headline, caption) = text;
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    let glyph = 28.0_f64;
-    let cx = rect.center().x;
-    let stack_height = glyph + 58.0;
-    let top = rect.y0 + ((rect.height() - stack_height) / 2.0).clamp(12.0, 48.0);
-    // A region too short for the stack (the lens at its height floor) paints
-    // nothing rather than running the glyph and two lines past its bottom
-    // edge into whatever sits below (HIG §7: nothing overlaps).
-    if top + stack_height > rect.y1 {
-        return;
-    }
-    draw_icon(
-        scene,
-        transform,
-        Rect::new(cx - glyph / 2.0, top, cx + glyph / 2.0, top + glyph),
-        icon,
-        colors.text_dim,
-        LUCIDE_DEFAULT_STROKE_PX,
-    );
-    let h_style = tokens.typography.style(TextRole::Body);
-    let (hw, _) = text_renderer.measure_style(headline, None, &h_style);
-    text_renderer.draw_style(
-        scene,
-        headline,
-        colors.text_primary,
-        at(transform, cx - f64::from(hw) / 2.0, top + glyph + 14.0),
-        None,
-        &h_style,
-    );
-    let c_style = tokens.typography.style(TextRole::Caption);
-    let (cw, _) = text_renderer.measure_style(caption, None, &c_style);
-    text_renderer.draw_style(
-        scene,
-        caption,
-        colors.text_dim,
-        at(transform, cx - f64::from(cw) / 2.0, top + glyph + 36.0),
-        None,
-        &c_style,
-    );
-}
-
-// Capability vocabulary — labels
 
 pub fn role_label(role: CapRole) -> String {
     t(match role {
@@ -2024,23 +245,6 @@ pub fn grant_set_sentence(grants: &[tilo_action_policy::Grant], apps: &dyn AppDi
         }
     }
     tilo_action_policy::sentences(grants, &Named(apps))
-}
-
-/// The kinds of action a grant covers, in words.
-fn kinds_phrase(kinds: tilo_action_policy::KindSet) -> String {
-    use tilo_action_policy::ActionKind;
-    let words: Vec<String> = ActionKind::ALL
-        .into_iter()
-        .filter(|kind| kinds.contains(*kind))
-        .map(|kind| {
-            t(match kind {
-                ActionKind::Read => "workspace-settings-kind-read",
-                ActionKind::Undoable => "workspace-settings-kind-undoable",
-                ActionKind::Outside => "workspace-settings-kind-outside",
-            })
-        })
-        .collect();
-    words.join(", ")
 }
 
 /// Where a grant applies, named the way people know the workspace's parts: the
@@ -2233,8 +437,7 @@ enum GrantTarget {
 /// (devices gate the portal, `NetHost` gates egress, `FsPath` gates the
 /// sandbox binds and the filesystem, `Workspace` gates administration).
 pub struct GrantChoice {
-    /// What the choice is named by where a lens asks for it: the same key
-    /// every host and every view of the composer uses.
+    /// What the choice is named by: the same key every host uses.
     pub key: &'static str,
     /// Catalogue key of the picker's label.
     label_key: &'static str,
@@ -2557,18 +760,6 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<DraftGrant
     ))
 }
 
-/// The subject a draft currently names, for rendering the picker.
-pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject> {
-    let subjects = grant_subjects(ws);
-    if subjects.is_empty() {
-        return None;
-    }
-    let idx = draft.subject_index.checked_rem(subjects.len()).unwrap_or(0);
-    subjects.get(idx).cloned()
-}
-
-// Authority-checked mutations
-
 /// What a panel mutation changed, for the caller that applies it to the
 /// desktop. Empty means there was nothing to change.
 pub use tilo_desktop_model::grants::PolicyEdit;
@@ -2609,22 +800,6 @@ pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, id: &str) -> Result<Poli
         )],
         now,
     )
-}
-
-/// The roles a member's role chip cycles through. Owner is not in the
-/// cycle: ownership is a transfer ceremony, not a chip click.
-const ROLE_CYCLE: [CapRole; 3] = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
-
-pub fn next_role(role: CapRole) -> CapRole {
-    if role == CapRole::Owner {
-        return CapRole::Viewer;
-    }
-    let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
-    let next = idx
-        .wrapping_add(1)
-        .checked_rem(ROLE_CYCLE.len())
-        .unwrap_or(0);
-    ROLE_CYCLE.get(next).copied().unwrap_or(CapRole::Viewer)
 }
 
 /// Move `member` to `role`, as `actor`, through the workspace's governance. The
@@ -2733,250 +908,6 @@ pub fn remove_agent(ws: &mut Workspace, actor: &UserId, agent: &str) -> PolicyEd
 
 // Members pane
 
-/// One row in the Members pane, plus the geometry the renderer painted
-/// so click-routing matches a point back to a member without
-/// re-deriving layout.
-#[derive(Clone, Debug)]
-pub struct MemberRow {
-    pub user: UserId,
-    pub role: CapRole,
-    /// The owner's role is structural, so their role chip is inert.
-    pub is_workspace_owner: bool,
-    pub grant_count: usize,
-    pub row_rect: Rect,
-    pub role_rect: Rect,
-    pub remove_rect: Rect,
-}
-
-/// One of the workspace's bots in the Agents pane: a participant like an agent,
-/// listed apart and tagged as a bot.
-#[derive(Clone, Debug)]
-pub struct BotRow {
-    pub bot: tilo_desktop_model::WorkspaceBot,
-    pub row_rect: Rect,
-    /// Remove, for a bot a member asked the workspace's host for; otherwise
-    /// zero (the workspace's operator runs it).
-    pub remove_rect: Rect,
-}
-
-/// The top of the Bots section: under the agents' rows, or under the
-/// pane's Add agent button while there are none.
-fn bots_section_top(ws: &Workspace, pane_rect: Rect) -> f64 {
-    let first =
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + AGENT_ONBOARDING_HEIGHT;
-    agents_pane_rows(ws, pane_rect)
-        .last()
-        .map_or(first + ROW_GAP, |row| row.row_rect.y1 + SECTION_GAP)
-}
-
-/// The space between the agents and the bots: one section step.
-const SECTION_GAP: f64 = ui::tokens::Spacing::BASE.s6 as f64;
-
-/// Width of the Bots section's Add a bot button.
-const ADD_BOT_WIDTH: f64 = 112.0;
-
-/// The Bots section's Add a bot button, at the trailing end of its header.
-pub fn bots_add_rect(ws: &Workspace, pane_rect: Rect) -> Rect {
-    let top = bots_section_top(ws, pane_rect);
-    let rect = Rect::new(
-        pane_rect.x1 - PANE_PAD_X - ADD_BOT_WIDTH,
-        top,
-        pane_rect.x1 - PANE_PAD_X,
-        top + SECTION_HEADER_HEIGHT,
-    );
-    if rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
-        Rect::ZERO
-    } else {
-        rect
-    }
-}
-
-/// Rows of the workspace's bots, under the Bots header; as many as fit.
-pub fn bots_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<BotRow> {
-    let mut cursor_y = bots_section_top(ws, pane_rect) + SECTION_HEADER_HEIGHT + ROW_GAP;
-    let mut rows = Vec::new();
-    for bot in &ws.bots {
-        let row_rect = Rect::new(
-            pane_rect.x0 + PANE_PAD_X,
-            cursor_y,
-            pane_rect.x1 - PANE_PAD_X,
-            cursor_y + ROW_HEIGHT,
-        );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
-            break;
-        }
-        let remove_rect = if bot.requested {
-            Rect::new(
-                row_rect.x1 - 12.0 - REVOKE_WIDTH,
-                row_rect.center().y - REVOKE_HEIGHT / 2.0,
-                row_rect.x1 - 12.0,
-                row_rect.center().y + REVOKE_HEIGHT / 2.0,
-            )
-        } else {
-            Rect::ZERO
-        };
-        rows.push(BotRow {
-            bot: bot.clone(),
-            row_rect,
-            remove_rect,
-        });
-        cursor_y += ROW_HEIGHT + ROW_GAP;
-    }
-    rows
-}
-
-/// What a bot row says under its name: whether it runs yet, and from which
-/// version. One fact per row, never joined.
-pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
-    if bot.installation.is_none() {
-        t("workspace-settings-bot-starting")
-    } else if bot.paused {
-        t("workspace-settings-bot-paused")
-    } else if let Some(version) = &bot.version {
-        t_args(
-            "workspace-settings-bot-version",
-            &[("version", version.as_str().into())],
-        )
-    } else {
-        t("workspace-settings-bot-running")
-    }
-}
-
-/// The workspace's bots: a header with Add a bot, then a row for each.
-fn draw_bots_section(ctx: &mut PaintCtx<'_>, pane_rect: Rect, ws: &Workspace, is_owner: bool) {
-    let PaintCtx {
-        scene,
-        transform,
-        text: text_renderer,
-        theme,
-    } = ctx.reborrow();
-    let add = bots_add_rect(ws, pane_rect);
-    if add.area() <= 0.0 {
-        return;
-    }
-    draw_section_header(
-        scene,
-        transform,
-        Point::new(
-            pane_rect.x0 + PANE_PAD_X,
-            add.y0 + (SECTION_HEADER_HEIGHT - 16.0) / 2.0,
-        ),
-        &t("workspace-settings-bots-header"),
-        None,
-        text_renderer,
-        theme,
-    );
-    Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ButtonFace::new(add, &t("workspace-settings-add-bot")).disabled(!is_owner),
-    );
-    let rows = bots_pane_rows(ws, pane_rect);
-    if rows.is_empty() {
-        let tokens = &theme.tokens;
-        text_renderer.draw_style(
-            scene,
-            &t("workspace-settings-bots-empty"),
-            tokens.colors.text_dim,
-            at(transform, pane_rect.x0 + PANE_PAD_X, add.y1 + ROW_GAP),
-            None,
-            &tokens.typography.style(TextRole::Caption),
-        );
-    }
-    for row in &rows {
-        draw_bot_row(scene, transform, row, is_owner, text_renderer, theme);
-    }
-}
-
-fn draw_bot_row(
-    scene: &mut Scene,
-    transform: Affine,
-    row: &BotRow,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    draw_row_card(scene, transform, row.row_rect, theme);
-    let avatar_size = 28.0;
-    let avatar = Rect::new(
-        row.row_rect.x0 + 12.0,
-        row.row_rect.center().y - avatar_size / 2.0,
-        row.row_rect.x0 + 12.0 + avatar_size,
-        row.row_rect.center().y + avatar_size / 2.0,
-    );
-    ui::agent_identity::draw_agent_identity_mark(
-        scene,
-        transform,
-        avatar,
-        subject_tint(&row.bot.name, theme),
-        theme,
-        ui::agent_identity::AgentIdentityStyle::Solid,
-    );
-    // Tagged as the agents' rows are: a badge before the row's controls.
-    let badge = draw_pill(
-        scene,
-        transform,
-        Point::new(
-            if row.remove_rect.area() > 0.0 {
-                row.remove_rect.x0 - 12.0
-            } else {
-                row.row_rect.x1 - 12.0
-            },
-            row.row_rect.center().y,
-        ),
-        &t("workspace-settings-bot-tag"),
-        ChipStyle::Neutral,
-        text_renderer,
-        theme,
-    );
-    let text_x = avatar.x1 + 12.0;
-    let text_x1 = badge.x0 - 8.0;
-    let title_style = tokens.typography.style(TextRole::Caption);
-    let title = elide(
-        &row.bot.name,
-        &title_style,
-        (text_x1 - text_x).max(0.0),
-        text_renderer,
-    );
-    text_renderer.draw_style(
-        scene,
-        &title,
-        colors.text_primary,
-        at(transform, text_x, row.row_rect.y0 + 12.0),
-        None,
-        &title_style,
-    );
-    let detail = elide(
-        &bot_detail(&row.bot),
-        &title_style,
-        (text_x1 - text_x).max(0.0),
-        text_renderer,
-    );
-    text_renderer.draw_style(
-        scene,
-        &detail,
-        colors.text_dim,
-        at(transform, text_x, row.row_rect.y0 + 32.0),
-        None,
-        &title_style,
-    );
-    if row.remove_rect.area() > 0.0 {
-        draw_danger_button(
-            scene,
-            transform,
-            row.remove_rect,
-            &t("workspace-settings-remove-bot"),
-            is_owner,
-            text_renderer,
-            theme,
-        );
-    }
-}
-
 /// The roster in a stable display order: owner first, then everyone
 /// else by id. [`Workspace::roster`]'s own order follows list position,
 /// which moves a row when a role change rewrites its capability.
@@ -2989,100 +920,6 @@ fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
         b_owner.cmp(&a_owner).then_with(|| a.0.cmp(&b.0))
     });
     rows
-}
-
-/// Pure geometry; feeds both the renderer and the click router.
-pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
-    let mut rows = Vec::new();
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return rows;
-    }
-    let mut cursor_y =
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT;
-    for (user, role) in ordered_roster(ws) {
-        let row_rect = Rect::new(
-            pane_rect.x0 + PANE_PAD_X,
-            cursor_y,
-            pane_rect.x1 - PANE_PAD_X,
-            cursor_y + ROW_HEIGHT,
-        );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
-            break;
-        }
-        let remove_rect = Rect::new(
-            row_rect.x1 - 12.0 - REVOKE_WIDTH,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            row_rect.x1 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let role_w = 96.0_f64;
-        let role_rect = Rect::new(
-            remove_rect.x0 - 12.0 - role_w,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            remove_rect.x0 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let is_workspace_owner = ws.is_owner(&user);
-        let person = tilo_action_policy::Subject::Person(user.clone());
-        let grant_count = ws
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| grant.subject == person)
-            .count();
-        rows.push(MemberRow {
-            user,
-            role,
-            is_workspace_owner,
-            grant_count,
-            row_rect,
-            role_rect,
-            remove_rect,
-        });
-        // List rows, separated by their own hairline rather than a gap.
-        cursor_y += ROW_HEIGHT;
-    }
-    rows
-}
-
-/// The note under the People pane: why its controls are disabled, for
-/// someone who may not change them. The owner gets none.
-#[must_use]
-pub fn members_authority_note(is_owner: bool) -> Option<String> {
-    (!is_owner).then(|| t("workspace-settings-owner-only"))
-}
-
-/// Plain-language ownership state shared by visual rendering, accessibility
-/// snapshots, and deterministic UI tests.
-pub fn ownership_transfer_status(
-    ws: &Workspace,
-    names: &crate::collaborators::PeopleNames,
-    local_user: &UserId,
-) -> Option<String> {
-    let proposal = ws.pending_ownership_transfer.as_ref()?;
-    let recipient = public_key_member_id(proposal.recipient);
-    let owner = public_key_member_id(proposal.current_owner);
-    let name_of = |id: &str| {
-        names
-            .get(id)
-            .map_or_else(|| member_name_or_short_id(ws, id), str::to_owned)
-    };
-    if &recipient == local_user {
-        Some(t_args(
-            "workspace-settings-ownership-offered",
-            &[("owner", name_of(&owner).into())],
-        ))
-    } else if &owner == local_user {
-        Some(t_args(
-            "workspace-settings-ownership-waiting",
-            &[("recipient", name_of(&recipient).into())],
-        ))
-    } else {
-        Some(t_args(
-            "workspace-settings-ownership-pending",
-            &[("recipient", name_of(&recipient).into())],
-        ))
-    }
 }
 
 /// A member by name, numbered when another member here shares it
@@ -3140,112 +977,41 @@ fn person_name(ws: &Workspace, local_user: &str, id: &str) -> String {
     member_name_or_short_id(ws, id)
 }
 
-/// Paint the non-human collaborator roster. The square identity mark and
-/// persistent AGENT badge are intentionally redundant: shape, text and
-/// placement all communicate that these rows are not people.
-pub fn draw_agents_pane(
-    scene: &mut Scene,
-    transform: Affine,
-    pane_rect: Rect,
+/// What the People tab says about who may change a member's role.
+pub fn members_authority_note(is_owner: bool) -> Option<String> {
+    (!is_owner).then(|| t("workspace-settings-owner-only"))
+}
+
+/// Where the workspace's ownership transfer stands, for the People tab.
+#[must_use]
+pub fn ownership_transfer_status(
     ws: &Workspace,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return;
-    }
-    let rows = agents_pane_rows(ws, pane_rect);
-    let count = ws.agent_members().len();
-    draw_pane_intro(
-        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        pane_rect,
-        Icon::Sparkles,
-        &t_args(
-            "workspace-settings-agents-count",
-            &[("count", count.into())],
-        ),
-        &t("workspace-settings-agents-help"),
-        &t(if is_owner {
-            "workspace-settings-you-manage"
-        } else {
-            "workspace-settings-view-only"
-        }),
-    );
-    draw_primary_button(
-        scene,
-        transform,
-        agents_add_rect(pane_rect),
-        &t("workspace-settings-add-agent"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
-    if rows.is_empty() && !ws.bots.is_empty() {
-        // No agents, but bots: the bots stand under the Add agent button.
-        draw_bots_section(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            pane_rect,
-            ws,
-            is_owner,
-        );
-        if !is_owner {
-            draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
-        }
-        return;
-    }
-    if rows.is_empty() {
-        let empty = Rect::new(
-            pane_rect.x0,
-            pane_rect.y0
-                + PANE_PAD_TOP
-                + PANE_INTRO_HEIGHT
-                + PANE_INTRO_GAP
-                + AGENT_ONBOARDING_HEIGHT,
-            pane_rect.x1,
-            pane_rect.y1,
-        );
-        draw_empty_state(
-            scene,
-            transform,
-            empty,
-            Icon::Sparkles,
-            (
-                &t("workspace-settings-agents-empty-title"),
-                &t("workspace-settings-agents-empty-detail"),
-            ),
-            text_renderer,
-            theme,
-        );
-        return;
-    }
-    draw_section_header(
-        scene,
-        transform,
-        Point::new(
-            pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0
-                + PANE_PAD_TOP
-                + PANE_INTRO_HEIGHT
-                + PANE_INTRO_GAP
-                + AGENT_ONBOARDING_HEIGHT,
-        ),
-        &t("workspace-settings-agents-header"),
-        Some(count),
-        text_renderer,
-        theme,
-    );
-    for row in &rows {
-        draw_agent_row(scene, transform, ws, row, is_owner, text_renderer, theme);
-    }
-    draw_bots_section(
-        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        pane_rect,
-        ws,
-        is_owner,
-    );
-    if !is_owner {
-        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    names: &crate::collaborators::PeopleNames,
+    local_user: &UserId,
+) -> Option<String> {
+    let proposal = ws.pending_ownership_transfer.as_ref()?;
+    let recipient = public_key_member_id(proposal.recipient);
+    let owner = public_key_member_id(proposal.current_owner);
+    let name_of = |id: &str| {
+        names
+            .get(id)
+            .map_or_else(|| member_name_or_short_id(ws, id), str::to_owned)
+    };
+    if &recipient == local_user {
+        Some(t_args(
+            "workspace-settings-ownership-offered",
+            &[("owner", name_of(&owner).into())],
+        ))
+    } else if &owner == local_user {
+        Some(t_args(
+            "workspace-settings-ownership-waiting",
+            &[("recipient", name_of(&recipient).into())],
+        ))
+    } else {
+        Some(t_args(
+            "workspace-settings-ownership-pending",
+            &[("recipient", name_of(&recipient).into())],
+        ))
     }
 }
 
@@ -3282,98 +1048,6 @@ fn service_member_detail(service: &ServiceMember) -> String {
     )
 }
 
-fn draw_agent_avatar(scene: &mut Scene, transform: Affine, row: &AgentRow, theme: &Theme) -> Rect {
-    let avatar_size = 28.0;
-    let avatar = Rect::new(
-        row.row_rect.x0 + 12.0,
-        row.row_rect.center().y - avatar_size / 2.0,
-        row.row_rect.x0 + 12.0 + avatar_size,
-        row.row_rect.center().y + avatar_size / 2.0,
-    );
-    ui::agent_identity::draw_agent_identity_mark(
-        scene,
-        transform,
-        avatar,
-        subject_tint(&row.agent, theme),
-        theme,
-        ui::agent_identity::AgentIdentityStyle::Solid,
-    );
-    avatar
-}
-
-fn draw_agent_row(
-    scene: &mut Scene,
-    transform: Affine,
-    ws: &Workspace,
-    row: &AgentRow,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    draw_row_card(scene, transform, row.row_rect, theme);
-    let avatar = draw_agent_avatar(scene, transform, row, theme);
-    let (name, badge_label, detail) = agent_summary_parts(ws, &row.agent, row.kinds);
-    let badge = draw_pill(
-        scene,
-        transform,
-        Point::new(row.role_rect.x0 - 12.0, row.row_rect.center().y),
-        &badge_label,
-        ChipStyle::Neutral,
-        text_renderer,
-        theme,
-    );
-    let text_x = avatar.x1 + 12.0;
-    let text_max = badge.x0 - 8.0 - text_x;
-    let title_style = tokens.typography.style(TextRole::Caption);
-    let title = elide(&name, &title_style, text_max, text_renderer);
-    text_renderer.draw_style(
-        scene,
-        &title,
-        colors.text_primary,
-        at(transform, text_x, row.row_rect.y0 + 12.0),
-        None,
-        &title_style,
-    );
-    let detail_style = tokens.typography.style(TextRole::Caption);
-    let detail = elide(&detail, &detail_style, text_max, text_renderer);
-    text_renderer.draw_style(
-        scene,
-        &detail,
-        colors.text_dim,
-        at(transform, text_x, row.row_rect.y0 + 32.0),
-        None,
-        &detail_style,
-    );
-    draw_pill(
-        scene,
-        transform,
-        Point::new(row.role_rect.x1, row.role_rect.center().y),
-        &t("workspace-settings-admitted"),
-        ChipStyle::Tinted(Tone::Success),
-        text_renderer,
-        theme,
-    );
-    Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ButtonFace::new(row.review_rect, &t("workspace-settings-review-access"))
-            .disabled(!is_owner),
-    );
-    draw_danger_button(
-        scene,
-        transform,
-        row.remove_rect,
-        &t("workspace-settings-revoke"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
-}
-
 fn agent_admission_label(kinds: tilo_action_policy::KindSet) -> String {
     use tilo_action_policy::ActionKind;
     t(if kinds.contains(ActionKind::Outside) {
@@ -3385,339 +1059,24 @@ fn agent_admission_label(kinds: tilo_action_policy::KindSet) -> String {
     })
 }
 
-#[derive(Clone, Debug)]
-pub struct DefaultAppRow {
-    pub resource: desktop_policy::ResourceKind,
-    pub workspace_rect: Rect,
-    pub user_rect: Rect,
-    pub row_rect: Rect,
-}
-
-/// Top of the first default-app row: under the intro card, the section
-/// header and the column-label line. The pane's empty state starts here
-/// too, so it can never paint over that header block.
-fn default_app_rows_top(pane: Rect) -> f64 {
-    pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + 44.0
-}
-
-/// A default-app cycler keeps this far from its row card's edge.
-const DEFAULT_APP_ROW_INSET: f64 = 12.0;
-const DEFAULT_APP_COLUMN_GAP: f64 = 12.0;
-/// What a wide row keeps for its resource label before the two cyclers
-/// share the rest.
-const DEFAULT_APP_LABEL_MIN: f64 = 120.0;
-
-/// The x-extent of the workspace and personal cyclers in a row spanning
-/// `x0..x1`. The column captions above the rows read the same extents, so
-/// a caption always sits over its control.
-fn default_app_columns(x0: f64, x1: f64, compact: bool) -> ((f64, f64), (f64, f64)) {
-    let inner0 = x0 + DEFAULT_APP_ROW_INSET;
-    let inner1 = x1 - DEFAULT_APP_ROW_INSET;
-    if compact {
-        let control_w = ((inner1 - inner0 - DEFAULT_APP_COLUMN_GAP) / 2.0).max(0.0);
-        return ((inner0, inner0 + control_w), (inner1 - control_w, inner1));
-    }
-    let control_w = ((inner1 - inner0 - DEFAULT_APP_LABEL_MIN - 2.0 * DEFAULT_APP_COLUMN_GAP)
-        / 2.0)
-        .clamp(160.0, 260.0);
-    let user = (inner1 - control_w, inner1);
-    let workspace_x1 = user.0 - DEFAULT_APP_COLUMN_GAP;
-    ((workspace_x1 - control_w, workspace_x1), user)
-}
-
-pub fn default_app_rows(
-    pane: Rect,
-    candidates: &[desktop_policy::AppCandidate],
-) -> Vec<DefaultAppRow> {
-    let mut resources: Vec<_> = candidates
-        .iter()
-        .flat_map(|a| a.resources.iter().cloned())
-        .collect();
-    resources.compact_sort();
-    resources.dedup();
-    let x0 = pane.x0 + PANE_PAD_X;
-    let x1 = pane.x1 - PANE_PAD_X;
-    let compact = compact_pane(pane);
-    let row_h = if compact { 94.0 } else { 64.0 };
-    let row_step = if compact { 104.0 } else { 72.0 };
-    resources
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, resource)| {
-            // `index` is a row position in a pane-height-bounded list of
-            // deduplicated resource kinds — well under 2^53.
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "index is a small row position bounded by the resource-kind list, well under 2^53"
-            )]
-            let y0 = default_app_rows_top(pane) + index as f64 * row_step;
-            let row_rect = Rect::new(x0, y0, x1, y0 + row_h);
-            let controls_y = if compact {
-                row_rect.y1 - 10.0 - CONTROL_HEIGHT
-            } else {
-                y0 + (row_h - CONTROL_HEIGHT) / 2.0
-            };
-            let ((ws_x0, ws_x1), (user_x0, user_x1)) = default_app_columns(x0, x1, compact);
-            let workspace_rect = Rect::new(ws_x0, controls_y, ws_x1, controls_y + CONTROL_HEIGHT);
-            let user_rect = Rect::new(user_x0, controls_y, user_x1, controls_y + CONTROL_HEIGHT);
-            (row_rect.y1 <= pane.y1 - 10.0).then_some(DefaultAppRow {
-                resource,
-                workspace_rect,
-                user_rect,
-                row_rect,
-            })
-        })
-        .collect()
-}
-
-/// Bundles the per-workspace inputs to [`draw_default_apps_pane`] so the
-/// call stays under clippy's argument-count budget, without disturbing
-/// the shared `scene`/`transform`/`text_renderer`/`theme` draw parameters
-/// every other pane drawer in this file takes in that same order.
-pub struct DefaultAppsCtx<'a> {
-    pub ws: &'a Workspace,
-    pub local_user: &'a UserId,
-    pub candidates: &'a [desktop_policy::AppCandidate],
-}
-
-pub fn draw_default_apps_pane(
-    scene: &mut Scene,
-    transform: Affine,
-    pane: Rect,
-    ctx: &DefaultAppsCtx<'_>,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let DefaultAppsCtx {
-        ws,
-        local_user,
-        candidates,
-    } = *ctx;
-    draw_default_apps_header(
-        scene,
-        transform,
-        pane,
-        &default_apps_status(ws, candidates),
-        text_renderer,
-        theme,
-    );
-    let can_admin = ws.may_administer(local_user);
-    draw_default_apps_rows(scene, transform, pane, ctx, can_admin, text_renderer, theme);
-    if candidates.iter().all(|a| a.resources.is_empty()) {
-        // The empty state owns the row region only: centred in the whole
-        // pane it painted across the intro card, the section header and the
-        // column labels (HIG §7: nothing overlaps).
-        let rows = Rect::new(pane.x0, default_app_rows_top(pane), pane.x1, pane.y1);
-        draw_empty_state(
-            scene,
-            transform,
-            rows,
-            Icon::LayoutGrid,
-            (
-                &t("workspace-settings-apps-empty-title"),
-                &t("workspace-settings-apps-empty-detail"),
-            ),
-            text_renderer,
-            theme,
-        );
+/// What a bot says under its name: whether it runs yet, and from which
+/// version. One fact per line, never joined.
+pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
+    if bot.installation.is_none() {
+        t("workspace-settings-bot-starting")
+    } else if bot.paused {
+        t("workspace-settings-bot-paused")
+    } else if let Some(version) = &bot.version {
+        t_args(
+            "workspace-settings-bot-version",
+            &[("version", version.as_str().into())],
+        )
+    } else {
+        t("workspace-settings-bot-running")
     }
 }
 
-/// The intro card, section heading and column labels above the row list —
-/// split out of [`draw_default_apps_pane`] so that function stays readable
-/// as one top-to-bottom pass over the pane.
-fn draw_default_apps_header(
-    scene: &mut Scene,
-    transform: Affine,
-    pane: Rect,
-    status: &str,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    draw_pane_intro(
-        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        pane,
-        Icon::LayoutGrid,
-        &t("workspace-settings-apps-intro-title"),
-        &t("workspace-settings-apps-intro-detail"),
-        status,
-    );
-    let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
-    draw_section_header(
-        scene,
-        transform,
-        Point::new(pane.x0 + PANE_PAD_X, heading_y),
-        &t("workspace-settings-apps-header"),
-        None,
-        text_renderer,
-        theme,
-    );
-    let ((workspace_x, _), (user_x, _)) = default_app_columns(
-        pane.x0 + PANE_PAD_X,
-        pane.x1 - PANE_PAD_X,
-        compact_pane(pane),
-    );
-    for (caption, x) in [
-        (t("workspace-settings-workspace-choice"), workspace_x),
-        (t("workspace-settings-your-choice"), user_x),
-    ] {
-        text_renderer.draw_style(
-            scene,
-            &caption,
-            theme.tokens.colors.text_dim,
-            at(transform, x, heading_y + 22.0),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-    }
-}
-
-/// One row per resource kind: the workspace's policy cycler and the local
-/// user's own override, split out of [`draw_default_apps_pane`] to keep it
-/// under `too_many_lines`.
-fn draw_default_apps_rows(
-    scene: &mut Scene,
-    transform: Affine,
-    pane: Rect,
-    ctx: &DefaultAppsCtx<'_>,
-    can_admin: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let DefaultAppsCtx {
-        ws,
-        local_user,
-        candidates,
-    } = *ctx;
-    for row in default_app_rows(pane, candidates) {
-        draw_row_card(scene, transform, row.row_rect, theme);
-        let label_style = theme.text(TextRole::Caption);
-        let label_x = row.row_rect.x0 + DEFAULT_APP_ROW_INSET;
-        let stacked = row.workspace_rect.y0 >= row.row_rect.y0 + 20.0;
-        let label_max = if stacked {
-            row.row_rect.x1 - DEFAULT_APP_ROW_INSET - label_x
-        } else {
-            row.workspace_rect.x0 - DEFAULT_APP_COLUMN_GAP - label_x
-        };
-        let label = elide(
-            &resource_kind_label(&row.resource),
-            &label_style,
-            label_max,
-            text_renderer,
-        );
-        let label_h = f64::from(text_renderer.measure_style(&label, None, &label_style).1);
-        let label_y = if stacked {
-            row.row_rect.y0 + 12.0
-        } else {
-            row.workspace_rect.center().y - label_h / 2.0
-        };
-        text_renderer.draw_style(
-            scene,
-            &label,
-            theme.tokens.colors.text_primary,
-            at(transform, label_x, label_y),
-            None,
-            &label_style,
-        );
-        let (policy_label, choice_label) =
-            default_app_labels(ws, local_user, &row.resource, candidates);
-        draw_cycler(
-            scene,
-            transform,
-            row.workspace_rect,
-            &policy_label,
-            can_admin,
-            text_renderer,
-            theme,
-        );
-        draw_cycler(
-            scene,
-            transform,
-            row.user_rect,
-            &choice_label,
-            true,
-            text_renderer,
-            theme,
-        );
-    }
-}
-
-/// A disabled control with no reason reads as a broken one.
-fn draw_authority_footnote(
-    scene: &mut Scene,
-    transform: Affine,
-    pane_rect: Rect,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    draw_authority_note(
-        scene,
-        transform,
-        pane_rect,
-        &t("workspace-settings-owner-only"),
-        text_renderer,
-        theme,
-    );
-}
-
-fn draw_authority_note(
-    scene: &mut Scene,
-    transform: Affine,
-    pane_rect: Rect,
-    note: &str,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let tokens = &theme.tokens;
-    let style = tokens.typography.style(TextRole::Caption);
-    text_renderer.draw_style(
-        scene,
-        note,
-        tokens.colors.text_dim,
-        at(
-            transform,
-            pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
-        ),
-        None,
-        &style,
-    );
-}
-
-// Permissions pane
-
-/// One capability row, keyed by the capability's stable id — the same
-/// key [`Workspace::revoke_as`] takes, so a click can never revoke a
-/// different capability than the one the row was painted for.
-#[derive(Clone, Debug)]
-pub struct PermissionRow {
-    pub cap_id: String,
-    pub subject: GrantSubject,
-    /// Who the capability is held by, as a person reads it.
-    pub title: String,
-    pub allows: String,
-    pub expiry: String,
-    pub granted_by: Option<String>,
-    pub row_rect: Rect,
-    pub revoke_rect: Rect,
-}
-
-/// Pure layout — the renderer and the click router both read it, so a
-/// click always lands on the rect that was painted.
-#[derive(Clone, Debug, Default)]
-pub struct PermissionsPaneLayout {
-    /// Zero-area when the workspace has no addressable subject.
-    pub subject_rect: Rect,
-    pub choice_rect: Rect,
-    /// In [`EXPIRY_CHOICES`] order.
-    pub expiry_rects: [Rect; 3],
-    pub submit_rect: Rect,
-    pub rows: Vec<PermissionRow>,
-    /// Capabilities that did not fit the pane.
-    pub overflow: usize,
-}
-
-/// One entry the Permissions pane lists: a sandbox capability an app holds,
+/// One entry the Permissions tab lists: a sandbox capability an app holds,
 /// or a grant of the workspace's tree.
 #[derive(Clone, Copy, Debug)]
 enum Listed<'a> {
@@ -3877,8 +1236,7 @@ pub struct ListedPermission {
 }
 
 /// The permissions the workspace gives, in the order the tab lists them,
-/// each in the viewer's words. The same entries the pane draws, from the
-/// same labels, for a view that lays them out itself.
+/// each in the viewer's words.
 #[must_use]
 pub fn listed_permissions(
     ws: &Workspace,
@@ -3912,860 +1270,47 @@ pub fn listed_permissions(
         .collect()
 }
 
-/// Geometry does not depend on the draft, so the click router can
-/// resolve a point without knowing it.
-pub fn permissions_pane_layout(
-    ws: &Workspace,
-    pane_rect: Rect,
-    apps: &dyn AppDirectory,
-    local_user: &str,
-) -> PermissionsPaneLayout {
-    let mut layout = PermissionsPaneLayout::default();
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return layout;
-    }
-
-    let card = permission_composer_card(pane_rect);
-    layout_composer_controls(&mut layout, ws, card, compact_pane(pane_rect));
-    layout_capability_rows(&mut layout, (ws, local_user), pane_rect, card, apps);
-    layout
-}
-
-/// Header-level entry point for reusable permission roles. Keeping this in
-/// the pane's shared geometry module makes paint and hit testing agree.
-pub fn permission_profiles_rect(pane_rect: Rect) -> Rect {
-    let width = 164.0_f64.min((pane_rect.width() * 0.42).max(0.0));
-    let y0 = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP - 2.0;
-    Rect::new(
-        pane_rect.x1 - PANE_PAD_X - width,
-        y0,
-        pane_rect.x1 - PANE_PAD_X,
-        y0 + 24.0,
-    )
-}
-
-fn permission_composer_card(pane_rect: Rect) -> Rect {
-    let composer_height = if compact_pane(pane_rect) {
-        COMPOSER_HEIGHT + COMPOSER_COMPACT_EXTRA
-    } else {
-        COMPOSER_HEIGHT
-    };
-    Rect::new(
-        pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + SECTION_HEADER_HEIGHT,
-        pane_rect.x1 - PANE_PAD_X,
-        pane_rect.y0
-            + PANE_PAD_TOP
-            + PANE_INTRO_HEIGHT
-            + PANE_INTRO_GAP
-            + SECTION_HEADER_HEIGHT
-            + composer_height,
-    )
-}
-
-/// The composer card's subject/choice/expiry/submit controls — split out of
-/// [`permissions_pane_layout`] to keep it under `too_many_lines`.
-fn layout_composer_controls(
-    layout: &mut PermissionsPaneLayout,
-    ws: &Workspace,
-    card: Rect,
-    compact: bool,
-) {
-    let inner_x0 = card.x0 + 12.0;
-    let inner_x1 = card.x1 - 12.0;
-    let controls_y = card.y1 - 12.0 - CONTROL_HEIGHT;
-    if compact {
-        let gap = 8.0_f64;
-        let subject_w = (inner_x1 - inner_x0 - gap) / 2.0;
-        let top_y = card.y0 + 32.0;
-        layout.subject_rect = Rect::new(
-            inner_x0,
-            top_y,
-            inner_x0 + subject_w,
-            top_y + CONTROL_HEIGHT,
-        );
-        layout.choice_rect = Rect::new(
-            layout.subject_rect.x1 + gap,
-            top_y,
-            inner_x1,
-            top_y + CONTROL_HEIGHT,
-        );
-        let submit_w = 72.0;
-        let expiry_gap = 6.0;
-        let expiry_w = (inner_x1 - inner_x0 - submit_w - gap) / 3.0;
-        layout.expiry_rects = std::array::from_fn(|i| {
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "i is a fixed 3-element array index, always 0..=2"
-            )]
-            let x0 = inner_x0 + i as f64 * expiry_w;
-            Rect::new(
-                x0,
-                controls_y,
-                x0 + expiry_w - expiry_gap,
-                controls_y + CONTROL_HEIGHT,
-            )
-        });
-        layout.submit_rect = Rect::new(
-            inner_x1 - submit_w,
-            controls_y,
-            inner_x1,
-            controls_y + CONTROL_HEIGHT,
-        );
-        if grant_subjects(ws).is_empty() {
-            layout.subject_rect = Rect::ZERO;
-            layout.submit_rect = Rect::ZERO;
-        }
-        return;
-    }
-    let gap = 8.0_f64;
-    let expiry_w = EXPIRY_SEGMENT_WIDTH * 3.0;
-    let flexible = (inner_x1 - inner_x0) - expiry_w - SUBMIT_WIDTH - gap * 3.0;
-    let subject_w = (flexible * 0.45).max(72.0);
-    let choice_w = (flexible - subject_w).max(72.0);
-
-    layout.subject_rect = Rect::new(
-        inner_x0,
-        controls_y,
-        inner_x0 + subject_w,
-        controls_y + CONTROL_HEIGHT,
-    );
-    layout.choice_rect = Rect::new(
-        layout.subject_rect.x1 + gap,
-        controls_y,
-        layout.subject_rect.x1 + gap + choice_w,
-        controls_y + CONTROL_HEIGHT,
-    );
-    let expiry_x0 = layout.choice_rect.x1 + gap;
-    layout.expiry_rects = std::array::from_fn(|i| {
-        // `i` is a `std::array::from_fn::<_, 3>` index, always 0..=2.
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "i is a fixed 3-element array index, always 0..=2"
-        )]
-        let x0 = expiry_x0 + i as f64 * EXPIRY_SEGMENT_WIDTH;
-        Rect::new(
-            x0,
-            controls_y,
-            x0 + EXPIRY_SEGMENT_WIDTH,
-            controls_y + CONTROL_HEIGHT,
-        )
-    });
-    layout.submit_rect = Rect::new(
-        inner_x1 - SUBMIT_WIDTH,
-        controls_y,
-        inner_x1,
-        controls_y + CONTROL_HEIGHT,
-    );
-    if grant_subjects(ws).is_empty() {
-        layout.subject_rect = Rect::ZERO;
-        layout.submit_rect = Rect::ZERO;
-    }
-}
-
-/// The capability list below the composer, stopping once a row would run
-/// past the pane — split out of [`permissions_pane_layout`] to keep it
-/// under `too_many_lines`.
-fn layout_capability_rows(
-    layout: &mut PermissionsPaneLayout,
-    (ws, local_user): (&Workspace, &str),
-    pane_rect: Rect,
-    card: Rect,
-    apps: &dyn AppDirectory,
-) {
-    let entries = listed_capabilities(ws);
-    // Keep a dedicated footer band for overflow/authority copy. Rows must
-    // never consume that space and then have explanatory text painted over
-    // their final line.
-    let footer_top = pane_rect.y1 - PANE_PAD_BOTTOM - 34.0;
-    let mut cursor_y = card.y1 + 16.0;
-    let mut last_kind: Option<SubjectKind> = None;
-    let mut placed = 0usize;
-    for (subject, entry) in &entries {
-        let needs_header = last_kind != Some(subject.kind);
-        let header_h = if needs_header {
-            SECTION_HEADER_HEIGHT
-        } else {
-            0.0
-        };
-        let row_y0 = cursor_y + header_h;
-        if row_y0 + ROW_HEIGHT > footer_top {
-            break;
-        }
-        let row_rect = Rect::new(
-            pane_rect.x0 + PANE_PAD_X,
-            row_y0,
-            pane_rect.x1 - PANE_PAD_X,
-            row_y0 + ROW_HEIGHT,
-        );
-        let revoke_rect = Rect::new(
-            row_rect.x1 - 12.0 - REVOKE_WIDTH,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            row_rect.x1 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let (allows, expiry, granted_by) = match entry {
-            Listed::Sandbox(cap) => (
-                capability_allows(cap, apps),
-                expiry_label(cap.expiry),
-                granted_by_label(cap, ws, local_user),
-            ),
-            Listed::Grant(grant) => (
-                grant_allows(grant, apps),
-                lifetime_label(&grant.lifetime),
-                grant_given_by_label(grant, ws, local_user),
-            ),
-        };
-        layout.rows.push(PermissionRow {
-            cap_id: entry.id().to_owned(),
-            subject: subject.clone(),
-            title: subject.display(ws, local_user, apps),
-            allows,
-            expiry,
-            granted_by,
-            row_rect,
-            revoke_rect,
-        });
-        last_kind = Some(subject.kind);
-        cursor_y = row_rect.y1 + ROW_GAP;
-        placed = placed.saturating_add(1);
-    }
-    layout.overflow = entries.len().saturating_sub(placed);
-}
-
-/// Non-owners see the same list and controls, painted disabled, with a
-/// footnote explaining why.
-pub fn draw_permissions_pane(
-    scene: &mut Scene,
-    transform: Affine,
-    pane_rect: Rect,
-    (ws, apps, local_user): (&Workspace, &dyn AppDirectory, &str),
-    draft: &GrantDraft,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return;
-    }
-    let layout = permissions_pane_layout(ws, pane_rect, apps, local_user);
-    let active_grants = listed_capabilities(ws).len();
-    draw_pane_intro(
-        &mut PaintCtx::new(scene, transform, text_renderer, theme),
-        pane_rect,
-        Icon::Shield,
-        &t("workspace-settings-permissions-intro-title"),
-        &t("workspace-settings-permissions-intro-detail"),
-        &t_args(
-            "workspace-settings-active-grants",
-            &[("count", active_grants.into())],
-        ),
-    );
-
-    let card = draw_permission_composer(
-        scene,
-        transform,
-        pane_rect,
-        (ws, draft, apps, local_user),
-        is_owner,
-        &layout,
-        (&mut *text_renderer, theme),
-    );
-
-    if layout.rows.is_empty() {
-        // Empty content belongs directly to the composer it explains. A
-        // full-height body centred the message in otherwise blank space and
-        // made the owner-only explanation look detached at the footer.
-        let body = Rect::new(
-            pane_rect.x0,
-            card.y1 + 8.0,
-            pane_rect.x1,
-            (card.y1 + 122.0).min(pane_rect.y1 - 54.0),
-        );
-        draw_empty_state(
-            scene,
-            transform,
-            body,
-            Icon::Shield,
-            (
-                &t("workspace-settings-permissions-empty-title"),
-                &t("workspace-settings-permissions-empty-detail"),
-            ),
-            text_renderer,
-            theme,
-        );
-        if !is_owner {
-            draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
-        }
-        return;
-    }
-
-    let mut last_kind: Option<SubjectKind> = None;
-    let group_counts = |kind: SubjectKind| -> usize {
-        layout
-            .rows
-            .iter()
-            .filter(|r| r.subject.kind == kind)
-            .count()
-    };
-    for row in &layout.rows {
-        if last_kind != Some(row.subject.kind) {
-            draw_section_header(
-                scene,
-                transform,
-                Point::new(
-                    row.row_rect.x0,
-                    row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0,
-                ),
-                &row.subject.kind.section_label(),
-                Some(group_counts(row.subject.kind)),
-                text_renderer,
-                theme,
-            );
-            last_kind = Some(row.subject.kind);
-        }
-        draw_permission_row(scene, transform, row, is_owner, text_renderer, theme);
-    }
-
-    if layout.overflow > 0 {
-        let more = t_args(
-            "workspace-settings-more",
-            &[("count", layout.overflow.into())],
-        );
-        text_renderer.draw_style(
-            scene,
-            &more,
-            theme.tokens.colors.text_dim,
-            at(
-                transform,
-                pane_rect.x0 + PANE_PAD_X,
-                pane_rect.y1 - PANE_PAD_BOTTOM - 14.0,
-            ),
-            None,
-            &theme.text(TextRole::Caption),
-        );
-    } else if !is_owner {
-        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
-    }
-}
-
-/// The "Who" and "What it allows" cyclers inside the composer card.
-fn draw_who_what_pickers(
-    scene: &mut Scene,
-    transform: Affine,
-    card: Rect,
-    subject_draft: (&Workspace, &GrantDraft, &dyn AppDirectory, &str),
-    is_owner: bool,
-    layout: &PermissionsPaneLayout,
-    render: (&mut TextRenderer, &Theme),
-) {
-    let (ws, draft, apps, local_user) = subject_draft;
-    let (text_renderer, theme) = render;
-    let caption_y = if compact_pane(card) {
-        layout.subject_rect.y0 - 18.0
-    } else {
-        card.y0 + 12.0
-    };
-    let subject = draft_subject(ws, draft);
-    match &subject {
-        Some(entry) => {
-            let caption = t(if entry.kind == SubjectKind::Agent {
-                "workspace-settings-who-agent"
-            } else {
-                "workspace-settings-who"
-            });
-            draw_control_caption(
-                scene,
-                transform,
-                Point::new(layout.subject_rect.x0 + 2.0, caption_y),
-                &caption,
-                text_renderer,
-                theme,
-            );
-            draw_cycler(
-                scene,
-                transform,
-                layout.subject_rect,
-                &entry.display(ws, local_user, apps),
-                is_owner,
-                text_renderer,
-                theme,
-            );
-        }
-        None => {
-            draw_control_caption(
-                scene,
-                transform,
-                Point::new(card.x0 + 12.0, caption_y),
-                &t("workspace-settings-nobody-to-grant"),
-                text_renderer,
-                theme,
-            );
-        }
-    }
-    draw_control_caption(
-        scene,
-        transform,
-        Point::new(layout.choice_rect.x0 + 2.0, caption_y),
-        &t("workspace-settings-what-it-allows"),
-        text_renderer,
-        theme,
-    );
-    draw_cycler(
-        scene,
-        transform,
-        layout.choice_rect,
-        &draft.choice().label(),
-        is_owner,
-        text_renderer,
-        theme,
-    );
-}
-
-/// Paint the "Grant a permission" composer card — header, the who/what
-/// cyclers, the expiry track, the submit button. Returns the card's rect
-/// so the caller can lay out the capability rows beneath it.
-fn draw_permission_composer(
-    scene: &mut Scene,
-    transform: Affine,
-    pane_rect: Rect,
-    subject_draft: (&Workspace, &GrantDraft, &dyn AppDirectory, &str),
-    is_owner: bool,
-    layout: &PermissionsPaneLayout,
-    render: (&mut TextRenderer, &Theme),
-) -> Rect {
-    let draft = subject_draft.1;
-    let (text_renderer, theme) = render;
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-
-    draw_section_header(
-        scene,
-        transform,
-        Point::new(
-            pane_rect.x0 + PANE_PAD_X,
-            pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
-        ),
-        &t("workspace-settings-grant-header"),
-        None,
-        text_renderer,
-        theme,
-    );
-    Button::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &ButtonFace::new(
-            permission_profiles_rect(pane_rect),
-            &t_args(
-                "workspace-settings-saved-roles",
-                &[("count", subject_draft.0.presets.len().into())],
-            ),
-        )
-        .disabled(!is_owner),
-    );
-    let card = permission_composer_card(pane_rect);
-    ui::surface::card(
-        scene,
-        transform,
-        card,
-        f64::from(tokens.radii.control),
-        colors.surfaces.raised,
-    );
-
-    draw_who_what_pickers(
-        scene,
-        transform,
-        card,
-        subject_draft,
-        is_owner,
-        layout,
-        (&mut *text_renderer, theme),
-    );
-
-    let caption_y = if compact_pane(pane_rect) {
-        layout.expiry_rects[0].y0 - COMPOSER_CAPTION_BAND
-    } else {
-        card.y0 + 12.0
-    };
-    draw_control_caption(
-        scene,
-        transform,
-        Point::new(layout.expiry_rects[0].x0 + 2.0, caption_y),
-        &t("workspace-settings-expiry-caption"),
-        text_renderer,
-        theme,
-    );
-    draw_expiry_track(
-        scene,
-        transform,
-        layout,
-        draft,
-        is_owner,
-        text_renderer,
-        theme,
-    );
-
-    if layout.submit_rect.area() > 0.0 {
-        draw_primary_button(
-            scene,
-            transform,
-            layout.submit_rect,
-            &t("workspace-settings-grant"),
-            is_owner,
-            text_renderer,
-            theme,
-        );
-    }
-    card
-}
-
-/// The expiry segmented control inside the composer card.
-fn draw_expiry_track(
-    scene: &mut Scene,
-    transform: Affine,
-    layout: &PermissionsPaneLayout,
-    draft: &GrantDraft,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let selected = EXPIRY_CHOICES
-        .iter()
-        .position(|expiry| *expiry == draft.expiry)
-        .unwrap_or_default();
-    let owned_labels = EXPIRY_CHOICES.map(expiry_label);
-    let labels = owned_labels.each_ref().map(String::as_str);
-    // `SegmentedFace` owns the selected/unselected contrast, separators and
-    // shared focus-compatible geometry. The surrounding disabled layer keeps
-    // a viewer's immutable policy visibly unavailable without changing which
-    // actions the router authorizes.
-    if !is_owner {
-        let track = Rect::new(
-            layout.expiry_rects[0].x0,
-            layout.expiry_rects[0].y0,
-            layout.expiry_rects[2].x1,
-            layout.expiry_rects[2].y1,
-        );
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            DISABLED_ALPHA,
-            transform,
-            &track,
-        );
-    }
-    ui::widget::ToggleGroup::paint(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        &SegmentedFace::new(&layout.expiry_rects, &labels, selected),
-    );
-    if !is_owner {
-        scene.pop_layer();
-    }
-}
-
-/// Paint one [`PermissionRow`] — avatar, subject, expiry chip, Revoke button.
-fn draw_permission_row(
-    scene: &mut Scene,
-    transform: Affine,
-    row: &PermissionRow,
-    is_owner: bool,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-    draw_row_card(scene, transform, row.row_rect, theme);
-
-    let avatar_size = 28.0_f64;
-    let avatar = Rect::new(
-        row.row_rect.x0 + 12.0,
-        row.row_rect.center().y - avatar_size / 2.0,
-        row.row_rect.x0 + 12.0 + avatar_size,
-        row.row_rect.center().y + avatar_size / 2.0,
-    );
-    let title = &row.title;
-    draw_avatar(
-        scene,
-        transform,
-        avatar,
-        title,
-        matches!(row.subject.kind, SubjectKind::App | SubjectKind::Agent),
-        text_renderer,
-        theme,
-    );
-
-    let chip = draw_pill(
-        scene,
-        transform,
-        Point::new(row.revoke_rect.x0 - 12.0, row.row_rect.center().y),
-        &row.expiry,
-        ChipStyle::Neutral,
-        text_renderer,
-        theme,
-    );
-
-    let text_x = avatar.x1 + 12.0;
-    let text_max = chip.x0 - 12.0 - text_x;
-    let title_style = tokens.typography.style(TextRole::Caption);
-    let title_text = elide(title, &title_style, text_max, text_renderer);
-    text_renderer.draw_style(
-        scene,
-        &title_text,
-        colors.text_primary,
-        at(transform, text_x, row.row_rect.y0 + 12.0),
-        None,
-        &title_style,
-    );
-    let detail = match &row.granted_by {
-        Some(by) => t_args(
-            "workspace-settings-permission-detail",
-            &[
-                ("allows", row.allows.as_str().into()),
-                ("grantor", by.into()),
-            ],
-        ),
-        None => row.allows.clone(),
-    };
-    let detail_style = tokens.typography.style(TextRole::Caption);
-    let detail_text = elide(&detail, &detail_style, text_max, text_renderer);
-    text_renderer.draw_style(
-        scene,
-        &detail_text,
-        colors.text_dim,
-        at(transform, text_x, row.row_rect.y0 + 32.0),
-        None,
-        &detail_style,
-    );
-
-    draw_danger_button(
-        scene,
-        transform,
-        row.revoke_rect,
-        &t("workspace-settings-revoke"),
-        is_owner,
-        text_renderer,
-        theme,
-    );
-}
-
 #[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    reason = "exact settings layout geometry is the behavior under test"
-)]
-mod tab_tests {
-    //! The modal's tab surface: default tab, switching, sidebar
-    //! geometry, and that the sidebar renders without a pane drawer.
+mod members_tests {
+    //! A member's role and removal rewrite the membership capability the
+    //! model decides with, and only within owner authority.
 
     use super::*;
-    /// Whoever is looking at the pane; never a grantor in these fixtures.
-    const VIEWER: &str = "viewer-user";
-
-    fn ws_settings_default() -> WorkspaceSettings {
-        WorkspaceSettings::new(WorkspaceSlot::default())
-    }
-
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn settings_tabs_navigate_hit_test_and_draw_the_active_pane() {
-        // Phase `settings_tabs_default_to_general_and_switch_in_nav_order`.
-        {
-            // Phase `ws_settings_default_tab_is_general`.
-            {
-                let ws = ws_settings_default();
-                assert_eq!(ws.active_tab, WsTab::General);
-            }
-
-            // Phase `select_tab_switches_active`.
-            {
-                let mut ws = ws_settings_default();
-                ws.select_tab(WsTab::Members);
-                assert_eq!(ws.active_tab, WsTab::Members);
-                ws.select_tab(WsTab::Agents);
-                assert_eq!(ws.active_tab, WsTab::Agents);
-                ws.select_tab(WsTab::Permissions);
-                assert_eq!(ws.active_tab, WsTab::Permissions);
-                ws.select_tab(WsTab::General);
-                assert_eq!(ws.active_tab, WsTab::General);
-            }
-
-            // Phase `ws_tab_default_matches_general`.
-            {
-                assert_eq!(WsTab::default(), WsTab::General);
-            }
-
-            // Phase `ws_tab_all_iterates_in_nav_order`.
-            {
-                assert_eq!(
-                    WsTab::all(),
-                    [
-                        WsTab::General,
-                        WsTab::Members,
-                        WsTab::Agents,
-                        WsTab::Permissions,
-                        WsTab::Apps,
-                        WsTab::Emoji
-                    ]
-                );
-            }
-
-            // Phase `compact_labels_keep_every_destination_distinct`.
-            {
-                assert_eq!(
-                    WsTab::all().map(|tab| tab.compact_label()),
-                    ["General", "People", "Agents", "Privacy", "Apps", "Emoji"]
-                );
-            }
-
-            // Phase `permissions_tab_is_reachable_on_a_workspace_with_no_grants`.
-            {
-                // A host who wants to grant something before any grant exists
-                // has to be able to reach the tab that grants it.
-                let ws = Workspace::new(WorkspaceSlot::default(), "no-grants");
-                assert!(!ws.has_app_grants());
-                assert!(WsTab::all().contains(&WsTab::Permissions));
-                let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-                let layout = permissions_pane_layout(&ws, pane, &NoAppDirectory, VIEWER);
-                assert!(
-                    layout.choice_rect.area() > 0.0,
-                    "the capability picker must be laid out even with zero grants"
-                );
-            }
-        }
-
-        // Phase `settings_sidebar_nav_geometry_and_hit_testing`.
-        {
-            // Phase `sidebar_rect_is_the_token_sidebar_width`.
-            {
-                let ws = ws_settings_default();
-                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-                let sidebar = ws.sidebar_rect(modal);
-                assert_eq!(sidebar.width(), SIDEBAR_WIDTH);
-                assert_eq!(
-                    SIDEBAR_WIDTH,
-                    f64::from(ui::tokens::Metrics::BASE.sidebar_width),
-                    "the lens sidebar is the docked-sidebar width (HIG §9.6), not a bespoke 256"
-                );
-                assert_eq!(sidebar.height(), modal.height());
-                assert_eq!(sidebar.x0, modal.x0);
-            }
-
-            // Phase `pane_rect_starts_after_sidebar`.
-            {
-                let ws = ws_settings_default();
-                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-                let pane = ws.pane_rect(modal);
-                assert_eq!(pane.x0, modal.x0 + SIDEBAR_WIDTH);
-                assert_eq!(pane.x1, modal.x1);
-                assert!((pane.width() + SIDEBAR_WIDTH - modal.width()).abs() < f64::EPSILON);
-            }
-
-            // Phase `nav_rows_yield_one_rect_per_tab_in_order`.
-            {
-                let ws = ws_settings_default();
-                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-                let rows = ws.nav_rows(modal);
-                assert_eq!(rows.len(), WsTab::COUNT);
-                assert_eq!(rows[0].0, WsTab::General);
-                assert_eq!(rows[1].0, WsTab::Members);
-                assert_eq!(rows[2].0, WsTab::Agents);
-                assert_eq!(rows[3].0, WsTab::Permissions);
-                assert_eq!(rows[4].0, WsTab::Apps);
-                assert_eq!(rows[5].0, WsTab::Emoji);
-                for (index, (tab, _)) in rows.iter().enumerate() {
-                    assert_eq!(tab.index(), index);
-                }
-                for (_, r) in &rows {
-                    assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
-                    assert!(r.x1 > r.x0);
-                }
-                let stride = NAV_ROW_HEIGHT + NAV_ROW_GAP;
-                assert!((rows[1].1.y0 - rows[0].1.y0 - stride).abs() < f64::EPSILON);
-                assert!((rows[2].1.y0 - rows[1].1.y0 - stride).abs() < f64::EPSILON);
-            }
-
-            // Phase `nav_hit_test_returns_tab_at_point`.
-            {
-                let ws = ws_settings_default();
-                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-                for (tab, row) in ws.nav_rows(modal) {
-                    assert_eq!(ws.nav_hit_test(modal, row.center()), Some(tab));
-                }
-                assert_eq!(
-                    ws.nav_hit_test(modal, Point::new(modal.x1 - 10.0, modal.y1 - 10.0)),
-                    None
-                );
-            }
-        }
-
-        // Phase `draw_body_paints_the_sidebar_and_the_active_pane`.
-        {
-            // Phase `draw_body_paints_sidebar_when_pane_drawer_absent`.
-            {
-                let ws = ws_settings_default();
-                let mut scene = Scene::new();
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-                ws.draw_body(&mut scene, Affine::IDENTITY, modal, &mut tr, &theme, None);
-                assert!(
-                    !scene.encoding().draw_tags.is_empty(),
-                    "sidebar must paint at least one draw command even without a pane drawer"
-                );
-            }
-
-            // Phase `draw_body_invokes_pane_drawer_for_active_tab`.
-            {
-                let mut ws = ws_settings_default();
-                ws.select_tab(WsTab::Members);
-                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-                let expected_pane = ws.pane_rect(modal);
-
-                let mut observed: Option<Rect> = None;
-                let mut scene = Scene::new();
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let mut drawer =
-                    |_s: &mut Scene, _x: Affine, pane: Rect, _t: &mut TextRenderer, _th: &Theme| {
-                        observed = Some(pane);
-                    };
-                ws.draw_body(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    modal,
-                    &mut tr,
-                    &theme,
-                    Some(&mut drawer),
-                );
-                assert_eq!(observed, Some(expected_pane));
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod members_pane_tests {
-    //! The Members pane renders [`Workspace::roster`] — the membership
-    //! the capability model actually holds — and its role control
-    //! rewrites the membership capability that `role_of` reads back.
-
-    use super::*;
+    use crate::authority::WorkspaceAuthority as _;
     use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet, roles};
     use tilo_desktop_model::WorkspaceSlot;
 
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
 
+    fn ws_with_two_members() -> Workspace {
+        let mut ws = Workspace::new(WorkspaceSlot::from(7), "members-test");
+        ws.set_owner(OWNER);
+        assert!(
+            set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &PEER.to_string(),
+                CapRole::Viewer
+            )
+            .is_ok_and(|edit| !edit.is_empty()),
+            "owner may admit a member"
+        );
+        ws
+    }
+
+    /// Whether `who` may change the workspace's content now.
+    fn may_write(ws: &Workspace, who: &str) -> bool {
+        ws.answer_at(
+            who,
+            &ws.node(),
+            ActionKind::Undoable,
+            tilo_clock::unix_now(),
+        ) == Answer::Allow
+    }
+
     #[test]
-    fn people_are_named_as_the_roster_names_them_and_the_owner_sees_no_owner_only_note() {
+    fn people_are_named_as_the_roster_names_them() {
         use crate::collaborators::{PeopleNames, collaborator_roster_rows_named};
         let owner_key = "fa4834147f".repeat(6) + "0123";
         let mut ws = Workspace::new(WorkspaceSlot::from(9), "Studio");
@@ -4809,30 +1354,51 @@ mod members_pane_tests {
         );
     }
 
-    fn ws_with_two_members() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot::from(7), "members-test");
-        ws.set_owner(OWNER);
+    #[test]
+    fn a_pending_transfer_reads_differently_to_each_side() {
+        let (owner_key, owner_public) = collab_types::generate_keypair();
+        let (_, recipient_public) = collab_types::generate_keypair();
+        let owner = public_key_member_id(owner_public);
+        let recipient = public_key_member_id(recipient_public);
+        let mut ws = Workspace::new(WorkspaceSlot(91), "Research");
+        ws.set_owner(owner.clone());
+        ws.admit(recipient.clone(), CapRole::Editor);
+        ws.collaborators
+            .push(tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited());
+        ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
+            ws.id().to_string(),
+            [8; 32],
+            owner_public,
+            recipient_public,
+            u64::MAX,
+            &owner_key,
+        )
+        .ok();
+        let names = crate::collaborators::PeopleNames::default();
+        let to_recipient = ownership_transfer_status(&ws, &names, &recipient).expect("offered");
         assert!(
-            set_member_role(
-                &mut ws,
-                &OWNER.to_string(),
-                &PEER.to_string(),
-                CapRole::Viewer
-            )
-            .is_ok_and(|edit| !edit.is_empty()),
-            "owner may admit a member"
+            to_recipient.contains("offered you ownership"),
+            "{to_recipient}"
         );
-        ws
+        let to_owner = ownership_transfer_status(&ws, &names, &owner).expect("waiting");
+        assert!(to_owner.contains("Morgan"), "{to_owner}");
+        assert!(
+            !to_owner.contains(&short_id(&recipient)),
+            "a person is named, never shown as a key: {to_owner}"
+        );
+        let to_other =
+            ownership_transfer_status(&ws, &names, &"someone-else".to_string()).expect("pending");
+        assert!(to_other.contains("Morgan"), "{to_other}");
+        assert_eq!(
+            ownership_transfer_status(&ws_without_pending(), &names, &owner),
+            None
+        );
     }
 
-    /// Whether `who` may change the workspace's content now.
-    fn may_write(ws: &Workspace, who: &str) -> bool {
-        ws.answer_at(
-            who,
-            &ws.node(),
-            ActionKind::Undoable,
-            tilo_clock::unix_now(),
-        ) == Answer::Allow
+    fn ws_without_pending() -> Workspace {
+        let mut ws = Workspace::new(WorkspaceSlot(92), "Research");
+        ws.set_owner("owner-user");
+        ws
     }
 
     #[test]
@@ -4841,27 +1407,6 @@ mod members_pane_tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn member_roles_come_from_the_roster_and_change_only_within_owner_authority() {
-        {
-            let ws = ws_with_two_members();
-            let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-            let rows = members_pane_rows(&ws, pane);
-            assert_eq!(rows.len(), 2, "owner + invited peer");
-            let owner_row = rows
-                .iter()
-                .find(|r| r.user == OWNER)
-                .expect("owner is in the roster");
-            assert!(owner_row.is_workspace_owner);
-            assert_eq!(owner_row.role, CapRole::Owner);
-            let peer_row = rows.iter().find(|r| r.user == PEER).expect("peer row");
-            assert!(!peer_row.is_workspace_owner);
-            assert_eq!(peer_row.role, CapRole::Viewer);
-            for row in &rows {
-                assert!(row.role_rect.x0 > row.row_rect.x0);
-                assert!(row.remove_rect.x1 <= row.row_rect.x1);
-                assert!(row.role_rect.x1 <= row.remove_rect.x0);
-            }
-        }
-
         {
             let mut ws = ws_with_two_members();
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
@@ -4876,7 +1421,7 @@ mod members_pane_tests {
             assert_eq!(
                 ws.role_of(PEER),
                 Some(CapRole::Editor),
-                "the role the panel shows must be the role the model decides with"
+                "the role the sheet shows must be the role the model decides with"
             );
             assert!(may_write(&ws, PEER));
         }
@@ -4933,13 +1478,6 @@ mod members_pane_tests {
         }
 
         {
-            assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
-            assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
-            assert_eq!(next_role(CapRole::Editor), CapRole::Viewer);
-            assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
-        }
-
-        {
             let mut ws = ws_with_two_members();
             let refusal = set_member_role(
                 &mut ws,
@@ -4982,243 +1520,53 @@ mod members_pane_tests {
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-    )]
-    fn member_removal_and_ownership_protect_the_owner() {
-        {
-            {
-                let mut ws = ws_with_two_members();
-                let cap = CapOverride::grant(
-                    Subject::person(PEER),
-                    Scope::FsPath("/var/workspace".into()),
-                    Access::Write,
-                );
-                ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
-                let notes = Grant::new(
-                    "peer-notes",
-                    tilo_action_policy::Subject::person(PEER),
-                    ws.node().app("so.tilo.notes"),
-                    KindSet::READ_UNDOABLE,
-                    Answer::Allow,
-                    tilo_action_policy::Subject::person(OWNER),
-                );
-                ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
-                    .expect("owner shares an app");
-                assert_eq!(
-                    members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count,
-                    1
-                );
-
-                let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
-                    .expect("the owner may remove a member");
-                assert_eq!(edit.members, vec![PEER.to_string()]);
-                assert_eq!(edit.revoked.len(), 1, "the app grant");
-                assert_eq!(edit.sandbox_revoked.len(), 1, "the file grant");
-                assert_eq!(ws.role_of(PEER), None);
-                assert!(
-                    !ws.allows(
-                        &ws.actor_for_person(&PEER.to_string()),
-                        &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
-                        Access::Write
-                    ),
-                    "removing a member must revoke what they held, not just hide them"
-                );
-            }
-
-            {
-                let mut ws = ws_with_two_members();
-                let refusal = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
-                assert!(refusal.is_err(), "the owner cannot be removed");
-                assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
-            }
-        }
-
-        {
-            {
-                let (owner_key, owner_public) = collab_types::generate_keypair();
-                let (_, recipient_public) = collab_types::generate_keypair();
-                let owner = hex::encode(owner_public.as_bytes());
-                let recipient = hex::encode(recipient_public.as_bytes());
-                let mut ws = Workspace::new(WorkspaceSlot(91), "Research");
-                ws.set_owner(owner.clone());
-                ws.admit(recipient.clone(), CapRole::Editor);
-                ws.pending_ownership_transfer = Some(
-                    collab_types::OwnershipTransferProposalV1::new(
-                        ws.id().to_string(),
-                        [8; 32],
-                        owner_public,
-                        recipient_public,
-                        500,
-                        &owner_key,
-                    )
-                    .unwrap(),
-                );
-
-                let owner_resource = ownership_transfer_resource(&ws, &owner);
-                assert!(owner_resource.actions.iter().any(|action| {
-                    action.id == "ownership.propose"
-                        && action.contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
-                }));
-                assert!(
-                    owner_resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "ownership.cancel")
-                );
-                let recipient_resource = ownership_transfer_resource(&ws, &recipient);
-                let accept = recipient_resource
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "ownership.accept")
-                    .unwrap();
-                assert!(matches!(
-                    accept.contract.confirmation,
-                    tilo_actions::ConfirmationPolicy::Phrase { .. }
-                ));
-                assert!(
-                    ownership_transfer_status(
-                        &ws,
-                        &crate::collaborators::PeopleNames::default(),
-                        &recipient
-                    )
-                    .unwrap()
-                    .contains("offered you ownership")
-                );
-            }
-
-            {
-                let mut ws = ws_with_two_members();
-                let owner_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
-                let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[18; 32]);
-                let owner_public = collab_types::Ed25519PublicKey::from_bytes(
-                    owner_key.verifying_key().to_bytes(),
-                );
-                let recipient_public = collab_types::Ed25519PublicKey::from_bytes(
-                    recipient_key.verifying_key().to_bytes(),
-                );
-                let owner = public_key_member_id(owner_public);
-                let recipient = public_key_member_id(recipient_public);
-                ws.collaborators.push(
-                    tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited(),
-                );
-                ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-                    ws.id().to_string(),
-                    [23; 32],
-                    owner_public,
-                    recipient_public,
-                    u64::MAX,
-                    &owner_key,
-                )
-                .ok();
-
-                let status = ownership_transfer_status(
-                    &ws,
-                    &crate::collaborators::PeopleNames::default(),
-                    &owner,
-                )
-                .unwrap();
-                assert!(status.contains("Morgan"));
-                assert!(!status.contains(&short_id(&recipient)));
-            }
-        }
-    }
-
-    #[test]
-    fn governance_publishes_typed_workspace_actions() {
-        let mut ws = Workspace::new(WorkspaceSlot(92), "Research");
-        let owner = "owner".to_string();
-        ws.set_owner(owner.clone());
-        ws.save_preset_as_at(
-            &owner,
-            tilo_action_policy::Preset::new(
-                "Release reviewer",
-                "Read Builds and approve releases",
-                vec![tilo_action_policy::Rule::new(
-                    tilo_action_policy::TreePath::root()
-                        .app("org.tilo.Builds")
-                        .rest()
-                        .action("release.approve"),
-                    KindSet::ALL,
-                    Answer::Allow,
-                )],
-            ),
-            tilo_clock::unix_now(),
-        )
-        .unwrap();
-
-        let resource = governance_resource(&ws, &owner);
-        assert_eq!(resource.kind, roles::ROOM_KIND);
-        let save = resource
-            .actions
-            .iter()
-            .find(|action| action.id == PRESET_SAVE_ACTION_ID)
-            .unwrap();
-        assert_eq!(save.contract.kind, roles::GOVERNANCE_KIND);
-        let rules = save
-            .params()
-            .iter()
-            .find(|parameter| parameter.name == "rules")
-            .expect("agent-visible rules parameter");
-        assert_eq!(rules.ty, tilo_actions::ParamType::Array);
-        let arguments = serde_json::json!({
-            "name": "Notes opener",
-            "description": "Can open notes but cannot edit them",
-            "rules": [{
-                "node": "app:so.tilo.notes/**/action:note.open",
-                "kinds": ["read"],
-                "answer": "allow"
-            }]
-        })
-        .as_object()
-        .cloned()
-        .unwrap();
-        let encoded = save
-            .build_json(&arguments)
-            .expect("typed agent arguments bind");
-        let operation: GovernanceOperation =
-            serde_json::from_slice(&encoded.payload).expect("typed governance operation");
-        assert!(matches!(
-            operation,
-            GovernanceOperation::SavePreset { rules, .. }
-                if rules == vec![tilo_action_policy::Rule::new(
-                    tilo_action_policy::TreePath::root()
-                        .app("so.tilo.notes")
-                        .rest()
-                        .action("note.open"),
-                    KindSet::READ,
-                    Answer::Allow,
-                )]
-        ));
-        let assign = resource
-            .actions
-            .iter()
-            .find(|action| action.id == PRESET_ASSIGN_ACTION_ID)
-            .unwrap();
-        assert_eq!(assign.kind, tilo_actions::OperationKind::Effect);
-        assert_eq!(
-            assign.operation_type.as_deref(),
-            Some(GOVERNANCE_ACTION_TYPE)
+    fn member_removal_takes_back_what_the_member_held() {
+        let mut ws = ws_with_two_members();
+        let cap = CapOverride::grant(
+            Subject::person(PEER),
+            Scope::FsPath("/var/workspace".into()),
+            Access::Write,
         );
+        ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
+        let notes = Grant::new(
+            "peer-notes",
+            tilo_action_policy::Subject::person(PEER),
+            ws.node().app("so.tilo.notes"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            tilo_action_policy::Subject::person(OWNER),
+        );
+        ws.govern_as_at(OWNER, Change::Grant(notes), tilo_clock::unix_now())
+            .expect("owner shares an app");
+
+        let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string())
+            .expect("the owner may remove a member");
+        assert_eq!(edit.members, vec![PEER.to_string()]);
+        assert_eq!(edit.revoked.len(), 1, "the app grant");
+        assert_eq!(edit.sandbox_revoked.len(), 1, "the file grant");
+        assert_eq!(ws.role_of(PEER), None);
         assert!(
-            assign.params().first().is_some_and(|preset| preset
-                .choices
-                .iter()
-                .any(|choice| choice.as_ref() == "Release reviewer")),
-            "the saved grant sets are offered by name"
+            !ws.allows(
+                &ws.actor_for_person(&PEER.to_string()),
+                &collab_types::caps::ResourceRef::FsPath("/var/workspace/notes".into()),
+                Access::Write
+            ),
+            "removing a member must revoke what they held, not just hide them"
         );
 
-        let viewer = "viewer".to_string();
-        assert!(governance_resource(&ws, &viewer).actions.is_empty());
+        let refusal = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
+        assert!(refusal.is_err(), "the owner cannot be removed");
+        assert_eq!(ws.role_of(OWNER), Some(CapRole::Owner));
     }
 }
 
 #[cfg(test)]
-mod agents_pane_tests {
+mod agents_tests {
+    //! An agent is admitted with the grants of its preset and holds nothing
+    //! ambient: its authority reads back from those grants, per subject.
+
     use super::*;
-    /// Whoever is looking at the pane; never a grantor in these fixtures.
-    const VIEWER: &str = "viewer-user";
+    use crate::authority::WorkspaceAuthority as _;
     use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet};
     use tilo_desktop_model::WorkspaceSlot;
 
@@ -5262,374 +1610,743 @@ mod agents_pane_tests {
     )]
     fn agents_are_scoped_permission_subjects_presented_honestly() {
         {
-            {
-                let ws = ws_with_agent();
-                assert_eq!(
-                    members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0)).len(),
-                    1
-                );
-                let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0].agent, AGENT);
-                assert_eq!(rows[0].kinds, KindSet::READ);
-                assert_eq!(
-                    rows[0].grant_count, 1,
-                    "membership is not an extra permission"
-                );
-                assert_eq!(rows[0].preset, AgentPreset::Observer);
-                assert!(rows[0].review_rect.x1 < rows[0].remove_rect.x0);
-            }
-
-            {
-                let mut ws = Workspace::new(WorkspaceSlot::from(18), "profile-test");
-                ws.set_owner(OWNER);
-                let edit = admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer);
-                assert_eq!(
-                    edit.granted.len(),
-                    2,
-                    "reading the workspace, and no governing it"
-                );
-                assert_eq!(
-                    ws.agent_members_at(tilo_clock::unix_now()),
-                    vec![(AGENT.to_string(), KindSet::READ)]
-                );
-                assert_eq!(
-                    agent_answer(&ws, "so.tilo.notes", ActionKind::Read),
-                    Answer::Allow
-                );
-                assert_eq!(
-                    agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
-                    Answer::Deny,
-                    "an Observer reads; it never changes anything"
-                );
-                assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
-
-                ws.grant_as(
-                    &OWNER.to_string(),
-                    CapOverride::grant(
-                        Subject::agent(AGENT),
-                        Scope::FsPath("/var/workspace/brief.md".into()),
-                        Access::Read,
-                    ),
-                )
-                .expect("owner grants one selected file");
-                assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
-            }
-
-            {
-                let mut ws = ws_with_agent();
-                ws.grant_as(
-                    &OWNER.to_string(),
-                    CapOverride::grant(
-                        Subject::agent(AGENT),
-                        Scope::NetHost("*".into()),
-                        Access::Read,
-                    ),
-                )
-                .expect("owner grants network access for the test");
-                assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Custom);
-            }
-
-            {
-                let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-                let add = agents_add_rect(pane);
-                let row = agents_pane_rows(&ws_with_agent(), pane)
-                    .into_iter()
-                    .next()
-                    .expect("agent row");
-                assert!(add.y1 <= row.row_rect.y0);
-                assert!(row.review_rect.x1 < row.remove_rect.x0);
-            }
+            let ws = ws_with_agent();
+            let summaries = agent_summaries(&ws);
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].agent, AGENT);
+            assert_eq!(summaries[0].badge, t("workspace-settings-badge-agent"));
+            let members = ws.agent_members_at(tilo_clock::unix_now());
+            assert_eq!(members.len(), 1, "listed with the workspace's agents");
+            assert_eq!(members[0].0, AGENT);
+            assert_eq!(members[0].1, KindSet::READ);
+            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
         }
 
         {
-            {
-                let ws = ws_with_agent();
-                assert_eq!(
-                    agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
-                    Answer::Allow
-                );
-                assert_eq!(
-                    agent_answer(&ws, "so.tilo.sheets", ActionKind::Undoable),
-                    Answer::Deny,
-                    "an admission must not become ambient human-role authority",
-                );
-            }
+            let mut ws = Workspace::new(WorkspaceSlot::from(18), "profile-test");
+            ws.set_owner(OWNER);
+            let edit = admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer);
+            assert_eq!(
+                edit.granted.len(),
+                2,
+                "reading the workspace, and no governing it"
+            );
+            assert_eq!(
+                ws.agent_members_at(tilo_clock::unix_now()),
+                vec![(AGENT.to_string(), KindSet::READ)]
+            );
+            assert_eq!(
+                agent_answer(&ws, "so.tilo.notes", ActionKind::Read),
+                Answer::Allow
+            );
+            assert_eq!(
+                agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
+                Answer::Deny,
+                "an Observer reads; it never changes anything"
+            );
+            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
 
-            {
-                let mut ws = ws_with_agent();
-                let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-                assert_eq!(edit.revoked.len(), 3, "its admission and its app grant");
-                assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
-                assert_eq!(
-                    agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
-                    Answer::Deny
-                );
-            }
-
-            {
-                let mut ws = ws_with_agent();
-                let before = ws.policy.clone();
-                assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
-                assert_eq!(ws.policy, before);
-            }
-
-            {
-                let ws = ws_with_agent();
-                let subjects = grant_subjects(&ws);
-                let index = subjects
-                    .iter()
-                    .position(|subject| subject.kind == SubjectKind::Agent && subject.id == AGENT)
-                    .expect("agent is offered in the permission composer");
-                let draft = GrantDraft {
-                    subject_index: index,
-                    ..GrantDraft::default()
-                };
-                let Some(DraftGrant::Sandbox(cap)) = draft_capability(&ws, &draft) else {
-                    panic!("agent grant can be composed");
-                };
-                assert_eq!(cap.subject, Subject::agent(AGENT));
-            }
-
-            {
-                let ws = ws_with_agent();
-                let layout = permissions_pane_layout(
-                    &ws,
-                    Rect::new(0.0, 0.0, 660.0, 620.0),
-                    &NoAppDirectory,
-                    VIEWER,
-                );
-                assert!(layout.rows.iter().all(|row| !row.cap_id.is_empty()));
-                assert_eq!(
-                    layout
-                        .rows
-                        .iter()
-                        .filter(|row| row.subject.kind == SubjectKind::Agent)
-                        .count(),
-                    1,
-                    "only the explicit app grant belongs in Privacy & Security",
-                );
-            }
-        }
-    }
-
-    /// A service member is a cloud or relay identity an administrator
-    /// admits: it joins with the purpose and the grants stated here, it is
-    /// listed with the workspace's agents under that purpose, and it holds
-    /// nothing else.
-    #[test]
-    fn a_service_member_is_admitted_with_only_the_grants_it_is_given() {
-        use tilo_desktop_model::service_member::{
-            service_device, service_members, service_principal,
-        };
-
-        let device = collab_types::Ed25519PublicKey::from_bytes([9; 32]);
-        let principal = service_principal(&device);
-        let mut ws = Workspace::new(WorkspaceSlot::from(20), "service-test");
-        ws.set_owner(OWNER);
-        let deadline = 2_000_000_000;
-        let grant = admit_service_member(
-            &mut ws,
-            &OWNER.to_string(),
-            &device,
-            "Cloud agent: summarise the brief",
-            KindSet::READ,
-            Some(deadline),
-        )
-        .expect("the owner admits a service member");
-
-        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let rows = agents_pane_rows(&ws, pane);
-        assert_eq!(rows.len(), 1, "listed with the workspace's agents");
-        assert_eq!(rows[0].agent, principal);
-        assert_eq!(rows[0].kinds, KindSet::READ, "only what it was granted");
-        assert_eq!(
-            rows[0].grant_count, 0,
-            "its membership is its admission, not a permission beside one"
-        );
-        let service = rows[0].service.clone().expect("a service member row");
-        assert_eq!(service.purpose, "Cloud agent: summarise the brief");
-        assert_eq!(service.kinds, KindSet::READ);
-        assert_eq!(service.expires_at, Some(deadline));
-        assert_eq!(service.grant_id, grant);
-        let summaries = agent_summaries(&ws);
-        assert_eq!(summaries[0].name, "Cloud agent: summarise the brief");
-        assert_eq!(summaries[0].badge, t("workspace-settings-badge-service"));
-        assert_eq!(summaries[0].detail, service_member_detail(&service));
-
-        // Only the granted kinds: it reads the workspace, it changes nothing in
-        // it, and it holds no governance of it.
-        let now = tilo_clock::unix_now();
-        let context = tilo_desktop_model::context_at(now);
-        let authority = ws.subject_authority(tilo_action_policy::Subject::agent(principal.clone()));
-        assert_eq!(
-            authority
-                .decide(&ws.node().app("so.tilo.notes"), ActionKind::Read, &context)
-                .answer,
-            Answer::Allow
-        );
-        assert_eq!(
-            authority
-                .decide(
-                    &ws.node().app("so.tilo.notes"),
-                    ActionKind::Undoable,
-                    &context
-                )
-                .answer,
-            Answer::Deny,
-            "an admission to read is not a permission to change"
-        );
-        assert!(
             ws.grant_as(
-                &principal,
+                &OWNER.to_string(),
                 CapOverride::grant(
                     Subject::agent(AGENT),
                     Scope::FsPath("/var/workspace/brief.md".into()),
                     Access::Read,
                 ),
             )
-            .is_none(),
-            "a service member admits nobody"
-        );
+            .expect("owner grants one selected file");
+            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
+        }
 
-        // Only an administrator admits one, and a refused attempt writes
-        // nothing.
-        let before = ws.policy.clone();
-        assert_eq!(
-            admit_service_member(
-                &mut ws,
-                &"stranger".to_string(),
-                &collab_types::Ed25519PublicKey::from_bytes([10; 32]),
-                "search",
-                KindSet::READ,
-                None,
-            ),
-            None
-        );
-        assert_eq!(ws.policy, before);
+        {
+            let mut ws = ws_with_agent();
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::agent(AGENT),
+                    Scope::NetHost("*".into()),
+                    Access::Read,
+                ),
+            )
+            .expect("owner grants network access for the test");
+            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Custom);
+        }
 
-        // Ending it revokes what it was admitted with, and it leaves the
-        // agents' rows.
-        let edit = remove_agent(&mut ws, &OWNER.to_string(), &principal);
-        assert_eq!(edit.revoked, vec![grant]);
-        assert!(agents_pane_rows(&ws, pane).is_empty());
-        assert!(service_members(&ws, tilo_clock::unix_now()).is_empty());
-        assert_eq!(service_device("service:zz"), None);
+        {
+            let ws = ws_with_agent();
+            assert_eq!(
+                agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
+                Answer::Allow
+            );
+            assert_eq!(
+                agent_answer(&ws, "so.tilo.sheets", ActionKind::Undoable),
+                Answer::Deny,
+                "an admission must not become ambient human-role authority",
+            );
+        }
+
+        {
+            let mut ws = ws_with_agent();
+            let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
+            assert_eq!(edit.revoked.len(), 3, "its admission and its app grant");
+            assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
+            assert_eq!(
+                agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
+                Answer::Deny
+            );
+        }
+
+        {
+            let mut ws = ws_with_agent();
+            let before = ws.policy.clone();
+            assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
+            assert_eq!(ws.policy, before);
+        }
+
+        {
+            let ws = ws_with_agent();
+            let subjects = grant_subjects(&ws);
+            let index = subjects
+                .iter()
+                .position(|subject| subject.kind == SubjectKind::Agent && subject.id == AGENT)
+                .expect("agent is offered in the permission composer");
+            let draft = GrantDraft {
+                subject_index: index,
+                ..GrantDraft::default()
+            };
+            let Some(DraftGrant::Sandbox(cap)) = draft_capability(&ws, &draft) else {
+                panic!("agent grant can be composed");
+            };
+            assert_eq!(cap.subject, Subject::agent(AGENT));
+        }
+
+        {
+            let ws = ws_with_agent();
+            let listed = listed_permissions(&ws, &NoAppDirectory, OWNER);
+            assert_eq!(
+                listed
+                    .iter()
+                    .filter(|row| row.section == SubjectKind::Agent.section_label())
+                    .count(),
+                1,
+                "only the explicit app grant belongs in Privacy & Security",
+            );
+            assert!(listed.iter().all(|row| !row.id.is_empty()));
+        }
     }
 }
 
 #[cfg(test)]
-mod bots_pane_tests {
-    use super::*;
-    use tilo_desktop_model::{WorkspaceBot, WorkspaceSlot};
+mod permissions_tests {
+    //! The Permissions tab lists the workspace's grants in the viewer's
+    //! words, and its composer writes one through the owner's authority.
 
-    fn bot(name: &str, entry: Option<&str>, requested: bool) -> WorkspaceBot {
+    use super::*;
+    use crate::authority::WorkspaceAuthority as _;
+    use collab_types::caps::ResourceRef;
+    use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceSlot};
+
+    const OWNER: &str = "owner-user";
+    /// Whoever is looking at the tab; never a grantor in these fixtures.
+    const VIEWER: &str = "viewer-user";
+
+    fn app_actor(ws: &Workspace, app: &str) -> collab_types::caps::Actor {
+        collab_types::caps::Actor::app(app).in_workspace(ws.id().to_string())
+    }
+
+    fn ws_with_grants() -> Workspace {
+        let mut ws = Workspace::new(WorkspaceSlot::from(3), "perm-test");
+        ws.set_owner(OWNER);
+        ws.grant_app(
+            "firefox",
+            &Capability::Camera {
+                scope: GRANT_ALWAYS,
+            },
+        );
+        ws.grant_app(
+            "firefox",
+            &Capability::Network {
+                hosts: None,
+                scope: GRANT_SESSION,
+            },
+        );
+        ws
+    }
+
+    fn listed(ws: &Workspace) -> Vec<ListedPermission> {
+        listed_permissions(ws, &NoAppDirectory, VIEWER)
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn permission_rows_list_each_grant_with_its_real_scope_and_subject() {
+        {
+            let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+            assert_eq!(
+                scope_label(&Scope::FsRecord(record.to_string()), &NoAppDirectory),
+                "one shared file (b0d4e23f-c…)"
+            );
+            assert_eq!(
+                capability_allows(
+                    &CapOverride::grant(
+                        Subject::Principal(Principal::App("files".to_string())),
+                        Scope::FsRecord(record.to_string()),
+                        Access::Read,
+                    ),
+                    &NoAppDirectory
+                ),
+                "View one shared file (b0d4e23f-c…)"
+            );
+        }
+
+        {
+            let ws = ws_with_grants();
+            let rows = listed(&ws);
+            assert_eq!(rows.len(), 2);
+            for row in &rows {
+                assert_eq!(row.section, SubjectKind::App.section_label());
+                assert_eq!(row.holder, "firefox");
+                assert!(!row.id.is_empty(), "rows are keyed by capability id");
+            }
+            assert_ne!(rows[0].id, rows[1].id);
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::person("peer-user"),
+                    Scope::FsPath("/var/workspace".into()),
+                    Access::Write,
+                ),
+            )
+            .expect("owner grants");
+            ws.govern_as_at(
+                OWNER,
+                tilo_action_policy::Change::Grant(tilo_action_policy::Grant::new(
+                    "editors-camera-app",
+                    tilo_action_policy::Subject::Role(CapRole::Editor),
+                    ws.node().app("so.tilo.camera"),
+                    tilo_action_policy::KindSet::READ,
+                    tilo_action_policy::Answer::Allow,
+                    tilo_action_policy::Subject::person(OWNER),
+                )),
+                tilo_clock::unix_now(),
+            )
+            .expect("owner grants");
+            let rows = listed(&ws);
+            let kinds: Vec<&str> = rows.iter().map(|r| r.section.as_str()).collect();
+            for expected in [
+                SubjectKind::App.section_label(),
+                SubjectKind::Member.section_label(),
+                SubjectKind::Role.section_label(),
+            ] {
+                assert!(kinds.contains(&expected.as_str()), "{kinds:?}");
+            }
+            let mut sorted = kinds.clone();
+            sorted.sort_unstable();
+            assert_eq!(kinds, sorted, "rows are grouped by subject kind");
+        }
+
+        {
+            // A 64-hex person key is what the model records; the row names the
+            // collaborator, and the viewer's own grant reads "you".
+            let ada = "ad".repeat(32);
+            let bea = "be".repeat(32);
+            let mut ws = Workspace::new(WorkspaceSlot::from(5), "names");
+            ws.set_owner(&ada);
+            ws.collaborators.push(tilo_desktop_model::Collaborator::new(
+                ada.clone(),
+                "Ada Lovelace",
+            ));
+            ws.collaborators
+                .push(tilo_desktop_model::Collaborator::new(bea.clone(), "Bea"));
+            ws.grant_as(
+                &ada,
+                CapOverride::grant(
+                    Subject::person(bea.clone()),
+                    Scope::FsPath("/var/workspace".into()),
+                    Access::Write,
+                ),
+            )
+            .expect("owner grants");
+            let as_bea = listed_permissions(&ws, &NoAppDirectory, VIEWER);
+            assert_eq!(as_bea[0].holder, "Bea");
+            assert_eq!(
+                as_bea[0].granted_by.as_deref(),
+                Some("granted by Ada Lovelace")
+            );
+            let as_ada = listed_permissions(&ws, &NoAppDirectory, &ada);
+            assert_eq!(as_ada[0].granted_by.as_deref(), Some("granted by you"));
+            let as_bea = listed_permissions(&ws, &NoAppDirectory, &bea);
+            assert_eq!(
+                as_bea[0].holder, "Bea",
+                "the viewer is named, never \"You\""
+            );
+            for row in as_bea.iter().chain(&as_ada) {
+                let shown = format!("{} {}", row.holder, row.granted_by.as_deref().unwrap_or(""));
+                assert!(
+                    !shown.contains("adad") && !shown.contains("bebe"),
+                    "{shown}"
+                );
+            }
+        }
+
+        {
+            let mut ws = Workspace::new(WorkspaceSlot::from(4), "labels");
+            ws.set_owner(OWNER);
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::app("terminal"),
+                    Scope::FsPath("/var/workspace".into()),
+                    Access::Write,
+                )
+                .expiring(Expiry::EndOfSession),
+            )
+            .expect("owner grants");
+            let row = &listed(&ws)[0];
+            assert_eq!(row.allows, "Edit workspace files");
+            assert_eq!(row.expiry, "Session");
+            assert_eq!(
+                row.granted_by.as_deref(),
+                Some("granted by owner-user"),
+                "grant_as records the grantor; the row shows it"
+            );
+        }
+
+        // No capability line may name the mount point workspace files are
+        // projected at (HIG §4). Swept over every scope kind, not just the
+        // two the panel shows today, so a new scope can't reintroduce the leak.
+        {
+            let scopes = vec![
+                Scope::FsPath(WORKSPACE_FILES_PATH.into()),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design/drafts")),
+                Scope::Device("camera".into()),
+                Scope::NetHost("*".into()),
+                Scope::NetHost("example.com".into()),
+                Scope::FsRecord("b0d4e23f-c7cb-4ded-a427-b32cf9da9341".into()),
+            ];
+            for scope in &scopes {
+                for verb in [Access::Read, Access::Write] {
+                    let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
+                    let line = capability_allows(&cap, &NoAppDirectory);
+                    assert!(
+                        !line.contains(WORKSPACE_FILES_PATH),
+                        "the permission line {line:?} names {WORKSPACE_FILES_PATH}"
+                    );
+                    assert!(
+                        !line.contains("/var/"),
+                        "the permission line {line:?} exposes a system path"
+                    );
+                    assert!(!line.is_empty(), "{scope:?} produced an empty line");
+                }
+            }
+        }
+
+        // The projection root and a path inside it must read as different
+        // things, so a row never understates what is being granted.
+        {
+            let root = CapOverride::grant(
+                Subject::app("a"),
+                Scope::FsPath(WORKSPACE_FILES_PATH.into()),
+                Access::Write,
+            );
+            let sub = CapOverride::grant(
+                Subject::app("a"),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
+                Access::Write,
+            );
+            assert_eq!(
+                capability_allows(&root, &NoAppDirectory),
+                "Edit workspace files"
+            );
+            assert_eq!(
+                capability_allows(&sub, &NoAppDirectory),
+                "Edit \u{201c}design\u{201d} in this workspace",
+            );
+            assert_ne!(
+                capability_allows(&root, &NoAppDirectory),
+                capability_allows(&sub, &NoAppDirectory),
+                "granting every workspace file must not read the same as granting \
+                 one folder in it",
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
+        {
+            let ws = ws_with_grants();
+            let subjects = grant_subjects(&ws);
+            assert_eq!(
+                subjects[0],
+                GrantSubject {
+                    kind: SubjectKind::Member,
+                    id: OWNER.to_string()
+                },
+                "people come first"
+            );
+            assert!(subjects.contains(&GrantSubject {
+                kind: SubjectKind::App,
+                id: "firefox".to_string()
+            }));
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let subjects = grant_subjects(&ws);
+            let firefox = subjects
+                .iter()
+                .position(|s| s.id == "firefox")
+                .expect("firefox is a candidate subject");
+            let mut draft = GrantDraft {
+                subject_index: firefox,
+                choice_index: 0,
+                expiry: Expiry::Never,
+            };
+            while draft.choice().label() != "Microphone" {
+                draft.cycle_choice();
+            }
+            assert!(!ws.allows(
+                &app_actor(&ws, "firefox"),
+                &ResourceRef::Device("microphone".into()),
+                Access::Read
+            ));
+
+            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
+                .expect("the owner may grant");
+            assert_eq!(edit.sandbox_granted.len(), 1);
+            assert!(
+                ws.allows(
+                    &app_actor(&ws, "firefox"),
+                    &ResourceRef::Device("microphone".into()),
+                    Access::Read
+                ),
+                "the granted capability must start working, not merely start rendering"
+            );
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let firefox = grant_subjects(&ws)
+                .iter()
+                .position(|s| s.id == "firefox")
+                .unwrap();
+            // Re-granting an existing capability merges expiries, so pick
+            // something the app doesn't already hold to observe this one.
+            let mut draft = GrantDraft {
+                subject_index: firefox,
+                choice_index: 0,
+                expiry: Expiry::AfterUse,
+            };
+            while draft.choice().label() != "Microphone" {
+                draft.cycle_choice();
+            }
+            let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft)
+                .expect("the owner may grant");
+            let id = &edit.sandbox_granted[0];
+            let cap = ws
+                .sandbox
+                .iter()
+                .find(|c| &c.id == id)
+                .expect("stored capability");
+            assert_eq!(cap.expiry, Expiry::AfterUse);
+            assert!(
+                !cap.persists_across_restart(),
+                "an after-use grant must not be written down as permanent"
+            );
+        }
+
+        {
+            // `grant_capability` keeps the longer expiry for the same
+            // (subject, scope, effect, verb).
+            let mut ws = ws_with_grants();
+            let firefox = grant_subjects(&ws)
+                .iter()
+                .position(|s| s.id == "firefox")
+                .unwrap();
+            let mut draft = GrantDraft {
+                subject_index: firefox,
+                choice_index: 0,
+                expiry: Expiry::AfterUse,
+            };
+            while draft.choice().label() != "Camera" {
+                draft.cycle_choice();
+            }
+            apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("the owner may grant");
+            let camera = ws
+                .sandbox
+                .iter()
+                .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                camera.len(),
+                1,
+                "the re-grant merges rather than duplicating"
+            );
+            assert_eq!(
+                camera[0].expiry,
+                Expiry::Never,
+                "the existing permanent grant is not demoted to once-only"
+            );
+            let row = listed(&ws)
+                .into_iter()
+                .find(|r| r.allows.contains("camera"))
+                .expect("camera row");
+            assert_eq!(
+                row.expiry, "Always",
+                "the row must report the expiry that is stored, not the one that was asked for"
+            );
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let firefox = grant_subjects(&ws)
+                .iter()
+                .position(|s| s.id == "firefox")
+                .unwrap();
+            let draft = GrantDraft {
+                subject_index: firefox,
+                choice_index: 0,
+                expiry: Expiry::Never,
+            };
+            let before = ws.sandbox.len();
+            assert!(
+                apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft).is_err(),
+                "grant_as must refuse a non-administrator"
+            );
+            assert_eq!(ws.sandbox.len(), before);
+        }
+
+        {
+            let ws = ws_with_grants();
+            let firefox = grant_subjects(&ws)
+                .iter()
+                .position(|s| s.id == "firefox")
+                .unwrap();
+            for (i, choice) in GRANT_CHOICES.iter().enumerate() {
+                let draft = GrantDraft {
+                    subject_index: firefox,
+                    choice_index: i,
+                    expiry: Expiry::Never,
+                };
+                let mut probe = ws.clone();
+                match draft_capability(&ws, &draft).expect("every choice resolves") {
+                    DraftGrant::Sandbox(cap) => {
+                        assert_eq!(cap.effect, Effect::Grant);
+                        let resource = match &cap.scope {
+                            Scope::Device(d) => ResourceRef::Device(d.clone()),
+                            Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
+                            Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
+                            Scope::FsRecord(record) => {
+                                panic!("unexpected scope in the grant table: {record:?}")
+                            }
+                        };
+                        probe
+                            .grant_as(&OWNER.to_string(), cap.clone())
+                            .expect("owner grants");
+                        assert!(
+                            probe.allows(&app_actor(&probe, "firefox"), &resource, cap.access),
+                            "granting {:?} must make the decision function allow it",
+                            choice.label()
+                        );
+                    }
+                    DraftGrant::Grant(grant) => {
+                        let node = grant.node.clone();
+                        probe
+                            .govern_as_at(
+                                OWNER,
+                                tilo_action_policy::Change::Grant(grant),
+                                tilo_clock::unix_now(),
+                            )
+                            .expect("owner grants");
+                        assert_eq!(
+                            probe
+                                .subject_authority(tilo_action_policy::Subject::App(
+                                    "firefox".into()
+                                ))
+                                .decide(
+                                    &node,
+                                    tilo_action_policy::roles::GOVERNANCE_KIND,
+                                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
+                                )
+                                .answer,
+                            tilo_action_policy::Answer::Allow,
+                            "granting {:?} must make the decision function allow it",
+                            choice.label()
+                        );
+                    }
+                }
+            }
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let now = tilo_clock::unix_now();
+            let grant = tilo_action_policy::roles::app_authorship(
+                &ws.policy.workspace,
+                "firefox",
+                tilo_action_policy::Subject::person(OWNER),
+            );
+            let id = grant.id.as_str().to_owned();
+            ws.govern_as_at(OWNER, tilo_action_policy::Change::Grant(grant.clone()), now)
+                .expect("owner grants");
+            assert!(ws.app_is_author_at("firefox", now));
+            let row = listed(&ws)
+                .into_iter()
+                .find(|r| r.id == id)
+                .expect("the workspace-scoped app grant has a row");
+            assert_eq!(row.section, SubjectKind::App.section_label());
+            assert_eq!(row.allows, grant_allows(&grant, &NoAppDirectory));
+            assert_eq!(
+                apply_revoke(&mut ws, &OWNER.to_string(), &row.id)
+                    .expect("the owner may revoke")
+                    .revoked
+                    .len(),
+                1
+            );
+            assert!(!ws.app_is_author_at("firefox", now));
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let camera_row = listed(&ws)
+                .into_iter()
+                .find(|r| r.allows.contains("camera"))
+                .expect("camera row");
+            let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.id)
+                .expect("the owner may revoke");
+            assert_eq!(edit.sandbox_revoked, vec![camera_row.id.clone()]);
+            assert!(
+                !ws.allows(
+                    &app_actor(&ws, "firefox"),
+                    &ResourceRef::Device("camera".into()),
+                    Access::Read
+                ),
+                "the revoked capability must stop working, not merely stop rendering"
+            );
+            assert_eq!(listed(&ws).len(), 1);
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let target = listed(&ws)[0].id.clone();
+            let refusal = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
+            assert!(refusal.is_err(), "only an administrator may revoke");
+            assert_eq!(listed(&ws).len(), 2);
+        }
+
+        {
+            let mut ws = ws_with_grants();
+            let refusal = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
+            assert!(refusal.is_err(), "there is no such grant to revoke");
+            assert_eq!(ws.sandbox.len(), 2, "the two grants");
+        }
+    }
+
+    #[test]
+    fn a_resource_is_picked_by_the_title_its_app_publishes() {
+        struct Titles;
+        impl AppDirectory for Titles {
+            fn app_display_name(&self, _app_id: &str) -> Option<String> {
+                None
+            }
+            fn titled_resources(&self) -> Vec<TitledResource> {
+                vec![TitledResource {
+                    app: "so.tilo.notes".into(),
+                    kind: "notes.notebook.pages".into(),
+                    resource: "q3".into(),
+                    title: "Q3 plan".into(),
+                }]
+            }
+        }
+
+        let mut ws = ws_with_grants();
+        let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
+        let mut ws2 = ws.clone();
+        apply_grant_draft(&mut ws2, &OWNER.to_string(), &draft).expect("owner grants");
+        ws = ws2;
+        let rows = listed_permissions(&ws, &Titles, VIEWER);
+        assert!(
+            rows.iter().all(|row| !row.allows.contains("q3")),
+            "a printed permission names what it opens, never a bare id"
+        );
+    }
+
+    #[test]
+    fn a_grant_set_reads_back_as_the_grants_the_workspace_holds() {
+        let mut ws = ws_with_grants();
+        let draft = draft_for(&ws, "app:firefox", "microphone", "never").expect("a draft");
+        let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft).expect("owner grants");
+        assert_eq!(edit.sandbox_granted.len(), 1);
+        let rows = listed(&ws);
+        assert_eq!(
+            rows.len(),
+            ws.sandbox
+                .iter()
+                .filter(|c| c.effect == Effect::Grant)
+                .count(),
+            "every live grant is listed once"
+        );
+        for row in &rows {
+            assert!(ws.sandbox.iter().any(|cap| cap.id == row.id));
+        }
+    }
+}
+
+#[cfg(test)]
+mod bot_detail_tests {
+    use super::*;
+    use tilo_desktop_model::WorkspaceBot;
+
+    fn bot(version: Option<&str>) -> WorkspaceBot {
         WorkspaceBot {
-            name: name.into(),
-            installation: Some(format!("{name}-installation")),
+            name: "Standup".into(),
+            installation: Some("standup-installation".into()),
             device: Some("cd".repeat(32)),
-            entry: entry.map(str::to_owned),
-            version: Some("1.2.0".into()),
+            entry: Some("so.tilo.bots.standup".into()),
+            version: version.map(str::to_owned),
             added_by: "owner-user".into(),
-            requested,
+            requested: true,
             paused: false,
         }
     }
 
     #[test]
-    fn the_workspace_bots_are_listed_under_the_agents_and_only_a_requested_one_is_removed_here() {
-        let mut ws = Workspace::new(WorkspaceSlot::from(19), "bots-test");
-        ws.set_owner("owner-user");
-        ws.bots
-            .push(bot("Standup", Some("so.tilo.bots.standup"), true));
-        ws.bots.push(bot("Bridge", None, false));
-        let pane = Rect::new(0.0, 0.0, 660.0, 620.0);
-        let add = bots_add_rect(&ws, pane);
-        assert!(add.area() > 0.0, "the Bots section offers Add a bot");
-        assert!(
-            add.y0 > agents_add_rect(pane).y1,
-            "the bots stand under the agents"
-        );
-        let rows = bots_pane_rows(&ws, pane);
+    fn a_bot_says_whether_it_runs_and_from_which_version() {
         assert_eq!(
-            rows.iter()
-                .map(|row| row.bot.name.as_str())
-                .collect::<Vec<_>>(),
-            ["Standup", "Bridge"]
-        );
-        assert!(rows[0].row_rect.y0 >= add.y1);
-        assert!(rows[0].remove_rect.area() > 0.0, "a member asked for it");
-        assert!(
-            rows[1].remove_rect.area() <= 0.0,
-            "the workspace's operator runs it; it is removed where it was installed"
-        );
-        assert!(rows[0].row_rect.y1 <= rows[1].row_rect.y0);
-        assert_eq!(
-            bot_detail(&rows[0].bot),
+            bot_detail(&bot(Some("1.2.0"))),
             t_args(
                 "workspace-settings-bot-version",
                 &[("version", "1.2.0".into())]
             )
         );
-        let mut starting = bot("Standup", Some("so.tilo.bots.standup"), true);
+        let mut starting = bot(Some("1.2.0"));
         starting.installation = None;
         assert_eq!(bot_detail(&starting), t("workspace-settings-bot-starting"));
-    }
-}
-
-#[cfg(test)]
-mod permissions_pane_tests;
-
-#[cfg(test)]
-mod roster_order_tests {
-    //! The Members list must not reorder under the pointer.
-
-    use super::*;
-    use tilo_desktop_model::WorkspaceSlot;
-
-    #[test]
-    fn changing_a_role_does_not_move_the_row() {
-        // A role change rewrites the capability, shifting the raw
-        // roster order; the pane's order must not shift with it.
-        let mut ws = Workspace::new(WorkspaceSlot::from(5), "order");
-        ws.set_owner("host");
-        for person in ["ada", "bo", "cy"] {
-            assert!(
-                set_member_role(
-                    &mut ws,
-                    &"host".to_string(),
-                    &person.to_string(),
-                    CapRole::Viewer
-                )
-                .is_ok_and(|edit| !edit.is_empty()),
-                "owner may admit"
-            );
-        }
-        let pane = Rect::new(0.0, 0.0, 640.0, 600.0);
-        let before: Vec<UserId> = members_pane_rows(&ws, pane)
-            .into_iter()
-            .map(|r| r.user)
-            .collect();
-        assert_eq!(before, vec!["host", "ada", "bo", "cy"]);
-
-        set_member_role(
-            &mut ws,
-            &"host".to_string(),
-            &"ada".to_string(),
-            CapRole::Editor,
-        )
-        .expect("the owner may set a role");
-        let after: Vec<UserId> = members_pane_rows(&ws, pane)
-            .into_iter()
-            .map(|r| r.user)
-            .collect();
-        assert_eq!(after, before, "the row order must be identical");
+        let mut paused = bot(Some("1.2.0"));
+        paused.paused = true;
+        assert_eq!(bot_detail(&paused), t("workspace-settings-bot-paused"));
+        assert_eq!(bot_detail(&bot(None)), t("workspace-settings-bot-running"));
     }
 }
 
 #[cfg(test)]
 mod default_app_authority_tests {
     use super::*;
+    use crate::authority::WorkspaceAuthority as _;
+    use tilo_desktop_model::WorkspaceSlot;
 
     fn candidate(id: &str) -> desktop_policy::AppCandidate {
         desktop_policy::AppCandidate {
@@ -5701,53 +2418,6 @@ mod default_app_authority_tests {
                 next_user_default(None, &pdf, &candidates),
                 desktop_policy::UserWorkspaceChoice::PersonalDefault
             );
-        }
-    }
-}
-
-#[cfg(test)]
-mod rest_edge_tests {
-    //! HIG §9.5 rest edges: every card class this file paints derives its
-    //! edge from the fill it sits on and must register on every palette.
-
-    use super::*;
-
-    #[test]
-    fn rest_panes_keep_edges_and_the_section_step() {
-        {
-            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-                let colors = &theme.tokens.colors;
-                for (what, fill) in [
-                    ("row / intro / composer card", colors.surfaces.raised),
-                    ("sidebar footer row", colors.lift(0.35)),
-                ] {
-                    let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
-                    assert!(
-                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                        "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
-                        theme.name
-                    );
-                }
-            }
-        }
-
-        // Phase `default_apps_empty_state_starts_below_the_header_block`.
-        // The default-apps empty state starts where the first row would, under
-        // the column-label line, instead of centring itself over the header.
-        {
-            let pane = Rect::new(0.0, 0.0, 508.0, 560.0);
-            let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
-            let label_line_bottom = heading_y + 22.0 + 14.0;
-            assert!(default_app_rows_top(pane) >= label_line_bottom + 4.0);
-            assert!(default_app_rows(pane, &[]).is_empty());
-        }
-
-        // Phase `pane_lead_in_completes_the_section_step`.
-        // The pane lead-in and the lens body lead-in add up to one `s4` step.
-        {
-            let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
-            let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
-            assert_eq!(PANE_PAD_TOP + s2, s4);
         }
     }
 }

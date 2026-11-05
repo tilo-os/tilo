@@ -59,8 +59,6 @@ file with one visible surface and several helpers is one row.
 | 11 | **File chooser sheet** | `crates/session/sheets/src/file_picker/mod.rs` | 0 | — (`ui::widget::FilePicker`; the decorator reads input only) | — | yes |
 | 12 | **Quick settings panel and its pages** | `crates/session/quick-settings/src/view/*.rs`, `faces.rs` | 0 | — (`FloatingPanel`, `QuickTile`, `ListRow`, `Section`, `Slider`, `Button`; `faces.rs` is plain data) | — | yes |
 | 13 | **Power menu, window menu, workspace menu, Tilo menu** | `sheets/src/power.rs`, `window-menu/src/surface.rs`, `desktop/src/workspace_menu.rs`, `desktop/src/about.rs` | 0 | — (`ContextMenu`, `MenuItem`, `ModalDialog`) | — | yes |
-| 14 | **Workspace settings lens (sidebar, panes, footer)** — unused: the live lens is the settings sheet (#9) | `desktop/src/workspace_settings.rs` | 34 (panel 10, text 22, row 2) | the sidebar ground, hairline and identity plate, the tab rows, the pane intro, section headers, row cards, pills, the role cycler, captions, danger and primary buttons, the empty state, the footer | `FloatingPanelFace` for the lens, `ListRowFace`/`NavRowFace` for its tabs and rows, `SectionHeaderFace` for headers, `SegmentedFace`/`Dropdown` for the cycler, `Button`/`ButtonFace` for both buttons, `EmptyState.paint` for the empty panes, `Chip` for pills | rows, headers, buttons, segmented, empty state, chip exist; a **settings lens** (a sheet with a sidebar of tabs and scrolling panes, shared with the settings sheet) does not |
-| 15 | **Workspace settings: agent access pane** — unused, as #14 | `desktop/src/workspace_settings/agent_access.rs` | 11 (text 11) | the pane's header, each app's answer row and its summary, the stop and note lines | `SectionHeaderFace`, `ListRowFace` + `SegmentedFace`/`ToggleGroup` for the answer, `TextStackFace` for the summary, `Text`/`Banner` for the note | partly: all exist; the pane composes them itself |
 | 17 | **Workspace overview (Super+Tab panel) and its picture** | `desktop/src/overview_panel.rs` (5), `overview_panel/layout.rs` (6), `overview_panel/input.rs` (2), `overview_panel/paint.rs` (21), `desktop/src/overview_picture.rs` (3) | 37 (panel 10, text 13, scroll 1) | the panel's ground, edge and shadow, the "where you are" block, share rows, the go-to list, workspace rows and list rows, each tile and its strip label, the naming field, the face stack and app marks; and the shared picture's strip names, window titles and empty-strip words | `paint_surface`/`FloatingPanelFace` for the panel, `ListRowFace` for its rows, `TileHost`/`WindowPreview` for the pictured windows, `FaceStack` for the faces, `ScrollRegion` for its scroll (it clamps `scroll_y` by hand), `SearchField`/`TextInput` for the naming field | largely: `FloatingPanelFace`, `ListRowFace`, `TileHost`, `WindowPreview`, `ScrollRegion` exist; a **workspace-overview panel** (workspaces, each with pictured windows, one shared scroll) does not |
 | 18 | **Window switcher (Alt+Tab)** | `desktop/src/window_switcher.rs` | 9 (panel 7, text 2) | the panel, its cards and their wells, the hover ring, the hint line | `FloatingPanelFace` for the panel, `Card`/`WindowWell` for a card and its window, `KeyHintsFace` for the hints, `Text` for labels | partly: `FloatingPanelFace`, `Card`, `WindowWell`, `KeyHintsFace` exist; a **window switcher card** (a well with a title and an app mark, lifted when chosen) does not |
 | 19 | **Emoji picker** | `desktop/src/emoji_picker.rs` | 11 (panel 6, text 4, row 1) | the card's ground and edge, group segments, the grid's cells and their selection, the tone row | `FloatingPanelFace` for the card, `SearchField` (already used) and `ToggleGroup`/`SegmentedFace` for groups, `Card`/`ButtonFace` for a cell, `Popover` for the tone row | mostly: the picker's **grid cell** (a glyph, its name and its selection) as a shared component does not exist; `apps/osk`'s emoji panel draws the same thing and should share it |
@@ -111,14 +109,12 @@ component serves both.
    body with its own scroll and a footer of more than three actions, which
    the sheet a surface with a long list needs (a workspace directory, a
    chooser). API needed: `ModalDialog::search(field)`, `ModalDialog::body_scrolls()`,
-   `ModalDialog::footer_action(&str, ModalActionKind)`. **File chooser, the
-   directory sheet and the settings lens are the callers.**
+   `ModalDialog::footer_action(&str, ModalActionKind)`. **The file chooser
+   and the directory sheet are the callers.**
 2. **Settings lens** — `SettingsLens::new(tabs) -> Element`, `SettingsLens::page(tab, sections)`,
    `SettingsLens::footer(actions)`: a sheet with a sidebar of tabs, scrolling
-   panes of `Section`s and one footer, on `FloatingPanelFace`. Replaces
-   `workspace_settings.rs`'s hand-built sidebar, tab rows, section headers,
-   row cards, cycler and footer, and is shared with the workspace settings
-   sheet (`crates/session/sheets/src/workspace_settings/`), which draws the
+   panes of `Section`s and one footer, on `FloatingPanelFace`. The workspace
+   settings sheet (`crates/session/sheets/src/workspace_settings/`) draws the
    same shape composed. API: `SettingsLensTab { id, icon, label, count }`.
 3. **Bar chip** — **built:** `BarChipFace::new(name, faces).label(..).icons(&[..]).tone(..).hovered(..).paint(..)`,
    one bar control that holds a face stack, a label and a press, on

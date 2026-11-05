@@ -79,8 +79,7 @@ glyph-join 1 crates/session/desktop-surface/src/activity/pane.rs
 glyph-join 1 crates/session/desktop-surface/src/activity/replay.rs
 glyph-join 2 crates/session/desktop-surface/src/person_cursor.rs
 glyph-join 1 crates/session/desktop/src/here.rs
-glyph-join 1 crates/session/desktop/src/workspace_settings.rs
-glyph-join 2 crates/session/desktop/src/workspace_settings/agent_access.rs
+glyph-join 1 crates/session/desktop/src/workspace_settings/agent_access.rs
 glyph-join 1 crates/session/messaging-service/src/service/sms.rs
 glyph-join 1 crates/session/speaker-service/src/settings.rs
 glyph-join 1 crates/session/tray-host/src/item.rs
@@ -101,14 +100,11 @@ hand-panel 1 crates/session/desktop/src/people_overlay.rs
 hand-panel 3 crates/session/desktop/src/people_overlay/peek.rs
 hand-panel 1 crates/session/desktop/src/strip_switcher.rs
 hand-panel 7 crates/session/desktop/src/window_switcher.rs
-hand-panel 10 crates/session/desktop/src/workspace_settings.rs
 hand-rolled 1 apps/feeds/src/reader_pane.rs
 hand-rolled 2 apps/word-processor/src/widget/paint.rs
 hand-rolled 2 apps/word-processor/src/widget/panels.rs
-hand-rolled 2 crates/session/desktop/src/workspace_settings.rs
 hand-row 1 crates/session/desktop/src/desk_widgets/paint.rs
 hand-row 1 crates/session/desktop/src/emoji_picker.rs
-hand-row 2 crates/session/desktop/src/workspace_settings.rs
 hand-text 1 crates/session/capture-studio/src/surface.rs
 hand-text 4 crates/session/desktop-surface/src/drill_in.rs
 hand-text 1 crates/session/desktop-surface/src/surface/arrivals.rs
@@ -127,8 +123,6 @@ hand-text 3 crates/session/desktop/src/people_overlay.rs
 hand-text 2 crates/session/desktop/src/people_overlay/peek.rs
 hand-text 1 crates/session/desktop/src/strip_switcher.rs
 hand-text 2 crates/session/desktop/src/window_switcher.rs
-hand-text 22 crates/session/desktop/src/workspace_settings.rs
-hand-text 11 crates/session/desktop/src/workspace_settings/agent_access.rs
 own-scroll 1 crates/session/desktop-surface/src/surface.rs
 own-scroll 3 crates/session/desktop-surface/src/surface/paging.rs
 own-scroll 5 crates/session/desktop/src/collaborators.rs
