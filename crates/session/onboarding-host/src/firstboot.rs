@@ -162,9 +162,26 @@ pub fn renew_due_device_certificates() -> std::io::Result<()> {
         return Ok(());
     };
     let paths = collaboration_identity_paths();
+    let now = tilo_clock::unix_now_ns();
+    // A device that joined another person's identity holds no root, so the
+    // provisioning below has no key to reissue its certificate with and
+    // writes none. The session asks the person's devices for the renewal once
+    // its fabric is up (`tilo_session`'s fleet renewal); what is due here is
+    // said, not pretended to be renewed.
+    if let Some(held) = tilo_identity_host::provisioning::joined_device_renewal_due(&paths, now) {
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            identity = %identity_dir.display(),
+            device = %hex::encode(held.device_public_key),
+            expires_at_ns = held.expires_at_ns,
+            now_ns = now,
+            outcome = "due, through the person's devices",
+            "renewal: this joined device's certificate is due; it is renewed by the person's devices, not here"
+        );
+        return Ok(());
+    }
     let due =
         tilo_identity_host::provisioning::next_device_certificate_renewal(&identity_dir, &paths);
-    let now = tilo_clock::unix_now_ns();
     if due.is_none_or(|due| due > now) {
         return Ok(());
     }

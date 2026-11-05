@@ -467,6 +467,9 @@ struct Shared {
     underway: Rc<Cell<arrangement::Busy>>,
     /// The person's settings, kept in step with their other devices.
     settings: mount::settings_sync::SettingsSync,
+    /// A joined device's certificate, renewed through the person's devices
+    /// once it is due: this device holds no root to reissue it with.
+    fleet_renewal: Option<mount::renewal::FleetRenewal>,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     overview: mount::overview::Overview,
@@ -1909,6 +1912,7 @@ impl Session {
             arrangement,
             underway: busy,
             settings: mount::settings_sync::SettingsSync::new(),
+            fleet_renewal: mount::renewal::FleetRenewal::for_joined_device(),
             overview,
             dictation,
             emoji,
