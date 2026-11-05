@@ -1534,26 +1534,38 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             ui::tilo_resource::read_key::<String>(&doc, &home, "name").unwrap(),
             "My Workspace"
         );
-        let mut app = crate::ChatApp::new_ephemeral();
-        app.reload(&doc);
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
-        ui::Widget::draw(
-            &mut app,
-            &mut vello::Scene::new(),
-            vello::kurbo::Affine::IDENTITY,
-            &mut ui::text_render::TextRenderer::new(),
-            &ui::theme::Theme::dark(),
-            &ui::presence::PresenceCtx::empty(),
-        );
-        let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
-        assert!(
-            root.children.iter().all(|node| node
-                .name
-                .as_deref()
-                .is_none_or(|name| !name.contains("Workspace"))),
-            "Chat shows no workspace of its own"
-        );
     }
+}
+
+/// The migrated chat, drawn, lists the workspace's channels and the person's
+/// conversations: it has no workspace tab of its own.
+#[test]
+fn the_migrated_chat_draws_no_workspace_of_its_own() {
+    use ui::tilo_resource::evolution;
+    let mut doc = users_chat(false);
+    assert!(
+        evolution::migrate::<Chat>(&mut doc).unwrap(),
+        "migrated once"
+    );
+    let mut app = crate::ChatApp::new_ephemeral();
+    app.reload(&doc);
+    app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+    ui::Widget::draw(
+        &mut app,
+        &mut vello::Scene::new(),
+        vello::kurbo::Affine::IDENTITY,
+        &mut ui::text_render::TextRenderer::new(),
+        &ui::theme::Theme::dark(),
+        &ui::presence::PresenceCtx::empty(),
+    );
+    let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
+    assert!(
+        root.children.iter().all(|node| node
+            .name
+            .as_deref()
+            .is_none_or(|name| !name.contains("Workspace"))),
+        "Chat shows no workspace of its own"
+    );
 }
 
 #[test]

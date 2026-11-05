@@ -6,8 +6,8 @@ use super::*;
 /// A direct conversation row as the record projects it, named `name`.
 fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
     let id = crate::record::Chat::direct_id([
-        crate::record::Participant::person(app.me.id.clone()),
-        crate::record::Participant::person(key.to_owned()),
+        crate::record::Participant::person(app.me.id.as_str()),
+        crate::record::Participant::person(key),
     ]);
     crate::model::Channel {
         id: id.to_string(),
@@ -21,12 +21,8 @@ fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
         archived: false,
         direct: true,
         participants: vec![
-            crate::record::Participant::person(app.me.id.clone())
-                .key()
-                .to_owned(),
-            crate::record::Participant::person(key.to_owned())
-                .key()
-                .to_owned(),
+            crate::record::Participant::person(app.me.id.as_str()).key(),
+            crate::record::Participant::person(key).key(),
         ],
     }
 }

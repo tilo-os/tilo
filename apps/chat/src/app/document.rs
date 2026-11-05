@@ -120,7 +120,7 @@ impl ChatApp {
         self.direct_held = per_channel
             .iter()
             .filter(|(_, messages)| !messages.is_empty())
-            .map(|(id, _)| id.to_string())
+            .map(|(id, _)| id.clone())
             .filter(|id| {
                 self.channels
                     .iter()

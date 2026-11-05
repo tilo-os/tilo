@@ -649,7 +649,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             let state = cx.live().get();
             let mut chat = chat.borrow_mut();
             chat.open_conversation(&id, &state);
-            return chat.read_direct_answer(public_key, &id, &state);
+            return Ok(chat.read_direct_answer(public_key, &id, &state));
         }
         ChatEffect::SendDirectMessage { public_key, text } => {
             let state = cx.live().get();
@@ -672,9 +672,9 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         ChatEffect::ReadDirectConversation { public_key } => {
             let state = cx.live().get();
             let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
-            return chat
+            return Ok(chat
                 .borrow_mut()
-                .read_direct_answer(public_key, &id, &state);
+                .read_direct_answer(public_key, &id, &state));
         }
         _ => {}
     }

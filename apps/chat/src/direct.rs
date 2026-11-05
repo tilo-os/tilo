@@ -9,7 +9,7 @@
 //! are the chat's messages in the chat's parts, beside every channel's; its
 //! read mark is this person's, in the record.
 
-use ui::framework::{EffectAnswer, Effected, LiveRow};
+use ui::framework::{Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::Id;
 
@@ -75,7 +75,7 @@ impl ChatApp {
     /// The conversation with `peer` as the app answers a read of it: its
     /// messages in the order the window shows them, and how many of them this
     /// person has not seen.
-    pub(crate) fn read_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> EffectAnswer {
+    pub(crate) fn read_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> Effected {
         let channel = id.to_string();
         let held = self.held_messages();
         let rows = chat.message_rows(&held, &channel);
@@ -94,11 +94,11 @@ impl ChatApp {
         if self.active_channel == channel {
             self.messages = rows;
         }
-        Ok(Effected::value(serde_json::json!({
+        Effected::value(serde_json::json!({
             "peer": peer,
             "messages": messages,
             "unread": unread,
-        })))
+        }))
     }
 
     /// Post `text` to the conversation `id` now, as the record's `post`

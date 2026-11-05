@@ -46,7 +46,7 @@ fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {
     let ada = Participant::person("ad".repeat(32));
     let agent = Participant::agent("ag".repeat(32));
     assert_ne!(
-        Chat::direct_id([ada.clone(), agent.clone()]),
+        Chat::direct_id([ada.clone(), agent]),
         Chat::direct_id([ada, Participant::person("ag".repeat(32))]),
         "who someone is names the conversation"
     );
@@ -263,7 +263,7 @@ fn a_conversation_that_is_here_and_a_person_that_is_not_are_named_apart() {
         refused
             .to_string()
             .contains(&crate::i18n::t("chat-person-unknown")),
-        "the window says which person it does not know: {refused}"
+        "this window's own person is no conversation of theirs: {refused}"
     );
 
     // A window that does not hold the workspace's chat yet answers the
@@ -273,9 +273,7 @@ fn a_conversation_that_is_here_and_a_person_that_is_not_are_named_apart() {
         .direct_conversation(&unknown, &Chat::default())
         .expect_err("a window without the workspace's chat");
     assert!(
-        refused
-            .to_string()
-            .contains(&crate::i18n::t("chat-direct-unavailable")),
+        refused.contains(&crate::i18n::t("chat-direct-unavailable")),
         "the window says what it lacks: {refused}"
     );
 }

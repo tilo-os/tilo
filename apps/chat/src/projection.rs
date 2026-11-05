@@ -111,7 +111,7 @@ impl Chat {
                 },
             ));
         }
-        for person in self.people.iter() {
+        for person in &self.people {
             if person.agent || person.id.0 == me {
                 continue;
             }
