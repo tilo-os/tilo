@@ -1810,7 +1810,7 @@ default = false
 [[check]]
 name = "sign-ci-builder"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index\n"
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64", "signing-tools"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/x86_64/bundle.json", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub", "/target/publish/ci-builder/index/bundle.json"]
@@ -1820,7 +1820,7 @@ id_token = ["sts.amazonaws.com"]
 [[check]]
 name = "sign-dev-ci-builder"
 run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index\n"
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64", "signing-tools"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "signing-tools"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-dev-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTDevSigner", TILO_SIGNING_AUDIENCE = "tilo-dev-signing", TILO_DEV_SIGNING = "1" }
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub"]
@@ -1830,7 +1830,7 @@ id_token = ["tilo-dev-signing"]
 [[check]]
 name = "publish-ci-builder"
 run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/x86_64 'dev:dev-{commit}-x86_64' 'release:{commit}-x86_64'\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/tilo-builder /target/publish/ci-builder/index 'dev:dev-{commit}' 'release:{commit}' 'release:{rust}'\n"
-needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "canary-ci-builder-x11-bridge-x86_64", "signing-tools"]
+needs = ["image-ci-builder", "image-ci-builder-x86_64", "canary-ci-builder-cache-warm-x86_64", "canary-ci-builder-browser-x86_64", "signing-tools"]
 optional_needs = ["sign-ci-builder", "sign-dev-ci-builder"]
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
 requires = ["arch=x86_64"]
@@ -1861,15 +1861,6 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "canary-ci-builder-browser-{arch}"
 run = "bash tools/ci/publish/ci-builder-canary.sh browser"
-image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
-requires = ["arch={arch}"]
-default = false
-[check.matrix]
-arch = ["x86_64", "aarch64"]
-
-[[check]]
-name = "canary-ci-builder-x11-bridge-{arch}"
-run = "bash tools/ci/publish/ci-builder-canary.sh x11-bridge"
 image = { check = "image-ci-builder-{arch}", path = "/target/publish/ci-builder/{arch}/image.oci.tar" }
 requires = ["arch={arch}"]
 default = false

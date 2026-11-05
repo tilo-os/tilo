@@ -18,11 +18,10 @@ MODULES=(
 # the code editor's language-server checks, and a software TPM plus LUKS tools
 # for the rollback mechanism suite. The image also supplies sccache so workflows
 # do not download or compile it. The NTFS helper bootstraps its pinned reader
-# with autotools. The X11 clipboard tests drive a real xwayland-satellite and
-# Xwayland through the compositor's per-workspace bridge.
+# with autotools. The compositor's X11 tests start Xwayland for each workspace.
 BINARIES=(
   autoreconf libtoolize bwrap rust-analyzer sccache fc-match gst-inspect-1.0 jq rg yt-dlp
-  cryptsetup swtpm swtpm_setup tpm2_getcap xwayland-satellite Xwayland
+  cryptsetup swtpm swtpm_setup tpm2_getcap Xwayland
   pipewire wireplumber pw-dump
 )
 FONTS=(
