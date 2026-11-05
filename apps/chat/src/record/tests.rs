@@ -969,9 +969,9 @@ fn messages_channels_and_categories_change_only_through_their_actions() {
     let before = chat.state().unwrap();
     let channels = Chat::paths().channels;
     let categories = Chat::paths().categories;
-    let channel = Channel {
+    let channel = Conversation {
         name: "sneaky".into(),
-        ..Channel::default()
+        ..Conversation::default()
     };
     let category = Category {
         name: "Sneaky".into(),
@@ -1614,4 +1614,32 @@ fn reactors(group: &crate::model::Reaction) -> Vec<String> {
         .iter()
         .map(|reactor| reactor.by.clone())
         .collect()
+}
+
+#[test]
+fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
+    let mut ada = workspace();
+    let mut bo = ada.fork().as_author(BO);
+    bo.apply(Chat::INTRODUCE.with(chat::Introduce {
+        name: String::new(),
+        initials: "BO".into(),
+        color: 2,
+    }))
+    .unwrap();
+    ada.sync_with(&mut bo).unwrap();
+    let chat = ada.state().unwrap();
+    let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let row = chat
+        .conversation_rows(ADA)
+        .into_iter()
+        .find(|row| row.id == with_bo.to_string())
+        .expect("Ada lists her conversation with Bo");
+    assert!(row.direct, "it is a conversation, not a channel");
+    assert_eq!(row.name, crate::identity::unnamed_label(BO));
+    let row = chat
+        .conversation_rows(BO)
+        .into_iter()
+        .find(|row| row.id == with_bo.to_string())
+        .expect("Bo lists it too");
+    assert_eq!(row.name, "Ada", "each of them names the other");
 }

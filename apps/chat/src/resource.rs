@@ -217,13 +217,6 @@ impl ResourceApp for ChatShell {
             app
         };
         app.attach_framework(cx.dispatcher());
-        // A live window on this device keeps its direct conversations in the
-        // pair's own record, in the workspace it shares with its people: the
-        // workspace's records are the window's on every target, a page's
-        // included. A capture and a past version keep none.
-        if live && let (Some(handle), Some(workspace)) = (cx.workspace_handle(), cx.workspace()) {
-            app.attach_direct(handle, workspace);
-        }
         if let Some(chain) = cx.chain::<crate::parts::ChatPart>() {
             app.attach_chain(chain);
         }
@@ -648,38 +641,42 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
 /// agent or a script, from and on the window `chat`.
 fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> EffectAnswer {
     match &effect {
-        ChatEffect::AdoptPrivateDraft { token } => {
-            let invocation = cx
-                .invocation()
-                .ok_or("private draft requires original person invocation")?;
-            return ui::person_chat::with_invocation(Some(invocation), || {
-                chat.borrow_mut().adopt_private_draft(token, invocation)
-            });
+        // A direct conversation is one of the chat's own: its id names the
+        // two people it is between, so opening, reading and sending all read
+        // and write the same record and the same parts as a channel's.
+        ChatEffect::OpenDirectConversation { public_key } => {
+            let (_, id) = chat
+                .borrow()
+                .direct_conversation(public_key, &cx.live().get())?;
+            let state = cx.live().get();
+            let mut chat = chat.borrow_mut();
+            chat.open_conversation(&id, &state);
+            return chat.read_direct_answer(public_key, &id, &state);
         }
-        ChatEffect::OpenDirectConversation { .. } => {
-            return ui::person_chat::with_invocation(cx.invocation(), || {
-                chat.borrow_mut().answer_effect(effect)
-            });
-        }
-        // A message goes into the pair's record, which answers at once; only
-        // the pair's announcement waits for a page's own device to sign it.
         ChatEffect::SendDirectMessage { public_key, text } => {
-            let invocation = cx.invocation();
-            let conversation = ui::person_chat::with_invocation(invocation, || {
-                chat.borrow_mut()
-                    .send_person_message(public_key, text, invocation)
-            })?;
-            return chat
-                .borrow_mut()
-                .sent_person_answer(public_key, Ok(conversation));
+            let state = cx.live().get();
+            let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            if text.trim().is_empty() {
+                return Err(crate::i18n::t("chat-person-chat-empty"));
+            }
+            chat.borrow().post_to_conversation(&id, text)?;
+            let mut chat = chat.borrow_mut();
+            if chat.active_channel == id.as_str() {
+                let held = chat.held_messages();
+                chat.messages = state.message_rows(&held, id.as_str());
+                chat.scroll = 0.0;
+                chat.request_relayout();
+            }
+            return Ok(ui::framework::Effected::value(
+                serde_json::json!({"peer": peer, "accepted": true}),
+            ));
         }
         ChatEffect::ReadDirectConversation { public_key } => {
-            let conversation = ui::person_chat::with_invocation(cx.invocation(), || {
-                chat.borrow_mut().read_person_conversation(public_key)
-            })?;
+            let state = cx.live().get();
+            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
             return chat
                 .borrow_mut()
-                .read_person_answer(public_key, Ok(conversation));
+                .read_direct_answer(public_key, &id, &state);
         }
         _ => {}
     }

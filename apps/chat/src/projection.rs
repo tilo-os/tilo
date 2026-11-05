@@ -49,7 +49,7 @@ impl Chat {
     /// reader's own.
     #[must_use]
     pub fn channel_rows(&self) -> Vec<Channel> {
-        let mut rows: Vec<Channel> = self
+        let rows: Vec<Channel> = self
             .channels
             .iter()
             .filter(|(_, channel)| channel.participants.is_empty())
@@ -157,15 +157,9 @@ impl Chat {
         rows
     }
 
-    /// What a conversation is called for `me`: the names of the people it is
-    /// with, this person's own left out of a direct conversation.
-    #[must_use]
-    pub fn label(&self, id: &Id, me: &str) -> String {
-        self.display_names(id, Some(me))
-    }
-
     /// The names of the people a conversation is with, `me`'s left out when
-    /// they are one of them and someone else is.
+    /// they are one of them and someone else is. A person the workspace has
+    /// no name for goes by their tag, never blank.
     #[must_use]
     fn display_names(&self, id: &Id, me: Option<&str>) -> String {
         let participants = self.conversation_participants(id);
@@ -175,7 +169,9 @@ impl Chat {
                 self.people
                     .iter()
                     .find(|person| person.id.0 == participant.id())
-                    .map_or_else(|| participant.id().to_owned(), |person| person.name.clone())
+                    .map(|person| person.name.trim().to_owned())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| crate::identity::unnamed_label(participant.id()))
             })
             .collect();
         let others: Vec<String> = participants
@@ -185,12 +181,7 @@ impl Chat {
             .map(|(_, name)| name.clone())
             .collect();
         let shown = if others.is_empty() { named } else { others };
-        shown
-            .iter()
-            .filter(|name| !name.trim().is_empty())
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
+        shown.join(", ")
     }
 
     /// The people and agents in the workspace.

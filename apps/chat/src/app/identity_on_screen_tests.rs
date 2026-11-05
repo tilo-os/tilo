@@ -285,7 +285,8 @@ fn a_call_names_each_person_once_by_their_devices_name() {
         unread: 0,
         mentions: 0,
         archived: false,
-        conversation_with: None,
+        direct: false,
+        participants: Vec::new(),
     });
     let mut presence = PresenceCtx::default();
     presence.set_display_name(UserId("crane-device".into()), "Clever Crane");
@@ -327,21 +328,28 @@ fn a_call_names_each_person_once_by_their_devices_name() {
 fn a_contact_goes_by_the_name_they_go_by_here_now() {
     use ui::permissions::UserId;
     let mut app = ChatApp::new_ephemeral();
-    let listed = ui::person_chat::Contact {
-        public_key: "ada-root".into(),
-        display_name: "Swift Lynx".into(),
-        conversation: false,
-    };
+    app.users.push(crate::model::User {
+        id: "ada-root".into(),
+        name: "Swift Lynx".into(),
+        initials: "SL".into(),
+        color_idx: 0,
+        status: crate::model::Presence::default(),
+        is_agent: false,
+    });
     let mut presence = PresenceCtx::default();
     presence.set_display_name(UserId("ada-device".into()), "Ada");
     presence.set_persons([(UserId("ada-device".into()), UserId("ada-root".into()))]);
     app.adopt_workspace(&presence);
-    assert_eq!(app.contact_name(&listed), "Ada");
+    assert!(
+        app.display_name("ada-root").contains("Ada"),
+        "the name they go by here now: {:?}",
+        app.display_name("ada-root")
+    );
 
     app.adopt_workspace(&PresenceCtx::default());
-    assert_eq!(
-        app.contact_name(&listed),
-        "Swift Lynx",
-        "gone: the workspace's name"
+    assert!(
+        app.display_name("ada-root").contains("Swift Lynx"),
+        "gone: the workspace's name: {:?}",
+        app.display_name("ada-root")
     );
 }

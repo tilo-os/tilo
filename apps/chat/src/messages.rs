@@ -21,7 +21,6 @@ use tilo_document::ClipBlock;
 use ui::framework::Chained;
 use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, Segment};
 
-use crate::model::ChannelKind;
 use crate::parts::{self, ChatPart};
 use crate::record::{
     AttachmentUpdate, Chat, MAX_AGENT_NAME_BYTES, MAX_MESSAGE_TEXT_BYTES, Message, Posting,

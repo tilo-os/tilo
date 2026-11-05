@@ -69,17 +69,16 @@ pub struct LaunchpadAppAction {
 
 impl LaunchpadAppAction {
     /// The app action that opens (or starts) this person's conversation with
-    /// `root` (hex): Chat's own `open-direct-conversation` on the pair's
-    /// conversation, on the record the two of them share, its composer
-    /// ready. Chat publishes the action on a row named for the conversation
-    /// each person has with the person they talk to, so the desktop asks for
-    /// that row's resource.
+    /// `root` (hex): Chat's own `open-direct-conversation` on the workspace's
+    /// conversation with them, its composer ready. Chat publishes the action
+    /// on a row named for the person it is with, so the desktop asks for that
+    /// row's resource.
     #[must_use]
     pub fn message_person(root: &str) -> Self {
         Self {
             app_id: "so.tilo.chat".to_owned(),
             display_name: "Chat".to_owned(),
-            resource: format!("chat.person:{}", ui::person_chat::person_key(root)),
+            resource: format!("chat.conversation:{root}"),
             action: "open-direct-conversation".to_owned(),
         }
     }
@@ -1462,7 +1461,7 @@ mod tests {
         assert_eq!(ask.action, "open-direct-conversation");
         assert_eq!(
             ask.resource,
-            format!("chat.person:{}", ui::person_chat::person_key(root)),
+            format!("chat.conversation:{root}"),
             "Chat publishes the action on its conversation with them"
         );
     }

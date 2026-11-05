@@ -36,8 +36,8 @@ struct Projection {
 #[derive(Clone)]
 pub(crate) struct HistoryView {
     client: Option<HistoryClient>,
-    /// The conversations with the workspace's people are read where they
-    /// are kept: the workspace's own records, which this window holds.
+    /// The conversations with the workspace's people are Chat's: they are
+    /// read through Chat's published operations.
     direct: bool,
     state: LocalState<Projection>,
     changes: LocalState<u64>,
@@ -131,7 +131,7 @@ impl HistoryView {
         let requested: Choice =
             serde_json::from_str(choice).map_err(|_| CATALOG.t("messages-contact-missing"))?;
         if requested.service == "tilo" {
-            return read_direct(sources, selection, &requested, self);
+            return read_direct(sources, selection, &requested, self, cx);
         }
         let client = self
             .client
@@ -351,53 +351,80 @@ impl HistoryView {
     }
 }
 
-/// The conversation with one of the workspace's people, read where it is
-/// kept: the record the two of them share, the same one Chat shows.
-///
-/// A record holds every message of the conversation it always held, so the
-/// page is the whole of it and there is none before it. Reading it is what
-/// opening the conversation does, so it marks what came in as read.
+/// The conversation with one of the workspace's people: Chat's own, read
+/// through the operation Chat publishes for it, so this window and Chat show
+/// the same messages and neither keeps a copy.
 fn read_direct(
     sources: &Sources,
     selection: &LocalState<Selection>,
     requested: &Choice,
     view: &HistoryView,
+    cx: &mut EffectCx<Messages>,
 ) -> EffectAnswer {
-    let page = direct_page(sources, selection, requested)?;
-    view.publish(page);
-    Ok(Effected::done())
-}
-
-/// The conversation with one of the workspace's people, as a page: the
-/// record opened, its messages as the list draws them, and what came in
-/// marked read.
-pub(crate) fn direct_page(
-    sources: &Sources,
-    selection: &LocalState<Selection>,
-    requested: &Choice,
-) -> Result<HistoryPage, String> {
-    let direct = sources
-        .direct
-        .clone()
-        .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
+    if !sources.tilo {
+        return Err(CATALOG.t("messages-history-unavailable"));
+    }
     let selected = selection.get();
     let route = current_route(sources, &selected, requested)?;
-    let conversation = direct.open(&selected.person)?;
-    direct.mark_read(&selected.person);
-    let messages = conversation
-        .messages
+    let opened = view.clone();
+    let peer = selected.person.clone();
+    let call = tilo_call(OPEN_DIRECT_CONVERSATION, &selected.person);
+    Ok(cx.call(&call, move |(), read, _| {
+        let page = direct_page(route, &peer, read?)?;
+        opened.publish(page);
+        Ok(Effected::done())
+    }))
+}
+
+/// The app whose conversations the workspace's people have between them.
+const CHAT: &str = "so.tilo.chat";
+/// The chat record of the workspace: what Chat publishes its operations on.
+const CHAT_RECORD: &str = "chat.workspace";
+/// Chat's operation that opens the conversation with a person, and answers
+/// with its messages.
+pub(crate) const OPEN_DIRECT_CONVERSATION: &str = "open-direct-conversation";
+/// Chat's operation that sends to the conversation with a person.
+pub(crate) const SEND_DIRECT_MESSAGE: &str = "send-direct-message";
+
+/// Chat's operation `operation` on the conversation with `person`, ready to
+/// be called.
+pub(crate) fn tilo_call(operation: &str, person: &str) -> ui::framework::Call {
+    let record = ui::tilo_reference::ResourceRef::whole(CHAT, CHAT_RECORD, "Chat");
+    ui::framework::Call::on(CHAT, None, &record, operation)
+        .with(serde_json::json!({ "public_key": person }))
+}
+
+/// The conversation with one of the workspace's people, as a page: what
+/// Chat's read of it answered, as the list draws the messages.
+pub(crate) fn direct_page(
+    route: routing::Route,
+    peer: &str,
+    read: ui::tilo_actions::ActionOutput,
+) -> Result<HistoryPage, String> {
+    let value = read
+        .value
+        .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
+    let messages = value["messages"]
+        .as_array()
+        .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?
         .iter()
-        .map(|message| tilo_messaging::Message {
-            id: message.id.clone(),
-            text: message.text.clone().into(),
-            direction: if message.author == direct.person() {
-                Direction::Outgoing
-            } else {
-                Direction::Incoming
-            },
-            timestamp_ms: u64::try_from(message.at).unwrap_or(0),
-            // Nothing stands between the two of them and the record.
-            delivery: None,
+        .map(|message| {
+            let id = message["id"].as_str().unwrap_or_default().to_owned();
+            let text = message["text"].as_str().unwrap_or_default().to_owned();
+            let at = message["at"].as_i64().unwrap_or_default();
+            let author = message["author"].as_str().unwrap_or_default();
+            tilo_messaging::Message {
+                id,
+                text: text.into(),
+                direction: if author == peer {
+                    Direction::Incoming
+                } else {
+                    Direction::Outgoing
+                },
+                timestamp_ms: u64::try_from(at).unwrap_or(0),
+                // Nothing stands between the two of them and the conversation.
+                delivery: None,
+            }
         })
         .collect();
     Ok(HistoryPage {

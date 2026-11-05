@@ -32,7 +32,6 @@ impl ChatApp {
             self.workspace_voice.clone(),
             self.workspace_names.clone(),
             self.workspace_colors.clone(),
-            self.person_contacts.clone(),
         );
         let permissions = ui::presence::frame::frame(PresenceCtx::permission_context).flatten();
         let perms_changed = permissions.is_some_and(|permissions| {
@@ -52,9 +51,8 @@ impl ChatApp {
             &self.workspace_voice,
             &self.workspace_names,
             &self.workspace_colors,
-            &self.person_contacts,
         );
-        let changed = perms_changed || (&before.0, &before.1, &before.2, &before.3) != after;
+        let changed = perms_changed || (&before.0, &before.1, &before.2) != after;
         if changed || self.call.active {
             self.show_sidebar();
         }
@@ -66,7 +64,6 @@ impl ChatApp {
         // here. An answer naming nobody besides this window's own person is
         // still an answer — the workspace is otherwise empty.
         self.workspace_presence_answers = true;
-        self.person_contacts = self.direct_contacts();
         self.adopt_own_participant(presence);
         self.workspace_voice = self
             .channels

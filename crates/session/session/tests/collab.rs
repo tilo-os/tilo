@@ -796,8 +796,8 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
     );
     assert_eq!(
         target.address.resource.as_str(),
-        format!("chat.person:{}", ui::person_chat::person_key(&person(0xaa))),
-        "the record the two of them share"
+        format!("chat.conversation:{}", person(0xaa)),
+        "the conversation with them"
     );
     assert_eq!(
         target.address.action.as_str(),

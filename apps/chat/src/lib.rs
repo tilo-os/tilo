@@ -82,7 +82,6 @@ pub mod parts;
 pub mod permissions;
 pub mod picker;
 pub mod preferences;
-mod private_draft;
 pub mod projection;
 pub mod record;
 pub mod render_call;

@@ -1,12 +1,13 @@
-use crate::composer::{ConversationKey, DraftComposer};
-use automerge::{AutoCommit, transaction::Transactable as _};
+//! A direct conversation as the workspace keeps it: the chat's own messages
+//! between two of its people, named by them.
 
-fn person(workspace: &str, public_key: &str) -> ConversationKey {
-    ConversationKey::Person {
-        workspace: workspace.into(),
-        public_key: public_key.into(),
-    }
-}
+use ui::framework::testing::TestApp;
+
+use crate::ChatShell;
+use crate::record::{Chat, Participant};
+use crate::testing::MountedChat;
+
+type Window = TestApp<ChatShell>;
 
 #[test]
 fn registered_person_effect_ids_match_the_native_broker_protocol() {
@@ -23,126 +24,47 @@ fn registered_person_effect_ids_match_the_native_broker_protocol() {
     assert_eq!(ChatEffect::SEND_DIRECT_MESSAGE.id, "send-direct-message");
 }
 
-/// A private draft is held under a key naming the workspace's scope, so the
-/// same conversation always finds the words typed in it.
+/// The conversation two people have is named by the two of them, whichever
+/// order they are named in, once.
 #[test]
-fn a_private_draft_is_kept_under_a_key_naming_the_workspace() {
-    let key = crate::app::ChatApp::person_conversation_key("peer");
-    assert_eq!(key.draft_key(), "person:9:workspace:4:peer");
-}
-
-#[test]
-fn accepted_person_send_cannot_clear_a_newer_editor_revision() {
-    let mut workspace = AutoCommit::new();
-    let before = workspace.get_heads();
-    let key = person("workspace", "peer");
-    let mut composer = DraftComposer::shared();
-    composer.set_conversation_draft(&key);
-    composer.insert_text(&mut ui::widget::Edits::lend(&mut workspace), "First");
-    let sent_revision = composer.conversation_revision(&key).unwrap();
-    composer.insert_text(&mut ui::widget::Edits::lend(&mut workspace), " more");
-    assert!(!composer.clear_conversation_revision(&key, sent_revision));
-    assert_eq!(composer.private_plain().as_deref(), Some("First more"));
-    let current_revision = composer.conversation_revision(&key).unwrap();
-    assert!(composer.clear_conversation_revision(&key, current_revision));
-    assert_eq!(composer.private_plain().as_deref(), Some(""));
-    assert_eq!(workspace.get_heads(), before);
-    assert_eq!(workspace.pending_ops(), 0);
-}
-
-#[test]
-fn private_person_typing_never_mutates_the_workspace_document() {
-    let mut workspace = AutoCommit::new();
-    let before = workspace.get_heads();
-    let mut composer = DraftComposer::shared();
-    composer.set_conversation_draft(&person("workspace", "certified-person-key"));
-    composer.insert_text(&mut ui::widget::Edits::lend(&mut workspace), "Private body");
-    assert_eq!(composer.private_plain().as_deref(), Some("Private body"));
-    assert_eq!(workspace.get_heads(), before);
-    assert_eq!(workspace.pending_ops(), 0);
-}
-
-#[test]
-fn person_workspaces_retain_distinct_private_editors() {
-    let mut workspace = AutoCommit::new();
-    let mut composer = DraftComposer::shared();
-    let first = person("one", "same-key");
-    composer.set_conversation_draft(&first);
-    composer.insert_text(
-        &mut ui::widget::Edits::lend(&mut workspace),
-        "First person draft",
-    );
-    composer.set_conversation_draft(&person("two", "same-key"));
-    assert_eq!(composer.private_plain().as_deref(), Some(""));
-    composer.set_conversation_draft(&first);
+fn a_conversation_is_named_by_its_participants_once() {
+    let ada = Participant::person("ad".repeat(32));
+    let bob = Participant::person("b0".repeat(32));
+    let one = Chat::direct_id([ada.clone(), bob.clone()]);
+    let other = Chat::direct_id([bob.clone(), ada.clone(), ada.clone()]);
+    assert_eq!(one, other, "one conversation per pair, however named");
     assert_eq!(
-        composer.private_plain().as_deref(),
-        Some("First person draft")
+        Chat::direct_participants(&one),
+        Some(vec![ada, bob]),
+        "the id names its participants back"
     );
-    composer.clear_conversation_draft(&first);
-    assert_eq!(composer.private_plain().as_deref(), Some(""));
+    assert_eq!(Chat::direct_participants(&"c_general".into()), None);
 }
 
 #[test]
-fn private_person_editor_survives_retained_surface_store_handoff() {
-    let mut workspace = AutoCommit::new();
-    let key = person("workspace", "certified-person-key");
-    let mut attached = DraftComposer::shared();
-    attached.set_conversation_draft(&key);
-    attached.insert_text(
-        &mut ui::widget::Edits::lend(&mut workspace),
-        "Unsent private text",
+fn an_agent_and_a_person_converse_apart_from_the_pair_of_people() {
+    let ada = Participant::person("ad".repeat(32));
+    let agent = Participant::agent("ag".repeat(32));
+    assert_ne!(
+        Chat::direct_id([ada.clone(), agent.clone()]),
+        Chat::direct_id([ada, Participant::person("ag".repeat(32))]),
+        "who someone is names the conversation"
     );
-    let mut floating = DraftComposer::shared();
-    floating.share_private_store_from(&attached);
-    floating.set_conversation_draft(&key);
-    assert_eq!(
-        floating.private_plain().as_deref(),
-        Some("Unsent private text")
-    );
-    assert_eq!(attached.private_plain(), floating.private_plain());
-    let before = workspace.get_heads();
-    floating.insert_text(
-        &mut ui::widget::Edits::lend(&mut workspace),
-        " and more from the floating surface",
-    );
-    assert_eq!(attached.private_plain(), floating.private_plain());
-    assert!(
-        floating
-            .private_plain()
-            .unwrap()
-            .contains("floating surface")
-    );
-    floating.clear_conversation_draft(&key);
-    assert_eq!(attached.private_plain().as_deref(), Some(""));
-    assert_eq!(workspace.get_heads(), before);
-    assert_eq!(workspace.pending_ops(), 0);
 }
 
 /// Ada's and Bob's windows in one workspace, each having introduced themself,
-/// the pair's record delivered both ways.
-fn a_pair_of_windows(
-    workspace: &str,
-    ada: &str,
-    bob: &str,
-) -> (
-    ui::framework::testing::TestApp<crate::ChatShell>,
-    ui::framework::testing::TestApp<crate::ChatShell>,
-) {
+/// the record delivered both ways.
+fn a_pair_of_windows(workspace: &str, ada: &str, bob: &str) -> (Window, Window) {
     use crate::record::chat::Introduce;
 
-    let mut ada_window =
-        ui::framework::testing::TestApp::<crate::ChatShell>::for_person_in(ada, workspace)
-            .expect("Ada's window opens");
-    let mut bob_window =
-        ui::framework::testing::TestApp::<crate::ChatShell>::for_person_in(bob, workspace)
-            .expect("Bob's window opens");
+    let mut ada_window = Window::for_person_in(ada, workspace).expect("Ada's window opens");
+    let mut bob_window = Window::for_person_in(bob, workspace).expect("Bob's window opens");
     for (window, name, initials, color) in [
         (&mut ada_window, "Ada", "A", 1),
         (&mut bob_window, "Bob", "B", 2),
     ] {
         window
-            .invoke(crate::Chat::INTRODUCE.with(Introduce {
+            .invoke(Chat::INTRODUCE.with(Introduce {
                 name: name.into(),
                 initials: initials.into(),
                 color,
@@ -160,12 +82,9 @@ fn a_pair_of_windows(
     (ada_window, bob_window)
 }
 
-/// What a window reads of its conversation with `peer`: each message's text,
+/// What `window` reads of its conversation with `peer`: each message's text
 /// and the person it names as its author.
-fn read_conversation(
-    window: &mut ui::framework::testing::TestApp<crate::ChatShell>,
-    peer: &str,
-) -> Vec<(String, String)> {
+fn read_conversation(window: &mut Window, peer: &str) -> Vec<(String, String)> {
     use crate::effects::ChatEffect;
 
     let read = window
@@ -193,19 +112,7 @@ fn read_conversation(
         .collect()
 }
 
-/// The record the two people's conversation is in `workspace`: its name, and
-/// the part its messages are in.
-fn the_pairs_record(workspace: &str, ada: &str, bob: &str) -> (String, ui::record::RecordId) {
-    let pair = ui::person_chat::direct_pair_id(workspace, ada, bob).expect("a pair");
-    let record = format!("direct/{pair}");
-    let part = ui::record::RecordId::parse(&record)
-        .expect("a record id")
-        .part(0);
-    (record, part)
-}
-
-/// What `window` sends `peer`, which the pair's record accepts.
-fn send(window: &mut ui::framework::testing::TestApp<crate::ChatShell>, peer: &str, text: &str) {
+fn send(window: &mut Window, peer: &str, text: &str) {
     use crate::effects::ChatEffect;
 
     let sent = window
@@ -219,81 +126,59 @@ fn send(window: &mut ui::framework::testing::TestApp<crate::ChatShell>, peer: &s
             .as_ref()
             .and_then(|value| value["accepted"].as_bool()),
         Some(true),
-        "the pair's record accepts {text:?}: {:?}",
+        "the conversation takes {text:?}: {:?}",
         sent.value
     );
 }
 
-/// Hand `from`'s copy of the conversation's part to `to`, and read what `to`
-/// says of its conversation with `peer`.
-fn deliver_and_read(
-    from: &mut ui::framework::testing::TestApp<crate::ChatShell>,
-    to: &mut ui::framework::testing::TestApp<crate::ChatShell>,
-    part: &ui::record::RecordId,
-    peer: &str,
-) -> Vec<(String, String)> {
-    assert!(
-        from.deliver_record_to(to, part).expect("the part arrives"),
-        "the conversation changed when the part arrived"
-    );
-    read_conversation(to, peer)
+/// The messages `sender` wrote reach `reader`: the workspace sends the part
+/// they are in, which the reader opens as a device joining a chat does.
+fn deliver_messages(sender: &mut Window, reader: &mut Window) {
+    reader
+        .with_chat(|chat| chat.chain.clone())
+        .flatten()
+        .expect("the reader holds the chat's messages")
+        .hold(0)
+        .expect("the reader opens the part the conversation is in");
+    sender
+        .deliver_record_to(reader, &crate::parts::part(0))
+        .expect("the messages arrive");
+    reader.harness().relayout();
 }
 
-/// Two people, a window each in one workspace, talk through the ordinary
-/// record their pair shares: what one's window sends, the other's window
-/// reads, and the conversation is the record `direct/<pair>` every app of
-/// the workspace opens — Messages' Tilo lane included.
+/// Two people, a window each in one workspace, talk in the workspace's own
+/// chat: what one's window sends, the other's window reads, in the messages
+/// every channel of the workspace keeps beside it.
 #[test]
-fn two_peoples_chat_talks_in_the_pairs_record() {
-    use crate::effects::ChatEffect;
-    use crate::testing::MountedChat;
-
+fn two_peoples_chat_is_the_workspaces_own_messages() {
     const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
-    let ada_key = ui::person_chat::person_key(&ada);
-    let bob_key = ui::person_chat::person_key(&bob);
     let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
-    ada_window.with_chat(|chat| {
-        assert_eq!(chat.direct_people.len(), 1, "Ada's window names Bob");
-        assert_eq!(chat.direct_people[0].root, bob);
+
+    bob_window.with_chat(|chat| {
+        assert!(
+            chat.channels
+                .iter()
+                .any(|row| row.direct && row.participants.iter().any(|key| key.contains(&ada))),
+            "Bob's window names Ada's conversation: {:?}",
+            chat.channels
+                .iter()
+                .map(|row| row.id.clone())
+                .collect::<Vec<_>>()
+        );
     });
 
-    // The conversation is an ordinary record of the workspace, named by the
-    // two people in it: the same record Messages' Tilo lane opens.
-    let (record, part) = the_pairs_record(WORKSPACE, &ada, &bob);
-    bob_window
-        .effect(&ChatEffect::OpenDirectConversation {
-            public_key: ada_key.clone(),
-        })
-        .expect("Bob opens the conversation with Ada");
-    send(&mut ada_window, &bob_key, "hello from Ada");
-    assert!(
-        ada_window
-            .shared_record::<ui::direct::DirectConversation>(ui::direct::OWNER, &record)
-            .is_some(),
-        "the conversation is the ordinary record {record}"
-    );
-    assert!(
-        bob_window
-            .shared_record::<ui::direct::parts::DirectPart>(ui::direct::OWNER, part.as_str())
-            .is_some(),
-        "Bob's window holds the conversation's part"
-    );
-    let messages = deliver_and_read(&mut ada_window, &mut bob_window, &part, &ada_key);
+    send(&mut ada_window, &bob, "hello from Ada");
+    deliver_messages(&mut ada_window, &mut bob_window);
+    let messages = read_conversation(&mut bob_window, &ada);
     assert_eq!(messages.len(), 1, "Bob reads what Ada sent");
     assert_eq!(messages[0].0, "hello from Ada");
-    assert_eq!(messages[0].1, ada_key, "the message says Ada wrote it");
+    assert_eq!(messages[0].1, ada, "the message says Ada wrote it");
 
-    // Bob answers, and Ada reads the answer in the same record.
-    send(&mut bob_window, &ada_key, "hello from Bob");
-    assert!(
-        ada_window
-            .shared_record::<ui::direct::parts::DirectPart>(ui::direct::OWNER, part.as_str())
-            .is_some(),
-        "Ada's window holds the conversation's part"
-    );
-    let said: Vec<String> = deliver_and_read(&mut bob_window, &mut ada_window, &part, &bob_key)
+    send(&mut bob_window, &ada, "hello from Bob");
+    deliver_messages(&mut bob_window, &mut ada_window);
+    let said: Vec<String> = read_conversation(&mut ada_window, &bob)
         .into_iter()
         .map(|(text, _)| text)
         .collect();
@@ -304,22 +189,19 @@ fn two_peoples_chat_talks_in_the_pairs_record() {
     );
 }
 
-/// What a person's card asks of Chat when they press Message: the action the
-/// window publishes on the row naming their conversation, which opens it with
-/// the composer ready — one Chat answers it, no second composer.
+/// What a person's card asks of Chat when they press Message: the row naming
+/// their conversation, which opens it with the composer ready.
 #[test]
 fn a_persons_card_opens_the_conversation_chat_keeps() {
     use crate::effects::ChatEffect;
-    use crate::testing::MountedChat;
 
     const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
     let ada = "ad".repeat(32);
     let bob = "b0".repeat(32);
-    let ada_key = ui::person_chat::person_key(&ada);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
     bob_window
         .effect(&ChatEffect::OpenDirectConversation {
-            public_key: ada_key.clone(),
+            public_key: ada.clone(),
         })
         .expect("Bob opens the conversation with Ada");
     bob_window.with_chat(|chat| {
@@ -330,20 +212,70 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
     });
     bob_window.with_chat(|chat| {
         let row = chat
-            .person_conversation_rows()
+            .direct_conversation_rows()
             .into_iter()
-            .find(|row| row.id() == format!("chat.person:{ada_key}"))
+            .find(|row| row.id() == format!("chat.conversation:{ada}"))
             .expect("Chat lists the conversation with Ada");
         let resource = row.into_resource();
-        assert_eq!(resource.kind, "chat.person", "{:?}", resource.id);
+        assert_eq!(resource.kind, "chat.conversation", "{:?}", resource.id);
         assert!(
             resource
                 .actions
                 .iter()
                 .any(|action| action.id == ChatEffect::OPEN_DIRECT_CONVERSATION.id),
-            "the row offers {}: {:?}",
-            ChatEffect::OPEN_DIRECT_CONVERSATION.id,
-            resource.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+            "the row offers the operations on the conversation: {:?}",
+            resource
+                .actions
+                .iter()
+                .map(|action| &action.id)
+                .collect::<Vec<_>>()
         );
     });
+}
+
+/// A window whose chat this device does not hold says so, and one that knows
+/// no such person says that instead: two different things to tell the person
+/// asking.
+#[test]
+fn a_conversation_that_is_here_and_a_person_that_is_not_are_named_apart() {
+    use crate::effects::ChatEffect;
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000b";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let unknown = "ff".repeat(32);
+    let refused = bob_window
+        .effect(&ChatEffect::OpenDirectConversation {
+            public_key: unknown.clone(),
+        })
+        .expect_err("a person the workspace does not know");
+    assert!(
+        refused
+            .to_string()
+            .contains(&crate::i18n::t("chat-person-unknown")),
+        "the window says which person it does not know: {refused}"
+    );
+    let refused = bob_window
+        .effect(&ChatEffect::OpenDirectConversation { public_key: bob })
+        .expect_err("this window's own person has no conversation with themself");
+    assert!(
+        refused
+            .to_string()
+            .contains(&crate::i18n::t("chat-person-unknown")),
+        "the window says which person it does not know: {refused}"
+    );
+
+    // A window that does not hold the workspace's chat yet answers the
+    // person differently, naming what it lacks.
+    let empty = crate::ChatApp::new_ephemeral();
+    let refused = empty
+        .direct_conversation(&unknown, &Chat::default())
+        .expect_err("a window without the workspace's chat");
+    assert!(
+        refused
+            .to_string()
+            .contains(&crate::i18n::t("chat-direct-unavailable")),
+        "the window says what it lacks: {refused}"
+    );
 }

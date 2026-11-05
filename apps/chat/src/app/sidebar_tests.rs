@@ -3,11 +3,31 @@
 
 use super::*;
 
-fn contact(key: &str, name: &str, conversation: bool) -> ui::person_chat::Contact {
-    ui::person_chat::Contact {
-        public_key: key.into(),
-        display_name: name.into(),
-        conversation,
+/// A direct conversation row as the record projects it, named `name`.
+fn conversation(app: &ChatApp, key: &str, name: &str) -> crate::model::Channel {
+    let id = crate::record::Chat::direct_id([
+        crate::record::Participant::person(app.me.id.clone()),
+        crate::record::Participant::person(key.to_owned()),
+    ]);
+    crate::model::Channel {
+        id: id.to_string(),
+        category: String::new(),
+        name: name.into(),
+        topic: String::new(),
+        kind: crate::model::ChannelKind::Text,
+        order: 0,
+        unread: 0,
+        mentions: 0,
+        archived: false,
+        direct: true,
+        participants: vec![
+            crate::record::Participant::person(app.me.id.clone())
+                .key()
+                .to_owned(),
+            crate::record::Participant::person(key.to_owned())
+                .key()
+                .to_owned(),
+        ],
     }
 }
 
@@ -40,12 +60,32 @@ fn labels(section: &ui::widget::NavSection) -> Vec<String> {
 #[test]
 fn channels_open_the_sidebar_and_only_conversations_follow() {
     let mut app = app_in_workspace();
-    let mut contacts: Vec<_> = (0..25)
-        .map(|i| contact(&format!("{i:064x}"), "", false))
-        .collect();
-    contacts.push(contact(&format!("{:064x}", 100), "Ada", true));
-    contacts.push(contact(&format!("{:064x}", 101), "Swift Lynx", false));
-    app.person_contacts = contacts;
+    let me = app.me.id.clone();
+    let key = |i: u64| format!("{i:064x}");
+    let row = |i: u64, name: &str| {
+        let id = crate::record::Chat::direct_id([
+            crate::record::Participant::person(me.clone()),
+            crate::record::Participant::person(key(i)),
+        ]);
+        crate::model::Channel {
+            id: id.to_string(),
+            category: String::new(),
+            name: name.into(),
+            topic: String::new(),
+            kind: crate::model::ChannelKind::Text,
+            order: 0,
+            unread: 0,
+            mentions: 0,
+            archived: false,
+            direct: true,
+            participants: Vec::new(),
+        }
+    };
+    let ada = row(100, "Ada");
+    app.channels.extend((0..25).map(|i| row(i, "")));
+    app.channels.push(row(101, "Swift Lynx"));
+    app.direct_held.insert(ada.id.clone());
+    app.channels.push(ada);
     app.show_sidebar();
 
     let sections = shown(&app);
@@ -62,9 +102,10 @@ fn channels_open_the_sidebar_and_only_conversations_follow() {
         labels(first)
     );
     let people: Vec<_> = sections
+        .last()
+        .expect("sections")
+        .items
         .iter()
-        .flat_map(|section| &section.items)
-        .filter(|item| item.id.starts_with("person:"))
         .map(|item| item.label.clone())
         .collect();
     assert_eq!(people, ["Ada"], "only whom they write with");
@@ -79,16 +120,19 @@ fn channels_open_the_sidebar_and_only_conversations_follow() {
 fn the_open_conversation_is_listed_by_a_name_never_blank() {
     let mut app = app_in_workspace();
     let key = format!("{:064x}", 7);
-    app.person_contacts = vec![contact(&key, "", false)];
-    app.direct_person = Some(key.clone());
+    let row = conversation(&app, &key, &crate::identity::unnamed_label(&key));
+    app.active_channel = row.id.clone();
+    app.channels.push(row);
     app.show_sidebar();
 
     let people: Vec<_> = shown(&app)
+        .last()
+        .expect("the direct messages section")
+        .items
         .iter()
-        .flat_map(|section| section.items.clone())
-        .filter(|item| item.id.starts_with("person:"))
-        .map(|item| item.label)
+        .map(|item| item.label.clone())
         .collect();
     assert_eq!(people, [crate::identity::unnamed_label(&key)]);
     assert!(!people[0].trim().is_empty());
+    assert_ne!(people[0], key, "never the raw key");
 }

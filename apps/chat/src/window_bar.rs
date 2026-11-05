@@ -30,7 +30,7 @@ impl ChatApp {
                 Hit::StopSharingLiveContext,
             ));
         }
-        if self.direct_person.is_some() {
+        if self.direct_person().is_some() {
             let label = crate::i18n::t(if self.conversation_surface {
                 "chat-agent-return"
             } else {
@@ -90,7 +90,7 @@ impl ChatApp {
                     .destructive(),
             );
         }
-        if self.direct_person.is_none() && self.has_other_collaborator() {
+        if self.direct_person().is_none() && self.has_other_collaborator() {
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
             actions.push(
                 self.bar_entries
@@ -104,7 +104,7 @@ impl ChatApp {
                     .on(people),
             );
         }
-        if self.direct_person.is_none() {
+        if self.direct_person().is_none() {
             for command in self.model_controls(&self.active_channel) {
                 actions.push(
                     self.bar_entries
@@ -117,7 +117,7 @@ impl ChatApp {
                 );
             }
         }
-        if self.keeps_layout() && self.direct_person.is_none() {
+        if self.keeps_layout() && self.direct_person().is_none() {
             actions.push(
                 self.bar_entries
                     .entry("plus", crate::i18n::t("chat-create-menu"), Hit::AddCategory)

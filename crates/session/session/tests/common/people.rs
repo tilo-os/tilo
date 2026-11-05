@@ -1263,11 +1263,10 @@ impl Chat<'_> {
         answer
     }
 
-    /// The key Chat names a conversation with `peer`, a person's root key,
-    /// by: the person's key in the workspace's people list, which is what the
-    /// app's direct actions take ([`ui::person_chat::person_key`]).
+    /// The person a conversation with `peer` is with, as the app's direct
+    /// actions take it: their root key, which the workspace names them by.
     fn conversation_key(peer: &str) -> String {
-        ui::person_chat::person_key(peer)
+        peer.to_owned()
     }
 
     /// Open the conversation with `peer` in the app, as clicking their name

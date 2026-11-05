@@ -290,12 +290,13 @@ fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError
 /// Read the conversations versions up to 7 kept as a channel with the agent
 /// it was with (`conversation_with`) into the participant the conversation is
 /// with; the old field is removed. Nothing is lost with it: a conversation
-/// whose participants are only an agent is listed as that agent's
-/// ([`Chat::conversation_name`]), not among the workspace's channels.
+/// whose participants are only an agent is listed as that agent's, not
+/// among the workspace's channels.
 ///
 /// # Errors
 /// The document's read or write error.
 fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
+    use automerge::transaction::Transactable as _;
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
     use ui::tilo_resource::Slot;
     for channel in collection_items(doc, &ROOT, "channels")? {
@@ -1353,27 +1354,6 @@ impl Chat {
             self.people
                 .iter()
                 .any(|person| person.id.0 == participant.id())
-        })
-    }
-
-    /// The name the workspace gives a conversation: a channel's own name,
-    /// or the names of everyone a direct conversation is with, in order.
-    #[must_use]
-    pub fn conversation_name(&self, id: &Id) -> String {
-        if let Some(channel) = self.channels.get(id) {
-            return channel.name.clone();
-        }
-        Self::direct_participants(id).map_or_else(String::new, |participants| {
-            participants
-                .iter()
-                .map(|participant| {
-                    self.people
-                        .iter()
-                        .find(|person| person.id.0 == participant.id())
-                        .map_or_else(|| participant.id().to_owned(), |person| person.name.clone())
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
         })
     }
 

@@ -91,7 +91,7 @@ impl ChatApp {
         if !self.host_focused
             || self.editing.is_some()
             || !self.can_participate()
-            || self.direct_person.is_some()
+            || self.direct_person().is_some()
         {
             return None;
         }

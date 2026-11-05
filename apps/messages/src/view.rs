@@ -23,14 +23,12 @@ struct CapturePeople {
     accounts: PersonAccounts,
 }
 
-/// A person of the workspace: the key their conversation keeps them under
-/// and the name the workspace calls them.
+/// A person of the workspace: their root public key, as the workspace names
+/// them, and the name it calls them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WorkspacePerson {
     /// Their root public key, as the workspace names them.
     pub root: String,
-    /// The key their conversation keeps them under.
-    pub key: String,
     pub name: String,
 }
 
@@ -40,9 +38,11 @@ pub(crate) struct Sources {
     accounts: Option<PersonRecord<PersonAccounts>>,
     /// The Messages record itself, whose conversations are listed first.
     record: Option<Live<Messages>>,
-    /// The conversations with the workspace's people: ordinary records of the
-    /// workspace, the same ones Chat reads and writes.
-    pub(crate) direct: Option<Rc<ui::direct::Records>>,
+    /// The workspace's own conversations are Chat's, and this window reaches
+    /// them through Chat's published operations.
+    pub(crate) tilo: bool,
+    /// This window's own person, as their conversations name them.
+    pub(crate) me: String,
     /// The workspace's people as they were when this view was built.
     people: Vec<WorkspacePerson>,
     fixture: Rc<CapturePeople>,
@@ -51,8 +51,8 @@ pub(crate) struct Sources {
 impl Sources {
     /// The person a Tilo conversation is with, by the key it keeps them
     /// under: `None` for anyone the workspace does not name.
-    pub(crate) fn workspace_person(&self, key: &str) -> Option<&WorkspacePerson> {
-        self.people.iter().find(|person| person.key == key)
+    pub(crate) fn workspace_person(&self, root: &str) -> Option<&WorkspacePerson> {
+        self.people.iter().find(|person| person.root == root)
     }
 
     /// Whether `person` is someone this window can write to, whether the
@@ -176,13 +176,13 @@ pub(crate) fn choices(sources: &Sources, person: &str) -> Vec<Choice> {
     // A person the workspace names is written to as the workspace's own
     // record of the conversation between you: one route, through no service.
     if let Some(workspace_person) = sources.workspace_person(person) {
-        let Some(direct) = &sources.direct else {
+        if !sources.tilo {
             return Vec::new();
-        };
+        }
         return vec![Choice {
             service: "tilo".into(),
-            account: direct.person().to_owned(),
-            recipient: workspace_person.key.clone(),
+            account: sources.me.clone(),
+            recipient: workspace_person.root.clone(),
             association: String::new(),
             scope: String::new(),
             revision: String::new(),
@@ -264,7 +264,7 @@ fn who(sources: &Sources) -> Vec<serde_json::Value> {
     sources
         .people
         .iter()
-        .map(|person| serde_json::json!({"person":person.key, "label":person.name}))
+        .map(|person| serde_json::json!({"person":person.root, "label":person.name}))
         .chain(
             sources
                 .contacts()
@@ -433,7 +433,6 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
     } else {
         Vec::new()
     };
-    let direct = if live { direct(cx, &people) } else { None };
     Sources {
         directory: if live {
             cx.shared_person::<ContactDirectory>()
@@ -446,7 +445,8 @@ fn sources(cx: &ViewCx<Messages>) -> Sources {
             None
         },
         record: Some(cx.live().clone()),
-        direct,
+        tilo: live,
+        me: cx.me().map(str::to_owned).unwrap_or_default(),
         people,
         fixture: cx.fixture::<CapturePeople>().unwrap_or_default(),
     }
@@ -465,29 +465,10 @@ fn workspace_people(cx: &ViewCx<Messages>) -> Vec<WorkspacePerson> {
                 && member.id.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
         .map(|member| WorkspacePerson {
-            key: ui::person_chat::person_key(&member.id),
             root: member.id,
             name: member.name,
         })
         .collect()
-}
-
-/// The conversations with the workspace's people, in the records the
-/// workspace holds them in: what Chat reads and writes too.
-fn direct(cx: &ViewCx<Messages>, people: &[WorkspacePerson]) -> Option<Rc<ui::direct::Records>> {
-    let (handle, workspace, me) = (cx.workspace_handle()?, cx.workspace()?, cx.me()?);
-    let records = ui::direct::Records::new(handle, workspace, me);
-    records.set_people(
-        people
-            .iter()
-            .map(|person| ui::direct::Person {
-                root: person.root.clone(),
-                key: person.key.clone(),
-                name: person.name.clone(),
-            })
-            .collect(),
-    );
-    Some(records)
 }
 
 pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
@@ -496,13 +477,13 @@ pub(super) fn build(cx: &ViewCx<Messages>) -> Element {
     let live = cx.mode().is_live() && !cx.is_past();
     // What the person is writing is theirs: the live draft and the record it
     // is kept in, made together so a send can clear it where it was kept.
-    let (sending, held_drafts) = sending_and_drafts(cx, live, sources.direct.is_some());
+    let (sending, held_drafts) = sending_and_drafts(cx, live, sources.tilo);
     let history = crate::history::HistoryView::new(
         sending
             .history()
             .or_else(|| live.then(|| cx.take_lent()).flatten()),
         cx.me(),
-        sources.direct.is_some(),
+        sources.tilo,
     );
     if !cx.mode().is_live()
         && let Some(capture) = cx.fixture::<crate::history::CaptureHistory>()
@@ -960,7 +941,7 @@ fn overview(
             sources
                 .people
                 .iter()
-                .map(|person| Entry::Person(Id::from_raw(&person.key), person.name.clone())),
+                .map(|person| Entry::Person(Id::from_raw(&person.root), person.name.clone())),
         )
         .chain(
             sources
@@ -1422,7 +1403,8 @@ mod route_tests {
             directory: Some(directory),
             accounts: None,
             record: None,
-            direct: None,
+            tilo: false,
+            me: String::new(),
             people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
@@ -1483,7 +1465,8 @@ mod route_tests {
             directory: Some(directory.clone()),
             accounts: None,
             record: None,
-            direct: None,
+            tilo: false,
+            me: String::new(),
             people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
@@ -1572,7 +1555,8 @@ mod route_tests {
             directory: Some(directory),
             accounts: None,
             record: None,
-            direct: None,
+            tilo: false,
+            me: String::new(),
             people: Vec::new(),
             fixture: Rc::new(CapturePeople {
                 directory: ContactDirectory::default(),
