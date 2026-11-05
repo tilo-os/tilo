@@ -78,6 +78,12 @@ const CHAT_RECORD: &str = "";
 /// that the host asks the page that wrote it for the record, as it does
 /// once a workspace's sealed history is a fair length.
 const HISTORY: i64 = 300;
+/// Twelve hours, in nanoseconds: how long the certificate a session starts
+/// with has been out.
+const TWELVE_HOURS_NS: u64 = 43_200_000_000_000;
+/// A day and a half, in nanoseconds: how long ago the certificate a session
+/// starts with was issued.
+const A_DAY_AND_A_HALF_NS: u64 = 129_600_000_000_000;
 
 const COMMUNITY_WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
@@ -879,8 +885,8 @@ fn expired_throwaway_identity(
         device_public_key: held.device_public_key,
         device_label: held.device_label.clone(),
         capabilities: held.capabilities,
-        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(36 * 60 * 60 * 1_000_000_000),
-        expires_at_ns: Some(tilo_clock::unix_now_ns().saturating_sub(12 * 60 * 60 * 1_000_000_000)),
+        issued_at_ns: tilo_clock::unix_now_ns().saturating_sub(A_DAY_AND_A_HALF_NS),
+        expires_at_ns: Some(tilo_clock::unix_now_ns().saturating_sub(TWELVE_HOURS_NS)),
         signature: [0; 64],
     };
     let digest = tilo_user_identity::device_cert_signing_digest(&aged).expect("a digest to sign");
@@ -906,6 +912,7 @@ fn expired_throwaway_identity(
     (hex::encode(aged.user_public_key), paths)
 }
 
+#[test]
 fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
