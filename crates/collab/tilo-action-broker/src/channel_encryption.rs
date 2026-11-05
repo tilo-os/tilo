@@ -874,17 +874,38 @@ impl ChannelEncryption {
         wall: u64,
     ) {
         let channel = frame.channel;
-        let Some(route) = self
-            .peers
-            .get(&channel)
-            .filter(|entry| entry.workspace == workspace)
-            .map(|entry| entry.route.clone())
-        else {
-            // A group this device takes no part in yet: if it comes to, it
-            // asks to join and never creates a second one.
-            if self.groups_seen.len() < MAX_GROUPS_SEEN {
-                self.groups_seen.insert(channel);
+        if let Some(entry) = self.peers.get(&channel)
+            && entry.workspace != workspace
+        {
+            return;
+        }
+        if !self.peers.contains_key(&channel) {
+            // A device that was away keeps the state of the channels it takes
+            // part in, and its host replays the governance it retained when
+            // the device comes back, before its apps read anything: take that
+            // in rather than forget it, so the group is current before the
+            // first read of its record. A channel this device holds no state
+            // of is one it takes no part in: it never creates a second group
+            // of a channel whose group it has heard, and if it comes to take
+            // part it asks to join.
+            let opened = self.store.is_some()
+                && match self.open_peer(workspace, channel, now) {
+                    Ok(opened) => opened,
+                    Err(error) => {
+                        tracing::warn!(%error, %workspace, "channel state could not be opened");
+                        false
+                    }
+                };
+            if !opened {
+                if self.groups_seen.len() < MAX_GROUPS_SEEN {
+                    self.groups_seen.insert(channel);
+                }
+                return;
             }
+            self.receive_frame(workspace, frame, now, wall);
+            return;
+        }
+        let Some(route) = self.peers.get(&channel).map(|entry| entry.route.clone()) else {
             return;
         };
         let allowed = self
@@ -3374,4 +3395,6 @@ mod tests {
     include!("channel_encryption_personal_cluster_tests.rs");
 
     include!("channel_encryption_held_frame_tests.rs");
+
+    include!("channel_encryption_catch_up_tests.rs");
 }
