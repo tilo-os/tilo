@@ -157,11 +157,18 @@ impl Chat {
         rows
     }
 
-    /// The names of the people a conversation is with, `me`'s left out when
-    /// they are one of them and someone else is. A person the workspace has
-    /// no name for goes by their tag, never blank.
+    /// What the conversation is called: its own name when it has one, and
+    /// else the names of the people it is with, `me`'s left out when they
+    /// are one of them and someone else is. A person the workspace has no
+    /// name for goes by their tag, never blank.
     #[must_use]
     fn display_names(&self, id: &Id, me: Option<&str>) -> String {
+        if let Some(conversation) = self.channels.get(id)
+            && !conversation.participants.is_empty()
+            && !conversation.name.trim().is_empty()
+        {
+            return conversation.name.trim().to_owned();
+        }
         let participants = self.conversation_participants(id);
         let named: Vec<String> = participants
             .iter()

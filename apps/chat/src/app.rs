@@ -367,6 +367,11 @@ pub struct ChatApp {
     /// The direct conversations that hold messages, by conversation id: the
     /// ones the sidebar lists beside the one open.
     pub(crate) direct_held: std::collections::HashSet<String>,
+    /// The conversations the record itself holds, by id: the ones this window
+    /// has item resources to publish effects on. A conversation with a person
+    /// neither has written in yet is one the app derives from the workspace's
+    /// people, and has no item of its own.
+    pub(crate) recorded_channels: std::collections::HashSet<String>,
     /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
@@ -756,6 +761,7 @@ impl ChatApp {
             workspace_agents: Vec::new(),
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
+            recorded_channels: std::collections::HashSet::new(),
             motion_reduced: false,
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),

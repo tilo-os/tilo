@@ -1487,6 +1487,16 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             ["agent:scribe"],
             "the agent the conversation was with is now its participant"
         );
+        let row = chat
+            .conversation_rows(ADA)
+            .into_iter()
+            .find(|row| row.id == OLD_AGENT_CHANNEL)
+            .expect("the agent's conversation is listed");
+        assert!(
+            row.direct,
+            "it is a conversation, not the workspace's channel"
+        );
+        assert_eq!(row.name, "Scribe", "a conversation with a name keeps it");
         {
             use automerge::ReadDoc as _;
             let (_, channels) = doc.get(automerge::ROOT, "channels").unwrap().unwrap();

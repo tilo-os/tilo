@@ -63,7 +63,11 @@ impl ChatApp {
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&channel));
         self.messages = chat.message_rows(&self.held_messages(), &channel);
-        self.mark_conversation_read(chat);
+        // The conversation in view is read by the pass that follows, as a
+        // channel is ([`ChatApp::mark_active_read`]): a read receipt sent from
+        // here would continue this view's invocation, whose reach is reading,
+        // and a write beyond it is the person's to confirm — which nobody
+        // asked them.
         self.restore_attached_agent_surface(&channel);
         self.request_relayout();
     }

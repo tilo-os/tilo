@@ -977,6 +977,13 @@ impl ChatApp {
     }
 
     fn channel_row(&self, id: &str) -> Option<LiveRow> {
+        // Only a conversation the record holds is an item with effects on it:
+        // a conversation with a person neither has written in yet is derived
+        // from the workspace's people, and its row is
+        // [`Self::direct_conversation_rows`]'.
+        if !self.recorded_channels.contains(id) {
+            return None;
+        }
         let channel = self.channels.iter().find(|item| item.id == id)?;
         let channel_id = || id.to_owned();
         let row = LiveRow::new(
