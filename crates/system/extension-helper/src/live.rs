@@ -1441,8 +1441,8 @@ fn parent(pid: u32) -> Option<u32> {
 /// The processes `wrapper` started.
 ///
 /// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
-/// `CONFIG_PROC_CHILDREN`, which Tilo's kernel is not, so the parent each
-/// process reports is what names them.
+/// `CONFIG_PROC_CHILDREN`, so the parent each process reports is what names
+/// them here.
 fn children_of(wrapper: u32) -> Vec<u32> {
     let Ok(processes) = fs::read_dir("/proc") else {
         return Vec::new();
