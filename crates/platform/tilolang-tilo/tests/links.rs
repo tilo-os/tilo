@@ -219,7 +219,7 @@ fn seeded(n: usize) -> (Replica, Vec<Package>) {
     }
     let create = DynAction {
         app: APP.to_owned(),
-        kind: meta.kind_of("Board").to_owned(),
+        kind: meta.kind_of("Board"),
         action_id: "$create".to_owned(),
         args: serde_json::Value::Null,
         authorship: Authorship::default(),
@@ -239,12 +239,14 @@ fn reads_of(ada: &Replica, action: &str, args: Vec<Value>) -> (u64, u64) {
     let before = ada.host.store().read_stats();
     let _ = call(ada, action, args);
     let after = ada.host.store().read_stats();
-    (
-        after.index.dirs - before.index.dirs + after.index.pages - before.index.pages
-            + after.index.fields
-            - before.index.fields,
-        after.evaluated - before.evaluated,
-    )
+    let index: u64 = [
+        after.index.dirs.saturating_sub(before.index.dirs),
+        after.index.pages.saturating_sub(before.index.pages),
+        after.index.fields.saturating_sub(before.index.fields),
+    ]
+    .into_iter()
+    .sum();
+    (index, after.evaluated.saturating_sub(before.evaluated))
 }
 
 #[test]

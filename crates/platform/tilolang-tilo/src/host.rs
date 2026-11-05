@@ -623,46 +623,7 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        let mut given: Vec<Option<Value>> = Vec::new();
-        let mut params = action.params.iter();
-        if let (Some(subject), Some(declared)) =
-            (request.resource, package.meta.subject_of(&action.params))
-        {
-            let target = ResourceRef::parse_id(subject, declared.id.clone())
-                .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
-            given.push(Some(Value::resource(&target)));
-            params.next();
-        }
-        // An argument left out that has a default gets it now, on the invoker's state: what
-        // the person saw is the argument, and the invocation records it.
-        let mut defaulted = Vec::new();
-        for param in params {
-            match request.args.get(&param.name) {
-                None if param.default.is_some() => {
-                    defaulted.push(param);
-                    given.push(None);
-                }
-                json => {
-                    let json = json.cloned().unwrap_or(Json::Null);
-                    given.push(Some(value_of(self, &package.meta, &json, &param.ty)?));
-                }
-            }
-        }
-        let args = self
-            .runtime
-            .complete_args(request.action_id, given)
-            .map_err(|error| error.to_string())?;
-        let mut recorded = request.args.clone();
-        for param in defaulted {
-            let index = action
-                .params
-                .iter()
-                .position(|declared| declared.name == param.name);
-            if let Some(value) = index.and_then(|index| args.get(index)) {
-                let json = self.recorded(&package.meta, param, value)?;
-                recorded.insert(param.name.clone(), json);
-            }
-        }
+        let (args, recorded) = self.planned_args(&package, action, request)?;
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
@@ -731,6 +692,56 @@ impl HostInner {
             }
         }
         Ok(planned)
+    }
+
+    /// The action's arguments as its invocation records them: those the door was given, and
+    /// each left out that has a default computed now, on the invoker's state, since what the
+    /// person saw is the argument.
+    fn planned_args(
+        &self,
+        package: &Package,
+        action: &tilolang::meta::ActionMeta,
+        request: &PlanRequest<'_>,
+    ) -> Result<(Vec<Value>, serde_json::Map<String, Json>), String> {
+        let mut given: Vec<Option<Value>> = Vec::new();
+        let mut params = action.params.iter();
+        if let (Some(subject), Some(declared)) =
+            (request.resource, package.meta.subject_of(&action.params))
+        {
+            let target = ResourceRef::parse_id(subject, declared.id.clone())
+                .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
+            given.push(Some(Value::resource(&target)));
+            params.next();
+        }
+        let mut defaulted = Vec::new();
+        for param in params {
+            match request.args.get(&param.name) {
+                None if param.default.is_some() => {
+                    defaulted.push(param);
+                    given.push(None);
+                }
+                json => {
+                    let json = json.cloned().unwrap_or(Json::Null);
+                    given.push(Some(value_of(self, &package.meta, &json, &param.ty)?));
+                }
+            }
+        }
+        let args = self
+            .runtime
+            .complete_args(request.action_id, given)
+            .map_err(|error| error.to_string())?;
+        let mut recorded = request.args.clone();
+        for param in defaulted {
+            let index = action
+                .params
+                .iter()
+                .position(|declared| declared.name == param.name);
+            if let Some(value) = index.and_then(|index| args.get(index)) {
+                let json = self.recorded(&package.meta, param, value)?;
+                recorded.insert(param.name.clone(), json);
+            }
+        }
+        Ok((args, recorded))
     }
 }
 
