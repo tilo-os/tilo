@@ -128,7 +128,6 @@ COPY \
     os/etc/polkit-1/rules.d/49-tilo-disk-unlock.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-power.rules \
     os/etc/polkit-1/rules.d/49-tilo-greeter-fingerprint.rules \
-    os/etc/polkit-1/rules.d/49-tilo-session-priority.rules \
     os/etc/polkit-1/rules.d/49-tilo-time-zone.rules \
     os/etc/polkit-1/rules.d/49-tilo-battery-cap.rules \
     /etc/polkit-1/rules.d/

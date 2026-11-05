@@ -199,8 +199,8 @@ impl Source for TreeSource {
             else {
                 continue;
             };
-            // An app whose tier cannot be read is treated as the focused
-            // one: never reclaimed from.
+            // An app whose tier cannot be read is treated as foreground:
+            // never reclaimed from.
             let tier = app_cgroup::tier_of(&app_dir).unwrap_or(Tier::Foreground);
             let mut leaves = vec![(app_dir.join(app_cgroup::MAIN_LEAF), Leaf::Main)];
             leaves.extend(
@@ -579,7 +579,7 @@ mod tests {
                 .reclaimed
                 .iter()
                 .all(|(dir, _)| dir.starts_with(fake.tree().join("app-so.tilo.mail-1"))),
-            "nothing is taken from the focused app: {:?}",
+            "nothing is taken from a foreground app: {:?}",
             effects.reclaimed
         );
     }

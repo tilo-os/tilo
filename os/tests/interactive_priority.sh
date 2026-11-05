@@ -40,7 +40,7 @@ if [ "$mode" = static ]; then
   has "$etc/user/app.slice.d/50-tilo-interactive.conf" MemoryLow=15%
   if grep -q '^ManagedOOM' "$etc/user/app.slice.d/50-tilo-interactive.conf" \
       "$etc/user/session.slice.d/50-tilo-interactive.conf"; then
-    bad 'app.slice or session.slice is an oomd target; the focused app could be killed'
+    bad 'app.slice or session.slice is an oomd target; an app could be killed'
   fi
   has "$etc/user/session.slice.d/50-tilo-interactive.conf" CPUWeight=400
   # The app tree hands each app every controller its tier and accounting use.
@@ -64,11 +64,6 @@ if [ "$mode" = static ]; then
     || bad 'tilo-fs-recipient is not in session.slice'
   grep -Fqx 'Slice=background.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-cloud.service" \
     || bad 'tilo-fs-cloud sync is not background'
-  grep -Fq 'set-property' "$repo/os/etc/polkit-1/rules.d/49-tilo-session-priority.rules" \
-    && grep -Fq 'subject.session' "$repo/os/etc/polkit-1/rules.d/49-tilo-session-priority.rules" \
-    || bad 'polkit rule for the session scope is missing or too broad'
-  grep -Fq '49-tilo-session-priority.rules' "$repo/os/Containerfile" \
-    || bad 'the polkit rule is not copied into the image'
   [ -f "$etc/zram-generator.conf" ] && ok 'zram policy shipped'
 else
   prop() { # prop MANAGER UNIT NAME EXPECTED
@@ -91,12 +86,10 @@ else
   controllers=$(cat "/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers")
   case " $controllers " in *' io '*) ok 'io controller delegated to the user manager' ;;
     *) bad "io not delegated: $controllers" ;; esac
-  # The compositor's session scope, set by the compositor at startup.
+  # The compositor inherits the display manager's OOM score: never oomd's or
+  # the OOM killer's choice.
   shell_pid=$(pgrep -xo tilo-session || true)
   if [ -n "$shell_pid" ]; then
-    scope=$(sed -n 's#.*/\(session-[0-9]*\.scope\)$#\1#p' "/proc/$shell_pid/cgroup")
-    prop --system "$scope" CPUWeight 1000
-    prop --system "$scope" MemorySwapMax 0
     [ "$(cat "/proc/$shell_pid/oom_score_adj")" = -1000 ] \
       && ok 'the compositor is never the OOM killer'"'"'s choice' \
       || bad "compositor oom_score_adj is $(cat "/proc/$shell_pid/oom_score_adj"), not -1000"
@@ -106,15 +99,14 @@ else
   slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
   trees=$(cd "$slice" && ls -d tilo-apps-*.scope 2>/dev/null || true)
   [ -n "$trees" ] && ok "app trees: $(echo $trees)" || bad 'no tilo-apps-*.scope: the app spawner did not get its tree'
-  boosted=0
   for tree in $trees; do
     prop --user "$tree" Delegate yes
     prop --user "$tree" OOMPolicy continue
     for app in "$slice/$tree"/app-*; do
       [ -d "$app" ] || continue
       w=$(cat "$app/cpu.weight")
-      case "$w" in 800) boosted=$((boosted + 1)) ;; 50) ;;
-        *) bad "${app##*/} has no foreground/background tier (cpu.weight=$w)" ;; esac
+      case "$w" in 800 | 50) ;;
+        *) bad "${app##*/} has no tier (cpu.weight=$w)" ;; esac
       # The app's own cgroup holds no process and is no OOM group: its main
       # leaf is (a Tilo app, 1; a host app, 0) and each job is its own (1).
       [ "$(cat "$app/memory.oom.group")" = 0 ] || bad "${app##*/} is one OOM group with its jobs"
@@ -126,8 +118,6 @@ else
       done
     done
   done
-  # Exactly one app is boosted: the focused one.
-  [ "$boosted" -le 1 ] && ok "at most one app is boosted ($boosted)" || bad "$boosted apps boosted"
   # IO weights need a scheduler that honours them.
   for dev in /sys/block/nvme*n*; do
     [ -e "$dev/queue/scheduler" ] || continue

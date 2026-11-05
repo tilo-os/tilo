@@ -8,8 +8,8 @@
 //!
 //! 1. **Rising pressure:** reclaim from apps in the background tier
 //!    (`memory.reclaim`), a quarter of what each holds, at most every few
-//!    seconds each. The focused app and launches still starting are never
-//!    touched, nor is the session (it is not in the app tree).
+//!    seconds each. An app in the foreground tier and launches still starting
+//!    are never touched, nor is the session (it is not in the app tree).
 //! 2. **Critical pressure that stays:** end the one app or job growing out of
 //!    control: the one whose memory grew most over the last
 //!    [`GROWTH_WINDOW_TICKS`] samples, not the largest one. A job ends alone
@@ -289,7 +289,7 @@ impl Policy {
     /// The unit growing out of control, with its growth: the most growth of
     /// at least [`RUNAWAY_GROWTH`], or, once pressure stayed critical for
     /// [`STALLED_TICKS`], the most growth at all. Ties go to a job before an
-    /// app and to the background before the focused app.
+    /// app and to the background tier before the foreground one.
     fn runaway<'a>(&self, units: &'a [Unit]) -> Option<(&'a Unit, u64)> {
         let floor = if self.critical_for >= STALLED_TICKS {
             1
@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn rising_pressure_reclaims_from_the_background_and_never_from_the_focused_app() {
+    fn rising_pressure_reclaims_from_the_background_and_never_from_a_foreground_app() {
         let units = vec![
             unit("mail", Leaf::Main, Tier::Background, 2 * GIB),
             unit("notes", Leaf::Main, Tier::Foreground, 3 * GIB),
@@ -443,7 +443,7 @@ mod tests {
                 dir: PathBuf::from("/tree/app-mail-1/main"),
                 bytes: GIB / 2
             }],
-            "a quarter of the background app, nothing of the focused one or of a tiny one"
+            "a quarter of the background app, nothing of a foreground one or of a tiny one"
         );
         for later in &actions[2..6] {
             assert!(later.is_empty(), "not again before it is due: {later:?}");
@@ -463,7 +463,7 @@ mod tests {
     #[test]
     fn critical_pressure_ends_the_unit_growing_fastest_not_the_largest() {
         // The browser is the largest and steady; the language server grows
-        // 200 MiB a sample; the focused editor grows a little.
+        // 200 MiB a sample; the foreground editor grows a little.
         let samples: Vec<Vec<Unit>> = (0..6_u64)
             .map(|at| {
                 vec![

@@ -271,7 +271,7 @@ fn a_job_is_born_in_a_leaf_of_its_own_beside_its_app() {
     let door = runtime_portal::jobs::connect(&socket).unwrap();
     let slot =
         runtime_portal::jobs::request(door.as_fd(), "rust-analyzer", Some(member.as_fd())).unwrap();
-    assert_eq!(slot.oom_score_adj(), 100, "a job of the focused app");
+    assert_eq!(slot.oom_score_adj(), 100, "a job of a foreground app");
     let mut command = std::process::Command::new("/bin/sh");
     command
         .args(["-c", "cat /proc/self/cgroup /proc/self/oom_score_adj"])

@@ -25,9 +25,8 @@
 //! launcher inside its `main/` leaf with `clone3(CLONE_INTO_CGROUP |
 //! CLONE_PARENT)`: born there, and still the compositor's child, with no
 //! round trip to anyone. It removes each cgroup once `cgroup.events` says it
-//! is no longer populated. The compositor moves apps between tiers by writing
-//! the same files ([`crate::priority`]) and ends a whole app with
-//! `cgroup.kill`.
+//! is no longer populated. An app's tier is what [`crate::priority`] writes at
+//! launch; a whole app ends with `cgroup.kill`.
 //!
 //! **Out of memory, an app is one unit; a job is its own.** The kernel's OOM
 //! killer, when it picks a process, ends every process of the highest
@@ -56,7 +55,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::priority::{Property, Tier, Value};
+use crate::priority::{Property, Tier};
 
 /// Where the cgroup2 hierarchy is mounted.
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
@@ -254,9 +253,6 @@ pub fn bfq_weight(io_weight: u64) -> u64 {
 pub fn property_writes(props: &[Property]) -> Vec<(&'static str, String)> {
     let mut writes = Vec::new();
     for (name, value) in props {
-        let Value::U64(value) = value else {
-            continue;
-        };
         match *name {
             "CPUWeight" => writes.push(("cpu.weight", value.to_string())),
             "IOWeight" => {
@@ -391,7 +387,7 @@ pub fn kind_of(dir: &Path) -> Option<AppKind> {
     }
 }
 
-/// The focus tier the app cgroup at `dir` is in, from its CPU weight.
+/// The tier the app cgroup at `dir` is in, from its CPU weight.
 #[must_use]
 pub fn tier_of(dir: &Path) -> Option<Tier> {
     match read_u64(dir, "cpu.weight")? {
@@ -476,41 +472,6 @@ pub fn processes(dir: &Path) -> Vec<u32> {
     pids
 }
 
-/// Give every process of the app cgroup at `dir` the `oom_score_adj` of
-/// `tier` ([`crate::priority::oom_score_adj`]): its main leaf the app's, its
-/// jobs a little more. A process that ended meanwhile is skipped.
-///
-/// # Errors
-///
-/// How many processes refused, with the first reason.
-pub fn set_oom_score_adj(dir: &Path, tier: Tier) -> Result<(), String> {
-    let mut leaves = vec![(dir.join(MAIN_LEAF), Leaf::Main)];
-    leaves.extend(jobs(dir).into_iter().map(|job| (job, Leaf::Job)));
-    let mut refused = 0_usize;
-    let mut first = None;
-    for (leaf, kind) in leaves {
-        let value = crate::priority::oom_score_adj(tier, kind).to_string();
-        for pid in processes(&leaf) {
-            match std::fs::write(format!("/proc/{pid}/oom_score_adj"), &value) {
-                Ok(()) => {}
-                Err(error)
-                    if matches!(error.kind(), io::ErrorKind::NotFound)
-                        || error.raw_os_error() == Some(libc::ESRCH) => {}
-                Err(error) => {
-                    refused = refused.saturating_add(1);
-                    first.get_or_insert_with(|| format!("pid {pid}: {error}"));
-                }
-            }
-        }
-    }
-    match first {
-        None => Ok(()),
-        Some(first) => Err(format!(
-            "{refused} processes kept their OOM score ({first})"
-        )),
-    }
-}
-
 /// End every process in the app cgroup at `dir` at once, those that left
 /// its process tree (`setsid`, a double fork) included.
 pub fn kill(dir: &Path) -> io::Result<()> {
@@ -551,7 +512,7 @@ pub struct Stats {
     pub memory_current: Option<u64>,
     /// The most it was ever charged, in bytes.
     pub memory_peak: Option<u64>,
-    /// Its protected floor, in bytes: the focused app's tier has one.
+    /// Its protected floor, in bytes: the foreground tier has one.
     pub memory_low: Option<u64>,
     /// CPU time used, in microseconds.
     pub cpu_usec: Option<u64>,

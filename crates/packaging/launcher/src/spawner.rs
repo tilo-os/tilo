@@ -425,9 +425,7 @@ impl Server {
             let dir = self.dir.join(name);
             match std::fs::create_dir(&dir) {
                 Ok(()) => {
-                    // The person just asked for this app: it starts in the
-                    // foreground tier, and the compositor demotes it when focus
-                    // moves on (see `priority`).
+                    // Every app starts in the foreground tier (see `priority`).
                     let tier = crate::priority::tier_properties(
                         crate::priority::Tier::Foreground,
                         self.total_memory,

@@ -208,10 +208,9 @@ pub fn join_app_tree_with(busctl: &Path, timeout: Duration) -> Result<String, St
 /// and `OOMPolicy=continue` are the tree's (systemd sees one unit, so with
 /// `stop` one process killed for memory in any app would stop every app);
 /// the tier weights and floor are per app, in its cgroup. The tree itself
-/// carries the foreground weights, as the focused app's scope did, so what
-/// the person looks at still outweighs the rest of `app.slice`, and the
-/// foreground floor, so the focused app's own floor has protection to draw
-/// on (`memory_recursiveprot`).
+/// carries the foreground weights, so the apps below it outweigh the rest of
+/// `app.slice`, and the foreground floor, so each app's own floor has
+/// protection to draw on (`memory_recursiveprot`).
 #[must_use]
 pub fn tree_request_args(unit: &str, pid: u32) -> Vec<String> {
     let mut properties: Vec<Vec<String>> = vec![
@@ -265,8 +264,8 @@ pub fn request_args(unit: &str, pid: u32, description: &str) -> Vec<String> {
         ],
         vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
     ];
-    // The person just asked for this app: it starts in the foreground tier,
-    // and the compositor demotes it when focus moves on (see `priority`).
+    // The person just asked for this app: it starts in the foreground tier
+    // (see `priority`).
     let tier = crate::priority::tier_properties(
         crate::priority::Tier::Foreground,
         crate::priority::mem_total_bytes(),
