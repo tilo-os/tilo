@@ -211,8 +211,9 @@ impl DeviceClass {
 mod renewal;
 
 pub use renewal::{
-    RENEWAL_CAUSES, RenewalCauses, RenewalClock, keep_device_certificates_renewed,
-    next_device_certificate_renewal, renewal_due_at,
+    RENEWAL_CAUSES, RenewalCauses, RenewalClock, install_renewed_certificate,
+    joined_device_renewal_due, keep_device_certificates_renewed, next_device_certificate_renewal,
+    renewal_due_at,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -620,6 +620,13 @@ impl Session {
             // from their own top bar, where they decide it.
             crate::certification::pump(fabric.as_ref());
             self.shared.follow_device_asks();
+            // A device that joined a person's identity holds no root of
+            // their own, so nothing here can reissue its certificate. Once
+            // the person's devices are reachable, this asks them for the
+            // renewal the certificate is due.
+            if let Some(renewal) = &self.shared.fleet_renewal {
+                renewal.follow(fabric);
+            }
             // The person's settings follow them between their devices on the
             // same fabric: what they set here is offered to it, and what
             // they set there reaches the document this session reads.

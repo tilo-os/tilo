@@ -5,7 +5,6 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{DeviceCert, GovernedIdentity, ROOT, ReadDoc, SigningKey, SystemTime, err, now_ns};
 use automerge::transaction::Transactable as _;
-use tilo_user_identity::DeviceCapabilities;
 
 impl PeerGovernance<'_> {
     /// The certificate `renewed` replaces: the one the workspace holds for the
@@ -40,7 +39,7 @@ impl PeerGovernance<'_> {
         if renewed.issued_at_ns <= held.issued_at_ns {
             return Err("the workspace holds a newer certificate for this device".into());
         }
-        if !within(&renewed.capabilities, &held.capabilities) {
+        if !renewed.capabilities.grants_no_more_than(&held.capabilities) {
             return Err("a renewed certificate grants no more than the one it replaces".into());
         }
         tilo_user_identity::verify_device_cert_at(renewed, now_ns(now)).map_err(err)?;
@@ -116,24 +115,7 @@ impl PeerGovernanceMut<'_> {
 /// replica takes it in `held`'s place; its signature and validity are
 /// checked where it is taken in.
 pub(crate) fn renews(renewed: &DeviceCert, held: &DeviceCert) -> bool {
-    renewed.device_public_key == held.device_public_key
-        && renewed.user_public_key == held.user_public_key
-        && renewed.issued_at_ns > held.issued_at_ns
-        && within(&renewed.capabilities, &held.capabilities)
-}
-
-/// Whether `renewed` grants nothing `held` does not.
-fn within(renewed: &DeviceCapabilities, held: &DeviceCapabilities) -> bool {
-    let within = |renewed: bool, held: bool| !renewed || held;
-    within(renewed.can_own_workspaces, held.can_own_workspaces)
-        && within(renewed.can_admit_devices, held.can_admit_devices)
-        && within(renewed.can_act_as_host, held.can_act_as_host)
-        && within(
-            renewed.can_read_all_workspaces,
-            held.can_read_all_workspaces,
-        )
-        && within(renewed.can_administer_devices, held.can_administer_devices)
-        && (renewed.foreign || !held.foreign)
+    renewed.renews(held)
 }
 
 #[cfg(test)]
