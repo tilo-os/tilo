@@ -15,6 +15,7 @@ use crate::ids::Principal;
 use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
+use crate::runtime::Reading;
 use crate::seen::SeenMark;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
@@ -1937,11 +1938,13 @@ impl Core {
         let mut applies = true;
         let mut available = true;
         let mut why = String::new();
-        if let Some(refused) = self.decided(&action.id, &shown.args, &viewer, Decides::Applies)? {
+        if let (Some(refused), _) =
+            self.decided(&action.id, &shown.args, &viewer, Decides::Applies)?
+        {
             applies = false;
             available = false;
             why = refused;
-        } else if let Some(refused) =
+        } else if let (Some(refused), _) =
             self.decided(&action.id, &shown.args, &viewer, Decides::Requirement)?
         {
             available = false;
@@ -2016,6 +2019,19 @@ impl Core {
         subject: &RefValue,
         viewer: &Principal,
     ) -> HResult<Option<String>> {
+        self.refusal_reading(action, subject, viewer)
+            .map(|(reason, _)| reason)
+    }
+
+    /// As [`Self::refusal`], with what reading the requirements read: the resources, and whether
+    /// they read more than the workspace holds (the clock, the window), which no change in the
+    /// workspace moves.
+    pub(crate) fn refusal_reading(
+        &self,
+        action: &str,
+        subject: &RefValue,
+        viewer: &Principal,
+    ) -> HResult<(Option<String>, Reading)> {
         let places = {
             let registry = self.registry.borrow();
             registry
@@ -2042,21 +2058,21 @@ impl Core {
         args: &[Value],
         viewer: &Principal,
         which: Decides,
-    ) -> HResult<Option<String>> {
+    ) -> HResult<(Option<String>, Reading)> {
         let (pkg, params, export) = {
             let registry = self.registry.borrow();
             let Some(pkg) = registry.action_package(action) else {
-                return Ok(None);
+                return Ok((None, Reading::default()));
             };
             let Some(meta) = pkg.action(action) else {
-                return Ok(None);
+                return Ok((None, Reading::default()));
             };
             let exported = match which {
                 Decides::Requirement => meta.guard,
                 Decides::Applies => meta.applies,
             };
             if !exported {
-                return Ok(None);
+                return Ok((None, Reading::default()));
             }
             let decided = places_of(meta).saturating_add(1);
             let params = meta.params.get(..decided).unwrap_or_default().to_vec();
@@ -2091,16 +2107,28 @@ impl Core {
             }
         };
         self.note_time(reads.changes_at);
-        self.note_reads(reads.reads);
+        self.note_reads(reads.reads.clone());
         {
             let mut frames = self.frames.borrow_mut();
             if let Some(vs) = frames.view_mut() {
-                vs.state_reads.extend(reads.state_reads);
+                vs.state_reads.extend(reads.state_reads.clone());
                 vs.state_seen.extend(reads.state_seen);
-                vs.space_reads.extend(reads.space_reads);
+                vs.space_reads.extend(reads.space_reads.clone());
             }
         }
-        Ok((!reason.is_empty()).then_some(reason))
+        // What the requirement read of the workspace, each resource once: what reading it again
+        // waits on. A requirement that read the clock, the window's space or the person's view
+        // state reads beyond the workspace, and is read again whatever changes.
+        let mut resources: Vec<String> = reads.reads.iter().map(|(at, _)| at.clone()).collect();
+        resources.sort_unstable();
+        resources.dedup();
+        let beyond = reads.changes_at.is_some()
+            || !reads.state_reads.is_empty()
+            || !reads.space_reads.is_empty();
+        Ok((
+            (!reason.is_empty()).then_some(reason),
+            Reading { resources, beyond },
+        ))
     }
 
     /// The person the code running is for: whom an action offered now would be offered to.

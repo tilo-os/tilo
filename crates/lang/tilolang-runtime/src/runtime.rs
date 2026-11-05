@@ -835,6 +835,33 @@ impl Runtime {
             })
     }
 
+    /// As [`Runtime::refusal`], with what reading the requirement read: the resources it read,
+    /// each once, and whether it read more than the workspace holds (the clock, the window's
+    /// space, the person's view state), which no change in the workspace moves.
+    ///
+    /// # Errors
+    ///
+    /// A requirement that traps, or answers something else than a text.
+    pub fn refusal_reading(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<(Option<String>, Reading), RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .refusal_reading(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("a guard waited on a decision".into())
+                }
+            })
+    }
+
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
@@ -1211,4 +1238,16 @@ impl Runtime {
     pub fn module_hash(wasm: &[u8]) -> ModuleHash {
         ModuleHash::of_bytes(wasm)
     }
+}
+
+/// What reading an action's requirements read of the workspace: the resources, each once, and
+/// whether they read more than the workspace holds, which no change in it moves.
+#[derive(Clone, Debug, Default)]
+pub struct Reading {
+    /// The resources the requirements read: one whose own fields moved is read again, and so is
+    /// everything published under it or over it.
+    pub resources: Vec<String>,
+    /// Whether they read the clock, the window's space or the person's view state: the answer
+    /// moves without the workspace moving, so it is not kept.
+    pub beyond: bool,
 }

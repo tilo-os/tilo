@@ -80,7 +80,7 @@ pub use live::LiveStats;
 pub use meta::Meta;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;
-pub use runtime::{BlockOutput, MemorySink, Runtime, SettleReport};
+pub use runtime::{BlockOutput, MemorySink, Reading, Runtime, SettleReport};
 pub use settle::{AgentBlock, InvocationRecord};
 pub use space::Space;
 pub use store::{

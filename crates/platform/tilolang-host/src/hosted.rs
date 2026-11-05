@@ -83,10 +83,21 @@ pub struct Spec {
 /// loaded packages.
 type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 
-/// What the actions of one published resource were read as: whether each can run now, by the
-/// action's id. `None` for an action whose app keeps no requirement its subject decides, so a
-/// resource's requirements are read once and not asked again while nothing they read moves.
-type Read = std::collections::HashMap<String, Option<tilo_actions::Availability>>;
+/// What the actions of one published resource were read as: each action's answer, by the
+/// action's id.
+type Read = std::collections::HashMap<String, Said>;
+
+/// What one action's requirements answered, and what reading them read.
+#[derive(Clone)]
+struct Said {
+    /// Whether the action can run now, in the person at the window's words: `None` for an action
+    /// whose app keeps no requirement its subject decides, and it keeps what it is published as.
+    availability: Option<tilo_actions::Availability>,
+    /// The resources the requirements read, each once: a change to one of them, or to anything
+    /// published under it or over it, reads them again. `None` for a requirement that read more
+    /// than the workspace holds (the clock, the window), which is read again every time.
+    reads: Option<Vec<String>>,
+}
 
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
@@ -183,20 +194,31 @@ impl Surface {
     }
 }
 
-/// Forget what actions were read as, for the resources `changed` and everything their tree links
-/// them to: a requirement reads what an item holds and what holds it, up and down.
+/// Forget what actions were read as, where a requirement read something `changed` moved: what an
+/// answer read is reread when one of those resources, or anything published under it or over it,
+/// changed. An answer that read more than the workspace is read again anyway.
 fn forget_reads(surface: &Surface, changed: &[String]) {
-    surface.availability.borrow_mut().retain(|doc, _| {
-        !changed.iter().any(|changed| {
-            doc == changed
-                || doc
-                    .strip_prefix(changed.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
-                || changed
-                    .strip_prefix(doc.as_str())
-                    .is_some_and(|rest| rest.starts_with('/'))
+    surface.availability.borrow_mut().retain(|_, said| {
+        said.values().all(|said| {
+            said.reads.as_ref().is_some_and(|reads| {
+                !reads
+                    .iter()
+                    .any(|read| changed.iter().any(|changed| reached(changed, read)))
+            })
         })
     });
+}
+
+/// Whether a change to `changed` moves what a read of `read` saw: the same resource, one
+/// published under the other, or one whose item it holds.
+fn reached(changed: &str, read: &str) -> bool {
+    changed == read
+        || read
+            .strip_prefix(changed)
+            .is_some_and(|rest| rest.starts_with('/'))
+        || changed
+            .strip_prefix(read)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// The resources whose actions a catalogue reads again after `moved`: the changed resources, and
@@ -222,46 +244,53 @@ fn reads_again(surface: &Surface, moved: &Moved) -> Vec<String> {
     again
 }
 
-/// What the actions of `resource` are read as now, as `host` says, remembered in `cache` for the
-/// changes that leave this resource where it is.
-fn read_actions(
-    host: &Host,
-    cache: &RefCell<std::collections::BTreeMap<String, Read>>,
-    resource: &ResourceSpec,
-) -> Read {
-    let mut read = Read::new();
-    for action in &resource.actions {
-        read.insert(
-            action.id.clone(),
-            host.availability(resource.id.as_str(), &action.id),
-        );
+/// What the action `action` of `resource` is read as now, as `host` says.
+fn read_action(host: &Host, resource: &str, action: &str) -> Said {
+    match host.availability_reading(resource, action) {
+        Some((availability, reading)) => Said {
+            availability: Some(availability),
+            reads: (!reading.beyond).then_some(reading.resources),
+        },
+        None => Said {
+            availability: None,
+            reads: Some(Vec::new()),
+        },
     }
-    cache
-        .borrow_mut()
-        .insert(resource.id.as_str().to_owned(), read.clone());
-    read
 }
 
 /// Set each action's availability on `resource` and the items under it, as `host` says it now:
-/// read from the app for a resource whose own requirements nothing has moved since, and taken
-/// from `cache` otherwise. Each resource is remembered by its own id, so a change to one item of a
-/// record of ten thousand reads that item's requirements again, and the record's above it, and no
-/// other item's.
+/// the answer kept in `cache` while nothing it read has moved, read from the app otherwise. Each
+/// resource is remembered by its own id, so a change to one item of a record of ten thousand
+/// reads that item's requirements again, and the record's above it, and no other item's.
 fn fill_availability(
     host: &Host,
     cache: &RefCell<std::collections::BTreeMap<String, Read>>,
     resource: &mut ResourceSpec,
 ) {
-    let read = match cache.borrow().get(resource.id.as_str()) {
-        Some(read) => read.clone(),
-        None => read_actions(host, cache, resource),
-    };
+    let held = cache.borrow().get(resource.id.as_str()).cloned();
+    let mut read = Read::new();
+    let mut reread = held.is_none();
     for action in &mut resource.actions {
+        // An answer that read more than the workspace is read again every time: nothing it read
+        // is held anywhere, so a change gives no sign that it moved.
+        let said = match held.as_ref().and_then(|held| held.get(action.id.as_str())) {
+            Some(said) if said.reads.is_some() => said.clone(),
+            _ => {
+                reread = true;
+                read_action(host, resource.id.as_str(), &action.id)
+            }
+        };
         // An action the app keeps no requirement for keeps what it is published as: a host
         // action beside it (undo, redo) says for itself whether it can run now.
-        if let Some(Some(availability)) = read.get(action.id.as_str()) {
+        if let Some(availability) = &said.availability {
             action.type_mut().contract.availability = availability.clone();
         }
+        read.insert(action.id.clone(), said);
+    }
+    if reread {
+        cache
+            .borrow_mut()
+            .insert(resource.id.as_str().to_owned(), read);
     }
     for child in &mut resource.children {
         fill_availability(host, cache, child);
