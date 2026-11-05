@@ -111,6 +111,36 @@ impl Studio {
     fn bob_key(&self) -> String {
         hex::encode(self.bob.public)
     }
+
+    /// Run one step that reads several devices, and say what every device did
+    /// when they disagree.
+    fn together<T>(&self, step: impl FnOnce() -> T) -> T {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)) {
+            Ok(value) => value,
+            Err(payload) => {
+                let said = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| {
+                        payload
+                            .downcast_ref::<&str>()
+                            .map(|text| (*text).to_owned())
+                    })
+                    .unwrap_or_default();
+                let logs = [
+                    &self.ada_laptop,
+                    &self.ada_phone,
+                    &self.bob_laptop,
+                    &self.bob_phone,
+                ]
+                .into_iter()
+                .map(Device::every_log)
+                .collect::<Vec<_>>()
+                .join("\n");
+                panic!("{said}\nevery device's log:\n{logs}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -217,16 +247,20 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
     // Bob answers, and Ada's laptop—which stayed on—shows it with her own
     // three.
     studio.bob_phone.chat().send(&ada_key, "answered");
-    studio
-        .ada_laptop
-        .chat()
-        .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
+    studio.together(|| {
+        studio
+            .ada_laptop
+            .chat()
+            .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
+    });
     // Ada's phone was away too: it reads the whole conversation at once, under
     // the same ids.
-    studio
-        .ada_phone
-        .chat()
-        .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
+    studio.together(|| {
+        studio
+            .ada_phone
+            .chat()
+            .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
+    });
     assert_eq!(
         message_ids(&studio.ada_phone, &bob_key),
         message_ids(&studio.ada_laptop, &bob_key),
@@ -257,16 +291,18 @@ fn both_people_writing_offline_converge_without_duplicates() {
         device.wait_for_window("so.tilo.chat");
     }
     let wanted = ["Ada one", "Ada two", "Bob one", "Bob two"];
-    studio.ada_phone.chat().wait_for_texts(&bob_key, &wanted);
-    studio.bob_phone.chat().wait_for_texts(&ada_key, &wanted);
-    for (device, peer) in [
-        (&studio.ada_laptop, &bob_key),
-        (&studio.ada_phone, &bob_key),
-        (&studio.bob_laptop, &ada_key),
-        (&studio.bob_phone, &ada_key),
-    ] {
-        device.chat().wait_for_texts(peer, &wanted);
-    }
+    studio.together(|| {
+        studio.ada_phone.chat().wait_for_texts(&bob_key, &wanted);
+        studio.bob_phone.chat().wait_for_texts(&ada_key, &wanted);
+        for (device, peer) in [
+            (&studio.ada_laptop, &bob_key),
+            (&studio.ada_phone, &bob_key),
+            (&studio.bob_laptop, &ada_key),
+            (&studio.bob_phone, &ada_key),
+        ] {
+            device.chat().wait_for_texts(peer, &wanted);
+        }
+    });
     // Each message once, under one id, on every device.
     let ids = message_ids(&studio.ada_laptop, &bob_key);
     assert_eq!(ids.len(), 4, "each message once: {ids:?}");
@@ -300,7 +336,9 @@ fn one_read_mark_advances_once_and_both_of_a_persons_devices_agree() {
     // Reading them on his laptop marks them read for his phone too.
     studio.bob_laptop.chat().open(&ada_key);
     studio.bob_laptop.chat().wait_for_unread(&ada_key, 0);
-    studio.bob_phone.chat().wait_for_unread(&ada_key, 0);
+    studio.together(|| {
+        studio.bob_phone.chat().wait_for_unread(&ada_key, 0);
+    });
     // Read is not gone: both of his devices still show what Ada wrote.
     for device in [&studio.bob_laptop, &studio.bob_phone] {
         device

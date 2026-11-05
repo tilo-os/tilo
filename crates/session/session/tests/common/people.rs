@@ -828,6 +828,24 @@ impl Device {
         )
     }
 
+    /// Everything this device logged, session and apps alike: what a step that
+    /// compares devices reads when they disagree.
+    pub fn every_log(&self) -> String {
+        let mut all = format!("{} session:\n{}\n", self.label, self.log());
+        if let Ok(entries) = std::fs::read_dir(self.logs_dir()) {
+            for entry in entries.flatten() {
+                let text =
+                    std::fs::read_to_string(entry.path()).unwrap_or_else(|error| error.to_string());
+                all.push_str(&format!(
+                    "{} {}:\n{text}\n",
+                    self.label,
+                    entry.path().display()
+                ));
+            }
+        }
+        all
+    }
+
     /// Run this device's session: its own home, its own identity root, its own
     /// state and its own control socket, as a device's session runs.
     fn spawn(&mut self, invitation: Option<&str>) {
