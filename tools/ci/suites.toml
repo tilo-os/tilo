@@ -825,6 +825,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
+  "crates/platform/tilolang-tilo/tests/unseen.rs",
   "crates/platform/tilolang-tilo/tests/upgrade_fields.rs",
   "crates/platform/tilolang-tilo/tests/views_migration.rs",
   "crates/platform/tilolang-tilo/tests/words.rs",
