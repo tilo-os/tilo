@@ -57,6 +57,23 @@ if [ "$mode" = static ]; then
   # The kernel's OOM killer never chooses the session (the compositor greetd
   # starts inherits it); apps leave it before they start.
   has "$etc/system/greetd.service.d/50-tilo-oom.conf" OOMScoreAdjust=-1000
+  # The compositor lives in logind's session scope, so that scope carries the
+  # session's own weights, floors and swap policy, and is not an oomd target.
+  # A prefix drop-in applies it to every session scope before anything starts
+  # in it, with nothing asking the manager at runtime.
+  scope="$etc/system/session-.scope.d/50-tilo-interactive.conf"
+  grep -Fqx '[Scope]' "$scope" 2>/dev/null \
+    || bad "${scope#"$repo"/}: no [Scope] section or not a session- prefix drop-in"
+  has "$scope" CPUWeight=1000
+  has "$scope" IOWeight=1000
+  has "$scope" MemoryMin=256M
+  has "$scope" MemoryLow=1G
+  has "$scope" MemorySwapMax=0
+  has "$scope" ManagedOOMPreference=avoid
+  if grep -E '^(CPUQuota|MemoryMax|MemoryHigh|IOReadBandwidthMax|IOWriteBandwidthMax)=' \
+      "$scope" >/dev/null; then
+    bad "${scope#"$repo"/} caps the session"
+  fi
   ok 'session tier: weights, floors, io delegation, oomd limits, OOM score'
   grep -Fqx 'Slice=session.slice' "$repo/os/usr/lib/systemd/user/tilo-app-host.service" \
     || bad 'tilo-app-host is not in session.slice'
@@ -86,10 +103,23 @@ else
   controllers=$(cat "/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/cgroup.controllers")
   case " $controllers " in *' io '*) ok 'io controller delegated to the user manager' ;;
     *) bad "io not delegated: $controllers" ;; esac
-  # The compositor inherits the display manager's OOM score: never oomd's or
-  # the OOM killer's choice.
+  # The compositor's login session scope, set by the image's prefix drop-in
+  # (system/session-.scope.d/50-tilo-interactive.conf).
   shell_pid=$(pgrep -xo tilo-session || true)
   if [ -n "$shell_pid" ]; then
+    scope=$(sed -n 's#.*/\(session-[0-9]*\.scope\)$#\1#p' "/proc/$shell_pid/cgroup")
+    if [ -n "$scope" ]; then
+      ok "the compositor runs in $scope"
+      prop --system "$scope" CPUWeight 1000
+      prop --system "$scope" IOWeight 1000
+      prop --system "$scope" MemoryMin 268435456
+      prop --system "$scope" MemoryLow 1073741824
+      prop --system "$scope" MemorySwapMax 0
+      prop --system "$scope" ManagedOOMPreference avoid
+    else bad "the compositor is not in a logind session scope: $(cat "/proc/$shell_pid/cgroup")"
+    fi
+    # The compositor inherits the display manager's OOM score: never oomd's or
+    # the OOM killer's choice.
     [ "$(cat "/proc/$shell_pid/oom_score_adj")" = -1000 ] \
       && ok 'the compositor is never the OOM killer'"'"'s choice' \
       || bad "compositor oom_score_adj is $(cat "/proc/$shell_pid/oom_score_adj"), not -1000"
