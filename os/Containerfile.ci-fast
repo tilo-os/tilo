@@ -3,7 +3,7 @@
 # Reuse the reviewed compiler and audit binaries; never resolve a floating Rust.
 # Built by t's image-ci-fast check. Keep the base on the
 # builder's Fedora release: the copied audit tools link against its glibc.
-ARG TOOLS_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+ARG TOOLS_IMAGE=registry.tilo.so/tilo/tilo-builder@sha256:5a72b2a985be655cb2cd95ca9b3c7af30faaf8bd589258790ce8594b01a7eacc
 FROM ${TOOLS_IMAGE} AS tools
 
 # cargo-hakari checks that crates/workspace-hack matches the dependency graph.
