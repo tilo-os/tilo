@@ -1032,13 +1032,19 @@ pub(crate) async fn settle_strips(
 }
 
 /// The apps the workspace's members write through: the ones `--author-app`
-/// names, or, naming none, every first-party app and every seeded one.
+/// names, or, naming none, every first-party app, every seeded one, and the
+/// workspace's own shared desktop.
 fn authored_apps(args: &PersistentArgs) -> Vec<String> {
     if args.author_apps.is_empty() {
         let mut apps: Vec<String> = tilo_desktop_model::first_party::FIRST_PARTY_APPS
             .iter()
             .map(|app| (*app).to_owned())
             .collect();
+        // The shared desktop is the workspace's own record rather than some
+        // package's: every member writes the desk its windows are on, so the
+        // workspace's host lets it author, as it lets the first-party apps
+        // author the records their windows show.
+        apps.push(tilo_desktop_model::ownership::DESKTOP_APP.to_owned());
         for app in &args.seed_apps {
             if !apps.contains(app) {
                 apps.push(app.clone());

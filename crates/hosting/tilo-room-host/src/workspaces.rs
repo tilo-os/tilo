@@ -1983,17 +1983,23 @@ impl Workspaces {
                 "{app_id} record written by a device that may not edit"
             ));
         }
-        // The checkpoint includes the write that created the record: the
-        // relay retains a member's changes only as a tail of a checkpoint
-        // that resolves their dependencies.
+        // A record starts from the write that founds it: a write that is the
+        // whole record founds the route on its own, and is not preceded by a
+        // cleartext genesis the members, who read only what the channel seals,
+        // would have to account for. The checkpoint includes the write that
+        // created a record founded here in the clear: the relay retains a
+        // member's changes only as a tail of a checkpoint that resolves their
+        // dependencies.
         let mut candidate = workspace.peer().clone();
-        candidate.publication_mut().publish_document(
-            &app_id,
-            &record_id,
-            automerge::AutoCommit::new().save(),
-            &host.key,
-            now,
-        )?;
+        if !envelope.is_whole_record() {
+            candidate.publication_mut().publish_document(
+                &app_id,
+                &record_id,
+                automerge::AutoCommit::new().save(),
+                &host.key,
+                now,
+            )?;
+        }
         candidate.receive_from(
             tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
             message,

@@ -737,6 +737,20 @@ impl SignedOp {
         self
     }
 
+    /// Whether this op is the whole record rather than a change to it: a
+    /// compaction, which the key holder folded the record's sealed history
+    /// into, or a checkpoint, the record as its writer saved it. It names
+    /// the record on its own, so a replica holding none of the route founds
+    /// it with this op, and a writer that founds a record sealed publishes
+    /// one instead of a cleartext genesis a member, who reads only what the
+    /// channel seals, could never account for.
+    #[must_use]
+    pub fn is_whole_record(&self) -> bool {
+        self.kind == OpKind::Compaction
+            || self.encryption.and_then(|metadata| metadata.retention())
+                == Some(ContentRetention::Checkpoint)
+    }
+
     /// Canonical bytes the author signs to mint this envelope — the struct
     /// minus `signature`, stable regardless of when signing happens.
     pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {

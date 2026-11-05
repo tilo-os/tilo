@@ -9,8 +9,7 @@ use crate::{NeighbourMsg, document, workspace};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use collab_types::caps::Principal;
 use collab_types::{
-    ArtifactKind, ChannelState, ContentRetention, DocumentMutation, Ed25519PublicKey, OpKind, Role,
-    SignedOp,
+    ArtifactKind, ChannelState, DocumentMutation, Ed25519PublicKey, OpKind, Role, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
@@ -2039,7 +2038,10 @@ impl StatePeer {
     /// Host-local SDK publication after its certified connection was admitted.
     /// No wire message can select this door. Unlike a retained checkpoint, an
     /// SDK snapshot is an authored mutation of an already-owned exact record.
-    /// Certificate, current policy, signature, replay and route checks are shared.
+    /// A write that is the whole record, sealed, is the one exception: it
+    /// names the record on its own, so a device that keeps a record's channel
+    /// founds it with it, as a replica that holds none of the route founds it
+    /// from one it is sent.
     pub fn admit_local_app_document(
         &mut self,
         app: &str,
@@ -2060,7 +2062,25 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<AdmissionReport, String> {
         if self.document(app, record).is_none() {
-            return Err("local app publication cannot create a record owner".into());
+            // A local publication is an authored change to a record the
+            // workspace owns already; only a write that is the whole record
+            // founds one, and the workspace says first whether this device
+            // may create it, as it does for a cleartext genesis.
+            if !envelope.is_whole_record() {
+                return Err("local app publication cannot create a record owner".into());
+            }
+            if !self.signed_by_owner(envelope.author.as_bytes())
+                && !self.may_create_record(
+                    &self.membership(*envelope.author.as_bytes(), now)?,
+                    &Route {
+                        app: app.into(),
+                        record: record.into(),
+                    },
+                    now,
+                )
+            {
+                return Err("the workspace does not let this device create the record".into());
+            }
         }
         let source = *envelope.author.as_bytes();
         self.admit_document(
@@ -2306,20 +2326,13 @@ impl StatePeer {
                 ));
             }
             collab_types::WholeDocumentPayload::Encrypted { .. } => {
-                // A sealed change needs the record it changes; a sealed
-                // compaction is the whole record as its key holder folded it,
-                // so it founds the route for a replica that has none, as a
+                // A sealed change needs the record it changes; a write that
+                // is the whole record — a compaction, or a checkpoint such as
+                // the one a host keeps at the head of a sealed channel —
+                // founds the route for a replica that holds none of it, as a
                 // device catching up from a store that holds only ciphertext
-                // does. So does a sealed checkpoint, the whole record as its
-                // writer saved it: the one a host keeps at the head of a
-                // sealed channel replays to a device joining the workspace, and
-                // the route it names is what the writes after it change.
-                let whole_record = envelope.kind == OpKind::Compaction
-                    || envelope
-                        .encryption
-                        .and_then(|metadata| metadata.retention())
-                        == Some(ContentRetention::Checkpoint);
-                if !route_existed && !whole_record {
+                // does.
+                if !route_existed && !envelope.is_whole_record() {
                     return self.defer(
                         source,
                         NeighbourMsg::AppDocument {

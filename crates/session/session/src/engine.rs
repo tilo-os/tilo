@@ -224,7 +224,12 @@ impl Engine {
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
-        if sealed && !self.join_channel(workspace, app, record)? {
+        let joined = if sealed {
+            self.join_channel(workspace, app, record)?
+        } else {
+            true
+        };
+        if sealed && !joined {
             return Ok(None);
         }
         let reader = self.identity.device_cert.device_public_key;
@@ -268,6 +273,40 @@ impl Engine {
         match keys.access_record(workspace, &route).0 {
             ChannelAccess::Ready(_) => Ok(true),
             ChannelAccess::Waiting | ChannelAccess::Removed => Ok(false),
+            ChannelAccess::NoSecretStore => {
+                Err("this device has no secret store, so it holds no channel keys".to_owned())
+            }
+            ChannelAccess::Unavailable => {
+                Err("this device takes part in no channel of the record".to_owned())
+            }
+        }
+    }
+
+    /// The keys this device seals writes of `record` of `app` with in
+    /// `workspace`, a workspace whose records are its members' sealed
+    /// channels: `Ok(None)` while the record's channel keys are not here yet,
+    /// and the answer arrives as the workspace's other messages do.
+    ///
+    /// # Errors
+    /// This session has no channel service, this device has no secret store,
+    /// or it takes part in no channel of the record: it holds no keys, and
+    /// none are coming.
+    pub(crate) fn seal_keys(
+        &self,
+        workspace: WorkspaceId,
+        app: &str,
+        record: &str,
+    ) -> Result<Option<channel_crypto::ChannelContentKeys>, String> {
+        let Some(keys) = self.keys.get() else {
+            return Err("this session's channel service is not running".to_owned());
+        };
+        let route = collab_types::ChannelRoute::new(app, record);
+        match keys.access_record(workspace, &route).0 {
+            ChannelAccess::Ready(keys) => Ok(Some(keys)),
+            ChannelAccess::Waiting => Ok(None),
+            ChannelAccess::Removed => Err(format!(
+                "the workspace removed this device from {record}'s channel"
+            )),
             ChannelAccess::NoSecretStore => {
                 Err("this device has no secret store, so it holds no channel keys".to_owned())
             }

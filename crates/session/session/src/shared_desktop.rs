@@ -183,13 +183,6 @@ impl SharedDesktops {
         if room.is_nil() || local == 0 {
             return false;
         }
-        // Only a workspace whose app records this device commits has its
-        // shared desk written here: where the records are its members' sealed
-        // channels, the pages write the desk, and a write in the clear from
-        // this device would be refused as a downgrade.
-        if !engine.commits_documents(room) {
-            return false;
-        }
         let Some(person) = sync.and_then(|sync| sync.own().user) else {
             return false;
         };
@@ -263,13 +256,11 @@ impl SharedDesktops {
                 // What the record refused is not written, and the look that
                 // found it is not one that wrote it: the next look tries again.
                 self.written.borrow_mut().remove(&room);
-                if !self.warned.replace(true) {
-                    tracing::warn!(
-                        %error,
-                        %room,
-                        "the workspace's shared desktop was not kept"
-                    );
-                }
+                self.say(
+                    &error.to_string(),
+                    "the workspace's shared desktop was not kept",
+                    room,
+                );
                 false
             }
             Ok(true) => self.publish(engine, room, &person, candidate, &heads, own, notes),
@@ -280,6 +271,16 @@ impl SharedDesktops {
     /// workspace's own copy of it: what the workspace takes is the record
     /// the next look writes on, and what it refuses is dropped, so the next
     /// look writes it again on what the workspace holds.
+    ///
+    /// The desk is one of the workspace's records, so it is written the way
+    /// the workspace keeps them: sealed under the record channel's keys where
+    /// they are its members' sealed channels, and in the clear where the
+    /// workspace's device commits its documents. A sealed record starts
+    /// sealed: the write that first holds anything of the record is a
+    /// checkpoint of the whole of it, and every write after it a sealed
+    /// change. Members read a sealed record from its sealed history alone, so
+    /// a record founded in the clear would leave them a genesis they cannot
+    /// account for and a desk they could never read.
     fn publish(
         &self,
         engine: &Engine,
@@ -297,17 +298,47 @@ impl SharedDesktops {
                 .with_message(shared_record::change_message(Some(person))),
         );
         let changes = candidate.save_after(heads);
+        // A write on no history is the whole record: the one that founds it.
+        let founding = heads.is_empty();
+        let mut keys = None;
+        if !engine.commits_documents(room) {
+            match engine.seal_keys(room, DESKTOP_APP, DESKTOP_RECORD) {
+                Ok(Some(here)) => keys = Some(here),
+                // The record's channel keys are not here yet: the desk is
+                // written on the look after they arrive, and this look leaves
+                // the workspace unread so that there is one.
+                Ok(None) => {
+                    self.read.borrow_mut().remove(&room);
+                    return false;
+                }
+                Err(error) => {
+                    self.say(
+                        &error,
+                        "the workspace's shared desktop was not written",
+                        room,
+                    );
+                    return false;
+                }
+            }
+        }
+        let artifact =
+            collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD);
         let key = engine.identity().device_signing_key.clone();
         let committed = engine.owner().commit_document_with_current(
             room,
             |view| {
-                let message = view.peer().clone().publication_mut().publish_incremental(
-                    DESKTOP_APP,
-                    DESKTOP_RECORD,
-                    changes.clone(),
-                    &key,
-                    std::time::SystemTime::now(),
-                )?;
+                let message = match &keys {
+                    None => view.peer().clone().publication_mut().publish_incremental(
+                        DESKTOP_APP,
+                        DESKTOP_RECORD,
+                        changes.clone(),
+                        &key,
+                        std::time::SystemTime::now(),
+                    )?,
+                    Some(keys) => {
+                        sealed_write(view.peer(), keys, artifact, &changes, founding, &key)?
+                    }
+                };
                 let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
                     return Err("a desktop write is not a document write".to_owned());
                 };
@@ -342,15 +373,21 @@ impl SharedDesktops {
                 // not on the write it refused.
                 self.written.borrow_mut().remove(&room);
                 self.kept.borrow_mut().remove(&room);
-                if !self.warned.replace(true) {
-                    tracing::warn!(
-                        %error,
-                        %room,
-                        "the workspace's shared desktop was not published"
-                    );
-                }
+                self.say(
+                    &error,
+                    "the workspace's shared desktop was not published",
+                    room,
+                );
                 false
             }
+        }
+    }
+
+    /// Say why a workspace's shared desktop was not kept or published: once
+    /// per session, not on every frame.
+    fn say(&self, error: &str, what: &str, room: WorkspaceId) {
+        if !self.warned.replace(true) {
+            tracing::warn!(%error, %room, "{what}");
         }
     }
 
@@ -373,9 +410,11 @@ impl SharedDesktops {
         {
             // What the workspace holds cannot be laid over our own write:
             // start from it, and say so once.
-            if !self.warned.replace(true) {
-                tracing::warn!(%error, %room, "the shared desktop was not laid together");
-            }
+            self.say(
+                &error.to_string(),
+                "the shared desktop was not laid together",
+                room,
+            );
             return reached;
         }
         base
@@ -426,4 +465,49 @@ impl SharedDesktops {
     pub(crate) fn is_unrecorded(&self, tab: u64) -> bool {
         self.unrecorded.borrow().contains(&tab)
     }
+}
+
+/// `changes` to the desk published into `peer` as this device's own write,
+/// sealed under the record's channel `keys`: a checkpoint of the whole record
+/// when the write founds it, so the record is sealed from the start, and a
+/// change of it after that.
+fn sealed_write(
+    peer: &tilo_peer_state::StatePeer,
+    keys: &channel_crypto::ChannelContentKeys,
+    artifact: collab_types::ArtifactId,
+    changes: &[u8],
+    founding: bool,
+    key: &ed25519_dalek::SigningKey,
+) -> Result<neighbour_wire::NeighbourMsg, String> {
+    let mut write = peer.clone();
+    let now = std::time::SystemTime::now();
+    let publication = write.publication_mut();
+    if !founding {
+        return publication.publish_sealed_incremental(
+            DESKTOP_APP,
+            DESKTOP_RECORD,
+            changes.to_vec(),
+            &mut |plaintext: &[u8]| {
+                keys.seal_content(artifact, collab_types::ContentRetention::Delta, plaintext)
+                    .map_err(|error| error.to_string())
+            },
+            key,
+            now,
+        );
+    }
+    publication.publish_sealed_checkpoint(
+        DESKTOP_APP,
+        DESKTOP_RECORD,
+        changes.to_vec(),
+        &mut |plaintext: &[u8]| {
+            keys.seal_content(
+                artifact,
+                collab_types::ContentRetention::Checkpoint,
+                plaintext,
+            )
+            .map_err(|error| error.to_string())
+        },
+        key,
+        now,
+    )
 }

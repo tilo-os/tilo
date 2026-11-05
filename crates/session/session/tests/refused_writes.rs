@@ -158,6 +158,27 @@ fn waited(what: &str, site: &Site, devices: &[&Device], mut condition: impl FnMu
     }
 }
 
+/// The windows `device` shows on `site`'s workspace, by title: the desk it
+/// reads out of the workspace's shared desktop record.
+fn titles_on(device: &Device, site: &Site) -> Vec<String> {
+    let state = device.state();
+    let tree: tilo_desktop_model::DesktopTree =
+        serde_json::from_value(state["state"]["workspace_tree"].clone()).unwrap_or_else(|error| {
+            panic!("{}'s desk does not read: {error}\n{state}", device.label)
+        });
+    let mut titles: Vec<String> = tree
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.id().to_string() == site.workspace)
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.title.clone())
+        .collect();
+    titles.sort_unstable();
+    titles
+}
+
 /// Two people, one of whom hosts the workspace they share: Ada's site governs
 /// it, and both devices join it.
 fn two_people_at_a_site() -> (Site, Device, Device) {
@@ -179,14 +200,11 @@ fn two_people_at_a_site() -> (Site, Device, Device) {
 /// What a device opens is a change of the workspace's shared desk, and the
 /// workspace's device takes it: the first window founds the record, and the
 /// next change continues the one the device made instead of numbering it
-/// again.
+/// again. The record is the workspace's, sealed in a workspace a site hosts:
+/// the site keeps it and the other member's device reads it.
 #[test]
-#[ignore = "a workspace a site hosts keeps its records in its members' sealed \
-            channels, and this session writes a shared desk only where it commits \
-            those records itself (`Engine::commits_documents`): the site kept no desk \
-            record. The pages that hold the record's keys write that desk"]
 fn the_workspace_keeps_the_desk_its_device_writes() {
-    let (site, ada_laptop, _bob_laptop) = two_people_at_a_site();
+    let (site, ada_laptop, bob_laptop) = two_people_at_a_site();
     show(&ada_laptop, &site);
     let _first = open(&ada_laptop, "Notes");
     waited(
@@ -218,14 +236,23 @@ fn the_workspace_keeps_the_desk_its_device_writes() {
         ["Another", "Notes"],
         "the windows the desk was written with are the ones the site holds"
     );
+    // And the desk the site keeps is the other member's too: what one member
+    // opened on this workspace's desk, the other member's device reads and
+    // shows.
+    show(&bob_laptop, &site);
+    waited(
+        "the other member's desk showing the workspace's windows",
+        &site,
+        &[&bob_laptop],
+        || titles_on(&bob_laptop, &site) == ["Another", "Notes"],
+    );
 }
 
 #[test]
-#[ignore = "a member's device cannot write its workspace's app records yet: the \
-            record a workspace's device holds does not reach the member's, and \
-            local app publication founds none (`local app publication cannot \
-            create a record owner`), so no write of a member's reaches the \
-            workspace to be refused"]
+#[ignore = "the workspace's refusal does not reach the member whose write it is: the \
+            site keeps nothing of a write it refuses, and tells the member's device \
+            nothing of the refusal, so the member's feed shows no refusal of his \
+            change and no reason for it"]
 fn a_member_reads_where_their_refused_change_is_not() {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
