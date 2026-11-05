@@ -512,7 +512,10 @@ impl Apps {
             // Nothing of this app can be showing on a desk with no windows.
             return Some(false);
         }
-        let Some(app) = Instance::of(launch, &desktop_entry::cache::cached_scan()) else {
+        let Some(app) = Instance::of(
+            launch,
+            &desktop_entry::cache::cached_scan(&crate::app_names::entry_locales()),
+        ) else {
             return Some(false);
         };
         let window = match app.answer(launch, &shown) {
@@ -839,7 +842,7 @@ impl AppActions for Apps {
     /// a file on this machine, else the app that claims its scheme.
     fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
         let installed = tilo_installed_apps::read_from_env().unwrap_or_default();
-        let entries = desktop_entry::cache::cached_scan();
+        let entries = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
         let launch = match uri.strip_prefix("file://") {
             // A file URI is percent-encoded; the path it names is not.
             Some(path) => {
@@ -889,7 +892,7 @@ pub(crate) fn launch_of(app: &str) -> Option<Launch> {
             open: None,
         });
     }
-    let scan = desktop_entry::cache::cached_scan();
+    let scan = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
     let entry = scan.entries.iter().find(|entry| {
         entry.id.eq_ignore_ascii_case(app)
             || entry

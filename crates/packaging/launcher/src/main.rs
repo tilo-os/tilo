@@ -1452,8 +1452,10 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         (Some(program), _) if dry_run => launcher::host::plan_host_program(program, &env),
         (Some(program), _) => launcher::host::make_runnable(program)
             .and_then(|()| launcher::host::plan_host_program(program, &env)),
-        (None, Some(path)) => launcher::host::plan_host_file(path, &env),
-        (None, None) => launcher::host::plan_host(&desktop_id, &env),
+        (None, Some(path)) => {
+            launcher::host::plan_host_file(path, &env, &launcher::host::locales())
+        }
+        (None, None) => launcher::host::plan_host(&desktop_id, &env, &launcher::host::locales()),
     };
     if dry_run {
         return match planned {

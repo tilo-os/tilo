@@ -108,6 +108,9 @@ uuid.workspace = true
 # packaging — it is the freedesktop format, and the compositor's search
 # providers read it directly too.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+# The interface language a host entry is named in: the person's, as every
+# surface resolves it, not the machine's locale.
+settings-store = { path = "../../system/settings-store" }
 # Resolves the explicit active identity selector and hosts its per-app signing
 # broker. Private records are never mounted into the sandbox.
 runtime-identity = { path = "../../runtime/runtime-identity" }

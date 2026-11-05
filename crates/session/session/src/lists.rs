@@ -79,7 +79,7 @@ impl AppLists {
         // starts on the lists' worker: a later ask for an entry's icon or
         // name (`crate::app_icons::entry_icon`) finds it read, or meets the
         // read already under way rather than starting one.
-        let scan = desktop_entry::cache::cached_scan();
+        let scan = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
         // An installed Tilo app may keep a desktop entry of its own, as its
         // bundle does: that entry is the same app, listed once.
         let tilo_apps =
@@ -457,6 +457,65 @@ mod tests {
         assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
         // Any other app's entry is one of the machine's.
         assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
+    }
+
+    /// The machine's own apps are named in the person's language, not in the
+    /// machine's: on a German desktop with English chosen the list reads
+    /// `Files`, and the same desktop with no language chosen reads `Dateien`.
+    #[test]
+    fn the_machines_apps_are_named_in_the_persons_language() {
+        let home = tempfile::tempdir().unwrap();
+        let data = home.path().join("data");
+        let applications = data.join("applications");
+        std::fs::create_dir_all(&applications).unwrap();
+        std::fs::write(
+            applications.join("org.example.Files.desktop"),
+            "[Desktop Entry]\nType=Application\nName=Files\nName[de]=Dateien\n\
+             Exec=/bin/true\n",
+        )
+        .unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("HOME", home.path());
+        env.set("XDG_DATA_HOME", &data);
+        env.set("XDG_DATA_DIRS", &data);
+        env.set("LANG", "de_DE.UTF-8");
+        for unset in ["LC_ALL", "LC_MESSAGES", "LANGUAGE"] {
+            env.remove(unset);
+        }
+        let listed = || {
+            AppLists::read()
+                .host_apps
+                .iter()
+                .find(|app| app.desktop_id == "org.example.Files")
+                .map(|app| app.name.clone())
+        };
+
+        // The person chose English, on a German machine.
+        let english = serde_json::json!({"appearance": {"language": "en-US"}})
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let chosen = settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(english, |_| Ok(())),
+        )));
+        assert_eq!(
+            listed().as_deref(),
+            Some("Files"),
+            "the person's language names the machine's apps"
+        );
+        drop(chosen);
+
+        // Nothing chosen: the machine's locale is the default, not a second
+        // source that survives a choice.
+        let none = settings_store::scoped_source(Some(std::sync::Arc::new(
+            settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
+        )));
+        assert_eq!(
+            listed().as_deref(),
+            Some("Dateien"),
+            "with no choice the device's own locale decides"
+        );
+        drop(none);
     }
 
     #[test]

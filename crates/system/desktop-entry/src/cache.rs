@@ -31,6 +31,8 @@ use tilo_lock::MutexRecover as _;
 struct Cached {
     dirs: Vec<PathBuf>,
     desktop: Vec<String>,
+    /// The interface language the entries were named in.
+    locales: Vec<String>,
     scan: Watched<Scan>,
     /// The downloaded programs' folders being watched, and their watches.
     programs: std::sync::Arc<Mutex<ProgramWatches>>,
@@ -148,13 +150,17 @@ fn cell() -> &'static Mutex<Option<Cached>> {
 }
 static REVISION: AtomicU64 = AtomicU64::new(0);
 
-/// The host's application entries, memoised.
+/// The host's application entries, memoised, named in the language `locales`
+/// names ([`crate::locale::language_candidates`]): the person's interface
+/// language, which is part of what is cached, so a session reads its own names
+/// and a tool that asked in another language is read again rather than served
+/// the wrong one.
 ///
 /// Cloning the scan on every call is deliberate: the alternative hands
 /// a lock guard to a caller that then does UI work under it, and the
 /// list is a few hundred small structs.
-pub fn cached_scan() -> Scan {
-    cached_scan_snapshot().1
+pub fn cached_scan(locales: &[String]) -> Scan {
+    cached_scan_snapshot(locales).1
 }
 
 /// Generation and records observed under the same cache lock. Filling a cold
@@ -163,13 +169,14 @@ pub fn cached_scan() -> Scan {
 /// Only the first call for an environment scans on the calling thread (the
 /// session asks at startup); every later one returns the worker's latest
 /// scan without touching the disk.
-pub fn cached_scan_snapshot() -> (u64, Scan) {
+pub fn cached_scan_snapshot(locales: &[String]) -> (u64, Scan) {
     let dirs = crate::scan::application_dirs();
     let desktop = crate::scan::current_desktops();
     let mut guard = cell().lock_recover();
     if let Some(cached) = guard.as_ref()
         && cached.dirs == dirs
         && cached.desktop == desktop
+        && cached.locales == locales
     {
         return (
             REVISION.load(Ordering::Acquire),
@@ -178,12 +185,13 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
     }
     let read_dirs = dirs.clone();
     let read_desktop = desktop.clone();
-    let read = move || scan_dirs(&read_dirs, &read_desktop);
+    let read_locales = locales.to_vec();
+    let read = move || scan_dirs(&read_dirs, &read_desktop, &read_locales);
     let Ok(watched) = Watched::start("desktop-entries", dirs.clone(), read) else {
         // Unwatchable directories are scanned per call, never served stale.
         *guard = None;
         drop(guard);
-        return unwatched_snapshot(dirs, desktop, scan_dirs);
+        return unwatched_snapshot(dirs, desktop, locales.to_vec(), scan_dirs);
     };
     let programs = std::sync::Arc::new(Mutex::new(ProgramWatches::default()));
     let follow = std::sync::Arc::clone(&programs);
@@ -207,6 +215,7 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
     *guard = Some(Cached {
         dirs,
         desktop,
+        locales: locales.to_vec(),
         scan: watched,
         programs,
     });
@@ -220,6 +229,7 @@ pub fn cached_scan_snapshot() -> (u64, Scan) {
 struct Unwatched {
     dirs: Vec<PathBuf>,
     desktop: Vec<String>,
+    locales: Vec<String>,
     scan: Scan,
     generation: u64,
 }
@@ -237,13 +247,15 @@ fn unwatched() -> &'static Mutex<Option<Unwatched>> {
 fn unwatched_snapshot(
     dirs: Vec<PathBuf>,
     desktop: Vec<String>,
-    scan: impl FnOnce(&[PathBuf], &[String]) -> Scan,
+    locales: Vec<String>,
+    scan: impl FnOnce(&[PathBuf], &[String], &[String]) -> Scan,
 ) -> (u64, Scan) {
-    let scan = scan(&dirs, &desktop);
+    let scan = scan(&dirs, &desktop, &locales);
     let mut last = unwatched().lock_recover();
     if let Some(last) = last.as_ref()
         && last.dirs == dirs
         && last.desktop == desktop
+        && last.locales == locales
         && last.scan == scan
     {
         return (last.generation, scan);
@@ -252,6 +264,7 @@ fn unwatched_snapshot(
     *last = Some(Unwatched {
         dirs,
         desktop,
+        locales,
         scan: scan.clone(),
         generation,
     });
@@ -286,28 +299,35 @@ mod tests {
     fn an_unwatched_scan_keeps_its_generation_until_its_entries_change() {
         let dirs = vec![PathBuf::from("/nonexistent/tilo-unwatched/applications")];
         let desktop = vec!["Tilo".to_owned()];
-        let empty = |_: &[PathBuf], _: &[String]| Scan::default();
-        let (first, _) = unwatched_snapshot(dirs.clone(), desktop.clone(), empty);
-        let (again, _) = unwatched_snapshot(dirs.clone(), desktop.clone(), empty);
+        let locales = vec!["de_DE".to_owned()];
+        let empty = |_: &[PathBuf], _: &[String], _: &[String]| Scan::default();
+        let (first, _) = unwatched_snapshot(dirs.clone(), desktop.clone(), locales.clone(), empty);
+        let (again, _) = unwatched_snapshot(dirs.clone(), desktop.clone(), locales.clone(), empty);
         assert_eq!(again, first, "an unchanged scan is the same generation");
-        let one_hidden = |_: &[PathBuf], _: &[String]| Scan {
+        let (other_language, _) =
+            unwatched_snapshot(dirs.clone(), desktop.clone(), Vec::new(), empty);
+        assert_ne!(
+            other_language, first,
+            "another language's names are another scan"
+        );
+        let one_hidden = |_: &[PathBuf], _: &[String], _: &[String]| Scan {
             hidden: vec!["org.example.Gone.desktop".to_owned()],
             ..Scan::default()
         };
-        let (changed, _) = unwatched_snapshot(dirs, desktop, one_hidden);
+        let (changed, _) = unwatched_snapshot(dirs, desktop, locales, one_hidden);
         assert_ne!(changed, first, "a changed scan is a new generation");
     }
 
     #[test]
     fn the_scan_is_warm_after_the_first_call_and_cold_after_invalidate() {
         invalidate();
-        let (cold_generation, first) = cached_scan_snapshot();
+        let (cold_generation, first) = cached_scan_snapshot(&[]);
         assert_eq!(
             cold_generation,
             cached_scan_generation(),
             "filling a cold cache produces a current snapshot"
         );
-        let (warm_generation, second) = cached_scan_snapshot();
+        let (warm_generation, second) = cached_scan_snapshot(&[]);
         assert_eq!(warm_generation, cold_generation);
         assert_eq!(
             first.entries.len(),
@@ -315,7 +335,7 @@ mod tests {
             "a warm read returns the same list"
         );
         invalidate();
-        let third = cached_scan();
+        let third = cached_scan(&[]);
         assert_eq!(first.entries.len(), third.entries.len());
     }
 }

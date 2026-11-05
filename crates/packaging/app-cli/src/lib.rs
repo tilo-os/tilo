@@ -599,26 +599,32 @@ pub fn host_apps(installed: &[InstalledApp]) -> Vec<InstalledApp> {
         .map(|app| app.package_id.to_ascii_lowercase())
         .collect();
     let person_applications = tilo_paths::xdg::data_home().map(|home| home.join("applications"));
-    desktop_entry::scan()
-        .entries
-        .into_iter()
-        .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
-        .map(|entry| {
-            let from = match entry.kind(person_applications.as_deref()) {
-                desktop_entry::EntryKind::Flatpak => "flatpak",
-                desktop_entry::EntryKind::AppImage => "appimage",
-                desktop_entry::EntryKind::Program => "program",
-                desktop_entry::EntryKind::System => "system",
-            };
-            InstalledApp {
-                missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),
-                package_id: entry.id,
-                version: String::new(),
-                from: from.into(),
-                name: entry.name,
-            }
-        })
-        .collect()
+    desktop_entry::scan_dirs(
+        &desktop_entry::scan::application_dirs(),
+        &desktop_entry::scan::current_desktops(),
+        &desktop_entry::locale::language_candidates(
+            settings_store::appearance::preferred_language().as_deref(),
+        ),
+    )
+    .entries
+    .into_iter()
+    .filter(|entry| !packaged.contains(&entry.id.to_ascii_lowercase()))
+    .map(|entry| {
+        let from = match entry.kind(person_applications.as_deref()) {
+            desktop_entry::EntryKind::Flatpak => "flatpak",
+            desktop_entry::EntryKind::AppImage => "appimage",
+            desktop_entry::EntryKind::Program => "program",
+            desktop_entry::EntryKind::System => "system",
+        };
+        InstalledApp {
+            missing: entry.downloaded.as_ref().is_some_and(|d| !d.present),
+            package_id: entry.id,
+            version: String::new(),
+            from: from.into(),
+            name: entry.name,
+        }
+    })
+    .collect()
 }
 
 /// The version of `package_id` the system image ships, when the user's copy

@@ -185,7 +185,7 @@ pub(crate) fn notification(
 
 /// The icon a desktop entry names, for the entry id `desktop_id`.
 fn entry_icon(desktop_id: &str) -> Option<String> {
-    desktop_entry::cache::cached_scan()
+    desktop_entry::cache::cached_scan(&crate::app_names::entry_locales())
         .find(desktop_id)
         .and_then(|entry| entry.icon.clone())
 }

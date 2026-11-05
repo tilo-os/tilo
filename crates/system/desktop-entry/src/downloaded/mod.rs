@@ -382,22 +382,29 @@ pub struct Identity {
     pub field_code: Option<String>,
 }
 
-/// Find `program`'s identity, best source first. Never fails: the window
-/// always names the program.
-pub fn identify(program: &Program, window: &WindowFacts) -> Identity {
-    identify_with_source(program, window).0
+/// Find `program`'s identity, best source first, named in the language
+/// `locales` names ([`crate::locale::language_candidates`]). Never fails: the
+/// window always names the program.
+pub fn identify(program: &Program, window: &WindowFacts, locales: &[String]) -> Identity {
+    identify_with_source(program, window, locales).0
 }
 
 /// [`identify`], and whether only the window named the program.
-fn identify_with_source(program: &Program, window: &WindowFacts) -> (Identity, bool) {
+fn identify_with_source(
+    program: &Program,
+    window: &WindowFacts,
+    locales: &[String],
+) -> (Identity, bool) {
     #[cfg(feature = "appimage")]
     let embedded = match program.kind {
-        ProgramKind::AppImage => appimage::read_identity(&program.path).ok().flatten(),
+        ProgramKind::AppImage => appimage::read_identity(&program.path, locales)
+            .ok()
+            .flatten(),
         ProgramKind::Program => None,
     };
     #[cfg(not(feature = "appimage"))]
     let embedded: Option<Found> = None;
-    let found = embedded.or_else(|| folder_identity(&program.path, &window.app_id));
+    let found = embedded.or_else(|| folder_identity(&program.path, &window.app_id, locales));
     let window_key = window_key(&window.app_id, &program.path);
     // Only the window names it: no entry anywhere, or just an icon under
     // the program's own name, keyed by the window.
@@ -504,7 +511,7 @@ fn boundaries() -> Vec<PathBuf> {
 /// beside the program. With none, an icon named like the program
 /// (`foo.png` beside `foo`) or in the folder's `hicolor` tree still gives
 /// the program its picture.
-fn folder_identity(program: &Path, app_id: &str) -> Option<Found> {
+fn folder_identity(program: &Path, app_id: &str, locales: &[String]) -> Option<Found> {
     let stops = boundaries();
     let program_name = program.file_name()?.to_string_lossy().into_owned();
     let mut folders = Vec::new();
@@ -516,7 +523,6 @@ fn folder_identity(program: &Path, app_id: &str) -> Option<Found> {
         folders.push(dir.to_path_buf());
         folder = dir.parent();
     }
-    let locales = crate::locale::locale_candidates();
     for (depth, dir) in folders.iter().enumerate() {
         let mut desktops: Vec<PathBuf> = std::fs::read_dir(dir)
             .ok()?
@@ -537,7 +543,7 @@ fn folder_identity(program: &Path, app_id: &str) -> Option<Found> {
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let Some(entry) = crate::entry::parse(&contents, &id, &path, &locales) else {
+            let Some(entry) = crate::entry::parse(&contents, &id, &path, locales) else {
                 continue;
             };
             let runs_it = entry
@@ -575,7 +581,7 @@ fn folder_identity(program: &Path, app_id: &str) -> Option<Found> {
         "[Desktop Entry]\nType=Application\n",
         &key,
         program,
-        &locales,
+        locales,
     )?;
     entry.name = name_from_app_id(&key);
     Some(Found {
@@ -971,13 +977,14 @@ impl Store {
     }
 
     /// Point the entry `desktop_id` at `program`, the file the person found
-    /// when it went missing.
+    /// when it went missing, keeping the name it has in the language `locales`
+    /// names ([`crate::locale::language_candidates`]).
     ///
     /// # Errors
     ///
     /// No such entry, `program` is not a runnable file, or the entry could
     /// not be rewritten.
-    pub fn locate(&self, desktop_id: &str, program: &Path) -> io::Result<()> {
+    pub fn locate(&self, desktop_id: &str, program: &Path, locales: &[String]) -> io::Result<()> {
         let path = self
             .entry_path(desktop_id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a downloaded app"))?;
@@ -993,8 +1000,7 @@ impl Store {
         } else {
             ProgramKind::Program
         };
-        let locales = crate::locale::locale_candidates();
-        let entry = crate::entry::parse(&contents, desktop_id, &path, &locales)
+        let entry = crate::entry::parse(&contents, desktop_id, &path, locales)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "unreadable entry"))?;
         let groups = crate::entry::unlocalised_groups(&contents);
         let key = groups
@@ -1035,7 +1041,7 @@ impl Store {
     /// # Errors
     ///
     /// The entry could not be rewritten.
-    pub fn fall_back(&self, desktop_id: &str) -> io::Result<Option<PathBuf>> {
+    pub fn fall_back(&self, desktop_id: &str, locales: &[String]) -> io::Result<Option<PathBuf>> {
         let Some(recorded) = self.entry(desktop_id) else {
             return Ok(None);
         };
@@ -1049,7 +1055,7 @@ impl Store {
         else {
             return Ok(None);
         };
-        self.locate(desktop_id, &copy)?;
+        self.locate(desktop_id, &copy, locales)?;
         Ok(Some(copy))
     }
 
@@ -1088,17 +1094,21 @@ impl Store {
     /// for the same window ([`Self::key_for_window`]) when nothing but the
     /// window names the program.
     #[must_use]
-    pub fn identify(&self, program: &Program, window: &WindowFacts) -> Identity {
-        let (mut identity, from_window) = identify_with_source(program, window);
+    pub fn identify(
+        &self,
+        program: &Program,
+        window: &WindowFacts,
+        locales: &[String],
+    ) -> Identity {
+        let (mut identity, from_window) = identify_with_source(program, window, locales);
         if from_window
             && let Some(recorded) = self
                 .key_for_window(&window.app_id)
                 .and_then(|key| self.lookup(&key))
         {
             let contents = std::fs::read_to_string(&recorded.path).unwrap_or_default();
-            let locales = crate::locale::locale_candidates();
             if let Some(entry) =
-                crate::entry::parse(&contents, &recorded.desktop_id, &recorded.path, &locales)
+                crate::entry::parse(&contents, &recorded.desktop_id, &recorded.path, locales)
             {
                 identity.name = entry.name;
                 identity.comment = entry.comment;

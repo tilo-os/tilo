@@ -63,6 +63,7 @@ fn scanned(applications: &Path) -> Vec<crate::DesktopEntry> {
     crate::scan::scan_dirs(
         &[applications.to_path_buf()],
         &crate::scan::current_desktops(),
+        &[],
     )
     .entries
 }
@@ -93,6 +94,7 @@ fn an_appimage_names_itself_from_its_embedded_entry_without_running() {
             app_id: "krita".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(identity.key, "org.kde.krita");
     assert_eq!(identity.name, "Krita");
@@ -161,6 +163,7 @@ fn a_tarball_program_takes_its_name_and_icon_from_its_folder() {
             app_id: "thing-editor".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(identity.key, "thing");
     assert_eq!(identity.name, "Thing Editor");
@@ -230,10 +233,10 @@ fn a_new_version_takes_over_the_entry_instead_of_adding_a_second() {
         path: old,
         kind: ProgramKind::AppImage,
     };
-    store.add(&identify(&first, &window), &first).unwrap();
+    store.add(&identify(&first, &window, &[]), &first).unwrap();
     assert_eq!(
         store
-            .update_location(&identify(&first, &window), &first)
+            .update_location(&identify(&first, &window, &[]), &first)
             .unwrap(),
         None,
         "running the same file again changes nothing"
@@ -244,7 +247,7 @@ fn a_new_version_takes_over_the_entry_instead_of_adding_a_second() {
         kind: ProgramKind::AppImage,
     };
     let updated = store
-        .update_location(&identify(&second, &window), &second)
+        .update_location(&identify(&second, &window, &[]), &second)
         .unwrap();
     assert_eq!(updated.as_deref(), Some("tilo-downloaded-org.kde.krita"));
     let entries = scanned(&applications);
@@ -265,6 +268,7 @@ fn a_new_version_takes_over_the_entry_instead_of_adding_a_second() {
             app_id: "org.example.Other".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(
         store.update_location(&other_identity, &other).unwrap(),
@@ -289,6 +293,7 @@ fn a_missing_file_is_noticed_and_located_and_remove_keeps_the_file() {
             app_id: "org.example.Tool".into(),
             icon: Some(Icon::sniff(PNG.to_vec()).unwrap()),
         },
+        &[],
     );
     assert_eq!(identity.name, "Tool");
     let (store, applications) = store(tmp.path());
@@ -327,8 +332,12 @@ fn a_missing_file_is_noticed_and_located_and_remove_keeps_the_file() {
         "a missing file is never a dead launch: {refused:?}"
     );
 
-    assert!(store.locate(&id, &home.join("Apps/nothing-here")).is_err());
-    store.locate(&id, &moved).unwrap();
+    assert!(
+        store
+            .locate(&id, &home.join("Apps/nothing-here"), &[])
+            .is_err()
+    );
+    store.locate(&id, &moved, &[]).unwrap();
     let entry = scanned(&applications)
         .into_iter()
         .find(|e| e.id == id)
@@ -363,6 +372,7 @@ fn awkward_paths_survive_the_exec_line() {
             app_id: "../../evil id".into(),
             icon: None,
         },
+        &[],
     );
     let (store, applications) = store(tmp.path());
     let id = store.add(&identity, &program).unwrap();
@@ -525,6 +535,7 @@ fn a_bundled_runtime_is_never_the_program_its_launcher_script_is() {
             app_id: "jetbrains-idea".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(identity.name, "IntelliJ IDEA");
 }
@@ -630,6 +641,7 @@ fn an_appimage_without_the_named_icon_shows_its_dir_icon_and_keeps_it_with_its_e
             app_id: "tool".into(),
             icon: None,
         },
+        &[],
     );
     let icon = identity
         .icon
@@ -666,6 +678,7 @@ fn a_program_with_no_artwork_shows_the_generic_application_icon() {
             app_id: "org.example.MyTool".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(identity.icon, None);
     let (store, applications) = store(tmp.path());
@@ -736,12 +749,12 @@ fn the_newest_copy_is_started_and_the_others_stay_known_until_they_are_gone() {
 
     // Phase `a_gone_copy_falls_back_to_one_still_there`.
     std::fs::remove_file(&tarball).unwrap();
-    assert_eq!(store.fall_back(&id).unwrap(), Some(appimage.clone()));
+    assert_eq!(store.fall_back(&id, &[]).unwrap(), Some(appimage.clone()));
     let now = downloaded(&applications);
     assert_eq!(now.program, appimage);
     assert!(now.locations.is_empty(), "a gone copy is forgotten");
     assert_eq!(
-        store.fall_back(&id).unwrap(),
+        store.fall_back(&id, &[]).unwrap(),
         None,
         "nothing to do while the file is there"
     );
@@ -776,6 +789,7 @@ fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
             app_id: "tool-window".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(by_class.key, "org.example.Tool");
     assert_eq!(by_class.name, "Tool");
@@ -786,6 +800,7 @@ fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
             app_id: "org.example.Tool".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(by_stem.key, "org.example.Tool");
     assert_eq!(
@@ -808,6 +823,7 @@ fn a_copy_only_its_window_names_joins_the_entry_another_copy_made() {
             app_id: "org.example.Other".into(),
             icon: None,
         },
+        &[],
     );
     assert_eq!(other.key, "org.example.Other");
 }

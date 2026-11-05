@@ -65,6 +65,16 @@ use std::time::Duration;
 use crate::scope;
 use desktop_entry::launch::{HostLaunch, HostLaunchError, LaunchEnv, plan_by_id, plan_file};
 
+/// The `Name[xx]` candidates of the person's interface language: the entry a
+/// host app starts from is named in it, so a German machine with English
+/// chosen says `Files` rather than `Dateien` in what it reports.
+#[must_use]
+pub fn locales() -> Vec<String> {
+    desktop_entry::locale::language_candidates(
+        settings_store::appearance::preferred_language().as_deref(),
+    )
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     #[error(transparent)]
@@ -94,7 +104,7 @@ impl HostError {
 /// [`HostError::Spawn`] if the resolved program cannot be spawned or waited
 /// on.
 pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostError> {
-    let launch = plan_host(desktop_id, env)?;
+    let launch = plan_host(desktop_id, env, &locales())?;
     spawn(&launch)
 }
 
@@ -107,8 +117,12 @@ pub fn run_host(desktop_id: &str, env: &LaunchEnv) -> Result<ExitStatus, HostErr
 ///
 /// Returns [`HostError::Plan`] if `desktop_id` does not resolve to an
 /// installed `.desktop` entry.
-pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
-    Ok(plan_by_id(desktop_id, env)?)
+pub fn plan_host(
+    desktop_id: &str,
+    env: &LaunchEnv,
+    locales: &[String],
+) -> Result<HostLaunch, HostError> {
+    Ok(plan_by_id(desktop_id, env, locales)?)
 }
 
 /// [`plan_host`] for a desktop file named by path, such as an XDG autostart entry.
@@ -116,8 +130,12 @@ pub fn plan_host(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostEr
 /// # Errors
 ///
 /// Returns [`HostError::Plan`] if the file is unreadable or not a runnable entry.
-pub fn plan_host_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostError> {
-    Ok(plan_file(path, env)?)
+pub fn plan_host_file(
+    path: &std::path::Path,
+    env: &LaunchEnv,
+    locales: &[String],
+) -> Result<HostLaunch, HostError> {
+    Ok(plan_file(path, env, locales)?)
 }
 
 /// [`plan_host`] for a program file run by itself, such as a downloaded
@@ -307,7 +325,7 @@ mod tests {
             "[Desktop Entry]\nType=Application\nName=Probe\nExec=sh -c \"exit 7\"\n",
         )
         .expect("write the probe entry");
-        let launch = plan_host_file(&entry, &LaunchEnv::default()).expect("the probe plans");
+        let launch = plan_host_file(&entry, &LaunchEnv::default(), &[]).expect("the probe plans");
         let stand_in = |name: &str, status: u8| {
             let path = dir.path().join(name);
             std::fs::write(

@@ -345,7 +345,9 @@ impl Planned {
         open: Option<&Open>,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
-        let scan = desktop_entry::cache::cached_scan();
+        let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
+            ui::i18n::preferred_language().as_deref(),
+        ));
         let entry = scan.find(desktop_id).ok_or_else(|| {
             PlanError::Host(desktop_entry::launch::HostLaunchError::NotFound(
                 desktop_id.to_owned(),

@@ -415,20 +415,25 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
 }
 
 /// Plan a launch for the desktop file at `path` — an autostart entry, which need not sit in
-/// any `applications` directory. Its id is the file name without `.desktop`.
+/// any `applications` directory. Its id is the file name without `.desktop`, and its name
+/// comes from the language `locales` names ([`crate::locale::language_candidates`]).
 ///
 /// # Errors
 ///
 /// Returns [`HostLaunchError::NotFound`] if the file cannot be read or is not a desktop entry,
 /// or any error [`plan`] can return.
-pub fn plan_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
+pub fn plan_file(
+    path: &std::path::Path,
+    env: &LaunchEnv,
+    locales: &[String],
+) -> Result<HostLaunch, HostLaunchError> {
     let id = path
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
     let entry = std::fs::read_to_string(path)
         .ok()
-        .and_then(|text| crate::entry::parse(&text, &id, path, &crate::locale::locale_candidates()))
+        .and_then(|text| crate::entry::parse(&text, &id, path, locales))
         .ok_or_else(|| HostLaunchError::NotFound(path.display().to_string()))?;
     plan(&entry, env)
 }
@@ -500,14 +505,19 @@ pub fn make_runnable(path: &std::path::Path) -> Result<(), HostLaunchError> {
     Ok(())
 }
 
-/// Find the entry with this desktop-file id on the current system and plan a launch for it.
+/// Find the entry with this desktop-file id on the current system and plan a launch for it,
+/// from the entries named in the language `locales` names.
 ///
 /// # Errors
 ///
 /// Returns [`HostLaunchError::NotFound`] if no scanned entry has this id, or
 /// any error [`plan`] can return.
-pub fn plan_by_id(desktop_id: &str, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
-    let scan = crate::cache::cached_scan();
+pub fn plan_by_id(
+    desktop_id: &str,
+    env: &LaunchEnv,
+    locales: &[String],
+) -> Result<HostLaunch, HostLaunchError> {
+    let scan = crate::cache::cached_scan(locales);
     let entry = scan
         .find(desktop_id)
         .ok_or_else(|| HostLaunchError::NotFound(desktop_id.to_string()))?;
