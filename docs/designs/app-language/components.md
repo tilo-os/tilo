@@ -99,18 +99,26 @@ pages, forms. It relies on general language features any author can use:
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
-A list groups without a second widget: `std.rows` takes `group:`, naming each item's heading,
-and the list draws a section band for each run and holds it at the top while its items scroll
-past (dates arrive formatted: Today, Tomorrow, a weekday, a day). Only the rows in view are
-built and asked for their group, so a heading costs nothing on a long list. `closed:` names the
-items done with: they stand last under `closed_title`, folded away until the person presses the
-band. The heading is a date the platform writes, never a string an app formats. The block names
-the item and the item it stands under, so a row leaves out what its parent already says:
+A list groups without a second widget: `std.rows` takes `group:`, naming each item's key, and the
+list draws a section band for each run of items that names the same key and holds it at the top
+while its items scroll past. The heading is the key itself, presented as a value of its kind is
+(a day as Today, Tomorrow, a weekday; a word as it is written), never a string an app formats.
+Items that name no key stand under `ungrouped:`, in the order the caller gave them; a place that
+groups nothing says so per item (`group: x -> if by_day { x.due } else { .none }`), from what the
+place says and never a walk over the list. Only the rows in view are built and asked for their
+group, so a heading costs nothing on a long list. `tail:` names the items done with: they stand
+last under `tail_title`, folded away until the person presses the band, and a list that folds
+nothing away answers `tail: x -> false`, giving no heading and no clause. The block names the
+item and the item it stands under, so a row leaves out what its parent already says:
 
 ```
 std.rows(shown, "No tasks here", .none, .some("list-checks"),
-         group: .due, closed: .done) { (t, under) -> task_row(t, under) }
+         group: .due, tail: .folded) { (t, under) -> task_row(t, under) }
 ```
+
+A key the platform has no words for — a case of an enum, a record reference — is grouped by the
+text the caller reads off it (`group: x -> .some(x.status.label())`): the heading is the text the
+platform draws, so the runs are the runs of that text.
 
 The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.ListItem` carry it
 (`group:` and `tail:` on a row, `tail_title:` on the list), so a view composed from `ui.*`

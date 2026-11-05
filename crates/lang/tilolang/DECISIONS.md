@@ -447,12 +447,20 @@ search.md, "What a type declares" and "Types, references and paths".
   count only where its filter declares `count: true` (`items.matching(p.query).len()`), never the
   all place, a project's or one that declares none. The `filter:` and `count:` parameters are
   gone.
-- **A list that stands plainly says so.** `std.rows(group:, closed:)` groups a list by the days
-  its items name and folds what is done with; `headings:` and `folding:` say whether it reads by
-  them at all, so a place whose own state decides — a project's list stands under the day each
-  task is due and folds a finished branch, the inbox does neither — is drawn from what the place
-  says rather than from a walk over its items, which would read the whole collection on every
-  change.
+- **A list groups by the key its caller gives.** `std.rows(group:)` takes `(T) -> Option<K>` and
+  heads each run of items naming the same key with the key itself, as the platform presents a
+  value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that
+  name no key stand under `ungrouped:`, in the order the caller gave them; `tail:` names the
+  items done with, under `tail_title:`. A place that groups or folds by what it says rather than
+  by its items answers per item (`group: x -> if by_day { x.due } else { .none }`,
+  `tail: x -> folds and x.folded`), so nothing reads the whole collection on every change:
+  `headings:`, `folding:` and `closed:` are gone, and a caller whose fold must stand last
+  orders its items itself (`sort_by(.folded)`).
+- **A function argument binds the type parameters its result names.** A template's type parameter
+  is not a variable, so `rows<T, K>(group: Option<(T) -> Option<K>>)` learns `K` where a call
+  passes the lambda, from what the lambda makes (`group: .due` a day, `group: x -> .some(x.t)` a
+  word); a function that makes something else is told so. A function passed on by the name its
+  caller gave it binds them from that function's result as well.
 - **Reflection reads the log, and may not have it.** `created(r)` and `updated(r)` are
   `Option<host.Version>` (`who`, `at`, `what`): a resource whose changes the device has not
   read yet has no versions to show, and code says what it shows then. A version is a change

@@ -105,30 +105,33 @@ view list<R, T, S>(
     }
 }
 
-/// The items of a list as the rows of a column, or what it says while it has none. Give
-/// `group` and the list stands under a heading for each run of items it names, the heading held
-/// at the top while the person scrolls it (each item's day, written the platform's way); the
-/// items that name none stand under a heading of their own, never under the last group that
-/// names one; give `closed` and the items it is true of stand last, under `closed_title`,
-/// folded away until the person opens them. Give `parent` and the items stand as a tree: each
-/// indented under the item it is a subtask of, with a disclosure that folds its subtasks away.
+/// The items of a list as the rows of a column, or what it says while it has none.
 ///
-/// A place whose own state says whether its list is one of days, and whether it folds what is
-/// done with, says so with `headings` and `folding` rather than by leaving `group` and `closed`
-/// out: the flags are read, never the items, so a list of thousands is drawn without reading
-/// all of them to find out.
+/// Give `group` and the list stands under a heading for each run of items that names the same
+/// key, the heading held at the top while the person scrolls its run: the key as the platform
+/// presents a value of its kind — a day as the day it is, read against today; a text as it is
+/// written. The items that name no key stand under `ungrouped` when the caller gives it, in
+/// the order the caller gave, never under the last group that names one.
+///
+/// Give `tail` and the rows it is true of stand under `tail_title`, folded away until the
+/// person opens them: they come last because the caller gave them last, so a place that
+/// decides so itself reads the same from three items to three thousand.
+///
+/// Give `parent` and the items stand as a tree: each indented under the item it is a subtask
+/// of, with a disclosure that folds its subtasks away.
+///
+/// A list that groups nothing, or folds nothing away, gives neither.
 ///
 /// `row` draws an item with the item it stands under (`.none` at the top), so a child leaves
 /// out what its parent already says — the day they are both due, the project they both are of.
-view rows<T>(
+view rows<T, K>(
     items: List<T>,
     empty: Text,
     icon: Option<Text>,
-    group: Option<(T) -> Option<Date>> = .none,
-    headings: Bool = true,
-    closed: Option<(T) -> Bool> = .none,
-    folding: Bool = true,
-    closed_title: Text = phrase("tilolang-done"),
+    group: Option<(T) -> Option<K>> = .none,
+    ungrouped: Option<Text> = .none,
+    tail: Option<(T) -> Bool> = .none,
+    tail_title: Text = phrase("tilolang-done"),
     parent: Option<(T) -> Option<T>> = .none,
     parent_title: Option<(T) -> Option<Text>> = .none,
     progress: Option<(T) -> Option<Text>> = .none,
@@ -139,6 +142,9 @@ view rows<T>(
 ) {
     // Nothing of a list that holds something is left open: its rows fold under the entry.
     let all_done = all_done and not items.is_empty()
+    // The heading over the rows done with, when the caller marks any: a list that folds
+    // nothing away says no such heading at all.
+    let folded_title: Option<Text> = if let t = tail { .some(tail_title) } else { .none }
     // The entry at the list's end is the list's own way to add: the host gives it the window's
     // primary action's key, so the key and the bar's button lead the person there, and what is
     // typed is what the list gains.
@@ -153,10 +159,9 @@ view rows<T>(
                             items,
                             icon,
                             group,
-                            headings,
-                            closed,
-                            folding,
-                            closed_title,
+                            ungrouped,
+                            tail,
+                            folded_title,
                             parent,
                             parent_title,
                             progress,
@@ -176,10 +181,9 @@ view rows<T>(
                     items,
                     icon,
                     group,
-                    headings,
-                    closed,
-                    folding,
-                    closed_title,
+                    ungrouped,
+                    tail,
+                    folded_title,
                     parent,
                     parent_title,
                     progress,
@@ -198,10 +202,9 @@ view rows<T>(
                     items,
                     icon,
                     group,
-                    headings,
-                    closed,
-                    folding,
-                    closed_title,
+                    ungrouped,
+                    tail,
+                    folded_title,
                     parent,
                     parent_title,
                     progress,
@@ -216,10 +219,9 @@ view rows<T>(
             items,
             icon,
             group,
-            headings,
-            closed,
-            folding,
-            closed_title,
+            ungrouped,
+            tail,
+            folded_title,
             parent,
             parent_title,
             progress,
@@ -241,58 +243,43 @@ view add_entry(placeholder: Text, commit: (Text) -> Action) {
 /// The items of a list as the rows of a column, with `rows`' grouping, nesting and folded tail.
 ///
 /// `row` draws an item with the item it stands under, as `rows` does.
-view rows_list<T>(
+view rows_list<T, K>(
     items: List<T>,
     icon: Option<Text>,
-    group: Option<(T) -> Option<Date>>,
-    headings: Bool,
-    closed: Option<(T) -> Bool>,
-    folding: Bool,
-    closed_title: Text,
+    group: Option<(T) -> Option<K>>,
+    ungrouped: Option<Text>,
+    tail: Option<(T) -> Bool>,
+    tail_title: Option<Text>,
     parent: Option<(T) -> Option<T>>,
     parent_title: Option<(T) -> Option<Text>>,
     progress: Option<(T) -> Option<Text>>,
     row: (T, Option<T>) -> View,
 ) {
-    // The flags say whether the list reads by the two at all: a place that decides so at runtime
-    // is drawn from the flags, never from a walk over its items to find out what they say.
-    // An item that names no group stands under a heading of its own, in the order the caller
-    // gave, rather than under the last group's heading. The caller whose list stands plainly
-    // has its items read as they come, with no heading over them.
-    let grouped: Bool = if let g = group { headings } else { false }
-    let ungrouped: Option<Text> = if grouped { .some(phrase("tilolang-no-date")) } else { .none }
-    // The items done with stand last, under the one heading their group folds: a sort is
-    // stable, so the order the caller gave holds among them and among the rest. A caller whose
-    // list folds nothing keeps the list it gave, collection and order both.
-    let shown = if let c = closed {
-        if folding { items.sort_by(x -> c(x)) } else { items }
-    } else { items }
     let nested = if let p = parent { true } else { false }
     ui.VirtualList(
         selection_follows_focus: true,
         in_column: true,
-        tail_title: .some(closed_title),
+        tail_title: tail_title,
         tree: nested,
         ungrouped_title: ungrouped,
     ) {
         on select(x: T): open(x, front: false)
         on activate(x: T): open(x)
-        for x in shown {
-            let heading: Option<Date> = if let g = group {
-                if headings { g(x) } else { .none }
-            } else { .none }
-            let tail = if let c = closed { folding and c(x) } else { false }
+        for x in items {
+            // The heading over the rows of the key this item names, drawn as the platform
+            // presents a value of its kind; `.none` among the items of a list that groups
+            // nothing heads none of them.
+            let heading: Option<K> = if let g = group { g(x) } else { .none }
+            let folded = if let t = tail { t(x) } else { false }
             // The row just over this one in its group, as the list shows them: the item before
             // it when that one has the same heading (the items naming none stand together
             // under the list's own) and is on this side of the fold. That is the place the
             // actions offered on the row get, and none for the first of a group. The list's
             // rows are the host's, so a row reaching one back costs one step, however far
             // along the list it stands.
-            let above: Option<T> = if let p = shown.previous(x) {
-                let same_heading = if let g = group {
-                    not headings or g(p) == heading
-                } else { true }
-                let same_side = if let c = closed { not folding or c(p) == tail } else { true }
+            let above: Option<T> = if let p = items.previous(x) {
+                let same_heading = if let g = group { g(p) == heading } else { true }
+                let same_side = if let t = tail { t(p) == folded } else { true }
                 if same_heading and same_side { .some(p) } else { .none }
             } else { .none }
             let under: Option<T> = if let p = parent { p(x) } else { .none }
@@ -302,7 +289,7 @@ view rows_list<T>(
                 item: x,
                 presence: lenses(x).find(l -> not l.mine)?.who,
                 group: heading,
-                tail: tail,
+                tail: folded,
                 above: above,
                 parent: under,
                 parent_title: belongs,

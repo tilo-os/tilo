@@ -475,7 +475,7 @@ one, or any other list of it, in the window's own `ui.NavList`.
 
 A filter is a predicate over the type's own fields, and nothing more: what a place holds is
 what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is
-the app's (`std.rows(group:, closed:)`, and `headings:`/`folding:` where the place decides so
+the app's (`std.rows(group:, tail:)`, each answered per item where the place decides so
 itself), and its order is the app's (`sort_by`).
 
 **Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the

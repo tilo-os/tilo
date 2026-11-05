@@ -326,7 +326,8 @@ fn descendants_and_ancestors_follow_the_parent_an_item_names() {
 
 #[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
-    // What `std.rows` writes: a heading that is absent when the app names no group.
+    // What `std.rows` writes: a heading of the key the caller groups by, absent when the item
+    // names none.
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
     );
@@ -334,6 +335,36 @@ fn a_ui_let_writes_the_type_its_value_is_read_as() {
     expect(
         "E020",
         "view w(c: C) {\n    ui.VirtualList {\n        let heading = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",
+    );
+}
+
+#[test]
+fn a_function_argument_binds_the_type_its_result_names() {
+    // The key a list groups by is whatever the caller reads: `.due` makes its heading a day
+    // the host presents as one, `x -> .some(x.t)` the text it is. A template's type parameter
+    // is not a variable, so what the function makes is read where the call passes it.
+    const ROWS: &str = "view rows<T, K>(items: List<T>, group: Option<(T) -> Option<K>> = .none) {\n    ui.VirtualList {\n        for x in items {\n            let heading: Option<K> = if let g = group { g(x) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}\n";
+    let compiled = |rest: &str| {
+        crate::common::compile_with(&format!("app t.x \"X\"\n{C}{ROWS}{rest}"), &[])
+            .unwrap_or_else(|d| panic!("{rest}\n{d:#?}"))
+    };
+    let day = compiled("view w(c: C) {\n    rows(c.items, group: .due)\n}");
+    let has = |name: &str| day.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(has("group:as"), "a day's heading is dated for the host");
+    crate::common::validate(&day.wasm);
+    let word = compiled("view w(c: C) {\n    rows(c.items, group: x -> .some(x.t))\n}");
+    let has = |name: &str| word.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(!has("group:as"), "a word's heading is the word it is");
+    crate::common::validate(&word.wasm);
+    // A list that groups nothing names no key at all, and rows keep no heading.
+    let plain = compiled("view w(c: C) {\n    rows(c.items)\n}");
+    let has = |name: &str| plain.wasm.windows(name.len()).any(|w| w == name.as_bytes());
+    assert!(!has("group"), "a plain list has no heading");
+    crate::common::validate(&plain.wasm);
+    // A function that makes something else than the key is told so.
+    expect(
+        "E020",
+        &format!("{ROWS}view w(c: C) {{\n    rows(c.items, group: x -> x.t)\n}}"),
     );
 }
 

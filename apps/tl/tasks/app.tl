@@ -544,11 +544,6 @@ view home(t: Tasks) {
     let shared = workspace.members.len() > 1
     let chosen = side.find(f -> f == place)
     let found = t.items.matching(place)
-    // What is done reads newest first, by the change that finished it; any other list by the
-    // day it is due.
-    let shown = if place == Task.done {
-        found.sort_by(x -> updated(x), desc)
-    } else { found.sort_by(.due) }
     // The project whose place is chosen, when one is.
     let project = t.projects.find(p -> place == Task.project(p))
     // A place of days, and a project's list, stand each task under the day it is due; a place
@@ -556,6 +551,13 @@ view home(t: Tasks) {
     // branch under its foot, so the open work it holds stands over what is done with.
     let by_day = place == Task.today or place == Task.upcoming or project != .none
     let folds = project != .none
+    // What is done reads newest first, by the change that finished it; any other list by the
+    // day it is due. A project's list stands its finished branch last, under the foot that
+    // folds it away.
+    let ordered = found.sort_by(.due)
+    let shown = if place == Task.done {
+        found.sort_by(x -> updated(x), desc)
+    } else if folds { ordered.sort_by(.folded) } else { ordered }
     let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
     // Whether nothing waits in the place: what it holds, less what is done in a project's
     // place, never a walk over the window's list, so the answer reads the same from three
@@ -611,10 +613,11 @@ view home(t: Tasks) {
                 shown,
                 "No tasks here",
                 .some("list-checks"),
-                group: .due,
-                headings: by_day,
-                closed: .folded,
-                folding: folds,
+                group: x -> if by_day { x.due } else { .none },
+                ungrouped: if by_day {
+                    .some(phrase("tilolang-no-date"))
+                } else { .none },
+                tail: x -> folds and x.folded,
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),

@@ -362,22 +362,32 @@ impl Checker<'_> {
                     Macro::Some(inner) => inner.as_ref(),
                     other => other,
                 };
-                if let Macro::State(state) = held {
-                    let te = match kind_of(&p.ty) {
-                        Kind::State(te) => Some(te),
-                        Kind::Optional(inner) => match *inner {
+                match held {
+                    Macro::State(state) => {
+                        let te = match kind_of(&p.ty) {
                             Kind::State(te) => Some(te),
+                            Kind::Optional(inner) => match *inner {
+                                Kind::State(te) => Some(te),
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        _ => None,
-                    };
-                    if let Some(te) = te {
-                        Self::unify(te, &state.ty, &params, &mut types);
+                        };
+                        if let Some(te) = te {
+                            Self::unify(te, &state.ty, &params, &mut types);
+                        }
+                        if !matches!(m, Macro::Some(_) | Macro::Absent) {
+                            values.insert(p.name.name.clone(), state.local);
+                            states.insert(p.name.name.clone(), state.clone());
+                        }
                     }
-                    if !matches!(m, Macro::Some(_) | Macro::Absent) {
-                        values.insert(p.name.name.clone(), state.local);
-                        states.insert(p.name.name.clone(), state.clone());
+                    // A function passed on by the name its caller gave it binds the type
+                    // parameters its result names, as the function a caller writes does.
+                    Macro::Lambda(closure) => {
+                        if let Some(result) = function_result(&p.ty) {
+                            Self::unify(result, &closure.result, &params, &mut types);
+                        }
                     }
+                    Macro::View(_) | Macro::Block(_) | Macro::Absent | Macro::Some(_) => {}
                 }
                 macros.insert(p.name.name.clone(), m);
                 continue;
@@ -464,8 +474,8 @@ impl Checker<'_> {
                     self.function_arg(
                         given[i],
                         (fparams, result, item_block),
-                        (&content, &caller, &types),
-                        (view, p, span),
+                        (&content, &caller, &mut types, &params),
+                        (view, p, span, optional),
                     )
                 }
                 Kind::View => {
@@ -653,16 +663,20 @@ impl Checker<'_> {
     }
 
     /// What a function parameter is given: a lambda, the call's item block, a view's name, or
-    /// for a view of an item left out, the item type's row view.
+    /// for a view of an item left out, the item type's row view. `.none` for a parameter a call
+    /// may leave out is nothing, as leaving it out is.
     fn function_arg(
         &mut self,
         arg: Option<&ast::Arg>,
         (fparams, result, item_block): (&[TypeExpr], &TypeExpr, bool),
-        (content, caller, types): (&Content, &Scope, &HashMap<String, Ty>),
-        (view, p, span): (&ast::ViewDecl, &ast::Param, Span),
+        (content, caller, types, names): (&Content, &Scope, &mut HashMap<String, Ty>, &[String]),
+        (view, p, span, optional): (&ast::ViewDecl, &ast::Param, Span, bool),
     ) -> Option<Macro> {
         let param_tys: Vec<Ty> = fparams.iter().map(|t| self.type_in(t, types)).collect();
         if let Some(a) = arg {
+            if optional && is_none(&a.value) {
+                return None;
+            }
             // A key path or a lambda, as the function of every value the parameter takes. A
             // function of a view is given its rows by the call's block, never by a lambda: the
             // block names the values it draws with, and the item is one of them.
@@ -688,14 +702,41 @@ impl Checker<'_> {
                     );
                     return None;
                 }
-                let result = self.type_in(result, types);
-                return Some(Macro::Lambda(Rc::new(Closure {
-                    params: params
+                let held: Vec<(String, Ty)> = params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .zip(param_tys)
+                    .collect();
+                // What the function is worth binds the type parameters its result names:
+                // `group: .due` makes a list's heading a day, and anyone reading the list
+                // keeps it a day.
+                let named = type_params_in(result, names);
+                let unbound = |types: &HashMap<String, Ty>| {
+                    named
                         .iter()
-                        .map(|param| param.name.clone())
-                        .zip(param_tys)
-                        .collect(),
-                    result,
+                        .any(|name| types.get(*name).is_none_or(Ty::is_error))
+                };
+                let result_ty = if unbound(types) {
+                    let worth = self.body_type(&held, &body, caller);
+                    Self::unify(result, &worth, names, types);
+                    if !worth.is_error() && unbound(types) {
+                        let (want, found) = (crate::print::print_type(result), self.show(&worth));
+                        self.err(
+                            "E020",
+                            a.value.span,
+                            format!(
+                                "`{}` of `{}` is a function that makes {want}; this one makes {found}",
+                                p.name.name, view.name.name
+                            ),
+                        );
+                    }
+                    self.type_in(result, types)
+                } else {
+                    self.type_in(result, types)
+                };
+                return Some(Macro::Lambda(Rc::new(Closure {
+                    params: held,
+                    result: result_ty,
                     body,
                     scope: caller.clone(),
                 })));
@@ -775,6 +816,24 @@ impl Checker<'_> {
             self.err("E097", span, format!("`{}` needs the rows of its items: write an item block, `{{ x -> row(x.title) }}`, or declare the type's row, `row view <view> for {t}`", view.name.name));
         }
         None
+    }
+
+    /// What a function parameter's body is worth on its own: its values are bound, its body
+    /// read, and what it lowers to dropped. The body is read here for its type alone and read
+    /// again where the template calls the function, which is where an error in it is reported.
+    fn body_type(&mut self, params: &[(String, Ty)], body: &ast::Expr, scope: &Scope) -> Ty {
+        let mut extra = HashMap::new();
+        for (name, ty) in params {
+            extra.insert(name.clone(), self.fresh(ty.clone()));
+        }
+        let saved = self.enter(scope, extra);
+        let known = self.diags.len();
+        self.push_sink();
+        let worth = self.expr(body, None);
+        self.pop_sink();
+        self.diags.truncate(known);
+        self.leave(saved);
+        worth.ty
     }
 
     /// A template's body where its call stands: its nodes under `parent`, or the one node it
@@ -1109,6 +1168,65 @@ fn coerces(found: &Ty, want: &Ty) -> bool {
     match (found, want) {
         (Ty::Collection(a) | Ty::Set(a), Ty::List(b)) => a.same(b),
         _ => false,
+    }
+}
+
+/// Whether `e` is the `.none` a call leaves an optional parameter out with.
+fn is_none(e: &ast::Expr) -> bool {
+    matches!(&e.kind, ExprKind::Variant { name, args: None } if name.name == "none")
+}
+
+/// The type parameters `names` that the written type `te` mentions, each once: what a
+/// function's result binds where a call passes it.
+fn type_params_in<'a>(te: &'a TypeExpr, names: &'a [String]) -> Vec<&'a String> {
+    let mut found: Vec<&String> = Vec::new();
+    collect_type_params(te, names, &mut found);
+    found
+}
+
+fn collect_type_params<'a>(te: &'a TypeExpr, names: &'a [String], found: &mut Vec<&'a String>) {
+    match &te.kind {
+        TypeExprKind::Named(path) => {
+            if path.len() == 1
+                && let Some(name) = names.iter().find(|name| **name == path[0].name)
+                && !found.contains(&name)
+            {
+                found.push(name);
+            }
+        }
+        TypeExprKind::Generic(_, args) | TypeExprKind::Tuple(args) | TypeExprKind::Union(args) => {
+            for arg in args {
+                collect_type_params(arg, names, found);
+            }
+        }
+        TypeExprKind::Fn(params, result) => {
+            for param in params {
+                collect_type_params(param, names, found);
+            }
+            collect_type_params(result, names, found);
+        }
+    }
+}
+
+/// The result a written function type names: `(T) -> Option<K>`, plain or optional.
+fn function_result(te: &TypeExpr) -> Option<&TypeExpr> {
+    if let TypeExprKind::Fn(_, result) = &te.kind {
+        return Some(result);
+    }
+    let TypeExprKind::Generic(name, args) = &te.kind else {
+        return None;
+    };
+    match (name.name.as_str(), args.as_slice()) {
+        (
+            "Option",
+            [
+                TypeExpr {
+                    kind: TypeExprKind::Fn(_, result),
+                    ..
+                },
+            ],
+        ) => Some(result),
+        _ => None,
     }
 }
 
