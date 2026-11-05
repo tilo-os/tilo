@@ -26,6 +26,7 @@ use tilo_network_actor::HostIdentity;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
 
 use crate::options::Options;
+use crate::sync::SiblingDials;
 
 /// This session's door to the person's own store: the store itself, opened on
 /// the identity this device acts as, and where it is kept.
@@ -79,6 +80,11 @@ impl Personal {
     /// session's apps through `channels` and `fanout`, and keep the store
     /// beside this session's state as it changes.
     ///
+    /// `dials` opens the other lane to the same devices: the session between
+    /// two of the person's desks is where they tell each other what they hold
+    /// — their workspaces and their hosts — so one adopts what the other
+    /// keeps. Without it a device keeps only what it was there to make.
+    ///
     /// The session must answer [`Self::protocol`] on `endpoint` for as long
     /// as the door: it is what a sibling dials.
     pub(crate) fn serve(
@@ -87,17 +93,129 @@ impl Personal {
         endpoint: iroh::Endpoint,
         channels: Arc<Mutex<BrokerChannels>>,
         fanout: Arc<FanoutState>,
+        dials: Option<SiblingDials>,
     ) -> Door {
-        Door::serve(
+        // An identity is filed under its root's hex, in the profile and in
+        // the fleet of the person's devices alike.
+        let person = Person::of(hex::encode(self.root), self.root);
+        // The devices the store holds once their fleet is in, before anything
+        // is spawned: what the sibling dials start from, so the door's own
+        // admission cannot come after the first pass read an empty store.
+        let held = personal::admit_fleet(&self.sync, &person);
+        let door = Door::serve(
             runtime,
             endpoint,
             self.sync.clone(),
-            // An identity is filed under its root's hex, in the profile and in
-            // the fleet of the person's devices alike.
-            &Person::of(hex::encode(self.root), self.root),
+            &person,
             &self.state,
             channels,
             fanout,
-        )
+        );
+        if let Some(dials) = dials {
+            runtime.spawn(keep_siblings(self.sync.clone(), dials, held));
+        }
+        door
+    }
+}
+
+/// Dial each of the person's devices the store holds as a sibling, from the
+/// ones the fleet named at start and again whenever the store changes: what
+/// it holds is the fleet's, and the plane keeps dialling the ones that are
+/// down.
+async fn keep_siblings(sync: PersonalSync, dials: SiblingDials, mut held: Vec<[u8; 32]>) {
+    let mut changes = sync.changes();
+    loop {
+        for device in std::mem::take(&mut held) {
+            dials.dial(device);
+        }
+        if changes.changed().await.is_err() {
+            return;
+        }
+        held = held_devices(&sync);
+    }
+}
+
+/// The devices the person's store holds: this one, and every one of theirs
+/// whose certificate the fleet admitted.
+fn held_devices(sync: &PersonalSync) -> Vec<[u8; 32]> {
+    sync.read(|store| {
+        store
+            .devices()
+            .into_iter()
+            .map(|device| device.device_public_key)
+            .collect()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        reason = "test fixtures: a failed step is the assertion"
+    )]
+
+    use std::time::{Duration, SystemTime};
+
+    use ed25519_dalek::SigningKey;
+    use tilo_peer_state::PersonalStore;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+    use super::*;
+    use crate::sync::Outgoing;
+
+    /// One of the person's devices' certificates, signed by their root.
+    fn certificate(root: &SigningKey, n: u8, now: SystemTime) -> DeviceCert {
+        let key = SigningKey::from_bytes(&[n; 32]);
+        let mut cert = DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: format!("device-{n}"),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: now
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| {
+                    u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
+                }),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+        cert
+    }
+
+    /// The person's other devices are dialled as this session's siblings from
+    /// the devices their store holds, and this device is not dialled at all:
+    /// that session is where the two desks tell each other the workspaces they
+    /// hold, so one adopts what the other keeps.
+    #[test]
+    fn the_persons_other_devices_are_dialled_as_siblings() {
+        let root = SigningKey::from_bytes(&[7; 32]);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let here = certificate(&root, 1, now);
+        let elsewhere = certificate(&root, 2, now);
+        let root_key = root.verifying_key().to_bytes();
+        let mut store =
+            PersonalStore::open(root_key, here.clone(), now).expect("a store for this device");
+        store
+            .admit_device(&elsewhere, now)
+            .expect("their other device is one of the person's");
+        let sync = PersonalSync::over(PeerPersonal::new(store), SigningKey::from_bytes(&[1; 32]));
+
+        let (outgoing, mut commands) = tokio::sync::mpsc::unbounded_channel();
+        let dials = SiblingDials::new(here.device_public_key, outgoing);
+        for device in held_devices(&sync) {
+            dials.dial(device);
+        }
+
+        let mut dialled = Vec::new();
+        while let Ok(command) = commands.try_recv() {
+            match command {
+                Outgoing::ConnectDevice(addr) => dialled.push(*addr.id.as_bytes()),
+                other => panic!("a sibling dial sent something else: {other:?}"),
+            }
+        }
+        assert_eq!(dialled, vec![elsewhere.device_public_key]);
     }
 }

@@ -326,9 +326,18 @@ pub(crate) fn start_action_plane(
     // the door takes it from there, once the broker is up to hand what a
     // sibling writes to the apps that have the record open.
     let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
-        (Some(sync), Some(endpoint)) => sync
-            .personal()
-            .map(|personal| personal.serve(tilo_rt::app().handle(), endpoint, channels, fanout)),
+        (Some(sync), Some(endpoint)) => sync.personal().map(|personal| {
+            // The person's other devices are dialled as this session's
+            // siblings too: the session between two of their desks tells each
+            // the workspaces the other holds.
+            personal.serve(
+                tilo_rt::app().handle(),
+                endpoint,
+                channels,
+                fanout,
+                sync.sibling_dials(),
+            )
+        }),
         _ => None,
     };
     // What arrives on this device's action plane is answered by the broker

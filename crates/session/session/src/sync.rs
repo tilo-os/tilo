@@ -599,6 +599,41 @@ pub(crate) struct ReceivedSurface {
     pub(crate) msg: NeighbourMsg,
 }
 
+/// The person's other devices, dialled as this device's siblings: the session
+/// between two of their desks is where each tells the other the workspaces it
+/// holds, and what it hosts, so one can adopt what the other keeps.
+#[derive(Clone)]
+pub(crate) struct SiblingDials {
+    /// This device's endpoint id: its own session is never dialled.
+    ours: [u8; 32],
+    outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+}
+
+impl SiblingDials {
+    /// Dial from `ours`, the endpoint this device's sessions run on.
+    pub(crate) fn new(
+        ours: [u8; 32],
+        outgoing: tokio::sync::mpsc::UnboundedSender<Outgoing>,
+    ) -> Self {
+        Self { ours, outgoing }
+    }
+
+    /// Dial `device` as a sibling, unless it is this device. The plane dials
+    /// again whatever has no session, for as long as that lasts.
+    pub(crate) fn dial(&self, device: [u8; 32]) {
+        if device == self.ours {
+            return;
+        }
+        let Ok(id) = iroh::EndpointId::from_bytes(&device) else {
+            tracing::warn!(device = %hex::encode(device), "a device of the person has no endpoint id");
+            return;
+        };
+        let _ = self
+            .outgoing
+            .send(Outgoing::ConnectDevice(EndpointAddr::new(id)));
+    }
+}
+
 /// What the sync thread is asked to do.
 #[derive(Debug)]
 pub(crate) enum Outgoing {
@@ -769,6 +804,10 @@ pub struct Client {
     /// The certificates each of the person's other devices was heard with,
     /// by its publisher.
     siblings: RefCell<std::collections::BTreeMap<EndpointId, Vec<tilo_user_identity::DeviceCert>>>,
+    /// Whether one of the person's other devices came up since the last call:
+    /// a device that just said hello has not heard this device's list yet,
+    /// and a list said only when something changed here would never reach it.
+    sibling_arrived: std::cell::Cell<bool>,
     /// The workspace lists the person's other devices sent since the last
     /// call, each with the certificate its device was heard by.
     personal: RefCell<
@@ -976,6 +1015,7 @@ impl Client {
             desk: RefCell::new(None),
             content: RefCell::new(None),
             siblings: RefCell::new(std::collections::BTreeMap::new()),
+            sibling_arrived: std::cell::Cell::new(false),
             personal: RefCell::new(Vec::new()),
             personal_store: RefCell::new(None),
             endpoint,
@@ -1642,6 +1682,7 @@ impl Client {
         match event {
             NetEvent::Sibling { peer, certs, .. } => {
                 self.siblings.borrow_mut().insert(*peer, certs.clone());
+                self.sibling_arrived.set(true);
             }
             NetEvent::SiblingLeft { peer, .. } => {
                 self.siblings.borrow_mut().remove(peer);
@@ -1698,6 +1739,13 @@ impl Client {
         tilo_user_identity::DeviceCert,
     )> {
         std::mem::take(&mut *self.personal.borrow_mut())
+    }
+
+    /// Whether one of the person's other devices came up since the last call:
+    /// it has heard nothing of this device's workspaces yet, whatever changed
+    /// here since the list was last said.
+    pub(crate) fn sibling_arrived(&self) -> bool {
+        self.sibling_arrived.replace(false)
     }
 
     /// Tell the person's other devices what this device says of itself, when
@@ -1799,6 +1847,16 @@ impl Client {
             actions.learn(addr.clone());
         }
         let _ = self.outgoing.send(Outgoing::ConnectDevice(addr));
+    }
+
+    /// Where the person's own devices are dialled as this device's siblings
+    /// from a thread of their own (the store's), once the endpoint has bound.
+    #[must_use]
+    pub(crate) fn sibling_dials(&self) -> Option<SiblingDials> {
+        Some(SiblingDials::new(
+            *self.endpoint()?.id().as_bytes(),
+            self.outgoing.clone(),
+        ))
     }
 
     /// Take the waves at this person heard since the last call: the bar
@@ -2220,6 +2278,7 @@ impl Client {
                 desk: RefCell::new(None),
                 content: RefCell::new(None),
                 siblings: RefCell::new(std::collections::BTreeMap::new()),
+                sibling_arrived: std::cell::Cell::new(false),
                 personal: RefCell::new(Vec::new()),
                 personal_store: RefCell::new(None),
                 endpoint: EndpointAddr::new(publisher),

@@ -155,7 +155,7 @@ async fn keep_links(endpoint: iroh::Endpoint, sync: PersonalSync, person: Person
     let dialing: Arc<Mutex<HashSet<[u8; 32]>>> = Arc::default();
     loop {
         let ours = *endpoint.id().as_bytes();
-        let siblings: Vec<[u8; 32]> = devices(&sync, &person)
+        let siblings: Vec<[u8; 32]> = admit_fleet(&sync, &person)
             .into_iter()
             .filter(|device| *device != ours)
             .collect();
@@ -195,11 +195,12 @@ async fn keep_links(endpoint: iroh::Endpoint, sync: PersonalSync, person: Person
     }
 }
 
-/// The person's devices this identity's fleet certifies now, once the store
-/// has been told of them: the certificates it admits and the revocations it
-/// holds are the fleet's, so a device enrolled or revoked elsewhere reaches
-/// the store on the next turn.
-fn devices(sync: &PersonalSync, person: &Person) -> Vec<[u8; 32]> {
+/// Take the person's device fleet into `sync` and answer the devices it holds
+/// afterwards: this device and every other one of the person's whose
+/// certificate their fleet carries and has not revoked. The certificates it
+/// admits and the revocations it holds are the fleet's, so a device enrolled
+/// or revoked elsewhere reaches the store on the next call.
+pub fn admit_fleet(sync: &PersonalSync, person: &Person) -> Vec<[u8; 32]> {
     let fleet = tilo_identity_host::device_fleet::DeviceFleetStore::from_env()
         .and_then(|fleets| fleets.load(&person.identity_id));
     let Ok(fleet) = fleet else {
