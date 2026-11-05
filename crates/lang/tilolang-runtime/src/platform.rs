@@ -2116,18 +2116,18 @@ impl Core {
                 vs.space_reads.extend(reads.space_reads.clone());
             }
         }
-        // What the requirement read of the workspace, each resource once: what reading it again
+        // What the requirement read of the workspace, each field once: what reading it again
         // waits on. A requirement that read the clock, the window's space or the person's view
         // state reads beyond the workspace, and is read again whatever changes.
-        let mut resources: Vec<String> = reads.reads.iter().map(|(at, _)| at.clone()).collect();
-        resources.sort_unstable();
-        resources.dedup();
+        let mut at = reads.reads.clone();
+        at.sort_unstable();
+        at.dedup();
         let beyond = reads.changes_at.is_some()
             || !reads.state_reads.is_empty()
             || !reads.space_reads.is_empty();
         Ok((
             (!reason.is_empty()).then_some(reason),
-            Reading { resources, beyond },
+            Reading { reads: at, beyond },
         ))
     }
 

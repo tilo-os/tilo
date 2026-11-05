@@ -93,10 +93,10 @@ struct Said {
     /// Whether the action can run now, in the person at the window's words: `None` for an action
     /// whose app keeps no requirement its subject decides, and it keeps what it is published as.
     availability: Option<tilo_actions::Availability>,
-    /// The resources the requirements read, each once: a change to one of them, or to anything
-    /// published under it or over it, reads them again. `None` for a requirement that read more
-    /// than the workspace holds (the clock, the window), which is read again every time.
-    reads: Option<Vec<String>>,
+    /// The fields the requirements read, by resource and field: a change to one of them, or to
+    /// anything under a resource they read, reads them again. `None` for a requirement that read
+    /// more than the workspace holds (the clock, the window), which is read again every time.
+    reads: Option<Vec<(String, String)>>,
 }
 
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
@@ -194,38 +194,51 @@ impl Surface {
     }
 }
 
-/// Forget what actions were read as, where a requirement read something `changed` moved: what an
-/// answer read is reread when one of those resources, or anything published under it or over it,
-/// changed. An answer that read more than the workspace is read again anyway.
-fn forget_reads(surface: &Surface, changed: &[String]) {
+/// Forget what actions were read as, where a requirement read something `moved` changed: what an
+/// answer read is read again when one of those fields, or anything its resource holds, changed.
+/// An answer that read more than the workspace is read again anyway.
+fn forget_reads(surface: &Surface, moved: &[(String, String)]) {
     surface.availability.borrow_mut().retain(|_, said| {
         said.values().all(|said| {
             said.reads.as_ref().is_some_and(|reads| {
                 !reads
                     .iter()
-                    .any(|read| changed.iter().any(|changed| reached(changed, read)))
+                    .any(|read| moved.iter().any(|at| reached(at, read)))
             })
         })
     });
 }
 
-/// Whether a change to `changed` moves what a read of `read` saw: the same resource, one
-/// published under the other, or one whose item it holds.
-fn reached(changed: &str, read: &str) -> bool {
-    changed == read
-        || read
-            .strip_prefix(changed)
+/// Whether a change to `changed` moves what a read of `read` saw.
+///
+/// The same resource and field, either read or changed whole, is the same thing read and changed
+/// again. A requirement that read a resource whole sees everything published under it, so a
+/// change to one of its items reads it again. A change to a resource above what was read does
+/// not: what an item's own fields are is what a requirement of the item reads, and a collection
+/// changing around it is a change to the collection.
+fn reached(changed: &(String, String), read: &(String, String)) -> bool {
+    const WHOLE: &str = tilolang_tilo::runtime::store::ANY_FIELD;
+    let above = |outer: &str, inner: &str| {
+        inner
+            .strip_prefix(outer)
             .is_some_and(|rest| rest.starts_with('/'))
-        || changed
-            .strip_prefix(read)
-            .is_some_and(|rest| rest.starts_with('/'))
+    };
+    if changed.0 == read.0 {
+        return changed.1 == read.1 || changed.1 == WHOLE || read.1 == WHOLE;
+    }
+    above(&read.0, &changed.0) || (changed.1 == WHOLE && above(&changed.0, &read.0))
 }
 
 /// The resources whose actions a catalogue reads again after `moved`: the changed resources, and
 /// every package's own resource, whose actions may read the whole workspace.
 fn reads_again(surface: &Surface, moved: &Moved) -> Vec<String> {
     let mut again: Vec<String> = match moved {
-        Moved::These(these) => these.clone(),
+        Moved::These(these) => {
+            let mut at: Vec<String> = these.iter().map(|(resource, _)| resource.clone()).collect();
+            at.sort_unstable();
+            at.dedup();
+            at
+        }
         Moved::Everything => surface
             .publications
             .borrow()
@@ -249,7 +262,7 @@ fn read_action(host: &Host, resource: &str, action: &str) -> Said {
     match host.availability_reading(resource, action) {
         Some((availability, reading)) => Said {
             availability: Some(availability),
-            reads: (!reading.beyond).then_some(reading.resources),
+            reads: (!reading.beyond).then_some(reading.reads),
         },
         None => Said {
             availability: None,

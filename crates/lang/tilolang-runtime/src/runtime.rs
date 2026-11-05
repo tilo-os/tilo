@@ -835,9 +835,9 @@ impl Runtime {
             })
     }
 
-    /// As [`Runtime::refusal`], with what reading the requirement read: the resources it read,
-    /// each once, and whether it read more than the workspace holds (the clock, the window's
-    /// space, the person's view state), which no change in the workspace moves.
+    /// As [`Runtime::refusal`], with what reading the requirement read: the fields it read, each
+    /// once, and whether it read more than the workspace holds (the clock, the window's space,
+    /// the person's view state), which no change in the workspace moves.
     ///
     /// # Errors
     ///
@@ -1240,13 +1240,13 @@ impl Runtime {
     }
 }
 
-/// What reading an action's requirements read of the workspace: the resources, each once, and
+/// What reading an action's requirements read of the workspace: the fields, each once, and
 /// whether they read more than the workspace holds, which no change in it moves.
 #[derive(Clone, Debug, Default)]
 pub struct Reading {
-    /// The resources the requirements read: one whose own fields moved is read again, and so is
-    /// everything published under it or over it.
-    pub resources: Vec<String>,
+    /// The fields the requirements read, by resource and field. A requirement of an item reads
+    /// the item's own fields, and a collection it read whole reads every item's under it.
+    pub reads: Vec<(String, String)>,
     /// Whether they read the clock, the window's space or the person's view state: the answer
     /// moves without the workspace moving, so it is not kept.
     pub beyond: bool,
