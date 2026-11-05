@@ -265,6 +265,9 @@ pub enum HostActionSource {
     Workspaces,
     /// Workspaces themselves: joining one, leaving this one, a new one.
     Workspace,
+    /// The session itself, on this computer: locking the screen, logging
+    /// out, restarting the computer, shutting it down.
+    Session,
 }
 
 impl HostActionSource {
@@ -273,6 +276,7 @@ impl HostActionSource {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
             Self::Workspaces | Self::Workspace => "host-action-source-workspace",
+            Self::Session => "host-action-source-session",
         })
     }
 }

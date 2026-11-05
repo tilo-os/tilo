@@ -1250,7 +1250,9 @@ impl BrowserShell {
                 let group = match action.source? {
                     HostActionSource::Identity => ProfileGroup::Identity,
                     HostActionSource::Devices => ProfileGroup::Devices,
-                    HostActionSource::Workspaces | HostActionSource::Workspace => return None,
+                    HostActionSource::Workspaces
+                    | HostActionSource::Workspace
+                    | HostActionSource::Session => return None,
                 };
                 let icon = match action.id.as_str() {
                     "save-recovery-key" => ui::icons::Icon::Download,

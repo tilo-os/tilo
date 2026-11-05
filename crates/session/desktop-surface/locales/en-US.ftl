@@ -553,6 +553,7 @@ history-notification-description-sourced-body = { $severity }. From { $source }.
 host-action-source-identity = Identity
 host-action-source-devices = Devices
 host-action-source-workspace = Workspace
+host-action-source-session = This computer
 notification-center-group-description = { $count } notifications. Press Enter to { $expanded ->
         [yes] collapse
        *[no] expand
@@ -1329,6 +1330,10 @@ session-host-new-workspace = Make a new workspace on this computer
 session-host-join-workspace = Join a workspace from its directory
 session-host-leave-workspace = Leave this workspace on this computer
 session-host-workspace-settings = What this workspace is called and who is in it
+session-host-lock = Lock
+session-host-log-out = Log out
+session-host-restart = Restart
+session-host-shut-down = Shut down
 session-left-workspace = You left { $name }
 session-left-workspace-body = Its windows are gone from this computer. You can join it again from the workspace directory.
 session-joined-workspace = You joined { $name }

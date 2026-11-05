@@ -8,15 +8,17 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
+    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT,
+    SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::overlays::Slot;
+use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::ShortcutAction;
 
 use crate::keys::Invocation;
 use crate::{
-    AppLists, Magnify, SessionCommand, Shared, identity, mount, people, workspace_settings,
-    workspaces,
+    AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
+    workspace_settings, workspaces,
 };
 
 impl Shared {
@@ -220,6 +222,12 @@ impl Shared {
                 &self.directory_store,
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
+            // The Tilo menu's own rows, and the same effects the power
+            // menu's choices are.
+            SESSION_LOCK => self.power_effect(PowerEffect::Lock),
+            SESSION_LOG_OUT => self.power_effect(PowerEffect::LogOut),
+            SESSION_RESTART => self.power_effect(PowerEffect::Restart),
+            SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             choice => {
                 // A device another of the person's devices found asks here
                 // to act as them: the banner's own buttons are its answer.
@@ -289,6 +297,40 @@ impl Shared {
             notice.addressed = Some(Addressed::Ask);
             notice.dismiss_after = PERSISTENT_DISMISS;
             self.notices.post(notice);
+        }
+    }
+
+    /// Carry out a power effect the person chose: the power menu's rows,
+    /// the Tilo menu's and a published action all name the same effects.
+    pub(crate) fn power_effect(&self, effect: PowerEffect) {
+        match effect {
+            PowerEffect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
+            PowerEffect::LogOut => self.commands.borrow_mut().push(SessionCommand::LogOut),
+            PowerEffect::ShutDown if self.hosted => {
+                self.commands.borrow_mut().push(SessionCommand::End)
+            }
+            // The desktop it runs in owns the machine's power and its
+            // session switching; the menu does not offer these here, and a
+            // published action that asks anyway stops at this session.
+            PowerEffect::SwitchUser | PowerEffect::Suspend | PowerEffect::Restart
+                if self.hosted =>
+            {
+                tracing::info!(
+                    ?effect,
+                    "a session in a window owns no power: nothing was done"
+                );
+            }
+            PowerEffect::SwitchUser => self.session_action(SessionAction::SwitchUser),
+            PowerEffect::Suspend => self.session_action(SessionAction::Suspend),
+            PowerEffect::Restart => self.session_action(SessionAction::Restart),
+            PowerEffect::ShutDown => self.session_action(SessionAction::ShutDown),
+        }
+    }
+
+    /// Ask the system to suspend, restart or shut the machine down.
+    pub(crate) fn session_action(&self, action: SessionAction) {
+        if let Err(error) = (self.session_actions)(action) {
+            tracing::warn!(%error, ?action, "session action");
         }
     }
 
@@ -420,6 +462,10 @@ impl Shared {
                 invocations.push(Invocation::new(mount::shell::WINDOW_MENU, "open"));
             }
             ShortcutAction::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
+            ShortcutAction::PowerMenu => self
+                .commands
+                .borrow_mut()
+                .push(SessionCommand::OpenPowerMenu),
             ShortcutAction::ToggleMagnifier => self
                 .commands
                 .borrow_mut()

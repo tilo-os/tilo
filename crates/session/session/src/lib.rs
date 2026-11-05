@@ -86,6 +86,7 @@ mod file_clipboard;
 mod fs_authority;
 mod held;
 mod here;
+mod host_actions;
 mod i18n;
 pub mod identity;
 mod identity_admin;
@@ -235,7 +236,7 @@ use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::portal::PortalSeat;
-use tilo_sheets::power::{PowerEffect, PowerSeat};
+use tilo_sheets::power::PowerSeat;
 use tilo_sheets::workspace_settings::WorkspaceSettingsSeat;
 
 pub use os_actions::SessionAction;
@@ -667,40 +668,7 @@ impl Shared {
         if let Some(power) = &self.power {
             for effect in power.take_asked() {
                 power.presentation().close();
-                let action = match effect {
-                    PowerEffect::Lock => {
-                        self.commands.borrow_mut().push(SessionCommand::Lock);
-                        continue;
-                    }
-                    PowerEffect::LogOut => {
-                        self.commands.borrow_mut().push(SessionCommand::LogOut);
-                        continue;
-                    }
-                    PowerEffect::ShutDown if self.hosted => {
-                        self.commands.borrow_mut().push(SessionCommand::End);
-                        continue;
-                    }
-                    PowerEffect::SwitchUser | PowerEffect::Suspend | PowerEffect::Restart
-                        if self.hosted =>
-                    {
-                        // The desktop it runs in owns the machine's power and
-                        // its session switching; the menu does not offer
-                        // these here, and a published action that asks anyway
-                        // stops at this session.
-                        tracing::info!(
-                            ?effect,
-                            "a session in a window owns no power: nothing was done"
-                        );
-                        continue;
-                    }
-                    PowerEffect::SwitchUser => SessionAction::SwitchUser,
-                    PowerEffect::Suspend => SessionAction::Suspend,
-                    PowerEffect::Restart => SessionAction::Restart,
-                    PowerEffect::ShutDown => SessionAction::ShutDown,
-                };
-                if let Err(error) = (self.session_actions)(action) {
-                    tracing::warn!(%error, ?action, "power menu");
-                }
+                self.power_effect(effect);
             }
         }
 
@@ -1173,7 +1141,6 @@ impl Session {
             )
             .with_conversation(std::sync::Arc::clone(&conversation)),
         )));
-        workspaces::publish_host_actions(&handle);
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
         // the pictures this device kept for them until the setting changes.
@@ -1494,6 +1461,13 @@ impl Session {
             uninstall,
             lock_view,
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
+        // What only the session can do, offered the same way to every
+        // surface that shows it: the workspace menu, the Tilo menu, search.
+        host_actions::publish(
+            &handle,
+            mount::sheets::power_offers(&options),
+            directory.is_some(),
+        );
 
         // The one worker that encodes a recording and writes every capture's
         // file, and what it makes of the recorder's work.
@@ -2820,9 +2794,7 @@ impl Session {
 
     /// Ask the system to suspend, restart or shut the machine down.
     fn session_action(&self, action: SessionAction) {
-        if let Err(error) = (self.shared.session_actions)(action) {
-            tracing::warn!(%error, ?action, "session action");
-        }
+        self.shared.session_action(action);
     }
 
     /// Lock the session as the person asked: with a key, a command, or

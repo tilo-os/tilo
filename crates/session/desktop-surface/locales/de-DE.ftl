@@ -571,6 +571,7 @@ history-notification-description-sourced-body = { $severity }. Von { $source }. 
 host-action-source-identity = Identität
 host-action-source-devices = Geräte
 host-action-source-workspace = Arbeitsbereich
+host-action-source-session = Dieser Computer
 notification-center-group-description = { $count } Benachrichtigungen. Eingabe zum { $expanded ->
         [yes] Einklappen
        *[no] Ausklappen
@@ -1345,6 +1346,10 @@ session-host-new-workspace = Einen neuen Arbeitsbereich auf diesem Rechner anleg
 session-host-join-workspace = Einem Arbeitsbereich aus dem Verzeichnis beitreten
 session-host-leave-workspace = Diesen Arbeitsbereich auf diesem Rechner verlassen
 session-host-workspace-settings = Wie dieser Arbeitsbereich heißt und wer darin ist
+session-host-lock = Sperren
+session-host-log-out = Abmelden
+session-host-restart = Neu starten
+session-host-shut-down = Ausschalten
 session-left-workspace = Du hast { $name } verlassen
 session-left-workspace-body = Seine Fenster sind von diesem Rechner verschwunden. Du kannst ihm über das Verzeichnis wieder beitreten.
 session-joined-workspace = Du bist { $name } beigetreten

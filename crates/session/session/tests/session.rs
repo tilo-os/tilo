@@ -1313,6 +1313,102 @@ fn the_power_menu_opens_by_its_published_verb() {
     );
 }
 
+/// The power menu's shortcut puts it up: the chord, as a person presses it,
+/// reaches the menu the same verb opens.
+#[test]
+fn the_power_menus_shortcut_opens_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    invoke_with(
+        &mut session,
+        CHROME_RESOURCE,
+        "shortcut",
+        &serde_json::json!({"action": "power_menu"}),
+    );
+    let menu = session.power_menu().expect("the power menu");
+    assert!(
+        menu.presentation().is_open(),
+        "the shortcut puts the menu up"
+    );
+    assert!(!menu.rows().is_empty(), "with the person's choices");
+}
+
+/// The session publishes the actions only it can carry out, with what each
+/// is called, so every surface listing them — the Tilo menu, search — offers
+/// the same rows; what this machine cannot do is not offered.
+#[test]
+fn the_session_publishes_the_actions_only_it_can_carry_out() {
+    let _settled = ui::motion::testing::settled();
+    let mut own = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            session_actions: record_session_action,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    own.step(Duration::from_millis(1)).unwrap();
+    let offered: Vec<(
+        String,
+        String,
+        Option<tilo_desktop_surface::HostActionSource>,
+    )> = own
+        .handle()
+        .host_actions()
+        .into_iter()
+        .map(|action| (action.id, action.title, action.source))
+        .collect();
+    for (id, title) in [
+        ("session-lock", "Lock"),
+        ("session-log-out", "Log out"),
+        ("session-restart", "Restart"),
+        ("session-shut-down", "Shut down"),
+    ] {
+        assert!(
+            offered.iter().any(|(held, called, source)| held == id
+                && called == title
+                && *source == Some(tilo_desktop_surface::HostActionSource::Session)),
+            "the session offers {id} as {title}: {offered:?}"
+        );
+    }
+
+    // A session in a window of another desktop owns neither the machine's
+    // power nor its session switching, so it offers none of them.
+    let mut windowed = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            machine: tilo_session::Machine::Window,
+            session_actions: record_session_action,
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    windowed.step(Duration::from_millis(1)).unwrap();
+    let offered: Vec<String> = windowed
+        .handle()
+        .host_actions()
+        .into_iter()
+        .map(|action| action.id)
+        .collect();
+    for id in ["session-suspend", "session-restart", "session-switch-user"] {
+        assert!(
+            !offered.iter().any(|held| held == id),
+            "a session in a window does not offer {id}: {offered:?}"
+        );
+    }
+    assert!(
+        offered.iter().any(|held| held == "session-shut-down"),
+        "shutting down is offered everywhere: {offered:?}"
+    );
+}
+
 #[test]
 fn quick_settings_opens_by_its_action_and_a_press_outside_closes_it() {
     let _settled = ui::motion::testing::settled();

@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use emoji::Recents;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
-use tilo_desktop::desktop_host::{DesktopChrome, DesktopRules};
+use tilo_desktop::chrome::ChromeIntent;
+use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, DesktopRules, JOIN_WORKSPACE};
 use tilo_desktop::emoji_picker::{EmojiLink, EmojiPlace, RecentsStore};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::DesktopCommand;
@@ -22,7 +23,9 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
 };
-use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
+use tilo_desktop_surface::{
+    DesktopHandle, DesktopSurface, HostAction, HostActionSource, TileSource,
+};
 use ui::a11y::Action;
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Rect};
@@ -477,5 +480,104 @@ fn the_strip_labels_are_the_readers_and_choosing_one_goes_there() {
         handle.read(|tree| tree.active_strip.get(&WorkspaceSlot(1)).copied()),
         Some(StripId(4)),
         "the desk moved to the strip the reader chose"
+    );
+}
+
+/// A host action as a host publishes it.
+fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
+    HostAction {
+        id: id.into(),
+        title: title.into(),
+        subtitle: None,
+        source: Some(source),
+        label: None,
+    }
+}
+
+/// The Tilo menu lists what only the session can do, above About; choosing
+/// one asks the session for it by the id it published it under.
+#[test]
+fn the_tilo_menu_lists_the_sessions_own_actions_above_about() {
+    let (mut frame, _desk, handle, _link) = chrome();
+    handle.set_host_actions(vec![
+        action("session-lock", "Lock", HostActionSource::Session),
+        action("session-shut-down", "Shut down", HostActionSource::Session),
+        action(
+            "new-workspace",
+            "New workspace",
+            HostActionSource::Workspaces,
+        ),
+    ]);
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleTiloMenu);
+    });
+    frame.relayout();
+
+    frame
+        .a11y_node_named("Lock")
+        .expect("the session's Lock leads the menu");
+    frame
+        .a11y_node_named("Shut down")
+        .expect("so does shutting the computer down");
+    frame
+        .a11y_node_named("About this computer")
+        .expect("About follows the session's own rows");
+    assert!(
+        frame.a11y_node_named("New workspace").is_none(),
+        "what the workspace menu offers is not a row here"
+    );
+
+    let lock = frame.a11y_node_named("Lock").expect("the row is reachable");
+    frame
+        .perform_a11y_action(lock, &Action::Activate)
+        .expect("the reader picks Lock");
+    frame.relayout();
+    assert_eq!(
+        with_chrome(&mut frame, DesktopChrome::take_asks),
+        vec![DesktopAsk::HostAction("session-lock".into())],
+        "the menu asks the session for what it published, once"
+    );
+}
+
+/// The switcher offers joining another workspace exactly when the session
+/// published the action that opens the directory, and choosing it asks for
+/// that action.
+#[test]
+fn the_switcher_offers_joining_a_workspace_when_the_session_does() {
+    let (mut frame, _desk, handle, _link) = chrome();
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleOverview);
+    });
+    frame.relayout();
+    assert!(
+        frame.a11y_node_named("Join a workspace…").is_none(),
+        "a session with no directory to join from offers no joining"
+    );
+
+    handle.set_host_actions(vec![action(
+        JOIN_WORKSPACE,
+        "Join a workspace",
+        HostActionSource::Workspace,
+    )]);
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleOverview);
+    });
+    frame.relayout();
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleOverview);
+    });
+    frame.relayout();
+
+    let join = frame
+        .a11y_node_named("Join a workspace…")
+        .expect("the switcher offers joining");
+    frame
+        .perform_a11y_action(join, &Action::Activate)
+        .expect("the reader picks joining");
+    frame.relayout();
+    assert_eq!(
+        with_chrome(&mut frame, DesktopChrome::take_asks),
+        vec![DesktopAsk::HostAction(JOIN_WORKSPACE.into())],
+        "joining asks for the action the host published"
     );
 }

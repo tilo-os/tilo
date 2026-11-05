@@ -37,13 +37,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tilo_desktop::desktop_host::{
-    JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, WORKSPACE_SETTINGS,
-};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{
-    DesktopHandle, DesktopNotifications, HostAction, HostActionSource,
+    DesktopHandle, DesktopNotifications,
     notifications::{Notification, NotificationIconKind},
 };
 use tilo_sheets::Seat as _;
@@ -55,41 +52,6 @@ use tilo_user_identity::{
 
 use crate::directory;
 use crate::workspace_settings;
-
-/// Offer, in the workspace menu and in search, what only the session can do
-/// about workspaces: making one, joining one, leaving this one, and its
-/// settings.
-pub(crate) fn publish_host_actions(handle: &DesktopHandle) {
-    let offer = |id: &str, title: &str, label: &str| HostAction {
-        id: id.to_owned(),
-        title: tilo_desktop_surface::i18n::t(title),
-        subtitle: None,
-        source: Some(HostActionSource::Workspace),
-        label: Some(tilo_desktop_surface::i18n::t(label)),
-    };
-    handle.set_host_actions(vec![
-        offer(
-            NEW_WORKSPACE,
-            "session-host-new-workspace",
-            "workspace-menu-new",
-        ),
-        offer(
-            JOIN_WORKSPACE,
-            "session-host-join-workspace",
-            "workspace-menu-join",
-        ),
-        offer(
-            LEAVE_WORKSPACE,
-            "session-host-leave-workspace",
-            "workspace-menu-leave",
-        ),
-        offer(
-            WORKSPACE_SETTINGS,
-            "session-host-workspace-settings",
-            "workspace-menu-settings",
-        ),
-    ]);
-}
 
 /// Show the workspaces this computer may join or open: the ones it holds,
 /// and what the sites' directories list.

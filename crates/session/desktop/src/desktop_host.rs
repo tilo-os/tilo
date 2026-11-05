@@ -38,7 +38,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-use crate::about::TiloMenu;
+use crate::about::{TiloMenu, TiloMenuAction};
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::desk_verbs::{self, OpenSearch, chrome_resource, desk_resource, launchpad_resource};
 use crate::desk_widgets::music::MusicAction;
@@ -48,7 +48,7 @@ use crate::fullscreen_hint::FullscreenHint;
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
-use crate::overview_panel::{OverviewPanel, OverviewPick};
+use crate::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
 use crate::search_overlay::SearchOverlay;
 use crate::shortcuts::{page_chord, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
@@ -76,6 +76,14 @@ pub const LEAVE_WORKSPACE: &str = "leave-workspace";
 pub const NEW_WORKSPACE: &str = "new-workspace";
 /// The host action that opens the workspace's settings.
 pub const WORKSPACE_SETTINGS: &str = "workspace-settings";
+/// The host action that locks the screen.
+pub const SESSION_LOCK: &str = "session-lock";
+/// The host action that logs this person out.
+pub const SESSION_LOG_OUT: &str = "session-log-out";
+/// The host action that restarts the computer.
+pub const SESSION_RESTART: &str = "session-restart";
+/// The host action that shuts the computer down.
+pub const SESSION_SHUT_DOWN: &str = "session-shut-down";
 const HOST_KEY: &str = "host:";
 
 /// What the host answers about the person at this desktop and the workspace it
@@ -1285,6 +1293,7 @@ impl DesktopChrome {
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
                 self.workspace_menu.close();
+                self.tilo_menu.set_actions(self.tilo_menu_actions());
                 self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
             }
             // The strip's name in the bar opens the strip switcher, as a
@@ -1306,6 +1315,31 @@ impl DesktopChrome {
             }
             other => self.asks.borrow_mut().push(DesktopAsk::Intent(other)),
         }
+    }
+
+    /// What the Tilo menu offers of the session's own actions, in the order
+    /// the host publishes them: locking, logging out, restarting and
+    /// shutting down.
+    fn tilo_menu_actions(&self) -> Vec<TiloMenuAction> {
+        self.handle
+            .host_actions()
+            .into_iter()
+            .filter(|action| action.source == Some(HostActionSource::Session))
+            .map(|action| TiloMenuAction {
+                id: action.id,
+                label: action.label.unwrap_or(action.title),
+            })
+            .collect()
+    }
+
+    /// Whether the workspace menu offers joining another workspace: the
+    /// host published the action that opens the directory workspaces are
+    /// joined from.
+    fn may_join_workspace(&self) -> bool {
+        self.handle
+            .host_actions()
+            .iter()
+            .any(|action| action.id == JOIN_WORKSPACE)
     }
 
     /// What the workspace menu offers now: this desktop's workspaces and
@@ -1449,11 +1483,24 @@ impl DesktopChrome {
     /// Open or close the overview.
     pub fn toggle_overview(&mut self) {
         let open = !self.overview.is_open();
-        let cards = if open { self.cards() } else { Vec::new() };
         self.overview_revision = self.handle.revision();
         self.overview
             .set_new_workspace(self.rules.may_create_workspace().is_ok());
-        self.overview.set_open(open, cards);
+        if open {
+            let desk = self.overview_desk();
+            self.overview.open_on(true, desk);
+        } else {
+            self.overview.open_on(false, OverviewDesk::of(Vec::new()));
+        }
+    }
+
+    /// The switcher's desk as this host offers it: the workspaces it shows
+    /// and what can be done to them, including joining another workspace
+    /// when the session published the action that opens the directory.
+    fn overview_desk(&self) -> OverviewDesk {
+        let mut desk = OverviewDesk::of(self.cards());
+        desk.can_join = self.may_join_workspace();
+        desk
     }
 
     fn cards(&self) -> Vec<crate::overview::WorkspaceCard> {
@@ -2438,11 +2485,15 @@ impl Widget for DesktopChrome {
         }
         if self.overview.is_open() && self.overview_revision != self.handle.revision() {
             self.overview_revision = self.handle.revision();
-            let cards = self.cards();
-            self.overview.show(cards);
+            let desk = self.overview_desk();
+            self.overview.set_desk(desk);
             changed = true;
         }
         changed |= self.tilo_menu.settle();
+        if let Some(action) = self.tilo_menu.take_action() {
+            self.asks.borrow_mut().push(DesktopAsk::HostAction(action));
+            changed = true;
+        }
         if let Some(choice) = self.workspace_menu.take_choice() {
             self.apply_workspace_choice(choice);
             changed = true;
