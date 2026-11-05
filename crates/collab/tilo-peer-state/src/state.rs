@@ -2780,6 +2780,21 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         };
+        // A device that starts a record is told now when the workspace does
+        // not let it create one, or when the record is there already: a
+        // peer's copy of the same start is held or merged as the nothing it
+        // is, but its own write would be answered as published while no peer
+        // ever sees it.
+        if matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
+            && !self.signed_by_owner(author.as_bytes())
+        {
+            if self.core.documents.contains_key(&route) {
+                return Err("the record exists already".into());
+            }
+            if !self.may_create_record(&self.membership(*author.as_bytes(), now)?, &route, now) {
+                return Err("the workspace does not let this device create the record".into());
+            }
+        }
         let seq = self
             .core
             .documents
