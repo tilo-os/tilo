@@ -198,31 +198,40 @@ impl Source for Commands {
         "desktop-commands"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_ACTIONS
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-source-commands")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
-        // The empty palette is about what is happening now, never a list of
-        // verbs: closing a window, switching workspace or leaving it on this
-        // computer are things a person goes looking for, and a default list
-        // of them takes the place of what they came for.
-        if needle.trim().is_empty() {
-            return Vec::new();
-        }
+        // Nothing typed lists what the person can do from the workspace they
+        // are in, in the order the desk offers it: what happens to the
+        // workspace first, then to the window in front, then the other
+        // workspaces. Each stands below the one before it, and one the
+        // person chose before rises above the rest.
+        let browsing = needle.trim().is_empty();
         self.0
             .iter()
-            .filter_map(|command| {
-                let score = rank_fields(
-                    needle,
-                    &[
-                        (&command.title, ui::search::FieldWeight::TITLE),
-                        (
-                            command.subtitle.as_deref().unwrap_or_default(),
-                            ui::search::FieldWeight::SUBTITLE,
-                        ),
-                    ],
-                )?;
+            .enumerate()
+            .filter_map(|(at, command)| {
+                let score = if browsing {
+                    let at = i32::try_from(at).unwrap_or(MAX_PROVIDER_SCORE);
+                    MAX_PROVIDER_SCORE.saturating_sub(at)
+                } else {
+                    rank_fields(
+                        needle,
+                        &[
+                            (&command.title, ui::search::FieldWeight::TITLE),
+                            (
+                                command.subtitle.as_deref().unwrap_or_default(),
+                                ui::search::FieldWeight::SUBTITLE,
+                            ),
+                        ],
+                    )?
+                };
                 Some(Hit {
                     row: None,
                     preview: None,
@@ -1516,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_browses_applications_and_windows_but_not_actions() {
+    fn empty_query_browses_apps_windows_and_the_workspaces_own_verbs() {
         let actions = Actions(vec![resource_with_action(
             "p1",
             "Groceries",
@@ -1530,23 +1539,91 @@ mod tests {
             app: None,
             place: vec!["Workspace".into()],
         }]);
-        let commands = Commands(vec![CommandSpec {
-            id: "session-host-leave-workspace".into(),
-            title: "Leave this workspace on this computer".into(),
-            subtitle: None,
-        }]);
+        let commands = Commands(vec![
+            CommandSpec {
+                id: "session-host-leave-workspace".into(),
+                title: "Leave this workspace on this computer".into(),
+                subtitle: None,
+            },
+            CommandSpec {
+                id: "desktop.close-window".into(),
+                title: "Close window".into(),
+                subtitle: None,
+            },
+        ]);
         let groups = search("", &[&apps(), &windows, &actions, &commands], 0, &|_| 0.0);
         let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
         assert!(kinds.contains(&"Apps"));
         assert!(kinds.contains(&WINDOWS_KIND));
-        assert!(!kinds.contains(&"Actions"));
+        assert!(kinds.contains(&"Actions"));
+        let listed: Vec<&str> = groups
+            .iter()
+            .flat_map(|group| &group.results)
+            .map(|hit| hit.title.as_str())
+            .collect();
         assert!(
-            groups
-                .iter()
-                .flat_map(|group| &group.results)
-                .all(|hit| !hit.title.starts_with("Leave this workspace")),
-            "nothing typed offers no workspace housekeeping: {groups:?}"
+            listed.contains(&"Leave this workspace on this computer"),
+            "the workspace's own verbs are there to choose before anything is typed: {listed:?}"
         );
+        assert!(
+            !listed.contains(&"Open page"),
+            "an open app's actions take no room unasked: {listed:?}"
+        );
+        let verbs = groups
+            .iter()
+            .find(|group| group.kind.label() == "Actions")
+            .map(|group| {
+                group
+                    .results
+                    .iter()
+                    .map(|hit| hit.title.as_str())
+                    .collect::<Vec<_>>()
+            });
+        assert_eq!(
+            verbs.as_deref(),
+            Some(["Leave this workspace on this computer", "Close window"].as_slice()),
+            "they stand in the order the desk offers them"
+        );
+    }
+
+    /// Nothing typed offers the workspace's own verbs in the order the desk
+    /// gives them; one the person chose before rises above the rest.
+    #[test]
+    fn the_workspaces_verbs_keep_the_desks_order_under_what_was_chosen() {
+        let commands = Commands(vec![
+            CommandSpec {
+                id: "session-host-workspace-settings".into(),
+                title: "Workspace settings".into(),
+                subtitle: None,
+            },
+            CommandSpec {
+                id: "session-host-lock".into(),
+                title: "Lock the screen".into(),
+                subtitle: None,
+            },
+        ]);
+        let titles = |commands: &Commands| -> Vec<String> {
+            commands
+                .query("")
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect()
+        };
+        assert_eq!(titles(&commands), ["Workspace settings", "Lock the screen"]);
+        let chosen = |hit: &Hit| {
+            if hit.title == "Lock the screen" {
+                0.5
+            } else {
+                0.0
+            }
+        };
+        let groups = search("", &[&commands], 0, &chosen);
+        let listed: Vec<&str> = groups
+            .iter()
+            .flat_map(|group| &group.results)
+            .map(|hit| hit.title.as_str())
+            .collect();
+        assert_eq!(listed, ["Lock the screen", "Workspace settings"]);
     }
 
     #[test]
@@ -1828,11 +1905,10 @@ mod tests {
         }]);
         assert_eq!(commands.query("close").len(), 1);
         assert!(commands.query("launch").is_empty());
-        // Nothing typed lists no verbs at all: closing a window, changing
-        // workspace or leaving it on this computer are things a person goes
-        // looking for, never what the empty palette leads with.
-        assert!(commands.query("").is_empty());
-        assert!(commands.query("  ").is_empty());
+        // Nothing typed lists them too: what the workspace can do from here
+        // belongs to what it shows, under its windows and its records.
+        assert_eq!(commands.query("").len(), 1);
+        assert_eq!(commands.query("  ").len(), 1);
     }
 
     /// Every app of the manifest registry, as the portable desktop lists them.

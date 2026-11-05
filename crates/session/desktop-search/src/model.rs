@@ -99,6 +99,12 @@ pub const BROWSE_RANK_RECENT: u8 = 2;
 /// The ways in: the apps they have, then the windows open.
 pub const BROWSE_RANK_APPS: u8 = 3;
 pub const BROWSE_RANK_WINDOWS: u8 = 4;
+/// What the other workspaces hold: their records, which one Enter brings
+/// into this one.
+pub const BROWSE_RANK_RECORDS: u8 = 5;
+/// What a person can do from here: the workspace's own verbs and the
+/// session's, then the window in front's and the other workspaces'.
+pub const BROWSE_RANK_ACTIONS: u8 = 6;
 
 /// An application action as the palette offers it.
 #[derive(Clone)]

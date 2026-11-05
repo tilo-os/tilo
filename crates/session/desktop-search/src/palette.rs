@@ -2319,7 +2319,8 @@ mod tests {
     #[test]
     fn a_crowded_card_lists_the_rest_of_its_results_in_one_row() {
         let mut search = DesktopSearch::new();
-        search.set_room(500.0, 160.0);
+        // Room for what stays once a group makes way, not for every group.
+        search.set_room(500.0, 320.0);
         search.open(crowded());
         settled(&mut search);
         let shown = search.palette().visible_entries();
@@ -2473,7 +2474,9 @@ mod tests {
     #[test]
     fn a_group_asked_for_whole_scrolls_rather_than_making_way() {
         let mut search = DesktopSearch::new();
-        search.set_room(400.0, 120.0);
+        // Room for the three groups the empty card holds, not for all their
+        // rows.
+        search.set_room(400.0, 340.0);
         search.open(SearchData {
             applications: vec![AppEntry {
                 id: "so.tilo.notes".into(),

@@ -714,9 +714,11 @@ fn people(
     (workspace.id().to_string(), people)
 }
 
-/// What search offers to do: the host's actions, then what the focused
-/// window allows (no close for a window someone else holds, `held`), then
-/// the other workspaces.
+/// What search offers to do, in this order: the host's actions (a
+/// workspace's own, the session's), then what the focused window allows (no
+/// close for a window someone else holds, `held`), then the other
+/// workspaces. Nothing typed lists them as the empty card's actions, so the
+/// first of them are the workspace's own; typing reaches the rest.
 fn commands(
     tree: &DesktopTree,
     host: &[HostAction],
