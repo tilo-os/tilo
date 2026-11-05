@@ -16,8 +16,8 @@
 //! | [`Facts`] / [`FactsFace`] | separate facts with space between, never a joined string |
 //! | [`KeyHintsFace`] | drawn keycaps and what they do |
 //! | [`BarControlFace`] | a top bar or window bar control |
+//! | [`ActivityCardFace`] | an activity's card on the floating layer |
 //! | [`BarChip`] / [`BarChipFace`] | a bar control holding a face stack, a label and a press |
-//! | [`AgendaPopoverFace`] | the clock's overlay: a title, a reading and its controls, on the floating material |
 //! | [`IconButton`] | a square icon button whose name is required |
 //! | [`DisclosureRow`] | a row whose body opens in place |
 //! | [`DensityRegion`] | a region laid out at compact (or comfortable) density |
@@ -34,7 +34,7 @@
 //! [`crate::widget::PropertyList`], [`crate::widget::Breadcrumb`],
 //! [`crate::widget::EmptyState`], [`crate::widget::Banner`] and the toast.
 
-mod agenda_popover;
+mod activity_card;
 mod bar_chip;
 #[path = "bar_chip_component.rs"]
 mod bar_chip_component;
@@ -52,9 +52,7 @@ mod surface;
 mod surfaces_component;
 mod text_stack;
 
-pub use agenda_popover::{
-    AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace, AgendaPopoverLayout,
-};
+pub use activity_card::ActivityCardFace;
 pub use bar_chip::{BarChipFace, BarChipLayout};
 pub use bar_chip_component::{BarChip, BarChipProps};
 pub use bar_control::{BarControlFace, IconButton};

@@ -3306,17 +3306,17 @@ pub use context_menu::{
 mod row_menu;
 pub use chrome_body::paint_bar_body;
 pub use primitives::{
-    AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace, AgendaPopoverLayout, BarChip,
-    BarChipFace, BarChipLayout, BarChipProps, BarControlFace, DeclaredModal, DeclaredPanel,
-    DeclaredPopover, DeclaredPopoverButton, DensityRegion, DisclosureGroup, DisclosureRow,
-    DisclosureRowProps, DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps,
-    FloatingPanel, FloatingPanelFace, FloatingPanelLayout, FloatingPanelProps, IconButton, KeyHint,
-    KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps, LinkKind, LinkStatus, ModalProps,
-    NotificationListControl, NotificationListLayout, NotificationListRow, NotificationListView,
-    NotificationRowControls, PopoverProps, StatusCluster, StatusClusterFace, StatusClusterLayout,
-    StatusSlot, Surface, SurfaceLevel, TextBlockFace, TextLineAlign, TextLineFace, TextStack,
-    TextStackFace, TextStackProps, badge_label, badge_size, control_fill, control_radius,
-    paint_control_row, paint_see_through, paint_severity_rail, paint_surface, paint_unread_badge,
+    ActivityCardFace, BarChip, BarChipFace, BarChipLayout, BarChipProps, BarControlFace,
+    DeclaredModal, DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, DensityRegion,
+    DisclosureGroup, DisclosureRow, DisclosureRowProps, DisclosureState, Fact, FactProps, Facts,
+    FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
+    FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
+    LinkKind, LinkStatus, ModalProps, NotificationListControl, NotificationListLayout,
+    NotificationListRow, NotificationListView, NotificationRowControls, PopoverProps,
+    StatusCluster, StatusClusterFace, StatusClusterLayout, StatusSlot, Surface, SurfaceLevel,
+    TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
+    badge_label, badge_size, control_fill, control_radius, paint_control_row, paint_see_through,
+    paint_severity_rail, paint_surface, paint_unread_badge,
 };
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
@@ -3386,8 +3386,6 @@ pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOut
 
 pub mod progress_bar;
 pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
-pub mod activity_card;
-pub use activity_card::ActivityCardFace;
 pub mod page_preview;
 pub use page_preview::{PagePreview, PagePreviewProps};
 pub mod spinner;
