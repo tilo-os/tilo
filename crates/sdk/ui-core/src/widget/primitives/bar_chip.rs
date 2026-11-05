@@ -445,7 +445,7 @@ mod tests {
                 &theme,
             );
             let rect = Rect::new(0.0, 0.0, 120.0, BarChipFace::height(&theme));
-            chip.paint(&mut ctx, rect, ground);
+            let _ = chip.paint(&mut ctx, rect, ground);
             scene.encoding().draw_tags.len()
         };
         // At rest the chip paints only its faces' rings and initials.
