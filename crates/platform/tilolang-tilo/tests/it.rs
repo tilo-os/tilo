@@ -12,6 +12,7 @@
 
 mod agent_queries;
 mod bundle;
+mod capture;
 mod chained;
 mod chat;
 mod collab;

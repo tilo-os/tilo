@@ -9,8 +9,9 @@ use std::collections::BTreeSet;
 pub const SECTION: &str = "search";
 const DISABLED_KEY: &str = "disabled_providers";
 /// What every desktop offers whatever the person switched: the actions are
-/// how anything is done from search.
-const ALWAYS_ON: &str = "actions";
+/// how anything is done from search, and the captures how something is
+/// written down from it.
+const ALWAYS_ON: [&str; 2] = ["actions", "captures"];
 /// The longest source id kept.
 const MAX_ID_CHARS: usize = 256;
 
@@ -20,11 +21,12 @@ pub struct SearchPreferences {
 }
 
 fn keepable(id: &str) -> bool {
-    id != ALWAYS_ON && !id.is_empty() && id.chars().count() <= MAX_ID_CHARS
+    !ALWAYS_ON.contains(&id) && !id.is_empty() && id.chars().count() <= MAX_ID_CHARS
 }
 
-/// Whether the person may switch `source` off: the actions are how anything
-/// is done from search, so they stay whatever is switched.
+/// Whether the person may switch `source` off: the actions and captures are
+/// how anything is done or written down from search, so they stay whatever
+/// is switched.
 #[must_use]
 pub fn switchable(source: &str) -> bool {
     keepable(source)

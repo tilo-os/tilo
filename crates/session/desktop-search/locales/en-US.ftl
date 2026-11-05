@@ -79,6 +79,7 @@ search-source-windows = Windows
 search-source-commands = Desktop commands
 search-source-app-actions = Actions in open apps
 search-source-published-actions = Actions apps publish
+search-source-captures = New
 search-source-app-content = What apps hold
 search-source-recent = Recent
 search-source-store = Store
