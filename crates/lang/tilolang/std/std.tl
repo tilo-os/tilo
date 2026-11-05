@@ -523,11 +523,13 @@ view origin<R>(of: R) {
 /// What `linked(of)` returns, each a card that opens it: drawn through its type's row view, so
 /// its state shows there (a done item shows done), above its type's name. Links by a field are
 /// left out: the page of the resource holding the field draws that reference, as its own
-/// section of related things, so drawing it here again would show it twice.
+/// section of related things, so drawing it here again would show it twice. The cards stand in
+/// columns, as cards do (`grid`'s own minimum width): a card's width is its column's, so a row
+/// view inside one is never squeezed below the room its text needs.
 view linked<R>(of: R) {
     let links = linked(of).filter(l -> l.how != "field")
     if not links.is_empty() {
-        row(gap: .related, wrap: true) {
+        grid(gap: .related) {
             for l in links {
                 ui.Card(item: l.of) {
                     stack(gap: .tight) {

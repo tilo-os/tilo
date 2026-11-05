@@ -678,3 +678,19 @@ fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
         "the error says where a place is written: {misplaced}"
     );
 }
+
+#[test]
+fn e094_made_from_runs_only_in_a_scenario() {
+    expect(
+        "E094",
+        "type C {\n    t: Text\n}\nfn f(c: C) -> Int {\n    made from c { 1 }\n}\n",
+    );
+}
+
+#[test]
+fn e020_made_from_takes_a_resource() {
+    expect(
+        "E020",
+        "type C {\n    t: Text\n}\nroot C\nscenario \"a thing\" -> C {\n    made from 1 { root C }\n}\n",
+    );
+}
