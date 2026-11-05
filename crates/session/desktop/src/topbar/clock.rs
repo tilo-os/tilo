@@ -224,7 +224,7 @@ impl TopBarChrome {
             .collect();
         let (width, _) = text.measure_style(&reading, None, &style);
         // The dots behind the reading are part of the pill too.
-        let dots = f64::from(ui::num::u32_of_f64(self.center_pill().more as f64)) * DOT_PITCH;
+        let dots = ui::num::f64_of_usize(self.center_pill().more) * DOT_PITCH;
         (f64::from(width) + dots + 2.0 * CENTER_INSET_PX).min(lane_w)
     }
 
@@ -249,7 +249,6 @@ impl TopBarChrome {
         let line =
             TextLineFace::styled(&s, &style, TextRole::Body).weight(self.clock_text_weight());
         let (tw, th) = line.measure(text_renderer);
-        let (tw, th) = (f64::from(tw), f64::from(th));
         // An activity's own ink marks the pill: its tone, or the reading's
         // own colour.
         let ink = if pill.is_empty() {
@@ -259,8 +258,8 @@ impl TopBarChrome {
         };
         // Extra activities stand behind the reading as dots, so a person
         // reads at a glance that more than one is running.
-        let dots = f64::from(ui::num::u32_of_f64(pill.more as f64)) * DOT_PITCH;
-        let tx = content_cx - (tw + dots) / 2.0;
+        let dots = ui::num::f64_of_usize(pill.more) * DOT_PITCH;
+        let tx = content_cx - f64::midpoint(tw, dots);
         let ty = center_y - th / 2.0;
         let rect = Rect::new(tx, ty, tx + tw, ty + th);
         line.paint(

@@ -449,6 +449,12 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
     let link = surface.link();
     let mut harness = FrameHarness::new(State::new(), Box::new(surface), (1600, 1000));
 
+    // The harness's own first frame (its theme and its empty tree) is not the
+    // layer's: it stands before the cards arrive, unmeasured. The first frame
+    // counted is the one that draws them.
+    harness.begin_profiling();
+    harness.profile_frame();
+    harness.clear_profile_samples();
     link.publish(feed(0));
     harness.begin_profiling();
     let start = Instant::now();
@@ -525,6 +531,7 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
     let mut drag = Phase::default();
     let mut drag_violations = 0usize;
     let mut drag_ratio = 0.0f64;
+    let mut drag_moved = 0usize;
     let width = |shown: &tilo_activities::Shown| shown.cards.first().map(|(_, _, rect)| *rect);
     let start = Instant::now();
     let mut pointer = grab;
@@ -555,6 +562,7 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
             }
             continue;
         }
+        drag_moved += 1;
         let ground = match before {
             Some(before) => painted_bounds(before, harness.theme())
                 .union(painted_bounds(after, harness.theme())),
@@ -572,6 +580,10 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
     }
     drag.wall_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
     drag.report = Some(report_of("drag", harness.take_profile_samples()));
+    println!(
+        "drag card        grabbed at ({:.0}, {:.0}), moved on {drag_moved} of {} frames",
+        grab.x, grab.y, drag.frames
+    );
 
     println!("device {device}, profile activities");
     println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
