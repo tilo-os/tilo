@@ -849,12 +849,7 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     // route's keys, then seals and sends it.
     if std::env::var_os(SDK_HELPER).is_some() {
         let mut manager = ui::collaboration::CollaborationManager::new();
-        let started = std::time::Instant::now();
-        while !manager.is_connected() && started.elapsed() < tilo_test_env::hang_bound() {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(manager.is_connected(), "{:?}", manager.state());
+        super::super::tests::wait_until_joined(&mut manager);
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "text", SDK_WRITTEN).unwrap();
         doc.commit_edit("fixture", "text");
@@ -911,6 +906,10 @@ fn a_live_sdk_app_in_a_joined_workspace_gets_its_keys_from_the_device() {
     command
         .args(["--exact", SDK_TEST, "--nocapture"])
         .env(SDK_HELPER, "1")
+        .env(
+            tilo_test_env::hang::HANG_BOUND_ENV,
+            super::super::tests::helper_hang_bound(),
+        )
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::from(log.try_clone().unwrap()))
         .stderr(std::process::Stdio::from(log));

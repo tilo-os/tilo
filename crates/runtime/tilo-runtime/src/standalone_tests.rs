@@ -377,6 +377,47 @@ fn written(session: &Standalone) -> Option<String> {
         .and_then(|(value, _)| value.into_string().ok())
 }
 
+/// Wait until `manager`'s primary route is joined, failing the moment it
+/// cannot be: a manager that went offline, or whose route the workspace
+/// refused, never connects, so its reason is the failure rather than the hang
+/// bound. One still joining says what holds it up.
+pub(crate) fn wait_until_joined(manager: &mut ui::collaboration::CollaborationManager) {
+    let started = Instant::now();
+    loop {
+        let _ = manager.poll();
+        if manager.is_connected() {
+            return;
+        }
+        if let Some(refusal) = manager.join_refusal() {
+            panic!("the app's route was refused: {refusal}");
+        }
+        if let ui::collaboration::CollaborationState::Offline(reason) = manager.state() {
+            panic!("the app never joined: {reason}");
+        }
+        assert!(
+            started.elapsed() < tilo_test_env::hang_bound(),
+            "the app never joined: {:?}, held by {:?}",
+            manager.state(),
+            manager.join_hold()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// How much sooner than the test that started it a helper child gives up: the
+/// child's reason is written to the test's log while the test still waits, so
+/// a failure reports what the helper waited on instead of the test's own bound.
+const HELPER_LEAD: u64 = 10;
+
+/// The hang bound a helper child is started with, in seconds.
+pub(crate) fn helper_hang_bound() -> String {
+    tilo_test_env::hang_bound()
+        .as_secs()
+        .saturating_sub(HELPER_LEAD)
+        .max(1)
+        .to_string()
+}
+
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -393,12 +434,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
             ui::record::RecordKind::new(WRITER_KIND),
         );
         let mut manager = ui::collaboration::CollaborationManager::for_record(&checkout);
-        let started = Instant::now();
-        while !manager.is_connected() && started.elapsed() < tilo_test_env::hang_bound() {
-            let _ = manager.poll();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(manager.is_connected(), "{:?}", manager.state());
+        wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
         doc.commit();
@@ -421,6 +457,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
     command
         .args(["--exact", WRITER_TEST, "--nocapture"])
         .env(WRITER_HELPER, "1")
+        .env(tilo_test_env::hang::HANG_BOUND_ENV, helper_hang_bound())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log));
