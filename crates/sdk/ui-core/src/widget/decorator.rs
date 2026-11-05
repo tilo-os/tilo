@@ -521,6 +521,7 @@ decorator_trait! {
         fn next_wake_deadline() -> Option<Instant>;
         fn holds_frame_until(now: Instant) -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;
+        fn presents_modal() -> bool;
         fn has_pending_visual_work() -> bool;
         fn has_transient_feedback() -> bool;
         fn needs_redraw() -> bool;
@@ -620,6 +621,7 @@ decorator_trait! {
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn take_structure_dirty() -> bool;
+        fn dismiss_presented_modal() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
         fn release_scene_cache();
