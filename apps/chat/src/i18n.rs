@@ -97,6 +97,8 @@ mod tests {
         "chat-agent-return",
         "chat-send",
         "chat-conversation-read-only",
+        "chat-direct-unavailable",
+        "chat-person-unknown",
         "chat-agent-author",
         "chat-thread-title",
         "chat-thread-close",
