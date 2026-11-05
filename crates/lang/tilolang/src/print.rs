@@ -384,7 +384,7 @@ fn prec_of(e: &Expr) -> u8 {
         ExprKind::Lambda { .. } | ExprKind::Range { .. } => 0,
         ExprKind::Binary { op, .. } => op.prec(),
         ExprKind::Unary { op: UnOp::Not, .. } => 3,
-        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Try(_) => 7,
+        ExprKind::Unary { op: UnOp::Neg, .. } | ExprKind::Try(_) | ExprKind::Suggest(_) => 7,
         _ => 9,
     }
 }
@@ -764,6 +764,7 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
             postfix(e, col, level, ctx)
         }
         ExprKind::Try(x) => format!("try {}", expr_with(x, 7, col + 4, level, ctx)),
+        ExprKind::Suggest(x) => format!("suggest {}", expr_with(x, 7, col + 8, level, ctx)),
         ExprKind::Root(t) => format!("root {}", print_type(t)),
     };
     if prec_of(e) < min {

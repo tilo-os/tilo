@@ -201,6 +201,7 @@ impl Checker<'_> {
             }
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
+            ExprKind::Suggest(inner) => self.suggest_expr(inner, e.span),
             ExprKind::Root(t) => self.root_of(t, e.span),
         }
     }
@@ -233,6 +234,45 @@ impl Checker<'_> {
                 "E044",
                 span,
                 "`try` must be followed by a call of an action, not of a fn",
+            );
+            return Ex::error();
+        }
+        ex
+    }
+
+    /// `suggest act(args)`: records the action as a proposal that waits on the resource it is
+    /// about, instead of applying it. An action or a flow records one where it runs; a block is
+    /// the proposal itself, the action its value says, and records it when the host runs it.
+    fn suggest_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
+        let value = if self.st.ctx == Ctx::Block && self.st.proposes {
+            true
+        } else if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+            false
+        } else {
+            let who = self.st.ctx.word();
+            self.err(
+                "E044",
+                span,
+                format!("`suggest` proposes an action, and only an action, a flow or an agent's block may do that; {who} cannot"),
+            );
+            return Ex::error();
+        };
+        if !matches!(inner.kind, ExprKind::Call { .. }) {
+            self.err(
+                "E044",
+                span,
+                "`suggest` must be followed by an action call, such as `suggest archive(m)`",
+            );
+            return Ex::error();
+        }
+        self.st.suggested_at = Some(span);
+        self.st.suggest = Some(value);
+        let ex = self.expr(inner, None);
+        if self.st.suggest.take().is_some() {
+            self.err(
+                "E044",
+                span,
+                "`suggest` must be followed by a call of an action, not of a fn",
             );
             return Ex::error();
         }

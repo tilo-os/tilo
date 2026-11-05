@@ -128,6 +128,8 @@ imports! {
     (ActRef, "act_ref", "ii", "i"),
     (Invoke, "invoke", "i", "i"),
     (TryInvoke, "try_invoke", "i", "i"),
+    (Suggest, "suggest", "i", ""),
+    (ProposalNote, "proposal_note", "i", "i"),
     (CallFn, "call_fn", "ii", "i"),
     (IsError, "is_error", "i", "i"),
     (Outside, "outside", "ii", "i"),

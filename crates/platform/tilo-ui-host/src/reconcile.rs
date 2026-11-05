@@ -1133,7 +1133,12 @@ impl Reconciler {
         let mut card = Stack::stack()
             .gap(Rhythm::Related)
             .with_id(node.key.clone());
-        let status = crate::i18n::t(&format!("tilolang-invocation-{state}"));
+        // A proposal a person decides reads as suggested, by the person who suggested it.
+        let status = if flag(node, "proposed") {
+            crate::i18n::t("tilolang-invocation-proposed")
+        } else {
+            crate::i18n::t(&format!("tilolang-invocation-{state}"))
+        };
         let header = Row::row()
             .fill_width()
             .gap(Rhythm::Related)
@@ -1175,20 +1180,16 @@ impl Reconciler {
                         }),
                 ))
             };
+            // A proposal answers as a suggestion; an ask the authority raised, as a confirmation.
+            let (accept, decline) = if flag(node, "proposed") {
+                ("tilolang-suggestion-accept", "tilolang-suggestion-dismiss")
+            } else {
+                ("tilolang-ask-confirm", "tilolang-ask-decline")
+            };
             let choices = Row::row()
                 .gap(Rhythm::Related)
-                .push_slot(answer(
-                    self,
-                    "allow",
-                    crate::i18n::t("tilolang-ask-confirm"),
-                    true,
-                ))
-                .push_slot(answer(
-                    self,
-                    "decline",
-                    crate::i18n::t("tilolang-ask-decline"),
-                    false,
-                ));
+                .push_slot(answer(self, "allow", crate::i18n::t(accept), true))
+                .push_slot(answer(self, "decline", crate::i18n::t(decline), false));
             card = card.push_slot(Slot::new(Box::new(choices)));
         }
         Box::new(card)

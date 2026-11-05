@@ -819,6 +819,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/shell_record.rs",
+  "crates/platform/tilolang-tilo/tests/suggest.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",

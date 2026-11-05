@@ -423,6 +423,8 @@ pub struct ListRowFace<'a> {
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
     secondary_lines: u8,
+    /// A line under the text of the row's own: what waits on the item.
+    note: Option<&'a str>,
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
@@ -492,6 +494,7 @@ impl<'a> ListRowFace<'a> {
             found: &[],
             subtitle: None,
             secondary: None,
+            note: None,
             secondary_lines: 1,
             meta: None,
             meta_spans: &[],
@@ -621,6 +624,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn secondary(mut self, text: &'a str) -> Self {
         self.secondary = Some(text);
+        self
+    }
+
+    /// A line under the text of the row's own: what waits on the item, which the app says and
+    /// the row only carries.
+    #[must_use]
+    pub fn note(mut self, text: &'a str) -> Self {
+        self.note = Some(text);
         self
     }
 
@@ -958,6 +969,7 @@ impl<'a> ListRowFace<'a> {
             [
                 self.subtitle,
                 self.secondary,
+                self.note,
                 meta,
                 (!spans.is_empty()).then_some(spans.as_str()),
                 self.value.map(|(value, _)| value),
@@ -1194,6 +1206,8 @@ pub struct ListRow {
     secondary: Option<String>,
     /// How many lines the secondary text may take.
     secondary_line_count: u8,
+    /// A line under the text of the row's own: what waits on the item.
+    note: Option<String>,
     meta: Option<String>,
     meta_spans: Vec<(String, Tone)>,
     value: Option<(String, RowValue)>,
@@ -1308,6 +1322,7 @@ impl ListRow {
             title_family: None,
             subtitle: None,
             secondary: None,
+            note: None,
             secondary_line_count: 1,
             meta: None,
             meta_spans: Vec::new(),
@@ -2308,6 +2323,9 @@ impl ListRow {
             face = face
                 .secondary(secondary)
                 .secondary_lines(self.secondary_line_count);
+        }
+        if let Some(note) = &self.note {
+            face = face.note(note);
         }
         if let Some(meta) = &self.meta {
             face = face.meta(meta);

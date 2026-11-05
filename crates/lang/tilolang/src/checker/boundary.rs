@@ -805,7 +805,7 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
                 names_in(&arg.value, out);
             }
         }
-        ExprKind::Try(inner) => names_in(inner, out),
+        ExprKind::Try(inner) | ExprKind::Suggest(inner) => names_in(inner, out),
     }
 }
 

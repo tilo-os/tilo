@@ -766,6 +766,9 @@ pub enum ExprKind {
     /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
+    /// `suggest act(args)`: proposes the action instead of applying it, as a suggestion that
+    /// waits on the resource it is about; an agent block's value.
+    Suggest(Box<Expr>),
     /// `root T`: the workspace's resource of the root type `T`.
     Root(TypeExpr),
 }

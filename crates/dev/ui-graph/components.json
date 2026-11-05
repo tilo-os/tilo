@@ -2419,6 +2419,13 @@
           }
         },
         {
+          "name": "note",
+          "doc": "A line of the row's own under its text: what waits on the item and is not its content, as a proposal about it reads (\"Suggested: move this to the end\"). One line, elided; empty shows nothing.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "meta",
           "doc": "When it happened or is due: the first fact of the row's facts column.",
           "type": {

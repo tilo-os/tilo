@@ -768,6 +768,7 @@ view task_row(t: Task, place: RowPlace, under: Option<Task>) {
         checkbox: t.done,
         check: check(t),
         secondary: project,
+        note: proposal_note(t),
         meta: due,
         mark: t.priority,
         avatar: t.assignee,
@@ -813,6 +814,8 @@ view task_page(t: Task) {
         }
         // What follows the heading stands in its body, under the text its title leads to.
         std.body() {
+            // What an agent proposed about the task: nothing shows while nothing waits.
+            std.suggestions(t)
             section("Subtasks") {
                 // A task with no subtasks puts no tree up, and the walk over the tasks under
                 // this one is made only once there is one.
@@ -1098,6 +1101,19 @@ scenario "a task made from another" -> Task {
         )
     }
     pack
+}
+
+/// What an agent suggested about a task, before anyone decided it: the task's page says what the
+/// change would be and who proposed it, with the way to accept or dismiss it, and its row carries
+/// the same in a line of its own. Nothing has changed: the task still has no day.
+scenario "an agent's suggestion" -> Task {
+    let scout = agent("Scout")
+    let flat = tasks.projects.insert(Project(name: "Move flat"))
+    let van = tasks.items.insert(Task(title: "Book the van", project: flat))
+    as scout {
+        suggest schedule(van, due: .some(2026-07-10))
+    }
+    van
 }
 
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.

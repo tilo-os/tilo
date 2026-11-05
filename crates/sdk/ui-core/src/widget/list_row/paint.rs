@@ -408,6 +408,25 @@ impl ListRowFace<'_> {
                 );
             }
         }
+        if let Some(note) = self.note {
+            // What waits on the item stands under its text, in the quieter ink: a proposal is
+            // not the item's own content.
+            let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
+            let y = if self.secondary.is_some() {
+                y + f64::from(self.secondary_lines) * secondary_line
+            } else {
+                y
+            };
+            let width = crate::num::f32_of_f64((geo.second_right - text_x).max(0.0));
+            let line = ctx.text.elide_to_width_style(note, width, &m.secondary);
+            ctx.text(
+                &line,
+                &m.secondary,
+                theme.text_tertiary,
+                Point::new(text_x, y),
+                None,
+            );
+        }
 
         if self.separator && !self.selected && !self.next_selected {
             crate::surface::separator(

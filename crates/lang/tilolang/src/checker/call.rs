@@ -124,6 +124,7 @@ impl Checker<'_> {
             }
             "unseen" => return self.builtin_unseen(args, span),
             "linked" => return self.builtin_links(args, span),
+            "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
             "mentions" => return self.builtin_mentions(args, span),
             "undo" => return self.builtin_undo(args, span),
@@ -485,6 +486,12 @@ impl Checker<'_> {
                 Ex::error()
             }
             (CKind::Action, Ctx::Action) => {
+                // `suggest act(args)` records the action as a proposal, so it is not applied
+                // here: nothing of it runs inside this action's own change.
+                if self.st.suggest.is_some() {
+                    let bound = self.applied_args(c, bound, span);
+                    return self.invoke(c, bound);
+                }
                 if !c.own {
                     self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
                     return Ex::error();
@@ -583,6 +590,9 @@ impl Checker<'_> {
     fn action_value(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
         self.st.facts.action_values.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
+        // A block's whole expression is the proposal, and its value the action: the host
+        // records it as one where it runs the block, instead of applying it.
+        self.st.suggest = None;
         Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action)
     }
 
@@ -590,6 +600,14 @@ impl Checker<'_> {
         self.st.facts.invokes.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
         let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
+        if let Some(value) = self.st.suggest.take() {
+            // The host records the proposal where it runs; a block's value is the proposal
+            // itself, which the host records where it runs the block.
+            if value {
+                return act.typed(Ty::Action);
+            }
+            return Ex::host(Imp::Suggest, vec![act], Ty::Unit);
+        }
         if std::mem::take(&mut self.st.try_invoke) {
             // The host builds the `Result`: `.ok(result)`, or `.err(reason)`.
             let ty = Ty::Result(Box::new(c.result.clone()), Box::new(Ty::Text));

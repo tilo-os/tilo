@@ -2240,6 +2240,7 @@ impl Store for TiloStore {
                 module: note.module.clone(),
                 at: note.at.clone(),
                 from: note.from.clone(),
+                suggested_by: note.suggested_by.clone(),
             },
             edits: state.edits,
         };

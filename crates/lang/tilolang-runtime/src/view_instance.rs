@@ -755,6 +755,7 @@ impl ViewInstance {
             invoker: self.live.viewer.clone(),
             chain: vec![view_module.clone()],
             approved_by: None,
+            suggested_by: None,
             origin: None,
             from: None,
         };
@@ -814,6 +815,7 @@ impl ViewInstance {
             touched: vec![target.id_string()],
             group: None,
             from: None,
+            suggested_by: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

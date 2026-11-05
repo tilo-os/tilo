@@ -141,6 +141,16 @@ impl Checker<'_> {
         Ex::host(Imp::Links, vec![r], Ty::List(Box::new(host_ty("Link"))))
     }
 
+    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text: what the
+    /// actions would do in words. Empty when nothing waits, so a row that carries it shows
+    /// nothing.
+    pub(super) fn builtin_proposal_note(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("proposal_note", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::ProposalNote, vec![r], Ty::Text)
+    }
+
     /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
     /// the same person, or by the same task run, folded into one `host.Step`. Which versions
     /// fold is the platform's rule, the same in every app's history, so no view writes it.

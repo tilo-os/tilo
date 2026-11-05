@@ -103,6 +103,9 @@ impl Stamp {
                 serde_json::to_value(from).unwrap_or(Json::Null),
             );
         }
+        if let (Some(who), Some(map)) = (&self.version.suggested_by, held.as_object_mut()) {
+            map.insert("suggested_by".to_owned(), Json::String(who.clone()));
+        }
         FieldValue::Scalar(Scalar::Json(held))
     }
 
@@ -144,6 +147,7 @@ impl Stamp {
                 task,
                 change: change.clone(),
                 from,
+                suggested_by: text("suggested_by"),
                 ..Version::default()
             },
             change,
@@ -273,6 +277,7 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
             task: task.clone(),
             change: hash.clone(),
             from: action.authorship.from.clone(),
+            suggested_by: action.authorship.suggested_by.clone(),
             ..Version::default()
         },
         change: hash,

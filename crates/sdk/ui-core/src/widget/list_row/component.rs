@@ -31,6 +31,10 @@ pub struct ListRowProps {
     pub item: Option<ResourceId>,
     /// The line under the title: the start of the item's content, the last message.
     pub secondary: Option<String>,
+    /// A line of the row's own under its text: what waits on the item and is not its content,
+    /// as a proposal about it reads ("Suggested: move this to the end"). One line, elided;
+    /// empty shows nothing.
+    pub note: Option<String>,
     /// When it happened or is due: the first fact of the row's facts column.
     pub meta: Option<String>,
     /// The tone the trailing fact reads in, where the item it states has one: a day gone by
@@ -89,6 +93,7 @@ impl ListRowProps {
             prefix: self.prefix.clone(),
             item: self.item.clone(),
             secondary: self.secondary.clone(),
+            note: self.note.clone(),
             meta: self.meta.clone(),
             meta_tone: self.meta_tone,
             value: self.value.clone(),
@@ -183,6 +188,7 @@ impl ListRow {
             prefix,
             item: _,
             secondary,
+            note,
             meta,
             meta_tone,
             value,
@@ -205,6 +211,7 @@ impl ListRow {
         self.title = title;
         self.prefix = shown(prefix);
         self.secondary = shown(secondary);
+        self.note = shown(note);
         self.meta = shown(meta);
         self.meta_spans = match shown(self.meta.clone()) {
             Some(text) if meta_tone != Tone::Neutral => vec![(text, meta_tone)],

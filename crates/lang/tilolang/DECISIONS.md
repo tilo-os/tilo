@@ -111,6 +111,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
   which invokes like `invoke` and builds the `Result` value in the host. Without `try`, a failed
   invocation yields an error value that traps when its scalar is unwrapped.
+- `suggest act(args)` records the action as a proposal on the resource it is about instead of
+  applying it: an agent's block whose whole expression it is, and a statement in an action or
+  flow (E044 elsewhere). An action records it once its own change has committed, so the proposal
+  is never part of that transaction. It compiles to one import, `suggest(act)`, and
+  `proposals(of)` draws what waits on `of`, each card naming who proposed it; accepting one runs
+  it as the person accepting, and the change it makes records who proposed it.
 - Sets and maps of Int and Float take their elements and values boxed with `some_i`/`some_f`
   through the existing `set_add`, `set_remove` and `map_put`. Set elements of Int or Float are
   stored under their text form, so a set iterates in text order.

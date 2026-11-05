@@ -50,6 +50,9 @@ pub struct ExecCtx {
     /// The resource the invocation was made from, when it was made from one: what the resources
     /// it creates were made from, recorded in the change ([`crate::store::Version::from`]).
     pub from: Option<ResourceRef>,
+    /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
+    /// its change, so history says who suggested it.
+    pub suggested_by: Option<Principal>,
 }
 
 /// How an action ended.
@@ -437,7 +440,7 @@ impl Core {
     }
 
     /// `aref` with the arguments it leaves out given their defaults, now.
-    fn completed(&self, aref: &ActionRef) -> Result<ActionRef, RuntimeError> {
+    pub(crate) fn completed(&self, aref: &ActionRef) -> Result<ActionRef, RuntimeError> {
         let wanted = self
             .registry
             .borrow()
@@ -468,6 +471,7 @@ impl Core {
             chain: ctx.chain.iter().map(|m| m.0.clone()).collect(),
             module: pkg.hash.0.clone(),
             approved_by: ctx.approved_by.as_ref().map(|p| p.0.clone()),
+            suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
             from: ctx.from.clone(),
             ..ChangeNote::default()
         }
@@ -508,6 +512,8 @@ impl Core {
                 primary,
                 invoker: ctx.invoker.clone(),
                 origin: ctx.origin.clone(),
+                suggested_by: ctx.suggested_by.clone(),
+                suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: meta.scenario,
                 acting_as: Vec::new(),
@@ -525,19 +531,22 @@ impl Core {
         );
         let at = self.invocation_time();
         let frame = self.frames.borrow_mut().pop();
-        let (queued, txn, note) = match frame.map(|f| f.kind) {
+        let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
             Some(FrameKind::Action(a)) => {
                 let mut note = *a.note;
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
-                (a.queued, a.txn, note)
+                (a.queued, a.suggestions, a.txn, note)
             }
-            _ => (Vec::new(), txn, Self::note(ctx, &pkg, aref)),
+            _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, aref)),
         };
         match result {
             Ok(v) => {
                 self.store.borrow_mut().commit(txn, &note)?;
                 self.settle_blocks(&ctx.invoker, queued)?;
+                for (who, suggested) in proposed {
+                    self.propose(&who, &suggested)?;
+                }
                 Ok(ActionOutcome::Done(v))
             }
             Err(RuntimeError::BadArgs(m)) => {
@@ -590,6 +599,7 @@ impl Core {
             invoker: invoker.clone(),
             chain,
             approved_by: None,
+            suggested_by: None,
             origin: None,
             from: from.cloned(),
         };
@@ -606,6 +616,7 @@ impl Core {
                     aref.args.clone(),
                     ctx.chain,
                     ctx.from,
+                    ctx.suggested_by,
                 )?;
                 Ok(match outcome {
                     FlowOutcome::Done(v) => InvokeOutcome::Done(v),
@@ -632,6 +643,7 @@ impl Core {
                     invoker: ctx.invoker,
                     chain: ctx.chain,
                     from: ctx.from,
+                    suggested_by: ctx.suggested_by.map(|who| who.0),
                     entries: Vec::new(),
                     pending: Some(suggestion.clone()),
                     finished: false,
@@ -691,7 +703,7 @@ impl Core {
         args: Vec<Value>,
         chain: Vec<ModuleHash>,
     ) -> Result<FlowOutcome, RuntimeError> {
-        self.start_flow_from(invoker, flow, args, chain, None)
+        self.start_flow_from(invoker, flow, args, chain, None, None)
     }
 
     /// [`Core::start_flow`] of a flow invoked from the resource `from`: what the resources its
@@ -707,6 +719,7 @@ impl Core {
         args: Vec<Value>,
         chain: Vec<ModuleHash>,
         from: Option<ResourceRef>,
+        suggested_by: Option<Principal>,
     ) -> Result<FlowOutcome, RuntimeError> {
         if self.registry.borrow().flow_package(flow).is_none() {
             return Err(RuntimeError::NotFound(format!("flow {flow}")));
@@ -718,6 +731,7 @@ impl Core {
             invoker: invoker.clone(),
             chain,
             from,
+            suggested_by: suggested_by.map(|p| p.0),
             entries: Vec::new(),
             pending: None,
             finished: false,
@@ -754,6 +768,7 @@ impl Core {
             FrameKind::Flow(Box::new(FlowState {
                 run: run.clone(),
                 invoker: journal.invoker.clone(),
+                suggested_by: journal.suggested_by.clone().map(Principal),
                 journal,
                 cursor: 0,
             })),
@@ -834,6 +849,7 @@ impl Core {
                 pending.args.clone(),
                 pending.chain.clone(),
                 journal.from.clone(),
+                journal.suggested_by.clone().map(Principal),
             );
         }
         let entry = match resolution {
@@ -842,6 +858,7 @@ impl Core {
                     invoker: pending.invoker.clone(),
                     chain: pending.chain.clone(),
                     approved_by: Some(approver.clone()),
+                    suggested_by: journal.suggested_by.clone().map(Principal),
                     origin: None,
                     from: journal.from.clone(),
                 };
@@ -937,6 +954,7 @@ impl Core {
                     invoker: fs.invoker.clone(),
                     chain,
                     approved_by: None,
+                    suggested_by: fs.suggested_by.clone(),
                     origin: None,
                     from: fs.journal.from.clone(),
                 })
@@ -1144,6 +1162,7 @@ impl Core {
                 invoker: fs.invoker.clone(),
                 chain: fs.journal.chain.clone(),
                 approved_by: None,
+                suggested_by: fs.suggested_by.clone(),
                 origin: None,
                 from: fs.journal.from.clone(),
             }
@@ -1549,6 +1568,41 @@ impl Core {
         Ok(())
     }
 
+    /// `suggest act(args)`: records the action as a proposal attached to the resource it is
+    /// about, instead of applying it. An action records it once it has committed, so the
+    /// proposal is never part of its transaction; a flow holds no transaction of its own, so it
+    /// records it now.
+    fn propose_in_frame(&self, act: i32) -> HResult<Option<Wasm>> {
+        let aref = match self.val(act)? {
+            Value::Action(aref) => aref,
+            other => return trap(format!("expected an action, got {}", other.kind_name())),
+        };
+        let mut recorded = false;
+        {
+            let mut frames = self.frames.borrow_mut();
+            match &mut frames.top_mut()?.kind {
+                FrameKind::Action(state) => {
+                    let who = state
+                        .acting_as
+                        .last()
+                        .map_or_else(|| state.invoker.clone(), |(who, _)| who.clone());
+                    state.suggestions.push((who, aref.clone()));
+                }
+                FrameKind::Flow(_) => recorded = true,
+                _ => return trap("only an action or a flow may suggest an action"),
+            }
+        }
+        if recorded {
+            let who = match &self.frames.borrow().top()?.kind {
+                FrameKind::Flow(state) => state.invoker.clone(),
+                _ => return trap("only an action or a flow may suggest an action"),
+            };
+            self.propose(&who, &aref)
+                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        }
+        ret_void()
+    }
+
     /// Run `f` on the top frame's action state, which must be a scenario's: only seed data
     /// names people and acts as them.
     fn scenario_state(&self, f: impl FnOnce(&mut ActionState)) -> HResult<()> {
@@ -1567,6 +1621,11 @@ impl Core {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
             Imp::Invoke => self.flow_invoke(a.h(0)?),
             Imp::TryInvoke => self.flow_try_invoke(a.h(0)?),
+            Imp::Suggest => self.propose_in_frame(a.h(0)?),
+            Imp::ProposalNote => {
+                let note = self.proposal_note(a.h(0)?)?;
+                self.ret_h(note)
+            }
             Imp::CallFn => self.fn_call(a.h(0)?, a.h(1)?),
             Imp::IsError => {
                 let failed = self.with_val(a.h(0)?, |v| Ok(matches!(v, Value::Error(_))))?;

@@ -115,6 +115,15 @@ struct FnState {
     keys: Vec<LocalId>,
     /// Set while checking the operand of `try`: the next `invoke` reports failure.
     try_invoke: bool,
+    /// Set while checking the operand of `suggest`: `Some(true)` when the call is the value an
+    /// agent block proposes, `Some(false)` when it is a statement recording a proposal.
+    suggest: Option<bool>,
+    /// Where a `suggest` stood in the code being checked: a block proposes only as its whole
+    /// expression, and says so where it stood elsewhere.
+    suggested_at: Option<crate::diag::Span>,
+    /// Whether the code being checked is an agent's block of expressions, whose own value its
+    /// proposal may be. A block of view body builds a view, which proposes nothing.
+    proposes: bool,
     /// The view state the view declares, by name.
     states: HashMap<String, StateRef>,
     /// What the code being checked was written as: a scenario or an agent's program
@@ -238,6 +247,8 @@ type Condition<'a> = (FuncKind, fn(&str) -> String, &'a [ast::Require]);
 pub struct BlockResult {
     pub module: ir::Module,
     pub ty: Ty,
+    /// Whether the block's value is a proposal the host records instead of applying it.
+    pub suggested: bool,
 }
 
 /// Checks every body of the module and lowers it. Errors go to `diags`.
@@ -403,7 +414,16 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         last_writes: Vec::new(),
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
+    c.st.proposes = true;
+    let proposal = matches!(e.kind, ast::ExprKind::Suggest(_));
     let ex = c.expr(e, None);
+    if let Some(at) = c.st.suggested_at.filter(|_| !proposal) {
+        c.err(
+            "E044",
+            at,
+            "`suggest` must be the whole expression of a block, or stand where an action or a flow runs",
+        );
+    }
     let ty = ex.ty.clone();
     if ty == Ty::Unit {
         c.err("E072", e.span, "a block must produce a value (a view, an action application or data), but this expression has none");
@@ -420,6 +440,9 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
             words: Vec::new(),
         },
         ty,
+        // A block that is a `suggest` of an action is the proposal; the host records it where
+        // it runs the block.
+        suggested: proposal,
     }
 }
 
@@ -449,6 +472,7 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
             words: Vec::new(),
         },
         ty: Ty::View,
+        suggested: false,
     }
 }
 

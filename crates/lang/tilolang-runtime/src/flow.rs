@@ -51,6 +51,10 @@ pub struct Journal {
     /// actions create were made from, kept across a suspension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<crate::value::ResourceRef>,
+    /// Who proposed the run, when the person running it accepted a suggestion: recorded in the
+    /// changes its actions make, so history says who suggested it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_by: Option<String>,
     pub entries: Vec<JournalEntry>,
     pub pending: Option<Suggestion>,
     pub finished: bool,

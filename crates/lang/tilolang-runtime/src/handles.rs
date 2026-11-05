@@ -14,7 +14,7 @@ use crate::flow::Journal;
 use crate::ids::{ModuleHash, Principal, RunId};
 use crate::space::Space;
 use crate::store::Txn;
-use crate::value::{ResourceRef, Value};
+use crate::value::{ActionRef, ResourceRef, Value};
 use crate::view::NodeBuild;
 use crate::view_state::StateKey;
 
@@ -36,6 +36,12 @@ pub struct ActionState {
     pub invoker: Principal,
     /// The recorded suggestion this run approves, if any; see `ExecCtx::origin`.
     pub origin: Option<String>,
+    /// What the person a suggestion was accepted from proposed, if this run is one: recorded in
+    /// its change so history says who suggested it ([`crate::store::Version::suggested_by`]).
+    pub suggested_by: Option<Principal>,
+    /// The actions the action proposed (`suggest act(args)`), recorded once it has committed:
+    /// a proposal is workspace state of its own, never part of this action's transaction.
+    pub suggestions: Vec<(Principal, ActionRef)>,
     /// Blocks to evaluate once the action has committed (`run_block`).
     pub queued: Vec<QueuedBlock>,
     /// Set for a scenario's action, the only one that may act as a named person.
@@ -67,6 +73,8 @@ pub struct FlowState {
     pub journal: Journal,
     pub cursor: usize,
     pub invoker: Principal,
+    /// Who proposed the run, when the person running it accepted a suggestion.
+    pub suggested_by: Option<Principal>,
 }
 
 #[derive(Default)]

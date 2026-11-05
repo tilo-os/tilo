@@ -15,7 +15,10 @@ impl ListRowFace<'_> {
         } else {
             0
         };
-        secondary + u8::from(self.subtitle.is_some()) + (self.title_lines - 1)
+        secondary
+            + u8::from(self.note.is_some())
+            + u8::from(self.subtitle.is_some())
+            + (self.title_lines - 1)
     }
 
     pub(super) fn title_style(&self, m: &RowMetrics) -> TextStyle {
@@ -76,7 +79,12 @@ impl ListRowFace<'_> {
         } else {
             0.0
         };
-        title + subtitle + secondary
+        let note = if self.note.is_some() {
+            RowMetrics::line(text, &m.secondary)
+        } else {
+            0.0
+        };
+        title + subtitle + secondary + note
     }
 
     pub(super) fn leading_extent(

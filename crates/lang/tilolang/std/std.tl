@@ -582,6 +582,13 @@ view linked<R>(of: R, compact: Bool = false) {
     }
 }
 
+/// What waits to be proposed of `of`: each pending proposal as the card a person accepts or
+/// dismisses it with — the action's own `proposal` view where it declares one, else what the
+/// action would do in words — naming who proposed it. Nothing waits: nothing shows.
+view suggestions<R>(of: R) {
+    proposals(of)
+}
+
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one task run, is an entry saying who made it, what
 /// they did and how long ago. What they did is the sentence its last change says
@@ -673,28 +680,37 @@ view history<R>(of: R) {
 /// what they held before and after ("moved this to", then the day as a day), or from what the
 /// action declares (`did:`); a version that says neither says what its action does.
 view version_sentence(v: host.Version) {
-    if v.did != "" {
-        ui.Text("{v.actor} {v.did}", role: .label)
-    } else if not v.changes.is_empty() {
-        row(gap: .tight, wrap: true) {
-            for c in v.changes {
-                row(gap: .tight) {
-                    ui.Text(c.said, role: .label)
-                    if c.shows == "after" {
-                        c.after
-                    } else if c.shows == "before" {
-                        c.before
+    stack(gap: .tight) {
+        if v.did != "" {
+            ui.Text("{v.actor} {v.did}", role: .label)
+        } else if not v.changes.is_empty() {
+            row(gap: .tight, wrap: true) {
+                for c in v.changes {
+                    row(gap: .tight) {
+                        ui.Text(c.said, role: .label)
+                        if c.shows == "after" {
+                            c.after
+                        } else if c.shows == "before" {
+                            c.before
+                        }
                     }
                 }
             }
+        } else {
+            ui.Text(v.actor, role: .label)
+            ui.Text(
+                if v.description == "" { v.what } else { v.description },
+                role: .caption,
+                secondary: true,
+            )
         }
-    } else {
-        ui.Text(v.actor, role: .label)
-        ui.Text(
-            if v.description == "" { v.what } else { v.description },
-            role: .caption,
-            secondary: true,
-        )
+        if v.suggested != "" {
+            ui.Text(
+                phrase("tilolang-suggested-by", name: v.suggested),
+                role: .caption,
+                secondary: true,
+            )
+        }
     }
 }
 

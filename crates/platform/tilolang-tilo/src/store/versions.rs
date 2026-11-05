@@ -106,6 +106,7 @@ fn stepped(
             left: None,
             placed: Vec::new(),
             from: None,
+            suggested_by: None,
         })
         .collect()
 }

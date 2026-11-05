@@ -326,6 +326,10 @@ pub struct ChangeNote {
     pub module: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<String>,
+    /// Who proposed the action, when the person invoking it accepted a suggestion: what makes
+    /// the change theirs while it says who proposed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_by: Option<String>,
     /// When it was made: the invocation's time, recorded like an argument (convergence.md,
     /// "Actions"); a scenario's `as who at time` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -386,6 +390,9 @@ pub struct Version {
     /// ran in was made from that resource (a message a task was made from). `None` for a change
     /// that made none, and for a resource made from nothing.
     pub from: Option<ResourceRef>,
+    /// Who proposed the action, for a change made by accepting a suggestion, so history says
+    /// who proposed it; `None` for a change made on its own.
+    pub suggested_by: Option<String>,
 }
 
 /// Where a removed item stood ([`Version::left`]).
@@ -591,6 +598,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
                 placed: Vec::new(),
                 // What it was made from is a fact of the change that made it.
                 from: made.then(|| note.from.clone()).flatten(),
+                suggested_by: note.suggested_by.clone(),
             }
         })
         .collect()

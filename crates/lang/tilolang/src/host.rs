@@ -225,6 +225,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "List<Change>",
                 "Each field it changed, with what the field held before and after, read from the change itself; empty for one that made or removed the resource.",
             ),
+            (
+                "suggested",
+                "Text",
+                "Who proposed the action the change made, as a sentence names them, when the person making it accepted their suggestion; empty for a change made on its own.",
+            ),
         ],
     },
     ValueType {
@@ -582,6 +587,16 @@ pub fn host_meta() -> PackageMeta {
                     "run",
                     "Text",
                     "The suggestion's run on the device that made it.",
+                ),
+                field(
+                    "subject",
+                    "Option<Resource>",
+                    "The resource the action is about, when a person proposed it: the resource it waits on.",
+                ),
+                field(
+                    "proposed",
+                    "Bool",
+                    "Whether a person proposed the action, to accept or dismiss, rather than the authority asking about one as it was applied.",
                 ),
             ],
             search: crate::meta::SearchMeta::default(),

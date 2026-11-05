@@ -1942,12 +1942,17 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        if self.is_kw("try") {
+        if self.is_kw("try") || self.is_kw("suggest") {
+            let suggest = self.is_kw("suggest");
             let start = self.bump().span;
             let operand = self.unary()?;
             let span = start.to(operand.span);
             return Ok(Expr {
-                kind: ExprKind::Try(Box::new(operand)),
+                kind: if suggest {
+                    ExprKind::Suggest(Box::new(operand))
+                } else {
+                    ExprKind::Try(Box::new(operand))
+                },
                 span,
             });
         }

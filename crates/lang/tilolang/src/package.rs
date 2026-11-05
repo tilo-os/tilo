@@ -43,6 +43,8 @@ pub struct CompiledBlock {
     pub value_type: String,
     pub kind: BlockKind,
     pub meta: PackageMeta,
+    /// Whether the block's action is a proposal to record, not an application to make.
+    pub suggested: bool,
 }
 
 /// Parses a module.
@@ -760,6 +762,7 @@ pub fn compile_block_for(
         wasm,
         value_type: result.ty.meta_text(&app),
         kind,
+        suggested: result.suggested,
         meta,
     })
 }

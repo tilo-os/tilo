@@ -16,7 +16,7 @@ use crate::types::Ty;
 
 /// The named arguments a list row takes, for messages.
 const ROW_ARGS_TEXT: &str =
-    "secondary:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
+    "secondary:, note:, meta:, mark:, icon:, avatar:, badge:, value:, checkbox: and check:";
 
 fn host(imp: Imp, args: Vec<Ex>) -> Stmt {
     Stmt::Eval(Ex::host(imp, args, Ty::Unit))
@@ -379,7 +379,7 @@ impl Checker<'_> {
                     let _ = self.expr(value, None);
                 }
                 Some("meta") => self.meta_arg(&node, value),
-                Some(name @ ("secondary" | "badge")) => {
+                Some(name @ ("secondary" | "badge" | "note")) => {
                     self.text_arg(&node, name, value);
                 }
                 Some("value") => {
@@ -1708,7 +1708,9 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .find_map(|b| mentions(&b.value, names))
             .or_else(|| block(then))
             .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
-        ExprKind::Unary { operand, .. } | ExprKind::Try(operand) => mentions(operand, names),
+        ExprKind::Unary { operand, .. } | ExprKind::Try(operand) | ExprKind::Suggest(operand) => {
+            mentions(operand, names)
+        }
         ExprKind::Binary { lhs, rhs, .. } => mentions(lhs, names).or_else(|| mentions(rhs, names)),
         ExprKind::Call { callee, args } => {
             mentions(callee, names).or_else(|| args.iter().find_map(|a| mentions(&a.value, names)))

@@ -532,6 +532,21 @@ impl Runtime {
             .resolve_invocation(invocation, approver, resolution)
     }
 
+    /// The proposals waiting on `resource`: each the `Invocation` it waits in and what it says,
+    /// with the person or agent who proposed it. Empty when nobody proposed anything that is
+    /// still undecided.
+    ///
+    /// # Errors
+    ///
+    /// Never for a resource that exists; a store that cannot be read says nothing waits.
+    #[must_use]
+    pub fn proposals_of(
+        &self,
+        resource: &ResourceRef,
+    ) -> Vec<(ResourceRef, crate::InvocationRecord)> {
+        self.core.proposals_of(resource)
+    }
+
     /// What the host recorded for an `Invocation` resource.
     ///
     /// # Errors

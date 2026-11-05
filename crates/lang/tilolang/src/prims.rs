@@ -122,6 +122,10 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
+    // What waits to be proposed of a resource (`suggest`), each as the card a person accepts or
+    // dismisses it with: the action's `proposal` view where it declares one, else what the
+    // action would do in words. `of` is a resource the proposals are about.
+    prim_of("proposals", &["of"], &[]),
     // A resource drawn through its type's default view, as its own package draws it, whatever
     // its type: what a shell composes a place from when it knows the resource by id alone
     // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view

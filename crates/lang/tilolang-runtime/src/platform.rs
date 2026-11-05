@@ -18,6 +18,7 @@ use crate::render::Offer;
 use crate::seen::SeenMark;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
+use tilolang::types::Ty;
 
 /// The window the lenses on each resource are kept under, as view state of no window: set by
 /// the host as presence moves, read by `lenses(r)`.
@@ -66,6 +67,16 @@ pub fn sentence(name: &str) -> String {
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()
     })
+}
+
+/// Whether `ty` names a resource (a reference), rather than a value of one.
+fn holds_resource(ty: &Ty) -> bool {
+    match ty {
+        Ty::Union(_) => true,
+        Ty::Record(key) => !tilolang::host::is_value(key),
+        Ty::Option(inner) => holds_resource(inner),
+        _ => false,
+    }
 }
 
 /// A field's name as a sentence goes on with it: `Notes` reads "notes".
@@ -493,6 +504,14 @@ impl Core {
             .map(|icon| Box::new(Value::Text(icon)));
         let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
         let actor = self.actor(&v.who, mine);
+        // Who proposed the action the person accepted, by the name the workspace calls them.
+        let suggested = v.suggested_by.as_ref().map_or_else(String::new, |who| {
+            let who = Principal(who.clone());
+            self.names
+                .borrow()
+                .as_ref()
+                .map_or_else(|| who.0.clone(), |host| host.name(&who))
+        });
         let changes = match &info {
             Some(info) => self.changes_value(&v, of, info)?,
             None => Vec::new(),
@@ -512,9 +531,116 @@ impl Core {
             Value::Text(did),
             Value::Opt(icon),
             Value::List(changes),
+            Value::Text(suggested),
             Value::Text(v.action),
             Value::Text(v.change),
         ]))
+    }
+
+    /// What proposing `action` with `args` would change, in the words history says a change
+    /// with ([`crate::did`]): one sentence per argument it names, over the field of its type
+    /// ("set the due date to Saturday", "assigned this to Bo"). A parameter that names no
+    /// value says nothing.
+    pub(crate) fn proposal_says(&self, action: &str, args: &[Value]) -> Vec<String> {
+        let params = {
+            let reg = self.registry.borrow();
+            let pkg = reg.action_package(action);
+            match pkg.and_then(|pkg| {
+                pkg.action(action)
+                    .map(|a| (pkg.meta.app.clone(), a.params.clone()))
+            }) {
+                Some(found) => found,
+                None => return Vec::new(),
+            }
+        };
+        let (app, params) = params;
+        let mut out = Vec::new();
+        for (param, arg) in params.iter().zip(args) {
+            if matches!(arg, Value::Unit | Value::Opt(None)) {
+                continue;
+            }
+            let Ok(ty) = crate::meta::parse_ty(&param.ty, &app) else {
+                continue;
+            };
+            // The resource an action is about is where the change goes, not what it changes:
+            // the sentences say the values proposed for it.
+            if holds_resource(&ty) {
+                continue;
+            }
+            let field = crate::registry::FieldInfo {
+                id: param.name.clone(),
+                name: param.name.clone(),
+                ty: ty.clone(),
+                kind: crate::meta::FieldKind::Register,
+                role: None,
+                default: None,
+                derived: None,
+            };
+            let named = field_of_sentence(&param.name);
+            // A proposal is read against nothing: as a change that sets the value.
+            let nothing = self
+                .change_shown(&ty, &Value::none())
+                .unwrap_or_else(|_| Value::none());
+            let verbs = crate::did::said(&field, &named, &nothing, arg);
+            let fills: Vec<(String, String)> = verbs
+                .field
+                .iter()
+                .map(|name| ("field".to_owned(), name.clone()))
+                .collect();
+            let source = match &verbs.field {
+                Some(name) => verbs.source.replace("{ $field }", name),
+                None => verbs.source.to_owned(),
+            };
+            let voices = self.words.borrow().word(verbs.key, &fills, &source);
+            let line = match verbs.shows {
+                crate::did::Shows::After => match self.change_shown(&ty, arg) {
+                    Ok(shown) => format!("{voices} {}", said(&shown)),
+                    Err(_) => voices,
+                },
+                _ => voices,
+            };
+            out.push(line);
+        }
+        out
+    }
+
+    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text — each
+    /// proposal's arguments in the words a change to them reads with, or the action's name when
+    /// they say nothing; empty when nothing waits.
+    pub(crate) fn proposal_note(&self, r: i32) -> HResult<Value> {
+        let target = self.ref_arg(r)?;
+        let mut says: Vec<String> = Vec::new();
+        for inv in self.pending_proposals(&target.target) {
+            let Ok(rec) = self.read_invocation(&inv) else {
+                continue;
+            };
+            let args = serde_json::from_str::<serde_json::Value>(&rec.args)
+                .ok()
+                .and_then(|json| crate::value::from_json(&json).ok())
+                .and_then(|value| match value {
+                    Value::List(args) => Some(args),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let lines = self.proposal_says(&rec.action, &args);
+            if lines.is_empty() {
+                says.push(self.action_label(&rec.action));
+            } else {
+                says.extend(lines);
+            }
+        }
+        if says.is_empty() {
+            return Ok(Value::text(""));
+        }
+        let lead = self.word("tilolang-suggested", "Suggested");
+        Ok(Value::text(format!("{lead}: {}", says.join(", "))))
+    }
+
+    /// What the workspace calls `who`, as a sentence names them: the person looking as the
+    /// platform's word for them, anyone else by their name.
+    pub(crate) fn name_of(&self, who: &Principal) -> String {
+        let mine = self.looking_now().as_deref() == Some(who.0.as_str());
+        self.actor(&who.0, mine)
     }
 
     /// Each field the version `v` of `of` changed, as a `host.Change`: its name, its name in
@@ -2038,7 +2164,7 @@ fn same_step(last: &crate::store::Version, next: &crate::store::Version) -> bool
 
 /// What a value as `c.before` and `c.after` show it says as text, where it is part of a phrase
 /// (an entry of a map): a person by name, a case by its label, a list one item after another.
-fn said(shown: &Value) -> String {
+pub(crate) fn said(shown: &Value) -> String {
     match shown {
         Value::List(items) => items.iter().map(said).collect::<Vec<_>>().join(", "),
         Value::Tuple(parts) => match parts.as_slice() {
