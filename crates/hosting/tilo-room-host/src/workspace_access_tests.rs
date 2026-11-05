@@ -480,7 +480,7 @@ pub(crate) fn unsigned_peer(user: [u8; 32], device: [u8; 32]) -> AuthenticatedPe
 
 /// A signed certificate of `root` for `device`, issued at `issued_at_ns`,
 /// granting the member set and expiring a day later.
-fn signed_member(root: &SigningKey, device: SigningKey, issued_at_ns: u64) -> DeviceCert {
+fn signed_member(root: &SigningKey, device: &SigningKey, issued_at_ns: u64) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: device.verifying_key().to_bytes(),
@@ -506,8 +506,8 @@ fn a_host_refuses_a_lapsed_certificate_and_admits_its_renewal() {
     // The matrix's NOW is an arbitrary instant; a certificate is judged
     // against the clock a device actually has.
     let now = 1_800_000_000_000_000_000;
-    let lapsed = signed_member(root, device.clone(), now - 48 * 60 * 60 * 1_000_000_000);
-    let renewed = signed_member(root, device, now - 60 * 1_000_000_000);
+    let lapsed = signed_member(root, &device, now - 48 * 60 * 60 * 1_000_000_000);
+    let renewed = signed_member(root, &device, now - 60 * 1_000_000_000);
     assert!(
         lapsed.is_expired_at(now),
         "the certificate the host knew ran out"
