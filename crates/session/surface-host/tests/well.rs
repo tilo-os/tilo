@@ -263,3 +263,86 @@ fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
     );
     drop(frame);
 }
+
+/// A window whose client rounds what it commits to a grid of cells, as a terminal does: told a
+/// size, it draws the largest whole number of cells that fits and commits that. It is the
+/// client `well_policy` places, and the size it last committed is what the compositor lists
+/// it at.
+struct Cells {
+    /// The width and height of one cell, in logical pixels.
+    cell: (i32, i32),
+    /// What it last committed.
+    committed: (i32, i32),
+}
+
+impl Cells {
+    /// A client of `cell` pixels that opens at `asked`.
+    fn new(cell: (i32, i32), asked: (i32, i32)) -> Self {
+        Self {
+            cell,
+            committed: (asked.0 / cell.0 * cell.0, asked.1 / cell.1 * cell.1),
+        }
+    }
+
+    /// The size this client commits when it is told `asked`.
+    fn rounded(&self, asked: (i32, i32)) -> (i32, i32) {
+        (
+            (asked.0 / self.cell.0 * self.cell.0).max(self.cell.0),
+            (asked.1 / self.cell.1 * self.cell.1).max(self.cell.1),
+        )
+    }
+}
+
+/// A policy that hands its windows wherever the desk's own towers stand, and records every
+/// size it configured a client to: what a click on a window must never add to.
+#[test]
+fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a_click() {
+    let _settled = ui::motion::testing::settled();
+    let (mut policy, _desk) = well_policy(7, 1.0);
+    let outputs = output();
+    let (window, key) = mapped(&mut policy, 46, "org.example.Terminal");
+    let wells = policy.wells();
+    let _frame = Frame::new(wells.clone(), 48.0, &key, VIEWPORT);
+    let well = wells.well(&key).expect("the well is on screen");
+    let at = LayoutPoint::from((round(well.x0), round(well.y0)));
+    let asked = (round(well.width()), round(well.height()));
+    // The client rounds the well's size to its own cells, as a terminal does.
+    let mut client = Cells::new((17, 29), asked);
+    assert_ne!(
+        client.committed, asked,
+        "precondition: the client's cells do not divide the well exactly"
+    );
+    // The window opens: the policy lays it out once, and the client commits its cells.
+    let arranged = policy
+        .arrange(
+            &[(window.clone(), LayoutRect::new(at, client.committed.into()))],
+            &outputs,
+        )
+        .expect("an arrangement");
+    if let Some(size) = arranged.first().and_then(|laid| laid.size) {
+        client.committed = client.rounded(size);
+    }
+    // Ten clicks on the window: each one a press and a release, each asking the policy to lay
+    // the windows out again (what the compositor does after every frame's input). None of them
+    // may configure it: the client committed a size within the room its well gives it, and a
+    // click changes no room.
+    let mut configured: Vec<(i32, i32)> = Vec::new();
+    for _ in 0..10 {
+        let current = LayoutRect::new(at, client.committed.into());
+        let arranged = policy.arrange(&[(window.clone(), current)], &outputs);
+        let arranged = arranged.expect("an arrangement");
+        let (laid, _rest) = arranged.split_first().expect("the window is arranged");
+        if let Some(size) = laid.size
+            && size != client.committed
+        {
+            configured.push(size);
+            client.committed = client.rounded(size);
+        }
+        assert_eq!(laid.location, at, "the window stays where its well is");
+    }
+    assert_eq!(
+        configured,
+        Vec::<(i32, i32)>::new(),
+        "a click never configures a client that committed a size within its constraint"
+    );
+}
