@@ -248,6 +248,9 @@ tilo-session-power = { path = "../power-service" }
 tilo-power-mgmt = { path = "../../system/power" }
 # The records of a session that stopped, and the news of one that did.
 tilo-crash-records = { path = "../crash-records" }
+# The session's own log: its stderr, filtered as `RUST_LOG` says, and a crash
+# record for every panic.
+tilo-session-logging = { path = "../session-logging" }
 # The runs of what people ask this session's agents to do: what the agent
 # composer and a run's window follow, and what the broker delivers a run on.
 tilo-agent-runs = { path = "../agent-runs" }
@@ -323,8 +326,6 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 pollster.workspace = true
 tracing.workspace = true
-# The session's own log: the filter `RUST_LOG` sets, written to its stderr.
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
@@ -348,6 +349,8 @@ tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
+# The log a test's people write while it runs.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A site's entry and directory served over loopback, for what joins list.
 test-http = { path = "../../dev/test-http" }
 # The broker's certified-connection context, for driving a service the way

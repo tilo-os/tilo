@@ -15,6 +15,11 @@
 //! reads its arguments, so a workspace's render service, the same binary in
 //! its own mode, logs the same way. A process that installs nothing reports
 //! to nobody.
+//!
+//! A crate of its own so that its test, which finds its own function in a
+//! panic's backtrace, alone keeps the symbol table CI strips from test
+//! executables (`[profile.test.package.tilo-session-logging]` in the
+//! workspace's Cargo.toml), not the session's tests, which link the compositor.
 
 /// The one log of this process: its stderr, filtered as `RUST_LOG` says, and
 /// a crash record for every panic.

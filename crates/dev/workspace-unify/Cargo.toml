@@ -1301,6 +1301,7 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
+"tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }
@@ -3774,6 +3775,7 @@ doc = false
 "tilo-selector" = { path = "../../../crates/platform/tilo-selector", default-features = false, features = [] }
 "tilo-service" = { path = "../../../crates/session/service", default-features = false, features = [] }
 "tilo-session" = { path = "../../../crates/session/session", default-features = false, features = [] }
+"tilo-session-logging" = { path = "../../../crates/session/session-logging", default-features = false, features = [] }
 "tilo-session-power" = { path = "../../../crates/session/power-service", default-features = false, features = [] }
 "tilo-session-record" = { path = "../../../crates/session/session-record", default-features = false, features = [] }
 "tilo-settings-records" = { path = "../../../crates/platform/tilo-settings-records", default-features = false, features = ["watch"] }

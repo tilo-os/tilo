@@ -103,7 +103,6 @@ mod lists;
 pub mod live;
 mod lock_screen;
 mod lock_service;
-pub mod logging;
 mod look;
 mod membership;
 pub mod mount;

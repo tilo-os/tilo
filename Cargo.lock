@@ -21358,6 +21358,7 @@ dependencies = [
  "tilo-seal",
  "tilo-secrets",
  "tilo-service",
+ "tilo-session-logging",
  "tilo-session-power",
  "tilo-settings-service",
  "tilo-sheets",
@@ -21393,6 +21394,17 @@ dependencies = [
  "xkeysym",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-session-logging"
+version = "0.1.0"
+dependencies = [
+ "tilo-crash-records",
+ "tilo-startup-metrics",
+ "tilo-test-env",
+ "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -28165,6 +28177,7 @@ dependencies = [
  "tilo-selector",
  "tilo-service",
  "tilo-session",
+ "tilo-session-logging",
  "tilo-session-power",
  "tilo-session-record",
  "tilo-settings-records",

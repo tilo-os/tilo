@@ -84,7 +84,7 @@ fn main() -> std::process::ExitCode {
     // Everything this process reports, and the panic that would end it, goes
     // through the one log from here on — including the render service, which
     // is this binary in its own mode.
-    tilo_session::logging::install();
+    tilo_session_logging::install();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it
