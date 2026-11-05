@@ -66,6 +66,11 @@ mod cases {
             texts_of(self.call("links_of", vec![Value::resource(note)]))
         }
 
+        /// The titles `action` answers for the links of `note`.
+        fn titles_of(&self, action: &str, note: &ResourceRef) -> Vec<String> {
+            texts_of(self.call(action, vec![Value::resource(note)]))
+        }
+
         /// Runs the scenario `name`, which answers the resource it names as its result.
         fn scenario(&self, name: &str) -> ResourceRef {
             let action = self
@@ -118,6 +123,56 @@ mod cases {
 
     fn rich(text: &str) -> Value {
         Value::Rich(RichValue::from_text(text))
+    }
+
+    /// A link says how it links as a case of `host.LinkHow`, so code compares it with
+    /// `.field` or `.mention` and never with a word.
+    #[test]
+    fn a_link_says_how_as_a_case_of_the_hosts_enum() {
+        let l = Links::new();
+        let source = l.add_note("A");
+        l.call_from("add_note", vec![l.board_arg(), Value::text("B")], &source);
+        // An item whose field names the note.
+        returned_ref(l.call(
+            "item_about",
+            vec![l.board_arg(), Value::resource(&source), Value::text("I")],
+        ));
+        // A note whose text mentions it.
+        l.note_about(&source, "M");
+        assert_eq!(l.titles_of("naming", &source), vec!["I".to_owned()]);
+        assert_eq!(l.titles_of("mentioning", &source), vec!["M".to_owned()]);
+        // A note made from it names it in no field and mentions it nowhere.
+        assert!(l.titles_of("naming", &l.titled("B")).is_empty());
+        assert!(l.titles_of("mentioning", &l.titled("B")).is_empty());
+    }
+
+    /// The word the index keeps a link's how under is the case `host.LinkHow` names, so a link
+    /// read from the index is the case code compares.
+    #[test]
+    fn a_links_how_word_is_the_case_it_is_read_as() {
+        use tilolang_runtime::store::LinkHow;
+
+        let meta = tilolang::host_meta();
+        let declared = meta
+            .enums
+            .iter()
+            .find(|e| e.id == tilolang::LINK_HOW_TYPE)
+            .expect("the host declares LinkHow");
+        assert_eq!(
+            declared
+                .variants
+                .iter()
+                .map(|v| v.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["created_from", "field", "mention"]
+        );
+        for how in [LinkHow::CreatedFrom, LinkHow::Field, LinkHow::Mention] {
+            assert!(
+                declared.variants.iter().any(|v| v.id == how.word()),
+                "`{}` is a case of the host's `LinkHow`",
+                how.word()
+            );
+        }
     }
 
     #[test]

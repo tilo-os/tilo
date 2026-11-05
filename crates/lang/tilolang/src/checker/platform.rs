@@ -130,10 +130,10 @@ impl Checker<'_> {
         }
     }
 
-    /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how:
-    /// made from it (`created_from`), mentioning it in its rich text (`mention`), or holding a
-    /// reference to it in a field (`field`). One definition for views, search and agents; a
-    /// store with an index answers it from a reverse list per resource.
+    /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how it
+    /// links, a `host.LinkHow`: made from it (`.created_from`), naming it in a field
+    /// (`.field`), or mentioning it in its rich text (`.mention`). One definition for views,
+    /// search and agents; a store with an index answers it from a reverse list per resource.
     pub(super) fn builtin_links(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("linked", args, span) else {
             return Ex::error();

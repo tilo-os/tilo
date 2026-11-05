@@ -3,13 +3,15 @@
 //! `Invocation` records what happened to an action a block applied: the host creates and
 //! changes these resources, and code only reads them. Every module sees the package as `host`.
 
-use crate::meta::{FieldMeta, PackageMeta, TypeMeta};
+use crate::meta::{EnumMeta, FieldMeta, PackageMeta, TypeMeta, VariantMeta};
 use crate::types::MergeKind;
 
 /// The app id of the host's package.
 pub const HOST_APP: &str = "tilo.host";
 /// The id of the `Invocation` type.
 pub const INVOCATION_TYPE: &str = "host-invocation";
+/// The id of `LinkHow`, the enum a `host.Link`'s `how` holds.
+pub const LINK_HOW_TYPE: &str = "host-link-how";
 
 /// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload
 /// fields. `try act(args)` builds one from an invocation's outcome.
@@ -29,6 +31,40 @@ pub struct ValueType {
     /// Its fields: name, type as metadata writes it, doc.
     pub fields: &'static [(&'static str, &'static str, &'static str)],
 }
+
+/// A closed set of the host's surface: a type whose values code names by case, so that a case
+/// the host never answers is a compile error.
+pub struct HostEnum {
+    pub name: &'static str,
+    pub id: &'static str,
+    pub doc: &'static str,
+    /// Its cases: name, which is also its id, what a control shows for it, and doc.
+    pub variants: &'static [(&'static str, &'static str, &'static str)],
+}
+
+/// The enums of the host.
+pub const HOST_ENUMS: &[HostEnum] = &[HostEnum {
+    name: "LinkHow",
+    id: LINK_HOW_TYPE,
+    doc: "How a resource is linked to another, as `linked(r)` answers: made from it, naming it in a field, or mentioning it in its rich text.",
+    variants: &[
+        (
+            "created_from",
+            "Made from it",
+            "An action made it from the resource it links to.",
+        ),
+        (
+            "field",
+            "Named in a field",
+            "A reference field of it points at the resource it links to.",
+        ),
+        (
+            "mention",
+            "Mentioned in its text",
+            "Its rich text names the resource it links to.",
+        ),
+    ],
+}];
 
 /// The value types of the host, each held as a tuple of its fields in their order.
 pub const VALUE_TYPES: &[ValueType] = &[
@@ -203,8 +239,8 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
             (
                 "how",
-                "Text",
-                "How it is linked: `created_from`, `mention` or `field`.",
+                "enum LinkHow",
+                "How it is linked: `created_from`, `field` or `mention`.",
             ),
         ],
     },
@@ -563,6 +599,27 @@ pub fn host_meta() -> PackageMeta {
             }
         }))
         .collect(),
+        enums: HOST_ENUMS
+            .iter()
+            .map(|e| EnumMeta {
+                id: e.id.to_string(),
+                name: e.name.to_string(),
+                doc: e.doc.to_string(),
+                variants: e
+                    .variants
+                    .iter()
+                    .map(|(name, label, doc)| VariantMeta {
+                        id: (*name).to_string(),
+                        name: (*name).to_string(),
+                        doc: (*doc).to_string(),
+                        label: (*label).to_string(),
+                        icon: None,
+                        tone: None,
+                        fields: Vec::new(),
+                    })
+                    .collect(),
+            })
+            .collect(),
         ..PackageMeta::default()
     }
 }

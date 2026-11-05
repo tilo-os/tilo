@@ -247,9 +247,9 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 (task-legibility.md).
 
 **What links to a resource.** `linked(r)` is every resource that links to `r`, a
-`List<host.Link>`: `.of` is the resource and `.how` how it links, `created_from` for one made
-from `r`, `mention` for one whose rich text names it, and `field` for one whose reference field
-points at it. It is read from the index, at the cost of what links to `r` and not of the
+`List<host.Link>`: `.of` is the resource and `.how` how it links, a `host.LinkHow`:
+`.created_from` for one made from `r`, `.field` for one whose reference field points at it, and
+`.mention` for one whose rich text names it. It is read from the index, at the cost of what links to `r` and not of the
 workspace's size, and a view that reads it runs again when what links to `r` changes.
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:

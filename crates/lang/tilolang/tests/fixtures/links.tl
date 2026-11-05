@@ -71,7 +71,17 @@ action made_from(n: Note) -> Text {
 
 /// What links to a note, each as how it is linked and the linked resource's title.
 action links_of(n: Note) -> List<Text> {
-    return linked(n).map(l -> "{l.how} {meta(l.of).title}")
+    return linked(n).map(l -> "{l.how.name()} {meta(l.of).title}")
+}
+
+/// What names the note in a field, by its title.
+action naming(n: Note) -> List<Text> {
+    return linked(n).filter(l -> l.how == .field).map(l -> meta(l.of).title)
+}
+
+/// What mentions the note in its text, by its title.
+action mentioning(n: Note) -> List<Text> {
+    return linked(n).filter(l -> l.how == .mention).map(l -> meta(l.of).title)
 }
 
 /// The board: its notes.
@@ -108,7 +118,7 @@ scenario "a note made from another" -> Note {
 view links(n: Note) {
     stack {
         for l in linked(n) {
-            text("{l.how} {meta(l.of).title}")
+            text("{l.how.name()} {meta(l.of).title}")
         }
     }
 }

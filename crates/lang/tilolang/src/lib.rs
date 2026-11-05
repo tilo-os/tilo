@@ -74,8 +74,8 @@ pub mod written;
 pub use checker::{RESOURCE_TYPE_NAME, resource_key};
 pub use diag::{Diagnostic, Span, diagnostics_json, did_you_mean};
 pub use host::{
-    HOST_APP, INVOCATION_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE, RESULT_VALUE,
-    host_meta,
+    HOST_APP, INVOCATION_TYPE, LINK_HOW_TYPE, RESULT_ERR, RESULT_ERROR, RESULT_OK, RESULT_TYPE,
+    RESULT_VALUE, host_meta,
 };
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
 pub use meta::{PERSONAL_RECORD_KIND, PackageMeta, custom_section};

@@ -1042,6 +1042,40 @@ fn linked_and_made_from_are_read_from_the_log() {
 }
 
 #[test]
+fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text\n}\nfn mentions(n: Note) -> Bool {\n    linked(n).any(l -> l.how == .mention)\n}",
+    );
+    let mentions = func(&m, "mentions");
+    let mut cases: Vec<(Option<String>, Option<String>)> = Vec::new();
+    visit(mentions, &mut |e| {
+        if let Ek::Host(Imp::EnumNew, args) = &e.kind {
+            cases.push((
+                args.first().and_then(text).map(str::to_owned),
+                args.get(1).and_then(text).map(str::to_owned),
+            ));
+        }
+    });
+    assert_eq!(
+        cases,
+        vec![(
+            Some(crate::host::LINK_HOW_TYPE.to_owned()),
+            Some("mention".to_owned())
+        )],
+        "`.mention` is the host's `LinkHow` case"
+    );
+    assert!(
+        host_imports(mentions).contains(&Imp::ValueEq),
+        "a how is compared by value"
+    );
+    // A word the host never answers is not a case of it.
+    let found = diagnostics(
+        "type Note {\n    title: Text\n}\nfn mentions(n: Note) -> Bool {\n    linked(n).any(l -> l.how == .mentioned)\n}",
+    );
+    assert!(found.iter().any(|d| d.code == "E036"), "{found:#?}");
+}
+
+#[test]
 fn every_rich_input_is_given_its_drawers_people_by_the_system() {
     let (m, _) = lower(
         "type Chat {\n    topic: Text\n}\nview chat(c: Chat) {\n    lens draft: RichText = RichText(\"\")\n    stack {\n        rich_input(bind: draft)\n    }\n}\nview loose() {\n    lens draft: RichText = RichText(\"\")\n    rich_input(bind: draft)\n}",

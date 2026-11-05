@@ -230,9 +230,9 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **`linked(r)` is three answers, in one order.** A resource links to another when an action
   made it from there (`created(r)?.from` of it names that one), when a reference field of it
   names it (the register's value, through options, lists, tuples and enums), or when its rich
-  text mentions it (`RichText::references`). Each is a `host.Link`: `of` the resource and `how`
-  `created_from`, `field` or `mention`, in that order, then by what is linked. It is a system
-  query, not a declaration: no type declares it and no app takes part.
+  text mentions it (`RichText::references`). Each is a `host.Link`: `of` the resource and
+  `how` a `host.LinkHow`, `created_from`, `field` or `mention`, in that order, then by what is
+  linked. It is a system query, not a declaration: no type declares it and no app takes part.
 - **The index keeps both ways.** Each resource's outgoing set is a pseudo-field (`$links`) of
   the pairs, kept with the fields it is derived from (`store::LINKS`), and each target holds
   the reverse list of what links to it; `Store::linked` reads the target's list, so its cost is

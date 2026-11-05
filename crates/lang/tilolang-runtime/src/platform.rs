@@ -16,7 +16,7 @@ use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
 use crate::seen::SeenMark;
-use crate::value::{ActionRef, RefValue, ResourceRef, Value};
+use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 
 /// The window the lenses on each resource are kept under, as view state of no window: set by
@@ -1315,7 +1315,12 @@ impl Core {
                 .map(|link| {
                     Value::Tuple(vec![
                         Value::resource(&link.of),
-                        Value::Text(link.how.word().to_owned()),
+                        // How it links, as the `host.LinkHow` case its word names.
+                        Value::Enum(EnumValue {
+                            ty: tilolang::host::LINK_HOW_TYPE.to_owned(),
+                            variant: link.how.word().to_owned(),
+                            fields: std::collections::BTreeMap::new(),
+                        }),
                     ])
                 })
                 .collect(),

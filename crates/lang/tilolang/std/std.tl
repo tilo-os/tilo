@@ -527,7 +527,7 @@ view origin<R>(of: R) {
 /// columns, as cards do (`grid`'s own minimum width): a card's width is its column's, so a row
 /// view inside one is never squeezed below the room its text needs.
 view linked<R>(of: R) {
-    let links = linked(of).filter(l -> l.how != "field")
+    let links = linked(of).filter(l -> l.how != .field)
     if not links.is_empty() {
         grid(gap: .related) {
             for l in links {
