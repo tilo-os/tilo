@@ -2627,7 +2627,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     for row in [
         "New workspace",
         "Join a workspace",
-        "Leave this workspace",
+        "Leave workspace",
         "Workspace settings",
     ] {
         assert!(menu.contains(row), "the menu offers {row}: {menu}");

@@ -489,8 +489,10 @@ fn action(id: &str, title: &str, source: HostActionSource) -> HostAction {
         id: id.into(),
         title: title.into(),
         subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
         source: Some(source),
-        label: None,
     }
 }
 

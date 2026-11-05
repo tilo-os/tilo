@@ -239,17 +239,31 @@ pub const PALETTE_EDGE: f64 = 8.0;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct HostAction {
     pub id: String,
+    /// What the action is called: its name, as the menus and search list it
+    /// ("Leave workspace"), never the sentence describing it, which is
+    /// `subtitle`.
     pub title: String,
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// The action's own picture, by its Lucide name
+    /// ([`ui::icons::Icon::name`]): every list of it draws the one the
+    /// action declares, never a generic glyph of its kind.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Taking something away from the person (leaving this workspace,
+    /// logging out): a menu draws it as that, and search never offers it
+    /// before anything is typed.
+    #[serde(default)]
+    pub destructive: bool,
+    /// Search offers it with nothing typed: what a person may want from the
+    /// empty card, which is making something or bringing someone in, never
+    /// a verb that only takes something away or closes this computer down.
+    #[serde(default)]
+    pub unasked: bool,
     /// What the action is about, named as the source of the notices that
     /// offer it.
     #[serde(default)]
     pub source: Option<HostActionSource>,
-    /// What a menu listing it calls it, when that differs from `title`
-    /// (the workspace menu lists "Lounge", search says "Open Lounge").
-    #[serde(default)]
-    pub label: Option<String>,
 }
 
 /// The part of the system a host action belongs to, in the desktop's
@@ -717,8 +731,9 @@ fn people(
 /// What search offers to do, in this order: the host's actions (a
 /// workspace's own, the session's), then what the focused window allows (no
 /// close for a window someone else holds, `held`), then the other
-/// workspaces. Nothing typed lists them as the empty card's actions, so the
-/// first of them are the workspace's own; typing reaches the rest.
+/// workspaces. Each row says whether it may stand there with nothing typed:
+/// closing a window or moving to another workspace is something a person
+/// goes looking for, and typing still finds every one of them.
 fn commands(
     tree: &DesktopTree,
     host: &[HostAction],
@@ -730,6 +745,8 @@ fn commands(
             id: format!("{HOST_PREFIX}{}", action.id),
             title: action.title.clone(),
             subtitle: action.subtitle.clone(),
+            icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            unasked: action.unasked && !action.destructive,
         })
         .collect();
     if let Some(ids) = navigation::active_route(tree)
@@ -745,6 +762,8 @@ fn commands(
                 id: CLOSE_WINDOW.into(),
                 title: "Close window".into(),
                 subtitle: title.clone(),
+                icon: Some(ui::icons::Icon::X),
+                unasked: false,
             });
         }
         out.push(CommandSpec {
@@ -755,6 +774,12 @@ fn commands(
                 "Maximize window".into()
             },
             subtitle: title,
+            icon: Some(if group.maximized {
+                ui::icons::Icon::Minimize2
+            } else {
+                ui::icons::Icon::Maximize2
+            }),
+            unasked: false,
         });
     }
     for workspace in &tree.workspaces {
@@ -767,6 +792,8 @@ fn commands(
                 ),
                 title: format!("Switch to {}", workspace.name),
                 subtitle: Some("Workspace".into()),
+                icon: Some(ui::icons::Icon::LayoutGrid),
+                unasked: false,
             });
         }
     }

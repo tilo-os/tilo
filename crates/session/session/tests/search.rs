@@ -400,6 +400,56 @@ fn the_search_chord_closes_the_open_search_and_opens_it_again() {
     });
 }
 
+/// Nothing typed offers what a person may want to do from an empty desk:
+/// making a workspace, and joining one where this session can. Leaving this
+/// workspace, and ending the computer's session, are looked for by name —
+/// and found.
+#[test]
+fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.step(Duration::from_millis(1)).expect("step");
+    invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
+    await_search(&mut session, Some(""));
+    let titles: Vec<String> = rows(&session)
+        .into_iter()
+        .filter(|row| row.kind == SEARCH_ROW_KIND)
+        .map(|row| row.label)
+        .collect();
+    assert!(
+        titles.iter().any(|title| title == "New workspace"),
+        "the empty search offers making a workspace: {titles:?}"
+    );
+    for kept_back in session
+        .handle()
+        .host_actions()
+        .into_iter()
+        .filter(|action| action.destructive)
+        .map(|action| action.title)
+    {
+        assert!(
+            !titles.contains(&kept_back),
+            "the empty search offers no way out ({kept_back}): {titles:?}"
+        );
+    }
+    // Typed, every one of them is found.
+    invoke(
+        &mut session,
+        SEARCH_RESOURCE,
+        "search",
+        serde_json::json!({"query": "leave"}),
+    );
+    await_search(&mut session, Some("leave"));
+    assert!(
+        row(&session, "Leave workspace").is_some(),
+        "typing finds the way out: {:?}",
+        rows(&session)
+            .into_iter()
+            .map(|row| row.label)
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn search_opens_by_its_action_and_runs_an_app_and_a_setting_by_address() {
     let _settled = ui::motion::testing::settled();

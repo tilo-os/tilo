@@ -1332,7 +1332,7 @@ impl DesktopChrome {
             .filter(|action| action.source == Some(HostActionSource::Session))
             .map(|action| TiloMenuAction {
                 id: action.id,
-                label: action.label.unwrap_or(action.title),
+                label: action.title,
             })
             .collect()
     }
@@ -1368,7 +1368,7 @@ impl DesktopChrome {
                 .filter(|action| action.source == Some(HostActionSource::Workspaces))
                 .map(|action| WorkspaceChoice {
                     key: format!("{HOST_KEY}{}", action.id),
-                    name: action.label.clone().unwrap_or_else(|| action.title.clone()),
+                    name: action.title.clone(),
                     current: false,
                 }),
         );
@@ -1380,8 +1380,9 @@ impl DesktopChrome {
                 .filter(|action| action.source == Some(HostActionSource::Workspace))
                 .map(|action| WorkspaceAction {
                     id: action.id.clone(),
-                    title: action.label.clone().unwrap_or_else(|| action.title.clone()),
-                    destructive: action.id.starts_with("leave"),
+                    title: action.title.clone(),
+                    icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+                    destructive: action.destructive,
                 })
                 .collect(),
             can_rename: self.may_add_or_rename(false),

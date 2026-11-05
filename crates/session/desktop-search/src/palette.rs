@@ -1067,7 +1067,8 @@ fn entry_for(hit: &Hit, id: String) -> CommandEntry {
         ),
         _ => (
             CommandEntry::new(id, hit.title.clone()),
-            ui::search::system::icon_for_kind(&hit.kind),
+            hit.icon
+                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
         ),
     };
     // What the row says under its title, never the title again: a source
@@ -1308,8 +1309,10 @@ mod tests {
         let mut data = data();
         data.commands.push(CommandSpec {
             id: "session-host-leave-workspace".into(),
-            title: "Leave this workspace on this computer".into(),
+            title: "Leave workspace".into(),
             subtitle: None,
+            icon: Some(ui::icons::Icon::ArrowUpRight),
+            unasked: false,
         });
         data.sources
             .push(Arc::new(Happening::new(false, vec![here])));
@@ -1349,10 +1352,60 @@ mod tests {
             ["Happening now", "People", "Recent", "Apps", "Windows"]
         );
         assert!(
+            entries.iter().all(|entry| entry.label != "Leave workspace"),
+            "no workspace housekeeping is a default: {entries:?}"
+        );
+    }
+
+    /// A place the person was in lately: what the empty card continues.
+    fn continue_source(
+        recent: &crate::providers::places::RecentPlaces,
+    ) -> crate::providers::places::Continue {
+        crate::providers::places::Continue::new(recent, "workspace", vec![9], 100, |_| {
+            "Files".into()
+        })
+    }
+
+    /// Nothing typed starts where the person was: the place their window is
+    /// in leads the card, above the apps and the windows, and no budget cuts
+    /// it away however crowded the card gets.
+    #[test]
+    fn the_empty_palette_continues_where_the_person_was() {
+        use crate::providers::places::{Place, RecentPlaces};
+        let mut recent = RecentPlaces::default();
+        recent.record(Place {
+            app: "so.tilo.file-explorer".into(),
+            workspace: "workspace".into(),
+            tab: 9,
+            label: "Home".into(),
+            value: String::new(),
+            anchor: None,
+            at: 3,
+            device: None,
+        });
+        let mut data = data();
+        data.sources.push(Arc::new(continue_source(&recent)));
+        let mut search = DesktopSearch::new();
+        search.open(data);
+        settled(&mut search);
+        let entries = search.palette().visible_entries();
+        assert_eq!(
+            entries.first().map(|entry| entry.label.as_str()),
+            Some("Home"),
+            "the place leads the empty card: {entries:?}"
+        );
+        assert_eq!(entries[0].group.as_deref(), Some("Continue"));
+        // A card too small for everything it has makes way with what is
+        // least likely wanted then, never with where the person was.
+        search.set_room(400.0, 200.0);
+        search.restart("", ui::search::engine_generation());
+        settled(&mut search);
+        let entries = search.palette().visible_entries();
+        assert!(
             entries
                 .iter()
-                .all(|entry| !entry.label.starts_with("Leave this workspace")),
-            "no workspace housekeeping is a default: {entries:?}"
+                .any(|entry| entry.label == "Home" && entry.group.as_deref() == Some("Continue")),
+            "the place stays on a crowded card: {entries:?}"
         );
     }
 
@@ -2170,6 +2223,8 @@ mod tests {
                     id: format!("host:{i}"),
                     title: format!("Meeting workspace {i}"),
                     subtitle: None,
+                    icon: None,
+                    unasked: true,
                 })
                 .collect(),
             ..data()
@@ -2293,6 +2348,8 @@ mod tests {
                     id: format!("host:{i}"),
                     title: format!("Command {i}"),
                     subtitle: None,
+                    icon: None,
+                    unasked: true,
                 })
                 .collect(),
             ..SearchData::default()
@@ -2496,6 +2553,8 @@ mod tests {
                     id: format!("host:{i}"),
                     title: format!("Command {i}"),
                     subtitle: None,
+                    icon: None,
+                    unasked: true,
                 })
                 .collect(),
             ..SearchData::default()

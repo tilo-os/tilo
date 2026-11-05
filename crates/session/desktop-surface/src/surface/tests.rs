@@ -1433,8 +1433,10 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
         id: id.into(),
         title: id.into(),
         subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
         source: None,
-        label: None,
     };
     assert!(
         handle

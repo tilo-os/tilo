@@ -280,12 +280,14 @@ impl Hit {
             Target::Launch { app } if self.kind == ResourceKind::Application => {
                 Thing::App(app_identity(app))
             }
-            // The window row itself is the window; a row that only goes to
-            // a window when chosen (a note shown in it, a place the person
-            // was in) is its own thing, or every item one window shows
-            // would be one row.
+            // The window row is the window, and so is the place the person
+            // continues from when that place is the window still open: one
+            // row, the one offering most. A row that only goes to a window
+            // when chosen (a note shown in it) is its own thing, or every
+            // item one window shows would be one row.
             Target::Window { tab, .. }
-                if self.kind == ResourceKind::Custom(crate::providers::WINDOWS_KIND.into()) =>
+                if self.kind == ResourceKind::Custom(crate::providers::WINDOWS_KIND.into())
+                    || self.kind == crate::providers::places::continue_kind() =>
             {
                 Thing::Window(*tab)
             }
@@ -989,6 +991,22 @@ mod tests {
         )
     }
 
+    /// A place the person was in, whose window is still open: what
+    /// Continue offers as the window it comes back to.
+    fn place_in_window(title: &str, tab: u64) -> Hit {
+        hit(
+            "continue",
+            &format!("place:{tab}"),
+            title,
+            crate::providers::places::continue_kind(),
+            system::MAX_PROVIDER_SCORE,
+            Target::Window {
+                tab,
+                app: Some("so.tilo.file-explorer".into()),
+            },
+        )
+    }
+
     fn window_row(title: &str, tab: u64) -> Hit {
         hit(
             "desktop-windows",
@@ -1179,6 +1197,34 @@ mod tests {
                 .map(|group| group.results.len())
                 .sum::<usize>(),
             "no group counts a row it does not show"
+        );
+    }
+
+    /// The place the person continues from, when that place is a window
+    /// still open, is that window: one row, offered by Continue, never the
+    /// same window twice.
+    #[test]
+    fn a_place_that_is_an_open_window_is_that_window() {
+        let mut world = world();
+        let window = window_row("Home", 9);
+        let place = place_in_window("Home", 9);
+        world.windows.hits.push(window);
+        world.places.hits = vec![place];
+        let groups = search("", &world.all(), 0, &|_| 0.0);
+        let listed = rows(&groups);
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|row| row.contains(":Home"))
+                .collect::<Vec<_>>(),
+            ["continue:place:9"],
+            "the window is listed once, as where the person continues: {listed:?}"
+        );
+        assert!(
+            !listed
+                .iter()
+                .any(|row| row.starts_with("desktop-windows:9")),
+            "the window wearing the same name is not listed beside it: {listed:?}"
         );
     }
 

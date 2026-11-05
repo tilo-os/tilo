@@ -3,6 +3,9 @@
 //! settings) and about the session itself (locking the screen, logging out,
 //! restarting the computer, shutting it down). The workspace menu lists the
 //! workspace rows, the Tilo menu the session's, and search both.
+//!
+//! Each row is named once, here: its name, the sentence describing it, its
+//! own picture, and whether search may offer it before anything is typed.
 
 use tilo_desktop::desktop_host::{
     JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART,
@@ -10,6 +13,7 @@ use tilo_desktop::desktop_host::{
 };
 use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
 use tilo_sheets::power::{Offers, PowerEffect};
+use ui::icons::Icon;
 
 /// The session's own rows, in the order a person reads them: what happens
 /// to the screen first, what happens to the computer last. Switch user and
@@ -37,41 +41,70 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
 /// `can_join` is whether a workspace can be joined here at all, which is
 /// whether this session holds the directory a workspace is joined from.
 pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool) {
-    let offer = |id: &str, title: &str, label: Option<&str>, source: HostActionSource| HostAction {
-        id: id.to_owned(),
-        title: tilo_desktop_surface::i18n::t(title),
-        subtitle: None,
-        source: Some(source),
-        label: label.map(tilo_desktop_surface::i18n::t),
-    };
-    let workspace = |id: &str, title: &str, label: &str| {
-        offer(id, title, Some(label), HostActionSource::Workspace)
-    };
-    let mut actions = vec![workspace(
-        NEW_WORKSPACE,
-        "session-host-new-workspace",
-        "workspace-menu-new",
-    )];
+    let t = tilo_desktop_surface::i18n::t;
+    let offer =
+        |id: &str, title: &str, description: Option<&str>, icon: Icon, source: HostActionSource| {
+            HostAction {
+                id: id.to_owned(),
+                title: t(title),
+                subtitle: description.map(t),
+                icon: Some(icon.name().to_owned()),
+                destructive: false,
+                unasked: false,
+                source: Some(source),
+            }
+        };
+    // Making something and bringing someone in are what a person may want to
+    // do from the empty card; leaving takes the workspace away from this
+    // computer, and its settings are looked for by name.
+    let mut actions = vec![HostAction {
+        unasked: true,
+        ..offer(
+            NEW_WORKSPACE,
+            "session-host-new-workspace",
+            Some("session-host-new-workspace-description"),
+            Icon::Plus,
+            HostActionSource::Workspace,
+        )
+    }];
     if can_join {
-        actions.push(workspace(
-            JOIN_WORKSPACE,
-            "session-host-join-workspace",
-            "workspace-menu-join",
-        ));
+        actions.push(HostAction {
+            unasked: true,
+            ..offer(
+                JOIN_WORKSPACE,
+                "session-host-join-workspace",
+                Some("session-host-join-workspace-description"),
+                Icon::Link,
+                HostActionSource::Workspace,
+            )
+        });
     }
-    actions.push(workspace(
-        LEAVE_WORKSPACE,
-        "session-host-leave-workspace",
-        "workspace-menu-leave",
-    ));
-    actions.push(workspace(
+    actions.push(HostAction {
+        destructive: true,
+        ..offer(
+            LEAVE_WORKSPACE,
+            "session-host-leave-workspace",
+            Some("session-host-leave-workspace-description"),
+            Icon::ArrowUpRight,
+            HostActionSource::Workspace,
+        )
+    });
+    actions.push(offer(
         WORKSPACE_SETTINGS,
         "session-host-workspace-settings",
-        "workspace-menu-settings",
+        Some("session-host-workspace-settings-description"),
+        Icon::Settings,
+        HostActionSource::Workspace,
     ));
     for (effect, id, title) in SESSION_ROWS {
         if offers.offers(effect) {
-            actions.push(offer(id, title, None, HostActionSource::Session));
+            actions.push(HostAction {
+                // Locking stands at the end of what the empty card offers,
+                // below making and joining; the rest only leave or end this
+                // computer, so they are looked for by name.
+                unasked: matches!(effect, PowerEffect::Lock),
+                ..offer(id, title, None, effect.icon(), HostActionSource::Session)
+            });
         }
     }
     handle.set_host_actions(actions);
