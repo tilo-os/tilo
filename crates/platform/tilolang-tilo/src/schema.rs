@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use tilo_action_policy::EarlierIds;
+use tilolang::types::Ty;
 
 /// The key holding a resource's type id.
 pub const TYPE_KEY: &str = "$type";
@@ -97,6 +98,10 @@ pub struct FieldSchema {
     /// A register naming a resource, of a record type the field declares: what links a resource
     /// to another (`linked(r)`, [`tilolang_runtime::store::LinkHow::Field`]).
     pub refers: bool,
+    /// The type the field declares (`Option<Text>`), for a reader that holds a value the app
+    /// wrote in a layout of its own (`crate::native`): what turns it into a value of the type a
+    /// program reads. `None` for a field whose declared type does not read.
+    pub ty: Option<Ty>,
     /// What the field is to the platform (`title: Text (title)`): the record's
     /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
     /// field search reads it by; a type declares at most one of each.
@@ -176,6 +181,7 @@ impl FieldSchema {
             default: serde_json::Value::Null,
             composite: false,
             refers: false,
+            ty: None,
             role: FieldRole::Plain,
             derived: None,
         }
@@ -238,6 +244,13 @@ impl FieldSchema {
     #[must_use]
     pub const fn composite(mut self) -> Self {
         self.composite = true;
+        self
+    }
+
+    /// The type the field declares.
+    #[must_use]
+    pub fn of_ty(mut self, ty: Ty) -> Self {
+        self.ty = Some(ty);
         self
     }
 

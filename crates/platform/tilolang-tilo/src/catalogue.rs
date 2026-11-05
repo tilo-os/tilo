@@ -130,11 +130,16 @@ impl NativeSurface {
     /// The surface does not read.
     pub fn package(&self) -> Result<PackageMeta, String> {
         let (surfaces, instances) = read_surfaces(&self.surface)?;
-        let mut meta = package_with(&self.app, &self.title, &surfaces, &instances);
+        let mut meta = package_with(&self.app, &self.title, &surfaces, &instances, Ids::Record);
         for action in &mut meta.actions {
             action.id = action_id(&meta.app, &action.id);
         }
-        if let Some(root) = record_root(&self.app, &surfaces, &kind_names(&surfaces, &instances)) {
+        if let Some(root) = record_root(
+            &self.app,
+            &surfaces,
+            &kind_names(&surfaces, &instances),
+            Ids::Record,
+        ) {
             meta.named_roots.push(root);
         }
         Ok(meta)
@@ -209,7 +214,7 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
 /// The text is not a surface file.
 pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
     let (surfaces, instances) = read_surfaces(text)?;
-    Ok(package_with(app, title, &surfaces, &instances))
+    Ok(package_with(app, title, &surfaces, &instances, Ids::Record))
 }
 
 /// The resources `text` publishes, and the kinds `instances` marks: the ones whose verbs act on
@@ -238,6 +243,7 @@ fn record_root(
     app: &str,
     surfaces: &[Surface],
     kinds: &BTreeMap<String, String>,
+    ids: Ids,
 ) -> Option<NamedRootMeta> {
     let kind = surfaces
         .iter()
@@ -246,7 +252,7 @@ fn record_root(
     let ty = kinds.get(kind)?;
     Some(NamedRootMeta {
         name: snake_case(ty),
-        ty: format!("{app}#{ty}"),
+        ty: ids.id(app, ty),
         published: Some(kind.to_owned()),
     })
 }
@@ -370,17 +376,25 @@ const fn effect_class(kind: ActionKind) -> EffectClass {
     }
 }
 
-/// The package of the app `app` named `title` that publishes `surfaces`. See the module docs.
+/// The package of the app `app` named `title` that publishes `surfaces`: an app whose
+/// resources the session publishes as readings (`so.tilo.device#Power`). See the module docs.
 #[must_use]
 pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
-    package_with(app, title, surfaces, &[])
+    package_with(app, title, surfaces, &[], Ids::Readings)
 }
 
 /// [`package_of`], where each resource of a kind of `instances` is a type too, though it
 /// stores no fields: its verbs act on the one resource they are called on.
-fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[String]) -> PackageMeta {
+fn package_with(
+    app: &str,
+    title: &str,
+    surfaces: &[Surface],
+    instances: &[String],
+    ids: Ids,
+) -> PackageMeta {
     let mut reader = Reader {
         app,
+        ids,
         kinds: kind_names(surfaces, instances),
         declared: BTreeMap::new(),
         meta: PackageMeta {
@@ -420,8 +434,34 @@ fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, St
     kinds
 }
 
+/// How a package spells the ids of its types.
+#[derive(Clone, Copy)]
+enum Ids {
+    /// A record the app itself reads (`so.tilo.tasks.Issue`): a resource a program reads from
+    /// the app's record, as it reads any app's the session holds.
+    Record,
+    /// A resource the session publishes as a reading (`so.tilo.device#Power`), which a view
+    /// reads without a record.
+    Readings,
+}
+
+impl Ids {
+    /// The id of the type or enum `name` of the app `app`, qualified by the app so two apps'
+    /// types of one name are two types wherever both are loaded. A record the app reads itself
+    /// keeps them apart as `so.tilo.tasks.Issue`: an id with a `#` names a resource read from
+    /// its published reading ([`tilolang_runtime::foreign`]), which an app whose record the
+    /// session holds is not.
+    fn id(self, app: &str, name: &str) -> String {
+        match self {
+            Self::Record => format!("{app}.{name}"),
+            Self::Readings => format!("{app}#{name}"),
+        }
+    }
+}
+
 struct Reader<'a> {
     app: &'a str,
+    ids: Ids,
     /// The type name of each resource kind of the app.
     kinds: BTreeMap<String, String>,
     /// The named types declared so far, by name, and whether each is an enum.
@@ -430,11 +470,9 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// The id of the app's type or enum `name`: qualified by the app (`so.tilo.device#Power`),
-    /// as a resource of it is typed, so two apps' types of one name are two types wherever both
-    /// are loaded.
+    /// The id of the app's type or enum `name`; see [`Ids::id`].
     fn type_id(&self, name: &str) -> String {
-        format!("{}#{name}", self.app)
+        self.ids.id(self.app, name)
     }
 
     fn surface(&mut self, surface: &Surface) {

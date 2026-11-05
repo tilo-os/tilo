@@ -658,6 +658,26 @@ fn action_rank(name: &str, action: &ActionDescriptor) -> Option<u8> {
         .then_some(2)
 }
 
+/// The action that reads a resource, among those its directory level offers:
+/// the one declared to read its document, else one named `read`, else a view
+/// whose action starts with `read` (`read-messages` next to `read`).
+fn reads_action(actions: &[ActionDescriptor]) -> Option<ActionDescriptor> {
+    actions
+        .iter()
+        .find(|action| action.contract.reads_document())
+        .or_else(|| {
+            actions
+                .iter()
+                .find(|action| action.address.action == "read")
+        })
+        .or_else(|| {
+            actions.iter().find(|action| {
+                action.kind == OperationKind::View && action.address.action.starts_with("read")
+            })
+        })
+        .cloned()
+}
+
 /// [`list_names`], or `none` for no names: an empty list reads as a
 /// sentence cut short.
 fn list_or_none(names: &[String]) -> String {
@@ -1352,6 +1372,47 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         read.revision = read_at;
         levels.insert(parent.to_owned(), read.clone());
         Ok(read)
+    }
+
+    /// Whether the resource `resource` a provider publishes answers a read of itself: whether
+    /// its directory lists a read on the resource itself. A resource that does not is read by
+    /// the resource its directory lists it under, which takes it as its `item` ([`Self::reader`]).
+    pub(super) async fn level_reads(
+        &self,
+        provider: &Addressed,
+        resource: &str,
+    ) -> Result<bool, String> {
+        let mut levels: Levels = HashMap::new();
+        let level = self
+            .level(&provider.provider, resource, &mut levels)
+            .await?;
+        Ok(reads_action(&level.own).is_some())
+    }
+
+    /// The resources `provider` lists under `resource`, as an agent names them: its
+    /// directory level there, one row per resource (`{id, kind, key, name}`), the key
+    /// being what a read of it takes as its `item`.
+    pub(super) async fn children_rows(
+        &self,
+        provider: &Addressed,
+        resource: &str,
+    ) -> Result<Vec<Value>, String> {
+        let mut levels: Levels = HashMap::new();
+        let level = self
+            .level(&provider.provider, resource, &mut levels)
+            .await?;
+        Ok(level
+            .children
+            .iter()
+            .map(|node| {
+                json!({
+                    "id": node.id,
+                    "kind": node.kind,
+                    "key": node.key,
+                    "name": node.label,
+                })
+            })
+            .collect())
     }
 
     /// The app `name` means: a running one by its id or last part, else an
@@ -2241,24 +2302,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         resolved: &Resolved,
         levels: &mut Levels,
     ) -> Result<Option<(String, ActionDescriptor)>, String> {
-        let reads = |actions: &[ActionDescriptor]| {
-            actions
-                .iter()
-                .find(|action| action.contract.reads_document())
-                .or_else(|| {
-                    actions
-                        .iter()
-                        .find(|action| action.address.action == "read")
-                })
-                .or_else(|| {
-                    actions.iter().find(|action| {
-                        action.kind == OperationKind::View
-                            && action.address.action.starts_with("read")
-                    })
-                })
-                .cloned()
-        };
-        if let Some(found) = reads(&resolved.actions) {
+        if let Some(found) = reads_action(&resolved.actions) {
             let owner = resolved
                 .node
                 .as_ref()
@@ -2267,7 +2311,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         for ancestor in resolved.chain.iter().rev().skip(1) {
             let level = self.level(&resolved.provider, &ancestor.id, levels).await?;
-            if let Some(found) = reads(&level.own) {
+            if let Some(found) = reads_action(&level.own) {
                 return Ok(Some((ancestor.id.clone(), found)));
             }
         }
@@ -2275,7 +2319,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let root = self.level(&resolved.provider, "", levels).await?;
         for node in &root.children {
             let level = self.level(&resolved.provider, &node.id, levels).await?;
-            if let Some(found) = reads(&level.own).or_else(|| reads(&node.actions)) {
+            if let Some(found) = reads_action(&level.own).or_else(|| reads_action(&node.actions)) {
                 return Ok(Some((node.id.clone(), found)));
             }
         }

@@ -105,7 +105,7 @@ pub fn locate_ref(
     })
 }
 
-fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
+pub(crate) fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
     if composite {
         return Scalar::Json(value.clone());
     }
@@ -120,7 +120,7 @@ fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
     }
 }
 
-fn element_key(value: &Json) -> String {
+pub(crate) fn element_key(value: &Json) -> String {
     match value {
         Json::String(text) => text.clone(),
         other => other.to_string(),

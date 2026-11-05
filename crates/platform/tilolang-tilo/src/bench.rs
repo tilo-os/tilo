@@ -2621,6 +2621,7 @@ mod tests {
                 default: Json::Null,
                 composite: true,
                 refers: false,
+                ty: None,
                 role: FieldRole::Plain,
                 derived: None,
             }],

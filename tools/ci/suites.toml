@@ -791,11 +791,13 @@ package = "tilolang-tilo"
 inputs = [
   "apps/tl/",
   "apps/chat/",
+  "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
   "apps/settings/surface.toml",
 ]
 readers = [
+  "crates/platform/tilolang-tilo/src/native.rs",
   "crates/platform/tilolang-tilo/src/platform_apps.rs",
   "crates/platform/tilolang-tilo/src/task.rs",
   "crates/platform/tilolang-tilo/tests/agent_queries.rs",

@@ -750,7 +750,8 @@ impl Core {
     }
 }
 
-fn describe_app(meta: &crate::meta::Meta, alias: &str) -> String {
+/// The app `meta` publishes, as `describe` shows it: its roots, types, actions and scenarios.
+pub fn describe_app(meta: &crate::meta::Meta, alias: &str) -> String {
     let app = &meta.app;
     let mut out = format!("app {alias} \"{}\"  ({app})", meta.title);
     for root in &meta.named_roots {
@@ -786,7 +787,9 @@ fn describe_app(meta: &crate::meta::Meta, alias: &str) -> String {
     out
 }
 
-fn describe_type(meta: &crate::meta::Meta, t: &crate::meta::TypeMeta, alias: &str) -> String {
+/// The type `t` of `meta`, as `describe` shows it: its doc, its fields, its filters and the
+/// actions taking it.
+pub fn describe_type(meta: &crate::meta::Meta, t: &crate::meta::TypeMeta, alias: &str) -> String {
     let app = &meta.app;
     let mut out = String::new();
     if !t.doc.is_empty() {

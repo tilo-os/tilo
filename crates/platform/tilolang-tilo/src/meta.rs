@@ -151,6 +151,7 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
             }
         }
     };
+    schema = schema.of_ty(ty_of_field);
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
     }

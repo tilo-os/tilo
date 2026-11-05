@@ -128,8 +128,15 @@ same catalogue by the session it runs in: every installed app's surface for its 
 by one loader. Invoking a native app's verb, or setting a field of its record, is the app's own
 action: it goes to the app through the session's broker, which decides it as it decides the
 agent's own call and starts the app when it is not running, and the step sits in the task's
-history with every other. Reading what a native record holds comes later; a program that reads
-one now compiles and fails at run with one refusal naming the app.
+history with every other. Reading a native record goes the same way: `find(chat.Channel)` lists
+the resources under the app's record as its directory does, and reading one, or a field of one,
+asks the app for it — the resource's own `read` view where its directory offers one, else the
+record's with the resource as its item, which is the read a window and `tilo_read` take too — as
+the task's caller, starting the app when it is not running. One app code over one record answers a
+person's window, an agent's `tilo_read` and a program, and a field reads as the type the app's
+surface declares it (`Option<Text>` as the text it holds or `.none`, a case of its enum, a set as
+its members). What the app keeps in the layout of its own model is never read here: no byte of a
+native record is.
 
 ## Syntax reference
 

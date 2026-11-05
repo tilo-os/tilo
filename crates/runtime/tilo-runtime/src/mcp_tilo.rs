@@ -8,7 +8,9 @@
 //! the task's program connection, and this door does it as the task, with the gate, attribution
 //! and grants of every other call:
 //!
-//! - a read is the app's `read-values`, a read of the resource as the task;
+//! - a read is the app's own `read`, as the task, in the app; a resource that does not read
+//!   itself is read by the resource the app's directory lists it under, which takes it as its
+//!   `item` — the read a window and `tilo_read` take too;
 //! - a change is an invocation of the action's own app: a method its type's declared action, an
 //!   assignment the resource's field edit. Each is decided at that action's node, asked about or
 //!   refused as the workspace's policy says, never done silently. A program never writes a record.
@@ -993,10 +995,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
             let reply = if let Some(record) = message.get("record") {
                 self.task_record(record).await
+            } else if let Some(listing) = message.get("children") {
+                Box::pin(self.task_children(listing, &mut providers)).await
+            } else if let Some(reads) = message.get("reads") {
+                Box::pin(self.task_reads(reads, &mut providers)).await
             } else if let Some(call) = message.get("invoke") {
                 Box::pin(self.task_invoke(call, &mut providers)).await
             } else {
-                json!({"err": "the door answers record reads and invocations"})
+                json!({"err": "the door answers record reads, listings, reads and invocations"})
             };
             task.send(&reply).await?;
         }
@@ -1088,6 +1094,44 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 json!({"err": format!("{name}: {error}")})
             }
             Err(error) => json!({"err": format!("the record read ended: {error}")}),
+        }
+    }
+
+    /// What the app `app` lists under `resource` (`{app, resource}`): its directory there, as
+    /// an agent reads it, `{"ok": {"rows": [{id, kind, key, name}]}}` or `{"err": why}`. A
+    /// program enumerates a native app's resources through this, and reads each by the `key` its
+    /// own listing gave ([`tilolang_tilo::native`]).
+    async fn task_children(&self, listing: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(resource)) = (listing["app"].as_str(), listing["resource"].as_str())
+        else {
+            return json!({"err": "a listing names its app and the resource it lists"});
+        };
+        let provider = match self.provider_of(app, providers).await {
+            Ok(provider) => provider,
+            Err(why) => return json!({"err": why}),
+        };
+        match self.children_rows(&provider, resource).await {
+            Ok(rows) => json!({"ok": {"rows": rows}}),
+            Err(why) => json!({"err": why}),
+        }
+    }
+
+    /// Whether the resource `resource` a provider publishes (`{app, resource}`) answers a read of
+    /// itself: `{"ok": {"reads": bool}}` or `{"err": why}`. A resource that does not is read by
+    /// the resource the app's directory lists it under, which takes it as its `item`
+    /// ([`tilolang_tilo::native`]).
+    async fn task_reads(&self, reads: &Value, providers: &mut Providers) -> Value {
+        let (Some(app), Some(resource)) = (reads["app"].as_str(), reads["resource"].as_str())
+        else {
+            return json!({"err": "a read question names its app and resource"});
+        };
+        let provider = match self.provider_of(app, providers).await {
+            Ok(provider) => provider,
+            Err(why) => return json!({"err": why}),
+        };
+        match self.level_reads(&provider, resource).await {
+            Ok(reads) => json!({"ok": {"reads": reads}}),
+            Err(why) => json!({"err": why}),
         }
     }
 

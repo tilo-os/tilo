@@ -10,12 +10,11 @@
 //! The door ([`TaskDoor`]) is the task's connection: in the session the program connection to
 //! the agent door (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
 //!
-//! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). In the session the task's
-//! host answers them itself from each app's record as the door hands it over, read with the
+//! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). A tilolang app's the
+//! session's host answers itself from the app's record as the door hands it over, read with the
 //! app's package ([`crate::task_records::RecordReads`]): no app runs for them. One resource is
-//! read once per program. A native app's records are not read yet: a program names the app's
-//! record where the app publishes it as a root and invokes its verbs, and reading what it holds
-//! is refused in one place.
+//! read once per program. A native app's record only the app knows how to read, so a read of it
+//! is the app's own `read` action through the door, as the task ([`crate::native`]).
 //!
 //! **Native apps.** A native app publishes what it offers, not how it runs: its verbs are actions
 //! of its catalogue, a field edit of its record is its own `field-edit` action, and both go to
@@ -51,6 +50,7 @@ use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, R
 use crate::bundle::Bundle;
 use crate::host::{Host, argument_json};
 use crate::meta::MetaExt as _;
+use crate::native::Native;
 use crate::publish::{package_resource_id, resource_id};
 
 /// More resources than this changed by one program are many: it answers with a preview first.
@@ -58,12 +58,13 @@ pub const MANY_RESOURCES: usize = 3;
 
 /// What a task's host asks of its door. Each call waits for the door's answer.
 pub trait TaskDoor {
-    /// The fields of the resource `item` (its id in its record) of the app `app`, as
-    /// [`Host::read_values`] answers them.
+    /// The fields of the resource `item` (its id in its record) of the app `app`, its type `ty`,
+    /// as [`Host::read_values`] answers them. A native app's id names the item alone; `ty` says
+    /// which of the app's collections a program holds it by ([`crate::native`]).
     ///
     /// # Errors
     /// Why it cannot be read: the task may not, the app does not run, the resource is gone.
-    fn read(&self, app: &str, item: &str) -> Result<Json, String>;
+    fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String>;
 
     /// Invoke `call` (`{app, resource, action, arguments}`) as the task.
     fn invoke(&self, call: &Json) -> Answered;
@@ -141,8 +142,9 @@ impl TaskSession {
     /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
     /// and the platform's own (the device's and the session's resources, Settings':
     /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
-    /// them. A program names and type-checks every app of them; a native one it names the
-    /// record of, invokes and assigns fields of ([`Native`]), and reads nothing of yet.
+    /// them. A program names and type-checks every app of them; a native one it names the record
+    /// of, invokes and assigns fields of, and reads what it holds through the app
+    /// ([`crate::native::NativeReads`]), which `door` carries too.
     ///
     /// # Errors
     /// The runtime cannot start or a package does not load.
@@ -150,20 +152,16 @@ impl TaskSession {
         person: Option<&str>,
         door: &Rc<dyn TaskDoor>,
         bundles: &[Bundle],
-        native: &[PackageMeta],
+        native: Rc<Native>,
     ) -> Result<Self, String> {
         let reads = Rc::new(RefCell::new(Reads::default()));
         let packages = Rc::new(RefCell::new(HashMap::new()));
         let schemas = Arc::new(crate::schema::Schemas::new());
-        // The native apps the task reaches, before anything loads: which they are, and the
-        // record each publishes.
-        let native_apps = Rc::new(Native::of(bundles, native));
         let store = TaskStore {
             door: Rc::clone(door),
             reads: Rc::clone(&reads),
             packages: Rc::clone(&packages),
             schemas: Arc::clone(&schemas),
-            native: Rc::clone(&native_apps),
             journals: HashMap::new(),
             fresh: 0,
         };
@@ -195,7 +193,7 @@ impl TaskSession {
             apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
         // The native apps, after the ones with code: what each publishes, and not how it runs.
-        load_apps(&runtime, &mut apps, native.iter().cloned())?;
+        load_apps(&runtime, &mut apps, native.packages().cloned())?;
         reads.borrow_mut().apps = apps.keys().cloned().collect();
         // The platform's packages, the session's own among them: no record holds their
         // resources, so they are read by no record read; their actions are invoked on the
@@ -218,14 +216,10 @@ impl TaskSession {
             published,
             addresses: crate::platform_apps::session_addresses()?,
             steps: Rc::clone(&steps),
-            native: Rc::clone(&native_apps),
+            native,
         });
         let asked = Rc::clone(door);
-        let unreadable = Rc::clone(&native_apps);
         runtime.set_reader(move |request| {
-            if let Some(why) = unreadable.unreadable(request.app()) {
-                return Err(why);
-            }
             let encoded = serde_json::to_value(request).map_err(|error| error.to_string())?;
             asked.query(request.app(), &encoded)
         });
@@ -864,71 +858,6 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Valu
     }
 }
 
-/// The native apps a task reaches: each app whose code the task does not run
-/// ([`crate::catalogue::described`] reads what such an app publishes, not how it runs), and the
-/// record it publishes. A program names that record, invokes the app's verbs on it and assigns
-/// its fields, and reads nothing of what it holds: those reads are refused here, in one place.
-struct Native {
-    /// The apps, by app id.
-    apps: std::collections::BTreeSet<String>,
-    /// The resource each app publishes its record as, by app id (`chat.workspace`). An app
-    /// whose surface stores no fields publishes no record a program could name.
-    records: std::collections::BTreeMap<String, String>,
-}
-
-impl Native {
-    /// The native apps among `native` that the bundles here do not carry (an app the session
-    /// runs is the one that counts), and the record each publishes.
-    fn of(bundles: &[Bundle], native: &[PackageMeta]) -> Self {
-        let carried: std::collections::HashSet<&str> = bundles
-            .iter()
-            .flat_map(|bundle| {
-                bundle
-                    .imports
-                    .iter()
-                    .map(|import| import.meta.app.as_str())
-                    .chain(std::iter::once(bundle.meta.app.as_str()))
-            })
-            .collect();
-        let mut apps = std::collections::BTreeSet::new();
-        let mut records = std::collections::BTreeMap::new();
-        for meta in native
-            .iter()
-            .filter(|meta| !carried.contains(meta.app.as_str()))
-        {
-            apps.insert(meta.app.clone());
-            // The record the app publishes is the root the catalogue names for it
-            // ([`crate::catalogue::described`]).
-            if let Some(record) = meta
-                .named_roots
-                .iter()
-                .find_map(|root| root.published.clone())
-            {
-                records.insert(meta.app.clone(), record);
-            }
-        }
-        Self { apps, records }
-    }
-
-    /// Whether `app` is a native one.
-    fn is(&self, app: &str) -> bool {
-        self.apps.contains(app)
-    }
-
-    /// The resource `app` publishes its record as.
-    fn record(&self, app: &str) -> Option<&str> {
-        self.records.get(app).map(String::as_str)
-    }
-
-    /// Why a program cannot read `app` yet, when it is a native one: what its record holds stays
-    /// in the app, which a task does not run.
-    fn unreadable(&self, app: &str) -> Option<String> {
-        self.apps.contains(app).then(|| {
-            format!("{app} is not yet readable from a program: a native app's record stays in the app; invoke its actions instead")
-        })
-    }
-}
-
 /// Load the packages of apps this runtime does not run ([`Runtime::load_foreign`]), passing over
 /// the ones an app here already has: what they publish, and not how they run. The apps it
 /// loaded.
@@ -979,8 +908,6 @@ struct TaskStore {
     /// record resolves its type by when the app the record's type names is not the one being
     /// read (a field holding another app's record).
     schemas: Arc<crate::schema::Schemas>,
-    /// The native apps among them, which a program reads nothing of yet.
-    native: Rc<Native>,
     /// The journals of the task's program runs: the task's own, kept in memory.
     journals: HashMap<RunId, Journal>,
     fresh: u64,
@@ -997,9 +924,6 @@ impl TaskStore {
             return Ok(Rc::clone(known));
         }
         let app = self.app_of(at)?;
-        if let Some(why) = self.native.unreadable(&app) {
-            return Err(StoreError::Backend(why));
-        }
         // The app's package table installed: what the record's type id names is that package
         // version's schema ([`crate::schema::for_module`]), and not another version of the same
         // app that loaded here for another task or host.
@@ -1012,7 +936,10 @@ impl TaskStore {
             .map(|package| package.enter());
         // A read that did not reach the app fails the program; one the app answered that it
         // holds no such resource is a resource that is not there.
-        let answer = self.door.read(&app, &id).map_err(StoreError::Backend)?;
+        let answer = self
+            .door
+            .read(&app, &id, &at.ty)
+            .map_err(StoreError::Backend)?;
         if answer.get("missing").is_some() {
             return Err(StoreError::NotFound(format!("{app} holds no {id}")));
         }
@@ -1096,9 +1023,6 @@ impl Store for TaskStore {
             item: None,
             ty: ty.clone(),
         })?;
-        if let Some(why) = self.native.unreadable(&app) {
-            return Err(StoreError::Backend(why));
-        }
         let request = tilolang_runtime::reads::ReadRequest::Select {
             app: app.clone(),
             ty: ty.clone(),
@@ -1179,7 +1103,7 @@ impl Store for TaskStore {
 // ---- the read, on both ends -----------------------------------------------------------------
 
 /// A field as `read-values` carries it.
-fn field_json(value: &FieldValue) -> Json {
+pub(crate) fn field_json(value: &FieldValue) -> Json {
     match value {
         FieldValue::Absent => json!({"absent": true}),
         FieldValue::Scalar(Scalar::Bool(flag)) => json!({"bool": flag}),
@@ -1380,7 +1304,7 @@ mod tests {
     struct Asked(RefCell<Vec<Json>>);
 
     impl TaskDoor for Asked {
-        fn read(&self, _: &str, _: &str) -> Result<Json, String> {
+        fn read(&self, _: &str, _: &str, _: &str) -> Result<Json, String> {
             Err("no read reaches this door".to_owned())
         }
 

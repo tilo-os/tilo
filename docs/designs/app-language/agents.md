@@ -39,8 +39,8 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
    check` reads an app's directory with, so what a program compiles against is what it runs
    against.
 4. **How it reads:** as any reader outside an app: `find` and `grep` through the system index,
-   fields through the platform's read path, results as catalogue references. Sources from
-   different apps combine (`docs + notes`).
+   fields through the platform's read path (a native app's through its own `read`, below),
+   results as catalogue references. Sources from different apps combine (`docs + notes`).
 5. **How it changes:** only by invoking actions. An assignment compiles to the resource's field
    edit, a method to its type's declared action; each is a broker invocation, a child of the
    task, decided at the action's own node (action-system.md step 3). A program never writes a
@@ -101,16 +101,27 @@ opens them. The task host is not an app, so it gets its own admission instead of
   the same way, by the app's id and record. An app's own instance is never asked to act for the program.
 - **Native apps.** Their types and views come from the published catalogue the same way, and a
   program type-checks against them, so `find(chat.Channel)` and its fields read as any type's.
-  Reading their records and invoking their actions are not reachable yet: a program that reaches
-  one compiles and is refused at run, once, by the task's invoker, naming the app. Their
-  action code is the app's Rust, so the origin routes the invocation to whatever executes it: a
-  window of the app when one is open, else an instance of the app with no window. For an action
-  that shows nothing the broker asks the host for one (`LauncherServices::windowless`) instead of
-  launching the app; the session mounts the app's own component on the workspace's record in its own
-  process, never drawn, connected as the app and marked windowless (`shell/windowless.rs`), and
-  the broker delivers to it. Tasks runs this way, so asking an agent and a run's reports to its
-  issue open no Tasks window. An `open` never goes to a windowless instance: it launches a
-  window.
+  None of their record is read here: the host asks the app, through the door, for what its own
+  `read` view answers, as the task's caller, and the broker starts the app when it is not
+  running (`NativeReads`, `native.rs`). It addresses a resource the way the app's directory
+  lists it: the resource's own `read` where it offers one (`Calls::reads`), else the record's,
+  which takes the resource as its `item`. That is the read a person's window and the agent's
+  `tilo_read` take, so one app code over one record answers all three, and an indexer filling a
+  task's search from records takes the same path. Fields read as the app's surface types them
+  (`Option<Text>` as the text it holds or `.none`, a case of the app's enum, a set as its
+  members), and what a query lists is what the app's directory lists under its own record, so
+  `find(tasks.Issue).filter(i -> i.assignee == "person:ada")` asks the app for the issues it
+  lists and for each one it keeps. Two things a native app does not answer yet: `grep` over its
+  text (its record's text stays in the app, and a program searches the resources its directory
+  lists by their fields) and `history` (the task has no change log of an app's own record).
+  Their action code is the app's Rust, so the origin routes the invocation to whatever executes
+  it: a window of the app when one is open, else an instance of the app with no window. For an
+  action that shows nothing the broker asks the host for one (`LauncherServices::windowless`)
+  instead of launching the app; the session mounts the app's own component on the workspace's
+  record in its own process, never drawn, connected as the app and marked windowless
+  (`shell/windowless.rs`), and the broker delivers to it. Tasks runs this way, so asking an agent
+  and a run's reports to its issue open no Tasks window. An `open` never goes to a windowless
+  instance: it launches a window.
 
 ## 2. What the agent knows from the start
 
