@@ -22,7 +22,11 @@
 //!   this) and applies the winner; if the group still differs from the
 //!   projection, its next reconcile commits again on top. The device that
 //!   committed the winner publishes it again when it sees the loser, so a
-//!   host that keeps only a channel's newest frame keeps the winner.
+//!   host that keeps only a channel's newest frame keeps the winner. Two
+//!   commits for one epoch that followed different frames compete the same
+//!   way, by the digest each branch reached: the device holding the higher
+//!   one cannot follow the other from where it stands, so it starts over and
+//!   asks again (below).
 //! - **Any participant creates the group, once.** A participant that holds
 //!   no state for a channel waits and asks; one that sees no genesis
 //!   ([`ChannelPeer::found`]) creates the group, and one that has seen a
@@ -1071,7 +1075,23 @@ impl ChannelPeer {
                 }
             };
         }
-        if frame.epoch <= head_epoch {
+        if frame.epoch == head_epoch {
+            // Participants committed this epoch each on their own head, so the
+            // two commits never met again. They compete like siblings, by the
+            // lower digest of the branch they reached; this device holds the
+            // lower one and publishes it again for a host that kept the other,
+            // or the higher one and cannot reach the frame from where it
+            // stands, so it starts over and asks again.
+            if incoming > head_digest {
+                if head.signed_by == self.device {
+                    self.republish_head();
+                    self.save(vault)?;
+                }
+                return Ok(PeerEvent::Ignored);
+            }
+            return self.desynchronise(vault);
+        }
+        if frame.epoch < head_epoch {
             return Ok(PeerEvent::Ignored);
         }
         if frame.epoch == head_epoch.saturating_add(1) {
