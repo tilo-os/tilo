@@ -456,6 +456,64 @@ class EngineRuntimeShips(unittest.TestCase):
                 ASSEMBLER.named_applications(repo, 'notes', 'missing')
 
 
+class PackagingBudgets(unittest.TestCase):
+    """The per-app size budgets measure the thin-LTO release binaries; a cohort
+    layer links without LTO, so packaging a package over its budget reports it
+    instead of refusing the whole swap."""
+
+    MANIFEST = ('[profile.release]\nlto = "fat"\n'
+                '[profile.thin-app]\ninherits = "release"\nlto = false\n'
+                '[profile.fast]\nlto = "thin"\n'
+                '[profile.fast-child]\ninherits = "fast"\n')
+
+    def repo(self, directory, manifest=MANIFEST):
+        repo = Path(directory) / 'repo'
+        authored_app(repo, 'notes')
+        (repo / 'Cargo.toml').write_text(manifest)
+        return repo
+
+    def test_only_a_build_the_budgets_measure_enforces_them(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'release', {}), 'enforce')
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'thin-app', {}), 'report')
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'dev', {}), 'report')
+            self.assertEqual(ASSEMBLER.packaging_budget(repo, 'fast-child', {}), 'enforce')
+
+    def test_a_cargo_lto_setting_or_the_callers_choice_names_the_budgets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            self.assertEqual(
+                ASSEMBLER.packaging_budget(repo, 'thin-app',
+                                           {'CARGO_PROFILE_THIN_APP_LTO': 'thin'}),
+                'enforce')
+            self.assertEqual(
+                ASSEMBLER.packaging_budget(repo, 'thin-app',
+                                           {'CARGO_PROFILE_THIN_APP_LTO': 'off'}),
+                'report')
+            self.assertEqual(
+                ASSEMBLER.packaging_budget(repo, 'release', {'TAPP_BUDGET': 'report'}),
+                'report')
+
+    def test_the_packaging_step_is_told_which_budgets_its_build_is_measured_by(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = self.repo(directory)
+            target = Path(directory) / 'target'
+            stage = Path(directory) / 'stage'
+            (stage / 'work').mkdir(parents=True)
+            (stage / 'work/runtime-version').write_text('2026.07\n')
+            args = SimpleNamespace(repo=repo, target_dir=target, stage=stage,
+                                   profile='thin-app', features='', app=None, cohort=None,
+                                   compiler_interface_out=None, compiler_capture=None)
+            with patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            self.assertEqual(run.call_args.kwargs['env']['TAPP_BUDGET'], 'report')
+            with patch.dict(os.environ, {'CARGO_PROFILE_THIN_APP_LTO': 'thin'}), \
+                    patch.object(ASSEMBLER, 'run') as run:
+                ASSEMBLER.package_inside(args)
+            self.assertEqual(run.call_args.kwargs['env']['TAPP_BUDGET'], 'enforce')
+
+
 class RuntimeFonts(unittest.TestCase):
     """The packaging namespaces have no network and an empty /tmp: the fonts are fetched before
     them, into a cache they can read."""

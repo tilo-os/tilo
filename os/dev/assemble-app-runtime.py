@@ -175,6 +175,47 @@ def profile_directory(profile):
     return 'debug' if profile == 'dev' else profile
 
 
+def lto_enabled(value):
+    return value is True or (isinstance(value, str)
+                             and value.strip().lower() not in ('', '0', 'false', 'off', 'no', 'none'))
+
+
+def profile_links_with_lto(repo, profile, environ):
+    """Whether `profile` links its binaries with LTO.
+
+    Cargo's own setting decides: `CARGO_PROFILE_<PROFILE>_LTO` when the caller
+    sets it, else the `[profile.<name>]` chain in Cargo.toml, where `inherits`
+    hands the parent's value down.
+    """
+    key = 'CARGO_PROFILE_{}_LTO'.format(profile.upper().replace('-', '_'))
+    if key in environ:
+        return lto_enabled(environ[key])
+    profiles = tomllib.loads((Path(repo) / 'Cargo.toml').read_text()).get('profile', {})
+    seen = set()
+    while profile in profiles and profile not in seen:
+        seen.add(profile)
+        settings = profiles[profile]
+        if 'lto' in settings:
+            return lto_enabled(settings['lto'])
+        profile = settings.get('inherits')
+    return False
+
+
+def packaging_budget(repo, profile, environ):
+    """`TAPP_BUDGET` for packing this build's apps.
+
+    The per-app size budgets are measured on the thin-LTO release binaries the
+    image ships. A build linked without LTO is larger for the same code, so its
+    over-budget packages are reported instead of refusing the cohort, the way
+    the image treats its own non-LTO builds. A caller that packs binaries the
+    budgets measure names them: `TAPP_BUDGET=enforce`, or the LTO setting that
+    made them so.
+    """
+    if 'TAPP_BUDGET' in environ:
+        return environ['TAPP_BUDGET']
+    return 'enforce' if profile_links_with_lto(repo, profile, environ) else 'report'
+
+
 def runtime_dependencies():
     """os/scripts/collect-runtime-dependencies.py, which the release bundles share."""
     path = Path(__file__).resolve().parents[1] / 'scripts/collect-runtime-dependencies.py'
@@ -469,7 +510,8 @@ def package_inside(args):
                BUNDLE_BIN=str(bundle), SHIM_BIN=str(target / 'release/tilo-cli-shim'),
                PUBKEY_OUT=str(stage / 'tree/usr/share/tilo/app-publisher.hex'),
                RUNTIME_ID='tilo-runtime/' + version, REQUIRE_MIN=str(len(entries)),
-               COHORT_APPS=' '.join(entry['dir'] for entry in entries))
+               COHORT_APPS=' '.join(entry['dir'] for entry in entries),
+               TAPP_BUDGET=packaging_budget(repo, args.profile, os.environ))
     # A complete cohort carries each app once, as its installed tree and signed
     # record; tilo-vmd rebuilds the archive it installs from those.
     if args.app is not None:
