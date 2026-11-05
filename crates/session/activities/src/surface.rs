@@ -274,6 +274,12 @@ impl Widget for ActivitiesSurface {
 impl ResourceSurface<Activities, ActivityEffect> for ActivitiesSurface {
     fn present(&mut self, _state: &Rc<Activities>) {}
 
+    /// A capture, or the app's own window, shows the fixed desktop's
+    /// activities: no session lent it any.
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.link().publish(crate::fixture::feed(scenario));
+    }
+
     fn attach(&mut self, _cx: SurfaceCx<Activities>) {}
 
     fn effect(

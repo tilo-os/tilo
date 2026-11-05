@@ -81,6 +81,14 @@ impl ResourceApp for ActivitiesApp {
         surface.link().wake_with(cx.waker());
         cx.surface(surface)
     }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::fixture::SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        crate::fixture::viewport(scenario)
+    }
 }
 
 #[cfg(test)]

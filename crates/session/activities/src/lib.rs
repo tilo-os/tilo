@@ -9,6 +9,7 @@
 //! `tilo_desktop_surface::floating_layer`'s; this app is the surface the
 //! session mounts on its own layer.
 
+pub mod fixture;
 pub mod link;
 mod resource;
 pub mod surface;
