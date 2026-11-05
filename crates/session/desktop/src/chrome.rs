@@ -1,18 +1,9 @@
 //! Portable display snapshots and typed chrome requests. No system probing or effects.
 use tilo_desktop_model::DesktopTree;
+/// The machine's link, as the toolkits' surfaces draw it: the bar's status
+/// cluster and the lock screen's footer share the one reading.
+pub use ui::widget::{LinkKind, LinkStatus};
 use vello::kurbo::Rect;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinkKind {
-    Offline,
-    Wired,
-    Wifi,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LinkStatus {
-    pub kind: LinkKind,
-    pub name: Option<String>,
-    pub signal: u8,
-}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VolumeState {
     pub level: f32,
@@ -63,13 +54,6 @@ impl SystemStatus {
         } else {
             self.summary.clone()
         }
-    }
-}
-pub fn link_bars(link: &LinkStatus) -> u8 {
-    if link.kind == LinkKind::Wifi {
-        link.signal.clamp(1, 4)
-    } else {
-        0
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

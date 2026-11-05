@@ -39,8 +39,7 @@ impl TopBarChrome {
     /// bell always. A reading that never arrived contributes nothing rather
     /// than a plausible default.
     pub(super) fn tray_slots(&self) -> Vec<ui::widget::StatusSlot> {
-        use crate::chrome::{LinkKind, link_bars};
-        use ui::widget::{LinkReading, StatusSlot};
+        use ui::widget::StatusSlot;
         let mut slots = vec![StatusSlot::Bell {
             unread: self.bell.unread,
             quiet: self.bell.quiet,
@@ -51,13 +50,10 @@ impl TopBarChrome {
             });
         }
         if let Some(link) = self.status.link.as_ref() {
-            slots.push(StatusSlot::Link(match link.kind {
-                LinkKind::Wired => LinkReading::Wired,
-                LinkKind::Wifi => LinkReading::Wifi {
-                    bars: link_bars(link),
-                },
-                LinkKind::Offline => LinkReading::Offline,
-            }));
+            slots.push(StatusSlot::Link {
+                kind: link.kind,
+                bars: link.bars(),
+            });
         }
         if let Some(percent) = self.status.battery_percent() {
             slots.push(StatusSlot::Battery {

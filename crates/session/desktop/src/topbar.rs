@@ -371,14 +371,7 @@ fn status_key_of(s: &crate::chrome::SystemStatus) -> StatusKey {
         battery_charging: s.battery_is_charging(),
         battery_low: s.battery_is_low(),
         battery_critical: s.battery_is_critical(),
-        link: s.link.as_ref().map(|l| {
-            let kind = match l.kind {
-                crate::chrome::LinkKind::Offline => 0,
-                crate::chrome::LinkKind::Wired => 1,
-                crate::chrome::LinkKind::Wifi => 2,
-            };
-            (kind, crate::chrome::link_bars(l))
-        }),
+        link: s.link.as_ref().map(|l| (l.kind, l.bars())),
         volume_pct: s.volume.map(|v| {
             let pct = (v.level * 100.0).round().clamp(0.0, 100.0);
             #[allow(
@@ -404,7 +397,7 @@ struct StatusKey {
     battery_charging: bool,
     battery_low: bool,
     battery_critical: bool,
-    link: Option<(u8, u8)>,
+    link: Option<(ui::widget::LinkKind, u8)>,
     volume_pct: Option<u8>,
     muted: bool,
 }

@@ -34,8 +34,13 @@ pub enum StatusSlot {
     },
     /// The volume, `silent` when it is muted.
     Volume { silent: bool },
-    /// The network link.
-    Link(LinkReading),
+    /// The network link, at `bars` of four when it is Wi-Fi (`0` otherwise).
+    Link {
+        /// What kind of connection it is.
+        kind: LinkKind,
+        /// Signal strength on Wi-Fi, `0` off it.
+        bars: u8,
+    },
     /// The battery: a gauge, its percentage, and whether it is charging.
     Battery {
         /// How full it is, `0..=100`.
@@ -47,15 +52,56 @@ pub enum StatusSlot {
     Glyph(Icon),
 }
 
-/// What the cluster's link slot draws, in the bar's terms.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LinkReading {
+/// What kind of connection the machine's link is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkKind {
+    /// Nothing is connected.
+    #[default]
+    Offline,
     /// A cable.
     Wired,
-    /// Wi-Fi at `bars` of four (0: no signal).
-    Wifi { bars: u8 },
-    /// Nothing is connected.
-    Offline,
+    /// Wi-Fi.
+    Wifi,
+}
+
+impl LinkKind {
+    /// The glyph a surface draws for this kind of connection: the cable's
+    /// port, Wi-Fi's arcs, or the crossed-out arcs for no connection.
+    #[must_use]
+    pub fn icon(self) -> Icon {
+        match self {
+            Self::Wired => Icon::EthernetPort,
+            Self::Wifi => Icon::Wifi,
+            Self::Offline => Icon::WifiOff,
+        }
+    }
+}
+
+/// The machine's link, as a surface draws it: what it is, what it is called,
+/// and how strong its signal is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LinkStatus {
+    /// What kind of connection it is.
+    pub kind: LinkKind,
+    /// What the connection is called: the network's name on Wi-Fi, the
+    /// profile's on a cable. `None` while nothing is connected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Signal strength from 0 to 4 on Wi-Fi, `0` on a cable and offline.
+    pub signal: u8,
+}
+
+impl LinkStatus {
+    /// The signal as the status cluster's link slot counts it: `1..=4` on
+    /// Wi-Fi, `0` where it has no bars to draw.
+    #[must_use]
+    pub fn bars(&self) -> u8 {
+        match self.kind {
+            LinkKind::Wifi => self.signal.clamp(1, 4),
+            LinkKind::Offline | LinkKind::Wired => 0,
+        }
+    }
 }
 
 /// The cluster's one control: its slots, the state they share and how it
@@ -333,8 +379,8 @@ impl<'a> StatusClusterFace<'a> {
                         LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
-                StatusSlot::Link(reading) => {
-                    self.paint_link(ctx, square, reading, (dim, low));
+                StatusSlot::Link { kind, bars } => {
+                    self.paint_link(ctx, square, kind, bars, (dim, low));
                 }
                 StatusSlot::Battery { percent, charging } => {
                     let percent = self.battery.unwrap_or(percent);
@@ -402,25 +448,26 @@ impl<'a> StatusClusterFace<'a> {
         &self,
         ctx: &mut PaintCtx<'_>,
         square: Rect,
-        reading: LinkReading,
+        kind: LinkKind,
+        bars: u8,
         (dim, warning): (Color, Color),
     ) {
-        match reading {
-            LinkReading::Wired => Icon::EthernetPort.draw_with_stroke(
+        match kind {
+            LinkKind::Wired => Icon::EthernetPort.draw_with_stroke(
                 ctx.scene,
                 ctx.transform,
                 square,
                 dim,
                 LUCIDE_DEFAULT_STROKE_PX,
             ),
-            LinkReading::Offline => Icon::WifiOff.draw_with_stroke(
+            LinkKind::Offline => Icon::WifiOff.draw_with_stroke(
                 ctx.scene,
                 ctx.transform,
                 square,
                 warning,
                 LUCIDE_DEFAULT_STROKE_PX,
             ),
-            LinkReading::Wifi { bars } => {
+            LinkKind::Wifi => {
                 // His arcs, read as a meter: a weak signal lights fewer of them.
                 let faint = dim.multiply_alpha(0.25);
                 icons::draw_icon_layered(
@@ -660,6 +707,56 @@ mod tests {
     fn the_badge_counts_nine_and_then_says_nine_plus() {
         assert_eq!(badge_label(7), "7");
         assert_eq!(badge_label(120), "9+");
+    }
+
+    /// The scene's paths, for telling one glyph from another.
+    fn paths(slots: &[StatusSlot]) -> vello::Scene {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let face = StatusClusterFace::new(slots, StatusCluster::new());
+        let width = face.width(&mut text, &theme);
+        let rect = Rect::new(0.0, 0.0, width, StatusClusterFace::height(&theme));
+        let mut scene = vello::Scene::new();
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
+        let _ = face.paint(&mut ctx, rect, theme.tokens.colors.surfaces.base);
+        scene
+    }
+
+    /// The link slot draws what kind of connection the machine has: a cable's
+    /// port, Wi-Fi's arcs, or the crossed-out arcs when nothing is connected.
+    #[test]
+    fn the_link_slot_draws_the_glyph_of_its_kind() {
+        assert_eq!(LinkKind::Wired.icon(), Icon::EthernetPort);
+        assert_eq!(LinkKind::Wifi.icon(), Icon::Wifi);
+        assert_eq!(LinkKind::Offline.icon(), Icon::WifiOff);
+        let of = |kind, bars| paths(&[StatusSlot::Link { kind, bars }]);
+        let (wired, wifi, offline) = (
+            of(LinkKind::Wired, 0),
+            of(LinkKind::Wifi, 4),
+            of(LinkKind::Offline, 0),
+        );
+        assert!(!wired.encoding_eq(&wifi), "a cable is not Wi-Fi");
+        assert!(
+            !wifi.encoding_eq(&offline),
+            "nothing connected is not Wi-Fi"
+        );
+        assert!(!wired.encoding_eq(&offline), "a cable is not nothing");
+    }
+
+    /// A weak but connected radio shows one bar rather than reading exactly
+    /// like an offline machine; a cable has no bars to show.
+    #[test]
+    fn a_connected_radio_always_shows_at_least_one_bar() {
+        let status = |kind, signal| LinkStatus {
+            kind,
+            name: None,
+            signal,
+        };
+        assert_eq!(status(LinkKind::Wifi, 0).bars(), 1);
+        assert_eq!(status(LinkKind::Wifi, 3).bars(), 3);
+        assert_eq!(status(LinkKind::Wifi, 9).bars(), 4);
+        assert_eq!(status(LinkKind::Wired, 4).bars(), 0);
+        assert_eq!(status(LinkKind::Offline, 0).bars(), 0);
     }
 
     #[test]

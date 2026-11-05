@@ -74,7 +74,7 @@ pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
 pub use key_hint::{KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps};
 pub use quick_tile::{QuickTileFace, paint_level_gauge};
 pub use status_cluster::{
-    LinkReading, MAX_SLOTS, StatusCluster, StatusClusterFace, StatusClusterLayout, StatusSlot,
+    LinkKind, LinkStatus, StatusCluster, StatusClusterFace, StatusClusterLayout, StatusSlot,
     badge_label, badge_size, paint_unread_badge,
 };
 pub use surface::{

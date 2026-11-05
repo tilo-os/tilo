@@ -115,6 +115,190 @@ fn the_screen_says_the_time_whose_session_it_is_and_what_unlocks_it() {
     }
 }
 
+/// Where the screen puts the node labelled `label`.
+fn place(app: &mut HeadlessApp<LockApp>, label: &str) -> Rect {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            (node.label() == Some(label))
+                .then(|| Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+        })
+        .unwrap_or_else(|| panic!("no {label} on the screen"))
+}
+
+/// The clock's type, as the sheet asks for it: its size, its weight, lining
+/// figures of one width, and no leading above the line.
+fn clock_style() -> ui::text_render::TextStyle {
+    use ui::text_render::{NumericStyle, OpenTypeTag, TextScaling};
+
+    let theme = ui::theme::Theme::dark();
+    let mut style = theme.tokens.typography.style(ui::tokens::TextRole::Body);
+    style.size = tilo_sheets::lock::CLOCK_SIZE;
+    style.scaling = TextScaling::Content;
+    style
+        .with_font_variation(OpenTypeTag::WEIGHT, tilo_sheets::lock::CLOCK_WEIGHT)
+        .with_numeric_style(NumericStyle::TabularLining)
+        .with_line_height(1.0)
+}
+
+#[test]
+fn the_clock_sets_each_character_one_figure_advance_from_the_last() {
+    let (mut app, _seat, _asked) = locked(screen());
+    let clock = place(&mut app, "10:42");
+    let frame = app.harness().frame_output();
+    let scale = f64::from(frame.device_size.0) / f64::from(frame.logical_size.0);
+    let encoding = frame.scene.encoding();
+    let run = encoding
+        .resources
+        .glyph_runs
+        .iter()
+        .find(|run| {
+            (f64::from(run.font_size) - f64::from(tilo_sheets::lock::CLOCK_SIZE) * scale).abs()
+                < 0.5
+        })
+        .expect("the clock is drawn at its own size");
+    let xs: Vec<f64> = encoding.resources.glyphs[run.glyphs.clone()]
+        .iter()
+        .map(|glyph| f64::from(glyph.x))
+        .collect();
+    assert_eq!(
+        xs.len(),
+        "10:42".chars().count(),
+        "the time is one run of its characters"
+    );
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a display scale is small and exact enough in f32"
+    )]
+    let text_scale = scale as f32;
+    let figure = f64::from(ui::text_render::with_layout_renderer(text_scale, |text| {
+        text.measure_style("0", None, &clock_style()).0
+    }));
+    for pair in xs.windows(2) {
+        let step = pair[1] - pair[0];
+        assert!(
+            step <= figure + 0.5,
+            "characters {step} px apart, wider than the font's {figure} px figure advance: {xs:?}"
+        );
+    }
+    let span = xs[xs.len() - 1] - xs[0] + figure;
+    assert!(
+        span <= clock.width().mul_add(scale, 1.0),
+        "the clock paints {span} px wide in a room {} px wide",
+        clock.width() * scale
+    );
+    assert!(
+        (xs[1] - xs[0] - (xs[4] - xs[3])).abs() < 0.05,
+        "each digit keeps one advance, whichever digit it is: {xs:?}"
+    );
+    assert!(
+        xs[3] - xs[2] < xs[1] - xs[0],
+        "the colon is narrower than a figure: {xs:?}"
+    );
+}
+
+/// A locked session's screen whose footer has `link` for its connection.
+fn with_link(link: Option<ui::widget::LinkStatus>) -> Shown {
+    Shown {
+        status: Status {
+            link,
+            ..screen().status
+        },
+        ..screen()
+    }
+}
+
+/// The frame the screen paints for `shown`.
+fn painted(shown: Shown) -> ui::vello::Scene {
+    let (mut app, _seat, _asked) = locked(shown);
+    app.harness().frame_output().scene.clone()
+}
+
+/// A connection of `kind` called `name`.
+fn connection(kind: ui::widget::LinkKind, name: Option<&str>) -> ui::widget::LinkStatus {
+    ui::widget::LinkStatus {
+        kind,
+        name: name.map(str::to_owned),
+        signal: 4,
+    }
+}
+
+/// Whether two painted screens draw the same shapes and letters. The ink is
+/// left out: the sheet's arrival still thins it while the shapes stand still.
+fn same_shapes(left: &ui::vello::Scene, right: &ui::vello::Scene) -> bool {
+    let (a, b) = (left.encoding(), right.encoding());
+    a.path_tags == b.path_tags
+        && a.path_data == b.path_data
+        && a.resources.glyphs.len() == b.resources.glyphs.len()
+        && a.resources
+            .glyphs
+            .iter()
+            .zip(&b.resources.glyphs)
+            .all(|(left, right)| {
+                left.x.to_bits() == right.x.to_bits()
+                    && left.y.to_bits() == right.y.to_bits()
+                    && left.id == right.id
+            })
+}
+
+/// The footer draws the glyph of the connection the session read: a cable's
+/// port on a cable, Wi-Fi's arcs on Wi-Fi, crossed-out arcs with nothing
+/// connected — not Wi-Fi's arcs whatever the machine is on.
+#[test]
+fn the_footer_draws_the_glyph_of_the_connection_the_session_read() {
+    use ui::widget::LinkKind;
+
+    let cable = painted(with_link(Some(connection(LinkKind::Wired, Some("Home")))));
+    let radio = painted(with_link(Some(connection(LinkKind::Wifi, Some("Home")))));
+    let unplugged = painted(with_link(Some(connection(LinkKind::Offline, Some("Home")))));
+    assert!(
+        same_shapes(
+            &cable,
+            &painted(with_link(Some(connection(LinkKind::Wired, Some("Home")))))
+        ),
+        "the same connection paints the same screen"
+    );
+    assert!(!same_shapes(&cable, &radio), "a cable does not draw Wi-Fi");
+    assert!(
+        !same_shapes(&radio, &unplugged),
+        "Wi-Fi is not the offline glyph"
+    );
+    assert!(
+        !same_shapes(&cable, &unplugged),
+        "a cable is not the offline glyph"
+    );
+    assert!(
+        !same_shapes(&cable, &painted(with_link(None))),
+        "a machine whose link the session did not read draws no glyph at all"
+    );
+}
+
+/// The words beside the glyph are the connection's own name, and a connection
+/// with no name is a glyph alone.
+#[test]
+fn the_footer_says_what_the_connection_is_called_when_it_has_a_name() {
+    use ui::widget::LinkKind;
+
+    let (mut app, _seat, _asked) = locked(with_link(Some(connection(
+        LinkKind::Wifi,
+        Some("Café WiFi"),
+    ))));
+    let names = labels(&mut app);
+    assert!(
+        names.iter().any(|name| name == "Café WiFi"),
+        "the connection is named beside its glyph: {names:?}"
+    );
+
+    let called = painted(with_link(Some(connection(LinkKind::Wired, Some("Home")))));
+    let unnamed = painted(with_link(Some(connection(LinkKind::Wired, None))));
+    assert!(
+        !same_shapes(&called, &unnamed),
+        "a named connection writes its name where an unnamed one stops at the glyph"
+    );
+}
+
 #[test]
 fn the_screen_shows_what_plays_and_a_press_asks_the_player() {
     let (mut app, _seat, asked) = locked(Shown {

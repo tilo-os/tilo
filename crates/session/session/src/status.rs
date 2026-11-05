@@ -240,11 +240,6 @@ impl Readings {
         Some(bar_link(self.network.as_ref()?.link.as_ref()?))
     }
 
-    /// The name of the network the person is on, when there is one.
-    pub(crate) fn network_name(&self) -> Option<String> {
-        self.link()?.name
-    }
-
     /// Whether this machine is on a network now: what a join that waited for
     /// one is asked again on.
     pub(crate) fn online(&self) -> bool {
@@ -600,14 +595,13 @@ mod tests {
         };
         let link = offline.link().expect("a link");
         assert_eq!(link.kind, BarLinkKind::Offline);
-        assert_eq!(offline.network_name(), None);
+        assert_eq!(link.name, None);
 
         let older = Readings {
             network: Some(Network::default()),
             ..Readings::default()
         };
         assert!(older.link().is_none());
-        assert!(older.network_name().is_none());
     }
 
     /// The lock screen names the network the person is on and the charge of
@@ -619,7 +613,10 @@ mod tests {
             battery: Some(charging()),
             ..Readings::default()
         };
-        assert_eq!(readings.network_name().as_deref(), Some("Home"));
+        assert_eq!(
+            readings.link().and_then(|link| link.name).as_deref(),
+            Some("Home")
+        );
         assert_eq!(readings.charge(), Some((42, true)));
     }
 

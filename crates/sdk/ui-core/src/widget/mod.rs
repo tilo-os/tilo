@@ -3311,7 +3311,7 @@ pub use primitives::{
     DeclaredPopover, DeclaredPopoverButton, DensityRegion, DisclosureGroup, DisclosureRow,
     DisclosureRowProps, DisclosureState, Fact, FactProps, Facts, FactsFace, FactsProps,
     FloatingPanel, FloatingPanelFace, FloatingPanelLayout, FloatingPanelProps, IconButton, KeyHint,
-    KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps, LinkReading, MAX_SLOTS, ModalProps,
+    KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps, LinkKind, LinkStatus, ModalProps,
     NotificationListControl, NotificationListLayout, NotificationListRow, NotificationListView,
     NotificationRowControls, PopoverProps, StatusCluster, StatusClusterFace, StatusClusterLayout,
     StatusSlot, Surface, SurfaceLevel, TextBlockFace, TextLineAlign, TextLineFace, TextStack,
