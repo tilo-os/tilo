@@ -301,6 +301,37 @@ test('the page that loads after the gesture joins as this browser’s own person
   assert.equal(session.has('tilo-embed-join'), false, 'the gesture is spent');
 });
 
+test('an uncaught page error reaches the door the site names', async () => {
+  const beacons = [];
+  globalThis.window = globalThis;
+  globalThis.parent = {postMessage: () => {}};
+  Object.defineProperty(globalThis, 'navigator', {configurable: true,
+    value: {sendBeacon: (url, body) => { beacons.push({url: String(url), body}); return true; }, language: 'en'}});
+  const {failure, listeners} = await fixture({search: '?embed=1', boot: async (options, booted) => {
+    options.deps.onScope({scope: booted.router.route.target.scope,
+      entry: {base: 'https://home.example/', home: LOUNGE, embedder: 'https://site.example'}});
+    return null;
+  }});
+  assert.equal(failure, null);
+  const fire = (type, event) => listeners.filter(held => held.type === type).forEach(held => held.listener(event));
+  fire('error', {message: 'x is not a function', filename: 'https://home.example/v/7/page.js', lineno: 12, colno: 4,
+    error: {stack: 'at page.js:12'}});
+  fire('unhandledrejection', {reason: Error('the host went away')});
+  assert.equal(beacons.length, 2);
+  assert.equal(beacons[0].url, 'https://home.example/peer/v1/directory/lounge/errors', 'the door\'s own errors route');
+  assert.deepEqual(JSON.parse(await beacons[0].body.text()), {
+    kind: 'error', message: 'x is not a function', source: 'https://home.example/v/7/page.js', line: 12, column: 4,
+    stack: 'at page.js:12', page: '/', build: 'development'});
+  const rejection = JSON.parse(await beacons[1].body.text());
+  assert.equal(rejection.kind, 'unhandledrejection');
+  assert.equal(rejection.message, 'the host went away');
+  assert.equal(rejection.page, '/');
+  assert.equal(typeof rejection.stack, 'string');
+  // A page that keeps failing says five things a load, never more.
+  for (let i = 0; i < 10; i++) fire('error', {message: `again ${i}`});
+  assert.equal(beacons.length, 5);
+});
+
 // A session's own status, as the peer publishes it (PeerSnapshot).
 function sessionOf({phase = 'ready', transport = 'connected', admission = 'ready'} = {}) {
   return {phase, outgoingPending: 0, health: {version: 1, transport: {phase: transport}, admission: {phase: admission}, records: [], failures: []}};

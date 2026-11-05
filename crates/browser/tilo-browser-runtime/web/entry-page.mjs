@@ -589,20 +589,25 @@ function rendererCard({reason, steps}) {
   document.body.append(form);
 }
 
-/** Report a page's uncaught errors to the host that admitted it through its
- * door (size-capped and rate-limited there, logged and never stored). */
-function reportErrors(door) {
+/** The page's uncaught errors, for the door its entry names (`<door>errors`):
+ * the site's host logs them, and sizes and rate-limits them there. Five a
+ * page load at most, and none of them waits for an answer. */
+function reportErrors() {
+  let door = null;
   let sent = 0;
-  const report = (kind, message, stack) => {
-    if (sent++ >= 5) return;
+  const report = (kind, message, stack, at = {}) => {
+    if (!door || sent++ >= 5) return;
     try {
       navigator.sendBeacon(new URL('errors', door), new Blob([JSON.stringify({
-        kind, message: String(message), source: '', line: 0, column: 0, stack: stack || '', page: location.pathname,
+        kind, message: String(message), source: at.source ?? '', line: at.line ?? 0, column: at.column ?? 0,
+        stack: stack || '', page: location.pathname, build: PAGE_BUILD,
       })], {type: 'text/plain'}));
     } catch { /* Reporting must never throw. */ }
   };
-  addEventListener('error', event => report('error', event.message, event.error?.stack));
+  addEventListener('error', event => report('error', event.message, event.error?.stack,
+    {source: event.filename, line: event.lineno, column: event.colno}));
   addEventListener('unhandledrejection', event => report('unhandledrejection', event.reason?.message ?? event.reason, event.reason?.stack));
+  return {at: next => { if (!door && typeof next === 'string' && next) door = next; }};
 }
 
 export async function startEntryPage({mode}) {
@@ -644,6 +649,8 @@ export async function startEntryPage({mode}) {
    * the page in yet: one for every reason the page waits. */
   const reconnect = createReconnect({view: domReconnectView({messages: () => messages, workspace: () => workspaceName,
     onTryNow: () => reconnect.tryNow()})});
+  /** What this page did not catch, for the site's host to log. */
+  const pageErrors = reportErrors();
   /** Where an embed's state goes: the site the web host names as its embedder, once the entry is read. */
   let embedder = null;
   const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };
@@ -802,6 +809,8 @@ export async function startEntryPage({mode}) {
     onScope: next => {
       admitting = next;
       embedder = next.entry?.embedder ?? null;
+      // This site's door: where its pages report what they did not catch.
+      pageErrors.at(next.entry?.home?.admission);
       const known = remembering(() => rememberedWorkspace(next.scope));
       if (known?.name && !workspaceName) workspaceName = known.name;
     },
@@ -813,7 +822,6 @@ export async function startEntryPage({mode}) {
     },
     ownDesktopOpen: home => ownDesktopOpen(home),
     enterViaHost: async ({workspace, room}) => {
-      reportErrors(workspace.admission);
       workspaceName = workspace.name || workspaceName;
       visitedAt = workspace;
       // An embed joins nothing before the visitor does something: it takes no

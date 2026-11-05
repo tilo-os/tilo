@@ -18,6 +18,7 @@ mod envelopes;
 mod fetch;
 mod here;
 pub mod install;
+mod page_errors;
 mod sessions;
 #[cfg(test)]
 mod tests;
@@ -175,6 +176,8 @@ struct Web {
     /// authority that admits their session tokens. `None` in a host that
     /// serves the browser routes without it.
     live: Option<Arc<wt::Live>>,
+    /// The page errors the door logs.
+    page_errors: page_errors::PageErrors,
 }
 
 /// Checks the published origins against the listeners they front.
@@ -327,6 +330,7 @@ impl Relay {
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
             live: Some(Arc::new(live)),
+            page_errors: page_errors::PageErrors::default(),
         });
         let mut tasks = live_tasks;
         tasks.extend(fetch.metrics);
@@ -506,8 +510,8 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
 
-/// A public workspace's door (`/directory/<workspace>/join` or `…/report`):
-/// JSON in, JSON out, a refusal as `{error}` the person reads.
+/// A public workspace's door (`/directory/<workspace>/join`, `…/report` or
+/// `…/errors`): JSON in, JSON out, a refusal as `{error}` the person reads.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -565,6 +569,12 @@ async fn directory_door(
                 .report_listed(workspace, &report)
                 .await
                 .map_err(refused)?;
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
+        // A page's own uncaught error: one log line for the site's operator,
+        // and the same answer whatever became of it, so a page never retries.
+        "errors" => {
+            web.page_errors.report(workspace, bytes);
             Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
         }
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),

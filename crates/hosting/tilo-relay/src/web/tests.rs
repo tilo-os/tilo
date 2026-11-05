@@ -230,6 +230,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         country: None,
         fetch: None,
         live: None,
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -312,6 +313,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
         country: None,
         fetch: None,
         live: None,
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -397,6 +399,32 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
             .contains("post"),
         "{head}"
     );
+
+    // A page's own uncaught error goes to the door that let it in: the host
+    // logs it, and answers the same whether or not it was a report, so a
+    // failing page never asks twice.
+    let report = serde_json::json!({
+        "kind": "error", "message": "x is not a function", "source": "https://someone.example/v/7/page.js",
+        "line": 12, "column": 4, "stack": "at page.js:12", "page": "/", "build": "7",
+    })
+    .to_string();
+    let head = format!(
+        "POST {API_PREFIX}/directory/{workspace}/errors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        report.len()
+    );
+    let (status, head, body) = exchange(addr, &head, report.as_bytes()).await;
+    assert_eq!(status, 204, "{head}");
+    assert!(body.is_empty(), "a report is logged here, not stored");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*"),
+        "any site's page reports to its own door"
+    );
+    let head = format!(
+        "POST {API_PREFIX}/directory/{workspace}/errors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 8\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &head, b"not json").await;
+    assert_eq!(status, 204, "{head}");
 
     serving.abort();
     crate::daemon::Relay::shutdown(relay).await;
@@ -640,6 +668,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
             .unwrap(),
         ),
         live: None,
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -921,6 +950,7 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         country: None,
         fetch: None,
         live: Some(Arc::new(live)),
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
