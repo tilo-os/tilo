@@ -1450,13 +1450,21 @@ fn remove_gpu(
 
 /// The GPU whose connectors to drive: udev's primary, else the one with the
 /// most connected connectors.
+///
+/// udev's primary is followed unless its node provably cannot scan out: a
+/// board can hand out a render-only `cardN` for its GPU (the Raspberry Pi's
+/// V3D, for one) while the display controller's node beside it drives the
+/// outputs, and only the latter carries connectors.
 fn primary_gpu(seat: &str, udev: &UdevBackend) -> Result<PathBuf, BackendError> {
-    if let Ok(Some(path)) = udev::primary_gpu(seat) {
+    let sysfs = Path::new("/sys/class/drm");
+    if let Ok(Some(path)) = udev::primary_gpu(seat)
+        && devices::has_connectors(&path, sysfs) != Some(false)
+    {
         return Ok(path);
     }
     let candidates =
         devices::filter_kms_nodes(udev.device_list().map(|(_, path)| path.to_path_buf()));
-    devices::order_by_connected_connectors(candidates, Path::new("/sys/class/drm"))
+    devices::order_by_connected_connectors(candidates, sysfs)
         .into_iter()
         .next()
         .ok_or_else(|| BackendError(format!("no KMS device on seat {seat}")))
