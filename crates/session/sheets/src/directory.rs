@@ -432,7 +432,7 @@ fn rows(directory: &Directory, query: &str, dispatch: &Dispatcher<WorkspaceDirec
         let empty = if directory.listings.is_empty() {
             EmptyState::new(t("directory-empty-title")).with_message(t("directory-empty"))
         } else {
-            EmptyState::new(&crate::t_args(
+            EmptyState::new(crate::t_args(
                 "directory-no-match-title",
                 &[("query", ui::i18n::ArgValue::Text(query.trim().to_owned()))],
             ))
@@ -506,7 +506,7 @@ fn row(listing: &Listing, dispatch: &Dispatcher<WorkspaceDirectory>) -> Element 
     .avatar(listing.name.clone(), listing.key.clone())
     .square()
     .avatar_glyph(Icon::Users)
-    .subtitle(&listing.about.replace('\n', " "))
+    .subtitle(listing.about.replace('\n', " "))
     .secondary(&listing.activity)
     .trailing(Box::new(trailing));
     if let Some(tag) = &listing.tag {
