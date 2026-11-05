@@ -1105,6 +1105,76 @@ mod door_tests {
         relay.shutdown().await;
     }
 
+    /// A removal moderation made before the door had a record of its own (the
+    /// room's `removals.json`) keeps the person out after a restart, while a
+    /// removal past the day and a malformed key keep nobody out; the old file
+    /// is gone once it has been taken over.
+    #[tokio::test]
+    async fn a_removal_the_room_kept_before_the_door_keeps_its_person_out_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces().clone();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let (_, guest) = guest_device();
+        let join = DoorJoin {
+            user_public_key: hex::encode(guest.user_public_key),
+            display_name: "Troll".into(),
+        };
+        let now_ms = tilo_clock::unix_now_ms();
+        let stale = [9; 32];
+        let file = dir.path().join("removals.json");
+        std::fs::write(
+            &file,
+            serde_json::json!({
+                hex::encode(guest.user_public_key): now_ms,
+                hex::encode(stale): now_ms.saturating_sub(48 * 3600 * 1000),
+                "not a person": now_ms,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            workspaces
+                .adopt_legacy_removals(&workspace, &file)
+                .await
+                .unwrap(),
+            1,
+            "the day has passed for one, and a malformed key is nobody"
+        );
+        assert!(!file.exists(), "the old file is gone");
+        drop(workspaces);
+        relay.shutdown().await;
+
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces().clone();
+        assert!(
+            workspaces
+                .removed_within_the_day(&workspace, guest.user_public_key)
+                .await
+        );
+        assert!(!workspaces.removed_within_the_day(&workspace, stale).await);
+        assert_eq!(
+            workspaces
+                .admit_listed(&workspace, &join)
+                .await
+                .unwrap_err(),
+            DoorRefusal::Refused("you were removed from this workspace within the day".into())
+        );
+        relay.shutdown().await;
+    }
+
     /// A door that holds as many open grants as the workspace keeps says when
     /// it has room again instead of taking another invitation.
     #[tokio::test]

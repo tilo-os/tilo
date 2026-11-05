@@ -602,25 +602,35 @@ fn own_device(
 }
 
 /// A person asks the room's door, as their computer does.
-async fn ask_door(
+async fn ask_door_raw(
     plain: std::net::SocketAddr,
     workspace: &str,
     cert: &tilo_user_identity::DeviceCert,
     name: &str,
-) -> tilo_relay_protocol::directory::DoorAnswer {
+) -> (u16, Vec<u8>) {
     use tilo_browser_peer::HttpClient as _;
     let join = tilo_relay_protocol::directory::DoorJoin {
         user_public_key: hex::encode(cert.user_public_key),
         display_name: name.into(),
     };
-    let (status, body) = Plain(plain)
+    Plain(plain)
         .post(
             &format!("/peer/v1/directory/{workspace}/join"),
             None,
             serde_json::to_vec(&join).unwrap(),
         )
         .await
-        .unwrap();
+        .unwrap()
+}
+
+/// The door's answer to a person it lets in.
+async fn ask_door(
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+    name: &str,
+) -> tilo_relay_protocol::directory::DoorAnswer {
+    let (status, body) = ask_door_raw(plain, workspace, cert, name).await;
     assert_eq!(
         status,
         200,
@@ -716,6 +726,57 @@ fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
         before.workspaces[0].members + 2,
         "both joined as members"
     );
+    room.stop();
+}
+
+/// The room takes over the removals it kept before the door had them: a
+/// person moderation removed before the upgrade stays out, and the old file
+/// goes.
+#[test]
+fn the_room_keeps_out_a_person_it_removed_before_the_door() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let (_, cert) = own_device(0x61, "Ana");
+    let legacy = state.join("relay").join("removals.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(
+        &legacy,
+        serde_json::json!({
+            hex::encode(cert.user_public_key): tilo_clock::unix_now_ms(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let web_plain = plain.to_string();
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
+    .unwrap();
+    let (workspace, _) = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (status, body) = runtime.block_on(ask_door_raw(plain, &workspace, &cert, "Ana"));
+    assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        String::from_utf8_lossy(&body).contains("within the day"),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(!legacy.exists(), "the room took the old removals over");
     room.stop();
 }
 

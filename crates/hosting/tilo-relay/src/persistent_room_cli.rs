@@ -1619,6 +1619,15 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
+    // The removals moderation made before the door had them, taken over once
+    // and kept out for the rest of their day.
+    let adopted = workspaces
+        .adopt_legacy_removals(&workspace, &state.join("removals.json"))
+        .await
+        .context("take over the removals the room kept before the door")?;
+    if adopted > 0 {
+        tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
+    }
     settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
     // Whether the workspace shares its members' windows and strips, as the
     // host configured it. Settled at every start.
