@@ -685,11 +685,8 @@ struct Fixture(u32);
 
 impl fmt::Display for Fixture {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let children = fs::read_to_string(format!("/proc/{}/task/{}/children", self.0, self.0))
-            .unwrap_or_default();
-        let children: Vec<String> = children
-            .split_whitespace()
-            .filter_map(|pid| pid.parse::<u32>().ok())
+        let children: Vec<String> = children_of(self.0)
+            .into_iter()
             .map(|pid| {
                 format!(
                     "{pid} runs {}{}",
@@ -700,10 +697,16 @@ impl fmt::Display for Fixture {
             .collect();
         write!(
             out,
-            "the fixture's compositor (the wrapper {} runs {}, and is {}; its children: {})",
+            "the fixture's compositor (the wrapper {} runs {}, and is {}; the children file is {}; \
+             its children: {})",
             self.0,
             process(self.0),
             if zombie(self.0) { "gone" } else { "running" },
+            if fs::metadata(format!("/proc/{}/task/{}/children", self.0, self.0)).is_ok() {
+                "there"
+            } else {
+                "absent"
+            },
             if children.is_empty() {
                 "none".to_owned()
             } else {
@@ -759,11 +762,13 @@ fn the_compositor_is_told_from_the_login_wrapper_by_its_binary() {
     let binary = binaries.join(COMPOSITOR);
     fs::copy("/bin/sleep", &binary).unwrap();
     // The wrapper: a script of that name, running the compositor as a child
-    // of its own as the login's wrapper does.
+    // of its own as the login's wrapper does. The compositor outlives the
+    // wait, so a failure reports what is running rather than what has just
+    // been reaped.
     let wrapper = dir.path().join(LOGIN_WRAPPER);
     fs::write(
         &wrapper,
-        format!("#!/bin/sh\n\"{}\" 120 &\nwait\n", binary.display()),
+        format!("#!/bin/sh\n\"{}\" 600 &\nwait\n", binary.display()),
     )
     .unwrap();
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();

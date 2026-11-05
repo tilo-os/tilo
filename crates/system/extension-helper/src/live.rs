@@ -1429,11 +1429,39 @@ fn is_compositor(pid: u32) -> bool {
             .unwrap_or(false)
 }
 
+/// The parent `pid` reports, from `/proc/<pid>/status`.
+fn parent(pid: u32) -> Option<u32> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))
+        .and_then(|parent| parent.trim().parse().ok())
+}
+
+/// The processes `wrapper` started.
+///
+/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
+/// `CONFIG_PROC_CHILDREN`, which Tilo's kernel is not, so the parent each
+/// process reports is what names them.
+fn children_of(wrapper: u32) -> Vec<u32> {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    processes
+        .flatten()
+        .filter_map(|process| {
+            process
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+        })
+        .filter(|pid| parent(*pid) == Some(wrapper))
+        .collect()
+}
+
 fn compositor_of(wrapper: u32) -> Option<u32> {
-    fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
-        .ok()?
-        .split_whitespace()
-        .filter_map(|pid| pid.parse::<u32>().ok())
+    children_of(wrapper)
+        .into_iter()
         .find(|pid| is_compositor(*pid) && !zombie(*pid))
 }
 
