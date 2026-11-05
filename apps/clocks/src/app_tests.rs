@@ -4,10 +4,10 @@
 )]
 
 use super::{
-    WEEKDAYS, custom_timer_duration_seconds, remaining_fraction, repeat_summary, timezone_label,
+    custom_timer_duration_seconds, remaining_fraction, repeat_summary, timezone_label,
     timezone_results,
 };
-use crate::model::{Clocks, bounded_label};
+use crate::model::{Clocks, WeekdayKey, bounded_label};
 use crate::{ClocksOnDevices, ClocksShell, ShellSnapshot};
 use std::collections::BTreeSet;
 use ui::prelude::TestApp;
@@ -433,7 +433,7 @@ fn timer_alarm_and_world_clock_inputs_are_bounded_and_readable() {
     }
 
     // Case: alarm schedule summaries are specific.
-    let selected = [WEEKDAYS[0].0, WEEKDAYS[2].0, WEEKDAYS[4].0]
+    let selected = [WeekdayKey::ALL[0], WeekdayKey::ALL[2], WeekdayKey::ALL[4]]
         .into_iter()
         .collect::<BTreeSet<_>>();
     assert_eq!(repeat_summary(&selected), "Mon, Wed, Fri");
@@ -506,6 +506,19 @@ fn the_repeat_days_are_one_strip_that_sets_the_new_alarms_days() {
     let clocks = app.state();
     let alarm = clocks.alarms.values().next().expect("the alarm was added");
     assert_eq!(alarm.repeat, 0b101, "Monday and Wednesday");
+}
+
+#[test]
+fn the_repeat_days_read_in_the_interface_language() {
+    let days = [WeekdayKey::ALL[0], WeekdayKey::ALL[2], WeekdayKey::ALL[4]]
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    ui::I18nManager::init("en-US");
+    ui::I18nManager::register_widget_messages();
+    ui::I18nManager::set_locale("de-DE");
+    assert_eq!(repeat_summary(&days), "Mo., Mi., Fr.");
+    ui::I18nManager::set_locale("en-US");
+    assert_eq!(repeat_summary(&days), "Mon, Wed, Fri");
 }
 
 #[test]

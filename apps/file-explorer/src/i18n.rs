@@ -1,9 +1,9 @@
 //! Fluent localization for Files.
 //!
-//! Catalogs are embedded so standalone, sandboxed, headless and test runs all
+//! The catalogs are embedded so standalone, sandboxed, headless and test runs
 //! resolve the same copy, through the toolkit's [`mod@ui::i18n`] manager. Locale
-//! selection follows the usual POSIX variables (`LC_ALL`, `LC_MESSAGES`,
-//! `LANGUAGE`, `LANG`) and falls back per-message to `en-US`.
+//! selection is the desktop's one answer — the person's language, else the
+//! system locale — and falls back per-message to `en-US`.
 
 use ui::i18n::ArgValue;
 

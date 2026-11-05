@@ -163,23 +163,14 @@ fn custom_timer_duration_seconds(hours: &str, minutes: &str, seconds: &str) -> O
         .checked_add(seconds)
 }
 
-const WEEKDAYS: [(WeekdayKey, &str); 7] = [
-    (WeekdayKey::Mon, "Mon"),
-    (WeekdayKey::Tue, "Tue"),
-    (WeekdayKey::Wed, "Wed"),
-    (WeekdayKey::Thu, "Thu"),
-    (WeekdayKey::Fri, "Fri"),
-    (WeekdayKey::Sat, "Sat"),
-    (WeekdayKey::Sun, "Sun"),
-];
-
 pub(crate) fn repeat_summary(days: &BTreeSet<WeekdayKey>) -> String {
     if days.is_empty() {
         return "Once".into();
     }
-    WEEKDAYS
-        .iter()
-        .filter_map(|(day, label)| days.contains(day).then_some(*label))
+    WeekdayKey::ALL
+        .into_iter()
+        .filter(|day| days.contains(day))
+        .map(|day| ui::format::weekday_short(day.weekday()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -446,9 +437,14 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
 fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static str) -> Element {
     // One multi-select strip: the week reads as one row, wrapping only
     // when the form is too narrow for it.
-    let days = WEEKDAYS
-        .iter()
-        .map(|(day, label)| (*day, ui::widget::Segment::new(*label)))
+    let days = WeekdayKey::ALL
+        .into_iter()
+        .map(|day| {
+            (
+                day,
+                ui::widget::Segment::new(ui::format::weekday_short(day.weekday())),
+            )
+        })
         .collect();
     Box::new(
         ui::widget::ToggleGroup::multiple_from_state(days, selection)

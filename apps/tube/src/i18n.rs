@@ -1,9 +1,9 @@
 //! Tube's copy, through the toolkit's Fluent catalogues.
 //!
 //! The catalogue is embedded, so a live window, a `--shots` capture and a
-//! test resolve the same strings with no file I/O. The person's locale comes
-//! from the usual POSIX variables (`LC_ALL`, `LC_MESSAGES`, `LANGUAGE`,
-//! `LANG`); a message a locale lacks falls back to `en-US`.
+//! test resolve the same strings with no file I/O. The language is the
+//! desktop's one answer — the person's language, else the system locale; a
+//! message a locale lacks falls back to `en-US`.
 
 use ui::i18n::ArgValue;
 
