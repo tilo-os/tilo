@@ -265,6 +265,7 @@ suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
   "os/containers/tilo-agent-host/test-contract.sh",
+  "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
@@ -1530,6 +1531,10 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-image.sh"
+reason = "needs the built Lounge image"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

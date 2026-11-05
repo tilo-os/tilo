@@ -1978,13 +1978,6 @@ mod tests {
         clippy::too_many_lines,
         reason = "one story: the door, an invitation, admitting it and taking it back"
     )]
-    #[cfg_attr(
-        feature = "agents",
-        expect(
-            clippy::significant_drop_tightening,
-            reason = "Relay::shutdown consumes the relay, and so its workspaces, after the assertions"
-        )
-    )]
     async fn taking_people_by_invitation_members_invite_whose_join_they_admit() {
         let dir = tempfile::tempdir().unwrap();
         let (relay, workspaces, host_cert, workspace) = plaza(dir.path()).await;

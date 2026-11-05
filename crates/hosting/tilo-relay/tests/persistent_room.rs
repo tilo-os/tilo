@@ -1,5 +1,6 @@
-//! The persistent room as the room service runs it: a real `tilo-relay
-//! room --persistent` process spoken to over operator protocol 5.
+//! The persistent room as its deployment runs it: a real `tilo-relay room
+//! --persistent` process spoken to over operator protocol 5, and the plain-HTTP
+//! routes beside it.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -89,12 +90,6 @@ impl Workspace {
                 return event;
             }
         }
-    }
-
-    fn tell(&mut self, command: &OperatorCommand) {
-        let stdin = self.stdin.as_mut().expect("the operator's input is open");
-        stdin.write_all(command.to_line().as_bytes()).unwrap();
-        stdin.flush().unwrap();
     }
 
     /// The operator goes away, as it does in a deployment that runs the room
@@ -1043,25 +1038,89 @@ fn get(runtime: &tokio::runtime::Runtime, addr: std::net::SocketAddr, path: &str
     }
 }
 
+/// What a bot publishes as an avatar: PNG bytes, addressed by their hash.
+const AVATAR_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+/// An avatar the workspace published is served by its content address as
+/// bytes that never change, and nothing else is served there.
+fn answers_its_avatars(
+    runtime: &tokio::runtime::Runtime,
+    management: std::net::SocketAddr,
+    published: &str,
+) {
+    let avatar = get(runtime, management, &format!("/avatars/{published}"));
+    assert_eq!(avatar.status, 200);
+    assert_eq!(avatar.header("content-type"), Some("image/png"));
+    assert_eq!(avatar.body, AVATAR_PNG, "the published bytes, as they are");
+    assert_eq!(
+        avatar.header("cache-control"),
+        Some("public, max-age=31536000, immutable"),
+        "a content address never changes"
+    );
+    assert_eq!(
+        get(runtime, management, &format!("/avatars/{}", "0".repeat(64))).status,
+        404,
+        "an avatar the workspace did not publish"
+    );
+    assert_eq!(get(runtime, management, "/avatars/not-a-hash").status, 404);
+}
+
+/// What Discord's consent page comes back with: on to the entry when the
+/// person said no, and a page saying why when the round trip was not one this
+/// host started.
+fn answers_its_sign_in(runtime: &tokio::runtime::Runtime, management: std::net::SocketAddr) {
+    let declined = get(runtime, management, "/discord/callback?error=access_denied");
+    assert_eq!(declined.status, 302);
+    assert_eq!(declined.header("location"), Some("https://tilo.example/"));
+    let malformed = get(
+        runtime,
+        management,
+        "/discord/callback?code=the-code&state=short",
+    );
+    assert_eq!(malformed.status, 400);
+    assert_eq!(
+        malformed.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(
+        String::from_utf8_lossy(&malformed.body).contains("href=\"https://tilo.example/\""),
+        "{}",
+        String::from_utf8_lossy(&malformed.body)
+    );
+}
+
+/// A page's own error report still lands on the door and is answered as
+/// reports always are.
+fn answers_the_door(
+    runtime: &tokio::runtime::Runtime,
+    plain: std::net::SocketAddr,
+    workspace: &str,
+) {
+    let reported = runtime.block_on(async {
+        use tilo_browser_peer::HttpClient as _;
+        Plain(plain)
+            .post(
+                &format!("/peer/v1/directory/{workspace}/errors"),
+                None,
+                br#"{"kind":"error","message":"boom","page":"/","build":"abc"}"#.to_vec(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(reported.0, 204, "{}", String::from_utf8_lossy(&reported.1));
+}
+
 /// The room as its deployment runs it: no operator at all, and the plain-HTTP
 /// routes the ingress publishes — the health check, the avatars its bots
 /// publish and Discord's sign-in callback — answering beside the browser
 /// listener, whose door still logs a page's error and answers it.
 #[test]
 fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
-    /// What a bot publishes as an avatar: content-addressed PNG bytes.
-    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
-
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    let published = blake3::hash(AVATAR_PNG).to_hex().to_string();
     std::fs::create_dir_all(state.join("avatars")).unwrap();
-    std::fs::write(
-        state
-            .join("avatars")
-            .join(blake3::hash(PNG).to_hex().to_string()),
-        PNG,
-    )
-    .unwrap();
+    std::fs::write(state.join("avatars").join(&published), AVATAR_PNG).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
     let secret = scratch.path().join("discord-client-secret");
@@ -1123,69 +1182,11 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
     assert_eq!(mode["relay"], "up", "the health check a deploy waits on");
     assert_eq!(mode["revision"], SOURCE_REVISION, "the image it built");
 
-    let name = blake3::hash(PNG).to_hex().to_string();
-    let avatar = get(&runtime, management, &format!("/avatars/{name}"));
-    assert_eq!(avatar.status, 200);
-    assert_eq!(avatar.header("content-type"), Some("image/png"));
-    assert_eq!(avatar.body, PNG, "the published bytes, as they are");
-    assert_eq!(
-        avatar.header("cache-control"),
-        Some("public, max-age=31536000, immutable"),
-        "a content address never changes"
-    );
-    assert_eq!(
-        get(
-            &runtime,
-            management,
-            &format!("/avatars/{}", "0".repeat(64))
-        )
-        .status,
-        404,
-        "an avatar the workspace did not publish"
-    );
-    assert_eq!(get(&runtime, management, "/avatars/not-a-hash").status, 404);
-
-    // Discord's consent page sent the person back saying no: on to Tilo.
-    let declined = get(
-        &runtime,
-        management,
-        "/discord/callback?error=access_denied",
-    );
-    assert_eq!(declined.status, 302);
-    assert_eq!(declined.header("location"), Some("https://tilo.example/"));
-    // A callback that carries no round trip of ours says so and leads back.
-    let malformed = get(
-        &runtime,
-        management,
-        "/discord/callback?code=the-code&state=short",
-    );
-    assert_eq!(malformed.status, 400);
-    assert_eq!(
-        malformed.header("content-type"),
-        Some("text/html; charset=utf-8")
-    );
-    assert!(
-        String::from_utf8_lossy(&malformed.body).contains("href=\"https://tilo.example/\""),
-        "{}",
-        String::from_utf8_lossy(&malformed.body)
-    );
+    answers_its_avatars(&runtime, management, &published);
+    answers_its_sign_in(&runtime, management);
     assert_eq!(get(&runtime, management, "/join").status, 404);
     assert_eq!(get(&runtime, management, "/wait-list").status, 404);
-
-    // The pages' own error reports still land on the door and are answered as
-    // reports always are.
-    let reported = runtime.block_on(async {
-        use tilo_browser_peer::HttpClient as _;
-        Plain(plain)
-            .post(
-                &format!("/peer/v1/directory/{workspace}/errors"),
-                None,
-                br#"{"kind":"error","message":"boom","page":"/","build":"abc"}"#.to_vec(),
-            )
-            .await
-            .unwrap()
-    });
-    assert_eq!(reported.0, 204, "{}", String::from_utf8_lossy(&reported.1));
+    answers_the_door(&runtime, plain, &workspace);
 
     room.stop();
 }

@@ -336,7 +336,7 @@ mod tests {
     #[tokio::test]
     async fn the_callback_trades_the_code_for_the_account_and_a_one_time_token() {
         let discord = FakeDiscord::answering("42", "ana", Some("Ana A"), Some("abc"));
-        let sign_in = sign_in_at(&discord.base, "123", "s3cret").await;
+        let sign_in = sign_in_at(&discord.base, "123", "s3cret");
         let state = "0123456789abcdef0123456789abcdef";
         let authorized = sign_in
             .callback(&format!("code=the-code&state={state}"))
@@ -379,7 +379,7 @@ mod tests {
     #[tokio::test]
     async fn a_callback_that_links_nothing_says_why() {
         let discord = FakeDiscord::answering("42", "ana", None, None);
-        let sign_in = sign_in_at(&discord.base, "123", "s3cret").await;
+        let sign_in = sign_in_at(&discord.base, "123", "s3cret");
         assert_eq!(
             sign_in
                 .callback("error=access_denied&state=0123456789abcdef")
@@ -401,7 +401,7 @@ mod tests {
 
         // Discord refusing the code: nothing linked, and the person is told.
         let refusing = FakeDiscord::refusing();
-        let sign_in = sign_in_at(&refusing.base, "123", "s3cret").await;
+        let sign_in = sign_in_at(&refusing.base, "123", "s3cret");
         assert_eq!(
             sign_in
                 .callback("code=the-code&state=0123456789abcdef")
@@ -411,7 +411,7 @@ mod tests {
         );
     }
 
-    async fn sign_in_at(base: &str, client_id: &str, secret: &str) -> SignIn {
+    fn sign_in_at(base: &str, client_id: &str, secret: &str) -> SignIn {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("secret");
         std::fs::write(&file, secret).unwrap();
@@ -466,15 +466,18 @@ mod tests {
                     };
                     let mut request = Vec::new();
                     let mut buffer = [0u8; 4096];
-                    while let Some(at) = find(&request, b"\r\n\r\n") {
-                        let head = String::from_utf8_lossy(&request[..at]).to_lowercase();
-                        let length = head
-                            .lines()
-                            .find_map(|line| line.strip_prefix("content-length:"))
-                            .and_then(|value| value.trim().parse::<usize>().ok())
-                            .unwrap_or(0);
-                        if request.len() >= at + 4 + length {
-                            break;
+                    loop {
+                        if let Some(at) = find(&request, b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&request[..at]).to_lowercase();
+                            let length = head
+                                .lines()
+                                .find_map(|line| line.strip_prefix("content-length:"))
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                                .unwrap_or(0);
+                            // A body that long can only come after its head.
+                            if request.len() >= at.saturating_add(4).saturating_add(length) {
+                                break;
+                            }
                         }
                         match stream.read(&mut buffer) {
                             Ok(0) | Err(_) => break,
