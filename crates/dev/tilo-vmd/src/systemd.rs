@@ -216,12 +216,31 @@ fn cgroup_members(pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// The processes `wrapper` started.
+///
+/// `/proc/<pid>/task/<tid>/children` exists only on kernels built with
+/// `CONFIG_PROC_CHILDREN`, so the parent each process reports is what names
+/// the wrapper's children here.
+fn children_of(wrapper: u32) -> Vec<u32> {
+    let Ok(processes) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    processes
+        .flatten()
+        .filter_map(|process| {
+            process
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse::<u32>().ok())
+        })
+        .filter(|pid| parent_of(*pid) == Some(wrapper))
+        .collect()
+}
+
 /// The running compositor `wrapper` (a `tilo-session`) started.
 fn compositor_of(wrapper: u32) -> Option<u32> {
-    fs::read_to_string(format!("/proc/{wrapper}/task/{wrapper}/children"))
-        .ok()?
-        .split_whitespace()
-        .filter_map(|c| c.parse::<u32>().ok())
+    children_of(wrapper)
+        .into_iter()
         .find(|c| comm(*c).is_some_and(|name| COMPOSITORS.contains(&name.as_str())) && !zombie(*c))
 }
 
@@ -1710,6 +1729,51 @@ fn control_command(
 
 #[cfg(test)]
 mod tests {
+    /// A login's compositor shares the wrapper's process name, so only its
+    /// being the wrapper's child and running a binary of that name tells it
+    /// apart: found through the parent each process reports, which every
+    /// kernel has, rather than through the children file, which only kernels
+    /// built with `CONFIG_PROC_CHILDREN` have.
+    #[test]
+    fn a_wrappers_compositor_is_found_as_its_child() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use tilo_test_env::SpawnUnderEnvLock as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let binaries = dir.path().join("bin");
+        std::fs::create_dir(&binaries).unwrap();
+        let binary = binaries.join(super::COMPOSITORS[0]);
+        std::fs::copy("/bin/sleep", &binary).unwrap();
+        let wrapper = dir.path().join(super::LOGIN_WRAPPER);
+        std::fs::write(
+            &wrapper,
+            format!("#!/bin/sh\n\"{}\" 600 &\nwait\n", binary.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut login = std::process::Command::new(&wrapper).spawn_locked().unwrap();
+        let wrapper_pid = login.id();
+        let compositor = tilo_test_env::wait_for(wrapper_pid, || super::compositor_of(wrapper_pid));
+
+        assert_eq!(
+            super::children_of(wrapper_pid),
+            vec![compositor],
+            "the compositor is the wrapper's child"
+        );
+        assert_eq!(
+            super::compositor_of(wrapper_pid),
+            Some(compositor),
+            "and the compositor the wrapper started is found again"
+        );
+
+        let _ = std::process::Command::new("kill")
+            .arg(compositor.to_string())
+            .status_locked();
+        let _ = login.kill();
+        let _ = login.wait();
+    }
+
     #[test]
     fn control_runs_the_sessions_own_client_in_its_namespace() {
         let command = super::control_command(
