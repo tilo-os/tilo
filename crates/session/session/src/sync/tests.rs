@@ -218,6 +218,28 @@ fn pointer_cleared(sync: &Client, from: u8, workspace: &str, tab: u64) {
 }
 
 #[test]
+fn a_device_of_the_person_coming_up_owes_it_the_list() {
+    let (sync, _said) = session("Desk", Some(0x04));
+    assert!(
+        !sync.sibling_arrived(),
+        "no device of the person said anything yet"
+    );
+    sync.keep_personal(&NetEvent::Sibling {
+        peer: device(0x11),
+        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
+        certs: Vec::new(),
+        revocations: Vec::new(),
+    });
+    // The pass that hears it tells the list; the next one has nothing new to
+    // say, so a device that stayed up is not told it again on every pass.
+    assert!(
+        sync.sibling_arrived(),
+        "a device that just came up has not heard it"
+    );
+    assert!(!sync.sibling_arrived());
+}
+
+#[test]
 fn a_list_is_kept_only_from_the_device_that_said_it() {
     let (laptop, laptop_key) = certified(0x04, 0x11, "Laptop");
     let (phone, _) = certified(0x04, 0x12, "Phone");

@@ -1376,7 +1376,10 @@ impl crate::Shared {
             if let Some(sync) = &self.sync {
                 let (taken, missing) = take_personal(&mut personal, sync);
                 news |= taken;
-                behind |= missing;
+                // A device that just came up has heard nothing of this
+                // device's workspaces yet, though nothing changed here since
+                // they were last said.
+                behind |= missing || sync.sibling_arrived();
             }
             let adoption = personal.adopt_into(&self.handle);
             for opened in adoption.enter {

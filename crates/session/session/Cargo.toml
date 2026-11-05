@@ -329,6 +329,11 @@ xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+# The events the actor hands the session, which its own tests hand the sync
+# directly: the membership epoch on them is the actor's to mint.
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
+
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # A paste killed mid-transfer: the crash test's child process ends on a
 # signal, as a power cut ends a machine.
