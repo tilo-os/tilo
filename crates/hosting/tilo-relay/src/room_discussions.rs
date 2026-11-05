@@ -12,7 +12,7 @@
 //! slug: the page opens `chat.channel:c_<slug>`, the channel this step
 //! seeded.
 
-use chat::record::{Channel, Chat};
+use chat::record::{Chat, Conversation};
 use tilo_resource::{Fields, Id};
 
 use crate::room_chat::channel_id;
@@ -149,10 +149,10 @@ pub(crate) fn settle_threads(
         target.channels.insert(
             at,
             Id::from_raw(id.as_str()),
-            Channel {
+            Conversation {
                 name: entry.title.clone(),
                 topic: entry.address.clone(),
-                ..Channel::default()
+                ..Conversation::default()
             },
         );
         at = at.saturating_add(1);
@@ -225,10 +225,10 @@ mod tests {
         chat.channels.insert(
             0,
             Id::from_raw("c_quiet_software"),
-            Channel {
+            Conversation {
                 name: "Quiet software, discussed".into(),
                 topic: "https://tilo.so/blog/quiet-software".into(),
-                ..Channel::default()
+                ..Conversation::default()
             },
         );
         chat.write_fields(&mut doc, &automerge::ROOT).unwrap();

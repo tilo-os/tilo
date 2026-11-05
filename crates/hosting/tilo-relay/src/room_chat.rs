@@ -46,7 +46,7 @@ pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
     channels: &[String],
 ) -> Result<(), String> {
-    use chat::record::{CHAT_CHANNEL, Channel, VOICE_CHANNEL};
+    use chat::record::{CHAT_CHANNEL, Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::room_bots::opened::<chat::Chat>(doc)
@@ -83,9 +83,9 @@ pub(crate) fn settle_chat(
             target.channels.insert(
                 at,
                 id,
-                Channel {
+                Conversation {
                     name: name.clone(),
-                    ..Channel::default()
+                    ..Conversation::default()
                 },
             );
             at = at.saturating_add(1);
@@ -110,7 +110,7 @@ pub(crate) fn settle_feedback_channel(
     doc: &mut automerge::AutoCommit,
     name: &str,
 ) -> Result<(), String> {
-    use chat::record::{Channel, VOICE_CHANNEL};
+    use chat::record::{Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::room_bots::opened::<chat::Chat>(doc)
@@ -131,9 +131,9 @@ pub(crate) fn settle_feedback_channel(
     target.channels.insert(
         at,
         id,
-        Channel {
+        Conversation {
             name: name.to_owned(),
-            ..Channel::default()
+            ..Conversation::default()
         },
     );
     target
