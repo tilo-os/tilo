@@ -536,12 +536,15 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
 /// what is typed in the entry at its end is their own too until Enter adds it.
 view home(t: Tasks) {
     window place: Filter<Task> = Task.inbox
-    // The places are this type's filters that are on or off, in the order it declares them; a
-    // priority is picked in search, not chosen as a place.
-    let side = filters(Task).filter(f -> f.toggle)
-    // What is assigned to the person looking is a place of its own where anyone else may be
-    // assigned it too: on their own, it holds all of it and tells them nothing.
+    // The places this window offers, in the order it offers them. What is assigned to the person
+    // looking is a place of its own where anyone else may be assigned it too: on their own, it
+    // holds all of it and tells them nothing.
     let shared = workspace.members.len() > 1
+    let side: List<Filter<Task>> = if shared {
+        [Task.inbox, Task.today, Task.upcoming, Task.done, Task.assigned_to_me]
+    } else {
+        [Task.inbox, Task.today, Task.upcoming, Task.done]
+    }
     let chosen = side.find(f -> f == place)
     let found = t.items.matching(place)
     // The project whose place is chosen, when one is.
@@ -581,22 +584,20 @@ view home(t: Tasks) {
         overview_title: title,
         overview_count: header_count,
     ) {
-        // The places this type's filters make, and the projects of its root under them: what a
+        // The places this window offers, and the projects of its root under them: what a
         // window offers in its sidebar is what the app declares.
         sidebar: {
             ui.NavList(selected: place) {
                 for f in side {
                     let held = if f.counts { t.items.matching(f).len() } else { 0 }
                     // A count of zero shows nothing: the badge says what waits.
-                    if f != Task.assigned_to_me or shared {
-                        ui.NavItem(
-                            f,
-                            f.label,
-                            icon: f.icon,
-                            count: if held > 0 { .some(held) } else { .none },
-                        ) {
-                            on select: set(place, f)
-                        }
+                    ui.NavItem(
+                        f,
+                        f.label,
+                        icon: f.icon,
+                        count: if held > 0 { .some(held) } else { .none },
+                    ) {
+                        on select: set(place, f)
                     }
                 }
                 ui.NavSection("Projects", add: new_project(t)) {

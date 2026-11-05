@@ -2622,8 +2622,8 @@ fn sections(view: &ViewInstance) -> Vec<ShownSection> {
     out
 }
 
-/// The sidebar the app draws: the type's own switch places in its order, counted where the
-/// filter of a place asks for a count, and the projects the root holds under a heading that
+/// The sidebar the app draws: the window's own places in the order it lists them, counted where
+/// the filter of a place asks for a count, and the projects the root holds under a heading that
 /// adds one of them.
 #[test]
 fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
@@ -2650,13 +2650,10 @@ fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
     let view = ada.view(APP);
     let labels: Vec<String> = places(&view).into_iter().map(|(label, _)| label).collect();
     assert_eq!(
-        &labels[..4],
-        ["Inbox", "Today", "Upcoming", "Done"],
-        "the type's own places: {labels:?}"
-    );
-    assert!(
-        !labels.iter().any(|label| label == "Priority"),
-        "a priority is searched, not chosen as a place: {labels:?}"
+        labels,
+        ["Inbox", "Today", "Upcoming", "Done", "Groceries"],
+        "the sidebar is the window's own places in the order it lists them, then the root's \
+         projects: a priority is searched, never offered as a place: {labels:?}"
     );
     assert_eq!(
         count(&view, "Inbox"),
