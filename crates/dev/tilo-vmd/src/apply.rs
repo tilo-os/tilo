@@ -837,9 +837,13 @@ pub struct RecordingApply {
     pub prepared_session_layers: Vec<(String, Vec<PathBuf>)>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
-    /// Answers for the next `control` calls, in order; an echo of the
-    /// arguments once they run out.
+    /// Answers for the next `control` calls, in order; past them the call
+    /// is answered by its op (see [`RecordingApply::control`]).
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// The controls a session lists, page by page: a press on a control of
+    /// the current page moves to the next, and the last page stands for the
+    /// desktop past onboarding.
+    pub pages: std::collections::VecDeque<Vec<String>>,
     /// Scripted readiness observations, consumed once per restarted session.
     pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
 
@@ -902,6 +906,47 @@ impl RecordingApply {
             calls.push(text.clone());
         }
         self.calls.push(text);
+    }
+
+    /// What an unscripted `control` call answers, from its op: the controls a
+    /// session lists, a settled desktop, and a press that turns the page.
+    fn answer_control(&mut self, args: &[String]) -> String {
+        let request: Option<serde_json::Value> =
+            args.iter().find_map(|arg| serde_json::from_str(arg).ok());
+        let field = |name: &str| {
+            request
+                .as_ref()
+                .and_then(|request| request.get(name))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        match field("op").as_deref() {
+            Some("list_targets") => {
+                let targets: Vec<_> = self
+                    .pages
+                    .front()
+                    .map(|page| {
+                        page.iter()
+                            .map(|name| serde_json::json!({ "name": name }))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                serde_json::json!({ "targets": targets }).to_string()
+            }
+            // `chrome.in_transition`: the desktop is at rest between pages.
+            Some("state_dump") => "{}".to_owned(),
+            Some("click_named") => {
+                let pressed = field("name");
+                if self.pages.front().is_some_and(|page| {
+                    page.iter()
+                        .any(|name| Some(name.as_str()) == pressed.as_deref())
+                }) {
+                    self.pages.pop_front();
+                }
+                "{}".to_owned()
+            }
+            _ => format!("{}\n", args.join(" ")),
+        }
     }
 }
 
@@ -1105,7 +1150,7 @@ impl Apply for RecordingApply {
         }
         Ok(ControlResult {
             exit_code: 0,
-            stdout: format!("{}\n", args.join(" ")),
+            stdout: self.answer_control(args),
             stderr: String::new(),
         })
     }

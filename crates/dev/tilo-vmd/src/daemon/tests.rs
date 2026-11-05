@@ -1414,20 +1414,7 @@ fn onboarding_targets_are_read_from_a_list_targets_answer() {
 /// A session whose onboarding shows its pages one after another as its
 /// controls are pressed, then the desktop.
 fn onboarding_session() -> RecordingApply {
-    use tilo_vm_protocol::ControlResult;
-    let reply = |stdout: String| ControlResult {
-        exit_code: 0,
-        stdout,
-        stderr: String::new(),
-    };
-    let targets = |names: &[&str]| {
-        let targets: Vec<_> = names
-            .iter()
-            .map(|name| serde_json::json!({ "name": name }))
-            .collect();
-        reply(serde_json::json!({ "targets": targets }).to_string())
-    };
-    let pages: [&[&str]; 5] = [
+    let pages: [&[&str]; 7] = [
         &["onboarding.begin.card"],
         &["onboarding.understood.row", "onboarding.create.button"],
         &["onboarding.understood.row", "onboarding.create.button"],
@@ -1439,17 +1426,15 @@ fn onboarding_session() -> RecordingApply {
             "onboarding.backup.skip-acknowledged.row",
             "onboarding.backup.continue.button",
         ],
+        &["onboarding.finish.button"],
+        &["shell.search"],
     ];
     let mut apply = RecordingApply::default();
-    for page in pages {
-        apply.control_replies.push_back(targets(page));
-        apply.control_replies.push_back(reply("{}".into()));
-    }
-    apply
-        .control_replies
-        .push_back(targets(&["onboarding.finish.button"]));
-    apply.control_replies.push_back(reply("{}".into()));
-    apply.control_replies.push_back(targets(&["shell.search"]));
+    apply.pages.extend(
+        pages
+            .iter()
+            .map(|page| page.iter().map(|name| (*name).to_owned()).collect()),
+    );
     apply
 }
 
