@@ -110,8 +110,10 @@ view list<R, T, S>(
 /// Give `group` and the list stands under a heading for each run of items that names the same
 /// key, the heading held at the top while the person scrolls its run: the key as the platform
 /// presents a value of its kind — a day as the day it is, read against today; a text as it is
-/// written. The items that name no key stand under `ungrouped` when the caller gives it, in
-/// the order the caller gave, never under the last group that names one.
+/// written. A list grouped by the day something happened (`group_done`) says those days as the
+/// days they were: `Today`, `Yesterday`, `Sunday`, `Jun 21`, never as days gone by. The items
+/// that name no key stand under `ungrouped` when the caller gives it, in the order the caller
+/// gave, never under the last group that names one.
 ///
 /// Give `tail` and the rows it is true of stand under `tail_title`, folded away until the
 /// person opens them: they come last because the caller gave them last, so a place that
@@ -130,6 +132,7 @@ view rows<T, K>(
     icon: Option<Text>,
     group: Option<(T) -> Option<K>> = .none,
     ungrouped: Option<Text> = .none,
+    group_done: Bool = false,
     tail: Option<(T) -> Bool> = .none,
     tail_title: Text = phrase("tilolang-done"),
     parent: Option<(T) -> Option<T>> = .none,
@@ -160,6 +163,7 @@ view rows<T, K>(
                             icon,
                             group,
                             ungrouped,
+                            group_done,
                             tail,
                             folded_title,
                             parent,
@@ -182,6 +186,7 @@ view rows<T, K>(
                     icon,
                     group,
                     ungrouped,
+                    group_done,
                     tail,
                     folded_title,
                     parent,
@@ -203,6 +208,7 @@ view rows<T, K>(
                     icon,
                     group,
                     ungrouped,
+                    group_done,
                     tail,
                     folded_title,
                     parent,
@@ -220,6 +226,7 @@ view rows<T, K>(
             icon,
             group,
             ungrouped,
+            group_done,
             tail,
             folded_title,
             parent,
@@ -264,6 +271,7 @@ view rows_list<T, K>(
     icon: Option<Text>,
     group: Option<(T) -> Option<K>>,
     ungrouped: Option<Text>,
+    group_done: Bool,
     tail: Option<(T) -> Bool>,
     tail_title: Option<Text>,
     parent: Option<(T) -> Option<T>>,
@@ -305,6 +313,7 @@ view rows_list<T, K>(
                 item: x,
                 presence: lenses(x).find(l -> not l.mine)?.who,
                 group: heading,
+                group_done: group_done,
                 tail: folded,
                 above: above,
                 parent: under,

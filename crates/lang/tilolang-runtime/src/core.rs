@@ -318,7 +318,8 @@ impl Core {
         use Imp::{
             ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt, CallFn,
             ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
-            CollRemove, CollWhere, CollWhereWith, Dated, Delivery, EntryParts, EnumGetF, EnumGetH,
+            CollRemove, CollWhere, CollWhereWith, Dated, DayOf, Delivery, EntryParts, EnumGetF,
+            EnumGetH,
             EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue,
             FilterLit, Filters, FirstUnseen, FloatToStr, FromPop, FromPush, IdentPart, IntToStr,
             Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses, Links, ListEnd,
@@ -367,7 +368,7 @@ impl Core {
                 self.ret_h(part)
             }
             RepeatNext | RepeatNextAt | RepeatLabel | ReminderAt | ReminderLabel | Today
-            | WallClock => self.recurrence_import(imp, a),
+            | WallClock | DayOf => self.recurrence_import(imp, a),
             RichNew | RichPart | RichEmpty | RichTime => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),

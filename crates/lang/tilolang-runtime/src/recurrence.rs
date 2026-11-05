@@ -1,5 +1,6 @@
-//! Imports over `std.Repeat` and `std.Reminder`: the next occurrence of a repeating item, the
-//! moment to remind of it, and the words a row says it in.
+//! Imports over `std.Repeat`, `std.Reminder` and the person's clock: the next occurrence of a
+//! repeating item, the moment to remind of it, the words a row says it in, the day it is today
+//! and the day a moment falls on (`day_of(t)`).
 //!
 //! The values are their RFC 5545 text (see `tilolang::repeat`), expanded by the shared
 //! `tilo-recurrence` crate, so a rule Calendar draws and one a task repeats by come from the same
@@ -95,6 +96,13 @@ impl Core {
             }
             Imp::Today => {
                 let instant = self.now_seconds();
+                self.ret_h(Value::Text(day_text(self.local_day(instant))))
+            }
+            Imp::DayOf => {
+                let at = self.text(a.h(0)?)?;
+                let Some(instant) = tilolang::calendar::instant(&at) else {
+                    return trap(format!("day_of: `{at}` is not a time"));
+                };
                 self.ret_h(Value::Text(day_text(self.local_day(instant))))
             }
             _ => trap("not a repeat or reminder import"),

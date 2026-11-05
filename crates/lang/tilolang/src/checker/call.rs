@@ -134,6 +134,7 @@ impl Checker<'_> {
             "phrase" => return self.builtin_phrase(args, span),
             "dated" => return self.builtin_dated(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
+            "day_of" => return self.builtin_day_of(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}

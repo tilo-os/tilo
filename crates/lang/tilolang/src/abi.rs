@@ -119,6 +119,7 @@ imports! {
     PrincipalName = "principal_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
+    DayOf = "day_of" ([H] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
     AgentNamed = "agent_named" ([H] -> [H]);

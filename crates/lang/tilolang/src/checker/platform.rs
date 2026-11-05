@@ -575,6 +575,24 @@ impl Checker<'_> {
         )
     }
 
+    /// `day_of(t)`: the day the moment `t` falls on for the person looking, in their zone, as
+    /// `today` reads the day it is.
+    pub(super) fn builtin_day_of(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [at] = args else {
+            self.err("E022", span, "`day_of` takes one moment: `day_of(t)`");
+            return Ex::error();
+        };
+        if at.name.is_some() {
+            self.err(
+                "E022",
+                at.value.span,
+                "`day_of` takes the moment by position: `day_of(t)`",
+            );
+        }
+        let at = self.expr_as(&at.value, &Ty::Time);
+        Ex::host(Imp::DayOf, vec![at], Ty::Date)
+    }
+
     /// `phrase("tilolang-empty")` or `phrase("tilolang-none-selected", kind: noun)`: one of the
     /// platform's phrases, in the person's language, with its arguments.
     pub(super) fn builtin_phrase(&mut self, args: &[ast::Arg], span: Span) -> Ex {

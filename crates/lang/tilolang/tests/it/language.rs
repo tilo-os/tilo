@@ -304,6 +304,23 @@ fn sort_by_takes_a_key_path_that_may_be_absent() {
 }
 
 #[test]
+fn a_moment_reads_as_the_day_it_falls_on() {
+    // `day_of(t)` is the day a moment falls on for the person, as `today` is the day it is: a day
+    // a list groups its rows by, and a date a row shows.
+    ok("fn f(c: C) -> Date {\n    day_of(c.at ?? 2026-06-29T07:02Z)\n}");
+    ok("action a(c: C) {\n    c.due = day_of(now)\n    c.at = now\n}");
+    ok(
+        "view w(c: C) {\n    ui.VirtualList {\n        for x in c.items {\n            let heading: Option<Date> = if let at = x.at { .some(day_of(at)) } else { .none }\n            ui.ListItem(item: x, group: heading) {\n            }\n        }\n    }\n}",
+    );
+    expect("E022", "fn f(c: C) -> Date {\n    day_of()\n}");
+    expect("E022", "fn f(c: C) -> Date {\n    day_of(at: c.at)\n}");
+    expect("E020", "fn f(c: C) -> Date {\n    day_of(c.due)\n}");
+    expect("E020", "fn f() -> Date {\n    day_of(1)\n}");
+    // The name is the language's: an app declares nothing called `day_of`.
+    expect("E011", "fn day_of(t: Time) -> Date {\n    2026-06-29\n}");
+}
+
+#[test]
 fn descendants_and_ancestors_follow_the_parent_an_item_names() {
     const TREE: &str = "type N {\n    p: Option<N> = .none\n    items: Collection<N>\n}\n";
     // The items under one, and the ones it is under: a tree the list itself holds.

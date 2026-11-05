@@ -104,6 +104,7 @@ imports! {
     (PrincipalName, "principal_name", "i", "i"),
     (Now, "now", "", "i"),
     (TimeShift, "time_shift", "ili", "i"),
+    (DayOf, "day_of", "i", "i"),
     (WallClock, "wall_clock", "i", "i"),
     (PrincipalNamed, "principal_named", "i", "i"),
     (AgentNamed, "agent_named", "i", "i"),
