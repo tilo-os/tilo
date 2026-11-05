@@ -1468,3 +1468,6 @@ hung-app-wait = Wait
 hung-app-force-quit = Force quit
 desk-wait-window = Keep waiting for { $window }
 desk-force-quit-window = Force quit { $window }
+activities-layer = Activities
+activity-collapse = Put away
+activity-close = Close

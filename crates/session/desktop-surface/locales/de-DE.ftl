@@ -1481,3 +1481,6 @@ hung-app-wait = Warten
 hung-app-force-quit = Erzwungen beenden
 desk-wait-window = Weiter auf { $window } warten
 desk-force-quit-window = { $window } erzwungen beenden
+activities-layer = Aktivitäten
+activity-collapse = Weglegen
+activity-close = Schließen

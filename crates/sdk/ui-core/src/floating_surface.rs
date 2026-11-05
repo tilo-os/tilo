@@ -1975,7 +1975,10 @@ fn clamp_rect(rect: Rect, bounds: Rect, reachable: f64) -> Rect {
     rect + Vec2::new(dx, dy)
 }
 
-fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
+/// `rect` moved onto an edge of `bounds` it stands within 32 px of, `gap` in
+/// from it: the settle every floating thing uses, cards and windows alike.
+#[must_use]
+pub fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
     let mut out = rect;
     let threshold = 32.0;
     if (rect.x0 - bounds.x0).abs() < threshold {

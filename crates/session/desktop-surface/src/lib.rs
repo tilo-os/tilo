@@ -19,6 +19,7 @@
 pub mod activity;
 pub mod crashed_app;
 pub mod drill_in;
+pub mod floating_layer;
 pub mod history_log;
 pub mod i18n;
 pub mod navigation;
