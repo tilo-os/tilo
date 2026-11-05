@@ -441,11 +441,13 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
         expanded: false,
     };
 
+    // Startup: the surface from nothing, as the session makes it, counted on
+    // its own so the harness below is not in it.
     let start = Instant::now();
     let surface = tilo_activities::ActivitiesSurface::new(None);
+    let build_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
     let link = surface.link();
     let mut harness = FrameHarness::new(State::new(), Box::new(surface), (1600, 1000));
-    let build_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
 
     link.publish(feed(0));
     harness.begin_profiling();
