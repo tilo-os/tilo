@@ -467,6 +467,57 @@ fn hover_actions_replace_the_meta_but_not_the_value() {
     );
 }
 
+/// Assistive technology reaches a row's actions without hovering it: each
+/// button says where it stands, in the slot the row keeps for it.
+#[test]
+fn a_rows_actions_say_where_they_stand_without_a_hover() {
+    let theme = Theme::dark();
+    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+    let mut row = ListRow::new("note-1", "Ada")
+        .action(Icon::Plus, "New note under Ada", || {})
+        .action(Icon::MoreHorizontal, "More actions for Ada", || {});
+    row.metrics = Some(RowMetrics::new(&theme));
+    row.theme = Some(theme.clone());
+    row.rect = rect;
+    let node = Widget::accessibility(&row).unwrap();
+    let buttons: Vec<_> = node
+        .children
+        .iter()
+        .filter(|child| {
+            child
+                .action_target
+                .as_deref()
+                .is_some_and(|target| target.contains("/action/"))
+        })
+        .collect();
+    assert_eq!(buttons.len(), 2, "one button per action");
+    assert!(
+        row.action_rects().is_empty(),
+        "the row is at rest: it shows no action"
+    );
+    // The band the row's own controls are hit-tested and published in.
+    let band = row.text_band();
+    let slots = row.with_face(|face| {
+        face.clone()
+            .interaction(hovered())
+            .action_rects(band, &theme)
+    });
+    let bounds: Vec<Rect> = buttons
+        .iter()
+        .map(|button| match button.bounds {
+            Some(bounds) => bounds.to_rect(),
+            None => panic!("an action a reader can press says where it stands"),
+        })
+        .collect();
+    assert_eq!(bounds.len(), slots.len());
+    for (bounds, slot) in bounds.iter().zip(&slots) {
+        assert!(
+            (bounds.x0 - slot.x0).abs() < 0.01 && (bounds.x1 - slot.x1).abs() < 0.01,
+            "the hovered row shows the action where its button stands: {bounds:?} vs {slot:?}"
+        );
+    }
+}
+
 #[test]
 fn the_text_ends_before_the_rows_facts() {
     let rect = Rect::new(0.0, 0.0, 400.0, 64.0);
