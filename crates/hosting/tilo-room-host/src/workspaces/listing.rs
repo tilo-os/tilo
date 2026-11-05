@@ -52,6 +52,9 @@ pub(crate) const DOOR_LABEL: &str = "the public directory";
 pub enum DoorRefusal {
     /// The person may not join now; `Display` says why.
     Refused(String),
+    /// The door admits only people invited or pre-admitted, and this person
+    /// holds neither: their page asks them to be invited.
+    InvitationOnly,
     /// The door holds as many open grants as the workspace keeps: the person
     /// comes back in `retry_after_secs`.
     Full {
@@ -70,6 +73,7 @@ impl std::fmt::Display for DoorRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Refused(reason) => f.write_str(reason),
+            Self::InvitationOnly => f.write_str("this workspace is joined by invitation"),
             Self::Full { retry_after_secs } => write!(
                 f,
                 "the workspace is taking nobody else just now; come back in {retry_after_secs} seconds"
@@ -90,6 +94,11 @@ struct Stored {
 pub(super) struct Listings {
     path: PathBuf,
     stored: std::sync::Mutex<Stored>,
+    /// The public workspaces whose door admits only people invited or
+    /// pre-admitted: a visitor without an invitation is told so, instead of
+    /// being handed one. The host's operator sets it; it is not a listing's
+    /// field, so what a stored listing holds never changes.
+    invitation_only: std::sync::Mutex<BTreeSet<String>>,
     /// When a member last wrote to each workspace, Unix milliseconds, since this
     /// relay started: the directory's activity hint.
     active: std::sync::Mutex<BTreeMap<String, u64>>,
@@ -111,8 +120,26 @@ impl Listings {
         Self {
             path,
             stored: std::sync::Mutex::new(stored),
+            invitation_only: std::sync::Mutex::default(),
             active: std::sync::Mutex::default(),
             changes: tokio::sync::broadcast::channel(16).0,
+        }
+    }
+
+    /// Whether `workspace`'s door admits only people invited or
+    /// pre-admitted.
+    fn invites_only(&self, workspace: &str) -> bool {
+        self.invitation_only.lock_recover().contains(workspace)
+    }
+
+    /// Set whether `workspace`'s door admits only people invited or
+    /// pre-admitted. Settled at every start.
+    fn set_invites_only(&self, workspace: &str, invites_only: bool) {
+        let mut closed = self.invitation_only.lock_recover();
+        if invites_only {
+            closed.insert(workspace.to_owned());
+        } else {
+            closed.remove(workspace);
         }
     }
 
@@ -256,6 +283,52 @@ impl Workspaces {
     }
 
     #[must_use]
+    /// Settle whether `workspace`'s door admits only people invited or
+    /// pre-admitted, as the host's operator asked. Its directory listing is
+    /// untouched: the workspace stays listed either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `device` may not change the workspace's settings.
+    pub async fn list_invitation_only(
+        &self,
+        workspace: &str,
+        device: &DeviceCert,
+        invites_only: bool,
+    ) -> Result<(), CollaborationError> {
+        {
+            let governed = self.workspace(workspace).await?;
+            let governed = governed.lock().await;
+            self.authorize(
+                device,
+                Some(&governed),
+                WorkspaceOp::Govern(governance::SETTINGS),
+                tilo_clock::unix_now_ns(),
+            )?;
+        }
+        self.inner
+            .listings
+            .set_invites_only(workspace, invites_only);
+        Ok(())
+    }
+
+    /// Whether `user` holds an invitation this workspace issued and has not
+    /// spent: one from a member, or the one its door hands a person it lets
+    /// in. Either is bound to them, so an invitation-only door still knows
+    /// whom it let in when they come back to redeem it.
+    async fn invited(&self, workspace: &str, user: [u8; 32], now: u64) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        state
+            .lock()
+            .await
+            .collaboration()
+            .pending(now)
+            .iter()
+            .any(|invitation| invitation.recipient_user_public_key == Some(user))
+    }
+
     pub fn listing(&self, workspace: &str) -> Option<Listing> {
         self.inner.listings.get(workspace)
     }
@@ -365,6 +438,14 @@ impl Workspaces {
             .ok_or_else(|| DoorRefusal::refused("that workspace is not public"))?;
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
+        // An invitation-only door refuses a stranger who holds no
+        // invitation of their own, and says so: the person's page offers
+        // them the way to be invited (the site's wait list) instead of a
+        // link in as a guest.
+        if self.inner.listings.invites_only(workspace) && !self.invited(workspace, user, now).await
+        {
+            return Err(DoorRefusal::InvitationOnly);
+        }
         let token = hex::encode(rand::random::<[u8; 32]>());
         let mut grant = PreAdmission {
             workspace: workspace.to_owned(),
@@ -500,7 +581,7 @@ impl Workspaces {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use tilo_relay_protocol::workspaces::WorkspaceRole;
 
@@ -579,6 +660,7 @@ mod door_tests {
     use super::super::actions::{HostWorkspaceActions, PUBLISH, UNPUBLISH};
     use crate::workspaces::DoorRefusal;
     use crate::workspaces::Workspaces;
+    use crate::workspaces::fixtures::signed_pre_admission;
     use crate::workspaces::tests::{governor, guest_device, test_host, test_host_with_grants};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
@@ -649,7 +731,7 @@ mod door_tests {
         (reply, cert)
     }
 
-    async fn walk_in_as(
+    pub(super) async fn walk_in_as(
         workspaces: &Workspaces,
         workspace: &str,
         join: &DoorJoin,
@@ -664,7 +746,7 @@ mod door_tests {
     }
 
     /// Redeem `invitation` with the door's `token`, as the person's device.
-    async fn redeem(
+    pub(super) async fn redeem(
         workspaces: &Workspaces,
         invitation: Vec<u8>,
         token: String,
@@ -1330,6 +1412,100 @@ mod door_tests {
             )
             .await;
         assert!(reported.is_ok(), "{reported:?}");
+        relay.shutdown().await;
+    }
+
+    /// A listed workspace whose door takes people by invitation only stays
+    /// listed — the site's directory names it — while a stranger who holds no
+    /// invitation is told so, and a person a member invited walks in. Opening
+    /// the door again lets a stranger in as before.
+    #[tokio::test]
+    async fn an_invitation_only_door_refuses_a_stranger_and_admits_an_invited_person() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces();
+        let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: "Coffee and tea".into(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        workspaces
+            .list_invitation_only(&workspace, &owner, true)
+            .await
+            .unwrap();
+
+        // Still a listed workspace: the site's directory names it.
+        let listed = workspaces
+            .directory(&std::collections::BTreeSet::new())
+            .await;
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].name, "Lounge");
+
+        // A stranger who holds no invitation is refused, and told why.
+        let (_stranger_key, stranger) = guest_device();
+        let stranger_join = DoorJoin {
+            user_public_key: hex::encode(stranger.user_public_key),
+            display_name: "Cy".into(),
+        };
+        assert_eq!(
+            workspaces
+                .admit_listed(&workspace, &stranger_join)
+                .await
+                .map(|_| ()),
+            Err(DoorRefusal::InvitationOnly)
+        );
+
+        // A person a member invited is let in.
+        let (invited_key, invited) = guest_device();
+        workspaces
+            .pre_admit(
+                &owner,
+                crate::workspaces::PreAdmitRequest {
+                    request_id: [3; 32],
+                    grant: signed_pre_admission(&workspace, b"invited-by-the-owner"),
+                    recipient_user_public_key: Some(invited.user_public_key),
+                    inviter_name: Some("Ky".into()),
+                },
+            )
+            .await
+            .unwrap();
+        let invited_join = DoorJoin {
+            user_public_key: hex::encode(invited.user_public_key),
+            display_name: "Ada".into(),
+        };
+        let reply = walk_in_as(
+            workspaces,
+            &workspace,
+            &invited_join,
+            &invited_key,
+            &invited,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
+
+        // Open again, the same workspace hands a stranger in.
+        workspaces
+            .list_invitation_only(&workspace, &owner, false)
+            .await
+            .unwrap();
+        let (open_key, open) = guest_device();
+        let open_join = DoorJoin {
+            user_public_key: hex::encode(open.user_public_key),
+            display_name: "Di".into(),
+        };
+        let reply = walk_in_as(workspaces, &workspace, &open_join, &open_key, &open)
+            .await
+            .unwrap();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
         relay.shutdown().await;
     }
 }

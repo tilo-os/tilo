@@ -141,6 +141,17 @@ pub struct PersistentArgs {
     /// in through its door, so this goes with no `--listing-description`.
     #[arg(long = "members-only", conflicts_with = "listing_description")]
     pub members_only: bool,
+    /// List the workspace, its door admitting only people invited or
+    /// pre-admitted: a member's invitation, or the one this door issued a
+    /// person it let in. Anyone else is told the workspace is joined by
+    /// invitation instead of being handed one. Settled at every start; goes
+    /// with --listing-description, which --members-only cannot.
+    #[arg(
+        long = "invitation-only",
+        requires = "listing_description",
+        conflicts_with = "members_only"
+    )]
+    pub invitation_only: bool,
     /// How many requests left at the door the workspace keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
     /// without an invitation leaves, on the workspace's wait list for whoever
@@ -1310,6 +1321,10 @@ pub(crate) async fn run(
         tracing::info!(%workspace, adopted, "removals taken over from the room's removals file");
     }
     settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
+    workspaces
+        .list_invitation_only(&workspace, &host_cert, persistent.invitation_only)
+        .await
+        .map_err(|error| anyhow::anyhow!("settle the workspace's door: {error}"))?;
     // Whether the workspace shares its members' windows and strips, as the
     // host configured it. Settled at every start.
     workspaces
