@@ -299,10 +299,7 @@ fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), 
     use automerge::transaction::Transactable as _;
     use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
     use ui::tilo_resource::Slot;
-    for channel in collection_items(doc, &ROOT, "channels")? {
-        let Some(item) = map_at(doc, &channel, "v")? else {
-            continue;
-        };
+    for item in collection_items(doc, &ROOT, "channels")? {
         let held = match doc.get(&item, "conversation_with")? {
             Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
                 ScalarValue::Str(agent) => Some(agent.to_string()),
