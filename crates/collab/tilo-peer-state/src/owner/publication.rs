@@ -1249,6 +1249,23 @@ mod encoding_tests {
         );
     }
 
+    /// A record an earlier build kept recovery projections in still reads, and
+    /// this build writes it back without them: it sends the signed originals.
+    #[test]
+    fn a_projected_record_still_reads_and_is_written_without_its_projection() {
+        let projected = entry(vec![1, 2, 3]);
+        let mut stored = serde_json::to_value(StoredPublication::default()).unwrap();
+        stored["projection"] = serde_json::to_value([&projected]).unwrap();
+        let mut read: StoredPublication = serde_json::from_value(stored).unwrap();
+        assert_eq!(read.projection, vec![projected]);
+        read.clear_projection();
+        let written = serde_json::to_value(&read).unwrap();
+        assert!(
+            written.get("projection").is_none(),
+            "a record written now carries no projection: {written}"
+        );
+    }
+
     /// Bytes past the cap are refused in either JSON form, text before it is
     /// decoded.
     #[test]
