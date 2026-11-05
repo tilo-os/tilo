@@ -102,7 +102,7 @@ pub(super) fn settle(frame: &mut ui::headless::FrameHarness) {
     let mut now = ui::time::now();
     for _ in 0..40 {
         now = now.checked_add(Duration::from_millis(16)).expect("a step");
-        tilo_clock::testing::with_monotonic_time(now, || frame.relayout());
+        ui::time::testing::with_monotonic_time(now, || frame.relayout());
     }
 }
 

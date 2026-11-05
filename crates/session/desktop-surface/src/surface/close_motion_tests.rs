@@ -92,7 +92,7 @@ impl Desk {
     /// The strip as drawn at the held clock's present frame.
     fn sample(&self) -> Frame {
         let row = self.frame.root::<DesktopSurface>().shown_row_ref().unwrap();
-        tilo_clock::testing::with_monotonic_time(self.now, || Frame {
+        ui::time::testing::with_monotonic_time(self.now, || Frame {
             scroll: row.drawn_scroll_x(),
             windows: row
                 .groups
@@ -108,7 +108,7 @@ impl Desk {
         (0..n)
             .map(|_| {
                 self.now = self.now.checked_add(Duration::from_millis(16)).unwrap();
-                tilo_clock::testing::with_monotonic_time(self.now, || self.frame.relayout());
+                ui::time::testing::with_monotonic_time(self.now, || self.frame.relayout());
                 self.sample()
             })
             .collect()

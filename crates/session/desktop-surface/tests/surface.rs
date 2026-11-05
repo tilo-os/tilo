@@ -971,7 +971,7 @@ fn on_clock<T>(after: Duration, step: impl FnOnce() -> T) -> T {
         .checked_add(after)
         .unwrap();
     CLOCK.set(Some(at));
-    tilo_clock::testing::with_monotonic_time(at, step)
+    ui::time::testing::with_monotonic_time(at, step)
 }
 
 /// Send one page wheel event as winit's web backend reports it: negated,
@@ -1205,7 +1205,7 @@ fn resting_on_the_window_bars_magnifier_shows_what_it_searches() {
         .frame_schedule()
         .next_wake_deadline
         .expect("the host is woken when the dwell runs out");
-    let shown = tilo_clock::testing::with_monotonic_time(reveal, || {
+    let shown = ui::time::testing::with_monotonic_time(reveal, || {
         driver.poll_frame().expect("the frame lays out");
         driver
             .drawn_tooltip()

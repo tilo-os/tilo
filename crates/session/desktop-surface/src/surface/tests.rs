@@ -628,7 +628,7 @@ fn closing_a_window_keeps_every_frame_settling() {
     let mut at = ui::time::now();
     for _ in 0..40 {
         at = at.checked_add(Duration::from_millis(16)).unwrap();
-        tilo_clock::testing::with_monotonic_time(at, || {
+        ui::time::testing::with_monotonic_time(at, || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
         });
     }
@@ -1520,7 +1520,7 @@ fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
     let mut at = ui::time::now();
     for _ in 0..count {
         at = at.checked_add(Duration::from_millis(16)).unwrap();
-        tilo_clock::testing::with_monotonic_time(at, || {
+        ui::time::testing::with_monotonic_time(at, || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
         });
     }

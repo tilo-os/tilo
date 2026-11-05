@@ -76,7 +76,7 @@ impl Desk {
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             self.now = self.now.checked_add(Duration::from_millis(16)).unwrap();
-            tilo_clock::testing::with_monotonic_time(self.now, || self.frame.relayout());
+            ui::time::testing::with_monotonic_time(self.now, || self.frame.relayout());
         }
     }
 
