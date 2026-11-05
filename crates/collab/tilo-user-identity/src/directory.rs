@@ -12,6 +12,9 @@
 //!   serve different workspaces.
 //! - Per-device pin state — a pinned workspace is held fully
 //!   offline on that device.
+//! - What the person decided about the community at a site
+//!   ([`CommunityState`]): one decision per person, so no device of
+//!   theirs joins their community a second time on its own.
 //! - The revocation list (kept alongside the directory for the same
 //!   reason: it must reach every device).
 //!
@@ -96,6 +99,42 @@ pub struct WorkspaceMeta {
 /// Key prefix on a workspace entry marking a device that keeps the
 /// workspace off its desktop; the rest of the key is the device's hex key.
 const KEPT_OFF_PREFIX: &str = "kept_off:";
+
+/// Key prefix on what this person decided about the community at a site;
+/// the rest of the key is the site's address as typed into the directory.
+const COMMUNITY_PREFIX: &str = "c:";
+
+/// What this person decided about the community at a site: one decision per
+/// person, so none of their devices asks their community's door again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommunityState {
+    /// The join is being asked for: the door is asked, and it has not landed
+    /// here yet.
+    Pending,
+    /// The person decided: they are in the community, or were in it and left.
+    /// Their decision stands, and no device of theirs joins it again on its
+    /// own.
+    Decided,
+}
+
+impl CommunityState {
+    /// The decision as the directory stores it.
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Decided => "decided",
+        }
+    }
+
+    /// The decision `text` names.
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "pending" => Some(Self::Pending),
+            "decided" => Some(Self::Decided),
+            _ => None,
+        }
+    }
+}
 
 /// Document key holding a workspace's collaboration topic. Entries written
 /// under the older name are stored as "room", so the key keeps that
@@ -401,6 +440,48 @@ impl WorkspaceDirectory {
 
     fn device_key(device: &[u8; 32]) -> String {
         format!("d:{}", hex::encode(device))
+    }
+
+    /// Key under `ROOT` for what the person decided about the community at
+    /// `site`. Top-level like the workspaces and the devices, so it merges
+    /// without a container two devices both create.
+    fn community_key(site: &str) -> String {
+        format!("{COMMUNITY_PREFIX}{site}")
+    }
+
+    /// What this person decided about the community at `site`. `None` while
+    /// they decided nothing, which is when their community is joined for
+    /// them.
+    pub fn community(&self, site: &str) -> Option<CommunityState> {
+        let key = Self::community_key(site);
+        let Ok(Some((Value::Object(ObjType::Map), obj))) = self.doc.get(ROOT, key.as_str()) else {
+            return None;
+        };
+        CommunityState::parse(&self.doc.str_at(&obj, "state")?)
+    }
+
+    /// Record what this person decided about the community at `site`:
+    /// `Pending` before their community's door is asked, `Decided` once it let
+    /// them in. Idempotent, so a decision already made is not written again.
+    /// Whether it changed anything.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying Automerge
+    /// document operation fails.
+    pub fn set_community(
+        &mut self,
+        site: &str,
+        state: CommunityState,
+    ) -> Result<bool, DirectoryError> {
+        let changed = self.community(site) != Some(state);
+        let key = Self::community_key(site);
+        let obj = match self.doc.get(ROOT, key.as_str())? {
+            Some((Value::Object(ObjType::Map), obj)) => obj,
+            _ => self.doc.put_object(ROOT, key.as_str(), ObjType::Map)?,
+        };
+        self.doc.put_str_if_changed(&obj, "state", state.as_str())?;
+        Ok(changed)
     }
 
     /// Remove a workspace from the directory. If the workspace does
@@ -1210,6 +1291,67 @@ mod tests {
             .unwrap();
         assert_eq!(board.list_workspaces()[0].order, Some(2.5));
         assert_eq!(board.devices(), vec![(a_pk, "Laptop".to_string())]);
+    }
+
+    /// What the person decided about their community reaches their other
+    /// devices, and the decision stays once it is made: a person who left is
+    /// not put back by the directory.
+    #[test]
+    fn a_community_decision_is_the_persons_and_reaches_their_devices() {
+        let f = fresh_user();
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let (_b_sk, b_pk, _) =
+            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+        let site = "https://tilo.coffee/";
+        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+        assert!(
+            laptop.community(site).is_none(),
+            "a person who decided nothing has no record"
+        );
+        assert!(
+            laptop.set_community(site, CommunityState::Pending).unwrap(),
+            "asking is a decision written down"
+        );
+        assert_eq!(laptop.community(site), Some(CommunityState::Pending));
+        let heads = laptop.doc.get_heads();
+        assert!(
+            !laptop.set_community(site, CommunityState::Pending).unwrap(),
+            "the same decision writes nothing"
+        );
+        assert_eq!(laptop.doc.get_heads(), heads);
+        assert!(
+            laptop.set_community(site, CommunityState::Decided).unwrap(),
+            "the join landed"
+        );
+        assert_eq!(
+            laptop.community("https://elsewhere.example/"),
+            None,
+            "another site is another decision"
+        );
+
+        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+        board
+            .apply_incremental(
+                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                &a_cert,
+                &RevocationList::new(),
+                1_100,
+            )
+            .unwrap();
+        assert_eq!(
+            board.community(site),
+            Some(CommunityState::Decided),
+            "the person's other device knows they decided, and asks nobody"
+        );
+        // Leaving is a leave of the workspace, not an undo of the decision:
+        // the record outlives the workspace being taken off the desk.
+        laptop.remove_workspace(7).unwrap();
+        assert_eq!(laptop.community(site), Some(CommunityState::Decided));
     }
 
     /// A workspace kept off one device shows everywhere else, including on

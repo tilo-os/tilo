@@ -101,8 +101,8 @@ pub struct Person {
     pub name: String,
 }
 
-/// What a door granted this person: the workspace it let them into, the
-/// invitation that admits this device, and where the host says to redeem it.
+/// What a door granted this person: the workspace it let them into, and the
+/// invitation that admits this device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Granted {
     /// The workspace the door's invitation grants: the one joined.
@@ -110,12 +110,6 @@ pub struct Granted {
     /// The invitation itself, which this device enrolls into the workspace's
     /// state with.
     pub invitation: String,
-    /// The one-time token of the host's pre-admission for this invitation: a
-    /// device that presents it is admitted at once, without waiting for the
-    /// owner.
-    pub admission_token: String,
-    /// Where to redeem them, when the door names a host rather than itself.
-    pub origin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -272,6 +266,27 @@ pub async fn join(client: &Client, door: &url::Url, person: &Person) -> Result<G
     asking.granted(&answer)
 }
 
+/// The home workspace of the community `site`, joined as `person`: the name
+/// the site calls it, and what its door granted. `None` when the site serves
+/// no home workspace of its own, which is nothing to join.
+///
+/// This is the door a listing's Join asks and the same verified invitation:
+/// a community is joined as a public workspace is.
+pub(crate) async fn join_home(
+    client: &Client,
+    site: &url::Url,
+    person: &Person,
+) -> Result<Option<(String, Granted)>, String> {
+    let Some(home) = read_site(client, site).await?.home else {
+        return Ok(None);
+    };
+    let Some(door) = home.admission else {
+        return Ok(None);
+    };
+    let granted = join(client, &door, person).await?;
+    Ok(Some((home.name, granted)))
+}
+
 /// An invitation verified for `person`: the workspace it grants, and the text
 /// the workspace's host admits this device by.
 pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String> {
@@ -279,8 +294,6 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
     Ok(Granted {
         workspace,
         invitation: text.trim().to_owned(),
-        admission_token: String::new(),
-        origin: None,
     })
 }
 
@@ -431,8 +444,6 @@ impl<'a> Asking<'a> {
         Ok(Granted {
             workspace,
             invitation: answer.invitation.clone(),
-            admission_token: answer.admission_token.clone(),
-            origin: answer.origin.clone(),
         })
     }
 }

@@ -512,6 +512,9 @@ impl Session {
         self.follow_collaboration();
         self.follow_automation();
         self.shared.follow_records();
+        // The community this computer is configured for is joined on its own,
+        // once, as the session starts.
+        self.shared.follow_community();
         // Who each workspace on the desk is whose, after the workspaces this
         // pass brought: the person's own are theirs, and one joined keeps its
         // host's owner.

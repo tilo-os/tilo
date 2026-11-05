@@ -245,6 +245,15 @@ impl Readings {
         self.link()?.name
     }
 
+    /// Whether this machine is on a network now: what a join that waited for
+    /// one is asked again on.
+    pub(crate) fn online(&self) -> bool {
+        self.network
+            .as_ref()
+            .and_then(|network| network.link.as_ref())
+            .is_some_and(|link| link.kind != LinkKind::Offline)
+    }
+
     /// How full the pack is, and whether it fills, when this machine has a
     /// battery and a service read it.
     pub(crate) fn charge(&self) -> Option<(u8, bool)> {

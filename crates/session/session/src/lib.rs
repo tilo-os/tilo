@@ -52,6 +52,7 @@ mod certification;
 mod channels;
 mod chrome;
 mod clock_wait;
+mod community;
 mod config;
 mod content;
 mod continuations;
@@ -393,6 +394,9 @@ struct Shared {
     directory_store: directory::Store,
     /// The workspace the host started this session to join.
     boot_join: RefCell<boot_join::BootJoin>,
+    /// The community site this computer is configured with, joined on its
+    /// own as the session starts.
+    community: RefCell<community::Community>,
     /// The lock, as the session publishes it for the lock screen to show.
     lock: lock_service::Lock,
     /// The on-screen keyboard, as the session publishes it for its app to
@@ -1794,6 +1798,7 @@ impl Session {
             workspace_settings::EmojiTab::new(cli::data_home(), options.wake.handle());
         let directory_store = directory::Store::default();
         let boot_join = boot_join::BootJoin::at_boot(&directory_store, &handle);
+        let community = community::Community::for_site(directory::community_site());
         let mut shared = Shared {
             handle,
             desktop,
@@ -1842,6 +1847,7 @@ impl Session {
             directory,
             directory_store,
             boot_join: RefCell::new(boot_join),
+            community: RefCell::new(community),
             portal,
             file_picker,
             lock,

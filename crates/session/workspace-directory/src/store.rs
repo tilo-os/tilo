@@ -17,8 +17,8 @@ use crate::{Listed, home_listing, listings_of};
 pub type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// A workspace this person was let into: the name it was listed under, and
-/// what its door granted — the workspace itself, the invitation this device
-/// enrolls into it with, and the host's pre-admission for that invitation.
+/// what its door granted — the workspace itself and the invitation this
+/// device enrolls into it with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Joined {
     /// The name the workspace goes by: the one it was listed under, else one
@@ -26,6 +26,10 @@ pub struct Joined {
     pub name: String,
     /// What the door granted, which is the workspace joined.
     pub granted: Granted,
+    /// The community site whose home this is, when nobody at the directory
+    /// asked for the join: the person's community joins on its own as their
+    /// session starts. `None` for a join a person chose.
+    pub community: Option<String>,
 }
 
 /// What the task is asked.
@@ -42,6 +46,9 @@ enum Ask {
         door: url::Url,
         person: Person,
     },
+    /// Join the home workspace of the community `site` as `person`, with
+    /// nobody at the directory asking for it.
+    Community { site: url::Url, person: Person },
     /// Join what the person pasted: an invitation's text, a site, or a
     /// workspace link.
     Take { text: String, person: Person },
@@ -57,6 +64,13 @@ enum Answer {
         key: String,
         name: String,
         granted: Result<Granted, String>,
+    },
+    /// Where joining the home workspace of the community `site` stands: the
+    /// name it goes by and what it was granted, `None` when the site serves
+    /// no home workspace to join.
+    Community {
+        site: String,
+        joined: Result<Option<(String, Granted)>, String>,
     },
     /// Where joining what the person pasted stands, named `name` when it got
     /// far enough to know it.
@@ -210,6 +224,31 @@ impl Store {
         Ok(())
     }
 
+    /// Join the home workspace of the community `site`, as `person`: what the
+    /// site's own `entry.json` names as its home, through the same door a
+    /// listing's Join asks. Nobody at the directory chose this: its failure
+    /// is the log's, not a note where a person would look for one they asked
+    /// for.
+    ///
+    /// # Errors
+    /// Why nothing was asked: there is no task to ask.
+    pub fn join_community(&self, site: &url::Url, person: &Person) -> Result<(), String> {
+        let Some(asks) = self.worker() else {
+            return Err("the directory has nowhere to ask".to_owned());
+        };
+        tracing::info!(
+            target: JOIN_FLOW_TARGET,
+            site = %site,
+            person = %hex::encode(person.user),
+            "join: asking the community site's home door"
+        );
+        asks.send(Ask::Community {
+            site: site.clone(),
+            person: person.clone(),
+        })
+        .map_err(|error| format!("the community site was not asked: {error}"))
+    }
+
     /// The listing `key` names, while it is listed.
     pub fn listing(&self, key: &str) -> Option<Listed> {
         self.listed
@@ -332,7 +371,7 @@ impl Store {
             Answer::Joined { key, name, granted } => {
                 *self.joining.borrow_mut() = None;
                 match granted {
-                    Ok(granted) => self.granted(&key, &name, granted),
+                    Ok(granted) => self.granted(&key, &name, granted, None),
                     Err(reason) => {
                         tracing::info!(
                             target: JOIN_FLOW_TARGET,
@@ -352,6 +391,32 @@ impl Store {
                     }
                 }
             }
+            Answer::Community { site, joined } => match joined {
+                Ok(Some((name, granted))) => {
+                    tracing::info!(
+                        target: JOIN_FLOW_TARGET,
+                        site = %site,
+                        workspace = %granted.workspace,
+                        name = %name,
+                        outcome = "granted",
+                        "join: the community's home workspace is granted"
+                    );
+                    self.granted(&site, &name, granted, Some(&site));
+                }
+                Ok(None) => tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    site = %site,
+                    outcome = "no home workspace",
+                    "join: the community site serves no home workspace to join"
+                ),
+                Err(reason) => tracing::info!(
+                    target: JOIN_FLOW_TARGET,
+                    site = %site,
+                    %reason,
+                    outcome = "failed",
+                    "join: the community site did not let this person in; their community stays unjoined"
+                ),
+            },
             Answer::Taken { key, name, granted } => {
                 *self.joining.borrow_mut() = None;
                 match granted {
@@ -361,7 +426,7 @@ impl Store {
                         } else {
                             name
                         };
-                        self.granted(&key, &listed, granted);
+                        self.granted(&key, &listed, granted, None);
                     }
                     Err(reason) => {
                         tracing::info!(
@@ -386,7 +451,7 @@ impl Store {
     /// A join the task answered with an invitation: keep the name it is
     /// listed by for the slot made once the host admits this device, and hand
     /// it to the caller.
-    fn granted(&self, key: &str, name: &str, granted: Granted) {
+    fn granted(&self, key: &str, name: &str, granted: Granted, community: Option<&str>) {
         self.failures.borrow_mut().remove(key);
         self.names
             .borrow_mut()
@@ -402,6 +467,7 @@ impl Store {
         self.joined.borrow_mut().push(Joined {
             name: name.to_owned(),
             granted,
+            community: community.map(str::to_owned),
         });
     }
 
@@ -455,6 +521,13 @@ async fn work(
                     Ok(client) => client::join(client, &door, &person).await,
                     Err(error) => Err(format!("no network to join over: {error}")),
                 },
+            },
+            Ask::Community { site, person } => Answer::Community {
+                joined: match &client {
+                    Ok(client) => client::join_home(client, &site, &person).await,
+                    Err(error) => Err(format!("no network to join over: {error}")),
+                },
+                site: site.to_string(),
             },
             Ask::Take { text, person } => {
                 let taken = client::take(&client, &text, &person).await;

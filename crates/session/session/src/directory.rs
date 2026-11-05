@@ -96,6 +96,17 @@ pub(crate) fn join(store: &Store, key: &str, listing: &Listed) -> Result<(), Str
     store.join(key, listing, &person)
 }
 
+/// Join the home workspace of the community `site` as this computer's person,
+/// with nobody at the directory asking: what the site's `entry.json` names as
+/// its home, through the same door a listing's Join asks.
+///
+/// # Errors
+/// Why nothing was asked: this computer has no identity to join as, or no
+/// task to ask.
+pub(crate) fn join_community(store: &Store, site: &url::Url) -> Result<(), String> {
+    store.join_community(site, &person()?)
+}
+
 /// Join what the person pasted into the sheet as this computer's person.
 ///
 /// # Errors
@@ -188,6 +199,46 @@ pub(crate) fn view(store: &Store, handle: &DesktopHandle) -> Directory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A site named is a community to join; an empty one is none, and a file
+    /// that is not there or does not parse leaves the next one to answer.
+    #[test]
+    fn an_empty_site_is_no_community() {
+        let dir = tempfile::tempdir().expect("a directory for the configurations");
+        let write = |name: &str, text: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, text).expect("a configuration");
+            path
+        };
+        let empty = write("empty.toml", "site = \"\"\n");
+        let blank = write("blank.toml", "site = \"   \"\n");
+        let broken = write("broken.toml", "site = \n");
+        let named = write("named.toml", "site = \"tilo.coffee\"\n");
+        let missing = dir.path().join("missing.toml");
+        let site_of = |paths: &[&Path]| site_from(paths.iter().copied());
+        assert_eq!(
+            site_of(&[named.as_path()]).map(|site| site.to_string()),
+            Some("https://tilo.coffee/".to_owned()),
+            "a named site is the community"
+        );
+        assert_eq!(
+            site_of(&[empty.as_path()]),
+            None,
+            "an administrator naming no site asks for no community"
+        );
+        assert_eq!(site_of(&[blank.as_path()]), None, "and a blank one is none");
+        assert_eq!(
+            site_of(&[empty.as_path(), named.as_path()]),
+            None,
+            "the first file that reads answers, empty or not"
+        );
+        assert_eq!(
+            site_of(&[missing.as_path(), broken.as_path(), named.as_path()])
+                .map(|site| site.to_string()),
+            Some("https://tilo.coffee/".to_owned()),
+            "a file that is not there or does not parse leaves the next one to answer"
+        );
+    }
 
     #[test]
     fn the_desk_names_the_person_as_it_knows_them() {

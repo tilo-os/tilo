@@ -104,7 +104,7 @@ pub use certification::{
 pub use clock::wait_for_wall_clock;
 pub use clock::{CertificateClockError, WallClockWait};
 pub use directory::{
-    DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
+    CommunityState, DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
 };
 pub use enrollment::{
     ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, MAX_ENROLLMENT_TOKEN_LIFETIME_NS,

@@ -47,7 +47,8 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{DirectoryEffect, DirectorySeat, ListingAction};
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tilo_user_identity::{
-    DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory, WorkspaceMeta,
+    CommunityState, DeviceCert, DirectoryError, DirectoryUpdate, RevocationList,
+    WorkspaceDirectory, WorkspaceMeta,
 };
 
 use crate::directory;
@@ -582,6 +583,37 @@ impl Personal {
     /// say, not this person's.
     pub(crate) fn borrowed(&self) -> &BTreeSet<WorkspaceId> {
         &self.borrowed
+    }
+
+    /// What this person decided about the community at `site`, as all their
+    /// devices hold it: `None` while they decided nothing, which is when
+    /// their community is joined for them.
+    pub(crate) fn community(&self, site: &str) -> Option<CommunityState> {
+        self.directory.community(site)
+    }
+
+    /// Record what this person decided about the community at `site`:
+    /// [`CommunityState::Pending`] as their door is asked, and
+    /// [`CommunityState::Decided`] once the site let them in — their decision
+    /// from then on, including after they leave it. It is the person's, not
+    /// this desk's, so their other devices are told of it. Whether it changed
+    /// anything.
+    pub(crate) fn decide_community(&mut self, site: &str, state: CommunityState) -> bool {
+        let changed = match self.directory.set_community(site, state) {
+            Ok(changed) => changed,
+            Err(error) => {
+                tracing::warn!(%error, %site, "what this person decided about their community was not kept");
+                return false;
+            }
+        };
+        if changed {
+            // Not a pass over the desk, which is what tells the person's
+            // other devices: this device says so itself.
+            self.published = None;
+            self.untold = true;
+            self.persist();
+        }
+        changed
     }
 
     /// Write what changed on this device's desk since the person's devices
@@ -1126,6 +1158,16 @@ impl crate::Shared {
         // invitation, so their list never names it.
         if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
+        }
+        // A community joined on its own is a decision of the person's: from
+        // here on, no device of theirs asks their community's door again —
+        // not to join it, and not to rejoin it once they left.
+        if let Some(site) = &joined.community
+            && let Some(personal) = &self.personal
+        {
+            personal
+                .borrow_mut()
+                .decide_community(site, CommunityState::Decided);
         }
         self.redeem_invitation(joined);
         Ok(())

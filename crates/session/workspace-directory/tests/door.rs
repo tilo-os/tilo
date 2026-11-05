@@ -62,7 +62,7 @@ fn entry(name: &str) -> DirectoryEntry {
 }
 
 #[test]
-fn a_door_round_trip_carries_the_invitation_the_token_and_the_origin() {
+fn a_door_round_trip_carries_the_invitation_it_granted() {
     let person = Person {
         user: [0x21; 32],
         name: "Ada Lovelace".to_owned(),
@@ -89,11 +89,6 @@ fn a_door_round_trip_carries_the_invitation_the_token_and_the_origin() {
         .expect("the app runtime")
         .expect("a granted join");
     assert_eq!(granted.workspace, WORKSPACE);
-    assert_eq!(granted.admission_token, "one-time-token");
-    assert_eq!(
-        granted.origin.as_deref(),
-        Some("https://rooms.tilo.coffee/")
-    );
     assert_eq!(
         granted.invitation, invitation,
         "the invitation the door answered with is the one carried"
