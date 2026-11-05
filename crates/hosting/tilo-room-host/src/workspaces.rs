@@ -780,16 +780,37 @@ impl GovernedWorkspace {
 
     fn summary(&self) -> WorkspaceSummary {
         let now = SystemTime::now();
+        let mut members = self
+            .peer
+            .governance()
+            .governed_members(now)
+            .unwrap_or_default();
+        // The structural owner is the workspace's own person: it holds the
+        // workspace without an admission receipt, and every list and count of
+        // its people includes it, from the authority pinned in the record.
+        let authority = &self.record.authority;
+        if !members
+            .iter()
+            .any(|member| member.user_public_key == authority.user_public_key)
+        {
+            members.insert(
+                0,
+                tilo_peer_state::GovernedMember {
+                    user_public_key: authority.user_public_key,
+                    role: tilo_peer_state::join::MemberRole::Editor,
+                    display_name: Some(authority.device_label.clone()),
+                    active_device_keys: Vec::new(),
+                    removed: false,
+                    administrator: true,
+                },
+            );
+        }
         WorkspaceSummary {
             workspace: self.record.workspace.clone(),
             workspace_id: self.record.workspace_id,
             name: self.record.name.clone(),
             generation: self.record.generation,
-            members: self
-                .peer
-                .governance()
-                .governed_members(now)
-                .unwrap_or_default(),
+            members,
         }
     }
 }

@@ -365,16 +365,22 @@ pub(crate) enum RoleChange {
 /// What makes the member list match the declared lists: promote declared
 /// people who joined and do not hold their role, demote people declared
 /// before and no longer listed. People not yet in the workspace wait until they
-/// join; the governance change of their join triggers this again.
+/// join; the governance change of their join triggers this again. The owner
+/// root is the workspace's own person, not one the lists declare: its role is
+/// the workspace's, so no list takes it.
 pub(crate) fn role_changes(
     members: &[tilo_peer_state::GovernedMember],
     owners: &BTreeSet<[u8; 32]>,
     moderators: &BTreeSet<[u8; 32]>,
     previously_declared: &BTreeSet<[u8; 32]>,
+    owner: [u8; 32],
 ) -> Vec<RoleChange> {
     let mut changes = Vec::new();
     for member in members.iter().filter(|member| !member.removed) {
         let key = member.user_public_key;
+        if key == owner {
+            continue;
+        }
         if owners.contains(&key) {
             if !member.administrator {
                 changes.push(RoleChange::Administrator(key));
@@ -1588,7 +1594,13 @@ async fn reconcile_roles(
 ) -> anyhow::Result<()> {
     let members = summary(context).await?.members;
     let current = governance.current();
-    let changes = role_changes(&members, &current.0, &current.1, previously_declared);
+    let changes = role_changes(
+        &members,
+        &current.0,
+        &current.1,
+        previously_declared,
+        context.host_cert.user_public_key,
+    );
     apply_role_changes(context, changes).await?;
     governance.remember_declared(&current)?;
     *previously_declared = current.0.union(&current.1).copied().collect();
@@ -2158,6 +2170,7 @@ mod tests {
             &owners,
             &BTreeSet::new(),
             &BTreeSet::from([[2; 32]]),
+            [0x77; 32],
         );
         assert_eq!(
             changes,
@@ -2171,9 +2184,29 @@ mod tests {
                 &[member(1, true)],
                 &owners,
                 &BTreeSet::new(),
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             )
             .is_empty()
+        );
+    }
+
+    /// The workspace's owner holds its seat by being its owner, not by a list:
+    /// no declared list takes it away.
+    #[test]
+    fn the_owner_root_keeps_its_seat_whatever_the_declared_lists_say() {
+        let mut dropped = member(1, false);
+        dropped.administrator = true;
+        assert!(
+            role_changes(
+                std::slice::from_ref(&dropped),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                &BTreeSet::from([[1; 32]]),
+                [1; 32]
+            )
+            .is_empty(),
+            "dropping the owner from a list does not demote it"
         );
     }
 
@@ -2185,7 +2218,8 @@ mod tests {
                 &[member(1, false)],
                 &BTreeSet::new(),
                 &moderators,
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             ),
             vec![RoleChange::Moderator([1; 32])]
         );
@@ -2198,7 +2232,8 @@ mod tests {
                 std::slice::from_ref(&moderator),
                 &BTreeSet::new(),
                 &moderators,
-                &BTreeSet::new()
+                &BTreeSet::new(),
+                [0x77; 32]
             )
             .is_empty()
         );
@@ -2207,7 +2242,8 @@ mod tests {
                 &[moderator],
                 &BTreeSet::new(),
                 &BTreeSet::new(),
-                &moderators
+                &moderators,
+                [0x77; 32]
             ),
             vec![RoleChange::Editor([1; 32])]
         );

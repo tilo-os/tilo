@@ -113,7 +113,7 @@ fn page_room(workspace: &GovernedWorkspace) -> Workspace {
     let summary = workspace.summary();
     let certificates = workspace.peer().certificates();
     let owner = workspace.peer().owner();
-    let mut members: Vec<_> = summary
+    let members: Vec<_> = summary
         .members
         .into_iter()
         .map(|member| WorkspaceMember {
@@ -130,21 +130,6 @@ fn page_room(workspace: &GovernedWorkspace) -> Workspace {
             removed: member.removed,
         })
         .collect();
-    // The structural owner has no invitation admission receipt, so
-    // governed_members() lists only invited people. Include the owner from
-    // the workspace's pinned authority, never from the caller's asserted root.
-    if !members.iter().any(|member| member.user_public_key == owner) {
-        members.insert(
-            0,
-            WorkspaceMember {
-                user_public_key: owner,
-                name: Some(workspace.record.authority.device_label.clone()),
-                role: WorkspaceRole::Editor,
-                owner: true,
-                removed: false,
-            },
-        );
-    }
     Workspace {
         workspace: summary.workspace,
         workspace_id: summary.workspace_id,

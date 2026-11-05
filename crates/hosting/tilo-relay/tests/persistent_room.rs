@@ -196,6 +196,114 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts() {
     assert!(!missing.child.wait().unwrap().success());
 }
 
+/// The room as the image's entrypoint starts it on the state volume a room
+/// service leaves: the relay's own state in `relay/`, the workspace id beside
+/// it, and the avatars and sealed secrets the image mounts.
+fn start_lounge(
+    state: &std::path::Path,
+    root_file: &std::path::Path,
+    plain: std::net::SocketAddr,
+) -> std::io::Result<Workspace> {
+    let web_plain = plain.to_string();
+    start_with(
+        state,
+        root_file,
+        &state.join("secrets"),
+        &[
+            "--public-avatars",
+            state.join("avatars").to_str().unwrap(),
+            "--public-avatars-url",
+            "https://plaza.example/avatars",
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
+}
+
+/// A deployment moved onto this image starts on the volume the room service
+/// left: the same workspace, its owner, and the people it took in keep their
+/// seats across that first start.
+#[test]
+fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::JoinReply;
+
+    let scratch = tempfile::tempdir().unwrap();
+    let state = scratch.path().join("plaza");
+    // What the volume holds before the new image starts.
+    for dir in ["relay", "avatars", "secrets"] {
+        std::fs::create_dir_all(state.join(dir)).unwrap();
+    }
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    // The workspace the room service ran, and one person it took in.
+    let room = start_lounge(&state, &root_file, plain).unwrap();
+    let (workspace, _) = announced(&room);
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
+    else {
+        panic!("no presence announced")
+    };
+    assert_eq!(members, 1, "the owner is the workspace's only member");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (device, cert) = own_device(0x41, "Ana");
+    let answer = runtime.block_on(ask_door(plain, &workspace, &cert, "Ana"));
+    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&answer.invitation)
+        .unwrap();
+    match runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+        &Plain(plain),
+        &invitation,
+        &cert,
+        &device,
+        [1; 32],
+        "Ana",
+        answer.admission_token.as_bytes(),
+    )) {
+        Ok(JoinReply::Admitted { .. }) => {}
+        other => panic!("Ana was not admitted: {other:?}"),
+    }
+    let listed = runtime.block_on(directory_page(plain));
+    assert_eq!(
+        listed.workspaces[0].members, 2,
+        "the owner and the person who joined"
+    );
+    room.stop();
+
+    // The new image's first start of that volume.
+    let room = start_lounge(&state, &root_file, plain).unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(again),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    else {
+        panic!("no governed room announced")
+    };
+    assert_eq!(
+        again, workspace,
+        "the volume's workspace is the one it serves"
+    );
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
+    else {
+        panic!("no presence announced")
+    };
+    assert_eq!(
+        members, 2,
+        "the owner and the person who joined keep their seats"
+    );
+    room.stop();
+}
+
 /// The room process settles the apps it is told to let members write
 /// through at every start, and remembers which it let, so an app taken out
 /// of its list on a later start is withdrawn (the room's side of it is
