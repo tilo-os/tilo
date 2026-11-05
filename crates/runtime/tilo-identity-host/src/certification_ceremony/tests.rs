@@ -347,7 +347,7 @@ fn a_key_holder_renews_a_joined_devices_lapsed_certificate_without_asking_anyone
     let held = member_cert(person, &joined, NOW - 48 * 60 * 60 * 1_000_000_000);
     let renewed = renewal_of(&held, NOW);
 
-    let mut gathering = Gathering::renewal([2; 16], renewed.clone(), held.clone(), SERVICE, 1, 1);
+    let mut gathering = Gathering::renewal([2; 16], renewed, held.clone(), SERVICE, 1, 1);
     let ask = gathering.ask().clone();
     check_renewal(&ask, &held, Some(&held), person, &|_| false).unwrap();
 
@@ -385,10 +385,10 @@ fn a_renewal_that_widens_or_comes_from_another_root_is_refused() {
     let mut wider = renewal_of(&held, NOW);
     wider.capabilities = DeviceCapabilities {
         can_read_all_workspaces: true,
-        ..held.capabilities.clone()
+        ..held.capabilities
     };
     let reason = check_renewal(
-        &ask_of(wider.clone(), held.clone()),
+        &ask_of(wider, held.clone()),
         &held,
         Some(&held),
         person,
@@ -460,7 +460,7 @@ fn a_share_renews_through_the_same_commitment_round_as_a_certification() {
     let held = member_cert(person, &joined, NOW - 48 * 60 * 60 * 1_000_000_000);
     let renewed = renewal_of(&held, NOW);
 
-    let mut gathering = Gathering::renewal([4; 16], renewed.clone(), held.clone(), SERVICE, 2, 3);
+    let mut gathering = Gathering::renewal([4; 16], renewed, held.clone(), SERVICE, 2, 3);
     let ask = gathering.ask().clone();
     // Each share is on a device of its own, with its own signer state, and
     // commits without anyone being asked.
@@ -468,12 +468,12 @@ fn a_share_renews_through_the_same_commitment_round_as_a_certification() {
     let mut second_signer = Signer::default();
     let first = first_signer.renew(&devices[0], &ask, NOW);
     let second = second_signer.renew(&devices[1], &ask, NOW);
-    let progress = gathering.answer(device(1), answer(&ask, first.clone()));
+    let progress = gathering.answer(device(1), answer(&ask, first));
     assert!(
         matches!(progress, Progress::Waiting),
         "one share is not enough"
     );
-    let progress = gathering.answer(device(2), answer(&ask, second.clone()));
+    let progress = gathering.answer(device(2), answer(&ask, second));
     let Progress::Send(rounds) = progress else {
         panic!("two shares of three begin the signing round");
     };

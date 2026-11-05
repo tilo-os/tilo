@@ -404,8 +404,9 @@ pub(crate) fn direct_page(
     let value = read
         .value
         .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?;
-    let messages = value["messages"]
-        .as_array()
+    let messages = value
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
         .ok_or_else(|| CATALOG.t("messages-history-unavailable"))?
         .iter()
         .map(|message| {

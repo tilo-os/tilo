@@ -274,7 +274,7 @@ impl Sending {
         // the same message, under the operation it was asked with.
         let answered = operation.to_owned();
         let sent_text = text.to_owned();
-        let sent_route = route.clone();
+        let sent_route = route;
         let history = history.clone();
         let sending = self.clone();
         Ok(cx.call(&call, move |(), sent, cx| {
