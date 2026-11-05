@@ -687,6 +687,9 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
 /// The panel open on the desk, its app running: what the bar's tray press
 /// does, which is to open the stack's quick-settings slot.
 fn open_the_panel(session: &mut Session) {
+    // The desk as it stands before the panel, at rest: what changes after it
+    // opens is the panel coming up, never the desk still settling.
+    let desk = at_rest(session);
     session
         .invoke(
             OVERLAYS,
@@ -703,6 +706,20 @@ fn open_the_panel(session: &mut Session) {
             session.surfaces().names()
         );
         pump(session);
+    }
+    // The app runs before its first frame reaches the desk, and it is drawn
+    // once the desk shows it: a frame read after this is the panel's.
+    loop {
+        pump(session);
+        let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
+        if frame.rgba != desk.rgba {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the panel never drew over the desk: {:?}",
+            session.surfaces().names()
+        );
     }
 }
 
