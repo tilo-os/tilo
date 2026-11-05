@@ -765,6 +765,12 @@ impl Checker<'_> {
             }
             StmtKind::Return(value) => self.return_stmt(value.as_ref(), s.span),
             StmtKind::As { who, at, body } => self.act_as(who, at.as_ref(), body, s.span),
+            StmtKind::SeedState {
+                layer,
+                view,
+                name,
+                value,
+            } => self.seed_state(*layer, view.as_ref(), name, value, s.span),
             StmtKind::Expr(e) => self.expr_stmt(e),
         }
     }
@@ -836,6 +842,101 @@ impl Checker<'_> {
         stmts.push(Stmt::Set(made, *last));
         stmts.push(Stmt::Eval(Ex::host(Imp::FromPop, vec![], Ty::Unit)));
         Ex::new(Ek::Seq(stmts, Box::new(Ex::local(made, ty.clone()))), ty)
+    }
+
+    /// `window place = Task.done` (or `lens place = x`) in a scenario: the value the window
+    /// state `place` starts from, as a person picking it in the window leaves it. The state is
+    /// a `window` or `lens` declaration of a view of this package, named with its view when
+    /// more than one view declares it; the value is checked against the type it declares.
+    fn seed_state(
+        &mut self,
+        layer: ast::StateLayer,
+        view: Option<&ast::Ident>,
+        name: &ast::Ident,
+        value: &ast::Expr,
+        span: Span,
+    ) {
+        let word = layer.word();
+        if self.st.written != Written::Scenario {
+            self.err(
+                "E094",
+                span,
+                format!("`{word} {} = ...` stages the value a window state starts from, which only a scenario does; a person sets a window's state in the window, and a declaration gives its default", name.name),
+            );
+            let _ = self.expr(value, None);
+            return;
+        }
+        let names_it = |s: &crate::resolve::StateInfo| {
+            s.name == name.name && view.is_none_or(|v| s.view == v.name)
+        };
+        let same: Vec<crate::resolve::StateInfo> = self
+            .env
+            .states
+            .iter()
+            .filter(|s| names_it(s) && s.layer == layer)
+            .cloned()
+            .collect();
+        let state = match same.as_slice() {
+            [one] => one.clone(),
+            [] => {
+                match self.env.states.iter().find(|s| names_it(s)) {
+                    Some(other) => {
+                        let is = other.layer.word();
+                        self.err(
+                            "E094",
+                            span,
+                            format!("`{}` is a `{is}` state, of the view `{}`: write `{is} {} = ...`, as it is declared", name.name, other.view, name.name),
+                        );
+                    }
+                    None if view.is_some() => {
+                        let named = view.map(|v| v.name.clone()).unwrap_or_default();
+                        let declared = self.declared_states(&named);
+                        let what = if declared.is_empty() {
+                            "no state".to_owned()
+                        } else {
+                            format!("only {}", declared.join(", "))
+                        };
+                        self.err(
+                            "E094",
+                            span,
+                            format!("the view `{named}` declares {what}: a scenario stages a state a view declares with a `window` or `lens` line at the top of its body"),
+                        );
+                    }
+                    None => self.err(
+                        "E094",
+                        span,
+                        format!("no view declares the state `{}`: a scenario stages a state a view declares with a `window` or `lens` line at the top of its body, naming the view (`home.{}`) where more than one does", name.name, name.name),
+                    ),
+                }
+                let _ = self.expr(value, None);
+                return;
+            }
+            many => {
+                let views: Vec<String> = many.iter().map(|s| s.view.clone()).collect();
+                let first = views.first().cloned().unwrap_or_default();
+                self.err(
+                    "E094",
+                    span,
+                    format!("`{}` is a {word} state of {}: say which view's, as `{word} {first}.{} = ...`", name.name, views.join(", "), name.name),
+                );
+                let _ = self.expr(value, None);
+                return;
+            }
+        };
+        let seeded = self.expr_as(value, &state.ty);
+        let layer_arg = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
+        let args = vec![layer_arg, Ex::str(&state.id), Self::handle_of(seeded)];
+        self.emit(Stmt::Eval(Ex::host(Imp::SeedState, args, Ty::Unit)));
+    }
+
+    /// The names of the states the view `view` declares, in the order it declares them.
+    fn declared_states(&self, view: &str) -> Vec<String> {
+        self.env
+            .states
+            .iter()
+            .filter(|s| s.view == view)
+            .map(|s| format!("`{}`", s.name))
+            .collect()
     }
 
     /// An expression whose value is not used: an `if`, `match` or block runs its branches as

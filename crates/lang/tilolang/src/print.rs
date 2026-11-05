@@ -1278,6 +1278,21 @@ impl Printer<'_> {
                 let v = self.ex_at(e, col);
                 self.line(&format!("return {v}"));
             }
+            StmtKind::SeedState {
+                layer,
+                view,
+                name,
+                value,
+            } => {
+                let path = view.as_ref().map_or_else(
+                    || name.name.clone(),
+                    |v| format!("{}.{}", v.name, name.name),
+                );
+                let head = format!("{} {path} = ", layer.word());
+                let col = self.level * 4 + head.len();
+                let v = self.ex_at(value, col);
+                self.line(&format!("{head}{v}"));
+            }
             StmtKind::Expr(e) => {
                 let v = self.ex(e);
                 self.line(&v);

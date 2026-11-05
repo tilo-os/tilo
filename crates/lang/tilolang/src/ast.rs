@@ -594,6 +594,15 @@ pub enum StmtKind {
         at: Option<Expr>,
         body: Block,
     },
+    /// `window place = Task.done` (or `lens place = x`): in a scenario, the value a window's
+    /// state starts from, as a person picking it in the window leaves it. A name more than one
+    /// view declares is written with its view (`home.place`).
+    SeedState {
+        layer: StateLayer,
+        view: Option<Ident>,
+        name: Ident,
+        value: Expr,
+    },
     Expr(Expr),
 }
 

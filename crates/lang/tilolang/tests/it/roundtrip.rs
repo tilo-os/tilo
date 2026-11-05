@@ -96,6 +96,11 @@ view v(l: todo.TodoList) {
         list(l.items) { i -> text(i.title) }
     }
 }
+
+scenario "one line" {
+    window v.order = .line(len: 2)
+    lens v.picked = .some(1)
+}
 "#;
 
 fn print_of(src: &str) -> String {
@@ -230,6 +235,7 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
+    window shown: NoteFilter = NoteFilter.all
     std.list(nb, nb.notes, empty: "No notes yet") { n ->
         row(n.title, checkbox: n.pinned)
     }
@@ -252,6 +258,7 @@ scenario "a week of notes" {
     as mia {
         new_note(nb)
     }
+    window notebook.shown = NoteFilter.pinned
 }
 "#;
 

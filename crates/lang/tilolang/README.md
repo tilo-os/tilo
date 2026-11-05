@@ -565,6 +565,12 @@ print(xs, fields: [.title, .due])
   it as mia's at that time. `made from r { ... }` makes the block's change from `r`, as an
   action invoked on `r` is, so what it creates shows what it was made from (`created(r)?.from`,
   `std.origin`, `std.linked`); it is a change of its own too, and only a scenario writes it.
+  `window place = Task.done` and `lens picked = .some(1)` say what state the window the
+  scenario shows stands on, where a view declares it (`window place: Filter<Task> = ...`);
+  `window home.place = ...` names the view where two declare the same name. The value is
+  typed and checked as the declaration's, a person's own choice stands over it, and only a
+  scenario writes it, so `layout-check` captures a place that is not the declaration's
+  default without saving anything as anyone's change.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
 - An item block names a template's other slots beside the item's view; they do not see the

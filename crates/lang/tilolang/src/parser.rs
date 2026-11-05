@@ -1709,6 +1709,39 @@ impl<'a> Parser<'a> {
                     StmtKind::Return(Some(self.expr()?))
                 }
             }
+            // `window place = Task.done` (or `lens place = x`): the state a scenario stages a
+            // window at, either as the view declares it or with the view's name before it
+            // (`home.place`). A declaration names its type where this names a value, so the
+            // two never read alike.
+            Tok::Ident(word)
+                if (word == "window" || word == "lens")
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && (matches!(self.peek_at(2), Tok::Assign)
+                        || (matches!(self.peek_at(2), Tok::Dot)
+                            && matches!(self.peek_at(3), Tok::Ident(_))
+                            && matches!(self.peek_at(4), Tok::Assign))) =>
+            {
+                self.bump();
+                let layer = if word == "window" {
+                    StateLayer::Window
+                } else {
+                    StateLayer::Lens
+                };
+                let first = self.ident("a state name")?;
+                let (view, name) = if self.eat(&Tok::Dot) {
+                    (Some(first), self.ident("a state name")?)
+                } else {
+                    (None, first)
+                };
+                self.expect(&Tok::Assign)?;
+                let value = self.expr()?;
+                StmtKind::SeedState {
+                    layer,
+                    view,
+                    name,
+                    value,
+                }
+            }
             _ => {
                 let e = self.expr()?;
                 let op = match self.peek() {

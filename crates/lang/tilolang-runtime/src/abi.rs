@@ -112,6 +112,7 @@ imports! {
     (InvokerPop, "invoker_pop", "", ""),
     (FromPush, "from_push", "i", ""),
     (FromPop, "from_pop", "", ""),
+    (SeedState, "seed_state", "iii", ""),
     (PrincipalKind, "principal_kind", "i", "l"),
     (PrincipalRole, "principal_role", "i", "i"),
 

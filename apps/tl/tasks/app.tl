@@ -943,6 +943,52 @@ scenario "a busy week" -> Task {
     call
 }
 
+/// The week's log: what was finished on each of its days, newest first, and what still waits.
+scenario "what got done this week" {
+    let mia = person("Mia")
+    let flat = tasks.projects.insert(Project(name: "Move flat"))
+    let van = tasks.items.insert(Task(title: "Book the van", project: flat, due: 2026-07-02))
+    let boxes = tasks.items.insert(Task(title: "Order boxes and tape", project: flat))
+    let notice = tasks.items.insert(
+        Task(title: "Give notice to the electricity company", project: flat),
+    )
+    let passports = tasks.items.insert(Task(title: "Find the passports"))
+    tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
+    tasks.items.insert(Task(title: "Measure the new bedroom", project: flat))
+    as mia at 2026-06-23T12:00Z {
+        check(passports, true)
+    }
+    as mia at 2026-06-29T12:00Z {
+        check(van, true)
+    }
+    as mia at 2026-06-29T15:40Z {
+        check(boxes, true)
+    }
+    as mia at 2026-06-30T07:15Z {
+        check(notice, true)
+    }
+    window place = Task.done
+}
+
+/// Today: what is due, what went by, and what is done with it.
+scenario "today" {
+    let flat = tasks.projects.insert(Project(name: "Move flat"))
+    tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
+    tasks.items.insert(
+        Task(
+            title: "Call the landlord about the boiler",
+            due: 2026-06-30,
+            at: 2026-06-30T09:00,
+            priority: .high,
+        ),
+    )
+    tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
+    tasks.items.insert(Task(title: "Pack the kitchen", project: flat, due: 2026-06-30))
+    tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
+    tasks.items.insert(Task(title: "Sort the paper mail"))
+    window place = Task.today
+}
+
 /// A launch post half written: its window, with the subtasks it was broken into, one of them
 /// broken into its own.
 scenario "a task's subtasks" -> Task {

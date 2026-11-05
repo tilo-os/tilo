@@ -1691,7 +1691,9 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
         b.stmts.iter().find_map(|s| match &s.kind {
             StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
             StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
-            StmtKind::Assign { value, .. } => mentions(value, names),
+            StmtKind::Assign { value, .. } | StmtKind::SeedState { value, .. } => {
+                mentions(value, names)
+            }
             StmtKind::For { iter, .. } | StmtKind::As { who: iter, .. } => mentions(iter, names),
         })
     };

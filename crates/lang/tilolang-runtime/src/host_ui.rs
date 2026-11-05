@@ -141,10 +141,14 @@ impl Core {
         let fallback = self.val_whole(a.h(2)?)?;
         let (value, generation) = {
             let states = self.view_states.borrow();
-            (
-                states.get(&key).cloned().unwrap_or(fallback),
-                states.generation(&key),
-            )
+            // What the person set, else what a scenario staged the declaration at, else what
+            // its view declares.
+            let held = states
+                .get(&key)
+                .or_else(|| states.seeded(&key))
+                .cloned()
+                .unwrap_or(fallback);
+            (held, states.generation(&key))
         };
         let seen = value.clone();
         self.with_view(|vs| {

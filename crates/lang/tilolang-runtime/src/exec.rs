@@ -32,6 +32,7 @@ use crate::meta::{EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
+use crate::view_state::StateLayer;
 
 /// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance
 /// of the callee's module, running on the host's stack, so recursion across packages would
@@ -1616,6 +1617,18 @@ impl Core {
         }
     }
 
+    /// `seed_state`: the view state a scenario stages a window at, before any window reads it.
+    fn seed_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let code = a.h(0)?;
+        let layer = StateLayer::from_code(code)
+            .map_or_else(|| trap(format!("unknown view state layer {code}")), Ok)?;
+        let state = self.text(a.h(1)?)?;
+        let value = self.val_whole(a.h(2)?)?;
+        self.scenario_state(|_| ())?;
+        self.view_states.borrow_mut().seed(layer, &state, value);
+        ret_void()
+    }
+
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
@@ -1698,6 +1711,7 @@ impl Core {
                 })?;
                 ret_void()
             }
+            Imp::SeedState => self.seed_state(a),
             Imp::PrincipalEq => {
                 let (x, y) = (self.principal_arg(a.h(0)?)?, self.principal_arg(a.h(1)?)?);
                 ret_i32(i32::from(x == y))

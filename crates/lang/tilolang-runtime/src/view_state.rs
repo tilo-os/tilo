@@ -120,6 +120,10 @@ impl StateKey {
 #[derive(Default)]
 pub struct ViewStates {
     slots: HashMap<StateKey, (Value, u64)>,
+    /// The value a scenario stages a declaration at (`window place = Task.done`), by the layer
+    /// it is declared in and the declaration's id: what a window that reads it shows until its
+    /// person sets the slot, where the scenario staged a window the capture lays out.
+    seeds: HashMap<StateLayer, HashMap<String, (Value, u64)>>,
     clock: u64,
     /// What the person changed here since the host last took it
     /// ([`ViewStates::take_writes`]), in the order they changed it.
@@ -134,7 +138,30 @@ impl ViewStates {
 
     /// The slot's generation: 0 until it is first set, then larger after every change.
     pub fn generation(&self, key: &StateKey) -> u64 {
-        self.slots.get(key).map_or(0, |(_, g)| *g)
+        let slot = self.slots.get(key).map_or(0, |(_, g)| *g);
+        let seed = key
+            .layer
+            .and_then(|layer| self.seeds.get(&layer))
+            .and_then(|states| states.get(&key.state))
+            .map_or(0, |(_, g)| *g);
+        slot.max(seed)
+    }
+
+    /// Stage the value the declaration `state` starts from in `layer`, as a scenario does: a
+    /// window that reads it shows it until the person sets the slot, and it is no one's change
+    /// to keep.
+    pub fn seed(&mut self, layer: StateLayer, state: &str, value: Value) {
+        self.clock = self.clock.saturating_add(1);
+        self.seeds
+            .entry(layer)
+            .or_default()
+            .insert(state.to_owned(), (value, self.clock));
+    }
+
+    /// The value a scenario staged the declaration `key` names at, when it staged one: what a
+    /// window shows where the person has set nothing.
+    pub fn seeded(&self, key: &StateKey) -> Option<&Value> {
+        self.seeds.get(&key.layer?)?.get(&key.state).map(|(v, _)| v)
     }
 
     /// A number that moves with every change of any slot.

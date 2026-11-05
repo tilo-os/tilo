@@ -508,6 +508,15 @@ search.md, "What a type declares" and "Types, references and paths".
   a change of its own for the same reason `as` is: what the block makes is made from `r`, while
   what came before is not. Only a scenario writes it, since seed data is what shows a
   provenance feature in `layout-check`.
+- **A scenario seeds the view state its window stands on.** `window place = Task.done` (and
+  `lens picked = ...`) in a scenario names a state the view declares, with an optional view
+  (`window home.place = ...`) where two declare one name, and the value is checked as the
+  declaration's type is. It sets the declaration, not an instance: the host reads a declared
+  state as the person's slot, then the scenario's seed, then the declaration's default, so a
+  window that opens later stands on it too, and the seed is a generation bump so an open window
+  draws again. A person's own choice is their slot and wins over the seed, and the seed is
+  never written as their change — a capture can show a place no one picked without recording
+  that anyone did. Only a scenario writes it: production code cannot stage a person's place.
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.

@@ -812,7 +812,9 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
 fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
     for s in &b.stmts {
         match &s.kind {
-            StmtKind::Let { value, .. } => names_in(value, out),
+            StmtKind::Let { value, .. }
+            | StmtKind::Expr(value)
+            | StmtKind::SeedState { value, .. } => names_in(value, out),
             StmtKind::Assign { place, value, .. } => {
                 if let Some(first) = place.segs.first() {
                     out.insert(first.name.clone());
@@ -835,7 +837,6 @@ fn names_in_block(b: &ast::Block, out: &mut BTreeSet<String>) {
                     names_in(value, out);
                 }
             }
-            StmtKind::Expr(e) => names_in(e, out),
         }
     }
 }
