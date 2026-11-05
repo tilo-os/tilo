@@ -352,10 +352,8 @@ impl<M: ListModel> VirtualList<M> {
             .mounted
             .iter()
             .find(|row| row.index == index && row.state == super::MountedRowState::Ready)?;
-        row.widget
-            .as_any()?
-            .downcast_ref::<crate::widget::ListRow>()?
-            .action_rects()
+        crate::widget::capability::capability::<dyn super::RowActionRects>(row.widget.as_ref())?
+            .row_action_rects()
             .get(action)
             .copied()
     }

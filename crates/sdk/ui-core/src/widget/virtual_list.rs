@@ -58,7 +58,7 @@ mod tree;
 pub use tree::{TREE_DISCLOSURE, TREE_INDENT, TreeMarks, TreeMove, TreeRow};
 #[path = "virtual_list_menu.rs"]
 mod menu;
-use menu::ListMenu;
+use menu::RowMenus;
 #[path = "virtual_list_edit.rs"]
 mod edit;
 #[path = "virtual_list_jump.rs"]
@@ -315,6 +315,15 @@ pub trait ListEdges {
     fn edges(&mut self, width: f64) -> (f64, f64);
 }
 
+/// A row widget says where its own hover actions stand, so the list reports the place to press
+/// one without knowing what the host built its row of ([`VirtualList::row_action_rect`]). A row
+/// without actions provides none; [`ListRow`](crate::widget::ListRow) provides its own.
+pub trait RowActionRects {
+    /// Where the row's hover actions stand on screen, in the order it shows them: what a host
+    /// presses to reach one from a script or a test.
+    fn row_action_rects(&self) -> Vec<Rect>;
+}
+
 /// Where a list's rows stand between its edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowStance {
@@ -379,8 +388,9 @@ pub struct VirtualList<M: ListModel> {
     open_on_press: bool,
     /// Told a row's subtasks folded or opened ([`VirtualList::on_fold`]).
     on_fold: Option<FoldCallback<M::Key>>,
-    /// The menu the rows and the list's own space open ([`VirtualList::with_context_menu`]).
-    menu: Option<ListMenu<M>>,
+    /// The menu the rows and the list's own space open, or the host's report of a row's menu
+    /// ([`VirtualList::with_context_menu`], [`VirtualList::with_row_menu_reporter`]).
+    menus: RowMenus<M>,
     /// The last row a click landed on and when, for a double click.
     clicks: super::rows::Clicks<M::Key>,
     semantic_key: Option<SemanticKey<M::Key>>,
@@ -589,7 +599,7 @@ impl<M: ListModel> VirtualList<M> {
             on_activate: None,
             open_on_press: false,
             on_fold: None,
-            menu: None,
+            menus: RowMenus::None,
             row_builds: 0,
             access_rows: std::cell::RefCell::default(),
             indent_guides: false,
@@ -2221,7 +2231,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } if self.menu.is_some() => {
+            } if self.menus.offers_row_menu() => {
                 if let (Some((_, key)), Some(point)) = (self.row_at_cursor(), self.last_cursor) {
                     self.open_row_menu(key, point);
                     *ctx.focus_target = Some(ctx.node_id);
@@ -2617,7 +2627,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         if self.rename.is_some() {
             self.mark_rename_drawn();
         }
-        if let Some(menu) = &mut self.menu {
+        if let Some(menu) = self.menus.owned_mut() {
             menu.menu_drawn();
         }
         for row in &mut self.mounted {

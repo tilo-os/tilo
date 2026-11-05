@@ -518,6 +518,28 @@ fn a_rows_actions_say_where_they_stand_without_a_hover() {
     }
 }
 
+/// A row says where its actions stand through the capability a list asks it for, so the list
+/// reports the place without knowing the kind of row its host built.
+#[test]
+fn a_row_says_where_its_actions_stand() {
+    let theme = Theme::dark();
+    let rect = Rect::new(0.0, 0.0, 400.0, 48.0);
+    let mut row = ListRow::new("note-1", "Ada")
+        .selected(true)
+        .action(Icon::Trash, "Delete", || {});
+    // A touch pointer has no hover: the selected row shows its action.
+    row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+    row.metrics = Some(RowMetrics::new(&theme));
+    row.theme = Some(theme.clone());
+    row.rect = rect;
+    let rects = crate::widget::capability::capability::<dyn crate::widget::RowActionRects>(&row)
+        .expect("the row answers where its actions stand")
+        .row_action_rects();
+    assert_eq!(rects.len(), 1, "one action, where the row shows it");
+    assert!(rect.contains(rects[0].center()), "{rect:?} vs {rects:?}");
+    assert_eq!(rects, row.action_rects(), "the same place it paints");
+}
+
 #[test]
 fn the_text_ends_before_the_rows_facts() {
     let rect = Rect::new(0.0, 0.0, 400.0, 64.0);

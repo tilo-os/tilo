@@ -114,7 +114,7 @@ impl<M: ListModel> VirtualList<M> {
                 .selected(self.selection.is_selected(&row.key))
                 // A row whose menu the host offers can be asked for it, as a
                 // secondary click does.
-                .context_menu(self.menu.is_some())
+                .context_menu(self.menus.offers_row_menu())
                 .disabled(!enabled),
         );
         // A row that is a control of its own — a task's box, say — keeps its state and what it
@@ -233,7 +233,7 @@ impl<M: ListModel> VirtualList<M> {
                 Action::Expand | Action::Collapse if self.tree.is_some() => {
                     self.fold_row(&key, matches!(action, Action::Collapse))
                 }
-                Action::ShowContextMenu if self.menu.is_some() => {
+                Action::ShowContextMenu if self.menus.offers_row_menu() => {
                     let point = self
                         .row_box(index)
                         .map_or(self.rect.center(), |row| row.center());
@@ -345,7 +345,7 @@ impl<M: ListModel> VirtualList<M> {
             bounds: self.row_box(row.index),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
-            menu: self.menu.is_some(),
+            menu: self.menus.offers_row_menu(),
             disabled: !enabled,
             level,
             expanded,

@@ -137,6 +137,9 @@ pub(super) struct ProbeRow {
     consumes_press: bool,
     presses: Rc<Cell<usize>>,
     rect: Rect,
+    /// Whether the row says its actions stand at its trailing edge, as a row whose controls
+    /// only it places them does.
+    trailing_actions: bool,
 }
 
 impl ProbeRow {
@@ -152,11 +155,36 @@ impl ProbeRow {
             consumes_press,
             presses,
             rect: Rect::ZERO,
+            trailing_actions: false,
         }
+    }
+
+    /// The row says where its two controls stand, at its trailing edge, in its own box.
+    pub(super) fn with_trailing_actions(mut self) -> Self {
+        self.trailing_actions = true;
+        self
+    }
+}
+
+impl crate::widget::RowActionRects for ProbeRow {
+    fn row_action_rects(&self) -> Vec<Rect> {
+        if !self.trailing_actions {
+            return Vec::new();
+        }
+        let side = self.rect.height().min(20.0) - 4.0;
+        let cy = self.rect.center().y;
+        (0..2_u32)
+            .map(|nth| {
+                let right = self.rect.x1 - 2.0 - f64::from(1 - nth) * (side + 2.0);
+                Rect::new(right - side, cy - side / 2.0, right, cy + side / 2.0)
+            })
+            .collect()
     }
 }
 
 impl Widget for ProbeRow {
+    crate::provides!(dyn crate::widget::RowActionRects);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1356,6 +1384,126 @@ fn the_menu_key_and_shift_f10_open_the_focused_rows_menu() {
             .layout(&taffy, node)
             .send(&mut plain, &menu)
             .handled
+    );
+}
+
+/// A list set up to report its row menus hands its host the row's key, its box and the point
+/// the menu opens at, and leaves the selection to the host's menu.
+#[test]
+fn a_reported_row_menu_hands_the_host_the_row_and_where_it_opens() {
+    let reports: Rc<RefCell<Vec<(u32, Rect, Point)>>> = Rc::new(RefCell::new(Vec::new()));
+    let r = Rc::clone(&reports);
+    let mut list = plain_rows(10).with_row_menu_reporter(move |key, row, at| {
+        r.borrow_mut().push((key, row, at));
+    });
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let middle = |list: &VirtualList<VecListModel<u32, u32>>, index: usize| {
+        list.rect.y0
+            + list.viewport.item_view_top(index).unwrap()
+            + list.viewport.item_height(index).unwrap() / 2.0
+    };
+    let row_three = middle(&list, 3);
+    dispatch(&mut list, &cursor(row_three), &taffy, node);
+    assert!(dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        &taffy,
+        node,
+    ));
+    {
+        let reports = reports.borrow();
+        assert_eq!(reports.len(), 1, "one report for the press");
+        let (key, row, at) = reports[0];
+        assert_eq!(key, 3, "the row under the pointer");
+        assert_eq!(Some(row), list.row_rect(&3), "its box, to anchor the menu");
+        assert_eq!(at, Point::new(20.0, row_three), "where the press was");
+        assert!(
+            !list.selection().is_selected(&3),
+            "the host's menu decides what it acts on"
+        );
+        assert!(!list.context_menu_is_open(), "no menu of the list's own");
+    }
+
+    // The Menu key on the focused row reports it too, at the middle of its row.
+    list.set_focus(true);
+    assert!(list.reveal(&5));
+    let menu = crate::synthetic_input::named_key(NamedKey::ContextMenu);
+    assert!(
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(&mut list, &menu)
+            .handled
+    );
+    let reports = reports.borrow();
+    assert_eq!(reports.len(), 2);
+    let (key, row, at) = reports[1];
+    assert_eq!(key, 5, "the row the keyboard is on");
+    assert_eq!(Some(row), list.row_rect(&5));
+    assert_eq!(at, row.center(), "at the middle of the row");
+}
+
+/// A list offers its rows one menu: setting the menu the list builds replaces the host's
+/// report, and the other way round.
+#[test]
+fn a_list_has_one_row_menu() {
+    let reports = Rc::new(Cell::new(0));
+    let reported = Rc::clone(&reports);
+    let handled = Rc::new(RefCell::new(Vec::new()));
+    let chosen = Rc::clone(&handled);
+    let mut list = plain_rows(4)
+        .with_row_menu_reporter(move |_, _, _| reported.set(reported.get() + 1))
+        .with_context_menu(
+            move |_, key| {
+                chosen.borrow_mut().push(key.copied());
+                vec![MenuItem::action("Open", || {})]
+            },
+            |_, _| {},
+        );
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let row_one = list.row_rect(&1).expect("row one").center().y;
+    dispatch(&mut list, &cursor(row_one), &taffy, node);
+    assert!(dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        &taffy,
+        node,
+    ));
+    assert_eq!(reports.get(), 0, "the host no longer hears of it");
+    assert_eq!(*handled.borrow(), [Some(1)], "the list builds the menu");
+    assert!(list.context_menu_is_open());
+}
+
+/// The list asks the mounted row where its actions stand, so a row the crate does not build
+/// still says where a script presses one.
+#[test]
+fn row_action_rect_asks_the_mounted_row() {
+    let mut list = VirtualList::new(
+        VecListModel::new((0..3_u32).collect(), |i| *i).unwrap(),
+        40.0,
+        |_, _, key| {
+            let row = ProbeRow::new(key.to_string(), 40.0, false, Rc::new(Cell::new(0)));
+            Box::new(if *key == 1 {
+                row.with_trailing_actions()
+            } else {
+                row
+            }) as Element
+        },
+    )
+    .with_viewport_height(200.0);
+    let _ = lay_out(&mut list, 300.0);
+    let row = list.row_rect(&1).expect("row one is placed");
+    let second = list.row_action_rect(&1, 1).expect("its second action");
+    assert!(
+        row.contains(second.center()),
+        "in the row's own box: {row:?} vs {second:?}"
+    );
+    let first = list.row_action_rect(&1, 0).expect("its first action");
+    assert!(first.x1 <= second.x0, "in the order the row shows them");
+    assert_eq!(list.row_action_rect(&1, 2), None, "a third is no action");
+    assert_eq!(
+        list.row_action_rect(&0, 0),
+        None,
+        "a row without actions says none"
     );
 }
 

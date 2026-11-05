@@ -1,9 +1,11 @@
 //! The menu a [`VirtualList`]'s rows open: one context menu the list owns, as a tree's rows
-//! have.
+//! have, or the report of it to the host, which opens and paints its own.
 //!
-//! A row's menu (a secondary click, the Menu key, Shift+F10, or assistive technology) is built
-//! from what the model says of that row; the list itself has one too, for a press on the space
-//! its rows leave. The chosen item comes back with the row's key, `None` for the list's own.
+//! A list owns one of the two ([`RowMenus`]): a row's menu (a secondary click, the Menu key,
+//! Shift+F10, or assistive technology) is either built from what the model says of that row —
+//! the list itself has one too, for a press on the space its rows leave, and the chosen item
+//! comes back with the row's key, `None` for the list's own — or reported to the host with the
+//! row and the point the host anchors its menu at.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -32,17 +34,58 @@ pub(super) struct ListMenu<M: ListModel> {
     target: Option<M::Key>,
 }
 
+/// Where a host opens its own menu for a row: the row's key, its box on screen, and the point
+/// the menu opens at.
+pub(super) type RowMenuReport<K> = Box<dyn FnMut(K, Rect, Point)>;
+
+/// What a list offers when a row's menu is asked for: a menu it owns and paints, or a report to
+/// the host, which opens its own. One list has one of them.
+pub(super) enum RowMenus<M: ListModel> {
+    /// No row offers a menu.
+    None,
+    /// The list builds one menu from its model and paints it over the rows
+    /// ([`VirtualList::with_context_menu`]).
+    Owned(ListMenu<M>),
+    /// The host opens its own menu where the list reports a row
+    /// ([`VirtualList::with_row_menu_reporter`]).
+    Reported(RowMenuReport<M::Key>),
+}
+
+impl<M: ListModel> RowMenus<M> {
+    /// Whether a row offers a menu: the list owns one, or reports it to the host.
+    pub(super) fn offers_row_menu(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// The menu the list owns, while it owns one.
+    pub(super) fn owned(&self) -> Option<&ListMenu<M>> {
+        match self {
+            Self::Owned(menu) => Some(menu),
+            _ => None,
+        }
+    }
+
+    /// The menu the list owns, while it owns one.
+    pub(super) fn owned_mut(&mut self) -> Option<&mut ListMenu<M>> {
+        match self {
+            Self::Owned(menu) => Some(menu),
+            _ => None,
+        }
+    }
+}
+
 impl<M: ListModel> VirtualList<M> {
     /// The menu a press, the Menu key or assistive technology opens: `items` says what a row
     /// (`Some`) or the list's empty space (`None`) offers, and `chosen` hears the item the
-    /// person took, with the row it was for.
+    /// person took, with the row it was for. A list offers its rows one menu: this replaces the
+    /// menu the host opens ([`Self::with_row_menu_reporter`]).
     #[must_use]
     pub fn with_context_menu(
         mut self,
         items: impl FnMut(&M, Option<&M::Key>) -> Vec<MenuItem> + 'static,
         chosen: impl FnMut(Option<M::Key>, usize) + 'static,
     ) -> Self {
-        self.menu = Some(ListMenu {
+        self.menus = RowMenus::Owned(ListMenu {
             items: Box::new(items),
             chosen: Box::new(chosen),
             menu: ContextMenu::new(),
@@ -51,25 +94,41 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    /// Report a row's menu to the host, which opens and paints its own: `report` hears the
+    /// row's key, the row's box on screen and the point its menu opens at, when a secondary
+    /// click, the Menu key, Shift+F10 or assistive technology asks for the row's menu. The row
+    /// takes the keyboard first, and the list changes no selection: what the menu acts on is
+    /// the host's. A list offers its rows one menu: this replaces the menu the list builds
+    /// ([`Self::with_context_menu`]).
+    #[must_use]
+    pub fn with_row_menu_reporter(
+        mut self,
+        report: impl FnMut(M::Key, Rect, Point) + 'static,
+    ) -> Self {
+        self.menus = RowMenus::Reported(Box::new(report));
+        self
+    }
+
     /// Whether the rows' menu is open.
     #[must_use]
     pub fn context_menu_is_open(&self) -> bool {
-        self.menu.as_ref().is_some_and(|menu| menu.menu.is_open())
+        self.menus.owned().is_some_and(|menu| menu.menu.is_open())
     }
 
-    /// Close the rows' menu, its chosen item unheard.
+    /// Close the rows' menu, its chosen item unheard. A list that reports its row menus to the
+    /// host has none of its own to close.
     pub fn close_context_menu(&mut self) {
-        if let Some(menu) = &mut self.menu {
+        if let Some(menu) = self.menus.owned_mut() {
             menu.menu.close();
             menu.target = None;
         }
     }
 
-    /// Open the menu for `key`'s row (or the list, `None`) with its corner at `at`. The row is
-    /// chosen and given the keyboard first, as a secondary click does. Whether a menu opened:
-    /// none is offered, or it has no items for that row.
+    /// Open the list's own menu for `key`'s row (or the list, `None`) with its corner at `at`.
+    /// The row is chosen and given the keyboard first, as a secondary click does. Whether a
+    /// menu opened: none is offered, or it has no items for that row.
     pub fn open_context_menu(&mut self, key: Option<&M::Key>, at: Point) -> bool {
-        let Some(menu) = &mut self.menu else {
+        let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
         let items = (menu.items)(&self.model, key);
@@ -87,9 +146,27 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Open the menu on the row of `key`, with its corner at `at`: what a host's row action
-    /// does, and what a secondary click does. The row becomes the selection and the focus
-    /// first. Whether a menu opened.
+    /// does, and what a secondary click does. A list that owns its menu makes the row its
+    /// selection and focus first; one that reports its row menus gives the row the keyboard and
+    /// hands its host the box and the point. Whether a menu opened.
     pub fn open_row_menu(&mut self, key: M::Key, at: Point) -> bool {
+        if matches!(self.menus, RowMenus::Reported(_)) {
+            let Some(row) = self
+                .model
+                .index_of(&key)
+                .and_then(|index| self.row_box(index))
+            else {
+                return false;
+            };
+            self.focus_row(key.clone());
+            if let RowMenus::Reported(report) = &mut self.menus {
+                report(key, row, at);
+            }
+            return true;
+        }
+        if self.menus.owned().is_none() {
+            return false;
+        }
         if !self.selection.is_selected(&key) {
             self.apply_selection(key.clone(), false, false);
         }
@@ -104,7 +181,7 @@ impl<M: ListModel> VirtualList<M> {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
-        let Some(menu) = &mut self.menu else {
+        let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
         if !menu.menu.is_open() {
@@ -120,7 +197,7 @@ impl<M: ListModel> VirtualList<M> {
         );
         self.drain_menu_selection();
         if !self.context_menu_is_open()
-            && let Some(menu) = &mut self.menu
+            && let Some(menu) = self.menus.owned_mut()
         {
             menu.target = None;
         }
@@ -132,7 +209,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Report the item the person took, if the menu closed on one.
     pub(super) fn drain_menu_selection(&mut self) {
-        let Some(menu) = &mut self.menu else {
+        let Some(menu) = self.menus.owned_mut() else {
             return;
         };
         let Some(index) = menu.menu.take_selection() else {
@@ -154,7 +231,7 @@ impl<M: ListModel> VirtualList<M> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if let Some(menu) = &mut self.menu {
+        if let Some(menu) = self.menus.owned_mut() {
             menu.menu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -163,14 +240,14 @@ impl<M: ListModel> VirtualList<M> {
     /// Whether the open menu needs a frame: it arrives, leaves, or a key moved its highlight.
     /// A closed menu paints nothing, so it asks for none.
     pub(super) fn menu_needs_redraw(&self) -> bool {
-        self.menu
-            .as_ref()
+        self.menus
+            .owned()
             .is_some_and(|menu| menu.menu.is_open() && menu.menu.needs_redraw())
     }
 
     /// The open menu's semantics, its targets namespaced into the list's.
     pub(super) fn menu_node(&self) -> Option<AccessNode> {
-        let menu = self.menu.as_ref()?;
+        let menu = self.menus.owned()?;
         if !menu.menu.is_open() {
             return None;
         }
@@ -189,7 +266,7 @@ impl<M: ListModel> VirtualList<M> {
         path: &crate::widget::ModelPath,
     ) -> Option<bool> {
         let target = target.strip_prefix(MENU_TARGET)?;
-        let menu = self.menu.as_mut()?;
+        let menu = self.menus.owned_mut()?;
         let performed = menu
             .menu
             .perform_semantic_action(target, action, state, path);
@@ -202,8 +279,8 @@ impl<M: ListModel> VirtualList<M> {
     /// The room the open menu takes, as the modal capture a host checks before it places
     /// anything over the list.
     pub(super) fn menu_capture(&self) -> Option<Rect> {
-        self.menu
-            .as_ref()
+        self.menus
+            .owned()
             .and_then(|menu| menu.menu.modal_capture())
     }
 }

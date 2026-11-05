@@ -63,10 +63,10 @@ impl<M: ListModel> VirtualList<M> {
         menu && self.open_menu_from_keyboard()
     }
 
-    /// Open the focused row's context menu: the one the keyboard is on, at the middle of its
-    /// row; or, with no row focused, the list's own menu, where its rows start.
+    /// Open the focused row's menu: the one the keyboard is on, at the middle of its row; or,
+    /// with no row focused, the list's own menu, where its rows start.
     pub(super) fn open_menu_from_keyboard(&mut self) -> bool {
-        if self.menu.is_none() {
+        if !self.menus.offers_row_menu() {
             return false;
         }
         let Some(key) = self.focused_row_key() else {

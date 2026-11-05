@@ -2521,6 +2521,12 @@ impl crate::widget::RowSelectionSink for ListRow {
     }
 }
 
+impl crate::widget::RowActionRects for ListRow {
+    fn row_action_rects(&self) -> Vec<Rect> {
+        ListRow::action_rects(self)
+    }
+}
+
 impl CardBody for ListRow {
     fn show_as_card(&mut self, selected: bool, activate: crate::component::Event) {
         self.set_card();
@@ -2536,6 +2542,7 @@ impl Widget for ListRow {
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
         dyn crate::widget::ReservedShape,
+        dyn crate::widget::RowActionRects,
         dyn crate::widget::RowSelectionSink
     );
 
