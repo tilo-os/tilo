@@ -76,6 +76,12 @@ pub trait Platform {
         None
     }
 
+    /// The day the person's region starts its week on, as days from Monday (`0`): the day a
+    /// day's `start_of_week` goes back to. Monday unless the platform knows the person's region.
+    fn week_start(&self) -> i64 {
+        0
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 

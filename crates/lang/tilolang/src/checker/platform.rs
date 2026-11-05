@@ -523,31 +523,6 @@ impl Checker<'_> {
         )
     }
 
-    /// `dated(text, at)`: when `text` says something is due, as people type it into a quick
-    /// add ("Call the landlord tomorrow 9am"), read against the time `at` (in an action, `now`)
-    /// in the zone of who runs it: a `host.Dated` holding the text without the phrase that said
-    /// when, the day it named and the moment, when it named a time (`crate::natural`).
-    pub(super) fn builtin_dated(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [text, at] = args else {
-            self.err(
-                "E022",
-                span,
-                "`dated` takes the text and the time it is read at: `dated(entry, now)`",
-            );
-            return Ex::error();
-        };
-        if let Some(a) = [text, at].into_iter().find(|a| a.name.is_some()) {
-            self.err(
-                "E022",
-                a.value.span,
-                "`dated` takes its text and time by position: `dated(entry, now)`",
-            );
-        }
-        let text = self.expr_as(&text.value, &Ty::Text);
-        let at = self.expr_as(&at.value, &Ty::Time);
-        Ex::host(Imp::Dated, vec![text, at], host_ty("Dated"))
-    }
-
     /// The action and the text of `entry_parts(action, text)`: the action a call left its
     /// `(entry)` parameter of, and what is typed in the entry.
     fn entry_args(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<(Ex, Ex)> {
@@ -583,24 +558,6 @@ impl Checker<'_> {
             vec![action, text],
             Ty::List(Box::new(host_ty("EntryPart"))),
         )
-    }
-
-    /// `day_of(t)`: the day the moment `t` falls on for the person looking, in their zone, as
-    /// `today` reads the day it is.
-    pub(super) fn builtin_day_of(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [at] = args else {
-            self.err("E022", span, "`day_of` takes one moment: `day_of(t)`");
-            return Ex::error();
-        };
-        if at.name.is_some() {
-            self.err(
-                "E022",
-                at.value.span,
-                "`day_of` takes the moment by position: `day_of(t)`",
-            );
-        }
-        let at = self.expr_as(&at.value, &Ty::Time);
-        Ex::host(Imp::DayOf, vec![at], Ty::Date)
     }
 
     /// `phrase("tilolang-empty")` or `phrase("tilolang-none-selected", kind: noun)`: one of the

@@ -519,12 +519,17 @@ fn a_query_that_does_not_fit_the_types_filters_is_an_error() {
             "{q}: expected {code} saying {says:?}, got:\n{got}"
         );
     }
-    // A length of time is a number of seconds where a value is one (a view moves a moment by
-    // it), so `7d` in a function returning an Int is an Int.
+    // A length of time is a value of its own, so `7d` is no Int; a stored number of seconds is
+    // read as one with `Duration(n)`.
     let compile_at = |body: &str| compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]);
+    let got = first_message("fn f() -> Int {\n    return 7d\n}");
     assert!(
-        compile_at("fn f() -> Int {\n    return 7d\n}").is_ok(),
-        "`7d` is an Int where a value is a number of seconds"
+        got.contains("E020") && got.contains("found Duration") && got.contains("`.seconds()`"),
+        "`7d` is a Duration where an Int goes, got:\n{got}"
+    );
+    assert!(
+        compile_at("fn f(n: Int) -> Duration {\n    return Duration(n)\n}").is_ok(),
+        "`Duration(n)` reads a number of seconds as a length of time"
     );
     let got = first_message("fn f(a: Int) -> Int {\n    return a..3\n}");
     assert!(got.contains("E105") && got.contains("a range"), "{got}");

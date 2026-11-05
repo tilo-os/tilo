@@ -477,12 +477,23 @@ pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
     out
 }
 
-/// Reads when `text` says something is due, typed at `now` (seconds since 1970, UTC) by
-/// someone whose clock is `offset` seconds ahead of UTC, typing in `lang`.
+/// What a text says about when, before it is a value: the words no phrase took, the day it
+/// named and the time of day it named — a day as days since 1970-01-01, and a time of day as
+/// minutes after midnight, in the zone it was read in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct When {
+    /// The text without the phrase that said when, its spaces tidied.
+    pub text: String,
+    /// The day it named, when it named one.
+    pub day: Option<i64>,
+    /// The time of day it named, when it named one.
+    pub minutes: Option<i64>,
+}
+
+/// Reads when `text` says something is due, said on the day `today` (days since 1970-01-01) at
+/// `second_of_day` seconds into that day, in `lang`.
 #[must_use]
-pub fn dated_lang(text: &str, now: i64, offset: i64, lang: Language) -> Dated {
-    let local = now.saturating_add(offset);
-    let today = local.div_euclid(DAY);
+pub fn when(text: &str, today: i64, second_of_day: i64, lang: Language) -> When {
     let words = words(text);
     let phrases = scan(&words, today, lang);
     let mut used = vec![false; words.len()];
@@ -502,17 +513,13 @@ pub fn dated_lang(text: &str, now: i64, offset: i64, lang: Language) -> Dated {
     // A time alone is today's while it is still to come, else tomorrow's.
     let day = day.or_else(|| {
         minutes.map(|m| {
-            if m * 60 > local.rem_euclid(DAY) {
+            if m * 60 > second_of_day {
                 today
             } else {
                 today + 1
             }
         })
     });
-    let at = match (day, minutes) {
-        (Some(d), Some(m)) => Some(time_text(d * DAY + m * 60 - offset)),
-        _ => None,
-    };
     let rest: Vec<&str> = words
         .iter()
         .zip(&used)
@@ -524,9 +531,22 @@ pub fn dated_lang(text: &str, now: i64, offset: i64, lang: Language) -> Dated {
     } else {
         rest.join(" ")
     };
+    When { text, day, minutes }
+}
+
+/// Reads when `text` says something is due, typed at `now` (seconds since 1970, UTC) by
+/// someone whose clock is `offset` seconds ahead of UTC, typing in `lang`.
+#[must_use]
+pub fn dated_lang(text: &str, now: i64, offset: i64, lang: Language) -> Dated {
+    let local = now.saturating_add(offset);
+    let read = when(text, local.div_euclid(DAY), local.rem_euclid(DAY), lang);
+    let at = match (read.day, read.minutes) {
+        (Some(d), Some(m)) => Some(time_text(d * DAY + m * 60 - offset)),
+        _ => None,
+    };
     Dated {
-        text,
-        day: day.map(day_text),
+        text: read.text,
+        day: read.day.map(day_text),
         at,
     }
 }

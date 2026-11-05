@@ -1494,20 +1494,26 @@ impl Core {
     }
 
     fn now(&self) -> HResult<Option<Wasm>> {
+        let time = self.now_text()?;
+        tilolang::types::check_time(&time)
+            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
+        self.ret_h(Value::Text(time))
+    }
+
+    /// What this invocation reads as `now`: the moment a scenario acts at, else the host
+    /// clock's, read once and kept until the invocation returns. `today` is the day it falls
+    /// on, so the two never disagree.
+    pub(crate) fn now_text(&self) -> HResult<String> {
         {
             let frames = self.frames.borrow();
             let FrameKind::Action(state) = &frames.top()?.kind else {
                 return trap("now is only available in actions");
             };
             if let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone()) {
-                drop(frames);
-                return self.ret_h(Value::Text(time));
+                return Ok(time);
             }
         }
-        let time = self.invocation_time();
-        tilolang::types::check_time(&time)
-            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
-        self.ret_h(Value::Text(time))
+        Ok(self.invocation_time())
     }
 
     /// The time of the outermost invocation running: read from the host's clock at its first

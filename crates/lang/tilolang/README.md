@@ -472,12 +472,12 @@ item in one call: `let again = std.complete(t, done)` adds the day to the item's
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
 checked against what each compares: a Bool; a case, or several (`[.open, .blocked]`); a Date
-or Time, `today`, `now`, either plus or minus a duration, a duration from now (`-7d`), or a
-range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a resource; an
-identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no value. Without
-`sort:`, the type's own order. Outside a view (an action, a flow) a query may leave out `in:`
-and look across the workspace. A filter is a value: `Task.today` names the one the type
-declares, `Task.project(p)` one with its value, and `items.matching(Task.today)`,
+or Time, `today`, `now`, either plus or minus a duration, a duration from now (`-7d`), a month
+(`2026-10`), or a range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a
+resource; an identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no
+value. Without `sort:`, the type's own order. Outside a view (an action, a flow) a query may
+leave out `in:` and look across the workspace. A filter is a value: `Task.today` names the one
+the type declares, `Task.project(p)` one with its value, and `items.matching(Task.today)`,
 `items.matching(Task.project(p), Task.done)` and `query(Task, in: x, Task.today)` ask them, no
 search text written. `filters(T)` lists the type's filters (`host.Filter`), each with the query
 choosing it asks, its label, icon, whether it is on or off and whether its place shows how many
@@ -525,6 +525,34 @@ print(xs, fields: [.title, .due])
   `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
   type the host holds.
 
+**Time.** A `Date` is a calendar day (`2026-10-24`), a `Time` an instant
+(`2026-10-24T09:30Z`; `2026-10-24T09:30` is the person's own time of day, read in their zone),
+both held as ISO text that compares with the ordering operators. `Date("2026-10-24")` and
+`Time("2026-10-24T09:30:00Z")` read one from text, and `ui.DateField(bind: t.due)` edits one.
+
+A `Duration` is a length of time: `30m`, `2h`, `3d`, `1w` (`s`, `m`, `h`, `d`, `w`), or
+`Duration(n)` for `n` seconds — a value of its own and not an `Int`. It shows as the largest unit
+that divides it (`Duration(7200)` reads `2h`, `Duration(5400)` reads `90m`), `.seconds()` gives the
+number back, and two of them compare.
+A `Time` moves by any length (`now + 2h`, `at - 30m`) and two are a `Duration` apart
+(`end - start`). A `Date` moves by whole days only (`today + 3d`, `today - 1w`), and two are
+apart in days: a length that spans part of a day is refused where it is written, and where code
+holds it, where it is applied.
+
+What a day and a moment are made of reads on them. On a `Date`: `d.weekday()` is the day of the
+week, matched as `.monday` … `.sunday`; `d.day()`, `d.month()` and `d.year()` are its parts;
+`d.start_of_week()` is the first day of the week it stands in, the day the person's region
+starts one on. On a `Time`: `t.day()` is the `Date` it falls on for the person, in their zone
+as `today` reads it, and `t.time_of_day()` the `Duration` since their midnight.
+
+An action reads the moment it is invoked at, `now`, and the day that falls on for the person,
+`today`; nothing else does, because a moment is a fact of the invocation, recorded with the
+change. Words name a day or a moment when they are read against one: `Date.parse(t, near: at)`
+and `Time.parse(t, near: at)` read their text — "tomorrow" is the day, "tomorrow 9am" the moment,
+a day's start when the words name no time of day — or `none` for words no phrase reads. A stored
+day or moment is a `Date` or a `Time` field; a stored length of time is the number the app
+measures it in, read as one with `Duration(n)`.
+
 **Native vocabulary.** Some smaller pieces of syntax:
 
 - An enum case takes an icon: `all (icon: .file_text)`.
@@ -553,12 +581,6 @@ print(xs, fields: [.title, .due])
   refused with the reason before anything changes. A condition reads only the subject and is
   pure, as the presentation is (it is checked in the action's presentation view):
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
-- `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
-  with the ordering operators; `2026-10` is a month, a filter's value.
-  `2026-10-24T09:30` is a Time too, of no zone: the person's own time of day, read in their
-  zone where the value is made, which is how seed data says 09:00 and shows 09:00.
-  `Date("2026-10-24")` and `Time(...)` read the same from text. `ui.DateField(bind: t.due)` edits one. In an action, `now` is the
-  invocation's Time, recorded with the change.
 - A scenario names people with `let mia = person("Mia")`. Inside
   `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
   and `now` = that time, and the block is a change of its own, so history and reflection show

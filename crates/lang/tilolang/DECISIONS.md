@@ -419,6 +419,51 @@ convergence.md, "Actions".
   the same register (`t.tag = tidy(t.tag)`, `t.n = t.n * 2`) are legitimate replays. E030's
   advice no longer suggests writing the read and the write out.
 
+## Time is values
+
+A day, a moment and a length of time are values of their own: `Date`, `Time` and `Duration`.
+`Date` and `Time` were already held as ISO text that compares; the length was a shape of filter
+literals only, written `7d` in a query and nowhere else.
+
+- **A length of time is a type, not a filter's spelling.** `30m`, `2h`, `3d` and `1w` are
+  `Duration` values anywhere an expression stands, and what they mean in a filter is unchanged:
+  relative times still resolve to the minute, and ranges (`a..b`) remain a filter's own. The
+  alternative — teaching the checker that a bare `7d` is an `Int` of seconds — would have made
+  `due + 7d` and `due + 604800` the same expression, and made `{7d}` read `604800`. A `Duration`
+  is an `i64` of seconds at the ABI, like an `Int`, and not one in the language: mixing them is
+  E024, and `Duration(n)` reads a stored number as one.
+- **Stored lengths stay numbers.** A field cannot hold a `Duration` (E023): a length an app
+  keeps is the number it measures it in (Mail's `hold: Int = 10`), read where it is used
+  (`now + Duration(m.hold)`). The stored format does not change, and no migration is needed.
+- **A day moves by whole days; a moment by anything.** A `Date` is a calendar day and has no
+  time of day to move, so `today + 2h` is E024 where it is written, and a length only code holds
+  fails where it moves the day (`day_shift`). A `Time` moves by the seconds it is given
+  (`time_shift`), and `Date - Date`/`Time - Time` are the seconds between them.
+- **What a day and a moment are made of reads on them, not from free functions.** `d.weekday()`,
+  `d.day()`, `d.month()`, `d.year()`, `d.start_of_week()`, `t.day()` and `t.time_of_day()` are
+  methods: the receiver says which reading is asked, and `t.day()` needs no `day_of(t)` beside
+  `now` and `today`. `Date.parse(text, near: at)` and `Time.parse(text, near: at)` stand on the
+  type, which is not a value: the checker reads them before the receiver as one (a name that is
+  no local and no import), so a package can still hold a root named `Date`.
+- **One zone source.** Every reading of a day and a moment is the person's: `t.day()` is the day
+  the moment falls on in their zone as the filter's `today` reads it, `today` is where `now`
+  falls, `Time.parse` resolves a wall time of day through the person's IANA zone
+  (`Platform::zone_name`, `Core.zone_name`) so 09:00 tomorrow is right across a change of
+  clocks, and `Date.start_of_week` uses the region's first day of the week
+  (`Platform::week_start`, `Core.week_start`, Monday where a host names none) — the same locale
+  data the toolkit's dates use. Without a named zone, the host's offset stands in, as it does for
+  repeats.
+- **A moment belongs to an invocation.** `now` and `today` read only in an action (E049
+  elsewhere): the moment is recorded with the change, so replaying a change computes the same
+  days. `Date.parse`/`Time.parse` take the moment in words are read against as an argument
+  (`near:`), which is what keeps them pure.
+- **The entry keeps reading words, not the language.** A typed entry's `Text (entry)` is filled
+  by the runtime's own scanner (`Core::entry_fill`, `natural`), so the phrase filling an action's
+  day and moment does not need the language; `Date.parse`/`Time.parse` are for code that reads
+  words itself and names the moment it reads them at. `dated(text, now)` (which answered the
+  rest of the text with its day and moment) and `day_of(t)` (which `t.day()` is) are removed
+  with no alias.
+
 ## Search
 
 search.md, "What a type declares" and "Types, references and paths".
@@ -456,8 +501,9 @@ search.md, "What a type declares" and "Types, references and paths".
   the type's filters at run time (`tilolang_runtime::query`). So `find("from:*@x.com is:unread
   received:-7d")` and `query(Message, from: "*@x.com", unread: true, received: -7d)` are one
   query. `today` and `now` are bare words in a query's values, as `now` is in an action;
-  search.md's `today()` is accepted too. Durations (`7d`, `-30d`; units s, m, h, d, w) and
-  ranges (`a..b`, `a..`, `..b`) are values of filters only (E105 elsewhere).
+  search.md's `today()` is accepted too. Durations are values of their own everywhere (see
+  "Time is values"); in a filter they are the same lengths (`7d`, `-30d`; units s, m, h, d, w),
+  and ranges (`a..b`, `a..`, `..b`) are values of filters only (E105 elsewhere).
 - **Relative times resolve to the minute.** `-7d` and `today` read the host's clock rounded
   to the minute, so a view asks one query a minute; a list does not move by itself as time
   passes.

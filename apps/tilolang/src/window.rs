@@ -151,6 +151,16 @@ impl Platform for InProcess {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    /// The day the person's region starts its week on, as the toolkit's dates start it.
+    fn week_start(&self) -> i64 {
+        i64::from(
+            ui::format::region::current()
+                .first_day
+                .weekday()
+                .num_days_from_monday(),
+        )
+    }
+
     fn waker(&self) -> tilolang_tilo::background::Waker {
         let wake = ui::wake::WakeHandle::new();
         Arc::new(move || wake.wake())

@@ -739,6 +739,8 @@ impl Instance {
         host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone_name(move || platform.zone_name());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_week_start(move || platform.week_start());
         host.set_words(PlatformWords(Rc::clone(&self.platform)));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(crate::origin::RoutingSink {

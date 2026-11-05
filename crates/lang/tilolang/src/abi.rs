@@ -45,6 +45,7 @@ imports! {
     IntToStr = "int_to_str" ([I64] -> [H]);
     StrToInt = "str_to_int" ([H] -> [H]);
     FloatToStr = "float_to_str" ([F64] -> [H]);
+    DurationText = "duration_text" ([I64] -> [H]);
     StrCmp = "str_cmp" ([H, H] -> [I32]);
     StrFind = "str_find" ([H, H] -> [I64]);
     StrSlice = "str_slice" ([H, I64, I64] -> [H]);
@@ -119,7 +120,6 @@ imports! {
     PrincipalName = "principal_name" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     TimeShift = "time_shift" ([H, I64, I32] -> [H]);
-    DayOf = "day_of" ([H] -> [H]);
     WallClock = "wall_clock" ([H] -> [H]);
     PrincipalNamed = "principal_named" ([H] -> [H]);
     AgentNamed = "agent_named" ([H] -> [H]);
@@ -219,7 +219,6 @@ imports! {
     RichTime = "rich_time" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
-    Dated = "dated" ([H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);
     RepeatNext = "repeat_next" ([H, H, H] -> [H]);
     RepeatNextAt = "repeat_next_at" ([H, H, H] -> [H]);
@@ -227,6 +226,18 @@ imports! {
     ReminderAt = "reminder_at" ([H, H, H] -> [H]);
     ReminderLabel = "reminder_label" ([H] -> [H]);
     Today = "today" ([] -> [H]);
+    // The day a moment falls on and the time of day it is, both for the person; a day moved by
+    // days; how far two days or two moments are apart; a part of a day, its weekday and the
+    // day its week starts on; and a day or a moment a text names, read at a moment.
+    TimeDay = "time_day" ([H] -> [H]);
+    TimeOfDay = "time_of_day" ([H] -> [I64]);
+    DayShift = "day_shift" ([H, I64, I32] -> [H]);
+    TimeSpan = "time_span" ([H, H] -> [I64]);
+    DayPart = "day_part" ([H, I32] -> [I64]);
+    DayWeekday = "day_weekday" ([H] -> [I64]);
+    DayStartOfWeek = "day_start_of_week" ([H] -> [H]);
+    DayParse = "day_parse" ([H, H] -> [H]);
+    TimeParse = "time_parse" ([H, H] -> [H]);
     EventPart = "event_part" ([I32] -> [H]);
     CollMoveAmong = "coll_move_among" ([H, H, H, I64, H] -> []);
     UiActions = "ui_actions" ([H, H, H] -> []);

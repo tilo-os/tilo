@@ -194,6 +194,12 @@ pub enum Ty {
     /// An instant, held as ISO-8601 UTC text `YYYY-MM-DDTHH:MM:SSZ`; not a `Text`. ISO text
     /// orders chronologically, so both compare as text.
     Time,
+    /// A length of time, held as its number of seconds (an `i64`, like an `Int`, and not one):
+    /// a literal writes it as `5m`, `2h`, `3d` or `1w`, and a moment or a day moves by it
+    /// (`now + 2h`, `today + 3d`), while two days or two moments apart are one
+    /// (`end - start`). A day moves by whole days only. Not a field's type: a stored span of
+    /// time is a number the app reads in its own unit.
+    Duration,
     /// `std.Identifier`: an account of some service, held as its URI `scheme:value`
     /// (`mailto:jane@x.com`, `tel:+4930123456`); not a `Text` (see [`crate::identifier`]).
     Identifier,
@@ -283,7 +289,7 @@ impl Ty {
     pub const fn repr(&self) -> Option<Vt> {
         match self {
             Self::Float | Self::Length(_) => Some(Vt::F64),
-            Self::Int | Self::Choice(_) => Some(Vt::I64),
+            Self::Int | Self::Duration | Self::Choice(_) => Some(Vt::I64),
             Self::Unit => None,
             _ => Some(Vt::I32),
         }
@@ -317,7 +323,10 @@ impl Ty {
 
     /// Whether values of this type are plain scalars in wasm (not handles).
     pub const fn is_scalar(&self) -> bool {
-        matches!(self, Self::Int | Self::Float | Self::Bool | Self::Choice(_))
+        matches!(
+            self,
+            Self::Int | Self::Duration | Self::Float | Self::Bool | Self::Choice(_)
+        )
     }
 
     /// The element type of something a `for` loop can walk.
@@ -362,6 +371,7 @@ impl Ty {
             Self::Principal => "Principal".into(),
             Self::Date => "Date".into(),
             Self::Time => "Time".into(),
+            Self::Duration => "Duration".into(),
             Self::Identifier => "std.Identifier".into(),
             Self::Repeat => "std.Repeat".into(),
             Self::Reminder => "std.Reminder".into(),
@@ -649,6 +659,7 @@ impl MetaTy<'_> {
             "Principal" => Some(Ty::Principal),
             "Date" => Some(Ty::Date),
             "Time" => Some(Ty::Time),
+            "Duration" => Some(Ty::Duration),
             "std.Identifier" => Some(Ty::Identifier),
             "std.Repeat" => Some(Ty::Repeat),
             "std.Reminder" => Some(Ty::Reminder),

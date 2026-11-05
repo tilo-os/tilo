@@ -392,7 +392,7 @@ action snooze_an_hour(t: Thread) (icon: .clock, label: "Snooze an hour") {
 
 /// Puts the conversation away until tomorrow morning, at nine, in the person's own zone.
 action snooze_until_tomorrow(t: Thread) (icon: .clock, label: "Snooze until tomorrow") {
-    snooze(t, dated("tomorrow 9am", now).at ?? now + 18h)
+    snooze(t, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
 /// Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again.
@@ -464,7 +464,7 @@ action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
 /// Sends the message at nine tomorrow, the moment people reach for most when they write in the
 /// evening and do not want it to arrive then.
 action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
-    send_later(d, dated("tomorrow 9am", now).at ?? now + 18h)
+    send_later(d, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
 /// Marks every conversation of the account read.
@@ -526,7 +526,7 @@ primary action send(d: Draft) proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     let m = root Mail
-    let at = now + m.hold
+    let at = now + Duration(m.hold)
     outside(
         "smtp.send",
         (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references),

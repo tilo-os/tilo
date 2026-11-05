@@ -323,28 +323,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
-        name: "Dated",
-        id: "host-dated",
-        doc: "When a text says something is due, as `dated(text, at)` read it.",
-        fields: &[
-            (
-                "text",
-                "Text",
-                "The text without the phrase that said when: `Call the landlord`.",
-            ),
-            (
-                "day",
-                "Option<Date>",
-                "The day it named, in the zone of who typed it.",
-            ),
-            (
-                "at",
-                "Option<Time>",
-                "The moment it named, when it named a time.",
-            ),
-        ],
-    },
-    ValueType {
         name: "EntryPart",
         id: "host-entry-part",
         doc: "One thing the text of an entry will make of the action it runs, as `entry_parts` \

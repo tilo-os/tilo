@@ -156,7 +156,7 @@ d-wclcgiyt = Tomorrow
     .doc = Makes a task due tomorrow.
 
 d-tg5yjcju = Next week
-    .doc = Makes a task due at the end of next week.
+    .doc = Makes a task due at the start of next week.
 
 d-jqhwyztw = Pick date
     .doc = Makes a task due on a day the person picks.

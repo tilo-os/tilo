@@ -58,6 +58,7 @@ pub mod space;
 pub mod store;
 mod surfaces;
 pub mod textdiff;
+mod time;
 pub mod value;
 pub mod view;
 pub mod view_instance;

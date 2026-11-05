@@ -572,6 +572,8 @@ impl Decoder<'_> {
                     Ok(Value::some(self.down("", held, inner)?))
                 }
             },
+            // No reading gives one: a length of time is never a field's type.
+            Ty::Duration => Err("a Duration is not a value a record holds".to_owned()),
             Ty::List(inner) | Ty::Collection(inner) | Ty::Set(inner) => {
                 let Some(items) = tagged(json, "list").unwrap_or(json).as_array() else {
                     return Err(format!("{json} is not a list"));

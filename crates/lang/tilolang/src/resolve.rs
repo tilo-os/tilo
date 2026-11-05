@@ -967,6 +967,8 @@ impl Resolver<'_> {
         let ty = self.resolve_type(&f.ty, true);
         if matches!(ty, Ty::Action | Ty::View) {
             self.err("E023", f.ty.span, format!("a field cannot hold `{ty}`: it is not stored state; fields hold scalars, Text, records, enums, List, Option, Set, Map and Collection"));
+        } else if ty == Ty::Duration {
+            self.err("E023", f.ty.span, "a field cannot hold a `Duration`: a stored length of time keeps the number the app measures it in (`Int`), and `Duration(n)` reads it as one where a moment moves by it".to_string());
         }
         let merge = self.merge(&ty, f.merge.as_ref(), &f.name.name);
         let default = match &f.default {
@@ -1744,6 +1746,7 @@ impl Resolver<'_> {
                 "Principal" => return Ty::Principal,
                 "Date" => return Ty::Date,
                 "Time" => return Ty::Time,
+                "Duration" => return Ty::Duration,
                 "RichText" => return Ty::RichText,
                 "Action" => return Ty::Action,
                 "View" => return Ty::View,
@@ -1792,7 +1795,7 @@ impl Resolver<'_> {
             } else {
                 String::new()
             };
-            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Action, View and {known}{held}"));
+            self.err("E013", span, format!("unknown type `{single}`; types here: Int, Float, Bool, Text, RichText, Principal, Date, Time, Duration, Action, View and {known}{held}"));
             return Ty::Error;
         }
         if let Some(ty) = std_text_ty(&dotted) {
@@ -1977,9 +1980,13 @@ impl Resolver<'_> {
                 self.err("E016", name.span, format!("`{}` names a {}, which starts with a lowercase letter (uppercase is for types)", name.name, kind.word()));
             }
             // A view's name is a UI statement, so it cannot be a primitive's; the others are
-            // called in expressions, where only the built-in functions are taken.
-            let taken = (kind == CKind::View && prims::prim(&name.name).is_some())
-                || prims::BUILTINS.contains(&name.name.as_str());
+            // called in expressions, where the built-in functions and values are taken. A view
+            // is not called in an expression, so it may be named after one: Today's is `today`.
+            let taken = if kind == CKind::View {
+                prims::prim(&name.name).is_some()
+            } else {
+                prims::BUILTINS.contains(&name.name.as_str())
+            };
             if taken {
                 self.err(
                     "E011",
@@ -2839,6 +2846,7 @@ fn is_builtin_type(name: &str) -> bool {
             | "Principal"
             | "Date"
             | "Time"
+            | "Duration"
             | "Action"
             | "View"
             | "List"

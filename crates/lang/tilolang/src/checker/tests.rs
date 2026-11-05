@@ -1214,3 +1214,205 @@ view home(t: Tasks) {
         home.locals
     );
 }
+
+/// The value a function returns.
+fn returned(f: &Func) -> &Expr {
+    f.body
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Return(Some(e)) => Some(e),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{} returns nothing", f.name))
+}
+
+/// Every host import a function uses, with its arguments.
+fn imports(f: &Func) -> Vec<crate::abi::Imp> {
+    let mut out = Vec::new();
+    for s in &f.body {
+        fn walk(e: &Expr, out: &mut Vec<crate::abi::Imp>) {
+            match &e.kind {
+                Ek::Host(imp, args) => {
+                    out.push(*imp);
+                    for a in args {
+                        walk(a, out);
+                    }
+                }
+                Ek::Call(_, args) => args.iter().for_each(|a| walk(a, out)),
+                Ek::Bin(_, a, b) => {
+                    walk(a, out);
+                    walk(b, out);
+                }
+                Ek::Neg(a) | Ek::Not(a) | Ek::Conv(_, a) => walk(a, out),
+                Ek::If(c, a, b) => {
+                    walk(c, out);
+                    walk(a, out);
+                    walk(b, out);
+                }
+                Ek::Seq(inner, v) => {
+                    for s in inner {
+                        if let Stmt::Return(Some(e)) | Stmt::Eval(e) | Stmt::Set(_, e) = s {
+                            walk(e, out);
+                        }
+                    }
+                    walk(v, out);
+                }
+                _ => {}
+            }
+        }
+        match s {
+            Stmt::Set(_, e) | Stmt::Eval(e) | Stmt::Return(Some(e)) => walk(e, &mut out),
+            _ => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn a_length_of_time_is_a_value_of_its_own() {
+    let (m, _) = lower(
+        "fn span() -> Duration { 2h + 30m }\n\
+         fn shorter() -> Duration { 1w - 2d }\n\
+         fn seconds(d: Duration) -> Int { d.seconds() }\n\
+         fn shown(d: Duration) -> Text { \"{d}\" }\n\
+         fn ordered(a: Duration, b: Duration) -> Bool { a < b }\n\
+         fn counted(n: Int) -> Duration { Duration(n) }",
+    );
+    for (name, ty) in [
+        ("span", Ty::Duration),
+        ("shorter", Ty::Duration),
+        ("seconds", Ty::Int),
+        ("shown", Ty::Text),
+        ("ordered", Ty::Bool),
+        ("counted", Ty::Duration),
+    ] {
+        assert_eq!(returned(func(&m, name)).ty, ty, "{name}");
+    }
+    // The length shows in the largest unit that divides it, which only the runtime knows.
+    assert!(imports(func(&m, "shown")).contains(&Imp::DurationText));
+    // A day and a moment move by one, and two of a kind are one apart.
+    let (m, _) = lower(
+        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n    at: Time = Time(\"1970-01-01T00:00:00Z\")\n}\n\
+         action soon(n: Note) -> Time { n.at = now + 2h \n now }\n\
+         action tomorrow(n: Note) -> Date { n.stamp = today + 1d \n today }\n\
+         action last_week(n: Note) -> Date { today - 1w }\n\
+         fn apart(a: Time, b: Time) -> Duration { b - a }\n\
+         fn days(a: Date, b: Date) -> Duration { b - a }",
+    );
+    for (name, want) in [
+        ("soon", Ty::Time),
+        ("tomorrow", Ty::Date),
+        ("last_week", Ty::Date),
+        ("apart", Ty::Duration),
+        ("days", Ty::Duration),
+    ] {
+        assert_eq!(returned(func(&m, name)).ty, want, "{name}");
+    }
+
+    for (body, wants) in [
+        // A day moves by whole days: an afternoon cannot move it.
+        (
+            "type N {\n    d: Date = Date(\"1970-01-01\")\n}\naction late(n: N) { n.d = today + 2h }",
+            "whole days",
+        ),
+        (
+            "type N {\n    d: Date = Date(\"1970-01-01\")\n}\naction late(n: N) { n.d = today + 1 }",
+            "length of time",
+        ),
+        // A length and a number are not one another; `Duration(n)` reads a number as one.
+        ("fn mix() -> Duration { 2h + 3 }", "Duration(n)"),
+        ("fn mix() -> Duration { 2h + \"x\" }", "two Durations"),
+        // A stored length of time is a number the app reads in its own unit.
+        ("type S { hold: Duration }", "cannot hold a `Duration`"),
+    ] {
+        let found = diagnostics(body);
+        assert!(
+            found.iter().any(|d| d.message.contains(wants)),
+            "{body}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_day_and_a_moment_are_read_by_their_parts() {
+    let (m, _) = lower(
+        "fn weekday(d: Date) -> Text {\n    match d.weekday() {\n        .monday => \"Mon\",\n        .tuesday => \"Tue\",\n        .wednesday => \"Wed\",\n        .thursday => \"Thu\",\n        .friday => \"Fri\",\n        .saturday => \"Sat\",\n        .sunday => \"Sun\",\n    }\n}\n\
+         fn part(d: Date) -> Int { d.day() }\n\
+         fn month(d: Date) -> Int { d.month() }\n\
+         fn year(d: Date) -> Int { d.year() }\n\
+         fn week(d: Date) -> Date { d.start_of_week() }\n\
+         fn day(m: Time) -> Date { m.day() }\n\
+         fn at(m: Time) -> Duration { m.time_of_day() }",
+    );
+    for (name, ty) in [
+        ("weekday", Ty::Text),
+        ("part", Ty::Int),
+        ("month", Ty::Int),
+        ("year", Ty::Int),
+        ("week", Ty::Date),
+        ("day", Ty::Date),
+        ("at", Ty::Duration),
+    ] {
+        assert_eq!(returned(func(&m, name)).ty, ty, "{name}");
+    }
+    assert!(imports(func(&m, "weekday")).contains(&Imp::DayWeekday));
+    assert!(imports(func(&m, "day")).contains(&Imp::TimeDay));
+    assert!(imports(func(&m, "at")).contains(&Imp::TimeOfDay));
+    for (body, wants) in [
+        ("fn w(d: Date) -> Bool { d.fortnight() }", "start_of_week"),
+        ("fn w(d: Date) -> Bool { d.parse(\"x\") }", "Date.parse"),
+        ("fn w() -> Bool { Date.weekday() }", "a type, not a value"),
+    ] {
+        let found = diagnostics(body);
+        assert!(
+            found.iter().any(|d| d.message.contains(wants)),
+            "{body}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn a_day_or_a_moment_is_read_from_a_text() {
+    let (m, _) = lower(
+        "action day(t: Text) -> Option<Date> { Date.parse(t, near: now) }\n\
+         action at(t: Text) -> Option<Time> { Time.parse(t, near: now) }",
+    );
+    assert_eq!(returned(func(&m, "day")).ty, Ty::Option(Box::new(Ty::Date)));
+    assert_eq!(returned(func(&m, "at")).ty, Ty::Option(Box::new(Ty::Time)));
+    assert!(imports(func(&m, "day")).contains(&Imp::DayParse));
+    assert!(imports(func(&m, "at")).contains(&Imp::TimeParse));
+
+    for (body, wants) in [
+        // Words are read against the moment they are said at, named.
+        ("action d(t: Text) { Date.parse(t) }", "near"),
+        ("action d(t: Text) { Date.parse(t, now) }", "near"),
+        ("action d() { Date.parse(2, near: now) }", "Text"),
+    ] {
+        let found = diagnostics(body);
+        assert!(
+            found.iter().any(|d| d.message.contains(wants)),
+            "{body}: {found:#?}"
+        );
+    }
+}
+
+#[test]
+fn only_an_action_reads_the_day_it_is() {
+    for name in ["today", "now"] {
+        let found = diagnostics(&format!("fn d() -> Bool {{ {name} == {name} }}"));
+        let said = found
+            .iter()
+            .find(|d| d.code == "E049")
+            .unwrap_or_else(|| panic!("{name} is an action's: {found:#?}"));
+        assert!(
+            said.message.contains(name) && said.message.contains("only an action"),
+            "{name}: {}",
+            said.message
+        );
+    }
+    // The action's day and moment read as one: the day is the one the moment falls on.
+    let (m, _) = lower(
+        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) { n.stamp = now.day() }",
+    );
+    assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
+}

@@ -58,6 +58,10 @@ impl Checker<'_> {
         let hint = match (want, &ex.ty) {
             (Ty::Float, Ty::Int) => "; convert with `.to_float()`",
             (Ty::Int, Ty::Float) => "; convert with `.to_int()`",
+            (Ty::Int, Ty::Duration) => "; read the number of seconds with `.seconds()`",
+            (Ty::Duration, Ty::Int) => {
+                "; a length of time is written `2h`, or read from a number of seconds with `Duration(n)`"
+            }
             _ => "",
         };
         self.err("E020", span, format!("expected {w}, found {f}{hint}"));
@@ -96,11 +100,11 @@ impl Checker<'_> {
             ExprKind::Int(v) => Ex::int(*v),
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
             ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
-            // A length of time is a number of seconds where a value is one: a moment moved by
-            // it (`now + 10s`, the moment an outside effect is held until). In a filter it is
-            // the filter's (`query(T, received: -7d)`).
+            // A length of time, as its number of seconds: a moment or a day moves by it
+            // (`now + 10s`, `today + 3d`), and what two of them are apart is one. In a filter
+            // it is the filter's (`query(T, received: -7d)`).
             ExprKind::Duration(n, u) => match crate::duration::seconds(*n, u) {
-                Some(secs) => Ex::new(Ek::Duration(secs), Ty::Int),
+                Some(secs) => Ex::new(Ek::Duration(secs), Ty::Duration),
                 None => {
                     self.err("E105", e.span, "the duration is too long");
                     Ex::error()
@@ -316,6 +320,19 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
+        // `today`: the day this invocation falls on for the person, read in their zone as the
+        // filter's `today` reads it.
+        if name == "today" {
+            if self.st.ctx == Ctx::Action {
+                return Ex::host(Imp::Today, vec![], Ty::Date);
+            }
+            self.err(
+                "E049",
+                span,
+                "`today` is the day of this invocation, which only an action has; pass a Date to anything else",
+            );
+            return Ex::error();
+        }
         // `me`: the person a program's task acts for (agents.md, "What the agent knows").
         if name == "me" && self.st.written == Written::Program {
             return Ex::host(Imp::Me, vec![], Ty::Principal);
@@ -478,6 +495,8 @@ impl Checker<'_> {
             Ty::Date | Ty::Time | Ty::Identifier => v.typed(Ty::Text),
             Ty::Int => Ex::host(Imp::IntToStr, vec![v], Ty::Text),
             Ty::Float => Ex::host(Imp::FloatToStr, vec![v], Ty::Text),
+            // Its length in the largest unit that divides it: `2h`, `90m`.
+            Ty::Duration => Ex::host(Imp::DurationText, vec![v], Ty::Text),
             Ty::Bool => Ex::new(
                 Ek::If(
                     Box::new(v),
@@ -496,7 +515,7 @@ impl Checker<'_> {
             }
             other => {
                 let t = self.show(other);
-                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Date, a Time, a Principal or a record"));
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Duration, a Date, a Time, a Principal or a record"));
                 Ex::error()
             }
         }
@@ -683,7 +702,7 @@ impl Checker<'_> {
                 // `-7d`, a length of time moved backwards.
                 if let ExprKind::Duration(n, u) = &operand.kind {
                     return match crate::duration::seconds(n.checked_neg().unwrap_or(*n), u) {
-                        Some(secs) => Ex::new(Ek::Duration(secs), Ty::Int),
+                        Some(secs) => Ex::new(Ek::Duration(secs), Ty::Duration),
                         None => {
                             self.err("E105", span, "the duration is too long");
                             Ex::error()
@@ -747,7 +766,7 @@ impl Checker<'_> {
     /// it holds itself.
     pub(super) fn same(&mut self, l: Ex, r: Ex, span: Span) -> Ex {
         match l.ty.clone() {
-            Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) => {
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) | Ty::Duration => {
                 Ex::new(Ek::Bin(ir::BinOp::Eq, Box::new(l), Box::new(r)), Ty::Bool)
             }
             // Enums, options, results, tuples and lists compare by value, payloads included.
@@ -784,7 +803,9 @@ impl Checker<'_> {
         };
         let r = self.coerce(r, &l.ty, span);
         match l.ty.clone() {
-            Ty::Int | Ty::Float => Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Bool),
+            Ty::Int | Ty::Float | Ty::Duration => {
+                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Bool)
+            }
             // ISO dates and times order chronologically as text.
             Ty::Text | Ty::Date | Ty::Time => {
                 let cmp = Ex::host(Imp::StrCmp, vec![l, r], Ty::Bool);
@@ -797,7 +818,7 @@ impl Checker<'_> {
                     "E024",
                     span,
                     format!(
-                        "`{}` orders Int, Float, Text, Date or Time, not {t}",
+                        "`{}` orders Int, Float, Text, Date, Time or a Duration, not {t}",
                         op.text()
                     ),
                 );
@@ -816,17 +837,34 @@ impl Checker<'_> {
         };
         match (&l.ty, &r.ty) {
             (Ty::Int, Ty::Int) => Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Int),
+            // Two lengths of time add and subtract as the seconds they are.
+            (Ty::Duration, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Duration)
+            }
             (Ty::Float, Ty::Float) if op != BinOp::Rem => {
                 Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Float)
             }
             (Ty::Text, Ty::Text) if op == BinOp::Add => {
                 Ex::host(Imp::StrConcat, vec![l, r], Ty::Text)
             }
-            // A moment moved by a number of seconds (`now + 10s`, `now - 30s`): the moment is
-            // a handle, the seconds an `i64`, and `back` an `i32`.
-            (Ty::Time, Ty::Int) if matches!(op, BinOp::Add | BinOp::Sub) => {
+            // A moment moved by a length of time (`now + 2h`, `now - 30s`): the moment is a
+            // handle, the seconds an `i64`, and `back` an `i32`.
+            (Ty::Time, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
                 let back = Ex::new(Ek::I32(i32::from(op == BinOp::Sub)), Ty::Bool);
                 Ex::host(Imp::TimeShift, vec![l, r, back], Ty::Time)
+            }
+            (Ty::Duration, Ty::Time) if op == BinOp::Add => {
+                let back = Ex::new(Ek::I32(0), Ty::Bool);
+                Ex::host(Imp::TimeShift, vec![r, l, back], Ty::Time)
+            }
+            // A day moved by whole days (`today + 3d`, `today - 1w`).
+            (Ty::Date, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                self.day_move(l, r, op == BinOp::Sub, span)
+            }
+            (Ty::Duration, Ty::Date) if op == BinOp::Add => self.day_move(r, l, false, span),
+            // How far apart two days, or two moments, are.
+            (Ty::Date | Ty::Time, Ty::Date | Ty::Time) if op == BinOp::Sub && l.ty == r.ty => {
+                Ex::host(Imp::TimeSpan, vec![l, r], Ty::Duration)
             }
             _ => {
                 let (a, b) = (self.show(&l.ty), self.show(&r.ty));
@@ -834,12 +872,29 @@ impl Checker<'_> {
                     (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => {
                         "; convert the Int with `.to_float()` first"
                     }
+                    (Ty::Time | Ty::Date | Ty::Duration, Ty::Int) | (Ty::Int, Ty::Duration) => {
+                        "; a length of time is written `2h` or `3d`, or read from a number of seconds with `Duration(n)`"
+                    }
                     _ => "",
                 };
-                self.err("E024", span, format!("`{}` needs two Int or two Float operands (or two Text for `+`); found {a} and {b}{hint}", op.text()));
+                self.err("E024", span, format!("`{}` needs two Int or two Float operands (or two Text for `+`, two Durations, or a Date or a Time moved by a Duration or by another of its kind, subtracted); found {a} and {b}{hint}", op.text()));
                 Ex::error()
             }
         }
+    }
+
+    /// `day + duration`: a day moves by whole days, so a length of time that is no whole day
+    /// cannot move one. A written length is told here; one code holds is told where it moves
+    /// the day (`day_shift`).
+    fn day_move(&mut self, day: Ex, by: Ex, back: bool, span: Span) -> Ex {
+        if let Ek::Duration(secs) = &by.kind
+            && secs % crate::calendar::DAY != 0
+        {
+            self.err("E024", span, format!("a day moves by whole days (`3d`, `1w`); {} is no whole day. Move a moment by it (`now + 2h`), or write the days it makes", crate::duration::text(*secs)));
+            return Ex::error();
+        }
+        let back = Ex::new(Ek::I32(i32::from(back)), Ty::Bool);
+        Ex::host(Imp::DayShift, vec![day, by, back], Ty::Date)
     }
 
     /// Reads field `name` of the record value `b`.

@@ -900,6 +900,12 @@ impl Runtime {
         *self.core.zone_name.borrow_mut() = Some(Box::new(zone));
     }
 
+    /// The day the person's region starts its week on, as days from Monday (`0`): the day a
+    /// day's `start_of_week` goes back to. Monday until it is set.
+    pub fn set_week_start(&self, start: impl Fn() -> i64 + 'static) {
+        *self.core.week_start.borrow_mut() = Some(Box::new(start));
+    }
+
     /// Where the words packages and the platform show come from, in the reader's language
     /// (`phrase(id, ...)`, a declaration's label and noun). It takes every package's catalogues
     /// loaded so far, and those loaded after. Until it is set, the source words stand.

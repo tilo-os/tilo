@@ -173,7 +173,7 @@ internal action quick_add(
 ) -> Task {
     let due: Option<Date> = if let d = due {
         .some(d)
-    } else if today { dated("today", now).day } else { .none }
+    } else if today { .some(now.day()) } else { .none }
     tasks.items.insert(
         Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
     )
@@ -243,19 +243,19 @@ action add_subtask(tasks: Tasks, t: Task, title: Text) -> Task (
 /// for any day.
 action due_today(t: Task) (label: "Today", icon: .star, key: "Ctrl+T", group: "Due") {
     require not t.done "It is done already"
-    t.due = dated("today", now).day
+    t.due = .some(today)
 }
 
 /// Makes a task due tomorrow.
 action due_tomorrow(t: Task) (label: "Tomorrow", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    t.due = dated("tomorrow", now).day
+    t.due = .some(today + 1d)
 }
 
-/// Makes a task due at the end of next week.
+/// Makes a task due at the start of next week.
 action due_next_week(t: Task) (label: "Next week", icon: .calendar, group: "Due") {
     require not t.done "It is done already"
-    t.due = dated("next week", now).day
+    t.due = .some(today.start_of_week() + 1w)
 }
 
 /// Makes a task due on a day the person picks.
@@ -540,7 +540,7 @@ fn finished_at(t: Task) -> Option<Time> {
 
 /// The day a task was finished on, in the person's zone: the heading Done stands it under.
 fn finished_day(t: Task) -> Option<Date> {
-    if let at = finished_at(t) { .some(day_of(at)) } else { .none }
+    if let at = finished_at(t) { .some(at.day()) } else { .none }
 }
 
 /// The tasks of a project, in order.

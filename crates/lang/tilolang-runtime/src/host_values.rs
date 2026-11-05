@@ -62,6 +62,7 @@ impl Core {
                 self.ret_h(Value::Opt(number.map(|n| Box::new(Value::Int(n)))))
             }
             Imp::FloatToStr => self.ret_h(Value::Text(a.float(0)?.to_string())),
+            Imp::DurationText => self.ret_h(Value::Text(tilolang::duration::text(a.long(0)?))),
             Imp::StrCmp => {
                 let o = self.text(a.h(0)?)?.cmp(&self.text(a.h(1)?)?);
                 ret_i32(ordering_to_i32(o))

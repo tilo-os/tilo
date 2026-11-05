@@ -102,6 +102,25 @@ impl Checker<'_> {
                 }
             };
         }
+        // `Duration(n)`: a length of time of `n` seconds, for one an app keeps as a number.
+        if name == "Duration" {
+            let [n] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`Duration` takes one number, its seconds: `Duration(hold)`",
+                );
+                return Ex::error();
+            };
+            if n.name.is_some() {
+                self.err(
+                    "E022",
+                    n.value.span,
+                    "`Duration` takes its seconds by position: `Duration(hold)`",
+                );
+            }
+            return self.expr_as(&n.value, &Ty::Int).typed(Ty::Duration);
+        }
         if let Some(ex) = self.program_builtin(name, args, span) {
             return ex;
         }
@@ -133,9 +152,7 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
-            "dated" => return self.builtin_dated(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
-            "day_of" => return self.builtin_day_of(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -1475,6 +1492,15 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // `Date.parse(text, near: now)`: a day a text names, read at a moment. It stands on the
+        // type, which is not a value, so it is read before the receiver.
+        if let ExprKind::Ident(n) = &recv.kind
+            && self.lookup(n).is_none()
+            && !self.names_import(recv)
+            && let Some(ty) = parse_ty(n)
+        {
+            return self.type_method(ty, name, args, span);
+        }
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
@@ -1878,6 +1904,65 @@ impl Checker<'_> {
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
+    /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
+    /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
+    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
+    fn type_method(&mut self, ty: Ty, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let t = self.show(&ty);
+        if name.name != "parse" {
+            self.err(
+                "E027",
+                name.span,
+                format!("`{t}` is a type, not a value; it has one method of its own, `.parse(text, near: at)`, and builds a value with `{t}(text)`"),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [text, near] = args else {
+            self.err(
+                "E022",
+                span,
+                format!("`.parse` takes the text and the moment it is read at: `{t}.parse(\"tomorrow 9am\", near: now)`"),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if text.name.is_some() {
+            self.err(
+                "E022",
+                text.value.span,
+                "`.parse` takes the text by position: `.parse(\"tomorrow 9am\", near: now)`",
+            );
+        }
+        // The moment is named, as the text it is read at: a bare second argument reads as a
+        // count of something other than what it is.
+        match &near.name {
+            Some(named) if named.name == "near" => {}
+            Some(named) => self.err(
+                "E022",
+                named.span,
+                "`.parse` reads the text at the moment named `near:`",
+            ),
+            None => self.err(
+                "E022",
+                near.value.span,
+                "`.parse` reads the text at the moment named `near:`, such as `near: now`",
+            ),
+        }
+        let text = self.expr_as(&text.value, &Ty::Text);
+        let near = self.expr_as(&near.value, &Ty::Time);
+        let imp = if ty == Ty::Date {
+            Imp::DayParse
+        } else {
+            Imp::TimeParse
+        };
+        Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
+    }
+
     pub(super) fn value_method(
         &mut self,
         r: Ex,
@@ -1936,6 +2021,31 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // A day read as people read it: the day of the week it is, the day, month and year
+            // it names, and the first day of the week it stands in.
+            (Ty::Date, "weekday") if args.is_empty() => {
+                Ex::host(Imp::DayWeekday, vec![r], Ty::Choice("weekday"))
+            }
+            (Ty::Date, "day" | "month" | "year") if args.is_empty() => {
+                let part = match m {
+                    "day" => 0,
+                    "month" => 1,
+                    _ => 2,
+                };
+                let part = Ex::new(Ek::I32(part), Ty::Bool);
+                Ex::host(Imp::DayPart, vec![r, part], Ty::Int)
+            }
+            (Ty::Date, "start_of_week") if args.is_empty() => {
+                Ex::host(Imp::DayStartOfWeek, vec![r], Ty::Date)
+            }
+            // A moment read as people read it: the day it falls on for the person, in their
+            // zone, and the time of day it is then.
+            (Ty::Time, "day") if args.is_empty() => Ex::host(Imp::TimeDay, vec![r], Ty::Date),
+            (Ty::Time, "time_of_day") if args.is_empty() => {
+                Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
+            }
+            // A length of time as the seconds it is, which is how a record keeps one.
+            (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
             // `r.next(from, done)`: the day the item comes round again. Counting from the due
             // day it steps on by the rule; counting from completion it steps from the day it was
             // done. Returns the day to be due next.
@@ -2101,6 +2211,9 @@ impl Checker<'_> {
                     Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
                     Ty::Repeat => "next, next_at, label",
                     Ty::Reminder => "at, label",
+                    Ty::Date => "weekday, day, month, year, start_of_week (and `Date.parse`)",
+                    Ty::Time => "day, time_of_day (and `Time.parse`)",
+                    Ty::Duration => "seconds",
                     Ty::Int => "to_float, to_text",
                     Ty::Float => "to_int, to_text",
                     Ty::Bool => "to_text",
@@ -2608,5 +2721,15 @@ fn held_as(ty: &Ty, want: &Ty) -> Option<bool> {
         Some(true)
     } else {
         None
+    }
+}
+
+/// The type a text names, where it is written before a method instead of a value:
+/// `Date.parse(...)`, `Time.parse(...)`.
+fn parse_ty(name: &str) -> Option<Ty> {
+    match name {
+        "Date" => Some(Ty::Date),
+        "Time" => Some(Ty::Time),
+        _ => None,
     }
 }

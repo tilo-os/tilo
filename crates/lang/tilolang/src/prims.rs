@@ -226,6 +226,21 @@ pub const CHOICES: &[Choice] = &[
         name: "PrincipalKind",
         variants: &["person", "agent"],
     },
+    // The day of the week a day is (`d.weekday()`), Monday first, as a date library counts
+    // them; `d.start_of_week()` is the one a region starts its week on.
+    Choice {
+        kind: "weekday",
+        name: "Weekday",
+        variants: &[
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ],
+    },
 ];
 
 pub fn choice(kind: &str) -> Option<&'static Choice> {
@@ -259,8 +274,8 @@ pub const BUILTINS: &[&str] = &[
     "run_block",
     "invoker",
     "now",
-    "dated",
-    "day_of",
+    "today",
+    "Duration",
     "open",
     "set",
     "resource",

@@ -63,6 +63,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Principal
         | Ty::Date
         | Ty::Time
+        | Ty::Duration
         | Ty::Identifier
         | Ty::Repeat
         | Ty::Reminder
