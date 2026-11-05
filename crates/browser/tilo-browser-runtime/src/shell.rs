@@ -1343,9 +1343,9 @@ impl BrowserShell {
                 (self.chrome.wake)();
                 return;
             }
-            // The conversation the two of them share, in Chat: the session
-            // opens Chat when it is not up, then hands it the action that
-            // shows it with its composer ready.
+            // The conversation they have in Chat: the session opens Chat
+            // when it is not up, then hands it the action that shows the
+            // conversation with its composer ready.
             ProfileChoice::Message(key) => {
                 self.chrome.shared.ask_app_action(
                     tilo_desktop::launchpad::LaunchpadAppAction::message_person(&key),

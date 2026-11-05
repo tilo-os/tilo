@@ -33,8 +33,8 @@ pub use ui_core::*;
 #[doc(hidden)]
 pub mod host_operation {}
 
-/// A pair's conversation as the pair's own record, read and written by every
-/// app that opens it.
+/// The app framework: a workspace's records, their views, and the chains
+/// kept beside them, read and written by every app that opens them.
 pub mod framework;
 pub mod linked_accounts;
 mod runner;

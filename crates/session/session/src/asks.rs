@@ -122,9 +122,10 @@ impl Shared {
     }
 
     /// Open this person's conversation with the person `key` names, in Chat:
-    /// the app's own `open` of the record the two of them share, so Chat
-    /// starts when it is closed and the record's window comes up with its
-    /// composer ready, as the desk's Message did in the browser.
+    /// the app's own `open-direct-conversation` on its row for the
+    /// conversation with them, so Chat starts when it is closed and the
+    /// conversation comes up with its composer ready, as the desk's Message
+    /// did in the browser.
     fn message_person(&self, key: &str) {
         let action = tilo_desktop::launchpad::LaunchpadAppAction::message_person(key);
         // A conversation belongs to a workspace: the one in front, where the

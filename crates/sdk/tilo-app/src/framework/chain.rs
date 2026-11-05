@@ -1292,7 +1292,7 @@ impl Chains {
 
     /// The chain of `P` kept at `chain` in `workspace`, opened on first use.
     /// The base is one of the app's own record, or a record of a workspace it
-    /// keeps beside its own (a pair's conversation record).
+    /// keeps beside its own (a chat, whose parts hold its messages).
     pub(crate) fn open_at<P: Chained>(
         &self,
         workspace: &WorkspaceRecords,

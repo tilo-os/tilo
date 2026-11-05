@@ -1,7 +1,7 @@
 //! Pictures of the card a person gets when they open someone else's profile.
 //!
 //! The card with what the person can do with them, Message first: the way
-//! into the conversation the two of them share. Captured in both themes
+//! into the conversation they have in Chat. Captured in both themes
 //! through the production frame path ([`ui::headless::Framed`]).
 //!
 //! ```text
@@ -24,7 +24,7 @@ use ui::theme::Theme;
 use vello::kurbo::Rect;
 
 /// The person whose card this is: someone else in the workspace, with the
-/// key that lets the card open the conversation the two of them share.
+/// key that lets the card open the conversation they have in Chat.
 fn ada() -> ProfileModel {
     ProfileModel {
         name: "Ada Lovelace".to_owned(),

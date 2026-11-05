@@ -462,8 +462,8 @@ pub(crate) struct WorkspaceState {
     /// Wakes the window when another replica's change arrives.
     wake: Option<WakeHandle>,
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
-    /// The chains kept beside the opened records (a pair's conversation
-    /// messages, [`WorkspaceHandle::chain_beside`]).
+    /// The chains kept beside the opened records (a chat's message parts,
+    /// [`WorkspaceHandle::chain_beside`]).
     chains: super::chain::Chains,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,

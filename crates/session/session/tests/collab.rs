@@ -1,7 +1,7 @@
 //! Who is here: the bar's faces open the roster, which lists everyone in the
 //! workspace and where each of them is, and the roster reads its one feed
 //! from the collaboration plane. A face opens the person's card, from which
-//! Message opens Chat on the record the two of them share.
+//! Message opens Chat on the conversation they have.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -538,7 +538,7 @@ fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
     );
 }
 
-/// The app that holds each pair of people's conversation.
+/// The app that holds conversations.
 const CHAT: &str = "so.tilo.chat";
 
 /// Install `app` in `store`, as the package landing there leaves it: the
@@ -719,10 +719,10 @@ fn assert_ada_card(labels: &[String]) {
 }
 
 /// A press on a person's face in the bar opens their card, and Message opens
-/// Chat on the record the two of them share: the same card the web desk shows,
-/// handed the app invocation that reveals the pair's conversation.
+/// Chat on the conversation they have: the same card the web desk shows,
+/// handed the app invocation that reveals it.
 #[test]
-fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
+fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() {
     let _settled = ui::motion::testing::settled();
     let home = tempfile::tempdir().expect("a home for this test's app store");
     let store = home.path().join("tilo-apps");
@@ -780,10 +780,10 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_pair() {
     capture(&mut session, "people-card-message");
     let message = message.expect("the card's Message");
 
-    // Message hands Chat the pair's record: the app's own
-    // `open-direct-conversation` on the resource their two root keys name.
+    // Message hands Chat the conversation with them: the app's own
+    // `open-direct-conversation` on the row their two root keys name.
     press(&mut session, message);
-    until(&mut session, "Chat is handed the pair's record", |_| {
+    until(&mut session, "Chat is handed the conversation", |_| {
         !host.invoked.borrow().is_empty()
     });
     let invoked = host.invoked.borrow();

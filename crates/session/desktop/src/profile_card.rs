@@ -250,7 +250,7 @@ pub enum ProfileChoice {
     /// Follow this person (roster id), or stop following them.
     Follow(String),
     /// Open the conversation this person has with them in Chat (root key,
-    /// hex), on the record the two of them share, its composer ready.
+    /// hex), on Chat's row for it, its composer ready.
     Message(String),
 }
 
