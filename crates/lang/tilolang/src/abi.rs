@@ -47,9 +47,36 @@ imports! {
     FloatToStr = "float_to_str" ([F64] -> [H]);
     DurationText = "duration_text" ([I64] -> [H]);
     StrCmp = "str_cmp" ([H, H] -> [I32]);
-    StrFind = "str_find" ([H, H] -> [I64]);
+    StrFind = "str_find" ([H, H] -> [H]);
     StrSlice = "str_slice" ([H, I64, I64] -> [H]);
     StrReplace = "str_replace" ([H, H, H] -> [H]);
+    StrTrim = "str_trim" ([H] -> [H]);
+    StrLower = "str_lower" ([H] -> [H]);
+    StrUpper = "str_upper" ([H] -> [H]);
+    StrStartsWith = "str_starts_with" ([H, H] -> [I32]);
+    StrEndsWith = "str_ends_with" ([H, H] -> [I32]);
+    StrContains = "str_contains" ([H, H] -> [I32]);
+    StrSplit = "str_split" ([H, H] -> [H]);
+    StrJoin = "str_join" ([H, H] -> [H]);
+    StrMatches = "str_matches" ([H, H] -> [I32]);
+
+    IntMin = "int_min" ([I64, I64] -> [I64]);
+    IntMax = "int_max" ([I64, I64] -> [I64]);
+    IntClamp = "int_clamp" ([I64, I64, I64] -> [I64]);
+    IntAbs = "int_abs" ([I64] -> [I64]);
+    FloatMin = "float_min" ([F64, F64] -> [F64]);
+    FloatMax = "float_max" ([F64, F64] -> [F64]);
+    FloatClamp = "float_clamp" ([F64, F64, F64] -> [F64]);
+    FloatAbs = "float_abs" ([F64] -> [F64]);
+    FloatRound = "float_round" ([F64] -> [I64]);
+    FloatRoundTo = "float_round_to" ([F64, I64] -> [F64]);
+    FloatFloor = "float_floor" ([F64] -> [I64]);
+    FloatFloorTo = "float_floor_to" ([F64, I64] -> [F64]);
+    FloatCeil = "float_ceil" ([F64] -> [I64]);
+    FloatCeilTo = "float_ceil_to" ([F64, I64] -> [F64]);
+    ListSumI = "list_sum_i" ([H] -> [I64]);
+    ListSumF = "list_sum_f" ([H] -> [F64]);
+    ListAvg = "list_avg" ([H] -> [F64]);
 
     ListNew = "list_new" ([] -> [H]);
     ListPushI = "list_push_i" ([H, I64] -> []);

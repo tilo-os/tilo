@@ -55,7 +55,9 @@ impl Core {
                 let eq = self.text(a.h(0)?)? == self.text(a.h(1)?)?;
                 ret_i32(i32::from(eq))
             }
-            Imp::StrLen => ret_i64(len_to_i64(self.text(a.h(0)?)?.chars().count())),
+            // Every count, place and cut is `tilolang::text`'s: graphemes, so what a person
+            // sees as one character is one.
+            Imp::StrLen => ret_i64(len_to_i64(tilolang::text::len(&self.text(a.h(0)?)?))),
             Imp::IntToStr => self.ret_h(Value::Text(a.long(0)?.to_string())),
             Imp::StrToInt => {
                 let number = self.text(a.h(0)?)?.trim().parse::<i64>().ok();
@@ -67,30 +69,57 @@ impl Core {
                 let o = self.text(a.h(0)?)?.cmp(&self.text(a.h(1)?)?);
                 ret_i32(ordering_to_i32(o))
             }
-            // Where `needle` first stands in `text`, in characters; -1 when it does not.
+            // Where `needle` first stands in `text`, counted as `len` counts, or none.
             Imp::StrFind => {
                 let text = self.text(a.h(0)?)?;
                 let needle = self.text(a.h(1)?)?;
-                let at = text
-                    .find(&needle)
-                    .and_then(|at| text.get(..at))
-                    .map_or(-1, |head| len_to_i64(head.chars().count()));
-                ret_i64(at)
+                let at = tilolang::text::find(&text, &needle)
+                    .map_or_else(Value::none, |at| Value::some(Value::Int(len_to_i64(at))));
+                self.ret_h(at)
             }
-            // The characters from `from` to `to`, counted in characters as `len` counts them.
             Imp::StrSlice => {
                 let text = self.text(a.h(0)?)?;
-                let from = a.long(1)?;
-                let to = a.long(2)?;
-                let count = text.chars().count();
-                let clamp = |n: i64| usize::try_from(n).unwrap_or(0).min(count);
-                let (from, to) = (clamp(from), clamp(to));
-                let sliced: String = text
-                    .chars()
-                    .skip(from)
-                    .take(to.saturating_sub(from))
-                    .collect();
+                let sliced = tilolang::text::slice(&text, a.long(1)?, a.long(2)?);
                 self.ret_h(Value::Text(sliced))
+            }
+            Imp::StrTrim => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(tilolang::text::trim(&text).to_owned()))
+            }
+            Imp::StrLower => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(tilolang::text::lower(&text)))
+            }
+            Imp::StrUpper => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(tilolang::text::upper(&text)))
+            }
+            // `text` is the receiver, `what` the text the method was given.
+            Imp::StrStartsWith | Imp::StrEndsWith | Imp::StrContains | Imp::StrMatches => {
+                let text = self.text(a.h(0)?)?;
+                let what = self.text(a.h(1)?)?;
+                let yes = match imp {
+                    Imp::StrStartsWith => tilolang::text::starts_with(&text, &what),
+                    Imp::StrEndsWith => tilolang::text::ends_with(&text, &what),
+                    Imp::StrContains => tilolang::text::contains(&text, &what),
+                    _ => tilolang::text::matches(&what, &text),
+                };
+                ret_i32(i32::from(yes))
+            }
+            Imp::StrSplit => {
+                let text = self.text(a.h(0)?)?;
+                let sep = self.text(a.h(1)?)?;
+                let pieces = tilolang::text::split(&text, &sep)
+                    .into_iter()
+                    .map(Value::Text)
+                    .collect();
+                self.ret_h(Value::List(pieces))
+            }
+            Imp::StrJoin => {
+                let pieces = self.list_text(a.h(0)?, "join")?;
+                let sep = self.text(a.h(1)?)?;
+                let refs: Vec<&str> = pieces.iter().map(String::as_str).collect();
+                self.ret_h(Value::Text(tilolang::text::join(&refs, &sep)))
             }
             Imp::StrReplace => {
                 let text = self.text(a.h(0)?)?;
@@ -107,6 +136,82 @@ impl Core {
         }
     }
 
+    /// The number surface: what a number's own methods lower to, and what a list of numbers
+    /// sums and averages.
+    pub(crate) fn num_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        match imp {
+            Imp::IntMin => ret_i64(a.long(0)?.min(a.long(1)?)),
+            Imp::IntMax => ret_i64(a.long(0)?.max(a.long(1)?)),
+            // A low bound above the high one clamps to the high one, as either bound alone
+            // would; nothing traps.
+            Imp::IntClamp => ret_i64(a.long(0)?.max(a.long(1)?).min(a.long(2)?)),
+            Imp::IntAbs => ret_i64(a.long(0)?.saturating_abs()),
+            Imp::FloatMin => ret_f64(a.float(0)?.min(a.float(1)?)),
+            Imp::FloatMax => ret_f64(a.float(0)?.max(a.float(1)?)),
+            Imp::FloatClamp => ret_f64(a.float(0)?.max(a.float(1)?).min(a.float(2)?)),
+            Imp::FloatAbs => ret_f64(a.float(0)?.abs()),
+            Imp::FloatRound => ret_i64(crate::num::round_whole(a.float(0)?)),
+            Imp::FloatFloor => ret_i64(crate::num::floor_whole(a.float(0)?)),
+            Imp::FloatCeil => ret_i64(crate::num::ceil_whole(a.float(0)?)),
+            Imp::FloatRoundTo => ret_f64(crate::num::round_to(a.float(0)?, a.long(1)?)),
+            Imp::FloatFloorTo => ret_f64(crate::num::floor_to(a.float(0)?, a.long(1)?)),
+            Imp::FloatCeilTo => ret_f64(crate::num::ceil_to(a.float(0)?, a.long(1)?)),
+            Imp::ListSumI => {
+                let mut sum: i64 = 0;
+                for item in self.list_items(a.h(0)?)? {
+                    match item {
+                        Value::Int(n) => sum = sum.saturating_add(n),
+                        other => {
+                            return trap(format!(
+                                "expected a list of ints, got a {}",
+                                other.kind_name()
+                            ));
+                        }
+                    }
+                }
+                ret_i64(sum)
+            }
+            Imp::ListSumF => {
+                let mut sum = 0.0;
+                for item in self.list_items(a.h(0)?)? {
+                    sum += float_of(&item)?;
+                }
+                ret_f64(sum)
+            }
+            // An average of nothing is nothing: no number divides by no items.
+            Imp::ListAvg => {
+                let items = self.list_items(a.h(0)?)?;
+                let mut sum = 0.0;
+                for item in &items {
+                    sum += match item {
+                        Value::Int(n) => crate::num::int_to_float(*n),
+                        other => float_of(other)?,
+                    };
+                }
+                let count = crate::num::int_to_float(len_to_i64(items.len()));
+                ret_f64(if items.is_empty() { 0.0 } else { sum / count })
+            }
+            _ => trap("not a number import"),
+        }
+    }
+
+    /// The texts of a list of text.
+    fn list_text(&self, h: i32, what: &str) -> HResult<Vec<String>> {
+        let mut out = Vec::new();
+        for item in self.list_items(h)? {
+            match item {
+                Value::Text(t) => out.push(t),
+                other => {
+                    return trap(format!(
+                        "expected a list of text to {what}, got a {}",
+                        other.kind_name()
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// A list in another order: sorted by the keys beside it, or reversed (`sort_by(k, desc)`).
     fn ordered(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let mut items = self.list_items(a.h(0)?)?;
@@ -120,7 +225,8 @@ impl Core {
 
     /// Where an item stands: in a list as it stands, or in a collection's items.
     fn index_of(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let want = self.val_whole(a.h(1)?)?;
+        // A scalar item comes boxed (`some_i`, `some_f`), as a set's elements do.
+        let want = crate::host_res::unboxed(self.val_whole(a.h(1)?)?);
         let at = self.with_val(a.h(0)?, |v| match v {
             Value::List(items) => Ok(Some(items.iter().position(|item| same_value(item, &want)))),
             Value::Coll(_) => Ok(None),

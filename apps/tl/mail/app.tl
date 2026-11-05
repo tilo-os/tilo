@@ -195,9 +195,9 @@ fn as_lines(body: Text) -> Text {
 }
 
 /// Where the quotation in what a message says begins: the blank line above the line naming who
-/// wrote it and when ("On 30 Jun 2026, Ada wrote:"), as Gmail and Apple Mail read one. -1 when
+/// wrote it and when ("On 30 Jun 2026, Ada wrote:"), as Gmail and Apple Mail read one. None when
 /// it quotes nothing.
-fn quote_begins(body: Text) -> Int {
+fn quote_begins(body: Text) -> Option<Int> {
     body.find("\n\nOn ")
 }
 
@@ -860,8 +860,8 @@ view message(m: Message) {
     lens quoting: Bool
     let body = as_lines(m.body)
     let at = quote_begins(body)
-    let said = if at >= 0 { body.slice(0, at) } else { body }
-    let quoted_part = if at >= 0 { body.slice(at + 2, body.len()) } else { "" }
+    let said = if let i = at { body.slice(0, i) } else { body }
+    let quoted_part = if let i = at { body.slice(i + 2, body.len()) } else { "" }
     stack(gap: .related) {
         row(gap: .related, align: .center) {
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
@@ -891,7 +891,7 @@ view message(m: Message) {
         }
         ui.Text("to {m.to}", role: .caption, secondary: true)
         ui.Text(said, role: .reading)
-        if at >= 0 {
+        if at != .none {
             ui.DisclosureRow(
                 if quoting { "Hide quoted text" } else { "Show quoted text" },
                 icon: .quote,

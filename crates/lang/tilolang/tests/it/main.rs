@@ -25,6 +25,7 @@ mod roles;
 mod roundtrip;
 mod search;
 mod semantics;
+mod text_math;
 mod unions;
 mod wasm;
 mod width;

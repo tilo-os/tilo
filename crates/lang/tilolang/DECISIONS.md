@@ -189,6 +189,33 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   replaced) are the description's, with no per-widget code, and a view's state binds like a
   field.
 
+- **Text and numbers are one method surface, on the value.** They are methods, not
+  `text.`/`math.` namespaces, because everything else a value is asked (`items.len()`,
+  `items.map(...)`, `p.name()`) already reads that way and a call reads best where its subject
+  is. `checker/text_math.rs` lowers all of them, and `checker/methods.rs` holds the one list of
+  names per type that both the lowering and the E027 message (and a container field's read)
+  consult, so a name offered in a message is one the type takes. `Text.len`, `to_int`, `find`,
+  `slice` and `replace` and `Int.to_float`, `Float.to_int` and `to_text` moved out of `call.rs`
+  into it with no aliases; `find` gives an `Option<Int>` rather than a sentinel index.
+- **A text is counted in graphemes.** `len`, `find` and `slice` count what a reader sees, so a
+  cut never lands inside a family emoji, a flag or a letter with an accent; `src/text.rs` is the
+  one reading of that, shared by the runtime's `Text` calls, the index's `len` of a text column
+  (`pred.rs`) and search's identifier patterns, so a filter and a view count a column alike.
+  Case changes are Unicode case mapping, not locale tailoring: the language carries no locale
+  data, `upper("straße")` is `STRASSE`, and a locale's own rule belongs to the system's
+  formatting, not to a pure string method. `matches` is the identifiers' `*` glob, so a search
+  query and an app's own test ask the same question.
+- **The arity of `round`, `floor` and `ceil` is the result's type.** No argument gives the whole
+  number as an `Int`; the places to keep give a `Float`, so `f.round(2)` keeps the fraction it
+  asked for. Places are clamped to 0..=15 (where every place a double has is representable) and
+  the rounding is over the scaled value, so a rounded figure is the one written with that many
+  places. `Int` arithmetic saturates where the host's own would trap: `abs` of the least `Int`
+  stays the greatest, and a sum stops at the end of the range. An empty list's `avg` is 0.0.
+  `clamp(n, lo, hi)` is `max(lo)` then `min(hi)`, which for a reversed range gives `hi` rather
+  than failing. Nothing is added for padding or aligning a number: how wide a figure is drawn is
+  the UI's numeric formatting (`numeric: true`), not a pure text method. Bytes↔Text is not part
+  of the language at all: there is no Bytes type.
+
 ## Derived keys
 
 - **Resources store facts; the index derives.** A value that follows from other records (a

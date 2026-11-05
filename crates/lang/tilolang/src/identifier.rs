@@ -97,29 +97,10 @@ pub fn parts(held: &str) -> (&str, &str) {
 }
 
 /// Whether the held identifier `id` matches the normalized pattern `pattern`, in which each `*`
-/// stands for any text.
+/// stands for any text. Identifiers compare without regard to case.
 #[must_use]
 pub fn matches(pattern: &str, id: &str) -> bool {
-    let id = id.to_lowercase();
-    let pattern = pattern.to_lowercase();
-    let mut pieces = pattern.split('*');
-    let Some(first) = pieces.next() else {
-        return true;
-    };
-    let Some(mut rest) = id.strip_prefix(first) else {
-        return false;
-    };
-    let pieces: Vec<&str> = pieces.collect();
-    let Some((last, middle)) = pieces.split_last() else {
-        return rest.is_empty();
-    };
-    for piece in middle {
-        match rest.split_once(piece) {
-            Some((_, after)) => rest = after,
-            None => return false,
-        }
-    }
-    rest.len() >= last.len() && rest.ends_with(last)
+    crate::text::matches(&pattern.to_lowercase(), &id.to_lowercase())
 }
 
 /// What every identifier a pattern matches starts with: its text before the first `*`.

@@ -24,6 +24,7 @@ mod component;
 mod enums;
 mod expr;
 mod holder;
+mod methods;
 mod native;
 mod optional;
 mod order;
@@ -36,6 +37,7 @@ mod query;
 mod template;
 #[cfg(test)]
 mod tests;
+mod text_math;
 mod ui;
 mod union;
 mod words;

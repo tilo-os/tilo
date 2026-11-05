@@ -1112,6 +1112,7 @@ doc = false
 "tilo-action-broker" = { path = "../../../crates/collab/tilo-action-broker", default-features = false, features = ["test-support"] }
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
+"tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }

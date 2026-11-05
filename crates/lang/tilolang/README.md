@@ -221,6 +221,21 @@ view board(b: Board) {
 A template's `Option<View>` parameter placed as a statement shows what it was given, and nothing
 when it was left out.
 
+**Text and numbers.** A text and a number are asked what they are and what to become as methods, on the value itself, in one surface and with no namespace or global beside it:
+
+```
+let parts = t.trim().split(",")           // List<Text>
+let shown = parts.join(", ")              // Text
+let n = " 42 ".to_int() ?? 0              // Option<Int>
+let half = n.to_float() / 2.0             // Float
+let price = total.round(2)                // Float, two places
+let sum = items.map(i -> i.price).sum()
+```
+
+`Text` has `len` and `is_empty`; `slice(from, to)`, a range of graphemes clamped to the text; `find(what)`, an `Option<Int>`; `starts_with`, `ends_with`, `contains` and `matches(pattern)`, where `*` stands for any run (the same pattern search's identifiers use); `trim`, `lower` and `upper`; `split(sep)`, which with an empty separator gives what a reader sees as one thing, and `replace(from, to)`, which replaces every occurrence; and `to_int`, an `Option<Int>` taking a decimal number written with an optional sign, around any outer space. A text is counted in what a reader sees: `len`, `find` and `slice` count graphemes, so a family emoji, a flag or a letter with an accent is one and a cut never splits one, and a text column's `len` in a filter counts the same way. Case changes are Unicode case mapping and not locale tailoring (`upper("straße")` is `STRASSE`).
+
+`Int` and `Float` have `min`, `max`, `clamp(lo, hi)` and `abs`; a `Float`'s `round`, `floor` and `ceil` give an `Int`, or, given the places to keep (`f.round(2)`), a `Float`. `Int.to_float()` and `Float.to_int()` convert between them (dropping the fraction), and `.to_text()` writes any number as `Bool.to_text()` writes `true` or `false`. A `List<Text>` has `join(sep)`; a `List<Int>` or `List<Float>` has `sum()` (the items' type) and `avg()` (a `Float`, 0.0 for an empty list); `contains` asks whether an item is one of a list, set or collection, as `index_of` finds it. All of them are pure — no clock, no workspace, no effect — so a view, an `fn`, an action and a flow write them alike.
+
 **Key paths.** Where a lambda would only read a field, `.field` (or `.a.b`) is that lambda:
 `items.sort_by(.due)`, `items.count(.done)`, `items.remove_where(.done)`. `sort_by` takes
 Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest first:

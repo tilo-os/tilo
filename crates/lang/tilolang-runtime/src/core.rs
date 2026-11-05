@@ -325,29 +325,38 @@ impl Core {
             CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
             DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
             EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
-            EnumSetI, EventPart, EventValue, FilterLit, Filters, Find, FirstUnseen, FloatToStr,
-            ForeignRef, FromPop, FromPush, Grep, GroupBy, IdentPart, IntToStr, Invoke, Invoker,
-            InvokerPop, InvokerPush, IsError, IsSome, Keep, Lenses, Links, ListEnd, ListGetF,
+            EnumSetI, EventPart, EventValue, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
+            FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
+            FloatRound, FloatRoundTo, FloatToStr, ForeignRef, FromPop, FromPush, Grep, GroupBy,
+            IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, Invoke, Invoker, InvokerPop,
+            InvokerPush, IsError, IsSome, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
             ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
-            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
-            MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf, ModelCall, NoneV, Now, OfType,
-            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
-            PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock, ReadText, ReadWith,
-            RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
-            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
-            RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd, SetRemove, Single, SomeF,
-            SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
-            StrEq, StrFind, StrLen, StrLit, StrReplace, StrSlice, StrToInt, Suggest, Take, TimeDay,
-            TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF, TupleGetH,
-            TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions, UiAnchor,
-            UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI, UiPropPic,
-            Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer, WallClock,
-            Withdraw, Word, WorkspaceMembers,
+            ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
+            MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
+            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
+            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
+            QueueBlock, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
+            RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF,
+            ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef,
+            RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd, SetRemove,
+            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
+            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
+            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
+            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
+            Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
-            | StrFind | StrSlice | StrReplace | DurationText => self.text_import(imp, mem, a),
+            | StrFind | StrSlice | StrReplace | StrTrim | StrLower | StrUpper | StrStartsWith
+            | StrEndsWith | StrContains | StrSplit | StrJoin | StrMatches | DurationText => {
+                self.text_import(imp, mem, a)
+            }
+            IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
+            | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
+            | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),
             ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | ListGetI
             | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf
             | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI

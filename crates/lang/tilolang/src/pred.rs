@@ -547,9 +547,9 @@ impl<F> Operand<F> {
                 Lit::Set(members) => i64::try_from(members.len()).unwrap_or(i64::MAX),
                 Lit::Int(n) => n,
                 Lit::Absent => 0,
-                other => other
-                    .as_text()
-                    .map_or(0, |t| i64::try_from(t.chars().count()).unwrap_or(i64::MAX)),
+                other => other.as_text().map_or(0, |t| {
+                    i64::try_from(crate::text::len(t)).unwrap_or(i64::MAX)
+                }),
             })),
             // Bound before it is asked ([`Pred::bind`], [`Pred::at`], [`Pred::viewer`]): one
             // that is not holds nothing.

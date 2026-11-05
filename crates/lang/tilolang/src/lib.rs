@@ -68,6 +68,7 @@ pub mod resolve;
 pub mod search;
 pub mod source;
 pub mod stdlib;
+pub mod text;
 pub mod toolkit;
 pub mod types;
 pub mod written;

@@ -5,7 +5,7 @@ use super::{Checker, Ctx, Ex, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
-use crate::ir::{self, ActionRef, Conv, Ek, Stmt};
+use crate::ir::{self, ActionRef, Ek, Stmt};
 use crate::prims;
 use crate::resolve::{CKind, Callable, FieldInfo, Import};
 use crate::types::{Ty, TypeKey};
@@ -1533,7 +1533,13 @@ impl Checker<'_> {
         f.ty.is_container().then(|| (key.clone(), f.clone()))
     }
 
-    fn arity(&mut self, name: &ast::Ident, args: &[ast::Arg], n: usize, span: Span) -> bool {
+    pub(super) fn arity(
+        &mut self,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        n: usize,
+        span: Span,
+    ) -> bool {
         if args.len() == n && args.iter().all(|a| a.name.is_none()) {
             return true;
         }
@@ -1558,81 +1564,30 @@ impl Checker<'_> {
         if let (Ty::Map(t), "get" | "keys") = (&f.ty, m) {
             return self.map_read(b, f, t, name, args, span);
         }
-        let valid = matches!(
-            (&f.ty, m),
-            (
-                Ty::Collection(_),
-                "insert" | "remove" | "move" | "remove_where"
-            ) | (Ty::Set(_), "add" | "remove")
-                | (Ty::Map(_), "put" | "remove")
-        ) || (m == "add" && matches!(&f.ty, Ty::Map(v) if matches!(**v, Ty::Set(_))));
-        if !valid
-            && !matches!(
-                m,
-                "len"
-                    | "is_empty"
-                    | "map"
-                    | "filter"
-                    | "any"
-                    | "all"
-                    | "find"
-                    | "count"
-                    | "index_of"
-                    | "sort_by"
-                    | "first"
-                    | "last"
-                    | "matching"
-                    | "count_by"
-                    | "group"
-                    | "take"
-                    | "each"
-                    | "single"
-                    | "descendants"
-                    | "ancestors"
-            )
-        {
+        // What a container field can be written through, and what it answers besides: the
+        // reads are its value's (`methods::names`), so a field accepts what a list or set does.
+        let writes: &[&str] = match &f.ty {
+            Ty::Collection(_) => &["insert", "remove", "remove_where", "move"],
+            Ty::Set(_) => &["add", "remove"],
+            Ty::Map(v) if matches!(**v, Ty::Set(_)) => &["add", "remove", "put"],
+            Ty::Map(_) => &["put", "remove"],
+            _ => &[],
+        };
+        let valid = writes.contains(&m);
+        let reads = super::methods::names(&f.ty).unwrap_or_default();
+        if !valid && !reads.contains(&m) {
             let t = self.show(&f.ty);
             let ops = match &f.ty {
-                Ty::Collection(_) => {
-                    "insert, remove, remove_where, move, len, matching and the list methods"
+                Ty::Collection(_) | Ty::Set(_) => {
+                    format!("{}, and what its items answer: {}", writes.join(", "), reads.join(", "))
                 }
-                Ty::Set(_) => "add, remove, len and the list methods",
                 Ty::Map(v) if matches!(**v, Ty::Set(_)) => {
-                    "add(key, element), remove(key, element), remove(key), get (an Option of the set) and keys"
+                    "add(key, element), remove(key, element), remove(key), get (an Option of the set) and keys".to_owned()
                 }
-                _ => "put, remove, get (an Option of the value) and keys",
+                _ => "put, remove, get (an Option of the value) and keys".to_owned(),
             };
-            let methods = [
-                "insert",
-                "remove",
-                "remove_where",
-                "move",
-                "add",
-                "put",
-                "get",
-                "keys",
-                "len",
-                "is_empty",
-                "map",
-                "filter",
-                "any",
-                "all",
-                "find",
-                "count",
-                "index_of",
-                "sort_by",
-                "first",
-                "last",
-                "matching",
-                "count_by",
-                "group",
-                "take",
-                "each",
-                "single",
-                "descendants",
-                "ancestors",
-            ];
-            let hint = crate::diag::suggestion(m, methods);
+            let known = writes.iter().chain(reads.iter()).copied();
+            let hint = crate::diag::suggestion(m, known);
             self.err(
                 "E027",
                 name.span,
@@ -1971,6 +1926,11 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
+        // The text and number surface first: it holds every method those values have (and the
+        // text and number methods of a list), and its names are `methods`'.
+        if let Some(ex) = self.text_math(r.clone(), name, args, span) {
+            return ex;
+        }
         match (&r.ty.clone(), m) {
             (Ty::Error, _) => {
                 for a in args {
@@ -1979,44 +1939,6 @@ impl Checker<'_> {
                     }
                 }
                 Ex::error()
-            }
-            (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
-            // The number the text writes, `.none` for text that writes none: an id another
-            // app gave as text, passed where its action takes the number.
-            (Ty::Text, "to_int") if args.is_empty() => {
-                Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int)))
-            }
-            (Ty::Text, "find") => {
-                if !self.arity(name, args, 1, span) {
-                    return Ex::error();
-                }
-                let Some(a) = args.first() else {
-                    return Ex::error();
-                };
-                let what = self.expr_as(&a.value, &Ty::Text);
-                Ex::host(Imp::StrFind, vec![r, what], Ty::Int)
-            }
-            (Ty::Text, "slice") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(from), Some(to)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let from = self.expr_as(&from.value, &Ty::Int);
-                let to = self.expr_as(&to.value, &Ty::Int);
-                Ex::host(Imp::StrSlice, vec![r, from, to], Ty::Text)
-            }
-            (Ty::Text, "replace") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(from), Some(to)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let from = self.expr_as(&from.value, &Ty::Text);
-                let to = self.expr_as(&to.value, &Ty::Text);
-                Ex::host(Imp::StrReplace, vec![r, from, to], Ty::Text)
             }
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
@@ -2101,13 +2023,6 @@ impl Checker<'_> {
             (Ty::Principal, "role") if args.is_empty() => {
                 Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
-            (Ty::Int, "to_float") if args.is_empty() => {
-                Ex::new(Ek::Conv(Conv::IntToFloat, Box::new(r)), Ty::Float)
-            }
-            (Ty::Float, "to_int") if args.is_empty() => {
-                Ex::new(Ek::Conv(Conv::FloatToInt, Box::new(r)), Ty::Int)
-            }
-            (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.text_of(r, span),
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
             // `a.then(b)`: an action that applies `a`, then `b` once `a` is done.
             (Ty::Action, "then") => {
@@ -2156,7 +2071,7 @@ impl Checker<'_> {
                 let Some(a) = args.first() else {
                     return Ex::error();
                 };
-                let what = self.expr_as(&a.value, &elem);
+                let what = Self::handle_of(self.expr_as(&a.value, &elem));
                 Ex::host(
                     Imp::ListIndexOf,
                     vec![r, what],
@@ -2207,24 +2122,13 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Text => "len, find, slice, replace, to_int",
-                    Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
-                    Ty::Repeat => "next, next_at, label",
-                    Ty::Reminder => "at, label",
-                    Ty::Date => "weekday, day, month, year, start_of_week (and `Date.parse`)",
-                    Ty::Time => "day, time_of_day (and `Time.parse`)",
-                    Ty::Duration => "seconds",
-                    Ty::Int => "to_float, to_text",
-                    Ty::Float => "to_int, to_text",
-                    Ty::Bool => "to_text",
-                    Ty::Record(_) => "id (and fields)",
-                    Ty::Option(_) | Ty::Result(..) | Ty::Enum(_) => {
-                        "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
-                    }
-                    Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, previous, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single, descendants, ancestors"
-                    }
-                    _ => "none",
+                    Ty::Repeat => "next, next_at, label".to_owned(),
+                    Ty::Reminder => "at, label".to_owned(),
+                    Ty::Principal => "name, kind, role".to_owned(),
+                    Ty::Action => "then".to_owned(),
+                    // Every other type's methods are in one table, whose names the check of a
+                    // container field reads too.
+                    other => super::methods::described(other),
                 };
                 let words = known.split([',', ' ', '(', ')']).filter(|w| {
                     !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
