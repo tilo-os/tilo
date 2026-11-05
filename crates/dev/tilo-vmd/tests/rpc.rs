@@ -634,15 +634,21 @@ fn the_device_slot_is_the_machines_own_session() {
             (applied.generation, applied.policy, applied.changed),
             (1, Policy::SessionRestart, true)
         );
-        for unit in ["user@1000.service", unit, "tilo-board-drm-session.service"] {
-            assert!(
-                applied
-                    .actions
-                    .contains(&Action::WriteDropIn { unit: unit.into() }),
-                "{unit}: {:?}",
-                applied.actions
-            );
-        }
+        // The seat's compositor is a system transient unit, which takes no
+        // drop-in: the layers merge into the host `/usr` instead.
+        assert!(
+            applied.actions.contains(&Action::SysextRefresh),
+            "{:?}",
+            applied.actions
+        );
+        assert!(
+            !applied
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::WriteDropIn { .. })),
+            "{:?}",
+            applied.actions
+        );
         let restart = [
             Action::StopUnit { unit: unit.into() },
             Action::RestartUnit {
