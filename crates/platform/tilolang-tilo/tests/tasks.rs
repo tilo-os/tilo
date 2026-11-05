@@ -1326,14 +1326,10 @@ fn texts(node: &UiNode) -> Vec<String> {
     out
 }
 
-/// A task's assignee is one person field: a chip of who holds it that opens a list of "Me",
-/// "No one" and the workspace's people. Picking the person the page shows, another member, and
-/// nobody is one change of the task's history each, so one undo takes back one pick.
+/// A task made by Ada in a workspace of Ada and Ben, and the page showing it: the list the
+/// assignee's chip opens offers the workspace's members, and the key the page binds it to.
 #[cfg(feature = "record")]
-#[test]
-fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
-    use collaboration::history_source::verbs::HistoryEdit;
-
+fn a_task_whose_assignee_the_page_shows() -> (Replica, Value, ViewInstance, String) {
     let (mut ada, root) = workspace();
     ada.host.runtime().set_members(
         vec![
@@ -1348,12 +1344,29 @@ fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
         vec![root, Value::text("Write the launch post")],
     );
     ada.commit();
-    let mut page = task_page(&ada, &task);
+    let page = task_page(&ada, &task);
     let field = {
         let meta = &ada.host.package(APP).unwrap().meta;
         crate::fixtures::field_id(meta, "Task", "assignee")
     };
     let key = bound_key(page.tree(), &field).expect("the page binds its assignee");
+    (ada, task, page, key)
+}
+
+/// The person picks `pick` for the task's assignee in the page's chip, and the page redraws.
+#[cfg(feature = "record")]
+fn pick_the_assignee(ada: &mut Replica, page: &mut ViewInstance, key: &str, pick: &Value) {
+    page.edit(key, pick).unwrap();
+    ada.commit();
+    page.poll_patches().unwrap();
+}
+
+/// A task's assignee is one person field: a chip of who holds it that opens a list of "Me",
+/// "No one" and the workspace's people, and shows each pick.
+#[cfg(feature = "record")]
+#[test]
+fn the_assignee_is_one_person_field_whose_chip_shows_each_pick() {
+    let (mut ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
     let node = node_of(page.tree(), &key).expect("the bound node is drawn");
     assert_eq!(
         node.kind, "ui.PersonField",
@@ -1382,28 +1395,23 @@ fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
     assert_eq!(assignee(&ada, &task), None, "nobody holds it yet");
 
     // Me, then another member, then nobody, as the person picks each from the list.
-    page.edit(&key, &Value::text("ada")).unwrap();
-    ada.commit();
-    page.poll_patches().unwrap();
+    pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ada"));
     assert_eq!(assignee(&ada, &task), Some("ada".to_owned()));
     assert_eq!(
         page.bound_value(&key),
         Some(Value::some(Value::Principal(Principal::new("ada")))),
         "the chip shows the person it is bound to"
     );
-    page.edit(&key, &Value::text("ben")).unwrap();
-    ada.commit();
-    page.poll_patches().unwrap();
+    pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
     assert_eq!(assignee(&ada, &task), Some("ben".to_owned()));
-    page.edit(&key, &Value::Text(String::new())).unwrap();
-    ada.commit();
-    page.poll_patches().unwrap();
+    pick_the_assignee(&mut ada, &mut page, &key, &Value::Text(String::new()));
     assert_eq!(assignee(&ada, &task), None, "No one clears it");
     assert_eq!(
         page.bound_value(&key),
         Some(Value::none()),
         "the chip shows nobody"
     );
+
     // The picks fold into one step of the task's history, the way one person's changes made in
     // a row do, and the step reads named for the field they changed. The page itself draws the
     // assignee as a chip, with no label beside it.
@@ -1416,7 +1424,23 @@ fn the_assignee_is_one_person_field_and_each_pick_is_one_step() {
         !shown.iter().any(|text| text == "Assignee"),
         "the assignee is a chip, not a labelled field: {shown:?}"
     );
+}
 
+/// Picking the person the page shows, another member, and nobody is one change of the task's
+/// history each, so one undo takes back one pick.
+#[cfg(feature = "record")]
+#[test]
+fn each_pick_of_the_assignee_is_one_step_of_history() {
+    use collaboration::history_source::verbs::HistoryEdit;
+
+    let (mut ada, task, mut page, key) = a_task_whose_assignee_the_page_shows();
+    for pick in [
+        Value::text("ada"),
+        Value::text("ben"),
+        Value::Text(String::new()),
+    ] {
+        pick_the_assignee(&mut ada, &mut page, &key, &pick);
+    }
     // One undo takes back one pick: the clearing, then Ben, then Me.
     let undo = |r: &mut Replica| {
         r.history(&HistoryEdit::Undo {

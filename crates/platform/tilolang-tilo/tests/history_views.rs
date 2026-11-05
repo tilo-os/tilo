@@ -407,22 +407,34 @@ fn marked(side: &UiNode, name: &str) -> Vec<String> {
     out
 }
 
-/// Words a change to a field reads with, beside the value it wrote there.
-#[test]
-fn a_history_entry_says_the_day_a_task_moved_to_its_priority_its_project_and_its_person() {
+/// A workspace whose people read as their names, and a project of Ada's to file tasks into. A
+/// task made here is Ada's, and Bo changes it once, so an entry of one change says what it did.
+fn named_workspace_with_a_project() -> (Replica, Value, Value) {
     let (mut ada, _notes, tasks) = two_people();
     ada.host.runtime().set_name_host(Named);
     let project = call(&ada, "ada", TASKS_APP, "new_project", vec![tasks.clone()]);
     ada.commit();
-    // A task of its own for each field, made by Ada and changed once by Bo: an entry of one
-    // change says what that change did.
-    let task = |ada: &mut Replica, title: &str| {
-        let task = call(ada, "ada", TASKS_APP, "new_task", vec![tasks.clone(), Value::text(title)]);
-        ada.commit();
-        task
-    };
+    (ada, tasks, project)
+}
 
-    let set = task(&mut ada, "Buy oat milk");
+/// A task of `title` made by Ada in the workspace's tasks.
+fn a_task_of(ada: &mut Replica, tasks: &Value, title: &str) -> Value {
+    let task = call(
+        ada,
+        "ada",
+        TASKS_APP,
+        "new_task",
+        vec![tasks.clone(), Value::text(title)],
+    );
+    ada.commit();
+    task
+}
+
+/// Words a change to the day a task is due reads with, beside the day it wrote there.
+#[test]
+fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
+    let (mut ada, tasks, _project) = named_workspace_with_a_project();
+    let set = a_task_of(&mut ada, &tasks, "Buy oat milk");
     call(
         &ada,
         "bo",
@@ -431,14 +443,14 @@ fn a_history_entry_says_the_day_a_task_moved_to_its_priority_its_project_and_its
         vec![set.clone(), Value::some(Value::text("2026-11-02"))],
     );
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&set)));
+    let said = says(&history_of(&ada, &target(&set)));
     assert!(
         said.contains(&"bo set the due date to".to_owned()),
         "a day a task did not have is set: {said:?}"
     );
     assert!(said.contains(&"2026-11-02".to_owned()), "{said:?}");
 
-    let moved = task(&mut ada, "Water the plants");
+    let moved = a_task_of(&mut ada, &tasks, "Water the plants");
     call(
         &ada,
         "bo",
@@ -449,7 +461,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_its_priority_its_project_and_its
     ada.commit();
     call(&ada, "bo", TASKS_APP, "due_tomorrow", vec![moved.clone()]);
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&moved)));
+    let said = says(&history_of(&ada, &target(&moved)));
     assert!(
         said.contains(&"bo moved this to".to_owned()),
         "a day a task had is moved to another: {said:?}"
@@ -457,47 +469,64 @@ fn a_history_entry_says_the_day_a_task_moved_to_its_priority_its_project_and_its
     assert!(said.contains(&"2026-10-31".to_owned()), "{said:?}");
     call(&ada, "bo", TASKS_APP, "due_clear", vec![moved.clone()]);
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&moved)));
+    let said = says(&history_of(&ada, &target(&moved)));
     assert!(
         said.contains(&"bo cleared the due date".to_owned()),
         "a day taken away is said so: {said:?}"
     );
+}
 
-    let urgent = task(&mut ada, "Pay the rent");
-    call(&ada, "bo", TASKS_APP, "set_priority_high", vec![urgent.clone()]);
+/// Words a change to a task's priority, its project and its person reads with.
+#[test]
+fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to() {
+    let (mut ada, tasks, project) = named_workspace_with_a_project();
+    let urgent = a_task_of(&mut ada, &tasks, "Pay the rent");
+    call(
+        &ada,
+        "bo",
+        TASKS_APP,
+        "set_priority_high",
+        vec![urgent.clone()],
+    );
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&urgent)));
+    let said = says(&history_of(&ada, &target(&urgent)));
     assert!(said.contains(&"bo set priority to".to_owned()), "{said:?}");
     assert!(said.contains(&"High".to_owned()), "{said:?}");
 
-    let filed = task(&mut ada, "Book the van");
-    call(&ada, "bo", TASKS_APP, "file", vec![filed.clone(), project.clone()]);
+    let filed = a_task_of(&mut ada, &tasks, "Book the van");
+    call(
+        &ada,
+        "bo",
+        TASKS_APP,
+        "file",
+        vec![filed.clone(), project.clone()],
+    );
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&filed)));
+    let said = says(&history_of(&ada, &target(&filed)));
     assert!(
         said.contains(&"bo moved this to".to_owned()),
         "a task put in a project is moved to it: {said:?}"
     );
     assert!(said.contains(&"New project".to_owned()), "{said:?}");
 
-    let unfiled = task(&mut ada, "Pack the boxes");
+    let unfiled = a_task_of(&mut ada, &tasks, "Pack the boxes");
     call(
         &ada,
         "bo",
         TASKS_APP,
         "file",
-        vec![unfiled.clone(), project.clone()],
+        vec![unfiled.clone(), project],
     );
     ada.commit();
     call(&ada, "bo", TASKS_APP, "unfile", vec![unfiled.clone()]);
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&unfiled)));
+    let said = says(&history_of(&ada, &target(&unfiled)));
     assert!(
         said.contains(&"bo moved this out of".to_owned()),
         "a task taken out of a project says the one it left: {said:?}"
     );
 
-    let assigned = task(&mut ada, "Call the plumber");
+    let assigned = a_task_of(&mut ada, &tasks, "Call the plumber");
     call(
         &ada,
         "bo",
@@ -509,7 +538,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_its_priority_its_project_and_its
         ],
     );
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&assigned)));
+    let said = says(&history_of(&ada, &target(&assigned)));
     assert!(
         said.contains(&"bo assigned this to".to_owned()),
         "a task given to someone says who: {said:?}"
@@ -532,14 +561,14 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&done)));
+    let said = says(&history_of(&ada, &target(&done)));
     assert!(
         said.contains(&"bo completed this".to_owned()),
         "checking a task off says it was completed: {said:?}"
     );
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&done)));
+    let said = says(&history_of(&ada, &target(&done)));
     assert!(
         said.contains(&"bo reopened this".to_owned()),
         "opening it again says so: {said:?}"
@@ -557,7 +586,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Outline")],
+        vec![tasks, Value::text("Outline")],
     );
     ada.commit();
     call(
@@ -565,10 +594,10 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
         "bo",
         TASKS_APP,
         "indent",
-        vec![under.clone(), Value::some(above.clone())],
+        vec![under.clone(), Value::some(above)],
     );
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&under)));
+    let said = says(&history_of(&ada, &target(&under)));
     assert!(
         said.contains(&"bo moved this under".to_owned()),
         "a task put under another is moved under it: {said:?}"
@@ -576,18 +605,15 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     assert!(said.contains(&"Plan the week".to_owned()), "{said:?}");
     call(&ada, "bo", TASKS_APP, "outdent", vec![under.clone()]);
     ada.commit();
-    let said = says(&history_of(&mut ada, &target(&under)));
+    let said = says(&history_of(&ada, &target(&under)));
     assert!(
         said.contains(&"bo moved this to the top level".to_owned()),
         "a task taken out from under another says so: {said:?}"
     );
 }
 
-/// A change that wrote two fields reads as one sentence, and a day reads with the time of day
-/// it holds. The window shows the task's history, as an app's does.
-#[test]
-fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
-    const SOURCE: &str = r#"app so.tilo.test.sentences "Sentences"
+/// A board of tasks whose window shows its history: one change may write two of its fields.
+const SENTENCES: &str = r#"app so.tilo.test.sentences "Sentences"
 
 type Task {
     title: Text (title)
@@ -633,15 +659,20 @@ view task_page(t: Task) {
     std.history(t)
 }
 "#;
-    const APP: &str = "so.tilo.test.sentences";
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SOURCE, "")]);
+const SENTENCES_APP: &str = "so.tilo.test.sentences";
+
+/// A change that wrote two fields reads as one sentence, and a day reads with the time of day
+/// it holds. The window shows the task's history, as an app's does.
+#[test]
+fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(SENTENCES, "")]);
     assert_eq!(packages.len(), 1);
     ada.commit();
-    let tasks = Value::resource(&ada.host.root_of(APP).unwrap());
+    let tasks = Value::resource(&ada.host.root_of(SENTENCES_APP).unwrap());
     let task = call(
         &ada,
         "ada",
-        APP,
+        SENTENCES_APP,
         "new_task",
         vec![
             tasks,
@@ -655,12 +686,12 @@ view task_page(t: Task) {
     call(
         &ada,
         "bo",
-        APP,
+        SENTENCES_APP,
         "reschedule",
         vec![task.clone(), Value::text("2026-07-01")],
     );
     ada.commit();
-    let section = history_of(&mut ada, &at);
+    let section = history_of(&ada, &at);
     let said = says(&section);
     assert!(
         said.contains(&"bo set the due date to".to_owned()),
@@ -681,12 +712,16 @@ view task_page(t: Task) {
     call(
         &ada,
         "bo",
-        APP,
+        SENTENCES_APP,
         "retitle_and_move",
-        vec![task.clone(), Value::text("Call the landlord about the boiler"), Value::text("2026-07-02")],
+        vec![
+            task,
+            Value::text("Call the landlord about the boiler"),
+            Value::text("2026-07-02"),
+        ],
     );
     ada.commit();
-    let said = says(&history_of(&mut ada, &at));
+    let said = says(&history_of(&ada, &at));
     assert!(
         said.contains(&"bo renamed this to".to_owned()),
         "the first field the change wrote: {said:?}"
@@ -931,7 +966,7 @@ fn says(section: &UiNode) -> Vec<String> {
 }
 
 /// The history section of a window on `at`.
-fn history_of(ada: &mut Replica, at: &ResourceRef) -> UiNode {
+fn history_of(ada: &Replica, at: &ResourceRef) -> UiNode {
     let mut page = ada.host.open_resource(at, None).unwrap();
     history(&mut page)
 }
@@ -1091,4 +1126,3 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         .expect("the check's change is shown");
     assert_eq!(label, "Done");
 }
-
