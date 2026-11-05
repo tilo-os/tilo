@@ -830,8 +830,7 @@ fn list_layout(
         let (w, h) = text_renderer.measure_style(&count.text(), None, &style);
         let (w, h) = (f64::from(w), f64::from(h));
         let rect = match count {
-            NavCount::Neutral(_) => trailing_rect(trailing, mid, w, h),
-            NavCount::Changed(_) => trailing_rect(trailing, mid, w, h),
+            NavCount::Neutral(_) | NavCount::Changed(_) => trailing_rect(trailing, mid, w, h),
             NavCount::Live(_) => {
                 let height = h + s1;
                 trailing_rect(trailing, mid, (w + s2).max(height), height)
