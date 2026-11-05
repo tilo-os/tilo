@@ -454,6 +454,10 @@ fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
     }
 }
 
+/// Run the protocol until nothing changes: every waiting device asks, every
+/// member reconciles, and every frame reaches every device (the copy
+/// carrying join material only the devices it adds). Frames a device cannot
+/// use are dropped, as a transport's receiver logs and drops them.
 fn settle(devices: &mut [&mut Device], allowed: &BTreeSet<Ed25519PublicKey>) {
     let mut settled = false;
     for _ in 0..32 {
