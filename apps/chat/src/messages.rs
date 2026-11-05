@@ -885,7 +885,7 @@ impl Chained for ChatPart {
         };
         let conversation = chat.conversation(channel)?;
         let name = conversation.name.trim().trim_start_matches('#');
-        (conversation.participants.is_empty() && !name.is_empty()).then(|| format!("#{name}"))
+        (conversation.is_channel() && !name.is_empty()).then(|| format!("#{name}"))
     }
 }
 

@@ -575,6 +575,15 @@ pub struct Conversation {
     pub participants: Vec<Atom>,
 }
 
+impl Conversation {
+    /// Whether this is one of the workspace's channels: a conversation of
+    /// all its members, which has no participants of its own.
+    #[must_use]
+    pub fn is_channel(&self) -> bool {
+        self.participants.is_empty()
+    }
+}
+
 /// The prefix of a direct conversation's id: what it is with follows it
 /// (`direct:person:<root>|person:<root>`, the keys in order).
 pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";

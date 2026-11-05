@@ -52,7 +52,7 @@ impl Chat {
         let rows: Vec<Channel> = self
             .channels
             .iter()
-            .filter(|(_, channel)| channel.participants.is_empty())
+            .filter(|(_, channel)| channel.is_channel())
             .enumerate()
             .map(|(order, (id, channel))| Channel {
                 id: id.to_string(),
@@ -86,7 +86,7 @@ impl Chat {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         for (id, channel) in self.channels.iter() {
-            if channel.participants.is_empty() {
+            if channel.is_channel() {
                 continue;
             }
             let name = self.display_names(id, Some(me));
@@ -309,7 +309,7 @@ impl Chat {
             || self
                 .channels
                 .get(&id)
-                .is_some_and(|conversation| !conversation.participants.is_empty())
+                .is_some_and(|conversation| !conversation.is_channel())
     }
 }
 

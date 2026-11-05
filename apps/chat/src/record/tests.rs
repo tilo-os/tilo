@@ -1474,6 +1474,29 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             ],
             "every channel stays, in the category it was in"
         );
+        let scribe = chat
+            .channels
+            .get(&id(OLD_AGENT_CHANNEL))
+            .expect("the agent's conversation stays");
+        assert_eq!(
+            scribe
+                .participants
+                .iter()
+                .map(|key| key.0.as_str())
+                .collect::<Vec<_>>(),
+            ["agent:scribe"],
+            "the agent the conversation was with is now its participant"
+        );
+        {
+            use automerge::ReadDoc as _;
+            let (_, channels) = doc.get(automerge::ROOT, "channels").unwrap().unwrap();
+            let (_, held) = doc.get(&channels, OLD_AGENT_CHANNEL).unwrap().unwrap();
+            let (_, entry) = doc.get(&held, "v").unwrap().unwrap();
+            assert!(
+                doc.get(&entry, "conversation_with").unwrap().is_none(),
+                "the old field is gone with the migration, not read beside it"
+            );
+        }
         assert_eq!(
             chat.categories
                 .iter()
@@ -1642,4 +1665,64 @@ fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
         .find(|row| row.id == with_bo.to_string())
         .expect("Bo lists it too");
     assert_eq!(row.name, "Ada", "each of them names the other");
+}
+
+/// A conversation's participants say who it is with, not who may use it:
+/// every member reads any conversation, and a member who is not one of its
+/// participants posts to it like anyone else.
+#[test]
+fn a_conversation_is_about_its_participants_not_who_may_read_it() {
+    const CY: &str = "u_cy";
+    let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let mut ada = Talk::new();
+    let mut cy = ada.fork_as(CY);
+    cy.apply(post_to(with_bo.as_str(), "in their conversation"))
+        .unwrap();
+    ada.sync_with(&mut cy);
+    let rows = ada.rows(with_bo.as_str());
+    let row = rows
+        .iter()
+        .find(|row| row.text == "in their conversation")
+        .expect("a member who is not a participant posts to the conversation");
+    assert_eq!(row.author, CY);
+    assert_eq!(
+        ada.chat
+            .state()
+            .unwrap()
+            .conversation_participants(&with_bo)
+            .len(),
+        2,
+        "and the conversation stays Ada's and Bo's"
+    );
+}
+
+/// Two devices opening the same conversation at once make one: its id names
+/// its participants, so neither has to write it first and neither can make a
+/// second.
+#[test]
+fn two_devices_opening_the_same_conversation_at_once_share_one() {
+    let mut ada = Talk::new();
+    let mut bo = ada.fork_as(BO);
+    let from_ada = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
+    let from_bo = Chat::direct_id([Participant::person(BO), Participant::person(ADA)]);
+    assert_eq!(from_ada, from_bo, "the id is the set, in any order");
+    ada.apply(post_to(from_ada.as_str(), "from Ada")).unwrap();
+    bo.apply(post_to(from_bo.as_str(), "from Bo")).unwrap();
+    ada.sync_with(&mut bo);
+    let rows = ada.rows(from_ada.as_str());
+    for text in ["from Ada", "from Bo"] {
+        assert!(
+            rows.iter().any(|row| row.text == text),
+            "both messages are in the one conversation: {rows:?}"
+        );
+    }
+    let chat = ada.chat.state().unwrap();
+    assert!(
+        !chat.channels.contains(&from_ada),
+        "the conversation is never written first: its id is enough"
+    );
+    assert_eq!(
+        Chat::direct_participants(&from_ada).map(|participants| participants.len()),
+        Some(2)
+    );
 }
