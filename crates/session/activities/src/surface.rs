@@ -81,7 +81,7 @@ impl State {
 
     /// Say what the layer shows, so the session's hit testing and
     /// accessibility read this frame.
-    fn hand_over(&mut self) {
+    fn hand_over(&self) {
         let shown = self.layer.shown();
         self.link.show(shown);
     }
@@ -148,7 +148,7 @@ impl State {
         self.drawn = false;
     }
 
-    fn answers(&mut self, effect: ActivityEffect) {
+    fn answers(&self, effect: ActivityEffect) {
         let ask = match effect {
             ActivityEffect::Control {
                 app,
@@ -256,7 +256,7 @@ impl Widget for ActivitiesSurface {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ui::widget::ModelPath,
     ) -> bool {
-        let mut state = self.state.borrow_mut();
+        let state = self.state.borrow_mut();
         let ask = state.layer.activate(target);
         if let Some(ask) = ask {
             state.link.ask(ask);

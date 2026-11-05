@@ -399,7 +399,7 @@ fn phase_json(phase: &Phase) -> serde_json::Value {
 /// activity cards docked in the corner, one of them ticking, and a card
 /// dragged across the surface. What it measures is the layer alone, so the
 /// numbers are the cards' cost rather than the desk's.
-fn run_activities(json_path: Option<String>, device: String) -> Result<(), String> {
+fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String> {
     use ui::floating_layer::{Card, Corner, Placement};
     use ui::live_activity::{Control, ControlKind, Kind, Summary};
     use ui::vello::kurbo::{Point, Rect, Vec2};
@@ -664,7 +664,7 @@ fn run() -> Result<(), String> {
     let tabs_per_window = tabs_per_window.clamp(1, 3);
     let device = std::env::var("TILO_PERF_DEVICE").unwrap_or_else(|_| "unlabelled".into());
     if profile == Profile::Activities {
-        return run_activities(json_path, device);
+        return run_activities(json_path, &device);
     }
 
     let (tree, resolver, _retained) = fixture(profile, tabs_per_window);

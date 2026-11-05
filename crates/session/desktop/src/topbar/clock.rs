@@ -258,8 +258,10 @@ impl TopBarChrome {
             ink,
         );
         for dot in 0..pill.more {
-            let x =
-                tx + f64::from(tw) + 2.0 + f64::from(ui::num::u32_of_f64(dot as f64)) * dot_pitch;
+            let x = tx
+                + f64::from(tw)
+                + 2.0
+                + f64::from(u32::try_from(dot).unwrap_or(u32::MAX)) * dot_pitch;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,

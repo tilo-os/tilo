@@ -436,20 +436,6 @@ impl TopBarChrome {
         true
     }
 
-    pub(super) fn handle_left_release(&mut self, event: &WindowEvent, _handled: &mut bool) -> bool {
-        if !matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-                ..
-            }
-        ) {
-            return false;
-        }
-        true
-    }
-
     pub(super) fn handle_left_press(&mut self, event: &WindowEvent, handled: &mut bool) {
         if !matches!(
             event,
@@ -463,6 +449,19 @@ impl TopBarChrome {
         }
         self.handle_left_click(handled);
     }
+}
+
+/// A left button release on the bar, which the bar takes so no window under
+/// it sees the release of a press the bar answered.
+pub(super) fn is_left_release(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: winit::event::ElementState::Released,
+            button: winit::event::MouseButton::Left,
+            ..
+        }
+    )
 }
 
 /// How the bar's focus last arrived, which decides whether its ring shows

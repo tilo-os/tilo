@@ -47,7 +47,7 @@ file with one visible surface and several helpers is one row.
 | # | Surface | Files | Counts | What it draws by hand | Replace with | Exists? |
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | **Top bar: status cluster (tray pill, badges, media indicator)** | `crates/session/desktop/src/topbar/tray.rs` | 0 (converted) | — (`StatusCluster` for the pill, badge and critical battery; `BarChipFace` for the media indicator; `BarControlFace::paint_lift` for a tray icon) | `StatusCluster`, `BarChip` | yes |
-| 2 | **Top bar: clock lane and its overlay** | `crates/session/desktop/src/topbar/clock.rs` | 0 (converted) | — (`AgendaPopoverFace` for the overlay, `TextLineFace` for the time and the live activity, `BarControlFace::paint_lift` for the activity's pill) | `AgendaPopover`, `TextLineFace` | yes |
+| 2 | **Top bar: clock lane** | `crates/session/desktop/src/topbar/clock.rs` | 0 (converted) | — (`TextLineFace` for the time and the live activity, `BarControlFace::paint_lift` for the activity's pill) | `TextLineFace` | yes |
 | 3 | **Top bar: people, sharing and invite chips** | `topbar/people.rs`, `topbar/sharing.rs`, `topbar/avatar_ask.rs`, `topbar/workspace.rs`, `topbar/controls.rs` | 0 (converted) | — (`BarChipFace` for the people, invite, watching and sharing chips, `BarControlFace::paint_lift` for the Tilo mark, `FloatingPanelFace` for the ask pill, `FactsFace` for its words, `paint_focus_ring` for the bar's ring) | `BarChip`, `paint_focus_ring` | yes |
 | 4 | **Top bar: strips and workspace name** | `topbar/strips.rs`, `topbar.rs` | 0 (converted) | — (`BarChipFace` for the strip's name, `TextInput` for the naming field, `paint_bar_body` for the bar's own body) | `BarChip`, `TextInput`, `paint_bar_body` | yes |
 | 5 | **Notification banners (stack, toasts, "more" card, lock redaction)** | `desktop-surface/src/notifications/stack.rs`, `notifications/reader.rs` | 0 (converted) | — (`ToastCard`/`paint_card` for the cards' ground, `TextLineFace` for their labels, `TextBlockFace` for the reader's page) | `ToastCard`, `TextLineFace`, `TextBlockFace` | yes |
@@ -154,10 +154,7 @@ component serves both.
 12. **Arrival hint** — `ArrivalHint::new(text).presence(rgb).action(..)`:
     the pill at a strip's edge saying who opened what. Replaces
     `desktop-surface/src/surface/arrivals.rs`'s `draw_hint`.
-13. **Clock/agenda popover** — **built:** `AgendaPopoverFace::new(&entry, &labels).focused(..).paint(..)`,
-    the clock's overlay on `FloatingPanelFace`, with its drag handle, reading
-    and pause, add and close controls.
-14. **Row-level field** — `SearchField` exists, but a sheet's embedded field
+13. **Row-level field** — `SearchField` exists, but a sheet's embedded field
     (`FloatingPanelFace`'s header field) and the strip's naming field
     (`strip_switcher::draw_field`) draw the same thing by hand; a
     `FieldFace`-backed embedded text widget on `FieldFace` is needed, or the

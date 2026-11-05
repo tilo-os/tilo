@@ -3386,6 +3386,8 @@ pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOut
 
 pub mod progress_bar;
 pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
+pub mod activity_card;
+pub use activity_card::ActivityCardFace;
 pub mod page_preview;
 pub use page_preview::{PagePreview, PagePreviewProps};
 pub mod spinner;

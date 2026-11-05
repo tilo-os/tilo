@@ -240,6 +240,15 @@ impl Summary {
             .find(|control| control.kind == ControlKind::Close)
     }
 
+    /// Whether the card draws a row of offered controls: every control but
+    /// the close, which its header carries instead.
+    #[must_use]
+    pub fn has_actions(&self) -> bool {
+        self.controls
+            .iter()
+            .any(|control| control.kind != ControlKind::Close)
+    }
+
     /// The controls the card's row draws, in the order the app named them:
     /// everything but the close, which the card's header carries instead.
     #[must_use]

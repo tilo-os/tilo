@@ -254,10 +254,11 @@ fn a_live_window_at_the_clock_it_holds() {
     let _held = tilo_clock::testing::hold_wall_everywhere(process, added);
     // The wall clock reads `added` until a phase moves it a second on,
     // past the timer's end.
-    shell_floating_clock_phases(&mut app, added);
+    shell_floating_clock_phases(&mut app);
+    shell_floating_clock_ringing(&mut app, added);
 }
 
-fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time::SystemTime) {
+fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>) {
     // Phase: nothing runs, so the shell shows nothing.
     app.settle();
     let idle = published();
@@ -352,9 +353,11 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
     app.settle();
     assert_eq!(app.state().stopwatch.laps_ms.len(), 1, "one lap");
     assert_eq!(app.state().timers, before, "timers untouched");
+}
 
-    // Phase: a finished timer is announced once, and the notice outlives
-    // the countdown in every later snapshot.
+/// The last phases: a finished timer is announced once, and the notice
+/// outlives the countdown in every later snapshot.
+fn shell_floating_clock_ringing(app: &mut TestApp<ClocksShell>, added: std::time::SystemTime) {
     app.invoke(Clocks::RESET_STOPWATCH.invoke()).unwrap();
     // The wall clock reads `added`, then a second later: past the timer's
     // end, and the timer started at `added`.
@@ -366,7 +369,7 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
     );
     app.settle();
     let first = published();
-    let announce = first.announce.clone().expect("the timer rang");
+    let announce = first.announce.expect("the timer rang");
     assert_eq!(announce.title, "Timer finished");
     assert_eq!(announce.body, "Tea");
     assert!(

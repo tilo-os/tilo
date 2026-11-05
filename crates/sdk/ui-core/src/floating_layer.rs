@@ -10,7 +10,7 @@
 //! Apps describe, the session places: nothing here knows what an activity is
 //! beyond its [`Summary`].
 
-use vello::kurbo::{Rect, Size};
+use vello::kurbo::{Point, Rect, Size};
 
 use crate::live_activity::Summary;
 use crate::tokens::Metrics;
@@ -41,6 +41,12 @@ const CARD_PROGRESS: f64 = 6.0;
 const CARD_CONTROLS: f64 = 34.0;
 /// The space between the rows of a card.
 const CARD_ROW_GAP: f64 = 10.0;
+/// A header control: the collapse and the close, square.
+const CARD_HEADER_CONTROL: f64 = 24.0;
+/// The tone mark before a card's title.
+const CARD_MARK: f64 = 8.0;
+/// What stands between the mark and the title.
+const CARD_TITLE_GAP: f64 = 8.0;
 
 /// Which corner of the work area the cards dock in. It is the person's choice
 /// on this device, never shared.
@@ -165,7 +171,7 @@ pub fn card_size(work: Rect, summary: &Summary) -> Size {
     if summary.progress.is_some() {
         height += CARD_ROW_GAP + CARD_PROGRESS;
     }
-    if !summary.controls.is_empty() {
+    if summary.has_actions() {
         height += CARD_ROW_GAP + CARD_CONTROLS;
     }
     Size::new(width, height)
@@ -175,6 +181,95 @@ pub fn card_size(work: Rect, summary: &Summary) -> Size {
 #[must_use]
 pub fn narrow(work: Rect) -> bool {
     work.width() < NARROW_PX
+}
+
+/// Where the parts of a card stand on it, as the frame draws them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Parts {
+    /// The mark before the title: a dot of the activity's own tone.
+    pub mark: Rect,
+    /// The title, beside the mark.
+    pub title: Rect,
+    /// The header's two controls, right-aligned.
+    pub collapse: Rect,
+    pub close: Rect,
+    /// The card's reading and its progress bar, where the summary has them,
+    /// and the row of controls it offers, in the order they stand below the
+    /// header.
+    pub value: Option<Rect>,
+    pub progress: Option<Rect>,
+    pub controls: Vec<(String, Rect)>,
+}
+
+/// Where each of `summary`'s parts stands on a card in `card`: the rows
+/// [`card_size`] reserves, laid out whatever the card's real height.
+#[must_use]
+pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
+    let inside = card.inflate(-CARD_PADDING, -CARD_PADDING);
+    let header = Rect::new(
+        inside.x0,
+        inside.y0,
+        inside.x1,
+        inside.y0 + CARD_HEADER.min(inside.height()),
+    );
+    let close = Rect::new(
+        header.x1 - CARD_HEADER_CONTROL,
+        header.y0,
+        header.x1,
+        header.y0 + CARD_HEADER_CONTROL,
+    );
+    let gap = 4.0;
+    let collapse = Rect::new(
+        close.x0 - gap - CARD_HEADER_CONTROL,
+        header.y0,
+        close.x0 - gap,
+        header.y0 + CARD_HEADER_CONTROL,
+    );
+    let mark_left = inside.x0 + CARD_MARK / 2.0;
+    let mark = Rect::from_center_size(
+        Point::new(mark_left, f64::midpoint(header.y0, header.y1)),
+        Size::new(CARD_MARK, CARD_MARK),
+    );
+    let title = Rect::new(
+        mark_left + CARD_MARK / 2.0 + CARD_TITLE_GAP,
+        header.y0,
+        collapse.x0 - CARD_TITLE_GAP,
+        header.y1,
+    );
+    let mut cursor = header.y1;
+    let mut row = |height: f64| {
+        cursor += CARD_ROW_GAP;
+        let rect = Rect::new(inside.x0, cursor, inside.x1, cursor + height);
+        cursor += height;
+        rect
+    };
+    let value = (!summary.value.is_empty()).then(|| row(CARD_VALUE));
+    let progress = summary.progress.is_some().then(|| row(CARD_PROGRESS));
+    let controls_row = summary.has_actions().then(|| row(CARD_CONTROLS));
+    let shown = summary.action_controls();
+    let mut controls = Vec::with_capacity(shown.len());
+    if let Some(controls_row) = controls_row {
+        let gap = 6.0;
+        let count = f64::from(u32::try_from(shown.len()).unwrap_or(u32::MAX));
+        let width = (controls_row.width() - gap * (count - 1.0)) / count;
+        for (at, control) in shown.into_iter().enumerate() {
+            let left =
+                controls_row.x0 + f64::from(u32::try_from(at).unwrap_or(u32::MAX)) * (width + gap);
+            controls.push((
+                control.id.clone(),
+                Rect::new(left, controls_row.y0, left + width, controls_row.y1),
+            ));
+        }
+    }
+    Parts {
+        mark,
+        title,
+        collapse,
+        close,
+        value,
+        progress,
+        controls,
+    }
 }
 
 /// Where the cards stand: `corner`'s column, in priority order from the

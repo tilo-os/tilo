@@ -1309,7 +1309,7 @@ impl Widget for TopBarChrome {
                 self.last_cursor = Some(ctx.logical(position));
                 return;
             }
-            if self.handle_left_release(event, ctx.handled) {
+            if is_left_release(event) {
                 return;
             }
             self.handle_left_press(event, ctx.handled);
@@ -1322,7 +1322,7 @@ impl Widget for TopBarChrome {
         if *ctx.handled || self.handle_app_tray_press(event, ctx.handled) {
             return;
         }
-        if self.handle_left_release(event, ctx.handled) {
+        if is_left_release(event) {
             return;
         }
         self.handle_left_press(event, ctx.handled);

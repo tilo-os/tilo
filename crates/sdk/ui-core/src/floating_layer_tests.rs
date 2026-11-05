@@ -456,3 +456,43 @@ fn a_summary_draws_at_most_three_controls_with_the_close_last() {
     );
     assert!(matches!(summary.tone, Tone::Neutral));
 }
+
+/// Whatever an activity says, its parts stand inside the card the layer
+/// sizes for it: the header with its two controls, then its reading, its
+/// progress and the controls it offers.
+#[test]
+fn a_cards_parts_fit_the_height_card_size_reserves() {
+    for summary in sets().into_iter().flatten() {
+        let rect = Rect::from_origin_size((100.0, 100.0), card_size(work(1280.0, 800.0), &summary));
+        let inside = rect.inflate(-CARD_PADDING, -CARD_PADDING);
+        let parts = card_parts(rect, &summary);
+        for part in [
+            ("mark", parts.mark),
+            ("title", parts.title),
+            ("collapse", parts.collapse),
+            ("close", parts.close),
+        ]
+        .into_iter()
+        .chain(parts.value.map(|part| ("value", part)))
+        .chain(parts.progress.map(|part| ("progress", part)))
+        {
+            assert!(
+                part.1.y0 >= inside.y0 - 0.5 && part.1.y1 <= inside.y1 + 0.5,
+                "{} stands in {rect:?}: {:?}",
+                part.0,
+                part.1
+            );
+        }
+        assert!(parts.collapse.x1 <= parts.close.x0 - 3.5);
+        assert!(parts.title.x1 <= parts.collapse.x0);
+        assert_eq!(parts.controls.len(), summary.action_controls().len());
+        for (id, control) in &parts.controls {
+            assert!(
+                control.x0 >= inside.x0 - 0.5
+                    && control.x1 <= inside.x1 + 0.5
+                    && control.y1 <= inside.y1 + 0.5,
+                "control {id} stands in {rect:?}: {control:?}"
+            );
+        }
+    }
+}

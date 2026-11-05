@@ -10,29 +10,18 @@
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Size, Vec2};
+use ui::vello::kurbo::{Affine, Point, Rect, Vec2};
+use ui::widget::ActivityCardFace;
 use ui::widget::floating_surface::{
     paint_card_body, paint_card_edge, paint_card_shadow, painted_bounds,
 };
-use ui::widget::{Button, ButtonFace, ButtonRole, ProgressBarFace};
 use ui::{
-    floating_layer::{Card, Corner, EDGE_INSET, FoldReason, Layer, Placed, Placement, place},
-    live_activity::{ControlKind, Summary, Tone},
+    floating_layer::{
+        Card, Corner, EDGE_INSET, FoldReason, Layer, Placed, Placement, card_parts, place,
+    },
+    live_activity::Summary,
 };
-
-/// A card's inside margin, as its placement reserves it.
-const PADDING: f64 = 14.0;
-const HEADER: f64 = 24.0;
-const VALUE: f64 = 30.0;
-const PROGRESS: f64 = 6.0;
-const CONTROLS: f64 = 34.0;
-const ROW_GAP: f64 = 10.0;
-/// The header's own controls: collapse and close, square.
-const HEADER_CONTROL: f64 = 24.0;
-/// The tone mark beside the title.
-const MARK: f64 = 8.0;
 
 /// What the person did on the layer, for the session to carry out.
 #[derive(Clone, Debug, PartialEq)]
@@ -57,17 +46,6 @@ pub enum Ask {
     Focus(bool),
 }
 
-/// Where a card's controls stand on it, as the frame draws them.
-struct Rows {
-    title: Rect,
-    collapse: Rect,
-    close: Rect,
-    value: Rect,
-    progress: Rect,
-    controls: Vec<(String, Rect)>,
-}
-
-/// One card's rectangle and the controls drawn inside it.
 /// Whether `card` stands on screen exactly as something in `cards` does.
 fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
     cards.iter().any(|other| {
@@ -76,67 +54,6 @@ fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
             && other.summary == card.summary
             && other.rect == card.rect
     })
-}
-
-fn rows(card: Rect, summary: &Summary) -> Rows {
-    let inside = card.inflate(-PADDING, -PADDING);
-    let header = Rect::new(
-        inside.x0,
-        inside.y0,
-        inside.x1,
-        inside.y0 + HEADER.min(inside.height()),
-    );
-    let close = Rect::new(
-        header.x1 - HEADER_CONTROL,
-        header.y0,
-        header.x1,
-        header.y0 + HEADER_CONTROL,
-    );
-    let collapse = Rect::new(
-        close.x0 - 4.0 - HEADER_CONTROL,
-        header.y0,
-        close.x0 - 4.0,
-        header.y0 + HEADER_CONTROL,
-    );
-    let title = Rect::new(
-        inside.x0 + MARK + 8.0,
-        header.y0,
-        collapse.x0 - 8.0,
-        header.y1,
-    );
-    let mut cursor = header.y1;
-    let mut row = |height: f64| {
-        cursor += ROW_GAP;
-        let rect = Rect::new(inside.x0, cursor, inside.x1, cursor + height);
-        cursor += height;
-        rect
-    };
-    let value = row(VALUE);
-    let progress = row(PROGRESS);
-    let controls_row = row(CONTROLS);
-    let shown = summary.action_controls();
-    let mut controls = Vec::with_capacity(shown.len());
-    if !shown.is_empty() {
-        let gap = 6.0;
-        let count = f64::from(u32::try_from(shown.len()).unwrap_or(u32::MAX));
-        let width = (controls_row.width() - gap * (count - 1.0)) / count;
-        for (at, control) in shown.into_iter().enumerate() {
-            let left =
-                controls_row.x0 + f64::from(u32::try_from(at).unwrap_or(u32::MAX)) * (width + gap);
-            controls.push((
-                control.id.clone(),
-                Rect::new(left, controls_row.y0, left + width, controls_row.y1),
-            ));
-        }
-    }
-    Rows {
-        title,
-        collapse,
-        close,
-        value,
-        progress,
-        controls,
-    }
 }
 
 /// A drag in flight: which card, and where the pointer took it from.
@@ -340,108 +257,24 @@ impl FloatingLayer {
         rect: Rect,
         card: &Placed,
     ) {
-        let rows = rows(rect, &card.summary);
-        let summary = &card.summary;
-        let colors = &theme.tokens.colors;
-        let ink = tone_colour(summary.tone, theme);
-        // The tone mark: a dot of the activity's own colour beside its name.
-        let mark = Rect::from_center_size(
-            Point::new(
-                rows.title.x0 - MARK,
-                f64::midpoint(rows.title.y0, rows.title.y1),
-            ),
-            Size::new(MARK, MARK),
-        );
-        scene.fill(
-            ui::vello::peniko::Fill::NonZero,
-            transform,
-            ink,
-            None,
-            &RoundedRect::from_rect(mark, MARK / 2.0),
-        );
-        let title_style = theme.text(TextRole::Label);
-        let title = text.elide_to_width_style(&summary.title, width(rows.title), &title_style);
-        text.draw_style(
-            scene,
-            &title,
-            colors.text_primary,
-            transform * Affine::translate((rows.title.x0, rows.title.y0)),
-            None,
-            &title_style,
-        );
         let focused = self
             .focus
             .as_ref()
-            .is_some_and(|(app, activity)| *app == card.app && *activity == card.summary.id);
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::icon_only(
-                rows.collapse,
-                ui::icons::Icon::ChevronDown,
-                &crate::i18n::t("activity-collapse"),
-            )
-            .focused(focused && self.press.is_none()),
-        );
-        Button::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &ButtonFace::icon_only(
-                rows.close,
-                ui::icons::Icon::X,
-                &crate::i18n::t("activity-close"),
-            ),
-        );
-        if !summary.value.is_empty() {
-            let style = theme
-                .text(TextRole::Heading)
-                .with_weight(ui::TextWeight::Bold);
-            let value = text.elide_to_width_style(&summary.value, width(rows.value), &style);
-            text.draw_style(
-                scene,
-                &value,
-                colors.text_primary,
-                transform * Affine::translate((rows.value.x0, rows.value.y0)),
-                None,
-                &style,
-            );
+            .is_some_and(|(app, activity)| *app == card.app && *activity == card.summary.id)
+            && self.press.is_none();
+        let held = self
+            .press
+            .as_ref()
+            .filter(|(app, activity, _)| *app == card.app && *activity == card.summary.id)
+            .map(|(_, _, control)| control.as_str());
+        ActivityCardFace {
+            summary: &card.summary,
+            collapse_label: &crate::i18n::t("activity-collapse"),
+            close_label: &crate::i18n::t("activity-close"),
+            focused,
+            held,
         }
-        if let Some(progress) = summary.progress {
-            let mut ctx = ui::paint::PaintCtx::new(scene, transform, text, theme);
-            ProgressBarFace::new(progress).paint(&mut ctx, rows.progress);
-        }
-        for (id, rect) in &rows.controls {
-            let Some(control) = summary
-                .action_controls()
-                .into_iter()
-                .find(|control| control.id == *id)
-            else {
-                continue;
-            };
-            let held = self.press.as_ref().is_some_and(|(app, activity, pressed)| {
-                *app == card.app && *activity == card.summary.id && pressed == id
-            });
-            let role = match control.kind {
-                ControlKind::Primary => ButtonRole::Primary,
-                ControlKind::Secondary | ControlKind::Close => ButtonRole::Secondary,
-            };
-            let label = text.elide_to_width_style(
-                &control.label,
-                width(*rect),
-                &theme.text(TextRole::Label),
-            );
-            Button::paint(
-                scene,
-                transform,
-                text,
-                theme,
-                &ButtonFace::new(*rect, &label).role(role).pressed(held),
-            );
-        }
+        .paint(scene, transform, text, theme, rect);
     }
 
     /// The part of the surface the last frame changed.
@@ -461,7 +294,7 @@ impl FloatingLayer {
             return false;
         };
         let origin = Point::new(point.x - drag.offset.x, point.y - drag.offset.y);
-        if !drag.moved && (origin - origin_of(drag.rect)).hypot() < 4.0 {
+        if !drag.moved && origin.distance(origin_of(drag.rect)) < 4.0 {
             return false;
         }
         drag.moved = true;
@@ -493,9 +326,9 @@ impl FloatingLayer {
         };
         self.focus = Some((card.app.clone(), card.summary.id.clone()));
         self.changed.push(card.rect);
-        let rows = rows(card.rect, &card.summary);
+        let rows = card_parts(card.rect, &card.summary);
         if let Some((id, _)) = rows.controls.iter().find(|(_, rect)| rect.contains(point)) {
-            self.press = Some((card.app.clone(), card.summary.id.clone(), id.clone()));
+            self.press = Some((card.app, card.summary.id, id.clone()));
             self.owed = true;
             return Vec::new();
         }
@@ -543,7 +376,7 @@ impl FloatingLayer {
                 .iter()
                 .find(|card| card.app == app && card.summary.id == activity)
                 .and_then(|card| {
-                    rows(card.rect, &card.summary)
+                    card_parts(card.rect, &card.summary)
                         .controls
                         .into_iter()
                         .find(|(id, _)| *id == control)
@@ -591,7 +424,8 @@ impl FloatingLayer {
             .position(|card| card.app == focused.0 && card.summary.id == focused.1)?;
         match key {
             Key::Named(NamedKey::ArrowDown | NamedKey::ArrowRight | NamedKey::Tab) => {
-                let next = (index + 1) % self.layout.cards.len().max(1);
+                let count = self.layout.cards.len().max(1);
+                let next = index.saturating_add(1).checked_rem(count)?;
                 let card = self.layout.cards.get(next)?;
                 self.focus = Some((card.app.clone(), card.summary.id.clone()));
                 self.refocused(&[index, next]);
@@ -730,19 +564,6 @@ fn target(card: &Placed, control: &str) -> String {
     format!("activity:{}:{}:{control}", card.app, card.summary.id)
 }
 
-/// An activity's own ink: its tone.
-fn tone_colour(tone: Tone, theme: &Theme) -> ui::vello::peniko::Color {
-    match tone {
-        Tone::Neutral => theme.tokens.colors.intent.accent,
-        Tone::Accent => theme.tokens.colors.intent.accent,
-        Tone::Alert => theme.tokens.colors.semantic.danger,
-    }
-}
-
-fn width(rect: Rect) -> f32 {
-    ui::num::f32_of_f64(rect.width().max(0.0))
-}
-
 fn origin_of(rect: Rect) -> Point {
     rect.origin()
 }
@@ -764,7 +585,7 @@ fn keep_inside(rect: Rect, work: Rect) -> Rect {
 mod tests {
     use super::*;
     use ui::floating_layer::{CARD_GAP, card_size};
-    use ui::live_activity::Kind;
+    use ui::live_activity::{ControlKind, Kind};
     use ui::widget::floating_surface::card_radius;
 
     fn placement() -> Placement {
@@ -878,7 +699,7 @@ mod tests {
     fn a_control_runs_when_the_press_lifts_on_it() {
         let mut layer = layer();
         let card = layer.layout().cards.first().expect("a card").rect;
-        let rows = rows(card, &timer());
+        let rows = card_parts(card, &timer());
         let (id, control) = rows.controls.first().expect("a control");
         assert_eq!(id, "toggle");
         let at = control.center();
@@ -906,7 +727,7 @@ mod tests {
     fn the_header_asks_to_close_or_collapse() {
         let mut layer = layer();
         let card = layer.layout().cards.first().expect("a card").rect;
-        let rows = rows(card, &timer());
+        let rows = card_parts(card, &timer());
         assert_eq!(
             layer.pointer_button(rows.close.center(), true),
             vec![Ask::Close {
@@ -1023,10 +844,10 @@ mod tests {
         let summary = timer();
         let size = card_size(placement().work, &summary);
         let rect = Rect::from_origin_size((100.0, 100.0), size);
-        let rows = rows(rect, &summary);
-        assert!(rows.controls.first().expect("a control").1.y1 <= rect.y1 - PADDING + 0.5);
+        let rows = card_parts(rect, &summary);
+        assert!(rows.controls.first().expect("a control").1.y1 <= rect.y1);
         assert!(rows.close.y1 <= rect.y1);
-        assert!(rows.value.y0 >= rows.title.y1 - 0.5);
+        assert!(rows.value.expect("a reading").y0 >= rows.title.y1 - 0.5);
         // The gap the layout reserves between cards is what the painter leaves.
         assert!(CARD_GAP > 0.0);
         assert!(card_radius(rect, &Theme::dark()) > 0.0);
