@@ -26,6 +26,7 @@ use crate::chrome::{
     nav_section_layout, paint_nav_row, paint_nav_section,
 };
 use crate::icons::Icon;
+use crate::interaction::InteractionEnvironment;
 use crate::text_render::TextRenderer;
 use crate::tokens::TextRole;
 use crate::widget::row_selection::{RowSelection, RowSelectionSink};
@@ -55,6 +56,10 @@ pub(crate) struct NavPaint {
     pub focused_control: Option<String>,
     /// A row is being dragged: no row shows its hover.
     pub dragging: bool,
+    /// The input the list was last laid out for: a trailing action's hit
+    /// target grows to the smallest target that input takes, as every
+    /// compact control's does, while its painted square keeps its size.
+    pub interaction: InteractionEnvironment,
     /// The check marks as they move.
     pub faces: crate::widget::FaceMotions,
 }
@@ -71,6 +76,7 @@ impl Default for NavPaint {
             focused: None,
             focused_control: None,
             dragging: false,
+            interaction: InteractionEnvironment::default(),
             faces: crate::widget::FaceMotions::default(),
         }
     }
@@ -148,7 +154,8 @@ impl NavPaint {
         face
     }
 
-    /// The trailing action squares of an item row at `rect`, in order.
+    /// The trailing action squares of an item row at `rect`, in order, each
+    /// grown to the smallest target the input takes.
     pub(crate) fn action_rects(&self, row: &NavRowData, rect: Rect) -> Vec<Rect> {
         if self.rail || !matches!(row.kind, NavRowKind::Item { actions: true, .. }) {
             return Vec::new();
@@ -157,8 +164,17 @@ impl NavPaint {
         let face = NavRowFace::new(rect, "").actions(&icons, None);
         // Action geometry does not depend on measured text.
         crate::text_render::with_layout_renderer(self.theme.text_scale, |text| {
-            nav_row_layout(&self.theme, text, &face).actions
+            let painted = nav_row_layout(&self.theme, text, &face).actions;
+            painted.into_iter().map(|rect| self.target(rect)).collect()
         })
+    }
+
+    /// The smallest target the input takes, about `rect`'s centre: a finger
+    /// needs 48 where a mouse needs 32. A control paints at its own size and
+    /// is pressed at this one, as [`InteractionEnvironment::minimum_target_rect`]
+    /// has it for every compact control.
+    fn target(&self, rect: Rect) -> Rect {
+        self.interaction.minimum_target_rect(rect)
     }
 
     /// The disclosure of a row at `rect`: the trailing chevron of an item
@@ -183,7 +199,8 @@ impl NavPaint {
         }
     }
 
-    /// Where a section header's trailing action stands at `rect`.
+    /// Where a section header's trailing action is pressed at `rect`: its
+    /// painted square grown to the smallest target the input takes.
     pub(crate) fn section_action_rect(&self, row: &NavRowData, rect: Rect) -> Option<Rect> {
         let NavRowKind::Section {
             action: Some(icon), ..
@@ -194,7 +211,9 @@ impl NavPaint {
         if self.rail {
             return None;
         }
-        nav_section_layout(&self.theme, &NavSectionFace::new(rect, "").action(*icon)).action
+        nav_section_layout(&self.theme, &NavSectionFace::new(rect, "").action(*icon))
+            .action
+            .map(|rect| self.target(rect))
     }
 
     /// The lift of row `row` at `rect`: where its hover and selection paint,
@@ -408,10 +427,10 @@ impl NavRow {
         }
         if let Some(icon) = action {
             face = face.action(*icon);
-            face.action_hover = nav_section_layout(theme, &face)
-                .action
+            face.action_hover = paint
+                .section_action_rect(&self.row, self.rect)
                 .zip(pointer)
-                .is_some_and(|(rect, point)| rect.contains(point));
+                .is_some_and(|(target, point)| target.contains(point));
         }
         paint_nav_section(scene, transform, text, theme, &face);
     }
@@ -458,7 +477,7 @@ impl NavRow {
                             .with_name(label.clone())
                             .with_state(focusable(&target).checked(checked))
                             .with_action_target(target)
-                            .with_bounds(self.rect),
+                            .with_bounds(paint.target(self.rect)),
                     );
                 }
                 for (index, ((_, name), rect)) in paint
@@ -568,6 +587,18 @@ impl RowRenameField for NavRow {
 
 impl Widget for NavRow {
     crate::provides!(dyn RowActionRects, dyn RowSelectionSink, dyn RowRenameField);
+
+    /// The input the list lays its rows out for, kept where the list reads
+    /// its hit targets: a finger's target is larger than a mouse's, and the
+    /// rows that mount from now on are pressed at the same one.
+    fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        let mut paint = self.paint.borrow_mut();
+        if paint.interaction != environment {
+            paint.interaction = environment;
+            // Which action the pointer is over is a target, not a face.
+            self.drawn.set(None);
+        }
+    }
 
     fn build_layout(
         &mut self,

@@ -446,6 +446,82 @@ fn a_rail_stacks_icons_over_labels() {
     );
 }
 
+/// A trailing action paints at its square and is pressed at the smallest
+/// target the input takes, as every compact control is: a finger reaches a
+/// square its own size, not the 24 px glyph the header shows.
+#[test]
+fn a_section_action_is_pressed_at_the_input_s_target() {
+    let seen = Rc::new(Cell2::new(Vec::<(String, String)>::new()));
+    let log = Rc::clone(&seen);
+    let list = NavList::new(mailboxes()).on_section_action(move |section, action| {
+        log.borrow_mut()
+            .push((section.to_owned(), action.to_owned()));
+    });
+    let mut h = harness(list, Theme::dark());
+    h.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+    let header = h
+        .root::<NavList>()
+        .row_rect("folders")
+        .expect("folders header");
+    let (target, painted) = {
+        let nav = h.root::<NavList>();
+        let row = nav
+            .list()
+            .model()
+            .row_of("section:folders")
+            .expect("folders row")
+            .clone();
+        let paint = nav.paint.borrow();
+        (
+            paint
+                .section_action_rect(&row, header)
+                .expect("the header's action"),
+            crate::chrome::nav_section_layout(
+                &Theme::dark(),
+                &NavSectionFace::new(header, "").action(Icon::Plus),
+            )
+            .action
+            .expect("the painted square"),
+        )
+    };
+    let finger = f64::from(crate::InteractionEnvironment::TOUCH.minimum_target());
+    assert!(
+        painted.width() < finger && painted.height() < finger,
+        "the square keeps its size: {painted:?}"
+    );
+    assert!(
+        target.width() + 0.5 >= finger && target.height() + 0.5 >= finger,
+        "a finger's target: {target:?}"
+    );
+    // The semantic button offers the same target the press lands in.
+    fn button(node: &crate::a11y::AccessNode) -> Option<&crate::a11y::AccessNode> {
+        if node
+            .action_target
+            .as_deref()
+            .is_some_and(|target| target.starts_with("section-action:"))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(button)
+    }
+    let published = Widget::accessibility(h.root::<NavList>()).expect("published navigation");
+    let bounds = button(&published)
+        .expect("the header's button")
+        .bounds
+        .expect("the button publishes its target")
+        .to_rect();
+    assert!(
+        bounds.width() + 0.5 >= finger && bounds.height() + 0.5 >= finger,
+        "the button says where it is pressed: {bounds:?}"
+    );
+    // A press in the margin the target adds beside the square runs it.
+    click_at(&mut h, target.x0 + 2.0, target.center().y);
+    assert_eq!(
+        seen.borrow().as_slice(),
+        [("folders".to_owned(), "new-folder".to_owned())]
+    );
+}
+
 fn device() -> winit::event::DeviceId {
     winit::event::DeviceId::dummy()
 }
