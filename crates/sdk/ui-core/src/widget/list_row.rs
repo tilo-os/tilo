@@ -272,6 +272,21 @@ impl RowMetrics {
         m
     }
 
+    /// The metrics of a dense row: one line at the caption's size and the small glyph, for a
+    /// reference that stands among content (what a message was made from) or a list that shows
+    /// a lot at once. Its height comes from its own line and inset, not the list's row height;
+    /// a row a finger presses still grows to its target.
+    fn dense(theme: &Theme) -> Self {
+        let mut m = Self::new(theme);
+        m.min_height = 0.0;
+        m.column_gap = f64::from(theme.tokens.spacing.s2);
+        m.title = theme.text(TextRole::Caption);
+        m.title_strong = theme.text(TextRole::Caption).strong();
+        m.subtitle = theme.text(TextRole::Caption);
+        m.icon = f64::from(theme.tokens.metrics.icon_sm);
+        m
+    }
+
     fn line(text: &mut TextRenderer, style: &TextStyle) -> f64 {
         f64::from(text.measure_style("Ag", None, style).1)
     }
@@ -461,6 +476,9 @@ pub struct ListRowFace<'a> {
     /// The row as a card: its own surface, its title wrapped over up to
     /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it.
     card: bool,
+    /// The row as a dense row: one quiet line at the caption's size, for a reference that
+    /// stands among content or a list that shows a lot at once.
+    dense: bool,
 }
 
 impl<'a> ListRowFace<'a> {
@@ -509,6 +527,7 @@ impl<'a> ListRowFace<'a> {
             min_target: 0.0,
             check_pose: None,
             card: false,
+            dense: false,
         }
     }
 
@@ -521,6 +540,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// The row as a dense row: one line at the caption's size, the small glyph, as tall as that
+    /// line and its inset: a quiet reference under content, or a list that shows a lot at once.
+    #[must_use]
+    pub fn dense(mut self) -> Self {
+        self.dense = true;
+        self
+    }
+
     /// How many lines the title may take: [`Self::two_line_title`] sets two, a card sets what
     /// its title wraps to.
     #[must_use]
@@ -529,10 +556,12 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// The metrics this face lays out with: a card's, where it is one.
+    /// The metrics this face lays out with: a card's, or a dense row's, where it is one.
     fn metrics(&self, theme: &Theme) -> RowMetrics {
         if self.card {
             RowMetrics::card(theme)
+        } else if self.dense {
+            RowMetrics::dense(theme)
         } else {
             RowMetrics::new(theme)
         }
@@ -1249,6 +1278,8 @@ pub struct ListRow {
     /// How many lines the title wraps to in a card at the width it was last measured in: a
     /// card is as tall as its title needs, so its height is measured, not fixed.
     card_lines: u8,
+    /// The row is a dense row ([`ListRowFace::dense`]): one quiet line at the caption's size.
+    dense: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1330,16 +1361,39 @@ impl ListRow {
             hand_on: crate::motion::HandOn::default(),
             card: false,
             card_lines: 1,
+            dense: false,
         }
     }
 
-    /// The metrics the row lays out with: a card's, where it is one.
+    /// The metrics the row lays out with: a card's, or a dense row's, where it is one.
     fn metrics(&self, theme: &Theme) -> RowMetrics {
         if self.card {
             RowMetrics::card(theme)
+        } else if self.dense {
+            RowMetrics::dense(theme)
         } else {
             RowMetrics::new(theme)
         }
+    }
+
+    /// Show the row as a dense row: one quiet line at the caption's size, as tall as that line
+    /// and its inset (a reference under content).
+    #[must_use]
+    pub fn dense(mut self) -> Self {
+        self.set_dense();
+        self
+    }
+
+    /// [`Self::dense`], for a row a host has already built.
+    pub fn set_dense(&mut self) {
+        self.dense = true;
+        self.dirty = true;
+    }
+
+    /// Whether the row stands dense ([`ListRowFace::dense`]).
+    #[must_use]
+    pub const fn is_dense(&self) -> bool {
+        self.dense
     }
 
     /// Show the row as a card: a surface of its own, its title wrapped over up to
@@ -2240,6 +2294,9 @@ impl ListRow {
             face = face.card().title_lines(self.card_lines);
         } else if self.two_line_title {
             face = face.two_line_title();
+        }
+        if self.dense {
+            face = face.dense();
         }
         if let Some(family) = &self.title_family {
             face = face.title_family(family);

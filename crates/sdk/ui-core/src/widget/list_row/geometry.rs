@@ -138,9 +138,14 @@ impl ListRowFace<'_> {
                         | RowLeading::AvatarSpace
                 )
             );
-        let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
-            .max(m.min_height)
-            .max(self.min_target);
+        // A dense row is as tall as its own line and inset, never the list's row height.
+        let min = if self.dense {
+            0.0
+        } else {
+            RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
+        }
+        .max(m.min_height)
+        .max(self.min_target);
         (self
             .text_block(text, &m)
             .max(leading_h)

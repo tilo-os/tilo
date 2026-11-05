@@ -2506,6 +2506,11 @@
               }
             }
           }
+        },
+        {
+          "name": "dense",
+          "doc": "The row stands dense: one quiet line at the caption's size with the small glyph, as tall as that line and its inset, for a reference under content rather than a list of items.",
+          "type": "bool"
         }
       ],
       "slots": [

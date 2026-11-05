@@ -535,24 +535,38 @@ view origin<R>(of: R) {
     }
 }
 
-/// What `linked(of)` returns, under one heading: each in its type's own row, so its state shows
-/// there (a done item shows done) and pressing it opens it; a type with no row of its own is a
-/// row saying its title under the glyph of its app. Links by a field are left out: the page of
-/// the resource holding the field draws that reference, as its own section of related things, so
-/// drawing it here again would show it twice.
-view linked<R>(of: R) {
+/// One resource `of` is linked to, as a reference: in its type's own row where the app declares
+/// one, so its state shows there (a done item says done) and pressing it opens it; any other
+/// type is a row saying its title under the glyph of its app. Dense is the quiet form: one
+/// caption line, for a link under the content it belongs to.
+view linked_row<R>(of: R, dense: Bool = false) {
+    let kind = meta(of)
+    if kind.row {
+        show(of, row: true)
+    } else {
+        let glyph: Option<Text> = if let i = kind.icon { .some(i) } else { .some("link") }
+        ui.ListRow(kind.title, item: of, icon: glyph, dense: dense)
+    }
+}
+
+/// What `linked(of)` returns, each one a reference that opens when pressed: under one heading,
+/// at the density of a page of related things, or compact — quiet reference rows right under
+/// the content they belong to, one caption line each, as what a message was made from. Links by
+/// a field are left out: the page of the resource holding the field draws that reference as its
+/// own section of related things, so drawing it here again would show it twice.
+view linked<R>(of: R, compact: Bool = false) {
     let links = linked(of).filter(l -> l.how != .field)
     if not links.is_empty() {
-        section(phrase("tilolang-linked")) {
-            for l in links {
-                let kind = meta(l.of)
-                if kind.row {
-                    show(l.of, row: true)
-                } else {
-                    let glyph: Option<Text> = if let i = kind.icon {
-                        .some(i)
-                    } else { .some("link") }
-                    ui.ListRow(kind.title, item: l.of, icon: glyph)
+        if compact {
+            stack(gap: .tight) {
+                for l in links {
+                    linked_row(l.of, dense: true)
+                }
+            }
+        } else {
+            section(phrase("tilolang-linked")) {
+                for l in links {
+                    linked_row(l.of)
                 }
             }
         }

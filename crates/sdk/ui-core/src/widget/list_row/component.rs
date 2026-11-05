@@ -67,6 +67,9 @@ pub struct ListRowProps {
     /// The pace the row's own motion plays at: its mark coming and going, and the row arriving,
     /// leaving and changing places in its list. Unset, the theme's.
     pub motion: Option<crate::motion::Feel>,
+    /// The row stands dense: one quiet line at the caption's size with the small glyph, as tall
+    /// as that line and its inset, for a reference under content rather than a list of items.
+    pub dense: bool,
     /// The row was activated (a click, Enter, an assistive technology): open what it shows.
     #[component(event)]
     pub activate: Event,
@@ -99,6 +102,7 @@ impl ListRowProps {
             checkbox: self.checkbox.clone(),
             check: self.check.clone(),
             motion: self.motion,
+            dense: self.dense,
             activate: self.activate.clone(),
         })
     }
@@ -192,6 +196,7 @@ impl ListRow {
             checkbox,
             check,
             motion,
+            dense,
             activate,
         } = props;
         // An empty line is no line: a row of a note without a body is one line high.
@@ -220,6 +225,7 @@ impl ListRow {
         });
         self.selected = selected;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        self.dense = dense;
         self.check_binding = None;
         self.leading = if let Some(bound) = checkbox {
             // The box follows the value it is bound to: one set elsewhere (another device, an

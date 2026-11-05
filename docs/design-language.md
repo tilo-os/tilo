@@ -263,6 +263,10 @@ notebook column) keeps its list width. Apps that paint their own sidebar
   sheets, Quick Settings tiles' minimum).
 - Rows are 36 (one line), 52 (title and secondary line) and 64 (led by a
   40 px avatar or icon); icon-to-text is `sibling`.
+- A dense row is a reference that stands among content (what a message was
+  made from): one line at the caption's size with the small glyph, as tall as
+  that line and its inset rather than the list's row height, and a press on
+  it still grows it to the input's target.
 - The top bar is 32 high; the window bar follows `window bar`; 4 px separate
   them.
 - **Density** is a token mode (`tokens::Density`, `Theme::with_density`) set

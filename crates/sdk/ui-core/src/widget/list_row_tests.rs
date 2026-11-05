@@ -124,6 +124,64 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
     }
 }
 
+/// A dense row is a quiet reference under content: one line at the caption's size with the
+/// small glyph, as tall as that line and its inset rather than the list's row height, and a
+/// finger's press on one still grows it to its target.
+#[test]
+fn a_dense_row_is_its_caption_line_not_a_list_row() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = Theme::dark();
+    let single = f64::from(theme.tokens.metrics.row_single);
+    let quiet = ListRowFace::new("The move flat on Saturday").dense();
+    assert!(
+        face_height(&quiet, 1.0) < single,
+        "a dense row stands under the list's row height"
+    );
+    assert!(
+        face_height(&ListRowFace::new("Water the plants"), 1.0)
+            - face_height(&ListRowFace::new("Water the plants").dense(), 1.0)
+            > f64::from(theme.tokens.spacing.rhythm.tight),
+        "the list's row height leaves it, not only its title's size"
+    );
+    assert!(
+        face_height(&quiet, 2.0) > face_height(&quiet, 1.0) * 1.5,
+        "a dense row grows with the text scale"
+    );
+
+    let row = || {
+        ListRow::new("made", "The move flat on Saturday")
+            .dense()
+            .on_activate(|| {})
+    };
+    for (name, input, want) in [
+        (
+            "a pointer",
+            InteractionEnvironment::POINTER,
+            face_height(&quiet, 1.0),
+        ),
+        (
+            "a finger",
+            InteractionEnvironment::TOUCH,
+            f64::from(InteractionEnvironment::TOUCH.minimum_collection_row()),
+        ),
+    ] {
+        let mut h = FrameHarness::for_root(
+            crate::State::new(),
+            Column::new().push(Box::new(row())),
+            (360, 200),
+            theme.clone(),
+        );
+        h.set_interaction_environment(input);
+        h.relayout_at((360, 200)).expect("layout");
+        let inspection = h.inspection();
+        let height = rect_of(find(&inspection.root, "ListRow").expect("the row")).height();
+        assert!(
+            (height - want).abs() < 0.5,
+            "a dense row is {want} tall as {name} shows it, not {height}"
+        );
+    }
+}
+
 #[test]
 fn a_quiet_word_before_the_title_shares_its_line_and_takes_its_room() {
     let theme = Theme::dark();

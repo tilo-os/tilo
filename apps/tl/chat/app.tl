@@ -546,7 +546,7 @@ view message(m: Message, editing: State<Option<Message>>, revised: State<RichTex
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())
     }
-    std.linked(m)
+    std.linked(m, compact: true)
 }
 
 /// What a message says, and that it was edited when its history holds an edit.
