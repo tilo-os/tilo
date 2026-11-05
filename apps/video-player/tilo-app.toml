@@ -57,8 +57,8 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@17"
-tilo-fs = "optional@17"
+collab = "optional@18"
+tilo-fs = "optional@18"
 
 [entrypoint]
 bin             = "bin/video-player"
