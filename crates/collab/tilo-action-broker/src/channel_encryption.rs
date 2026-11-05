@@ -318,6 +318,10 @@ struct Unopened {
     /// whenever the policy inputs announce a change. `Some` after a failed
     /// open: retried on its own backoff.
     retry: Option<Backoff>,
+    /// The record an endpoint asked about, when it knew one: a record's
+    /// channel is named from its record, so the re-check that waits for the
+    /// policy asks with it.
+    route: Option<ChannelRoute>,
 }
 
 impl Unopened {
@@ -327,6 +331,15 @@ impl Unopened {
         Self {
             workspace,
             retry: Some(retry),
+            route: None,
+        }
+    }
+
+    fn unnamed(workspace: WorkspaceId, route: Option<ChannelRoute>) -> Self {
+        Self {
+            workspace,
+            retry: None,
+            route,
         }
     }
 }
@@ -471,26 +484,14 @@ impl ChannelEncryption {
         now: Instant,
     ) -> ChannelAccess {
         if self.store.is_none() {
-            self.note_unopened(
-                channel,
-                Unopened {
-                    workspace,
-                    retry: None,
-                },
-            );
+            self.note_unopened(channel, Unopened::unnamed(workspace, route.cloned()));
             return ChannelAccess::NoSecretStore;
         }
         if !self.peers.contains_key(&channel) {
             match self.start_peer(workspace, channel, route, now) {
                 Ok(true) => self.queued = true,
                 Ok(false) => {
-                    self.note_unopened(
-                        channel,
-                        Unopened {
-                            workspace,
-                            retry: None,
-                        },
-                    );
+                    self.note_unopened(channel, Unopened::unnamed(workspace, route.cloned()));
                     return ChannelAccess::Unavailable;
                 }
                 Err(error) => {
@@ -584,6 +585,11 @@ impl ChannelEncryption {
                 } else if known.retry.is_none() {
                     known.retry = entry.retry;
                 }
+                // An endpoint that asks with its record hands it over for
+                // the re-check that needs it.
+                if known.route.is_none() {
+                    known.route = entry.route;
+                }
             }
             _ => {
                 self.unopened.insert(channel, entry);
@@ -603,12 +609,18 @@ impl ChannelEncryption {
         for (channel, entry) in &mut self.unopened {
             match &mut entry.retry {
                 None => {
-                    // An unopened channel keeps no route, so only a
-                    // directory that names its readers by channel alone can
-                    // open it here; a request carrying the route opens it
-                    // through `start_peer` instead.
+                    // A record's channel is named from its record, so the
+                    // re-check asks with the route its endpoint gave; only a
+                    // channel asked about without one opens on a directory
+                    // that names its readers by channel alone.
                     let opens = stored
-                        && takes_part(&*self.directory, device, entry.workspace, *channel, None);
+                        && takes_part(
+                            &*self.directory,
+                            device,
+                            entry.workspace,
+                            *channel,
+                            entry.route.as_ref(),
+                        );
                     if recheck && opens {
                         changed.push((*channel, true));
                     }
