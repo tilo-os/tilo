@@ -22,6 +22,7 @@ pub mod i18n;
 pub mod names;
 #[cfg(test)]
 pub mod packages;
+pub mod reminders;
 pub mod resource;
 pub mod search;
 pub mod updates;
