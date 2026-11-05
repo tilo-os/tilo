@@ -481,14 +481,18 @@ fn row(listing: &Listing, ask: &Ask) -> Element {
     let mut trailing = Row::new()
         .with_rhythm(Rhythm::Related)
         .with_gap(ui::tokens::Spacing::BASE.s1);
-    for (name, identity) in listing.here.iter().take(FACES_SHOWN) {
+    let faces = listing.here.len().min(FACES_SHOWN);
+    for (name, identity) in listing.here.iter().take(faces) {
         trailing = trailing.push(Box::new(Avatar::person(name.clone(), identity.clone())));
     }
+    // The count of who is here only counts past faces: a listing that says how
+    // many are here but draws none (a host that keeps no faces) leaves it to
+    // its activity line, which says it in words.
     let extra = listing
         .here_count
         .max(listing.here.len())
-        .saturating_sub(listing.here.len().min(FACES_SHOWN));
-    if extra > 0 {
+        .saturating_sub(faces);
+    if faces > 0 && extra > 0 {
         trailing = trailing.push(Box::new(
             Text::new(&crate::t_args(
                 "directory-here-more",

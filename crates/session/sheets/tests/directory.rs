@@ -72,6 +72,28 @@ fn seated(directory: Directory) -> (HeadlessApp<DirectoryApp>, DirectorySeat) {
     (app, seat)
 }
 
+/// Whether the sheet alone, built from `listings` and nothing else, says `text`.
+fn sheet_says(listings: Vec<Listing>, text: &str) -> bool {
+    let ask: directory::Ask = Rc::new(|_: DirectoryEffect| {});
+    let query = ui::LocalState::new(String::new());
+    let inputs = ui::headless::fixture_runner_inputs();
+    let directory = Directory {
+        status: Status::Listed,
+        listings,
+        note: None,
+    };
+    let mut frame = FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        directory::sheet(&directory, &query, &ask),
+        VIEWPORT,
+        inputs.theme,
+        inputs.text_renderer,
+        ui::collaboration::local_user_id(),
+    );
+    frame.relayout();
+    frame_says(&frame, text)
+}
+
 #[test]
 fn every_scenario_says_where_the_list_stands() {
     assert!(says(&mut staged("listed"), "Gardeners"));
@@ -194,6 +216,29 @@ fn a_join_running_holds_the_other_buttons() {
         "{buttons:?}"
     );
     assert!(held.iter().all(|(_, disabled)| *disabled), "{buttons:?}");
+}
+
+#[test]
+fn a_listing_that_draws_no_faces_says_how_many_are_here_in_words_only() {
+    // A host that keeps no faces (a listing stored before faces existed) still
+    // says how many are here. The row says that in its activity line; a count
+    // of who is past the faces would sit there alone, past nothing.
+    let mut quiet = listing("lounge", "Lounge", ListingAction::Join);
+    quiet.here_count = 3;
+    quiet.activity = "3 here now".to_owned();
+    assert!(sheet_says(vec![quiet.clone()], "3 here now"));
+    assert!(!sheet_says(vec![quiet], "+3"), "no count with no faces");
+}
+
+#[test]
+fn faces_carry_the_count_of_those_past_them() {
+    let mut busy = listing("busy", "Busy", ListingAction::Join);
+    busy.here = (0..4)
+        .map(|at| (format!("Face{at}"), format!("id{at}")))
+        .collect();
+    busy.here_count = 6;
+    assert!(sheet_says(vec![busy.clone()], "Face0"));
+    assert!(sheet_says(vec![busy], "+2"));
 }
 
 #[test]
