@@ -262,7 +262,12 @@ impl Core {
     /// A type no app declares (`app#Type` names one) is a read waiting on nothing: a fault.
     pub(crate) fn missing_type(&self, ty: &str) -> String {
         let why = format!("type `{ty}` is not declared by any loaded package");
-        if self.wanted_packages.borrow_mut().want(ty) {
+        // A type of an app whose package this runtime does not hold may come: ask for it, and
+        // the call waits rather than faults. One of an app loaded here is a mistake in the
+        // view, and stays a fault.
+        let may_come = crate::foreign::foreign_type(ty)
+            .is_some_and(|key| !self.registry.borrow().holds_app(&key.app));
+        if may_come && self.wanted_packages.borrow_mut().want(ty) {
             self.foreign.borrow().remember_waiting(&why);
         }
         why

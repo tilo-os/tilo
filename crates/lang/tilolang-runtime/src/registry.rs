@@ -298,6 +298,15 @@ impl Registry {
         })
     }
 
+    /// Whether a package of the app `app` is loaded here: its types are declared, and a type of
+    /// it no loaded package declares is a fault rather than one waiting on the app's package.
+    #[must_use]
+    pub fn holds_app(&self, app: &str) -> bool {
+        self.packages
+            .values()
+            .any(|package| package.meta.app == app)
+    }
+
     /// Remove every package of the app `app` this runtime does not run (its records are that
     /// app's): its types, actions, views and flows are declared here no more. Whether one was.
     pub fn remove_foreign(&mut self, app: &str) -> bool {
