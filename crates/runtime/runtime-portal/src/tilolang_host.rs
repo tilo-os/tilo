@@ -23,8 +23,8 @@
 //!
 //! A host whose author is an agent task runs no app instance: the session hands it
 //! the task instead ([`TASK_VERB`], [`TaskRequest`]), with the task's program
-//! connection to the agent door and the verified modules of every installed
-//! tilolang app, which its programs are compiled against
+//! connection to the agent door and every app its programs are compiled against:
+//! a tilolang app's verified module, and a native app's signed surface
 //! (`docs/designs/app-language/agents.md`, "How a program runs"). The host never names an app to the session: the
 //! broker and the compositor attribute each connection from the session's own
 //! records. An instance ends when its window's connection closes.
@@ -137,8 +137,8 @@ pub struct TaskRequest {
     /// The person the task acts for, as its programs' `me`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub person: Option<String>,
-    /// The length of the modules in their memfd ([`encode_modules`]).
-    pub modules_len: u64,
+    /// The length of the apps in their memfd ([`encode_apps`]).
+    pub apps_len: u64,
     /// The id whose records an app keeps, by the app's id, for each app that keeps another's:
     /// an app renamed keeps using the record of its earliest id
     /// ([`InstanceRequest::records_under`]).
@@ -152,8 +152,8 @@ pub struct TaskFds {
     /// The program connection to the agent door: the task's programs come in on it, and what
     /// they read and invoke goes out on it, as the task.
     pub program: Descriptor,
-    /// Every installed tilolang app's module, in a sealed memfd.
-    pub modules: Descriptor,
+    /// Every app the task's programs may name, in a sealed memfd ([`encode_apps`]).
+    pub apps: Descriptor,
 }
 
 /// What the session hands a host.
@@ -163,37 +163,53 @@ pub enum Handed {
     Task(TaskRequest, TaskFds),
 }
 
-const MODULES_MAGIC: &[u8; 8] = b"tlmodls1";
+const APPS_MAGIC: &[u8; 8] = b"tlappsl1";
 
-/// `modules` as the bytes a task's memfd holds.
+/// One app a task's programs may name, as the session hands it to the task's host: a tilolang
+/// app's compiled module, or a native app's published surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum App {
+    /// A tilolang app the session runs: its compiled module, its package's description embedded
+    /// (`app.wasm`, `app.ids`, `imports/*.wasm`; [`Module`]).
+    Module(Module),
+    /// A native app: its package id, the name people call it, and the bytes of its signed
+    /// `surface.toml` (the session reads them with `tilo_installed_apps::signed_surfaces`).
+    Surface {
+        app: String,
+        title: String,
+        surface: String,
+    },
+}
+
+/// `apps` as the bytes a task's memfd holds.
 #[must_use]
-pub fn encode_modules(modules: &[Module]) -> Vec<u8> {
-    let mut out = MODULES_MAGIC.to_vec();
-    for module in modules {
-        let encoded = module.encode();
+pub fn encode_apps(apps: &[App]) -> Vec<u8> {
+    let mut out = APPS_MAGIC.to_vec();
+    for app in apps {
+        let encoded = app.encode();
         out.extend_from_slice(&(encoded.len() as u64).to_le_bytes());
         out.extend_from_slice(&encoded);
     }
     out
 }
 
-/// The modules `bytes` hold.
+/// The apps `bytes` hold.
 ///
 /// # Errors
-/// The bytes are no list of modules.
-pub fn decode_modules(bytes: &[u8]) -> io::Result<Vec<Module>> {
-    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a list of tilolang modules");
-    let mut rest = bytes.strip_prefix(MODULES_MAGIC).ok_or_else(invalid)?;
-    let mut modules = Vec::new();
+/// The bytes are no list of apps.
+pub fn decode_apps(bytes: &[u8]) -> io::Result<Vec<App>> {
+    let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a list of tilolang apps");
+    let mut rest = bytes.strip_prefix(APPS_MAGIC).ok_or_else(invalid)?;
+    let mut apps = Vec::new();
     while !rest.is_empty() {
         let (len, after) = rest.split_at_checked(8).ok_or_else(invalid)?;
         let len = u64::from_le_bytes(len.try_into().map_err(|_| invalid())?);
         let len = usize::try_from(len).map_err(|_| invalid())?;
-        let (module, after) = after.split_at_checked(len).ok_or_else(invalid)?;
-        modules.push(Module::decode(module)?);
+        let (app, after) = after.split_at_checked(len).ok_or_else(invalid)?;
+        apps.push(App::decode(app)?);
         rest = after;
     }
-    Ok(modules)
+    Ok(apps)
 }
 
 /// What one instance runs: the package's compiled module, its ids lock and the
@@ -283,6 +299,80 @@ impl Module {
             ids,
             imports: fields.collect(),
         })
+    }
+}
+
+impl App {
+    /// The app as the bytes the task's memfd holds: a tag, then its fields, each with its
+    /// length.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        fn field(out: &mut Vec<u8>, bytes: &[u8]) {
+            out.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytes);
+        }
+        let mut out = Vec::new();
+        match self {
+            Self::Module(module) => {
+                out.push(b'm');
+                field(&mut out, &module.encode());
+            }
+            Self::Surface {
+                app,
+                title,
+                surface,
+            } => {
+                out.push(b's');
+                field(&mut out, app.as_bytes());
+                field(&mut out, title.as_bytes());
+                field(&mut out, surface.as_bytes());
+            }
+        }
+        out
+    }
+
+    /// The app `bytes` hold.
+    ///
+    /// # Errors
+    /// The bytes are no app.
+    pub fn decode(bytes: &[u8]) -> io::Result<Self> {
+        let invalid = || io::Error::new(io::ErrorKind::InvalidData, "not a tilolang app");
+        let (tag, mut rest) = bytes.split_first().ok_or_else(invalid)?;
+        let mut fields = Vec::new();
+        while !rest.is_empty() {
+            let (len, after) = rest.split_at_checked(8).ok_or_else(invalid)?;
+            let len = u64::from_le_bytes(len.try_into().map_err(|_| invalid())?);
+            let len = usize::try_from(len).map_err(|_| invalid())?;
+            let (field, after) = after.split_at_checked(len).ok_or_else(invalid)?;
+            fields.push(field.to_vec());
+            rest = after;
+        }
+        let mut fields = fields.into_iter();
+        match tag {
+            b'm' => {
+                let encoded = fields.next().ok_or_else(invalid)?;
+                if fields.next().is_some() {
+                    return Err(invalid());
+                }
+                Ok(Self::Module(Module::decode(&encoded)?))
+            }
+            b's' => {
+                let mut text =
+                    || String::from_utf8(fields.next().ok_or_else(invalid)?).map_err(|_| invalid());
+                let app = text()?;
+                let title = text()?;
+                let surface = text()?;
+                if fields.next().is_some() {
+                    return Err(invalid());
+                }
+                Ok(Self::Surface {
+                    app,
+                    title,
+                    surface,
+                })
+            }
+            _ => Err(invalid()),
+        }
     }
 }
 
@@ -377,8 +467,8 @@ pub fn send_instance(
     }
 }
 
-/// Hand the host behind `door` the task `request`: its program connection and the modules
-/// its programs are compiled against.
+/// Hand the host behind `door` the task `request`: its program connection and the apps its
+/// programs are compiled against.
 ///
 /// # Errors
 /// The socket's error, a request that does not encode, or
@@ -394,7 +484,7 @@ pub fn send_task(door: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io:
         crate::jobs::send(
             door.as_fd(),
             &[TASK_VERB, &encoded],
-            &[fds.program.as_fd(), fds.modules.as_fd()],
+            &[fds.program.as_fd(), fds.apps.as_fd()],
         )
     }
     #[cfg(not(target_os = "linux"))]
@@ -449,12 +539,12 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
         if verb == TASK_VERB {
             let request: TaskRequest = serde_json::from_slice(request)
                 .map_err(|_| invalid("a task request that does not decode"))?;
-            let [program, modules] = <[Descriptor; 2]>::try_from(fds)
+            let [program, apps] = <[Descriptor; 2]>::try_from(fds)
                 .map_err(|_| invalid("a task without its two connections"))?;
-            if request.modules_len > MAX_MODULE {
-                return Err(invalid("modules over the door's limit"));
+            if request.apps_len > MAX_MODULE {
+                return Err(invalid("apps over the door's limit"));
             }
-            return Ok(Some(Handed::Task(request, TaskFds { program, modules })));
+            return Ok(Some(Handed::Task(request, TaskFds { program, apps })));
         }
         if verb != INSTANCE_VERB {
             return Err(invalid("the door carried something other than an instance"));
@@ -654,18 +744,18 @@ mod tests {
     }
 
     #[test]
-    fn a_task_crosses_the_door_with_its_program_connection_and_modules() {
+    fn a_task_crosses_the_door_with_its_program_connection_and_apps() {
         let (shell, host) = pair().unwrap();
         let request = TaskRequest {
             task: "door:1".into(),
             room: "7a110d00-0000-4000-8000-000000000001".into(),
             person: Some("ada".into()),
-            modules_len: 3,
+            apps_len: 3,
             records_under: [("so.tilo.lang.tasks".into(), "so.tilo.lang.todo".into())].into(),
         };
         let fds = TaskFds {
             program: connection(),
-            modules: connection(),
+            apps: connection(),
         };
         send_task(&shell, &request, &fds).unwrap();
         let Some(Handed::Task(received, _fds)) = receive(&host).unwrap() else {
@@ -675,21 +765,34 @@ mod tests {
     }
 
     #[test]
-    fn modules_are_their_bytes_again() {
-        let modules = vec![
-            Module {
+    fn apps_are_their_bytes_again() {
+        let apps = vec![
+            App::Module(Module {
                 wasm: vec![0, 97, 115, 109, 1],
                 ids: "Note = 1\n".into(),
                 imports: Vec::new(),
-            },
-            Module {
+            }),
+            App::Module(Module {
                 wasm: vec![0, 97, 115, 109, 2],
                 ids: String::new(),
                 imports: vec![vec![1, 2]],
+            }),
+            App::Surface {
+                app: "so.tilo.chat".into(),
+                title: "Chat".into(),
+                surface: "[[resources]]\nkind = \"chat.workspace\"\n".into(),
             },
         ];
-        assert_eq!(decode_modules(&encode_modules(&modules)).unwrap(), modules);
-        assert!(decode_modules(b"garbage").is_err());
+        assert_eq!(decode_apps(&encode_apps(&apps)).unwrap(), apps);
+        assert!(decode_apps(b"garbage").is_err());
+        let mut empty = App::Surface {
+            app: String::new(),
+            title: String::new(),
+            surface: String::new(),
+        }
+        .encode();
+        empty.truncate(empty.len() - 1);
+        assert!(App::decode(&empty).is_err());
     }
 
     #[test]

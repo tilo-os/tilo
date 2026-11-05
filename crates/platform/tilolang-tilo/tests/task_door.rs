@@ -112,6 +112,7 @@ impl Apps {
             Some("ada"),
             &(Rc::clone(&door) as Rc<dyn TaskDoor>),
             &self.bundles,
+            &[],
         )
         .unwrap();
         (task, door)
@@ -123,6 +124,7 @@ impl Apps {
             Some("ada"),
             &(Rc::clone(self) as Rc<dyn TaskDoor>),
             &self.bundles,
+            &[],
         )
         .unwrap()
     }

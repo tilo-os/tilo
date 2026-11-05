@@ -31,7 +31,7 @@ use tilolang_runtime::catalogue::SignatureKind;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::flow::Journal;
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
-use tilolang_runtime::meta::{Meta, parse_ty};
+use tilolang_runtime::meta::{Meta, PackageMeta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{
@@ -130,9 +130,12 @@ impl Authority for DecidesNothing {
 
 impl TaskSession {
     /// The session of a task reaching the workspace through `door`, with the packages `bundles`
-    /// (every installed app's, each after the packages it uses) and the platform's own (the
-    /// device's and the session's resources, Settings': [`crate::platform_apps`]), whose actions
-    /// a program invokes where the session publishes them.
+    /// (every tilolang app the session runs, each after the packages it uses), the native apps
+    /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
+    /// and the platform's own (the device's and the session's resources, Settings':
+    /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
+    /// them. A program names and type-checks every app of them; one it reaches nothing of yet
+    /// refuses in one place ([`Unreachable`]).
     ///
     /// # Errors
     /// The runtime cannot start or a package does not load.
@@ -140,15 +143,18 @@ impl TaskSession {
         person: Option<&str>,
         door: &Rc<dyn TaskDoor>,
         bundles: &[Bundle],
+        native: &[PackageMeta],
     ) -> Result<Self, String> {
         let reads = Rc::new(RefCell::new(Reads::default()));
         let packages = Rc::new(RefCell::new(HashMap::new()));
         let schemas = Arc::new(crate::schema::Schemas::new());
+        let unreachable = Rc::new(unreachable(bundles, native));
         let store = TaskStore {
             door: Rc::clone(door),
             reads: Rc::clone(&reads),
             packages: Rc::clone(&packages),
             schemas: Arc::clone(&schemas),
+            unreachable: Rc::clone(&unreachable),
             journals: HashMap::new(),
             fresh: 0,
         };
@@ -179,24 +185,19 @@ impl TaskSession {
             }
             apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
+        // The native apps, after the ones with code: what each publishes, and not how it runs.
+        load_apps(&runtime, &mut apps, native.iter().cloned())?;
         reads.borrow_mut().apps = apps.keys().cloned().collect();
         // The platform's packages, the session's own among them: no record holds their
         // resources, so they are read by no record read; their actions are invoked on the
         // resource the session publishes.
-        let mut published = std::collections::HashSet::new();
-        let mut platform = crate::platform_apps::platform_packages()?;
-        platform.push(crate::platform_apps::session_package()?);
-        for meta in platform {
-            if apps.contains_key(&meta.app) {
-                continue;
-            }
-            runtime
-                .load_foreign(meta.clone())
-                .map_err(|error| error.to_string())?;
-            meta.register_schemas();
-            published.insert(meta.app.clone());
-            apps.insert(meta.app.clone(), meta);
-        }
+        let platform = crate::platform_apps::platform_packages()?
+            .into_iter()
+            .chain(std::iter::once(crate::platform_apps::session_package()?));
+        let published: std::collections::HashSet<String> =
+            load_apps(&runtime, &mut apps, platform)?
+                .into_iter()
+                .collect();
         *packages.borrow_mut() = modules
             .iter()
             .map(|(app, module)| (app.clone(), module.0.clone()))
@@ -208,9 +209,14 @@ impl TaskSession {
             published,
             addresses: crate::platform_apps::session_addresses()?,
             steps: Rc::clone(&steps),
+            unreachable: Rc::clone(&unreachable),
         });
         let asked = Rc::clone(door);
+        let reached = Rc::clone(&unreachable);
         runtime.set_reader(move |request| {
+            if let Some(why) = reached.why(request.app()) {
+                return Err(why);
+            }
             let encoded = serde_json::to_value(request).map_err(|error| error.to_string())?;
             asked.query(request.app(), &encoded)
         });
@@ -417,6 +423,8 @@ fn first_param_type(text: &str) -> Option<&str> {
 struct DoorInvoker {
     door: Rc<dyn TaskDoor>,
     apps: HashMap<String, Meta>,
+    /// The native apps among them, which a program names and invokes nothing of yet.
+    unreachable: Rc<Unreachable>,
     /// The platform's apps, whose resources the session publishes under their own ids.
     published: std::collections::HashSet<String>,
     /// The resource each of the session's loose actions is published on, by the action's id.
@@ -449,6 +457,9 @@ impl DoorInvoker {
 impl Invoker for DoorInvoker {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         let app = invocation.app();
+        if let Some(why) = self.unreachable.why(app) {
+            return Invoked::Refused(why);
+        }
         let Some(meta) = self.apps.get(app) else {
             return Invoked::Refused(format!("this task may use no app {app}"));
         };
@@ -730,6 +741,66 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Valu
     }
 }
 
+/// The apps a task names and reaches nothing of yet: native apps, whose records and actions
+/// stay in the app, which a program does not run ([`crate::catalogue::described`] reads what
+/// they publish, not how it runs). A program type-checks against one, and every read and
+/// invocation of it answers this one refusal.
+struct Unreachable(std::collections::HashSet<String>);
+
+/// The native apps among `native` that a program reaches nothing of yet: each one the bundles
+/// here do not carry, whose own package is the one that counts.
+fn unreachable(bundles: &[Bundle], native: &[PackageMeta]) -> Unreachable {
+    let carried: std::collections::HashSet<&str> = bundles
+        .iter()
+        .flat_map(|bundle| {
+            bundle
+                .imports
+                .iter()
+                .map(|import| import.meta.app.as_str())
+                .chain(std::iter::once(bundle.meta.app.as_str()))
+        })
+        .collect();
+    Unreachable(
+        native
+            .iter()
+            .map(|meta| meta.app.clone())
+            .filter(|app| !carried.contains(app.as_str()))
+            .collect(),
+    )
+}
+
+/// Load the packages of apps this runtime does not run ([`Runtime::load_foreign`]), passing over
+/// the ones an app here already has: what they publish, and not how they run. The apps it
+/// loaded.
+fn load_apps(
+    runtime: &Runtime,
+    apps: &mut HashMap<String, Meta>,
+    metas: impl IntoIterator<Item = PackageMeta>,
+) -> Result<Vec<String>, String> {
+    let mut loaded = Vec::new();
+    for meta in metas {
+        if apps.contains_key(&meta.app) {
+            continue;
+        }
+        runtime
+            .load_foreign(meta.clone())
+            .map_err(|error| error.to_string())?;
+        meta.register_schemas();
+        loaded.push(meta.app.clone());
+        apps.insert(meta.app.clone(), meta);
+    }
+    Ok(loaded)
+}
+
+impl Unreachable {
+    /// Why a program cannot reach `app` yet, when it is a native one.
+    fn why(&self, app: &str) -> Option<String> {
+        self.0.contains(app).then(|| {
+            format!("{app} is not yet reachable from a program: a native app's records and actions stay in the app")
+        })
+    }
+}
+
 /// What the door read of resources, per program.
 #[derive(Default)]
 struct Reads {
@@ -757,6 +828,8 @@ struct TaskStore {
     /// record resolves its type by when the app the record's type names is not the one being
     /// read (a field holding another app's record).
     schemas: Arc<crate::schema::Schemas>,
+    /// The native apps among them, which a program reads nothing of yet.
+    unreachable: Rc<Unreachable>,
     /// The journals of the task's program runs: the task's own, kept in memory.
     journals: HashMap<RunId, Journal>,
     fresh: u64,
@@ -773,6 +846,9 @@ impl TaskStore {
             return Ok(Rc::clone(known));
         }
         let app = self.app_of(at)?;
+        if let Some(why) = self.unreachable.why(&app) {
+            return Err(StoreError::Backend(why));
+        }
         // The app's package table installed: what the record's type id names is that package
         // version's schema ([`crate::schema::for_module`]), and not another version of the same
         // app that loaded here for another task or host.
@@ -869,6 +945,9 @@ impl Store for TaskStore {
             item: None,
             ty: ty.clone(),
         })?;
+        if let Some(why) = self.unreachable.why(&app) {
+            return Err(StoreError::Backend(why));
+        }
         let request = tilolang_runtime::reads::ReadRequest::Select {
             app: app.clone(),
             ty: ty.clone(),
@@ -1101,5 +1180,94 @@ mod tests {
         assert!(wants_preview(&[
             json!({"resources": ["a"], "destructive": true})
         ]));
+    }
+
+    /// A door that answers nothing: what the test asserts is never reached.
+    struct Unasked;
+
+    impl TaskDoor for Unasked {
+        fn read(&self, _: &str, _: &str) -> Result<Json, String> {
+            Err("a refused invocation reads nothing".to_owned())
+        }
+
+        fn invoke(&self, _: &Json) -> Answered {
+            Answered::Failed("a refused invocation is not sent".to_owned())
+        }
+
+        fn query(&self, _: &str, _: &Json) -> Result<Json, String> {
+            Err("a refused invocation asks nothing".to_owned())
+        }
+    }
+
+    #[test]
+    fn a_catalogue_of_apps_names_each_ones_verbs_by_its_app() {
+        // Chat and the session both publish a `share-window` verb: in one catalogue they are
+        // two actions, and each app's own door takes its verb back.
+        let chat = crate::catalogue::NativeSurface {
+            app: "so.tilo.chat".to_owned(),
+            title: "Chat".to_owned(),
+            surface: include_str!("../../../../apps/chat/surface.toml").to_owned(),
+        }
+        .package()
+        .expect("Chat's surface reads");
+        let session = crate::platform_apps::session_package().expect("the session's reads");
+        assert!(
+            chat.actions
+                .iter()
+                .any(|action| action.id == "so.tilo.chat#share-window"),
+            "{:?}",
+            chat.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+        );
+        assert!(
+            session
+                .actions
+                .iter()
+                .any(|action| action.id == "share-window"),
+            "{:?}",
+            session.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+        );
+        for (app, id, verb) in [
+            ("so.tilo.chat", "so.tilo.chat#share-window", "share-window"),
+            ("so.tilo.chat", "create-channel", "create-channel"),
+            ("so.tilo.chat", "a1b2c3", "a1b2c3"),
+        ] {
+            assert_eq!(crate::catalogue::published_verb(app, id), verb);
+        }
+    }
+
+    #[test]
+    fn a_native_apps_action_is_refused_from_one_place() {
+        let meta = crate::catalogue::described(
+            "so.tilo.chat",
+            "Chat",
+            include_str!("../../../../apps/chat/surface.toml"),
+        )
+        .expect("Chat's surface reads");
+        let app = meta.app.clone();
+        let invoker = DoorInvoker {
+            door: Rc::new(Unasked) as Rc<dyn TaskDoor>,
+            apps: HashMap::from([(app.clone(), meta)]),
+            published: std::collections::HashSet::new(),
+            addresses: std::collections::BTreeMap::new(),
+            steps: Rc::new(RefCell::new(Steps::default())),
+            unreachable: Rc::new(Unreachable([app.clone()].into_iter().collect())),
+        };
+        let invocation = Invocation::Action {
+            app,
+            action: "create-channel".to_owned(),
+            name: "create_channel".to_owned(),
+            args: Vec::new(),
+            class: tilolang_runtime::meta::EffectClass::Undoable,
+            destructive: false,
+            author: None,
+            subject: None,
+        };
+        match invoker.invoke(&invocation) {
+            Invoked::Refused(why) => {
+                assert!(why.contains("so.tilo.chat"), "{why}");
+                assert!(why.contains("is not yet reachable from a program"), "{why}");
+            }
+            other => panic!("a native app's action is refused, not {other:?}"),
+        }
     }
 }

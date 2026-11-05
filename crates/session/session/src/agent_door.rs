@@ -1303,10 +1303,10 @@ enum DoorAsk {
         app: String,
         done: tilo_actions::remote::Completer<Option<tilo_service::Record>>,
     },
-    /// The compiled modules of every package the session runs itself, which a task's host
-    /// loads to run its programs against: each its description embedded, and the packages it
-    /// uses first.
-    Modules(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::Module>>),
+    /// Every app a task's programs may name, which its host loads to run them against: the
+    /// compiled module of each package the session runs itself (its description embedded, the
+    /// packages it uses first), and the signed surface of each native app this device has.
+    Apps(tilo_actions::remote::Completer<Vec<runtime_portal::tilolang_host::App>>),
     /// Run the change `change` of a record a service keeps for a package the session runs
     /// itself, as `actor`, on the pass: its answer as the door gives it, or `None` when no
     /// service keeps that app's record.
@@ -1464,22 +1464,8 @@ impl SessionDoors {
                 DoorAsk::Record { app, done } => {
                     done.complete(services.borrow().record(&app));
                 }
-                DoorAsk::Modules(done) => {
-                    let modules: Vec<runtime_portal::tilolang_host::Module> = services
-                        .borrow()
-                        .records()
-                        .into_iter()
-                        .flat_map(|record| {
-                            record.packages.into_iter().map(|wasm| {
-                                runtime_portal::tilolang_host::Module {
-                                    wasm: wasm.to_vec(),
-                                    ids: String::new(),
-                                    imports: Vec::new(),
-                                }
-                            })
-                        })
-                        .collect();
-                    done.complete(modules);
+                DoorAsk::Apps(done) => {
+                    done.complete(catalogue(services));
                 }
                 DoorAsk::Change {
                     actor,
@@ -1933,6 +1919,55 @@ impl tilo_actions::remote::RecordChanges for ServiceChanges {
     }
 }
 
+/// Every app a task's programs may name: the compiled module of each package the session runs
+/// itself, and the signed surface of each native app installed on this device.
+///
+/// One catalogue, whoever reads it: `tilolang check` reads the same surfaces from the apps'
+/// directories, and both compile a program against the packages they read from them.
+fn catalogue(
+    services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
+) -> Vec<runtime_portal::tilolang_host::App> {
+    use runtime_portal::tilolang_host::{App, Module};
+    let mut apps: Vec<App> = services
+        .borrow()
+        .records()
+        .into_iter()
+        .flat_map(|record| record.packages)
+        .map(|wasm| {
+            App::Module(Module {
+                wasm: wasm.to_vec(),
+                ids: String::new(),
+                imports: Vec::new(),
+            })
+        })
+        .collect();
+    let installed = match tilo_installed_apps::signed_surfaces_from_env() {
+        Ok(installed) => installed,
+        Err(error) => {
+            tracing::warn!(%error, "agent door: the installed apps' surfaces are not read");
+            Vec::new()
+        }
+    };
+    for (app, title, surface) in installed {
+        let Ok(surface) = String::from_utf8(surface) else {
+            tracing::warn!(%app, "agent door: an app's surface is not text");
+            continue;
+        };
+        if apps.iter().any(|known| match known {
+            App::Surface { app: named, .. } => *named == app,
+            App::Module(_) => false,
+        }) {
+            continue;
+        }
+        apps.push(App::Surface {
+            app,
+            title,
+            surface,
+        });
+    }
+    apps
+}
+
 /// Where the session's door starts a connection's task host: a thread of the
 /// session's own running the task's tilolang host (`tilolang_host::task`)
 /// over the program connection. The host holds no authority: it decides
@@ -1972,19 +2007,20 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
         // The person's own connection into the same session, for the lines they type in the
         // run's conversation: it runs there, where the `let`s the agent's programs bound are.
         let (person_ours, person_host) = UnixStream::pair()?;
-        // The modules the task's programs are compiled against: every package the session runs
-        // itself (the shell), whose records a program reads by the app, and the platform's own
-        // (the device and its arrangement, Settings).
+        // The apps the task's programs are compiled against: every package the session runs
+        // itself (the shell), whose records a program reads by the app, every native app this
+        // device has, from its signed surface, and the platform's own (the device and its
+        // arrangement, Settings).
         let (done, whole) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Modules(done));
-        let modules = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
-        let encoded = runtime_portal::tilolang_host::encode_modules(&modules);
-        let modules = tilo_render_protocol::shm::sealed_blob("tilolang-modules", &encoded)?;
+        self.session.ask(DoorAsk::Apps(done));
+        let apps = whole.wait_timeout(WAIT).ok().flatten().unwrap_or_default();
+        let encoded = runtime_portal::tilolang_host::encode_apps(&apps);
+        let apps = tilo_render_protocol::shm::sealed_blob("tilolang-apps", &encoded)?;
         let request = runtime_portal::tilolang_host::TaskRequest {
             task: task.to_owned(),
             room: workspace.to_owned(),
             person: self.person.lock_recover().clone(),
-            modules_len: encoded.len() as u64,
+            apps_len: encoded.len() as u64,
             records_under: std::collections::BTreeMap::new(),
         };
         self.runs
@@ -1994,7 +2030,7 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
             .spawn(move || {
                 let fds = runtime_portal::tilolang_host::TaskFds {
                     program: host_end.into(),
-                    modules,
+                    apps,
                 };
                 let opened =
                     tilolang_host::task::Task::open_with(&request, fds, Some(person_host));

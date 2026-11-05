@@ -110,13 +110,56 @@ pub fn parse_surfaces(text: &str) -> Result<Vec<Surface>, String> {
     Ok(file.resources)
 }
 
-/// The package a native app directory publishes: its manifest's id and name, and the
-/// resources of its `surface.toml`. `None` for a directory that is not a native app with a
-/// committed surface.
+/// One native app's published surface: its package id, the name people call it, and the bytes
+/// of its `surface.toml`. [`NativeSurface::package`] reads it as a tilolang package, whichever
+/// way it arrived: from the app's directory ([`native_surface`]) for `tilolang check`, or from
+/// what a session hands a task's host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeSurface {
+    pub app: String,
+    pub title: String,
+    pub surface: String,
+}
+
+impl NativeSurface {
+    /// The package this app publishes: [`described`], its actions named by the catalogue
+    /// ([`action_id`]).
+    ///
+    /// # Errors
+    /// The surface does not read.
+    pub fn package(&self) -> Result<PackageMeta, String> {
+        let mut meta = described(&self.app, &self.title, &self.surface)?;
+        for action in &mut meta.actions {
+            action.id = action_id(&meta.app, &action.id);
+        }
+        Ok(meta)
+    }
+}
+
+/// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`.
+/// A surface's verb ids are the app's own (`open`, `share-window`), so several apps in one
+/// catalogue would otherwise be one action; its types are named by their app the same way. The
+/// app's own door takes the verb back ([`published_verb`]).
+#[must_use]
+pub fn action_id(app: &str, verb: &str) -> String {
+    format!("{app}#{verb}")
+}
+
+/// The verb id the app's own door takes for the catalogue action `id` ([`action_id`]): a
+/// tilolang package's action keeps the id its app gives it.
+#[must_use]
+pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
+    id.strip_prefix(app)
+        .and_then(|rest| rest.strip_prefix('#'))
+        .unwrap_or(id)
+}
+
+/// The surface a native app directory publishes: its manifest's id and name, and its
+/// `surface.toml`. `None` for a directory that is not a native app with a committed surface.
 ///
 /// # Errors
 /// The manifest or the surface file does not read.
-pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
+pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
     let (manifest, surface) = (dir.join(MANIFEST_FILE), dir.join(SURFACE_FILE));
     if !manifest.is_file() || !surface.is_file() {
         return Ok(None);
@@ -126,17 +169,36 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
     };
     let manifest: Manifest = toml::from_str(&read(&manifest)?)
         .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))?;
-    described(
-        &manifest.package.id,
-        &manifest.package.name,
-        &read(&surface)?,
-    )
-    .map(Some)
-    .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
+    Ok(Some(NativeSurface {
+        app: manifest.package.id,
+        title: manifest.package.name,
+        surface: read(&surface)?,
+    }))
+}
+
+/// The package a native app directory publishes: its manifest's id and name, and the
+/// resources of its `surface.toml`. `None` for a directory that is not a native app with a
+/// committed surface.
+///
+/// # Errors
+/// The manifest or the surface file does not read.
+pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
+    let Some(surface) = native_surface(dir)? else {
+        return Ok(None);
+    };
+    surface
+        .package()
+        .map(Some)
+        .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
 }
 
 /// The package of the app `app` named `title` whose `surface.toml` is `text`: what
 /// [`native_app`] reads from a directory, for a description a binary carries.
+///
+/// This is the one loader: `tilolang check` reads an app's directory with it ([`native_app`]),
+/// and a task's host reads the surfaces its session hands it ([`NativeSurface::package`]), so a
+/// program compiles against the same package either way. A native app's actions are named by
+/// its app there ([`action_id`]), because a catalogue of installed apps holds many apps' verbs.
 ///
 /// # Errors
 /// The text is not a surface file.

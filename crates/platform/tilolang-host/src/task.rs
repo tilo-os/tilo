@@ -25,9 +25,11 @@ use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 
 use base64::Engine as _;
-use runtime_portal::tilolang_host::{TaskFds, TaskRequest, decode_modules};
+use runtime_portal::tilolang_host::{App, TaskFds, TaskRequest, decode_apps};
 use serde_json::{Value as Json, json};
 use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::catalogue::NativeSurface;
+use tilolang_tilo::runtime::meta::PackageMeta;
 use tilolang_tilo::task::{Answered, TaskDoor, TaskSession};
 use tilolang_tilo::task_records::{RecordReads, RecordSource};
 
@@ -226,10 +228,10 @@ pub struct Task {
 
 impl Task {
     /// The task `request`, its programs coming in on `fds.program` and compiled against the
-    /// modules in `fds.modules`.
+    /// apps in `fds.apps`.
     ///
     /// # Errors
-    /// The modules cannot be read or loaded, or the connection is unusable.
+    /// The apps cannot be read or loaded, or the connection is unusable.
     pub fn open(request: &TaskRequest, fds: TaskFds) -> Result<Self, String> {
         Self::open_with(request, fds, None)
     }
@@ -239,13 +241,13 @@ impl Task {
     /// agent's own calls, each on a connection of its own, so they share its `let`s.
     ///
     /// # Errors
-    /// The modules cannot be read or loaded, or a connection is unusable.
+    /// The apps cannot be read or loaded, or a connection is unusable.
     pub fn open_with(
         request: &TaskRequest,
         fds: TaskFds,
         person: Option<UnixStream>,
     ) -> Result<Self, String> {
-        let bundles = bundles(&fds.modules, request.modules_len)?;
+        let apps = apps(&fds.apps, request.apps_len)?;
         let stream = UnixStream::from(fds.program);
         let writer = stream.try_clone().map_err(|error| error.to_string())?;
         let watched = OwnedFd::from(stream.try_clone().map_err(|error| error.to_string())?);
@@ -254,7 +256,7 @@ impl Task {
             writer: RefCell::new(writer),
         });
         let reads = RecordReads::new(
-            &bundles,
+            &apps.bundles,
             request.records_under.clone(),
             request.person.as_deref(),
             Rc::clone(&line) as Rc<dyn RecordSource>,
@@ -272,11 +274,13 @@ impl Task {
         let session = TaskSession::new(
             request.person.as_deref(),
             &(Rc::clone(&door) as Rc<dyn TaskDoor>),
-            &bundles,
+            &apps.bundles,
+            &apps.native,
         )?;
         tracing::info!(
             task = request.task,
-            apps = bundles.len(),
+            apps = apps.bundles.len(),
+            native = apps.native.len(),
             "task host started"
         );
         let task = Self {
@@ -572,30 +576,62 @@ fn program(message: &Json) -> Result<(String, bool, tilolang_tilo::publish::Call
     Ok((source.to_owned(), confirm, author))
 }
 
-/// The bundles the sealed memfd `fd` holds, `len` bytes of them.
-fn bundles(fd: &OwnedFd, len: u64) -> Result<Vec<Bundle>, String> {
+/// What the session says a task's programs may name: the tilolang apps it runs, whose modules
+/// run a program's reads, and the native apps it holds, read as packages from their surfaces.
+struct Apps {
+    bundles: Vec<Bundle>,
+    native: Vec<PackageMeta>,
+}
+
+/// The apps the sealed memfd `fd` holds, `len` bytes of them.
+fn apps(fd: &OwnedFd, len: u64) -> Result<Apps, String> {
     let len = usize::try_from(len).map_err(|error| error.to_string())?;
     let mapping = tilo_render_protocol::shm::Mapping::map_sealed(fd, true, len, len)
         .map_err(|error| error.to_string())?;
     let bytes = mapping
         .get(0, len)
-        .ok_or("the modules are shorter than they say")?;
-    decode_modules(bytes)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|module| {
-            Bundle::from_parts(module.wasm, module.ids, &module.imports)
-                .map_err(|error| error.to_string())
-        })
-        .collect()
+        .ok_or("the apps are shorter than they say")?;
+    let mut apps = Apps {
+        bundles: Vec::new(),
+        native: Vec::new(),
+    };
+    for app in decode_apps(bytes).map_err(|error| error.to_string())? {
+        match app {
+            App::Module(module) => apps.bundles.push(
+                Bundle::from_parts(module.wasm, module.ids, &module.imports)
+                    .map_err(|error| error.to_string())?,
+            ),
+            App::Surface {
+                app,
+                title,
+                surface,
+            } => apps.native.push(
+                NativeSurface {
+                    app,
+                    title,
+                    surface,
+                }
+                .package()?,
+            ),
+        }
+    }
+    Ok(apps)
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     /// A task over no packages, its program connection's far end returned as the door's.
     fn task() -> (Task, BufReader<UnixStream>, UnixStream) {
+        task_with(&[])
+    }
+
+    /// A task over the apps `native`, read as packages from their surfaces, its program
+    /// connection's far end returned as the door's.
+    fn task_with(native: &[PackageMeta]) -> (Task, BufReader<UnixStream>, UnixStream) {
         let (ours, door) = UnixStream::pair().expect("a socket pair");
         let line = Rc::new(Line {
             reader: RefCell::new(BufReader::new(ours.try_clone().expect("a clone"))),
@@ -615,8 +651,13 @@ mod tests {
                 on_behalf_of: None,
             }),
         });
-        let session = TaskSession::new(None, &(Rc::clone(&reached) as Rc<dyn TaskDoor>), &[])
-            .expect("a session");
+        let session = TaskSession::new(
+            None,
+            &(Rc::clone(&reached) as Rc<dyn TaskDoor>),
+            &[],
+            native,
+        )
+        .expect("a session");
         let task = Task {
             line,
             watched: OwnedFd::from(ours),
@@ -680,5 +721,92 @@ mod tests {
         let _ends = asking.join().expect("the door");
         let why = read.expect_err("an unreadable reply fails the read");
         assert!(why.contains("not JSON"), "{why}");
+    }
+
+    /// The native app `app` named `title`, read from `surface` as its committed `surface.toml`
+    /// reads.
+    fn native(app: &str, title: &str, surface: &str) -> PackageMeta {
+        NativeSurface {
+            app: app.to_owned(),
+            title: title.to_owned(),
+            surface: surface.to_owned(),
+        }
+        .package()
+        .expect("the surface reads")
+    }
+
+    /// Chat, as the app publishes it.
+    fn chat() -> PackageMeta {
+        native(
+            "so.tilo.chat",
+            "Chat",
+            include_str!("../../../../apps/chat/surface.toml"),
+        )
+    }
+
+    /// What a program run answered, and how it ended.
+    fn ran(task: &Task, source: &str) -> Json {
+        task.session.run(
+            source,
+            false,
+            &tilolang_tilo::runtime::Principal::new("agent:task"),
+        )
+    }
+
+    #[test]
+    fn a_program_names_a_native_apps_types_and_reads_its_fields() {
+        let (task, _reader, _door) = task_with(&[chat()]);
+        // Field reads against the app's published surface: a type-check is all a program does
+        // with them until it reaches the app.
+        let answer = ran(
+            &task,
+            "for c in find(chat.Channel) {\n    print(c.name, c.archived)\n}",
+        );
+        assert_eq!(answer["state"], "failed", "{answer:#}");
+        let why = answer["detail"].as_str().unwrap_or_default();
+        assert!(why.contains("so.tilo.chat"), "{why}");
+        assert!(why.contains("is not yet reachable from a program"), "{why}");
+        // A field the app does not publish is an error in the program, as in `tilolang check`.
+        let wrong = ran(
+            &task,
+            "for c in find(chat.Channel) {\n    print(c.colour)\n}",
+        );
+        assert_eq!(wrong["state"], "rejected", "{wrong:#}");
+    }
+
+    #[test]
+    fn a_task_names_only_the_apps_its_session_hands_it() {
+        let (task, _reader, _door) = task_with(&[]);
+        let answer = ran(&task, "for c in find(chat.Channel) {\n    print(c.name)\n}");
+        assert_eq!(answer["state"], "rejected", "{answer:#}");
+        let why = format!("{:#}", answer["detail"]);
+        assert!(
+            why.contains("chat") || why.contains("chat.Channel"),
+            "{why}"
+        );
+    }
+
+    /// `tilolang check`'s packages: what the apps' directories publish.
+    fn checked() -> Vec<PackageMeta> {
+        let chat = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/chat");
+        tilolang_tilo::catalogue::published_packages(&[chat]).expect("the surfaces read")
+    }
+
+    #[test]
+    fn check_and_a_task_compile_against_the_same_catalogue() {
+        let checked = checked();
+        let program = "for c in find(chat.Channel) {\n    print(c.name)\n    print(c.colour)\n}";
+        let Err(diagnostics) = tilolang::compile_program_reading(program, &checked, &[], &[])
+        else {
+            panic!("`colour` is no field of Chat's Channel");
+        };
+        let expected: Vec<String> = diagnostics
+            .iter()
+            .map(|d| format!("{}:{}: {} {}", d.line, d.col, d.code, d.message))
+            .collect();
+        let (task, _reader, _door) = task_with(&[chat()]);
+        let answer = ran(&task, program);
+        assert_eq!(answer["state"], "rejected", "{answer:#}");
+        assert_eq!(answer["detail"], serde_json::json!(expected), "{answer:#}");
     }
 }

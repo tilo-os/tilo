@@ -123,8 +123,10 @@ A package may also `use` a native app: `use so.tilo.chat as chat` reads what Cha
 resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
 `chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
 signatures against them. The language's tool (`tilolang check`) finds native apps among the
-`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
-invoking native actions come later; for now this is compile-time only.
+`--path` directories (`--path apps/chat`, or `--path apps`), and an agent's task is handed the
+same catalogue by the session it runs in: every installed app's surface for its workspace, read
+by one loader. Reading native records and invoking native actions come later; a program that
+reaches for one now compiles and fails at run with one refusal naming the app.
 
 ## Syntax reference
 

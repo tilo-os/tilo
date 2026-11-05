@@ -33,7 +33,11 @@ declare it like any effect (`uses model`, like `uses web`), and their answers ar
    it on the task's first `tilo` call; it lives as long as the task, holds the session's `let`s,
    opens no windows and owns no records.
 3. **What it names:** every installed app's published types and actions, from the one schema
-   (action-system.md step 4), as far as the task may use them.
+   (action-system.md step 4), as far as the task may use them. The session hands the task's host
+   that catalogue when it starts it: the signed surfaces of the apps installed on this device and
+   the packages the session runs itself for this workspace, read by the same loader `tilolang
+   check` reads an app's directory with, so what a program compiles against is what it runs
+   against.
 4. **How it reads:** as any reader outside an app: `find` and `grep` through the system index,
    fields through the platform's read path, results as catalogue references. Sources from
    different apps combine (`docs + notes`).
@@ -95,7 +99,10 @@ opens them. The task host is not an app, so it gets its own admission instead of
   says which it is; a plain enum by its case's name; rich text as its text, or encoded whole. An action on the app's root that no window
   made yet makes the root first, as the invoker's step, and answers the whole record. Undo goes
   the same way, by the app's id and record. An app's own instance is never asked to act for the program.
-- **Native apps.** Their types and views come from the published catalogue the same way. Their
+- **Native apps.** Their types and views come from the published catalogue the same way, and a
+  program type-checks against them, so `find(chat.Channel)` and its fields read as any type's.
+  Reading their records and invoking their actions are not reachable yet: a program that reaches
+  one compiles and is refused at run, once, by the task's invoker, naming the app. Their
   action code is the app's Rust, so the origin routes the invocation to whatever executes it: a
   window of the app when one is open, else an instance of the app with no window. For an action
   that shows nothing the broker asks the host for one (`LauncherServices::windowless`) instead of
