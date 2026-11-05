@@ -379,7 +379,7 @@ impl Shared {
         workspace_settings::Feeding::new(
             &self.handle,
             &self.person,
-            self.app_lists(),
+            &self.search,
             &self.ws_settings_fed,
             &self.workspace_emoji,
             self.file_picker.as_ref(),

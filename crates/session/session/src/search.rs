@@ -430,6 +430,12 @@ impl SessionSearch {
         self.lists.latest()
     }
 
+    /// The apps this session opens, for what it asks to be opened outside a
+    /// search: a link a page names, a page a sheet asks for.
+    pub(crate) fn apps(&self) -> Option<Rc<dyn AppActions>> {
+        self.apps.clone()
+    }
+
     /// The lists as last read, with the sources built from them rebuilt
     /// when they were read again since: the machine's apps here, Settings
     /// and the catalogue at their workspace's next search.

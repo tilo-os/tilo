@@ -421,11 +421,6 @@ enum GrantTarget {
     Device(&'static str),
     AnyHost,
     WorkspaceFiles,
-    /// One of the workspace's own governance actions, on the resource the
-    /// workspace publishes them on.
-    GovernanceAction {
-        action: &'static str,
-    },
 }
 
 /// One entry in the composer's "what does this allow" picker. Every
@@ -488,22 +483,6 @@ static GRANT_CHOICES: &[GrantChoice] = &[
         key: "edit-files",
         label_key: "workspace-settings-grant-edit-files",
         target: GrantTarget::WorkspaceFiles,
-        access: Access::Write,
-    },
-    GrantChoice {
-        key: "create-roles",
-        label_key: "workspace-settings-grant-create-roles",
-        target: GrantTarget::GovernanceAction {
-            action: tilo_desktop_model::PRESET_SAVE_ACTION_ID,
-        },
-        access: Access::Write,
-    },
-    GrantChoice {
-        key: "assign-roles",
-        label_key: "workspace-settings-grant-assign-roles",
-        target: GrantTarget::GovernanceAction {
-            action: tilo_desktop_model::PRESET_ASSIGN_ACTION_ID,
-        },
         access: Access::Write,
     },
 ];
@@ -698,18 +677,10 @@ pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
     out
 }
 
-/// What the composer's draft writes: a sandbox capability (files, devices,
-/// the network) or a grant of the workspace's tree (its governance actions).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DraftGrant {
-    Sandbox(CapOverride),
-    Grant(tilo_action_policy::Grant),
-}
-
-/// What `draft` currently names against `ws`, or `None` when the draft has
+/// The capability `draft` names against `ws`, or `None` when the draft has
 /// no addressable subject (an empty workspace) or names a subject this panel
 /// cannot grant to.
-pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<DraftGrant> {
+pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverride> {
     let subjects = grant_subjects(ws);
     if subjects.is_empty() {
         return None;
@@ -721,39 +692,9 @@ pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<DraftGrant
         GrantTarget::Device(d) => Scope::Device(d.to_string()),
         GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
         GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
-        GrantTarget::GovernanceAction { action } => {
-            let lifetime = match draft.expiry {
-                Expiry::AfterUse => tilo_action_policy::Lifetime::Once,
-                Expiry::EndOfSession => tilo_action_policy::Lifetime::Session(
-                    tilo_desktop_model::session_id().to_owned(),
-                ),
-                Expiry::AtUnix(at) => tilo_action_policy::Lifetime::Until(at.saturating_mul(1000)),
-                Expiry::Never => tilo_action_policy::Lifetime::UntilRevoked,
-            };
-            return Some(DraftGrant::Grant(
-                tilo_action_policy::Grant::new(
-                    format!("grant:{}", uuid::Uuid::new_v4()),
-                    subject_entry.to_grantee()?,
-                    tilo_actions::action_node(
-                        &ws.node(),
-                        tilo_desktop_model::WORKSPACE_GOVERNANCE_APP_ID,
-                        tilo_action_policy::roles::ROOM_KIND,
-                        &tilo_desktop_model::governance_resource_id(&ws.id()),
-                        None,
-                        action,
-                    ),
-                    tilo_action_policy::KindSet::of(tilo_action_policy::roles::GOVERNANCE_KIND),
-                    tilo_action_policy::Answer::Allow,
-                    tilo_action_policy::Subject::Person(String::new()),
-                )
-                .with_lifetime(lifetime),
-            ));
-        }
     };
     let subject = subject_entry.to_subject()?;
-    Some(DraftGrant::Sandbox(
-        CapOverride::grant(subject, scope, choice.access).expiring(draft.expiry),
-    ))
+    Some(CapOverride::grant(subject, scope, choice.access).expiring(draft.expiry))
 }
 
 /// What a panel mutation changed, for the caller that applies it to the
@@ -772,10 +713,7 @@ pub fn apply_grant_draft(
 ) -> Result<PolicyEdit, Refusal> {
     let now = tilo_clock::unix_now();
     match draft_capability(ws, draft) {
-        Some(DraftGrant::Sandbox(cap)) => ws.grant_sandbox_as_at(actor, cap, now),
-        Some(DraftGrant::Grant(grant)) => {
-            ws.govern_all_at(actor, vec![tilo_action_policy::Change::Grant(grant)], now)
-        }
+        Some(cap) => ws.grant_sandbox_as_at(actor, cap, now),
         None => Ok(PolicyEdit::default()),
     }
 }
@@ -1630,7 +1568,7 @@ mod agents_tests {
                 subject_index: index,
                 ..GrantDraft::default()
             };
-            let Some(DraftGrant::Sandbox(cap)) = draft_capability(&ws, &draft) else {
+            let Some(cap) = draft_capability(&ws, &draft) else {
                 panic!("agent grant can be composed");
             };
             assert_eq!(cap.subject, Subject::agent(AGENT));
@@ -2058,52 +1996,24 @@ mod permissions_tests {
                     expiry: Expiry::Never,
                 };
                 let mut probe = ws.clone();
-                match draft_capability(&ws, &draft).expect("every choice resolves") {
-                    DraftGrant::Sandbox(cap) => {
-                        assert_eq!(cap.effect, Effect::Grant);
-                        let resource = match &cap.scope {
-                            Scope::Device(d) => ResourceRef::Device(d.clone()),
-                            Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
-                            Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
-                            Scope::FsRecord(record) => {
-                                panic!("unexpected scope in the grant table: {record:?}")
-                            }
-                        };
-                        probe
-                            .grant_as(&OWNER.to_string(), cap.clone())
-                            .expect("owner grants");
-                        assert!(
-                            probe.allows(&app_actor(&probe, "firefox"), &resource, cap.access),
-                            "granting {:?} must make the decision function allow it",
-                            choice.label()
-                        );
+                let cap = draft_capability(&ws, &draft).expect("every choice resolves");
+                assert_eq!(cap.effect, Effect::Grant);
+                let resource = match &cap.scope {
+                    Scope::Device(d) => ResourceRef::Device(d.clone()),
+                    Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
+                    Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
+                    Scope::FsRecord(record) => {
+                        panic!("unexpected scope in the grant table: {record:?}")
                     }
-                    DraftGrant::Grant(grant) => {
-                        let node = grant.node.clone();
-                        probe
-                            .govern_as_at(
-                                OWNER,
-                                tilo_action_policy::Change::Grant(grant),
-                                tilo_clock::unix_now(),
-                            )
-                            .expect("owner grants");
-                        assert_eq!(
-                            probe
-                                .subject_authority(tilo_action_policy::Subject::App(
-                                    "firefox".into()
-                                ))
-                                .decide(
-                                    &node,
-                                    tilo_action_policy::roles::GOVERNANCE_KIND,
-                                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
-                                )
-                                .answer,
-                            tilo_action_policy::Answer::Allow,
-                            "granting {:?} must make the decision function allow it",
-                            choice.label()
-                        );
-                    }
-                }
+                };
+                probe
+                    .grant_as(&OWNER.to_string(), cap.clone())
+                    .expect("owner grants");
+                assert!(
+                    probe.allows(&app_actor(&probe, "firefox"), &resource, cap.access),
+                    "granting {:?} must make the decision function allow it",
+                    choice.label()
+                );
             }
         }
 

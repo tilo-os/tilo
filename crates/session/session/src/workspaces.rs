@@ -1149,7 +1149,7 @@ impl crate::Shared {
         if changed {
             self.handle.replace_tree(tree);
         }
-        self.project_people();
+        self.project_governance();
     }
 
     /// Who the governance of a workspace names as its owner: its own, when

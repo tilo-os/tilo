@@ -1,7 +1,6 @@
 //! The General tab: the workspace's name, inviting people, the workspace at
 //! a glance, the devices it shows on and its place among the person's
-//! workspaces, whether it is public, the workspaces archived here, and
-//! leaving it, last and apart.
+//! workspaces, and leaving it, last and apart.
 
 use ui::prelude::*;
 use ui::tokens::Rhythm;
@@ -39,34 +38,6 @@ pub struct Device {
     pub shown: bool,
 }
 
-/// The Public group's working controls, once the workspace's host
-/// answered.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PublicControls {
-    pub public: bool,
-    pub switch: String,
-    pub role: String,
-    pub describe: String,
-}
-
-/// Whether the workspace is listed in its host's directory, what it says
-/// there, and the controls that change it once the host answered.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Public {
-    pub group: Group,
-    pub controls: Option<PublicControls>,
-}
-
-/// A workspace archived on this device, with its Restore and Delete.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Archived {
-    /// What it is asked for by.
-    pub key: String,
-    pub name: String,
-    pub restore: String,
-    pub delete: String,
-}
-
 /// Everything the General tab shows, in the person's words.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct General {
@@ -87,10 +58,6 @@ pub struct General {
     pub device_rows: Vec<Device>,
     pub move_labels: [String; 2],
     pub move_enabled: [bool; 2],
-    /// The Public group, where there is something to say about it.
-    pub public: Option<Public>,
-    pub archived_title: String,
-    pub archived: Vec<Archived>,
     /// The row that takes the workspace off this device.
     pub leave: Group,
     pub leave_label: String,
@@ -132,12 +99,6 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
         )),
     ];
     groups.push(devices(general, parts));
-    if let Some(public) = &general.public {
-        groups.push(public_group(public, parts));
-    }
-    if !general.archived.is_empty() {
-        groups.push(archived(general, parts));
-    }
     // Leaving stands apart, last and under a rule, where nothing else is
     // reached for on the way to it.
     groups.push(Box::new(Section::new(vec![
@@ -251,70 +212,6 @@ pub(super) fn buttons(buttons: Vec<Button>) -> Element {
     ))
 }
 
-/// Whether anyone may find and join the workspace, and how.
-fn public_group(public: &Public, parts: &Parts) -> Element {
-    let items = public.controls.as_ref().map_or_else(Vec::new, |controls| {
-        let make_public = !controls.public;
-        vec![buttons(vec![
-            button(parts, "ws-general-public", &controls.switch, move || {
-                WorkspaceSettingsEffect::SetPublic {
-                    public: make_public,
-                }
-            })
-            .toggled(controls.public),
-            button(parts, "ws-general-public-role", &controls.role, || {
-                WorkspaceSettingsEffect::NextJoinRole
-            }),
-            button(
-                parts,
-                "ws-general-public-describe",
-                &controls.describe,
-                || WorkspaceSettingsEffect::Describe,
-            ),
-        ])]
-    });
-    described(&public.group, items)
-}
-
-/// The archived workspaces, each with Restore and Delete.
-fn archived(general: &General, parts: &Parts) -> Element {
-    Box::new(Section::titled(
-        general.archived_title.clone(),
-        general
-            .archived
-            .iter()
-            .map(|archived| {
-                let (restore, delete) = (archived.key.clone(), archived.key.clone());
-                Box::new(
-                    ListRow::new(
-                        format!("ws-general-archived-{}", archived.key),
-                        archived.name.clone(),
-                    )
-                    .trailing(buttons(vec![
-                        button(
-                            parts,
-                            &format!("ws-general-restore-{}", archived.key),
-                            &archived.restore,
-                            move || WorkspaceSettingsEffect::Restore {
-                                workspace: restore.clone(),
-                            },
-                        ),
-                        button(
-                            parts,
-                            &format!("ws-general-delete-archived-{}", archived.key),
-                            &archived.delete,
-                            move || WorkspaceSettingsEffect::DeleteArchived {
-                                workspace: delete.clone(),
-                            },
-                        )
-                        .role(ButtonRole::Destructive),
-                    ])),
-                ) as Element
-            })
-            .collect(),
-    ))
-}
-
 /// The General tab as a workspace's owner sees it, for captures.
 pub(super) fn sample() -> General {
     General {
@@ -354,22 +251,6 @@ pub(super) fn sample() -> General {
         ],
         move_labels: ["Move earlier".to_owned(), "Move later".to_owned()],
         move_enabled: [false, true],
-        public: Some(Public {
-            group: Group::new("Public", "Not listed in the directory."),
-            controls: Some(PublicControls {
-                public: false,
-                switch: "Make public".to_owned(),
-                role: "Joins as Viewer".to_owned(),
-                describe: "Describe…".to_owned(),
-            }),
-        }),
-        archived_title: "Archived here".to_owned(),
-        archived: vec![Archived {
-            key: "old-project".to_owned(),
-            name: "Old project".to_owned(),
-            restore: "Restore".to_owned(),
-            delete: "Delete".to_owned(),
-        }],
         leave: Group::new(
             "Leave workspace",
             "Takes it off this device, along with the windows and groups that \
@@ -389,8 +270,6 @@ pub(super) fn sample_viewer() -> General {
         rename_note: Some("Only admins can rename the workspace.".to_owned()),
         invite: Group::new("Invite people", "Only admins can invite people."),
         can_invite: false,
-        public: None,
-        archived: Vec::new(),
         ..sample()
     }
 }

@@ -505,6 +505,19 @@ impl StatePeer {
 }
 
 impl PeerGovernance<'_> {
+    /// Every bot the workspace has, as its governance records them: the ones
+    /// it runs and the ones a member asked its host for that do not run yet.
+    /// What a desk lists of a workspace's bots
+    /// ([`crate::workspace::workspace_bots_of`]).
+    #[must_use]
+    pub fn workspace_bots(self) -> Vec<tilo_desktop_model::WorkspaceBot> {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map_or_else(Vec::new, crate::workspace::workspace_bots_of)
+    }
+
     /// Every bot the workspace asks its host to run, by entry.
     #[must_use]
     pub fn bot_requests(self) -> Vec<RequestedBot> {

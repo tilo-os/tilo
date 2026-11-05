@@ -25,6 +25,7 @@ use tilo_sheets::workspace_settings as sheet;
 
 use crate::engine::Engine;
 use crate::lists::AppLists;
+use crate::search::SessionSearch;
 use crate::workspaces::{DeviceChoice, Personal};
 
 mod emoji;
@@ -36,8 +37,9 @@ pub(crate) use emoji::Emoji as EmojiTab;
 pub(crate) struct Feeding<'a> {
     handle: &'a DesktopHandle,
     person: &'a UserId,
-    /// The machine's application lists, as its every search pass reads them.
-    lists: std::sync::Arc<AppLists>,
+    /// This session's search: the machine's app lists, and the apps a page or
+    /// a link the sheet asks for opens in.
+    search: &'a SessionSearch,
     /// The desk revision the panes were last fed at.
     fed: &'a Cell<Option<u64>>,
     /// The workspace's emoji, read and changed through Chat's record.
@@ -55,7 +57,7 @@ impl<'a> Feeding<'a> {
     pub(crate) fn new(
         handle: &'a DesktopHandle,
         person: &'a UserId,
-        lists: std::sync::Arc<AppLists>,
+        search: &'a SessionSearch,
         fed: &'a Cell<Option<u64>>,
         emoji: &'a EmojiTab,
         picker: Option<&'a FilePickerSeat>,
@@ -65,7 +67,7 @@ impl<'a> Feeding<'a> {
         Self {
             handle,
             person,
-            lists,
+            search,
             fed,
             emoji,
             picker,
@@ -157,7 +159,7 @@ fn show(
     let mut shown = settings(
         &fed.handle.read(Clone::clone),
         fed.person,
-        &fed.lists,
+        &fed.search.app_lists(),
         tab,
         review,
         fed.personal,
@@ -196,57 +198,9 @@ fn show_picked_tab(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, tab: 
     show(seat, fed, tab, review.as_deref());
 }
 
-/// The Emoji tab's own effects: the picture to add, an emoji to remove, the
-/// notice dismissed. Whether `effect` was one of them.
-fn follow_emoji(effect: &sheet::WorkspaceSettingsEffect, fed: &Feeding<'_>) -> bool {
-    if !matches!(
-        effect,
-        sheet::WorkspaceSettingsEffect::AddEmoji
-            | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
-            | sheet::WorkspaceSettingsEffect::DismissEmojiNotice
-    ) {
-        return false;
-    }
-    fed.handle
-        .read(|tree| fed.emoji.asked(effect, tree, fed.person, fed.picker));
-    true
-}
-
-/// The agents tab's asks: a review shown or ended, an agent answered, given
-/// another app or model, or removed. Whether `effect` was one of them.
-fn follow_agent(
-    seat: &sheet::WorkspaceSettingsSeat,
-    effect: &sheet::WorkspaceSettingsEffect,
-    fed: &Feeding<'_>,
-) -> bool {
-    let handle = fed.handle;
-    let person = fed.person;
-    match effect {
-        sheet::WorkspaceSettingsEffect::ReviewAgent { agent } => {
-            show_review(seat, fed, Some(agent));
-        }
-        sheet::WorkspaceSettingsEffect::EndReview => show_review(seat, fed, None),
-        sheet::WorkspaceSettingsEffect::SetAgentAnswer {
-            agent,
-            scope,
-            kind,
-            answer,
-        } => answer_agent(handle, person, agent, scope, kind, answer),
-        sheet::WorkspaceSettingsEffect::ResetAgentApp { agent, scope } => {
-            reset_agent_app(handle, person, agent, scope);
-        }
-        sheet::WorkspaceSettingsEffect::RemoveAgent { agent } => {
-            edit(handle, person, |ws, actor| {
-                domain::remove_agent(ws, actor, agent)
-            });
-        }
-        sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
-            set_agent_model(seat, fed, agent, model);
-        }
-        _ => return false,
-    }
-    true
-}
+/// Where a member finds a bot for the workspace: the Store's bots, whose
+/// pages ask the workspace's host to run one.
+const BOTS_LINK: &str = "tilo-store:bots";
 
 /// Carry out what the person asked for in the sheet.
 pub(crate) fn follow(
@@ -263,82 +217,161 @@ pub(crate) fn follow(
     // tools, before what the person asks now.
     handle.read(|tree| fed.emoji.settle(tree, person, fed.picker));
     for effect in seat.take_asked() {
-        if follow_emoji(&effect, fed) || follow_agent(seat, &effect, fed) {
-            continue;
+        ask(seat, fed, intents, effect);
+    }
+}
+
+/// Carry out the one ask `effect` names. Every ask the sheet can make is
+/// answered here, so an effect added to the sheet is a compile error until
+/// the session says what it does with it.
+fn ask(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    intents: &RefCell<Vec<ChromeIntent>>,
+    effect: sheet::WorkspaceSettingsEffect,
+) {
+    let handle = fed.handle;
+    let person = fed.person;
+    match effect {
+        sheet::WorkspaceSettingsEffect::ShowTab { tab } => {
+            show_picked_tab(seat, fed, &tab);
         }
-        if effect == sheet::WorkspaceSettingsEffect::DismissNotice {
+        sheet::WorkspaceSettingsEffect::DismissNotice => {
             seat.dismiss_notice();
             let shown = seat.settings();
             let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
             show(seat, fed, shown.tab, review.as_deref());
-            continue;
         }
-        match effect {
-            sheet::WorkspaceSettingsEffect::ShowTab { tab } => {
-                show_picked_tab(seat, fed, &tab);
-            }
-            sheet::WorkspaceSettingsEffect::Close => {}
-            sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
-                toggle_workspace_device(seat, fed, &device);
-            }
-            sheet::WorkspaceSettingsEffect::Rename { name } => {
-                intents
-                    .borrow_mut()
-                    .push(ChromeIntent::RenameWorkspace { name });
-            }
-            sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
-            sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
-                let Some(role) = role_from_id(&role) else {
-                    tracing::debug!(%role, "no such role: nothing changed");
-                    continue;
-                };
-                govern(seat, fed, |ws, actor| {
-                    domain::set_member_role(ws, actor, &member, role)
-                });
-            }
-            sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
-                govern(seat, fed, |ws, actor| {
-                    domain::remove_member(ws, actor, &member)
-                });
-            }
-            sheet::WorkspaceSettingsEffect::Grant {
-                subject,
-                permission,
-                expiry,
-            } => govern(seat, fed, |ws, actor| {
-                let Some(draft) = domain::draft_for(ws, &subject, &permission, &expiry) else {
-                    tracing::debug!(%subject, %permission, "no such grant: nothing changed");
-                    return Ok(domain::PolicyEdit::default());
-                };
-                domain::apply_grant_draft(ws, actor, &draft)
-            }),
-            sheet::WorkspaceSettingsEffect::Revoke { grant } => {
-                govern(seat, fed, |ws, actor| {
-                    domain::apply_revoke(ws, actor, &grant)
-                });
-            }
-            sheet::WorkspaceSettingsEffect::ReviewActivity => {
-                intents.borrow_mut().push(ChromeIntent::ShowActivity(None));
-            }
-            sheet::WorkspaceSettingsEffect::Invite => {
-                intents.borrow_mut().push(ChromeIntent::Invite);
-            }
-            sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
-                next_workspace_default(handle, person, &fed.lists, &resource);
-            }
-            sheet::WorkspaceSettingsEffect::NextPersonalDefault { resource } => {
-                next_personal_default(handle, person, &fed.lists, &resource);
-            }
-            // The workspace leaves this device's desktop; it stays for
-            // everyone in it, on their devices.
-            sheet::WorkspaceSettingsEffect::Delete => {
-                intents.borrow_mut().push(ChromeIntent::LeaveWorkspace);
-            }
-            other => tracing::debug!(
-                ?other,
-                "workspace settings asks what the session cannot do yet"
-            ),
+        // Closing is the sheet's own; admitting an agent names the one to
+        // admit, which a chat in the workspace keeps as its own agent
+        // record, so the control stays until that record can name one.
+        sheet::WorkspaceSettingsEffect::Close | sheet::WorkspaceSettingsEffect::AddAgent => {}
+        sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
+            toggle_workspace_device(seat, fed, &device);
         }
+        sheet::WorkspaceSettingsEffect::Rename { name } => {
+            intents
+                .borrow_mut()
+                .push(ChromeIntent::RenameWorkspace { name });
+        }
+        sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
+        sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
+            let Some(role) = role_from_id(&role) else {
+                tracing::debug!(%role, "no such role: nothing changed");
+                return;
+            };
+            govern(seat, fed, |ws, actor| {
+                domain::set_member_role(ws, actor, &member, role)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::RemoveMember { member } => {
+            govern(seat, fed, |ws, actor| {
+                domain::remove_member(ws, actor, &member)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::Grant {
+            subject,
+            permission,
+            expiry,
+        } => govern(seat, fed, |ws, actor| {
+            let Some(draft) = domain::draft_for(ws, &subject, &permission, &expiry) else {
+                tracing::debug!(%subject, %permission, "no such grant: nothing changed");
+                return Ok(domain::PolicyEdit::default());
+            };
+            domain::apply_grant_draft(ws, actor, &draft)
+        }),
+        sheet::WorkspaceSettingsEffect::Revoke { grant } => {
+            govern(seat, fed, |ws, actor| {
+                domain::apply_revoke(ws, actor, &grant)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::ReviewActivity => {
+            intents.borrow_mut().push(ChromeIntent::ShowActivity(None));
+        }
+        sheet::WorkspaceSettingsEffect::Invite => {
+            intents.borrow_mut().push(ChromeIntent::Invite);
+        }
+        sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
+            next_workspace_default(handle, person, &fed.search.app_lists(), &resource);
+        }
+        sheet::WorkspaceSettingsEffect::NextPersonalDefault { resource } => {
+            next_personal_default(handle, person, &fed.search.app_lists(), &resource);
+        }
+        // The workspace leaves this device's desktop; it stays for
+        // everyone in it, on their devices.
+        sheet::WorkspaceSettingsEffect::Delete => {
+            intents.borrow_mut().push(ChromeIntent::LeaveWorkspace);
+        }
+        sheet::WorkspaceSettingsEffect::AddEmoji
+        | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
+        | sheet::WorkspaceSettingsEffect::DismissEmojiNotice => {
+            handle.read(|tree| fed.emoji.asked(&effect, tree, person, fed.picker));
+        }
+        sheet::WorkspaceSettingsEffect::ReviewAgent { agent } => {
+            show_review(seat, fed, Some(&agent));
+        }
+        sheet::WorkspaceSettingsEffect::EndReview => show_review(seat, fed, None),
+        sheet::WorkspaceSettingsEffect::SetAgentAnswer {
+            agent,
+            scope,
+            kind,
+            answer,
+        } => answer_agent(handle, person, &agent, &scope, &kind, &answer),
+        sheet::WorkspaceSettingsEffect::ResetAgentApp { agent, scope } => {
+            reset_agent_app(handle, person, &agent, &scope);
+        }
+        sheet::WorkspaceSettingsEffect::RemoveAgent { agent } => {
+            edit(handle, person, |ws, actor| {
+                domain::remove_agent(ws, actor, &agent)
+            });
+        }
+        sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
+            set_agent_model(seat, fed, &agent, &model);
+        }
+        sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
+        sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(seat, fed, &bot),
+    }
+}
+
+/// Open the Store's bots, where a member finds one and asks the workspace's
+/// host to run it, in the workspace in front.
+fn add_bot(fed: &Feeding<'_>) {
+    let Some(apps) = fed.search.apps() else {
+        tracing::debug!("this session opens no apps: no bot is found");
+        return;
+    };
+    let Some(workspace) = fed.handle.read(|tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.id().to_string())
+    }) else {
+        return;
+    };
+    if let Err(error) = apps.open_uri(&workspace, BOTS_LINK) {
+        tracing::warn!(%error, "the bot directory does not open");
+    }
+}
+
+/// Take back the workspace's request for the bot at `entry`, as this device:
+/// the workspace's host stops running it from then on. A bot the workspace's
+/// host runs from its own choice is not a member's to remove, and the sheet
+/// offers no control for it.
+fn withdraw_bot(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, entry: &str) {
+    let Some(workspace_id) = fed
+        .handle
+        .read(|tree| tree.active_workspace().map(Workspace::id))
+    else {
+        return;
+    };
+    let governance = fed
+        .engine
+        .filter(|engine| engine.policy(&workspace_id.to_string()).is_ok())
+        .map(|engine| crate::membership::Membership::of(engine, workspace_id));
+    let Some(governance) = governance else {
+        tracing::debug!("this device holds no governance to withdraw a bot request in");
+        return;
+    };
+    if let Err(reason) = governance.withdraw_bot_request(entry) {
+        refuse(seat, fed, &reason);
     }
 }
 
@@ -726,11 +759,6 @@ fn general(
             t("workspace-settings-move-later"),
         ],
         move_enabled: [at.is_some_and(|at| at > 0), at.is_some_and(|at| at < last)],
-        // No host directory answers from here, and this device archives no
-        // workspace: each group stays away until there is something to say.
-        public: None,
-        archived_title: String::new(),
-        archived: Vec::new(),
         leave: sheet::Group {
             title: t("workspace-settings-leave"),
             description: t("workspace-settings-leave-description"),
