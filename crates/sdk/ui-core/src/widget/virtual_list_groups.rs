@@ -298,7 +298,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// The height the row `index` takes in the layout: its own, with the band of the heading
     /// over it when it starts a group; only that band while its group is closed.
-    pub(super) fn grouped_height(&mut self, index: usize, height: f64) -> f64 {
+    pub(super) fn grouped_height(&self, index: usize, height: f64) -> f64 {
         let band = self.groups.height;
         let starts = self.row_starts(index);
         if !self.row_open(index) {

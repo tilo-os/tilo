@@ -844,6 +844,7 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
+    #[must_use]
     pub fn on_select(mut self, callback: impl FnMut(M::Key, bool) + 'static) -> Self {
         self.on_select = Some(Box::new(callback));
         self
@@ -2368,10 +2369,11 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             .collect()
     }
 
-    fn accessibility_child_parent(&self, child_index: usize) -> Option<usize> {
-        // Each mounted row stands under its own node, after the heading above it.
-        (child_index < self.mounted.len())
-            .then(|| child_index.saturating_add(self.headings_before(child_index)))
+    fn accessibility_represents_child(&self, child_index: usize) -> bool {
+        // Each mounted row's node is the list's own, headings standing before
+        // the rows: the walk never visits the row widgets, and a row nothing
+        // changed about is kept as the node it handed over before.
+        child_index < self.mounted.len()
     }
 
     /// Focus the row an assistive technology moves to, and select it, as the keyboard does.

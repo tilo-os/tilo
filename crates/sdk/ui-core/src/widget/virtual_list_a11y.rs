@@ -52,10 +52,6 @@ struct RowAccessInputs {
     index: usize,
     count: usize,
     bounds: Option<Rect>,
-    /// The row widget's own box: it is laid out after the row is built, and
-    /// moves with the window, so a node kept from a frame it was not in
-    /// still stands only while it does.
-    widget: Rect,
     focused: bool,
     selected: bool,
     /// Whether the row's menu can be asked for.
@@ -138,9 +134,9 @@ impl<M: ListModel> VirtualList<M> {
         }
         if let Some(row_box) = self.row_box(row.index) {
             // The row's own box, below the band of a heading it starts a group under: one
-            // bleed in from the list's edges.
-            let widget = row.widget.get_rect();
-            item = item.with_bounds(Rect::new(widget.x0, row_box.y0, widget.x1, row_box.y1));
+            // bleed in from the list's edges. The list places it, so it stands
+            // however far a row's own widget has been laid out.
+            item = item.with_bounds(row_box);
         }
         if let Some(encode) = &self.semantic_key {
             // The row keeps the name its host gave it across rebuilds, so a
@@ -327,7 +323,6 @@ impl<M: ListModel> VirtualList<M> {
             index: row.index,
             count,
             bounds: self.row_box(row.index),
-            widget: row.widget.get_rect(),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
             menu: self.menu.is_some(),
