@@ -364,13 +364,13 @@ impl Planned {
         // that cannot run says so before anything is started, and what its
         // window will announce itself by.
         let planned = desktop_entry::launch::plan(entry, &launch_env)?;
-        run_host(
+        Ok(run_host(
             planned,
             None,
             &launch_env,
             context.launcher.clone().ok_or(PlanError::NoLauncher)?,
             Kind::of_entry(entry),
-        )
+        ))
     }
 
     /// The program file at `path` itself, as opening a downloaded `AppImage`
@@ -387,13 +387,13 @@ impl Planned {
             Some("AppImage") => Kind::AppImage,
             _ => Kind::Program,
         };
-        run_host(
+        Ok(run_host(
             planned,
             Some(path),
             &launch_env,
             context.launcher.clone().ok_or(PlanError::NoLauncher)?,
             kind,
-        )
+        ))
     }
 
     /// One line saying what this launch starts, for a log before it starts.
@@ -431,7 +431,7 @@ fn run_host(
     env: &LaunchEnv,
     launcher: PathBuf,
     kind: Kind,
-) -> Result<Planned, PlanError> {
+) -> Planned {
     let mut args = vec![
         "run-host".to_owned(),
         "--desktop-id".to_owned(),
@@ -460,7 +460,7 @@ fn run_host(
     if env.prefer_new_window {
         args.push("--new-window".to_owned());
     }
-    Ok(Planned {
+    Planned {
         app: planned.desktop_id.clone(),
         title: planned.display_name.clone(),
         kind,
@@ -470,7 +470,7 @@ fn run_host(
         // of the session's own: a host app is told nothing of Tilo's.
         env: desktop_entry::launch::inherited_environment(),
         window_identities: planned.window_identities,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -682,8 +682,7 @@ mod tests {
             &launch_env,
             launcher.clone(),
             Kind::of_entry(&entry),
-        )
-        .expect("plans");
+        );
         assert_eq!(planned.kind, Kind::Flatpak);
         assert!(planned.kind.is_host());
         assert_eq!(
@@ -792,7 +791,6 @@ mod tests {
                 PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
                 Kind::of_entry(&editor),
             )
-            .expect("plans")
             .args
         };
         assert!(
