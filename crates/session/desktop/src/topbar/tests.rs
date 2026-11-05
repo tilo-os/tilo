@@ -617,6 +617,56 @@ fn pressing_the_pill_expands_the_activity_it_names() {
     );
 }
 
+/// A live activity reads in the bar as its own reading in a pill that hugs
+/// it, with a dot for each activity waiting behind it; the time steps aside
+/// while it runs.
+#[test]
+fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: Vec::new(),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let tea = ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
+        .with_id("tea");
+    chrome.borrow_mut().activities = vec![tea.clone()];
+    lay_out_and_draw(&mut bar, 1600.0);
+    let alone = bar.center_rect;
+    assert_eq!(
+        bar.clock_widget_text(),
+        bar.center_pill().reading(),
+        "the pill reads the activity, not the time"
+    );
+    assert!(
+        !bar.center_is_plain_text(),
+        "the reading stands on the pill, not as bare text"
+    );
+    assert!(
+        alone.width() < bar.center_lane.width() / 2.0,
+        "an activity is a pill, not a second bar: {alone:?}"
+    );
+    assert!((alone.center().x - bar.center_lane.center().x).abs() < 1e-9);
+
+    chrome.borrow_mut().activities = vec![
+        tea,
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Coffee", "0:30")
+            .with_id("coffee"),
+    ];
+    lay_out_and_draw(&mut bar, 1600.0);
+    assert_eq!(bar.center_pill().more, 1, "one activity waits behind it");
+    assert!(
+        bar.center_rect.width() > alone.width(),
+        "its dot widens the pill: {:?} against {alone:?}",
+        bar.center_rect
+    );
+}
+
 fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
     let key_event = ui::synthetic_input::key_event(
         winit::keyboard::Key::Named(key),

@@ -8,6 +8,10 @@ use super::{
     TextRole, TextStyle, TextWeight, Theme, TopBarChrome, TopBarPresence, Widget, WindowEvent, t,
 };
 
+/// How far apart the dots after an activity's reading stand: one dot per
+/// activity waiting behind the pill's own, measured into the pill's width.
+const DOT_PITCH: f64 = 5.0;
+
 impl TopBarChrome {
     /// The centre selector is visually anchored at the viewport centre, but
     /// its wide-state width must not consume the entire narrow bar. Keep the
@@ -88,8 +92,14 @@ impl TopBarChrome {
             band_cx + lane_w / 2.0,
             band.y1,
         );
-        // The quiet selector pill comes and goes with the activity.
-        let pill = self.center_activity_opacity(now);
+        // The quiet selector pill comes and goes with the activity: an
+        // activity's pill, or a glance's sentence, always stands on one.
+        let fade = self.center_activity_opacity(now);
+        let pill = if self.center_pill().is_empty() {
+            fade
+        } else {
+            1.0
+        };
         if pill > 0.0 {
             if pill < 1.0 {
                 scene.push_layer(
@@ -120,7 +130,7 @@ impl TopBarChrome {
     /// The clock with nothing live over it: drawn as bare text.
     #[cfg(test)]
     pub(super) fn center_is_plain_text(&self) -> bool {
-        !self.activity_is_visible()
+        !self.activity_is_visible() && self.center_pill().is_empty()
     }
 
     /// How strongly the live activity (and its pill) shows at `now`, as it
@@ -177,18 +187,18 @@ impl TopBarChrome {
         }
     }
 
-    /// The width of the centre widget inside its `lane_w` lane. A live
-    /// activity fills the lane; the clock is a five-character reading, so its target hugs it: the time and the
-    /// content inset either side. The time is measured with every digit set
-    /// as the widest one, so the target does not change width minute to
-    /// minute.
+    /// The width of the centre widget inside its `lane_w` lane. A glance's
+    /// sentence fills the lane; an activity's pill and the clock hug their
+    /// reading, so the band is a pill and not a second bar inside the bar.
+    /// The reading is measured with every digit set as the widest one, so the
+    /// target does not change width second to second.
     pub(super) fn center_pill_width(
         &self,
         theme: &Theme,
         text: &mut TextRenderer,
         lane_w: f64,
     ) -> f64 {
-        if self.activity_is_visible() || !self.center_pill().is_empty() {
+        if self.activity_is_visible() {
             return lane_w;
         }
         let style = theme
@@ -213,7 +223,9 @@ impl TopBarChrome {
             .map(|c| if c.is_ascii_digit() { widest_digit } else { c })
             .collect();
         let (width, _) = text.measure_style(&reading, None, &style);
-        (f64::from(width) + 2.0 * CENTER_INSET_PX).min(lane_w)
+        // The dots behind the reading are part of the pill too.
+        let dots = f64::from(ui::num::u32_of_f64(self.center_pill().more as f64)) * DOT_PITCH;
+        (f64::from(width) + dots + 2.0 * CENTER_INSET_PX).min(lane_w)
     }
 
     pub(super) fn draw_clock_widget(
@@ -247,8 +259,7 @@ impl TopBarChrome {
         };
         // Extra activities stand behind the reading as dots, so a person
         // reads at a glance that more than one is running.
-        let dot_pitch = 5.0;
-        let dots = f64::from(ui::num::u32_of_f64(pill.more as f64)) * dot_pitch;
+        let dots = f64::from(ui::num::u32_of_f64(pill.more as f64)) * DOT_PITCH;
         let tx = content_cx - (tw + dots) / 2.0;
         let ty = center_y - th / 2.0;
         let rect = Rect::new(tx, ty, tx + tw, ty + th);
@@ -258,10 +269,7 @@ impl TopBarChrome {
             ink,
         );
         for dot in 0..pill.more {
-            let x = tx
-                + f64::from(tw)
-                + 2.0
-                + f64::from(u32::try_from(dot).unwrap_or(u32::MAX)) * dot_pitch;
+            let x = tx + tw + 2.0 + f64::from(u32::try_from(dot).unwrap_or(u32::MAX)) * DOT_PITCH;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
