@@ -39,7 +39,16 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
 #[derive(Clone, Default)]
 pub(crate) struct Reserved {
     /// The rect, and when it stops being held (`None`: until released).
-    held: Rc<Cell<Option<(Rect, Option<ui::time::Instant>)>>>,
+    held: Rc<Cell<Option<Hold>>>,
+}
+
+/// A rect held while a surface is up, and when the hold ends.
+#[derive(Clone, Copy)]
+struct Hold {
+    /// The rect held.
+    rect: Rect,
+    /// When it stops being held (`None`: until released).
+    until: Option<ui::time::Instant>,
 }
 
 impl Reserved {
@@ -49,12 +58,15 @@ impl Reserved {
 
     /// Hold `rect` until released.
     fn hold(&self, rect: Rect) {
-        self.held.set(Some((rect, None)));
+        self.held.set(Some(Hold { rect, until: None }));
     }
 
     /// Hold `rect` for `hold` from now.
     fn hold_for(&self, rect: Rect, hold: ui::time::Duration) {
-        self.held.set(Some((rect, Some(until(hold)))));
+        self.held.set(Some(Hold {
+            rect,
+            until: Some(until(hold)),
+        }));
     }
 
     /// Release it.
@@ -67,8 +79,8 @@ impl Reserved {
         let now = ui::time::now();
         self.held
             .get()
-            .filter(|(_, until)| until.is_none_or(|until| until > now))
-            .map(|(rect, _)| rect)
+            .filter(|hold| hold.until.is_none_or(|until| until > now))
+            .map(|hold| hold.rect)
     }
 
     fn set(&self, rect: Option<Rect>) {
@@ -364,7 +376,7 @@ impl ActivityLayer {
     }
 
     /// Carry out what the person did on the cards.
-    fn answer(&mut self) {
+    fn answer(&self) {
         for ask in self.link.take_asks() {
             use tilo_activities::Ask;
             match ask {

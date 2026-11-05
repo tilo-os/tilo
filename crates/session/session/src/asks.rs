@@ -62,8 +62,8 @@ impl Shared {
                 }
                 // Pulling an activity out of the bar's pill: its card is
                 // the floating layer's to draw.
-                DesktopAsk::Intent(ChromeIntent::ExpandActivity { app, activity }) => {
-                    self.activities.expand(&app, &activity);
+                DesktopAsk::Intent(ChromeIntent::ExpandActivity { activity }) => {
+                    self.activities.expand(&activity);
                 }
                 // A click on an application's tray icon is the
                 // application's own to answer.

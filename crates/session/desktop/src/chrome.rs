@@ -293,9 +293,8 @@ pub enum ChromeIntent {
     ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
-    /// Bring an activity's card out of the bar's pill.
+    /// Bring an activity's card out of the bar's pill, by its id.
     ExpandActivity {
-        app: String,
         activity: String,
     },
     /// Focus the tab another of this person's devices offered, here.

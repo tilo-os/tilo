@@ -233,14 +233,23 @@ impl TopBarChrome {
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
     /// branch, split out to keep that function under the line budget.
     pub(super) fn handle_left_click(&mut self, handled: &mut bool) {
-        if self.activity_is_visible()
-            && self
-                .last_cursor
-                .is_some_and(|p| self.center_rect.contains(p))
+        let pill = self.center_pill();
+        if self
+            .last_cursor
+            .is_some_and(|p| self.center_rect.contains(p))
             && let Some(chrome) = self.chrome.as_ref()
+            && (pill.heading.is_some() || self.activity_is_visible())
         {
-            let focus = chrome.snapshot().activity_glance.focus;
-            chrome.intent(ChromeIntent::ShowActivity(focus));
+            // An activity the pill names is pulled out as its card; the
+            // reading on its own opens the board.
+            if let Some(summary) = pill.heading {
+                chrome.intent(ChromeIntent::ExpandActivity {
+                    activity: summary.id,
+                });
+            } else {
+                let focus = chrome.snapshot().activity_glance.focus;
+                chrome.intent(ChromeIntent::ShowActivity(focus));
+            }
             self.activity_started = None;
             *handled = true;
             return;

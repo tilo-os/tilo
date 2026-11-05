@@ -176,7 +176,7 @@ impl Activities {
         } else {
             self.hidden
                 .borrow_mut()
-                .insert(key, (summary.id.clone(), summary.title.clone()));
+                .insert(key, (summary.id, summary.title));
         }
     }
 
@@ -188,12 +188,19 @@ impl Activities {
     }
 
     /// The person pulled the activity out of the bar's pill: its card shows
-    /// again, however the app asked for it.
-    pub(crate) fn expand(&self, app: &str, activity: &str) {
-        let key = format!("{app}:{activity}");
+    /// again, however the app asked for it. The board is what knows which
+    /// app publishes the activity the pill named.
+    pub(crate) fn expand(&self, activity: &str) {
+        let Some((app, summary)) = self.read().into_iter().find_map(|(app, published)| {
+            let summary = published.summary?;
+            (summary.id == activity).then_some((app, summary))
+        }) else {
+            return;
+        };
+        let key = key(&app, &summary);
         self.collapsed.borrow_mut().remove(&key);
         self.pulled.borrow_mut().insert(key);
-        self.touch(app, activity);
+        self.touch(&app, activity);
     }
 
     /// The person left a card `at` a place of its own (`None`: back in the
@@ -209,14 +216,13 @@ impl Activities {
 
     /// Keyboard focus came to the cards, or left them.
     pub(crate) fn focus(&self, on: bool) {
-        if on {
-            if let Some((app, activity)) = self
+        if on
+            && let Some((app, activity)) = self
                 .cards()
                 .first()
                 .map(|card| (card.app.clone(), card.summary.id.clone()))
-            {
-                self.touch(&app, &activity);
-            }
+        {
+            self.touch(&app, &activity);
         }
     }
 
@@ -928,7 +934,7 @@ mod tests {
         assert!(!shown(), "it is away");
 
         // The same song ticking on is still the same activity.
-        publish(&board, "so.tilo.music", Published::of(music.clone()));
+        publish(&board, "so.tilo.music", Published::of(music));
         assert!(!shown(), "still away");
 
         // Another song is the app's answer: it shows again.
@@ -1008,7 +1014,7 @@ mod tests {
         assert!(activities.cards().is_empty(), "folded into the bar");
         assert_eq!(activities.summaries().len(), 1, "the pill still names it");
 
-        activities.expand(CLOCKS_APP, "timer-1");
+        activities.expand("timer-1");
         assert_eq!(activities.cards().len(), 1, "pulled out");
         assert_eq!(activities.cards()[0].summary.tone, Tone::Neutral);
     }

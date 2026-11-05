@@ -578,6 +578,45 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
     assert!(!chrome.borrow().overlays.workspace_activity);
 }
 
+/// A press on the pill pulls the activity it names out of the bar as its
+/// card; the plain clock reading opens the board instead.
+#[test]
+fn pressing_the_pill_expands_the_activity_it_names() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: Vec::new(),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    chrome.borrow_mut().activities = vec![
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
+            .with_id("tea"),
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Music, "Album", "Track 2")
+            .with_id("music"),
+    ];
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
+    bar.last_cursor = Some(bar.center_rect.center());
+    let mut handled = false;
+    bar.handle_left_click(&mut handled);
+    assert!(handled, "the bar takes the press");
+    assert_eq!(
+        chrome.borrow().intents.last(),
+        Some(&crate::chrome::ChromeIntent::ExpandActivity {
+            activity: "tea".to_owned()
+        }),
+        "the pill's leading activity comes out as its card"
+    );
+    assert!(
+        !chrome.borrow().overlays.workspace_activity,
+        "the card is the floating layer's, not an overlay"
+    );
+}
+
 fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
     let key_event = ui::synthetic_input::key_event(
         winit::keyboard::Key::Named(key),

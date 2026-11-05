@@ -652,7 +652,7 @@ fn run() -> Result<(), String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "session_perf [--json PATH] [--profile arriving|apps] [--tabs N]\n\
+                    "session_perf [--json PATH] [--profile arriving|apps|activities] [--tabs N]\n\
                      Measures the shared desktop surface: build, first frame, steady frames, \
                      typing and idle frames. TILO_PERF_DEVICE labels the machine (opi3b, x86)."
                 );
