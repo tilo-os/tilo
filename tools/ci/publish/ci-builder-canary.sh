@@ -4,11 +4,11 @@
 # rebuild the image.
 #
 #   ci-builder-canary.sh cold DIR  the workspace's build-environment check and the pinned
-#                                  toolchain, then a compile with the CI linker through t's
-#                                  compiler cache under a fresh prefix (kept as DIR/prefix): it
-#                                  must miss and write, never hit or fail
-#   ci-builder-canary.sh warm DIR  the same compile in another job, keyed by DIR/prefix: it
-#                                  must read everything the cold one wrote
+#                                  toolchain, then a compile through t's compiler cache under a
+#                                  fresh nonce (kept as DIR/prefix): it must miss and store,
+#                                  never hit
+#   ci-builder-canary.sh warm DIR  the same compile in another job, with DIR/prefix's nonce: it
+#                                  must find everything the cold one stored
 #   ci-builder-canary.sh browser   the native Chromium the browser tests use, and the browser
 #                                  regressions that once broke on a builder
 set -euo pipefail
@@ -19,47 +19,49 @@ mode=${1:-}
 case $mode in
   cold | warm)
     dir=${2:?usage: ci-builder-canary.sh cold|warm DIR}
-    # t hands every job its compiler cache unless the job chose its own: its wrapper, copied
-    # into the job's /tmp, and the node's cache daemon. This canary exists to prove that cache
-    # works in the candidate (the wrapper runs on its glibc, keys its compiler and links
-    # against its package database), so a job without it fails.
-    counts=/tmp/.t/compile-cache-counts
-    [[ ${RUSTC_WRAPPER:-} == /tmp/.t/rustc-wrapper && -x $RUSTC_WRAPPER \
-      && -n ${T_COMPILE_CACHE:-} && -n ${T_COMPILE_CACHE_TOKEN:-} ]] \
-      || die "no compiler cache from t in this job (RUSTC_WRAPPER=${RUSTC_WRAPPER:-unset}): t gave no wrapper, or a server without [compile_cache]"
+    # t hands every cargo job its compiler cache: its wrapper, bound into the job at
+    # /run/t/wrapper, and the socket to the node's cache daemon. This canary exists to prove that
+    # cache works in the candidate (the wrapper keys its compiler and runs its compiles), so a job
+    # without it fails.
+    [[ ${RUSTC_WRAPPER:-} == /run/t/wrapper && -x $RUSTC_WRAPPER && -n ${T_CACHE_SOCKET:-} ]] \
+      || die "no compiler cache from t in this job (RUSTC_WRAPPER=${RUSTC_WRAPPER:-unset}, T_CACHE_SOCKET=${T_CACHE_SOCKET:-unset})"
+    # The wrapper appends one line per compile to its temporary directory's .t-cache-counts (a VM
+    # guest's T_CACHE_COUNTS): `h MS` found in the cache, `m` compiled and stored, `x WHY` not
+    # cacheable (a build script's own compile, cargo's --print queries).
+    counts=${T_CACHE_COUNTS:-${TMPDIR:-/tmp}/.t-cache-counts}
     if [[ $mode == cold ]]; then
       channel=$(awk -F'"' '/^channel/{print $2}' rust-toolchain.toml)
       tilo-check-build-env
       rustc --version | grep -F " $channel " >/dev/null || die "the builder's rustc is not $channel"
-      # A key nobody used, so the cold compile can't hit and the warm one hits only what this
-      # one wrote.
+      # A nonce nobody used, so the cold compile can't hit and the warm one hits only what this
+      # one stored.
       mkdir -p "$dir"
       printf 'builder-canary/%s/%s\n' "$(uname -m)" "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" > "$dir/prefix"
     fi
     prefix=$(cat "$dir/prefix")
     [[ $prefix == builder-canary/"$(uname -m)"/* ]] || die "the cold canary's prefix is $prefix"
-    # The wrapper keys every compile by each RUSTC_* variable but RUSTC_WRAPPER, so this one
-    # gives the canary's compiles keys of their own.
-    export RUSTC_TILO_CANARY_KEY=$prefix CARGO_INCREMENTAL=0
-    # The wrapper appends one line per compile it could cache: h hit, w served after waiting,
-    # m missed and written, c compiled after a wait in vain, k unkeyed, u daemon unanswered,
-    # x uncacheable option.
+    # A compile's key holds every argument it is given, so a cfg naming the nonce gives every
+    # unit of this build, its dependencies' included, keys of its own. Cargo joins these flags
+    # with the workspace's target rustflags; CI's -D warnings stays.
+    triple=$(uname -m)-unknown-linux-gnu
+    flags_var=CARGO_TARGET_$(tr 'a-z-' 'A-Z_' <<< "$triple")_RUSTFLAGS
+    export "$flags_var=${!flags_var:-} --check-cfg=cfg(tilo_builder_canary,values(any())) --cfg=tilo_builder_canary=\"$prefix\""
     before=$( { cat "$counts" 2>/dev/null || true; } | wc -l)
     target=$scratch/builder-canary-target
     rm -rf "$target"
     CARGO_TARGET_DIR=$target bash tools/ci/measure.sh "compiler cache $mode canary" -- \
       cargo build --locked -p tilo-advisory-lock
     rm -rf "$target"
-    outcomes=$( { tail -n "+$((before + 1))" "$counts" 2>/dev/null || true; } | cut -c1 | sort | uniq -c | tr -s ' \n' ' ')
-    n() { { tail -n "+$((before + 1))" "$counts" 2>/dev/null || true; } | grep -c "^$1" || true; }
-    hits=$(( $(n h) + $(n w) )) misses=$(n m) failed=$(( $(n c) + $(n k) + $(n u) ))
-    echo "compiler cache $mode canary: hits=$hits misses=$misses failed=$failed (outcomes:${outcomes:- none}) key=$prefix"
-    (( failed == 0 )) || die "the $mode canary compiled past the cache: daemon unanswered, inputs unkeyed or a wait in vain"
+    lines() { tail -n "+$((before + 1))" "$counts" 2>/dev/null || true; }
+    n() { lines | grep -c "^$1\( \|$\)" || true; }
+    hits=$(n h) misses=$(n m) uncached=$(n x)
+    echo "compiler cache $mode canary: hits=$hits stored=$misses uncacheable=$uncached key=$prefix"
+    lines | sed -n 's/^x /  not cacheable: /p' | sort | uniq -c
     if [[ $mode == cold ]]; then
       (( hits == 0 )) || die 'the cold canary hit entries under its fresh key'
-      (( misses > 0 )) || die 'the cold canary neither missed nor wrote under its fresh key'
+      (( misses > 0 )) || die 'the cold canary neither missed nor stored under its fresh key'
     else
-      (( misses == 0 )) || die 'the warm canary missed compiles the cold one wrote'
+      (( misses == 0 )) || die 'the warm canary missed compiles the cold one stored'
       (( hits > 0 )) || die 'the warm canary got nothing from the cold one'
     fi
     ;;
