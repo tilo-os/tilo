@@ -764,6 +764,58 @@ fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
 }
 
 #[test]
+fn a_placement_that_placed_no_row_leaves_the_pointer_the_rows_that_mount() {
+    // A scroll that outruns the rows a list mounted asks for a placement of
+    // its neighbours: that placement finds no row near the box and places
+    // none, so it must not narrow the pointer to nothing. The rows the frame
+    // mounts stand under the pointer before they are placed, and a press
+    // there is theirs.
+    let keys = Rc::new(RefCell::new((0_u64..80).collect::<Vec<_>>()));
+    let presses = Rc::new(Cell::new(0));
+    let captured = Rc::clone(&presses);
+    let mut list = VirtualList::new(
+        SharedOrder {
+            keys: Rc::clone(&keys),
+        },
+        20.0,
+        move |_, index, _| {
+            Box::new(ProbeRow::new(
+                format!("row {index}"),
+                20.0,
+                true,
+                Rc::clone(&captured),
+            ))
+        },
+    )
+    .with_viewport_height(60.0);
+    let (taffy, node) = lay_out(&mut list, 200.0);
+    assert!(!list.mounted.is_empty(), "the rows at the top show");
+    assert!(list.mounted.len() < 80, "a list mounts only what it shows");
+
+    // The view runs past every mounted row, and the frame places the list
+    // again from the layout it has: no row is near the box yet.
+    list.set_scroll_offset(1200.0);
+    let tree = crate::widget::layout::TreeId::of(&taffy);
+    crate::widget::layout::placing_again_in(tree, || {
+        list.apply_layout(&taffy, node, Point::ZERO);
+    });
+
+    // What that frame mounts is what the pointer now stands on, placed by
+    // the next frame: the press is the row's before that placement.
+    let mut mounted = TaffyTree::new();
+    let mut node_map = HashMap::new();
+    let grown = list.build_layout(&mut mounted, &Theme::dark(), &mut node_map);
+    assert!(!list.mounted.is_empty(), "the rows at the view show");
+    dispatch(&mut list, &cursor(10.0), &mounted, grown);
+    dispatch(&mut list, &left(ElementState::Pressed), &mounted, grown);
+    assert_eq!(
+        presses.get(),
+        1,
+        "the row the pointer stands on takes its press"
+    );
+}
+
+#[test]
 fn a_press_opens_the_row_of_a_list_that_opens_on_press() {
     let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
     let door = Rc::clone(&opened);

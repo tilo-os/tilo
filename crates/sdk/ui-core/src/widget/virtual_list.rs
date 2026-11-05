@@ -486,7 +486,9 @@ pub struct VirtualList<M: ListModel> {
     retry_asked: Rc<Cell<Option<usize>>>,
     /// The mounted rows the last placement placed, when it placed only
     /// those near the box ([`crate::widget::placing_again`]); the others
-    /// keep earlier boxes until they come near. `None`: every row.
+    /// keep earlier boxes until they come near. `None`: every row, and the
+    /// placement that found no row near the box, which placed none to
+    /// narrow to.
     placed: Option<Range<usize>>,
     /// The rows near the box at the last placement, placed as they leave.
     near_placed: Range<usize>,
@@ -1760,7 +1762,12 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         } else {
             (0..self.mounted.len()).collect()
         };
-        self.placed = again.then_some(near);
+        // A placement that found no row near the box placed none, so it
+        // narrows nothing: the pointer, its replay and the copy's walk meet
+        // every row, as they do after a full layout. A narrowed set left
+        // empty would meet no row at all — including the rows this frame
+        // mounts, which stand under the pointer before they are placed.
+        self.placed = (again && !near.is_empty()).then_some(near);
         let mut measurements = Vec::with_capacity(placing.len());
         for at in placing {
             let Some(row) = self.mounted.get_mut(at) else {
