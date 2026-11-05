@@ -613,9 +613,8 @@ impl Joined {
         else {
             return false;
         };
-        let report = match report {
-            Ok(report) => report,
-            Err(_) => return false,
+        let Ok(report) = report else {
+            return false;
         };
         let replay = report.summary().replay_wanted;
         let Some(write) = input.app_write(&report) else {
