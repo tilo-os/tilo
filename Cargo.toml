@@ -881,6 +881,14 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+# CI strips the symbol table from test executables (`CARGO_PROFILE_TEST_STRIP` in t.toml); these
+# packages' tests read it and keep it. A package setting wins over that profile-wide one.
+# tilo-liveness names stack frames from its own executable's symbol table (src/symtab.rs).
+[profile.test.package.tilo-liveness]
+strip = false
+# tilo-session's logging test finds the test's own function in a panic's backtrace.
+[profile.test.package.tilo-session]
+strip = false
 
 # Keep the renderer's math, scene encoding and GPU command processing optimised
 # even when application code is unoptimised. These run for every interactive

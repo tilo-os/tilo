@@ -27,6 +27,14 @@ XDG_RUNTIME_DIR = "/tmp/tilo-xdg-runtime"
 # what the profiles in Cargo.toml ask for anyway.
 CARGO_PROFILE_DEV_DEBUG = "0"
 CARGO_PROFILE_TEST_DEBUG = "0"
+# Test executables without their symbol table: symbol names are about half of each one, and
+# stripping them makes a test binary 56-58% smaller (tilo-fs's lib tests 268 MB to 118 MB) to
+# link, store, move and load. What it costs: a backtrace no longer names its functions; a panic's
+# or an assert's message still says file:line. Cargo applies it to the `test` profile only, which
+# `cargo test` and nextest build every test executable with. The packages whose tests read the
+# symbol table keep it (`[profile.test.package.*] strip = false` in Cargo.toml).
+# To keep symbols in every test binary again, delete this line.
+CARGO_PROFILE_TEST_STRIP = "symbols"
 # A warning in any crate of a target the CI builds is an error, in every check that compiles.
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-D warnings"
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-D warnings"
