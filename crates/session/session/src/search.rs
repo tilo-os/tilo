@@ -1032,6 +1032,11 @@ mod tests {
             None,
             None,
         );
+        // Starting the lists reads them on a worker, so the first search
+        // waits for that read to land before it can see what they hold.
+        tilo_test_env::wait_until("the lists' first read", || {
+            found(&search, "viewer").0 == ["Sheets"]
+        });
         assert_eq!(
             found(&search, "viewer"),
             (vec!["Sheets".to_owned()], vec!["Sheets Viewer".to_owned()])
