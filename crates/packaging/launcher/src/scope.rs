@@ -7,27 +7,19 @@
 //! which stop the app and everything it forked instead of leaving it running
 //! with no display.
 //!
-//! The compositor's launches get that cgroup from the session's app spawner
-//! ([`crate::spawner`]), born inside it, with no round trip: the spawner
-//! asks the manager once per compositor run for a scope that delegates its
-//! subtree ([`join_app_tree_with`], see [`crate::app_cgroup`]). A launcher
-//! started some other way — by a root helper, from a terminal, or while the
-//! spawner is not up yet — still asks for its own transient
-//! `app-tilo-<id>-<pid>.scope` ([`join`]) and moves *itself* into it before
-//! it forks the app, so the app and every process it starts are inside it
-//! rather than chased into it afterwards.
+//! Every launch asks for its own transient `app-tilo-<id>-<pid>.scope`
+//! ([`join`]) and moves *itself* into it before it forks the app, so the app
+//! and every process it starts are inside it rather than chased into it
+//! afterwards: no path starts an app outside one ([`crate::app_cgroup`]).
 //!
-//! Either way `OOMPolicy` is `continue`: systemd never tears a unit down on
-//! its own when the kernel's OOM killer acts in it. What ends together is
-//! decided inside the delegated tree instead ([`crate::app_cgroup`]): a Tilo
-//! app's main leaf is one OOM group, so an app that runs out of memory ends
-//! completely, while each independent job it started (a terminal session, a
-//! build, a language server) is an OOM group of its own beside it and ends
-//! alone. A host app keeps one victim. A launcher in a scope of its own (the
-//! fallback) gets no grouping: its scope is not delegated. systemd-oomd never
-//! acts on apps: `app.slice` is not one of its targets (see
-//! `os/etc/systemd/user/app.slice.d`); the session's app spawner watches
-//! memory pressure for them ([`crate::memory_pressure`]).
+//! `OOMPolicy` is `continue`: systemd never tears a unit down on its own when
+//! the kernel's OOM killer acts in it. What ends together is decided inside
+//! the app's own cgroup instead ([`crate::app_cgroup::set_oom_group`]): a Tilo
+//! app is one OOM group, so an app that runs out of memory ends completely,
+//! while a host app keeps one victim. systemd-oomd never acts on apps:
+//! `app.slice` is not one of its targets (see
+//! `os/etc/systemd/user/app.slice.d`); the session watches memory pressure
+//! for them ([`crate::memory_pressure`]).
 //!
 //! A manager that is unreachable (a headless test host, a session without a
 //! user manager) or refuses costs the scope, never the launch: the caller
@@ -75,8 +67,7 @@ pub fn unit_name(app_id: &str, pid: u32) -> Option<String> {
 
 /// `name` escaped as systemd escapes a unit name's field: `-` separates
 /// fields, so it and anything else outside `[A-Za-z0-9:_.]` becomes `\xNN`.
-/// `None` for an empty name. The delegated app cgroups use the same spelling
-/// (`crate::app_cgroup`), so an app reads alike in either.
+/// `None` for an empty name.
 #[must_use]
 pub fn escape_name(name: &str) -> Option<String> {
     use std::fmt::Write as _;
@@ -186,66 +177,6 @@ fn join_unit(
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-}
-
-/// Move this process, the session's app spawner, into a new scope that
-/// delegates its cgroup subtree: `tilo-apps-<pid>.scope` in `app.slice`
-/// (see [`crate::app_cgroup`]). One call per compositor run, made before the
-/// first launch needs it; every app after that gets its cgroup from the
-/// spawner without asking the manager anything. Returns the unit name.
-///
-/// # Errors
-///
-/// As [`join`].
-pub fn join_app_tree_with(busctl: &Path, timeout: Duration) -> Result<String, String> {
-    let pid = std::process::id();
-    let unit = crate::app_cgroup::tree_unit_name(pid);
-    join_unit(busctl, &unit, &tree_request_args(&unit, pid), timeout)
-}
-
-/// `busctl` arguments for `StartTransientUnit` of the delegated app tree
-/// holding the spawner `pid`.
-///
-/// What each app scope was given becomes either the tree's own setting or a
-/// file the spawner writes in the app's cgroup: the slice, the session link
-/// and `OOMPolicy=continue` are the tree's (systemd sees one unit, so with
-/// `stop` one process killed for memory in any app would stop every app);
-/// the tier weights and floor are per app, in its cgroup. The tree itself
-/// carries the foreground weights, so the apps below it outweigh the rest of
-/// `app.slice`, and the foreground floor, so each app's own floor has
-/// protection to draw on (`memory_recursiveprot`).
-#[must_use]
-pub fn tree_request_args(unit: &str, pid: u32) -> Vec<String> {
-    let mut properties: Vec<Vec<String>> = vec![
-        vec!["PIDs".into(), "au".into(), "1".into(), pid.to_string()],
-        vec!["Slice".into(), "s".into(), APP_SLICE.into()],
-        vec![
-            "CollectMode".into(),
-            "s".into(),
-            "inactive-or-failed".into(),
-        ],
-        vec![
-            "PartOf".into(),
-            "as".into(),
-            "1".into(),
-            SESSION_TARGET.into(),
-        ],
-        vec!["OOMPolicy".into(), "s".into(), OOM_POLICY.into()],
-        // The subtree is the spawner's: systemd neither creates nor removes
-        // cgroups below the scope, and hands it every controller the user
-        // manager has (`os/etc/systemd/system/user@.service.d`).
-        vec!["Delegate".into(), "b".into(), "true".into()],
-    ];
-    let tier = crate::priority::tier_properties(
-        crate::priority::Tier::Foreground,
-        crate::priority::mem_total_bytes(),
-    );
-    properties.extend(
-        tier.iter()
-            .map(|p| crate::priority::dbus_property_args(p).to_vec()),
-    );
-    properties.push(vec!["Description".into(), "s".into(), "Tilo apps".into()]);
-    start_args(unit, properties)
 }
 
 /// `busctl` arguments for `StartTransientUnit` of a scope holding `pid`.

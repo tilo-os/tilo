@@ -10,13 +10,12 @@
 //!    (`memory.reclaim`), a quarter of what each holds, at most every few
 //!    seconds each. An app in the foreground tier and launches still starting
 //!    are never touched, nor is the session (it is not in the app tree).
-//! 2. **Critical pressure that stays:** end the one app or job growing out of
+//! 2. **Critical pressure that stays:** end the one app growing out of
 //!    control: the one whose memory grew most over the last
-//!    [`GROWTH_WINDOW_TICKS`] samples, not the largest one. A job ends alone
-//!    (a language server, a build); an app ends whole, with its jobs. The
-//!    person is told which and why. Then the policy waits
-//!    [`COOLDOWN_TICKS`] for the freed memory to show before it would end
-//!    anything else.
+//!    [`GROWTH_WINDOW_TICKS`] samples, not the largest one. An app ends
+//!    whole, with every process it started. The person is told which and
+//!    why. Then the policy waits [`COOLDOWN_TICKS`] for the freed memory to
+//!    show before it would end anything else.
 //!
 //! This module is the policy alone, a pure function of the readings it is
 //! given ([`Policy::tick`]); [`crate::memory_monitor`] samples a source on a
@@ -26,7 +25,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
-use crate::app_cgroup::Leaf;
 use crate::priority::Tier;
 
 const MIB: u64 = 1 << 20;
@@ -69,7 +67,7 @@ pub const MIN_RECLAIM: u64 = 16 * MIB;
 /// taking more from it would only make it thrash.
 pub const STARVED_SOME: f64 = 60.0;
 
-/// Why the system ended an app or a job for memory.
+/// Why the system ended an app for memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cause {
     /// The kernel's OOM killer chose it: memory ran out.
@@ -77,27 +75,6 @@ pub enum Cause {
     /// The session's pressure policy ended it: it kept taking more memory
     /// while the machine ran low.
     Runaway,
-}
-
-impl Cause {
-    /// How the spawner's messages spell it.
-    #[must_use]
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Kernel => "kernel",
-            Self::Runaway => "runaway",
-        }
-    }
-
-    /// The cause a message names.
-    #[must_use]
-    pub fn from_wire(text: &[u8]) -> Option<Self> {
-        match text {
-            b"kernel" => Some(Self::Kernel),
-            b"runaway" => Some(Self::Runaway),
-            _ => None,
-        }
-    }
 }
 
 /// One PSI reading: the share of the last ten seconds in which some task
@@ -154,17 +131,12 @@ impl Level {
     }
 }
 
-/// One app's main cgroup or one of its jobs, as a sample sees it.
+/// One app's cgroup, as a sample sees it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Unit {
-    /// Its cgroup directory: the app's `main` leaf or a `job-<n>` leaf.
+    /// The app's own cgroup directory.
     pub dir: PathBuf,
-    /// The app's cgroup, which holds both.
-    pub app_dir: PathBuf,
     pub app_id: String,
-    /// What a job is called (its program); `None` for an app's main leaf.
-    pub label: Option<String>,
-    pub leaf: Leaf,
     pub tier: Tier,
     /// What it holds that only it can give back: anonymous memory, in RAM or
     /// compressed in swap. Page cache is not growth: the kernel drops it.
@@ -179,8 +151,7 @@ pub struct Unit {
 pub enum Action {
     /// Write `bytes` to the cgroup's `memory.reclaim`.
     Reclaim { dir: PathBuf, bytes: u64 },
-    /// End the unit, which grew by `growth` bytes over the window: a job
-    /// alone, an app whole.
+    /// End the unit, which grew by `growth` bytes over the window.
     End { unit: Unit, growth: u64 },
 }
 
@@ -289,8 +260,8 @@ impl Policy {
 
     /// The unit growing out of control, with its growth: the most growth of
     /// at least [`RUNAWAY_GROWTH`], or, once pressure stayed critical for
-    /// [`STALLED_TICKS`], the most growth at all. Ties go to a job before an
-    /// app and to the background tier before the foreground one.
+    /// [`STALLED_TICKS`], the most growth at all. Ties go to the background
+    /// tier before the foreground one.
     fn runaway<'a>(&self, units: &'a [Unit]) -> Option<(&'a Unit, u64)> {
         let floor = if self.critical_for >= STALLED_TICKS {
             1
@@ -301,13 +272,7 @@ impl Policy {
             .iter()
             .map(|unit| (unit, self.growth(unit)))
             .filter(|(_, growth)| *growth >= floor)
-            .max_by_key(|(unit, growth)| {
-                (
-                    *growth,
-                    unit.leaf == Leaf::Job,
-                    unit.tier == Tier::Background,
-                )
-            })
+            .max_by_key(|(unit, growth)| (*growth, unit.tier == Tier::Background))
     }
 }
 
@@ -321,8 +286,8 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
 
-    /// A scripted stand-in for the kernel's PSI files and the app tree: what
-    /// each sample reads.
+    /// A scripted stand-in for the kernel's PSI files and the app cgroups:
+    /// what each sample reads.
     struct FakeSource {
         system: Vec<Psi>,
         units: Vec<Vec<Unit>>,
@@ -339,17 +304,10 @@ mod tests {
         }
     }
 
-    fn unit(name: &str, leaf: Leaf, tier: Tier, footprint: u64) -> Unit {
-        let app_dir = PathBuf::from(format!("/tree/app-{name}-1"));
+    fn unit(name: &str, tier: Tier, footprint: u64) -> Unit {
         Unit {
-            dir: match leaf {
-                Leaf::Main => app_dir.join("main"),
-                Leaf::Job => app_dir.join("job-1"),
-            },
-            app_dir,
+            dir: PathBuf::from(format!("/apps/app-tilo-{name}-1.scope")),
             app_id: name.into(),
-            label: (leaf == Leaf::Job).then(|| "rust-analyzer".into()),
-            leaf,
             tier,
             footprint,
             charged: footprint,
@@ -414,22 +372,14 @@ mod tests {
             }),
             Level::Elevated
         );
-        assert_eq!(
-            Cause::from_wire(Cause::Runaway.wire().as_bytes()),
-            Some(Cause::Runaway)
-        );
-        assert_eq!(
-            Cause::from_wire(Cause::Kernel.wire().as_bytes()),
-            Some(Cause::Kernel)
-        );
     }
 
     #[test]
     fn rising_pressure_reclaims_from_the_background_and_never_from_a_foreground_app() {
         let units = vec![
-            unit("mail", Leaf::Main, Tier::Background, 2 * GIB),
-            unit("notes", Leaf::Main, Tier::Foreground, 3 * GIB),
-            unit("tiny", Leaf::Main, Tier::Background, 8 * MIB),
+            unit("mail", Tier::Background, 2 * GIB),
+            unit("notes", Tier::Foreground, 3 * GIB),
+            unit("tiny", Tier::Background, 8 * MIB),
         ];
         let source = FakeSource {
             system: vec![CALM, RISING, RISING, RISING, RISING, RISING, RISING],
@@ -441,8 +391,8 @@ mod tests {
         assert_eq!(
             actions[1],
             [Action::Reclaim {
-                dir: PathBuf::from("/tree/app-mail-1/main"),
-                bytes: GIB / 2
+                dir: PathBuf::from("/apps/app-tilo-mail-1.scope"),
+                bytes: GIB / 2,
             }],
             "a quarter of the background app, nothing of a foreground one or of a tiny one"
         );
@@ -455,7 +405,7 @@ mod tests {
 
     #[test]
     fn a_starved_background_app_is_left_alone() {
-        let mut starved = unit("mail", Leaf::Main, Tier::Background, 2 * GIB);
+        let mut starved = unit("mail", Tier::Background, 2 * GIB);
         starved.pressure.some_avg10 = 90.0;
         let mut policy = Policy::new();
         assert!(policy.tick(RISING, &[starved]).is_empty());
@@ -463,14 +413,14 @@ mod tests {
 
     #[test]
     fn critical_pressure_ends_the_unit_growing_fastest_not_the_largest() {
-        // The browser is the largest and steady; the language server grows
-        // 200 MiB a sample; the foreground editor grows a little.
+        // The browser is the largest and steady; the video call grows
+        // 200 MiB a sample while the editor in front grows a little.
         let samples: Vec<Vec<Unit>> = (0..6_u64)
             .map(|at| {
                 vec![
-                    unit("browser", Leaf::Main, Tier::Background, 6 * GIB),
-                    unit("editor", Leaf::Job, Tier::Foreground, GIB + at * 200 * MIB),
-                    unit("editor", Leaf::Main, Tier::Foreground, GIB + at * 10 * MIB),
+                    unit("browser", Tier::Background, 6 * GIB),
+                    unit("call", Tier::Background, GIB + at * 200 * MIB),
+                    unit("editor", Tier::Foreground, GIB + at * 10 * MIB),
                 ]
             })
             .collect();
@@ -483,8 +433,8 @@ mod tests {
         let ends = ended(&actions);
         assert_eq!(
             ends,
-            [(3, "/tree/app-editor-1/job-1".to_string(), 600 * MIB)],
-            "after three critical samples the runaway job ends alone: {actions:?}"
+            [(3, "/apps/app-tilo-call-1.scope".to_string(), 600 * MIB)],
+            "after three critical samples the runaway app ends: {actions:?}"
         );
         assert!(
             actions[4]
@@ -497,7 +447,7 @@ mod tests {
 
     #[test]
     fn a_spike_ends_nothing_and_a_cooldown_follows_every_end() {
-        let growing = |at: u64| vec![unit("build", Leaf::Job, Tier::Background, at * 300 * MIB)];
+        let growing = |at: u64| vec![unit("build", Tier::Background, at * 300 * MIB)];
         // Two critical samples, then calm: no end.
         let mut policy = Policy::new();
         for (at, system) in [CRITICAL, CRITICAL, CALM, CRITICAL, CRITICAL]
@@ -535,8 +485,8 @@ mod tests {
         let mut ends = Vec::new();
         for at in 0..u64::from(STALLED_TICKS) {
             let units = [
-                unit("browser", Leaf::Main, Tier::Background, 6 * GIB),
-                unit("editor", Leaf::Main, Tier::Foreground, GIB + at * MIB),
+                unit("browser", Tier::Background, 6 * GIB),
+                unit("editor", Tier::Foreground, GIB + at * MIB),
             ];
             for action in policy.tick(CRITICAL, &units) {
                 if let Action::End { unit, .. } = action {
@@ -548,10 +498,7 @@ mod tests {
         // Nothing grows at all: nothing is ended by the policy.
         let mut policy = Policy::new();
         for _ in 0..(2 * STALLED_TICKS) {
-            let actions = policy.tick(
-                CRITICAL,
-                &[unit("browser", Leaf::Main, Tier::Background, 6 * GIB)],
-            );
+            let actions = policy.tick(CRITICAL, &[unit("browser", Tier::Background, 6 * GIB)]);
             assert!(actions.iter().all(|a| !matches!(a, Action::End { .. })));
         }
     }

@@ -124,29 +124,21 @@ else
       && ok 'the compositor is never the OOM killer'"'"'s choice' \
       || bad "compositor oom_score_adj is $(cat "/proc/$shell_pid/oom_score_adj"), not -1000"
   else bad 'no compositor running'; fi
-  # Every app is a cgroup of the session's delegated tree, with a tier, and
-  # the tree's scope keeps one OOM kill from stopping every app.
+  # Every app is a scope of its own, with a tier it moves between, and
+  # OOMPolicy=continue keeps one OOM kill from stopping every app.
   slice="/sys/fs/cgroup/user.slice/user-$uid.slice/user@$uid.service/app.slice"
-  trees=$(cd "$slice" && ls -d tilo-apps-*.scope 2>/dev/null || true)
-  [ -n "$trees" ] && ok "app trees: $(echo $trees)" || bad 'no tilo-apps-*.scope: the app spawner did not get its tree'
-  for tree in $trees; do
-    prop --user "$tree" Delegate yes
-    prop --user "$tree" OOMPolicy continue
-    for app in "$slice/$tree"/app-*; do
-      [ -d "$app" ] || continue
-      w=$(cat "$app/cpu.weight")
-      case "$w" in 800 | 50) ;;
-        *) bad "${app##*/} has no tier (cpu.weight=$w)" ;; esac
-      # The app's own cgroup holds no process and is no OOM group: its main
-      # leaf is (a Tilo app, 1; a host app, 0) and each job is its own (1).
-      [ "$(cat "$app/memory.oom.group")" = 0 ] || bad "${app##*/} is one OOM group with its jobs"
-      [ -z "$(cat "$app/cgroup.procs")" ] || bad "${app##*/} holds processes outside its leaves"
-      [ -d "$app/main" ] || bad "${app##*/} has no main leaf"
-      for job in "$app"/job-*; do
-        [ -d "$job" ] || continue
-        [ "$(cat "$job/memory.oom.group")" = 1 ] || bad "${job#"$slice"/} is no OOM group of its own"
-      done
-    done
+  apps=$(cd "$slice" && ls -d app-tilo-*.scope 2>/dev/null || true)
+  [ -n "$apps" ] && ok "app scopes: $(echo $apps)" || bad 'no app-tilo-*.scope: launched apps got no cgroup of their own'
+  for app in $apps; do
+    prop --user "$slice/$app" OOMPolicy continue
+    w=$(cat "$slice/$app/cpu.weight")
+    case "$w" in 800 | 50) ;;
+      *) bad "$app has no tier (cpu.weight=$w)" ;; esac
+    # A Tilo app is one OOM group; a host app is not delegated and keeps one
+    # victim.
+    oom_group=$(cat "$slice/$app/memory.oom.group")
+    case "$oom_group" in 0 | 1) ;;
+      *) bad "$app has no OOM grouping ($oom_group)" ;; esac
   done
   # IO weights need a scheduler that honours them.
   for dev in /sys/block/nvme*n*; do

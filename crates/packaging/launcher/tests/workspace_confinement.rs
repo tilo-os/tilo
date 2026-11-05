@@ -854,9 +854,7 @@ fn settings_reaches_only_its_own_parts_of_the_session_configuration() {
 /// An app's cgroup is out of its reach: its own place is the root of its
 /// cgroup namespace, the hierarchy (every app's cgroup, named by app, with
 /// its counters) is hidden behind an empty read-only directory, and no
-/// other cgroupfs can be mounted to reach it. The other half of the
-/// boundary, the kernel refusing moves out of that namespace and writes to
-/// its own limits, is `app_spawner::a_process_in_an_app_cgroup_cannot_move_or_retune_itself`.
+/// other cgroupfs can be mounted to reach it.
 #[test]
 fn an_app_can_neither_see_nor_reach_the_cgroup_hierarchy() {
     let data = DataHome::new();

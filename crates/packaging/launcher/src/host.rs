@@ -48,14 +48,14 @@
 //! subject to them.
 //!
 //! And the lifetime. Like every packaged app, each launch runs in its own
-//! cgroup: the compositor's spawner starts it born in one of the session's
-//! delegated app tree ([`crate::app_cgroup`]), and a launcher started any
-//! other way asks for a transient `app-tilo-<id>-<pid>.scope` of the systemd
-//! user manager (see [`crate::scope`]). A logout or a compositor crash stops
-//! the application and everything it forked, `cgroup.kill` ends it even when
-//! it left its process tree, and resource accounting and OOM handling see one
-//! app as one unit. A manager that is unreachable or refuses costs the
-//! cgroup, never the launch.
+//! cgroup: the launcher moves itself into a transient
+//! `app-tilo-<id>-<pid>.scope` of the systemd user manager before it forks the
+//! program (see [`crate::scope`]), so this process and the program are in it
+//! together. A logout or a compositor crash stops the application and
+//! everything it forked, `cgroup.kill` ends it even when it left its process
+//! tree, and resource accounting and OOM handling see one app as one unit. A
+//! manager that is unreachable or refuses costs the cgroup, never the
+//! launch.
 
 use std::os::unix::process::CommandExt as _;
 use std::path::Path;
@@ -167,8 +167,8 @@ pub fn make_runnable(path: &Path) -> Result<(), HostError> {
 /// waited on.
 pub fn spawn(launch: &HostLaunch) -> Result<ExitStatus, HostError> {
     crate::chromium_frame::prepare(launch);
-    // Started by the compositor's spawner, it was born in its app cgroup and
-    // asks the manager for nothing.
+    // A launcher already inside an app's cgroup (an app running a program of
+    // its own) stays in it and asks the manager for nothing.
     let busctl = Path::new(scope::BUSCTL);
     let ask_manager = busctl.is_file() && !crate::app_cgroup::current_is_app_cgroup();
     spawn_with(launch, ask_manager.then_some(busctl), scope::JOIN_TIMEOUT)

@@ -445,8 +445,17 @@ impl App {
         }
     }
 
-    /// Ask the app to end; one that has ended already is left as it is.
+    /// End the app; one that has ended already is left as it is. Its whole
+    /// cgroup goes, so a program it started and left behind ends too; a
+    /// launcher that never got a scope of its own (no user manager) is only
+    /// asked to end.
     fn end(&self) {
+        if let Some(dir) = self.cgroup_dir() {
+            if let Err(error) = launcher::app_cgroup::kill(&dir) {
+                tracing::warn!(app = %self.name, dir = %dir.display(), %error, "the app did not end");
+            }
+            return;
+        }
         #[cfg(target_os = "linux")]
         if let Some(pidfd) = &self.pidfd {
             use std::os::fd::AsRawFd as _;
@@ -501,7 +510,7 @@ fn ended(mut child: Child, ends: &memory::Ends) -> End {
 }
 
 /// The cgroup of the app `pid` runs in, when the launcher put it in one: the
-/// app's own scope, or a leaf of the delegated tree.
+/// app's own scope.
 #[cfg(target_os = "linux")]
 fn app_cgroup(pid: u32) -> Option<PathBuf> {
     let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;

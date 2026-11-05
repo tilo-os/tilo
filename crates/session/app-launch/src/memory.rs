@@ -29,7 +29,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use launcher::app_cgroup::Leaf;
 use launcher::memory_pressure::{Psi, Unit, parse_psi};
 use launcher::priority::Tier;
 use tilo_lock::MutexRecover as _;
@@ -122,11 +121,7 @@ pub(crate) fn units_of(apps: &[(PathBuf, String)]) -> Vec<Unit> {
             let footprint = launcher::app_cgroup::footprint(dir)?;
             Some(Unit {
                 dir: dir.clone(),
-                app_dir: dir.clone(),
                 app_id: app.clone(),
-                // A scope is the whole app: there are no job leaves of it.
-                label: None,
-                leaf: Leaf::Main,
                 // An app whose tier cannot be read is treated as foreground:
                 // never reclaimed from.
                 tier: launcher::app_cgroup::tier_of(dir).unwrap_or(Tier::Foreground),
@@ -185,8 +180,8 @@ impl launcher::memory_monitor::Effects for Effects {
             "memory is running out; closing the app"
         );
         // Recorded first: the spawner asks as soon as the launcher is reaped.
-        recorded(&self.ends).insert(unit.app_dir.clone(), Cause::Runaway);
-        if let Err(error) = launcher::app_cgroup::kill(&unit.app_dir) {
+        recorded(&self.ends).insert(unit.dir.clone(), Cause::Runaway);
+        if let Err(error) = launcher::app_cgroup::kill(&unit.dir) {
             tracing::warn!(app = %unit.app_id, %error, "the app did not end");
         }
     }
@@ -349,7 +344,6 @@ mod tests {
         assert_eq!(units[0].footprint, 2 * GIB + 64 * MIB, "swapped-out too");
         assert_eq!(units[0].charged, 2 * GIB);
         assert_eq!(units[0].app_id, "so.tilo.probe");
-        assert_eq!(units[0].leaf, Leaf::Main);
         // A cgroup whose app went away is no unit, and reading it is no error.
         std::fs::remove_dir_all(&app.0).unwrap();
         assert!(units_of(&[app]).is_empty());

@@ -22,8 +22,8 @@
 //! expected to fall back to a local-only mode.
 
 pub mod agent_transport;
+pub mod door;
 #[cfg(target_os = "linux")]
-pub mod jobs;
 #[cfg(unix)]
 pub mod launch_handoff;
 pub mod local_socket;

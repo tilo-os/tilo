@@ -3571,10 +3571,6 @@ pub(crate) fn run_with_context(
         )? {
             resolved.push(stats);
         }
-        // Every app may start independent jobs; it declares nothing for it.
-        if let Some(door) = crate::job_door::open(opts.no_services) {
-            resolved.push(door);
-        }
         // An origin connector's door, which the session released it with as a window's: the
         // instances of the app attach over it.
         #[cfg(target_os = "linux")]

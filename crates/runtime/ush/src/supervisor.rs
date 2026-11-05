@@ -937,11 +937,7 @@ fn open_environment(
     // process*, not a thread: attaching a pty means `dup2` onto fds 0/1/2 and
     // `setsid`, both process-wide — on a thread that would steal the
     // supervisor's own stdio and controlling terminal (and under a test harness, the harness's).
-    let label = command.first().map_or_else(
-        || "Shell".to_owned(),
-        |program| runtime_portal::jobs::program_label(program.as_ref()),
-    );
-    let (child, diagnostics) = spawn_attached(&launch, &slave, session_job(transport, &label))?;
+    let (child, diagnostics) = spawn_attached(&launch, &slave)?;
     // The child already holds its own clones for stdio, so the original can
     // close as soon as the spawn is done.
     drop(slave);
@@ -1305,14 +1301,9 @@ fn serve_host(
         })
         .flatten();
     let runs = key.filter(|_| rc.is_some());
-    let label = command.first().map_or_else(
-        || runtime_portal::jobs::program_label(account.shell.as_os_str()),
-        |program| runtime_portal::jobs::program_label(program.as_ref()),
-    );
     let child = spawn_on_pty(
         crate::host::host_command(&account, term, command, rc.as_deref(), runs),
         &slave,
-        session_job(transport, &label),
     )?;
     drop(slave);
     mark_terminal_session(transport.stream, child.id(), &id);
@@ -1519,7 +1510,6 @@ struct Launch<'a> {
 fn spawn_attached(
     launch: &Launch<'_>,
     slave: &std::fs::File,
-    job: Option<runtime_portal::jobs::Slot>,
 ) -> std::io::Result<(std::process::Child, OwnedFd)> {
     let exe = runtime_binary()?;
     let mut cmd = std::process::Command::new(exe);
@@ -1574,33 +1564,18 @@ fn spawn_attached(
         None => cmd.env_remove(crate::runs::KEY_ENV),
     };
     let (read, write) = diagnostics_pipe()?;
-    let child = spawn_on_pty_with(cmd, slave, job, Some(write))?;
+    let child = spawn_on_pty_with(cmd, slave, Some(write))?;
     drop(moved_editor);
     Ok((child, read))
 }
 
-/// Every session is an independent job of the app that asked for it (the
-/// Terminal, for the person or an agent's tool run): it starts in a cgroup of
-/// its own below the app's (`runtime_portal::jobs`), so a session that runs
-/// out of memory, a runaway build in one tab, ends alone and the Terminal and
-/// its other tabs keep running. The app is the one whose launcher opened this
-/// connection. `None` (the session runs here, as before) outside a session's
-/// delegated app tree.
-fn session_job(
-    transport: &SessionTransport<'_>,
-    label: &str,
-) -> Option<runtime_portal::jobs::Slot> {
-    runtime_portal::jobs::slot_for_peer(transport.stream, label)
-}
-
 /// Start `cmd` with `slave` as its stdio, in its own session, with the pty as
-/// its controlling terminal; in `job` when it has one.
+/// its controlling terminal.
 fn spawn_on_pty(
     cmd: std::process::Command,
     slave: &std::fs::File,
-    job: Option<runtime_portal::jobs::Slot>,
 ) -> std::io::Result<std::process::Child> {
-    spawn_on_pty_with(cmd, slave, job, None)
+    spawn_on_pty_with(cmd, slave, None)
 }
 
 /// [`spawn_on_pty`], with `diagnostics` as standard error in place of the
@@ -1621,16 +1596,11 @@ fn diagnostics_pipe() -> std::io::Result<(OwnedFd, OwnedFd)> {
 fn spawn_on_pty_with(
     mut cmd: std::process::Command,
     slave: &std::fs::File,
-    job: Option<runtime_portal::jobs::Slot>,
     diagnostics: Option<OwnedFd>,
 ) -> std::io::Result<std::process::Child> {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
-
-    if let Some(job) = job {
-        job.place(&mut cmd);
-    }
 
     cmd.stdin(Stdio::from(slave.try_clone()?));
     cmd.stdout(Stdio::from(slave.try_clone()?));
@@ -1765,7 +1735,7 @@ mod tests {
         cmd.env("HISTFILE", home.path().join("history"));
         cmd.env("INPUTRC", "/dev/null");
         let (mut master, slave) = open_pty(80, 24).unwrap();
-        let mut child = spawn_on_pty(cmd, &slave, None).unwrap();
+        let mut child = spawn_on_pty(cmd, &slave).unwrap();
         drop(slave);
         let mut reader = master.try_clone().unwrap();
         let (seen_tx, seen) = std::sync::mpsc::channel();
@@ -1811,7 +1781,6 @@ mod tests {
             let child = spawn_on_pty(
                 std::process::Command::new(if fails { "cat" } else { "true" }),
                 &slave,
-                None,
             )
             .unwrap();
             let pid = child.id();
@@ -1882,7 +1851,7 @@ mod tests {
         for index in 0..13 {
             let environment = if index % 2 == 0 { "default" } else { "host" };
             let (master, slave) = open_pty(80, 24).unwrap();
-            let child = spawn_on_pty(std::process::Command::new("cat"), &slave, None).unwrap();
+            let child = spawn_on_pty(std::process::Command::new("cat"), &slave).unwrap();
             let pid = child.id();
             drop(slave);
             let id = uuid::Uuid::new_v4().simple().to_string();

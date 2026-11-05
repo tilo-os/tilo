@@ -321,9 +321,12 @@ pub fn terminal_argv(
     expanded_argv(entry, env)
 }
 
-/// The child's whole environment: an allowlist of the parent's, plus the overrides the
-/// desktop is authoritative for.
-fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
+/// The parent's environment that a host app may inherit ([`INHERITED_ENV`]),
+/// as this process has it. A caller that starts another process to do the
+/// launch — the session starting `tilo-launcher run-host` — hands it exactly
+/// these, so that process builds the environment this one would have.
+#[must_use]
+pub fn inherited_environment() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for key in INHERITED_ENV {
         if let Some(value) = std::env::var_os(key)
@@ -332,6 +335,13 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
             env.insert((*key).to_string(), value.to_string_lossy().to_string());
         }
     }
+    env
+}
+
+/// The child's whole environment: an allowlist of the parent's, plus the overrides the
+/// desktop is authoritative for.
+fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
+    let mut env = inherited_environment();
     // The compositor's socket wins over anything inherited. Both halves must move together:
     // WAYLAND_DISPLAY resolves relative to XDG_RUNTIME_DIR, so mixing sources here is how an
     // app ends up connecting to a different compositor.

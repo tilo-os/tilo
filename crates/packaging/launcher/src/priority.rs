@@ -12,15 +12,11 @@
 //! (`session.slice`, `app.slice`, `background.slice`) decide who yields.
 //!
 //! The values are systemd resource-control properties, written onto the app's
-//! cgroup in the session's delegated app tree, where they are the cgroup files
-//! systemd would write ([`crate::app_cgroup::property_writes`]), or onto the
-//! app's own scope when a launcher had to ask the manager for one (see
-//! [`crate::scope`]).
+//! own scope, where they are the cgroup files systemd would write
+//! ([`crate::app_cgroup::property_writes`], see [`crate::scope`]).
 //!
-//! Each tier also has an `oom_score_adj` ([`oom_score_adj`]): an app is a
-//! candidate like any other, and a job it runs is a little likelier to be
-//! chosen than the app that started it. The session (the compositor and the
-//! services of the shell) is not: the display manager sets its score before
+//! The session (the compositor and the services of the shell) is not an
+//! OOM-killer candidate like an app: the display manager sets its score before
 //! the login, where only a privileged process can
 //! (`greetd.service.d/50-tilo-oom.conf`), and everything an app runs leaves
 //! that protection first ([`leave_session_protection`]).
@@ -38,12 +34,6 @@ pub const BACKGROUND_WEIGHT: u64 = 50;
 /// `oom_score_adj` of an app: the kernel's default, the lowest an unprivileged
 /// process may hand out once the session left its own.
 pub const FOREGROUND_OOM_SCORE_ADJ: i32 = 0;
-/// `oom_score_adj` of an app that yields: half the scale, so it is chosen
-/// before an app that does not unless it holds far more.
-pub const BACKGROUND_OOM_SCORE_ADJ: i32 = 500;
-/// What an app's independent job adds to its app's `oom_score_adj`: a runaway
-/// job goes before the app that started it.
-pub const JOB_OOM_SCORE_EXTRA: i32 = 100;
 
 /// A resource-control property: its name and its value, as `busctl` passes
 /// them to `StartTransientUnit` (`t`, a u64).
@@ -54,18 +44,6 @@ pub type Property = (&'static str, u64);
 pub enum Tier {
     Foreground,
     Background,
-}
-
-#[must_use]
-pub const fn oom_score_adj(tier: Tier, leaf: crate::app_cgroup::Leaf) -> i32 {
-    let app = match tier {
-        Tier::Foreground => FOREGROUND_OOM_SCORE_ADJ,
-        Tier::Background => BACKGROUND_OOM_SCORE_ADJ,
-    };
-    match leaf {
-        crate::app_cgroup::Leaf::Main => app,
-        crate::app_cgroup::Leaf::Job => app.saturating_add(JOB_OOM_SCORE_EXTRA),
-    }
 }
 
 /// Leave the session's protection from the OOM killer: an app, or the
@@ -153,23 +131,6 @@ mod tests {
         // Never a hard limit, in either direction.
         for (name, _) in fg.iter().chain(&bg) {
             assert!(!name.contains("Max") && !name.contains("High") && *name != "CPUQuota");
-        }
-    }
-
-    #[test]
-    fn the_oom_killer_prefers_an_apps_job_to_the_app() {
-        use crate::app_cgroup::Leaf;
-        let app = oom_score_adj(Tier::Foreground, Leaf::Main);
-        assert_eq!(app, 0);
-        assert_eq!(oom_score_adj(Tier::Foreground, Leaf::Job), 100);
-        assert!(oom_score_adj(Tier::Foreground, Leaf::Job) > app);
-        for tier in [Tier::Foreground, Tier::Background] {
-            for leaf in [Leaf::Main, Leaf::Job] {
-                let adj = oom_score_adj(tier, leaf);
-                assert!(adj > -1000 && adj <= 1000, "{tier:?} {leaf:?}");
-                // Unprivileged: never below what an app is born with.
-                assert!(adj >= FOREGROUND_OOM_SCORE_ADJ);
-            }
         }
     }
 

@@ -446,7 +446,7 @@ pub fn send_instance(
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::jobs::send(
+        crate::door::send(
             door.as_fd(),
             &[INSTANCE_VERB, &encoded],
             &[
@@ -481,7 +481,7 @@ pub fn send_task(door: &Descriptor, request: &TaskRequest, fds: &TaskFds) -> io:
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::jobs::send(
+        crate::door::send(
             door.as_fd(),
             &[TASK_VERB, &encoded],
             &[fds.program.as_fd(), fds.apps.as_fd()],
@@ -529,11 +529,11 @@ pub fn receive(door: &Descriptor) -> io::Result<Option<Handed>> {
                 .saturating_add(INSTANCE_VERB.len())
                 .saturating_add(1)
         ];
-        let Some((length, fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        let [verb, request] = crate::jobs::decode(message)[..] else {
+        let [verb, request] = crate::door::decode(message)[..] else {
             return Err(invalid("the door carried something other than an instance"));
         };
         if verb == TASK_VERB {
@@ -591,7 +591,7 @@ pub fn send_ended(door: &Descriptor, instance: u64) -> io::Result<()> {
     {
         use std::os::fd::AsFd as _;
         let instance = instance.to_string();
-        crate::jobs::send(door.as_fd(), &[ENDED_VERB, instance.as_bytes()], &[])
+        crate::door::send(door.as_fd(), &[ENDED_VERB, instance.as_bytes()], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -616,7 +616,7 @@ pub fn send_exiting(door: &Descriptor, reason: &str) -> io::Result<()> {
             .unwrap_or(0);
         // A NUL separates the door's fields.
         let reason = reason.get(..end).unwrap_or_default().replace('\0', " ");
-        crate::jobs::send(door.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
+        crate::door::send(door.as_fd(), &[EXITING_VERB, reason.as_bytes()], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -636,11 +636,11 @@ pub fn receive_from_host(door: &Descriptor) -> io::Result<Option<FromHost>> {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let mut buffer = [0_u8; MAX_MESSAGE];
-        let Some((length, _fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+        let Some((length, _fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        match crate::jobs::decode(message)[..] {
+        match crate::door::decode(message)[..] {
             [verb, instance] if verb == ENDED_VERB => std::str::from_utf8(instance)
                 .ok()
                 .and_then(|instance| instance.parse().ok())
@@ -737,9 +737,9 @@ mod tests {
         let (shell, host) = pair().unwrap();
         let request = br#"{"app":"a","room":"r","instance":1,"person":"p","module_len":1}"#;
         let one = connection();
-        crate::jobs::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
+        crate::door::send(shell.as_fd(), &[INSTANCE_VERB, request], &[one.as_fd()]).unwrap();
         assert!(receive_instance(&host).is_err());
-        crate::jobs::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
+        crate::door::send(shell.as_fd(), &[b"open", request], &[]).unwrap();
         assert!(receive_instance(&host).is_err());
     }
 
