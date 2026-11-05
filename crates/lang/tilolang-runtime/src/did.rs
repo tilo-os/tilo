@@ -194,6 +194,7 @@ mod tests {
             name: name.to_owned(),
             ty,
             kind: FieldKind::Register,
+            personal: false,
             role,
             default: None,
             derived: None,

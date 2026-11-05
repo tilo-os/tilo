@@ -152,6 +152,9 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
         }
     };
     schema = schema.of_ty(ty_of_field);
+    if field.personal {
+        schema = schema.personal();
+    }
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
     }
@@ -231,18 +234,27 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
     })
 }
 
+/// Whether `pred` reads a value a person has of their own: one whose column is kept per person.
+fn reads_personal(pred: &tilolang::pred::Pred<String>, fields: &[FieldSchema]) -> bool {
+    pred.fields().iter().any(|id| {
+        fields
+            .iter()
+            .any(|field| field.personal && field.id == **id)
+    })
+}
+
 /// The filter columns of the type `ty`, whose fields' schemas are `fields`: one per filter,
 /// then one per other field a `filter` compares (a register of a scalar, a counter).
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
     for f in &ty.search.filters {
-        // A filter on the time it is asked at, or on the person it is asked for, holds of
-        // different items as time passes or for each of them: it is answered from the columns of
-        // the fields it reads, never kept as a column of its own.
-        if f.pred
-            .as_ref()
-            .is_some_and(|pred| pred.reads_clock() || pred.reads_viewer())
-        {
+        // A filter on the time it is asked at, on the person it is asked for, or on a value a
+        // person has of their own, holds of different items as time passes or for each of them:
+        // it is answered from the columns of the fields it reads, never kept as a column of its
+        // own.
+        if f.pred.as_ref().is_some_and(|pred| {
+            pred.reads_clock() || pred.reads_viewer() || reads_personal(pred, fields)
+        }) {
             continue;
         }
         // ignored-failure: a loaded package's filter types all parse (`unreadable_types`).

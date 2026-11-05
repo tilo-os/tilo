@@ -98,6 +98,10 @@ pub struct FieldSchema {
     /// A register naming a resource, of a record type the field declares: what links a resource
     /// to another (`linked(r)`, [`tilolang_runtime::store::LinkHow::Field`]).
     pub refers: bool,
+    /// A field each person has a value of, in a record everyone shares (`personal today: Bool =
+    /// false`): the record keeps them in the field's own key, a map from a person's id to their
+    /// value (`tilolang::personal`), and a value read for one person is addressed `id@person`.
+    pub personal: bool,
     /// The type the field declares (`Option<Text>`), for a reader that holds a value the app
     /// wrote in a layout of its own (`crate::native`): what turns it into a value of the type a
     /// program reads. `None` for a field whose declared type does not read.
@@ -181,6 +185,7 @@ impl FieldSchema {
             default: serde_json::Value::Null,
             composite: false,
             refers: false,
+            personal: false,
             ty: None,
             role: FieldRole::Plain,
             derived: None,
@@ -244,6 +249,13 @@ impl FieldSchema {
     #[must_use]
     pub const fn composite(mut self) -> Self {
         self.composite = true;
+        self
+    }
+
+    /// The field holds one value per person, in the record everyone shares.
+    #[must_use]
+    pub const fn personal(mut self) -> Self {
+        self.personal = true;
         self
     }
 
@@ -377,12 +389,26 @@ impl TypeSchema {
         })
     }
 
-    /// The column of the field `id`.
+    /// The column of the field `id`, as it is named for the person `id` reads a personal field
+    /// for: the column of `today@ada` is the column of `today`, named `today@ada`. The index
+    /// holds a personal field's column once per person, each under the name a read of that
+    /// person's value has.
     #[must_use]
-    pub fn column_of(&self, id: &str) -> Option<&ColumnSchema> {
-        self.columns
+    pub fn column_of(&self, id: &str) -> Option<ColumnSchema> {
+        let column = self
+            .columns
             .iter()
             .find(|column| column.field.as_deref() == Some(id))
+            .or_else(|| {
+                let (base, _) = tilolang::personal::split(id)?;
+                let field = self.field(base).filter(|field| field.personal)?;
+                self.columns
+                    .iter()
+                    .find(|column| column.field.as_deref() == Some(field.id.as_str()))
+            })?;
+        let mut column = column.clone();
+        column.name = id.to_owned();
+        Some(column)
     }
 
     /// The field saying its records are finished, by id (`done: Bool (done)`), when it declares
@@ -428,6 +454,33 @@ impl TypeSchema {
     #[must_use]
     pub fn column(&self, name: &str) -> Option<&ColumnSchema> {
         self.columns.iter().find(|column| column.name == name)
+    }
+
+    /// The column `name`, when `name` is a value of a personal field kept for one person
+    /// (`today@ada`): the field's column, named for that person.
+    #[must_use]
+    pub fn column_for(&self, name: &str) -> Option<ColumnSchema> {
+        if let Some(column) = self.column(name) {
+            return Some(column.clone());
+        }
+        let (base, _) = tilolang::personal::split(name)?;
+        self.field(base).filter(|field| field.personal)?;
+        let mut column = self.column(base)?.clone();
+        column.name = name.to_owned();
+        Some(column)
+    }
+
+    /// The field a read of `id` reads, and the person it reads a personal field for: `None` for
+    /// a field that is not there. A personal field's value for one person is addressed
+    /// `id@person` (`tilolang::personal`).
+    #[must_use]
+    pub fn field_of<'a>(&'a self, id: &'a str) -> Option<(&'a FieldSchema, Option<&'a str>)> {
+        if let Some(field) = self.field(id) {
+            return Some((field, None));
+        }
+        let (base, person) = tilolang::personal::split(id)?;
+        let field = self.field(base)?;
+        field.personal.then_some((field, Some(person)))
     }
 
     /// The fields in the order a name is read from them: the `title` first, a `body`'s first

@@ -333,7 +333,7 @@ impl Core {
             ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
             ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
             MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
+            ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
             PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
             QueueBlock, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs,
             RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF,
@@ -406,7 +406,7 @@ impl Core {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase | Word
+            | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd | Phrase | Word
             | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)

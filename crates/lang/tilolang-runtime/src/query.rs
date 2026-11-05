@@ -213,10 +213,15 @@ impl Order {
 #[must_use]
 pub fn store_pred(pred: &Pred<String>, ty: &TypeMeta, app: &str) -> Option<crate::store::Pred> {
     pred.resolve(&mut |id: &String| {
-        let field = ty.fields.iter().find(|f| f.id == *id)?;
+        let field = ty
+            .fields
+            .iter()
+            .find(|f| f.id == tilolang::personal::field_of(id))?;
         let parsed = crate::meta::parse_ty(&field.ty, app).ok()?;
         let kind = crate::meta::field_kind(field, &parsed);
-        crate::store::FieldRead::of(&field.id, kind, &parsed, field.default.as_ref())
+        // A personal field's read names the person it is for (`today@ada`), the id the store
+        // keeps their value under.
+        crate::store::FieldRead::of(id, kind, &parsed, field.default.as_ref())
     })
 }
 
@@ -330,7 +335,80 @@ pub fn resolve(
         1 => all.remove(0),
         _ => Pred::And(all),
     };
+    // A personal field reads the value of the person asking, so the predicate names them for
+    // each of their fields: `today@ada`. The store keeps a value per person under that id, so
+    // the answer comes from its index as any other field's does.
+    let pred = for_viewer(pred, ty, viewer)?;
+    let order = match order {
+        Some(order) => Some(order_for_viewer(order, ty, viewer)?),
+        None => None,
+    };
     Ok(Resolved { pred, order })
+}
+
+/// The field `id` of `ty` when it is one each person has a value of their own for.
+fn personal_field<'a>(ty: &'a TypeMeta, id: &str) -> Option<&'a str> {
+    let field = ty
+        .fields
+        .iter()
+        .find(|f| f.id == tilolang::personal::field_of(id))?;
+    field.personal.then_some(field.name.as_str())
+}
+
+/// Which person a predicate on a personal field is asked for, and the error when nobody is
+/// looking: a value of one's own is read for someone.
+fn personal_viewer<'a>(
+    ty: &TypeMeta,
+    fields: &[&'a String],
+    viewer: Option<&'a str>,
+) -> Result<Option<&'a str>, String> {
+    let Some(name) = fields.iter().find_map(|id| personal_field(ty, id)) else {
+        return Ok(None);
+    };
+    viewer.map(Some).ok_or_else(|| {
+        format!("`{name}` is personal, so it reads the value of a person: a query on it is asked by someone looking")
+    })
+}
+
+/// `pred` with each personal field naming `who`: the id the store keeps their value under.
+fn for_viewer(
+    pred: Pred<String>,
+    ty: &TypeMeta,
+    viewer: Option<&str>,
+) -> Result<Pred<String>, String> {
+    let fields = pred.fields();
+    let Some(who) = personal_viewer(ty, &fields, viewer)? else {
+        return Ok(pred);
+    };
+    Ok(pred
+        .resolve(&mut |id: &String| {
+            Some(match personal_field(ty, id) {
+                Some(_) => tilolang::personal::id(id, who),
+                None => id.clone(),
+            })
+        })
+        .unwrap_or(Pred::Const(false)))
+}
+
+/// The order with each personal field naming `who` ([`for_viewer`]).
+fn order_for_viewer(order: Order, ty: &TypeMeta, viewer: Option<&str>) -> Result<Order, String> {
+    let fields = [&order.field];
+    let Some(who) = personal_viewer(ty, &fields, viewer)? else {
+        return Ok(order);
+    };
+    let then = order
+        .then
+        .map(|then| order_for_viewer(*then, ty, viewer).map(Box::new))
+        .transpose()?;
+    let field = match personal_field(ty, &order.field) {
+        Some(_) => tilolang::personal::id(&order.field, who),
+        None => order.field,
+    };
+    Ok(Order {
+        field,
+        then,
+        ..order
+    })
 }
 
 /// Free text as a predicate over the type's text fields: the conjunction of each word being

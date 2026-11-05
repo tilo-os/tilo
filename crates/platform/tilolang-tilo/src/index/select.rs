@@ -217,11 +217,17 @@ impl View<'_> {
         let named = self.overlay.touched_reading(
             &member,
             &|path| self.is_item_of(path, (resource, field)),
-            &|written| read.iter().any(|r| r == written),
+            // A personal field is written whole, under the field's id: a write of it moves what
+            // every person's value of it is part of.
+            &|written| {
+                read.iter()
+                    .any(|r| tilolang::personal::field_of(r) == written)
+            },
         );
         let touched = self.changed_items((resource, field), named, &read)?;
         let chosen = choose(schema, &conj, false);
         let order_column = order.and_then(|o| schema.column_of(&o.field));
+        let order_column = order_column.as_ref();
         // A run read page by page: one exact run, in the collection's order or the order of
         // the column it runs over. The conjuncts it leaves are checked as its pages fill
         // ([`Filtered`]), so a filter of several conjuncts costs the entries its first page
@@ -282,7 +288,8 @@ impl View<'_> {
         (order, order_column): (Option<&Order>, Option<&crate::schema::ColumnSchema>),
         (touched, evaluated): (&std::collections::BTreeSet<String>, &Cell<u64>),
     ) -> Result<Option<Listing>, StoreError> {
-        let column = schema.column(&a.column);
+        let column = schema.column_for(&a.column);
+        let column = column.as_ref();
         let descending = order.is_some_and(|o| o.descending);
         // A run is read in one order; an order over another one, or one with the items without
         // a value last, is not that order: [`Self::ordered_listing`] reads it instead.
@@ -429,7 +436,7 @@ impl View<'_> {
         for part in &parts {
             let base = self.listed(
                 (resource, field),
-                scan_column,
+                &scan_column,
                 (scan.absent_last, scan.descending),
             )?;
             let (added, removed) = self.moved_in_run(
@@ -573,7 +580,8 @@ impl View<'_> {
     ) -> Result<Merged, StoreError> {
         let list = scope_list(resource, field, column);
         let pages = self.snapshot.pages(&list).map_err(index_error)?;
-        let (start, end) = run_bounds(self.snapshot, (&list, &pages), schema.column(column), run)
+        let column_spec = schema.column_for(column);
+        let (start, end) = run_bounds(self.snapshot, (&list, &pages), column_spec.as_ref(), run)
             .map_err(index_error)?;
         let base = Base::Slice {
             pages,
@@ -610,10 +618,11 @@ impl View<'_> {
             for a in access {
                 let list = scope_list(resource, field, &a.column);
                 let pages = self.snapshot.pages(&list).map_err(index_error)?;
-                let column = schema.column(&a.column);
+                let column = schema.column_for(&a.column);
                 for run in &a.runs {
-                    let (start, end) = run_bounds(self.snapshot, (&list, &pages), column, run)
-                        .map_err(index_error)?;
+                    let (start, end) =
+                        run_bounds(self.snapshot, (&list, &pages), column.as_ref(), run)
+                            .map_err(index_error)?;
                     for index in start..end {
                         let Some((key, id)) = pages.entry(index) else {
                             break;
@@ -691,6 +700,9 @@ impl View<'_> {
                 if changed {
                     break;
                 }
+                // A personal field is held whole, under the field's id: a value of one person
+                // moves with the field it is kept in.
+                let f = tilolang::personal::field_of(f);
                 changed = self.snapshot.field(&path, f).map_err(index_error)?
                     != self.field(&path, f).map_err(index_error)?;
             }
@@ -730,19 +742,18 @@ impl View<'_> {
         schema: &TypeSchema,
         field: &str,
     ) -> Result<Lit, StoreError> {
-        let Some(f) = schema.field(field).or_else(|| super::reflect::field(field)) else {
-            return Ok(Lit::Absent);
+        let Some((f, person)) = schema.field_of(field) else {
+            let Some(f) = super::reflect::field(field) else {
+                return Ok(Lit::Absent);
+            };
+            let held = self.field(path, &f.id).map_err(index_error)?;
+            return Ok(held.map_or(Lit::Absent, |held| super::reflect::at_lit(&held)));
         };
-        if super::reflect::is_reflected(&f.id) {
-            return Ok(self
-                .field(path, &f.id)
-                .map_err(index_error)?
-                .map_or(Lit::Absent, |held| super::reflect::at_lit(&held)));
-        }
         let held = self.field(path, &f.id).map_err(index_error)?;
+        let whole = held.unwrap_or_else(|| crate::reads::default_value(f));
         lit_of(
             &f.id,
-            held.unwrap_or_else(|| crate::reads::default_value(f)),
+            crate::reads::for_person(f, whole, person),
             &Lit::Absent,
         )
     }
@@ -758,7 +769,7 @@ impl View<'_> {
     ) -> Result<Moved, StoreError> {
         let mut added = Vec::new();
         let mut removed = Vec::new();
-        let Some(spec) = schema.column(column) else {
+        let Some(spec) = schema.column_for(column) else {
             return Ok((added, removed));
         };
         for id in touched {
@@ -775,7 +786,7 @@ impl View<'_> {
             let now_key = self.key_in(&path, (resource, field)).map_err(index_error)?;
             let now = match &now_key {
                 Some(_) => self
-                    .column_values(&path, schema, spec)
+                    .column_values(&path, schema, &spec)
                     .map_err(index_error)?,
                 None => Vec::new(),
             };
@@ -909,17 +920,17 @@ impl View<'_> {
         schema: &TypeSchema,
         column: &str,
     ) -> Result<Vec<(String, usize)>, IndexError> {
-        let Some(spec) = schema.column(column) else {
+        let Some(spec) = schema.column_for(column) else {
             return Ok(Vec::new());
         };
         let list = scope_list(resource, field, column);
         let pages = self.snapshot.pages(&list)?;
         let mut out = Vec::new();
-        for value in columns::facet_values(spec) {
+        for value in columns::facet_values(&spec) {
             let (start, end) = run_bounds(
                 self.snapshot,
                 (&list, &pages),
-                Some(spec),
+                Some(&spec),
                 &value_run(&value),
             )?;
             out.push((value, end.saturating_sub(start)));

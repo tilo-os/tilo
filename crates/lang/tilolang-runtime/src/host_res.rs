@@ -41,10 +41,23 @@ fn field_in<'a>(info: &'a TypeInfo, field: &str) -> HResult<&'a FieldInfo> {
 }
 
 fn spec(f: &FieldInfo) -> FieldSpec {
-    FieldSpec {
-        id: f.id.clone(),
-        kind: f.kind,
-    }
+    spec_for(f, None)
+}
+
+/// A field as the record holds it whole: a personal one holds every person's value, read as
+/// [`FieldValue::Entries`] of the person to their value.
+pub(crate) fn spec_all(f: &FieldInfo) -> FieldSpec {
+    spec_for(f, None)
+}
+
+/// The field a personal one reads or writes for `person`: `id@person`, the id the store keeps
+/// a person's value under. Any other field reads under its own id.
+fn spec_for(f: &FieldInfo, person: Option<&str>) -> FieldSpec {
+    let id = match person {
+        Some(person) if f.personal => tilolang::personal::id(&f.id, person),
+        _ => f.id.clone(),
+    };
+    FieldSpec { id, kind: f.kind }
 }
 
 fn type_default(ty: &Ty) -> Result<Value, String> {
@@ -407,7 +420,24 @@ impl Core {
                 .borrow_mut()
                 .field(target, field, author, &registry);
         }
-        let fv = match self.store.borrow().read(target, &spec(field)) {
+        // A personal field reads the value of the person looking; nobody looking reads the
+        // value a person who never set it has.
+        let person = if field.personal {
+            match self.looking_now() {
+                Some(person) => Some(person),
+                None => {
+                    return declared_default(&field.ty, field.default.as_ref())
+                        .map_err(|e| e.to_string());
+                }
+            }
+        } else {
+            None
+        };
+        let fv = match self
+            .store
+            .borrow()
+            .read(target, &spec_for(field, person.as_deref()))
+        {
             Ok(fv) => fv,
             // A root nobody opened yet reads as it would start (`root T` names it anywhere).
             Err(crate::store::StoreError::NotFound(_)) if target.is_unmade_root() => {
@@ -693,7 +723,12 @@ impl Core {
 
     fn res_set(&self, rh: i32, fh: i32, v: &Value) -> HResult<Option<Wasm>> {
         let ctx = self.mut_ctx(rh, fh)?;
-        let id = ctx.field.id.clone();
+        // A personal field writes the value of the person the action runs as: everyone's own.
+        let id = if ctx.field.personal {
+            tilolang::personal::id(&ctx.field.id, &self.looking()?)
+        } else {
+            ctx.field.id.clone()
+        };
         let m = match ctx.field.kind {
             FieldKind::Register => Mutation::SetRegister {
                 field: id,
