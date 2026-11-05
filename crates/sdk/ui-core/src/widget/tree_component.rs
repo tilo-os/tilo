@@ -958,9 +958,10 @@ pub(crate) fn items_tree(id: &str, name: Option<&str>, open: bool) -> DescribedT
                 node("Root", "1", None, true),
                 node("Child", "2", Some("1"), false),
             ],
-            expanded: Some(match open {
-                true => vec![ResourceId("1".into())],
-                false => Vec::new(),
+            expanded: Some(if open {
+                vec![ResourceId("1".into())]
+            } else {
+                Vec::new()
             }),
             ..TreeViewProps::default()
         },
