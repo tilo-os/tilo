@@ -159,17 +159,29 @@ impl SessionEnvironment {
         if let Some(address) = &self.session_bus {
             variables.insert("DBUS_SESSION_BUS_ADDRESS".to_owned(), address.clone());
         }
-        variables.insert(
-            "XDG_CURRENT_DESKTOP".to_owned(),
-            desktop_entry::launch::XDG_CURRENT_DESKTOP.to_owned(),
-        );
-        variables.insert(
-            "XDG_SESSION_DESKTOP".to_owned(),
-            desktop_entry::scan::CURRENT_DESKTOP.to_owned(),
-        );
-        variables.insert("XDG_SESSION_TYPE".to_owned(), "wayland".to_owned());
+        for (name, value) in desktop_variables() {
+            variables.insert(name.to_owned(), value.to_owned());
+        }
         variables
     }
+}
+
+/// The variables naming the desktop a process of this session runs on.
+///
+/// They say Tilo is the desktop, so an app reads its appearance and its menu
+/// entries from the session's settings rather than from the desktop around a
+/// nested session: a process started without them is treated as a guest of
+/// whatever desktop it happens to run inside.
+#[must_use]
+pub fn desktop_variables() -> [(&'static str, &'static str); 3] {
+    [
+        (
+            "XDG_CURRENT_DESKTOP",
+            desktop_entry::launch::XDG_CURRENT_DESKTOP,
+        ),
+        ("XDG_SESSION_DESKTOP", desktop_entry::scan::CURRENT_DESKTOP),
+        ("XDG_SESSION_TYPE", "wayland"),
+    ]
 }
 
 #[cfg(test)]

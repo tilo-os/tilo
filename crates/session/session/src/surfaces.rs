@@ -288,8 +288,8 @@ impl Surface {
         self
     }
 
-    /// What the app reads of the surface it is to become, beside the
-    /// `WAYLAND_SOCKET` it is handed.
+    /// What the app reads of the surface it is to become and of the desktop
+    /// it runs on, beside the `WAYLAND_SOCKET` it is handed.
     #[must_use]
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut environment = vec![
@@ -328,6 +328,13 @@ impl Surface {
         if self.lock {
             environment.push((String::from("TILO_SURFACE_LOCK"), String::from("1")));
         }
+        // A surface app is Tilo's own app, whatever desktop this session was
+        // started inside: its appearance and its menu entries come from the
+        // session's settings, never from a host desktop around it.
+        environment.extend(
+            tilo_app_launch::env::desktop_variables()
+                .map(|(name, value)| (name.to_owned(), value.to_owned())),
+        );
         environment
     }
 }
@@ -1260,6 +1267,25 @@ mod tests {
             !environment.contains_key("TILO_SURFACE_LOCK"),
             "the bar is no lock screen"
         );
+    }
+
+    #[test]
+    fn a_surface_app_starts_as_an_app_of_this_desktop() {
+        // A surface reads its appearance and its menu entries from the
+        // session's settings: told nothing of the desktop, it would take them
+        // from a host desktop the session happens to run inside.
+        let environment: std::collections::BTreeMap<String, String> =
+            Surface::new("quick-settings", "/usr/bin/tilo-quick-settings")
+                .environment()
+                .into_iter()
+                .collect();
+        for (name, value) in tilo_app_launch::env::desktop_variables() {
+            assert_eq!(
+                environment.get(name).map(String::as_str),
+                Some(value),
+                "{name}"
+            );
+        }
     }
 
     #[test]

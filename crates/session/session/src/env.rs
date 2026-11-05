@@ -13,10 +13,6 @@
 //! An X11 display is not exported: every workspace has its own, and only the
 //! launch that belongs to a workspace is told that workspace's display.
 
-/// `XDG_CURRENT_DESKTOP` as a colon list: Tilo plus GNOME, so
-/// `OnlyShowIn=GNOME` entries remain visible without claiming to *be* GNOME.
-pub const CURRENT_DESKTOP_VALUE: &str = "tilo:GNOME";
-
 const UPDATE_PROGRAM: &str = "/usr/bin/dbus-update-activation-environment";
 
 /// What a Tilo session exports.
@@ -30,12 +26,12 @@ impl SessionEnvironment {
     /// The exact `KEY=value` assignments, in a stable order.
     #[must_use]
     pub fn assignments(&self) -> Vec<String> {
-        vec![
-            format!("WAYLAND_DISPLAY={}", self.wayland_display),
-            format!("XDG_CURRENT_DESKTOP={CURRENT_DESKTOP_VALUE}"),
-            format!("XDG_SESSION_DESKTOP={}", tilo_paths::login::TILO_DESKTOP),
-            "XDG_SESSION_TYPE=wayland".to_string(),
-        ]
+        let mut assignments = vec![format!("WAYLAND_DISPLAY={}", self.wayland_display)];
+        assignments.extend(
+            tilo_app_launch::env::desktop_variables()
+                .map(|(name, value)| format!("{name}={value}")),
+        );
+        assignments
     }
 
     /// The command that publishes [`Self::assignments`] to both
