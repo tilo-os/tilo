@@ -946,9 +946,6 @@ mod members;
 #[path = "governed_rooms/governance_actions.rs"]
 mod governance_actions;
 
-#[path = "governed_rooms/member_device.rs"]
-mod member_device;
-
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;
 
