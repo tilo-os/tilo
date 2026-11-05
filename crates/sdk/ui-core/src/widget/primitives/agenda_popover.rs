@@ -331,7 +331,7 @@ impl<'a> AgendaPopoverFace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::{TextRenderer, TextStyle};
+    use crate::text_render::TextRenderer;
     use vello::kurbo::Affine;
 
     fn entry() -> AgendaEntry {
