@@ -171,6 +171,41 @@ fn a_row_replaced_before_its_remount_is_let_go_of_by_the_remount() {
     assert_eq!(taffy.total_node_count(), nodes, "nor in the tree");
 }
 
+/// A list the tree keeps without laying it out — a closed sidebar — asks
+/// nothing of the host until a build lays it out: a change held for a layout
+/// that never comes would ask for a rebuild every frame.
+#[test]
+fn a_list_kept_out_of_the_layout_asks_no_rebuild_until_it_is_laid_out() {
+    let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0);
+    list.invalidate_rows([3]);
+    assert_eq!(
+        crate::widget::Widget::take_structure_change(&mut list),
+        crate::widget::StructureChange::None,
+        "with no node to mount under, the list asks nothing of the host"
+    );
+    let _ = lay_out(&mut list, 300.0);
+    assert_eq!(
+        crate::widget::Widget::take_structure_change(&mut list),
+        crate::widget::StructureChange::None,
+        "the build that lays it out mounts the rows: nothing is left for the host"
+    );
+    list.invalidate_rows([3]);
+    assert_eq!(
+        crate::widget::Widget::take_structure_change(&mut list),
+        crate::widget::StructureChange::Children,
+        "laid out, a row it mounts is mounted in place"
+    );
+}
+
 #[test]
 fn a_row_the_model_says_changed_is_mounted_again_in_place_and_alone() {
     let built = Rc::new(Cell::new(0_u32));

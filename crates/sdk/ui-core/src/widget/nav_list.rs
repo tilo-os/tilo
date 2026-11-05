@@ -2212,6 +2212,14 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         self.take_menu(matches!(event, WindowEvent::MouseInput { .. }));
     }
 
+    /// The list carries out its own structural changes in place: rows a
+    /// scroll or a new extent mounts, and rows it lets go of, are mounted
+    /// under the list's node. Pass its change on, so a mount settles the
+    /// frame instead of rebuilding the window's tree.
+    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+        crate::widget::Widget::take_structure_change(&mut *self.list)
+    }
+
     fn perform_semantic_action(
         &mut self,
         target: &str,
@@ -2392,10 +2400,11 @@ impl crate::widget::controls::ActionControls for NavList {
         let model = self.list.model();
         let mut bindings = crate::widget::controls::control_action_bindings(&*self.list);
         // The list exports only the rows it builds. Keep its control
-        // inventory equally bounded, including after filtering or scrolling.
+        // inventory the same set, so a row a screen reader reaches is one a
+        // control search finds, including after filtering or scrolling.
         for row in self
             .list
-            .visible_range()
+            .mounted_rows()
             .filter_map(|index| model.row(index))
         {
             let key = &row.key;
@@ -2432,14 +2441,14 @@ impl crate::widget::controls::ActionControls for NavList {
 
     /// Whether `Self::control_action_bindings` holds an action, answered
     /// without building the rows' semantics it also lists: the host asks it
-    /// on every frame. The actions are the visible destinations' selection
+    /// on every frame. The actions are the mounted destinations' selection
     /// actions and whatever the list's own rows bind.
     fn has_action_control_bindings(&self) -> bool {
         let shared = self.shared.borrow();
         let model = self.list.model();
         let rows = || {
             self.list
-                .visible_range()
+                .mounted_rows()
                 .filter_map(|index| model.row(index))
         };
         let selection = if shared.view.is_some() {

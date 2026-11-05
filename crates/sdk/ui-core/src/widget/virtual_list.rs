@@ -1040,6 +1040,13 @@ impl<M: ListModel> VirtualList<M> {
         self.mounted.len()
     }
 
+    /// The model indexes of the rows the list builds now, in order. What the
+    /// list exports as its children is what it binds controls for: both read
+    /// this, so a row reaches a screen reader and a control search alike.
+    pub fn mounted_rows(&self) -> impl Iterator<Item = usize> + '_ {
+        self.mounted.iter().map(|row| row.index)
+    }
+
     #[must_use]
     pub fn visible_range(&self) -> std::ops::Range<usize> {
         self.viewport.visible_range()
@@ -2620,20 +2627,21 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     /// Rows mounted and let go — those a scroll brought near or took away,
     /// those the model re-keyed, reordered, or whose content was built
     /// anew — are mounted where they stand ([`Self::remount_rows`]) and
-    /// draw themselves whole: the list shows them come and go. Only with
-    /// no layout of its own to mount under does the host build the tree.
+    /// draw themselves whole: the list shows them come and go.
+    ///
+    /// With no layout of its own the list has nothing to mount under yet: the
+    /// build that lays it out mounts the rows it shows, so until then it asks
+    /// nothing of the host — a list the tree keeps without laying it out (a
+    /// closed sidebar) would otherwise ask for a rebuild every frame and
+    /// never have one carry it out.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         use crate::widget::StructureChange;
-        // Reported until the rows are mounted, in place where the host can
-        // ([`Widget::remount_children`]) or by a rebuild of the tree.
         let mut change = if std::mem::take(&mut self.box_dirty) {
             StructureChange::Rebuild
-        } else if self.structure_dirty || self.remount {
-            if self.layout_node.is_some() {
-                StructureChange::Children
-            } else {
-                StructureChange::Described
-            }
+        } else if (self.structure_dirty || self.remount) && self.layout_node.is_some() {
+            // Reported until the rows are mounted, in place where the host
+            // can ([`Widget::remount_children`]) or by a rebuild of the tree.
+            StructureChange::Children
         } else {
             StructureChange::None
         };

@@ -600,6 +600,14 @@ impl Widget for NavRow {
         }
     }
 
+    /// A row takes its box from the list and the tokens: the width it stands
+    /// in, and the height its kind of row has. What it shows (the pointer, the
+    /// keyboard, its own data) repaints it and never resizes it, so a frame
+    /// laid out again measures nothing here.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
