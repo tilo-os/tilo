@@ -34,6 +34,7 @@
     reason = "test fixtures: a failed step is the assertion, and a device lives until its session ends"
 )]
 
+use std::fmt::Write as _;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
@@ -803,7 +804,7 @@ impl Device {
                     .copied()
                     .collect::<Vec<_>>()
                     .join("\n");
-                apps.push_str(&format!("{}:\n{shown}\n", entry.path().display()));
+                let _ = writeln!(apps, "{}:\n{shown}", entry.path().display());
             }
         }
         let log: Vec<String> = self
@@ -836,11 +837,7 @@ impl Device {
             for entry in entries.flatten() {
                 let text =
                     std::fs::read_to_string(entry.path()).unwrap_or_else(|error| error.to_string());
-                all.push_str(&format!(
-                    "{} {}:\n{text}\n",
-                    self.label,
-                    entry.path().display()
-                ));
+                let _ = writeln!(all, "{} {}:\n{text}", self.label, entry.path().display());
             }
         }
         all
@@ -1311,10 +1308,7 @@ impl Chat<'_> {
             &json!({"public_key": Self::conversation_key(peer)}),
         );
         Conversation {
-            messages: answer["messages"]
-                .as_array()
-                .map(|messages| messages.to_vec())
-                .unwrap_or_default(),
+            messages: answer["messages"].as_array().cloned().unwrap_or_default(),
             unread: answer["unread"].as_u64().unwrap_or_default(),
         }
     }
@@ -1352,8 +1346,7 @@ impl Chat<'_> {
             Some("failed") => Some(
                 update["output"]["error"]
                     .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| update.to_string()),
+                    .map_or_else(|| update.to_string(), str::to_owned),
             ),
             other => panic!(
                 "{} Chat's read of {peer} ended as {other:?}: {answer}\n{}",
@@ -1369,15 +1362,14 @@ impl Chat<'_> {
     pub fn wait_for_contact(&self, peer: &str) {
         let deadline = tilo_test_env::hang_deadline();
         while let Some(refusal) = self.refusal(peer) {
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "{DIAG}{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
-                     what the session warned and failed at:\n{}",
-                    self.device.label,
-                    self.device.warnings(),
-                    DIAG = self.device.diagnostic()
-                );
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{DIAG}{} never had {peer} to talk to in Chat, and said why: {refusal}\n\
+                 what the session warned and failed at:\n{}",
+                self.device.label,
+                self.device.warnings(),
+                DIAG = self.device.diagnostic()
+            );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
@@ -1398,15 +1390,14 @@ impl Chat<'_> {
             if matches {
                 return;
             }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "{DIAG}{} shows {held:?} from {peer} instead of {texts:?}\n\
-                     what the session warned and failed at:\n{}",
-                    self.device.label,
-                    self.device.warnings(),
-                    DIAG = self.device.diagnostic()
-                );
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{DIAG}{} shows {held:?} from {peer} instead of {texts:?}\n\
+                 what the session warned and failed at:\n{}",
+                self.device.label,
+                self.device.warnings(),
+                DIAG = self.device.diagnostic()
+            );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
@@ -1419,15 +1410,14 @@ impl Chat<'_> {
             if count == wanted {
                 return;
             }
-            if std::time::Instant::now() >= deadline {
-                panic!(
-                    "{DIAG}{} counts {count} unread from {peer} instead of {wanted}\n\
-                     what the session warned and failed at:\n{}",
-                    self.device.label,
-                    self.device.warnings(),
-                    DIAG = self.device.diagnostic()
-                );
-            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{DIAG}{} counts {count} unread from {peer} instead of {wanted}\n\
+                 what the session warned and failed at:\n{}",
+                self.device.label,
+                self.device.warnings(),
+                DIAG = self.device.diagnostic()
+            );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
