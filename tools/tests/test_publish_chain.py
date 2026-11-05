@@ -68,7 +68,11 @@ FAKE_COSIGN = '''#!/bin/sh
 echo "cosign $*" >> "$FAKE_LOG"
 case $1 in
   generate-key-pair) : > cosign.key; echo pub > cosign.pub ;;
-  sign-blob) prev=; for a; do [ "$prev" = --output-signature ] && echo sig > "$a"; prev=$a; done ;;
+  sign-blob) prev=; for a; do
+      [ "$prev" = --output-signature ] && echo sig > "$a"
+      [ "$prev" = --bundle ] && echo '{}' > "$a"
+      prev=$a
+    done ;;
   attest-blob) python3 - "$@" <<'PY'
 import base64, json, sys
 args = sys.argv[1:]
@@ -452,6 +456,31 @@ class ScriptTests(unittest.TestCase):
         self.assertNotIn("awskms", log)
         self.assertEqual(json.loads((self.out / "payload.json").read_text())["critical"]["image"],
                          {"docker-manifest-digest": self.digest})
+
+    def test_a_kms_signature_leaves_every_output_its_check_declares(self):
+        # t fails a check whose declared output matches no file, so signing with the key in KMS
+        # leaves an empty dry-run.pub (no dry-run key) beside what it signed.
+        checks = {c["name"]: c for c in tomllib.loads((ROOT / "t.toml").read_text())["check"]}
+        del self.env["TILO_PUBLISH_DRY_RUN"]
+        for name, ref in (("sign-ci-builder", "stable"), ("sign-dev-ci-builder", "main")):
+            with self.subTest(name):
+                check = checks[name]
+                prefix = "/target/publish/ci-builder/x86_64/"
+                declared = [o[len(prefix):] for o in check["outputs"] if o.startswith(prefix)]
+                self.assertIn("dry-run.pub", declared)
+                env = {**check["env"], "COSIGN_KEY_REF": check["env"]["COSIGN_KEY_REF"].replace(
+                    "awskms://", "hashivault://")}
+                for stale in self.out.glob("*"):
+                    if stale.name not in ("image.oci.tar", "digest"):
+                        stale.unlink()
+                result = subprocess.run(
+                    ["bash", str(PUBLISH / "oci-sign.sh"), "registry.tilo.so/tilo/tilo-builder", str(self.out)],
+                    env={**self.env, **env, "T_REF": ref}, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("generate-key-pair", self.log.read_text())
+                for output in declared:
+                    self.assertTrue((self.out / output).is_file(), output)
+                self.assertEqual((self.out / "dry-run.pub").read_bytes(), b"")
 
     def board(self, revision: str = COMMIT, board: str = "lenovo-83ed") -> subprocess.CompletedProcess:
         """os-board-publish.sh on what `os-image.sh board` and its signing leave in OUT: the image as
