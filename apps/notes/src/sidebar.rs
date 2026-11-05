@@ -552,7 +552,7 @@ impl PageSidebar {
             },
         )
         .on_view("page_tree", move |page| {
-            on_open.borrow_mut().open.push(page)
+            on_open.borrow_mut().open.push(page);
         })
         .on_rename(move |page, new_title| {
             rename_page(&on_rename, page, new_title);
@@ -644,7 +644,7 @@ impl PageSidebar {
             .tree
             .row_action_rect(&page, MORE_ACTION)
             .or_else(|| self.tree.row_rect(&page))
-            .map_or(self.tree.get_rect().center(), |rect| rect.center());
+            .map_or_else(|| self.tree.get_rect().center(), |rect| rect.center());
         self.tree.open_row_menu(page, at);
     }
 
@@ -1091,9 +1091,8 @@ mod tests {
             let key = root;
             let rect = tree.row_rect(&key).expect("the row is laid out");
             let bounds = node.children[0].bounds.expect("the row says where it is");
-            assert_eq!(
-                bounds.y1 - bounds.y0,
-                rect.height(),
+            assert!(
+                (bounds.y1 - bounds.y0 - rect.height()).abs() < 0.01,
                 "the exposed row is as tall as it is drawn"
             );
             assert!(

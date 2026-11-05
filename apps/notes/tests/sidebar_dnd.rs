@@ -100,7 +100,6 @@ fn sidebar_drags_preview_cancel_and_reparent() {
         let (mut app, welcome, one, two) = three_page_app();
 
         let r0 = row(&mut app, 0);
-        let r2 = row(&mut app, 2);
         dispatch(&mut app, &cursor_moved(r0.x, r0.y));
         dispatch(&mut app, &mouse(ElementState::Pressed, MouseButton::Left));
         let foot = row_at(&mut app, 2, 0.9);

@@ -2861,9 +2861,9 @@ impl Widget for NotesApp {
             .main
             .take_structure_change()
             .join(self.shell.take_structure_change());
-        if self.sidebar_shown() {
+        if self.sidebar_node.is_some() {
             change = change.join(self.sidebar.take_structure_change());
-            if self.outline.take_structure_dirty() {
+            if self.outline_node.is_some() && self.outline.take_structure_dirty() {
                 change = change.join(ui::widget::StructureChange::Rebuild);
             }
         }
@@ -3744,12 +3744,11 @@ impl NotesApp {
         // modal and gets its input from `handle_shell`.
         if self.shell.geometry().sidebar != SidebarPlacement::Drawer
             && (!editor_menu_open || !is_keyboard)
+            && let Some(n) = self.sidebar_node
         {
-            if let Some(n) = self.sidebar_node {
-                self.sidebar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                self.follow_page_tree_input(ctx, n);
-            }
+            self.sidebar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            self.follow_page_tree_input(ctx, n);
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename
