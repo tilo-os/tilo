@@ -171,6 +171,11 @@ impl Groups {
 
     /// The band of the group the row `index` starts, as the layout placed it.
     pub(super) fn place(&mut self, index: usize, index_group: Group, top: f64, closed: bool) {
+        // A group first placed takes the state its rows ask for, so a press on its heading
+        // opens a tail group rather than closing what it never opened.
+        self.open
+            .entry(index_group.heading.clone())
+            .or_insert(!index_group.tail);
         self.bands
             .retain(|band| band.heading != index_group.heading);
         self.bands.push(Band {

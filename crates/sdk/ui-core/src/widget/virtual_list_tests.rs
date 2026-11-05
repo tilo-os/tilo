@@ -422,12 +422,17 @@ fn semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions() {
         let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
         assert_eq!(
             first.bounds.expect("row bounds").to_rect(),
-            Rect::new(8.0, -10.0, 300.0 - gutter - 8.0, 14.0)
+            Rect::new(0.0, -10.0, 300.0 - gutter, 14.0),
+            "the list's own row box, clear of the bar's gutter",
         );
+        let delegate = first
+            .children
+            .first()
+            .expect("the row's own widget under it");
         assert_eq!(
-            list.mounted[0].widget.get_rect(),
-            first.bounds.expect("row bounds").to_rect(),
-            "semantic and retained delegate geometry agree",
+            delegate.name.as_deref(),
+            Some("1"),
+            "the row's own control reads under the list's row",
         );
     }
 

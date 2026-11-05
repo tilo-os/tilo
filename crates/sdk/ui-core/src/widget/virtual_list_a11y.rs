@@ -133,9 +133,9 @@ impl<M: ListModel> VirtualList<M> {
             }
         }
         if let Some(row_box) = self.row_box(row.index) {
-            // The row's own box, below the band of a heading it starts a group under: one
-            // bleed in from the list's edges. The list places it, so it stands
-            // however far a row's own widget has been laid out.
+            // The row's own box, below the band of a heading it starts a group under. The
+            // list places it, so it stands however far the row's own widget has been laid
+            // out; what that widget says of its own bounds stands inside it.
             item = item.with_bounds(row_box);
         }
         if let Some(encode) = &self.semantic_key {

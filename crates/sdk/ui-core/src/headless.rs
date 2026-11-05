@@ -537,6 +537,10 @@ pub struct FrameHarness {
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
+    /// The widget that held the trap while it was open, as its node stood when it engaged: on
+    /// release, focus resting on the trap itself stays there, while focus the trap moved into
+    /// its content goes back to the control it was taken from.
+    focus_trap_node: Option<NodeId>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
     /// author-scoped history a user does.
@@ -951,6 +955,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.focus_trap_node = None;
         self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
@@ -1639,6 +1644,7 @@ impl FrameHarness {
             activation_recomposed: false,
             saved_instance_focus: HashMap::new(),
             focus_before_trap: None,
+            focus_trap_node: None,
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
@@ -4507,6 +4513,15 @@ impl FrameHarness {
         }
     }
 
+    /// The node of the widget holding the open trap, as the tree stands now.
+    fn focus_trap_node(&self) -> Option<NodeId> {
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
+        self.node_map.keys().copied().find(|&node| {
+            // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+            unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
+        })
+    }
+
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
@@ -4536,6 +4551,7 @@ impl FrameHarness {
                     &self.bindings,
                 )
             });
+            self.focus_trap_node = self.focus_trap_node();
         }
         let mut before = if self.focus_trap_active && !trapped {
             // Bound component delegates can be absent from Widget::children's
@@ -4549,11 +4565,14 @@ impl FrameHarness {
                 saved.resolve(&self.node_map, &self.bindings, Some(&allowed))
             });
             // Focus the trap itself moved, still standing, outlives it: a menu's
-            // "Rename" opens the field the person types into next. That field
-            // keeps the keyboard and the saved control takes none of it back.
+            // "Rename" opens the field the person types into next, and the control
+            // that opened the menu is gone. So does focus the person put on the
+            // trap itself, which never went into what it hides. Focus the trap
+            // took into its content goes back to the control it was taken from.
+            let trap_node = self.focus_trap_node.take();
             let kept = self
                 .focused
-                .filter(|id| order.contains(id) && Some(*id) != target);
+                .filter(|id| order.contains(id) && (target.is_none() || Some(*id) == trap_node));
             let restored = match (&saved, kept) {
                 (Some(saved), Some(keep)) => unsafe {
                     saved.restore_keeping(&self.node_map, &self.bindings, Some(&allowed), keep)

@@ -431,6 +431,9 @@ pub struct VirtualList<M: ListModel> {
     requested_range: Option<Range<usize>>,
     request_dirty: bool,
     structure_dirty: bool,
+    /// The list's own box changed height, as a list that fits its rows measures taller
+    /// ones: the page around it lays out again.
+    box_dirty: bool,
     layout_dirty: bool,
     /// The view moved since the rows were last placed: a layout pass places
     /// them again, measuring nothing (as `Scrollable::scroll_dirty`).
@@ -621,6 +624,7 @@ impl<M: ListModel> VirtualList<M> {
             requested_range: None,
             request_dirty: true,
             structure_dirty: true,
+            box_dirty: false,
             layout_dirty: true,
             interaction: crate::interaction::InteractionEnvironment::default(),
             layout_offset: 0.0,
@@ -1793,6 +1797,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         // A list as tall as its rows grows or shrinks with what they measured.
         if self.fit_rows && (self.rect.height() - self.viewport.content_extent()).abs() > 0.5 {
             self.viewport.set_viewport(self.viewport.content_extent());
+            self.box_dirty = true;
             remeasured = true;
         }
         if remeasured {
@@ -2490,8 +2495,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut dirty =
-            std::mem::take(&mut self.structure_dirty) | std::mem::take(&mut self.remount);
+        let mut dirty = std::mem::take(&mut self.structure_dirty)
+            | std::mem::take(&mut self.box_dirty)
+            | std::mem::take(&mut self.remount);
         for row in &mut self.mounted {
             dirty |= row.widget.take_structure_dirty();
         }
@@ -2507,7 +2513,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         use crate::widget::StructureChange;
         // Reported until the rows are mounted, in place where the host can
         // ([`Widget::remount_children`]) or by a rebuild of the tree.
-        let mut change = if self.structure_dirty || self.remount {
+        let mut change = if std::mem::take(&mut self.box_dirty) {
+            StructureChange::Rebuild
+        } else if self.structure_dirty || self.remount {
             if self.layout_node.is_some() {
                 StructureChange::Children
             } else {
