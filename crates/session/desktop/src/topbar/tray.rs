@@ -190,15 +190,6 @@ impl TopBarChrome {
     /// capture announces itself as a named pill before settling into a dot.
     pub(super) fn refresh_status_and_media_state(&mut self) {
         self.status = self.live_status();
-        if let Some(chrome) = &self.chrome {
-            let snapshot = chrome.snapshot();
-            if snapshot.clock_activity.is_none() && self.clock_overlay_rect != Rect::ZERO {
-                self.clock_drag_offset = None;
-                self.clock_touch_id = None;
-                self.clock_control_focus = None;
-                self.cache_fp = CacheFingerprint::default();
-            }
-        }
         self.bell.unread = self
             .chrome
             .as_ref()

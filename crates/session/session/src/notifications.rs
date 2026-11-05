@@ -52,6 +52,7 @@ pub(crate) fn mount_banners(
     notices: &DesktopNotifications,
     desk: &tilo_desktop_surface::DesktopHandle,
     options: &crate::Options,
+    stack: crate::panels::Reserved,
 ) -> Link {
     let banners = Link::new();
     if options.shell {
@@ -67,6 +68,7 @@ pub(crate) fn mount_banners(
                 banners.clone(),
                 desk.clone(),
                 options.scale,
+                stack,
             )));
             compositor.add_host(Box::new(crate::panels::Held(Rc::clone(&surface))));
             doors.add(surface);

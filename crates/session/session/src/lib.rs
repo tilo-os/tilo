@@ -221,6 +221,7 @@ pub use setup::BeforeDesk;
 pub use tilo_agent_runs::wire::RESOURCE as AGENT_RUNS_RESOURCE;
 pub use tilo_service::{Service, Services};
 
+use crate::mount::panels::mount_activities;
 use desk::running_apps;
 use keys::{GuideKeys, Invocations, PressedChords};
 use mount::panels::{KeyContext, mount_controls, mount_setup};
@@ -409,9 +410,9 @@ struct Shared {
     notices: tilo_desktop_surface::DesktopNotifications,
     /// The windows carried to another workspace, asked about first.
     moves: window_move::Moves,
-    /// The apps' live activities on the bar, which the clock shows and the
+    /// The apps' live activities on the bar, which the pill names and the
     /// controls pressed on it go back to the app through.
-    clock: Rc<chrome::Clock>,
+    activities: Rc<chrome::Activities>,
     /// The running applications' tray items, which the bar shows and whose
     /// clicks the session hands back to the applications.
     tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
@@ -1331,13 +1332,14 @@ impl Session {
         // that publish it.
         let readings = Rc::new(RefCell::new(status::Readings::default()));
         // Every app shows its live activity on this one board, which the
-        // bar's clock reads and the controls pressed on the clock go back
-        // through.
+        // bar's pill reads and the floating layer draws as cards.
         let live_activities = std::sync::Arc::new(runtime_collab::LiveActivities::default());
-        // A timer starting in the background must reach the bar's clock on
-        // the next frame, not the next minute.
+        // A timer starting in the background must reach the bar on the next
+        // frame, not the next minute.
         live_activities.set_host_wake(options.wake.handle());
-        let clock = Rc::new(chrome::Clock::new(std::sync::Arc::clone(&live_activities)));
+        let activities = Rc::new(chrome::Activities::new(std::sync::Arc::clone(
+            &live_activities,
+        )));
         // An application's tray item registering, changing or going away is
         // read off the loop: it must reach the bar on the next frame.
         let tray = options
@@ -1377,7 +1379,7 @@ impl Session {
                 feeds: chrome::BarFeeds {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
-                    clock: Rc::clone(&clock),
+                    activities: Rc::clone(&activities),
                     notices: notices.clone(),
                     tray: tray.clone(),
                     fullscreen: Rc::clone(&fullscreen),
@@ -1424,7 +1426,7 @@ impl Session {
             handle: handle.clone(),
             person: options.person.clone(),
             signals: Rc::clone(&notice_signals),
-            clock: Rc::clone(&clock),
+            activities: Rc::clone(&activities),
             surfaces: surfaces.clone(),
             sync: sync.clone(),
             notices: notices.clone(),
@@ -1462,7 +1464,26 @@ impl Session {
         // where everyone else's pointer is.
         let people = people::mount(&mut compositor, &mut doors, &options, &handle, sync.clone());
 
-        let banners = mount_banners(&mut compositor, &mut doors, &notices, &handle, &options);
+        // What the floating layer keeps clear of: the banners' stack while a
+        // banner shows, and the readout's band while it stands.
+        let banner_stack = crate::panels::Reserved::new();
+        let readout_band = crate::panels::Reserved::new();
+        let _activity_layer = mount_activities(
+            &mut compositor,
+            &mut doors,
+            &activities,
+            banner_stack.clone(),
+            readout_band.clone(),
+            &options,
+        );
+        let banners = mount_banners(
+            &mut compositor,
+            &mut doors,
+            &notices,
+            &handle,
+            &options,
+            banner_stack,
+        );
 
         // The sheets, over the desktop and its panels.
         let mount::sheets::Sheets {
@@ -1545,6 +1566,7 @@ impl Session {
                     reveals: Rc::clone(&reveals),
                 },
                 options.scale,
+                readout_band,
             );
         // The readout draws in the person's theme like the desk and the shell
         // do: its ground is the theme's floating surface, never a fixed fill.
@@ -1870,7 +1892,7 @@ impl Session {
             display_confirm,
             notices: notices.clone(),
             moves: window_move::Moves::new(notices.clone(), std::sync::Arc::clone(&notes)),
-            clock,
+            activities,
             tray,
             wallpapers,
             lock_layouts: options.config.keyboard_layouts.clone(),
@@ -2383,7 +2405,7 @@ impl Session {
     /// as its clock.
     #[must_use]
     pub fn live_activities(&self) -> &std::sync::Arc<runtime_collab::LiveActivities> {
-        self.shared.clock.board()
+        self.shared.activities.board()
     }
 
     /// The media service the apps reach through the session's plane, while

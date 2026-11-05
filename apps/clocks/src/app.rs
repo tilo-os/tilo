@@ -1589,9 +1589,12 @@ impl ClocksApp {
                 self.dispatcher.submit(invoke);
             }
             ("lap-stopwatch", _) => self.dispatcher.submit(Clocks::LAP.invoke()),
-            ("close-stopwatch", _) => self.store.update_device(|device| {
-                device.floating_stopwatch = false;
-            }),
+            ("close-stopwatch", _) => {
+                self.dispatcher.submit(Clocks::RESET_STOPWATCH.invoke());
+                self.store.update_device(|device| {
+                    device.floating_stopwatch = false;
+                });
+            }
             ("toggle", Some(id)) => {
                 let invoke = if self.store.state.with(|shown| running(shown, &id)) {
                     Clocks::PAUSE_TIMER.with(id)
@@ -1601,9 +1604,13 @@ impl ClocksApp {
                 self.dispatcher.submit(invoke);
             }
             ("add-minute", Some(id)) => self.dispatcher.submit(Clocks::ADD_MINUTE.with(id)),
-            ("close", Some(id)) => self.store.update_device(|device| {
-                device.floating_timers.remove(id.as_str());
-            }),
+            ("close", Some(id)) => {
+                self.dispatcher
+                    .submit(Clocks::REMOVE_TIMER.with(id.clone()));
+                self.store.update_device(|device| {
+                    device.floating_timers.remove(id.as_str());
+                });
+            }
             _ => {}
         }
     }

@@ -8,7 +8,7 @@ use super::{
     timezone_results,
 };
 use crate::model::{Clocks, WeekdayKey, bounded_label};
-use crate::{ClocksOnDevices, ClocksShell, ShellSnapshot};
+use crate::{ClocksOnDevices, ClocksShell};
 use std::collections::BTreeSet;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
@@ -217,24 +217,12 @@ fn resource_selected_timer_pane_keeps_navigation_in_sync() {
     );
 }
 
-/// What the shell presents of Clocks' live activity now; an ended one is
-/// shown as inactive.
-fn snapshot() -> ShellSnapshot {
-    ui::collaboration::channel_live_activity::shown().map_or_else(
-        || ShellSnapshot {
-            active: false,
-            activity_id: None,
-            label: String::new(),
-            remaining_secs: 0,
-            stopwatch: false,
-            paused: false,
-            overlay: false,
-            notification_id: None,
-            notification_title: String::new(),
-            notification_body: String::new(),
-        },
-        |shown| serde_json::from_value(shown).unwrap(),
-    )
+/// What the shell is shown of Clocks' live activity now; an ended one is
+/// shown as nothing.
+fn published() -> ui::live_activity::Published {
+    ui::collaboration::channel_live_activity::shown()
+        .and_then(|shown| serde_json::from_value(shown).ok())
+        .unwrap_or_default()
 }
 
 /// Press `command` on the floating clock, as the shell does.
@@ -272,17 +260,36 @@ fn a_live_window_at_the_clock_it_holds() {
 fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time::SystemTime) {
     // Phase: nothing runs, so the shell shows nothing.
     app.settle();
-    assert!(!snapshot().active, "idle: nothing shown");
+    let idle = published();
+    assert!(
+        idle.summary.is_none() && !idle.overlay,
+        "idle: nothing shown"
+    );
 
     // Phase: a running timer is what the shell shows, by its id.
     app.invoke(Clocks::ADD_TIMER.with(("Laundry".into(), 2_700)))
         .unwrap();
     app.settle();
     let id = app.state().timers.ids().next().unwrap().as_str().to_owned();
-    let shown = snapshot();
-    assert!(shown.active && !shown.paused && !shown.overlay, "{shown:?}");
-    assert_eq!(shown.activity_id.as_deref(), Some(id.as_str()));
-    assert_eq!(shown.label, "Laundry");
+    let shown = published();
+    let summary = shown.summary.clone().expect("the timer is the activity");
+    assert!(
+        !shown.overlay,
+        "it does not float until the person floats it"
+    );
+    assert_eq!(summary.id, id);
+    assert_eq!(summary.title, "Laundry");
+    assert_eq!(summary.kind, ui::live_activity::Kind::Timer);
+    assert_eq!(summary.countdown, Some(2_700));
+    assert_eq!(
+        summary.first_control().map(|control| control.id.as_str()),
+        Some("toggle")
+    );
+    assert_eq!(
+        summary.close_control().map(|control| control.id.as_str()),
+        Some("close"),
+        "a timer can be ended from its card"
+    );
 
     // Phase: the shell's controls change exactly the timer they name.
     command("toggle", Some(&id));
@@ -317,7 +324,7 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
     )
     .unwrap();
     app.settle();
-    assert!(snapshot().overlay, "floating timer");
+    assert!(published().overlay, "floating timer");
     command("close", Some(&id));
     app.settle();
     app.settle();
@@ -328,6 +335,10 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
             .floating_timers
             .is_empty(),
         "close stops floating"
+    );
+    assert!(
+        app.state().timers.ids().next().is_none(),
+        "close ends the timer"
     );
 
     // Phase: stopwatch controls never reach a timer.
@@ -344,8 +355,6 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
 
     // Phase: a finished timer is announced once, and the notice outlives
     // the countdown in every later snapshot.
-    app.invoke(Clocks::REMOVE_TIMER.with(ui::prelude::Id::from_raw(id.as_str())))
-        .unwrap();
     app.invoke(Clocks::RESET_STOPWATCH.invoke()).unwrap();
     // The wall clock reads `added`, then a second later: past the timer's
     // end, and the timer started at `added`.
@@ -356,19 +365,20 @@ fn shell_floating_clock_phases(app: &mut TestApp<ClocksShell>, added: std::time:
         added + std::time::Duration::from_secs(1),
     );
     app.settle();
-    assert!(snapshot().notification_id.is_some(), "the timer rang");
-    let first = snapshot();
-    assert_eq!(first.notification_title, "Timer finished");
-    assert_eq!(first.notification_body, "Tea");
+    let first = published();
+    let announce = first.announce.clone().expect("the timer rang");
+    assert_eq!(announce.title, "Timer finished");
+    assert_eq!(announce.body, "Tea");
     assert!(
         app.harness().a11y_node_named("Timer finished").is_some(),
         "the window shows the notice"
     );
     app.settle();
-    let later = snapshot();
-    assert!(!later.active, "nothing runs any more");
+    let later = published();
+    assert!(later.summary.is_none(), "nothing runs any more");
     assert_eq!(
-        later.notification_id, first.notification_id,
+        later.announce.map(|announce| announce.id),
+        Some(announce.id),
         "the same notice, not a second one"
     );
     assert_eq!(

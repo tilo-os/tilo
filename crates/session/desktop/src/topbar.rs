@@ -25,8 +25,8 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::chrome::{
-    AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent, ClockActivity,
-    ClockSnapshot, TopBarPresence,
+    AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent, ClockSnapshot,
+    TopBarPresence,
 };
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::DesktopTree;
@@ -50,7 +50,7 @@ mod tray;
 mod wave_notice;
 mod workspace;
 
-use clock::{clock_overlay_drag_region, time_bucket_secs, until_next_time_bucket};
+use clock::{time_bucket_secs, until_next_time_bucket};
 use controls::{FocusOrigin, TrayBell, navigates};
 pub use reveal::{Finger, Reveals};
 use sharing::{FaceLook, roster_colors};
@@ -150,102 +150,10 @@ const CENTER_INSET_PX: f64 = 12.0;
 /// opening its menu): a control's 16.
 const SMALL_GLYPH_PX: f64 = 16.0;
 
-#[cfg(test)]
-#[allow(
-    clippy::float_cmp,
-    reason = "layout tests assert exact token-derived pixel values"
-)]
-mod clock_overlay_geometry_tests {
-    use super::clock::{
-        CLOCK_OVERLAY_HEIGHT, clamp_clock_overlay, clock_overlay_width,
-        released_clock_touch_control,
-    };
-    use super::*;
-
-    #[test]
-    fn overlay_clamps_to_narrow_viewport_and_below_bar() {
-        let p = clamp_clock_overlay(
-            Point::new(900.0, -20.0),
-            (252.0, CLOCK_OVERLAY_HEIGHT),
-            (360.0, 640.0),
-            40.0,
-        );
-        assert_eq!(p, Point::new(100.0, 48.0));
-    }
-
-    #[test]
-    fn overlay_preserves_an_in_bounds_drag_position() {
-        let p = clamp_clock_overlay(
-            Point::new(120.0, 180.0),
-            (252.0, CLOCK_OVERLAY_HEIGHT),
-            (900.0, 640.0),
-            40.0,
-        );
-        assert_eq!(p, Point::new(120.0, 180.0));
-    }
-
-    #[test]
-    fn overlay_cannot_be_dragged_below_the_visible_desktop() {
-        let p = clamp_clock_overlay(
-            Point::new(120.0, 900.0),
-            (252.0, CLOCK_OVERLAY_HEIGHT),
-            (900.0, 640.0),
-            40.0,
-        );
-        assert_eq!(p.y, 482.0);
-    }
-
-    #[test]
-    fn overlay_and_controls_fit_a_phone_width() {
-        let width = clock_overlay_width(220.0);
-        assert_eq!(width, 204.0);
-        // The popover's own layout at the phone's width: every action is at
-        // least a finger's target inside the panel, as the shared popover
-        // sizes them.
-        let theme = Theme::default();
-        let panel = Rect::new(8.0, 48.0, 8.0 + width, 48.0 + CLOCK_OVERLAY_HEIGHT);
-        let entry = ui::widget::AgendaEntry::new("Tea", "2:05");
-        let labels = ui::widget::AgendaLabels::of(&entry);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let mut ctx = ui::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        let (layout, _) =
-            ui::widget::AgendaPopoverFace::new(&entry, &labels).paint(&mut ctx, panel);
-        for control in [layout.toggle, layout.add, layout.close] {
-            assert!(control.x0 >= 8.0);
-            assert!(control.x1 <= 212.0);
-            assert!(control.width() >= 44.0, "{control:?}");
-            assert!(control.height() >= 44.0, "{control:?}");
-        }
-    }
-
-    #[test]
-    fn touch_control_commits_only_on_matching_release() {
-        let pending = Some((17, 1));
-        assert_eq!(
-            released_clock_touch_control(pending, 17, true, Some(1)),
-            Some(1)
-        );
-        assert_eq!(released_clock_touch_control(pending, 17, true, None), None);
-        assert_eq!(
-            released_clock_touch_control(pending, 17, true, Some(0)),
-            None
-        );
-        assert_eq!(
-            released_clock_touch_control(pending, 17, false, Some(1)),
-            None
-        );
-        assert_eq!(
-            released_clock_touch_control(pending, 99, true, Some(1)),
-            None
-        );
-    }
-}
-
 /// Compared field-for-field to decide whether [`TopBarChrome::cached`] can
 /// be reused. Time fields split by mode since each variant consumes a
 /// different grain of the host clock.
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Default, Clone, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag independently invalidates retained top-bar paint and hit-test data; combining them would hide cache dependencies"
@@ -285,7 +193,9 @@ struct CacheFingerprint {
     focused: bool,
     focused_control: Option<String>,
 
-    clock_activity: Option<(String, u64, bool, bool)>,
+    /// Every activity the pill names, in the bar's own order: another one
+    /// appearing, changing its reading or ending repaints it.
+    activities: Vec<ui::live_activity::Summary>,
     /// How far the centre's cross-fade between the time and a live activity
     /// has come, in thousandths; `None` at rest.
     center_fade: Option<u16>,
@@ -592,21 +502,6 @@ pub struct TopBarChrome {
     /// The bell in the status cluster: the unread count beside it, and
     /// whether fresh banners are held (silenced).
     bell: TrayBell,
-    clock_overlay_pos: Option<Point>,
-    clock_overlay_rect: Rect,
-    clock_pause_rect: Rect,
-    clock_add_rect: Rect,
-    clock_close_rect: Rect,
-    clock_drag_offset: Option<vello::kurbo::Vec2>,
-    /// Finger that owns the floating clock gesture. Mouse capture continues
-    /// to use `clock_drag_offset`; this prevents a second finger from stealing
-    /// an in-progress drag.
-    clock_touch_id: Option<u64>,
-    /// A touch-started action is only committed when that same finger lifts
-    /// over the same control. This mirrors a real button and lets a user slide
-    /// off to cancel instead of firing Pause/Close on contact.
-    clock_touch_control: Option<(u64, u8)>,
-    clock_control_focus: Option<u8>,
     /// The others' faces (and the "+N" badge): each face opens that
     /// person's card, the badge everyone.
     avatar_stack_rect: Rect,
@@ -728,15 +623,6 @@ impl TopBarChrome {
             media_started: None,
             media_expanded: false,
             bell: TrayBell::default(),
-            clock_overlay_pos: None,
-            clock_overlay_rect: Rect::ZERO,
-            clock_pause_rect: Rect::ZERO,
-            clock_add_rect: Rect::ZERO,
-            clock_close_rect: Rect::ZERO,
-            clock_drag_offset: None,
-            clock_touch_id: None,
-            clock_touch_control: None,
-            clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
             people_button_rect: Rect::ZERO,
             invite_rect: Rect::ZERO,
@@ -819,12 +705,7 @@ impl TopBarChrome {
                 .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings),
             focused: self.focused,
             focused_control: self.focused_control.clone(),
-            clock_activity: self.chrome.as_ref().and_then(|chrome| {
-                chrome
-                    .snapshot()
-                    .clock_activity
-                    .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
-            }),
+            activities: self.activities(),
             center_fade: self.center_fade_key(),
             center_width: self.center_width_key(),
             app_tray_revision: self.app_tray_revision(),
@@ -1163,15 +1044,6 @@ impl TopBarChrome {
         self.laid_out != BarStanding::of(self.presence().overlays())
     }
 
-    /// Whether the bar's clock card is up over the desk, which holds the
-    /// bar shown while it is.
-    pub fn card_open(&self) -> bool {
-        self.chrome
-            .as_ref()
-            .and_then(|chrome| chrome.snapshot().clock_activity)
-            .is_some_and(|activity| activity.overlay)
-    }
-
     /// Whether the bar, hidden by the person, must stay shown for its own
     /// sake: the keyboard is in it.
     pub fn holds_itself_shown(&self) -> bool {
@@ -1443,9 +1315,7 @@ impl Widget for TopBarChrome {
             self.handle_left_press(event, ctx.handled);
             return;
         }
-        if self.handle_clock_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled)
-            || self.handle_pointer_motion(event, ctx.scale_factor, ctx.handled)
-        {
+        if self.handle_pointer_motion(event, ctx.scale_factor, ctx.handled) {
             return;
         }
         self.handle_keyboard(event, ctx.handled);
@@ -1462,7 +1332,7 @@ impl Widget for TopBarChrome {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.clock_drag_offset.is_some()
+        false
     }
 
     fn name(&self) -> &'static str {
@@ -1482,9 +1352,6 @@ impl Widget for TopBarChrome {
             .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
         let mut rects = vec![
             ("topbar_tilo_mark".to_string(), self.tilo_mark_rect()),
-            ("clock_overlay_pause".to_string(), self.clock_pause_rect),
-            ("clock_overlay_add_minute".to_string(), self.clock_add_rect),
-            ("clock_overlay_close".to_string(), self.clock_close_rect),
             (
                 "topbar_workspace_pill".to_string(),
                 self.control_rect(Self::CONTROL_WORKSPACE_SETTINGS),
@@ -1602,9 +1469,6 @@ impl Widget for TopBarChrome {
                 .with_description(self.date_description())
                 .with_bounds(self.center_rect),
         );
-        if let Some(clock) = self.clock_accessibility_node() {
-            children.push(clock);
-        }
         children.extend(self.workspace_rename_accessibility());
         children.extend(self.arrival_accessibility());
         Some(
@@ -1666,42 +1530,10 @@ impl Widget for TopBarChrome {
                     .as_ref()
                     .is_some_and(|chrome| chrome.intent(ChromeIntent::ToggleProfile));
         }
-        match target {
-            "clock.overlay.toggle" => {
-                self.publish_clock_activity_command("toggle", "toggle-stopwatch");
-                true
-            }
-            "clock.overlay.add-minute" => {
-                self.publish_clock_activity_command("add-minute", "lap-stopwatch");
-                true
-            }
-            "clock.overlay.close" => {
-                if let Some(chrome) = self.chrome.as_ref() {
-                    chrome.intent(ChromeIntent::HideClock);
-                }
-                self.publish_clock_activity_command("close", "close-stopwatch");
-                true
-            }
-            _ => self.activate_control(target),
-        }
+        self.activate_control(target)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.clock_drag_offset.is_some() {
-            return Some(winit::window::CursorIcon::Grabbing);
-        }
-        if self
-            .chrome
-            .as_ref()
-            .is_some_and(|chrome| chrome.snapshot().overlays.clock)
-        {
-            if self.clock_control_at(point).is_some() {
-                return Some(winit::window::CursorIcon::Pointer);
-            }
-            if clock_overlay_drag_region(self.clock_overlay_rect).contains(point) {
-                return Some(winit::window::CursorIcon::Grab);
-            }
-        }
         self.control_targets()
             .into_iter()
             .any(|target| self.control_rect(&target).contains(point))
@@ -1933,13 +1765,6 @@ impl TopBarChrome {
                 self.draw_session_clusters(scene, theme, text_renderer, center_y);
             }
             self.draw_focus_indicator(scene, transform, theme);
-            let clock_activity = self.chrome.as_ref().and_then(|chrome| {
-                let snapshot = chrome.snapshot();
-                snapshot.overlays.clock.then_some(snapshot.clock_activity)?
-            });
-            if let Some(activity) = clock_activity {
-                self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
-            }
         });
         ui::scene_parts::append(out_scene, &local, parts.as_ref(), Some(out_transform));
         self.cached = local;

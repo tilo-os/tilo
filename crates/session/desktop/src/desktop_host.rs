@@ -2259,7 +2259,6 @@ impl DesktopChrome {
             || self.workspace_menu.is_open()
             || self.navigator.is_open()
             || self.emoji.is_open()
-            || self.bar.card_open()
             || self.bar.holds_itself_shown()
             || self.compact.iter().any(TopBarChrome::holds_itself_shown)
     }

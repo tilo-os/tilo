@@ -117,17 +117,6 @@ pub struct ActivityFocus {
 pub struct ChromeOverlays {
     pub overview: bool,
     pub ws_settings: bool,
-    pub clock: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ClockActivity {
-    pub activity_id: Option<String>,
-    pub label: String,
-    pub remaining_secs: u64,
-    pub stopwatch: bool,
-    pub paused: bool,
-    pub overlay: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -180,7 +169,9 @@ pub struct DesktopChromeSnapshot {
     pub notifications_only: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
-    pub clock_activity: Option<ClockActivity>,
+    /// Every activity the bar's pill names, most urgent first as the bar
+    /// orders them.
+    pub activities: Vec<ui::live_activity::Summary>,
     pub active_exposures: Vec<ActiveExposure>,
     /// Pages reading this workspace right now. The bar counts them beside
     /// the avatars so an audience is never invisible.
@@ -302,10 +293,10 @@ pub enum ChromeIntent {
     ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
-    HideClock,
-    ClockCommand {
-        command: String,
-        activity_id: Option<String>,
+    /// Bring an activity's card out of the bar's pill.
+    ExpandActivity {
+        app: String,
+        activity: String,
     },
     /// Focus the tab another of this person's devices offered, here.
     AcceptContinuity,

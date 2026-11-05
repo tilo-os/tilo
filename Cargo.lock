@@ -17070,6 +17070,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-activities"
+version = "0.1.0"
+dependencies = [
+ "tilo-app",
+ "tilo-desktop-surface",
+ "tilo-vello",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-adblock-engine"
 version = "0.1.0"
 dependencies = [
@@ -18330,6 +18341,7 @@ dependencies = [
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-activities",
  "tilo-app",
  "tilo-app-state",
  "tilo-automerge-fork",
@@ -21286,6 +21298,7 @@ dependencies = [
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-activities",
  "tilo-agent-runs",
  "tilo-app",
  "tilo-app-launch",

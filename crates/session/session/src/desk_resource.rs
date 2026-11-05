@@ -258,7 +258,7 @@ pub(crate) struct Desk {
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the
     /// person putting the floating one away hides it until Clocks shows something new.
-    pub(crate) clock: Rc<crate::chrome::Clock>,
+    pub(crate) activities: Rc<crate::chrome::Activities>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
@@ -597,7 +597,7 @@ impl Desk {
                 self.sync
                     .as_ref()
                     .map_or(0, |sync| sync.here().borrow().revision()),
-                self.clock.board().revision(),
+                self.activities.board().revision(),
                 self.handle.personal_ask_revision(),
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
                 self.notices.revision(),
@@ -739,37 +739,44 @@ impl Desk {
         })
     }
 
+    /// The floating timer as the web shell reads it: Clocks' summary while
+    /// it floats over the windows.
     fn timer(&self) -> Option<shell_part::TimerReading> {
-        let activity = self.clock.board().activity(crate::chrome::CLOCKS_APP)?;
-        let activity: ClocksActivity = serde_json::from_value(activity).ok()?;
-        (activity.active && self.clock.floating(activity.overlay)).then_some(
-            shell_part::TimerReading {
-                activity_id: activity.activity_id,
-                label: activity.label,
-                remaining_secs: activity.remaining_secs,
-                stopwatch: activity.stopwatch,
-                paused: activity.paused,
-            },
-        )
+        let published = self.activities.published(crate::chrome::CLOCKS_APP)?;
+        if !published.overlay {
+            return None;
+        }
+        let summary = published.summary?;
+        let countdown = summary.countdown.unwrap_or_default();
+        Some(shell_part::TimerReading {
+            activity_id: (!summary.id.is_empty()).then(|| summary.id.clone()),
+            label: summary.title.clone(),
+            remaining_secs: u64::try_from(countdown).unwrap_or_default(),
+            stopwatch: summary.kind == ui::live_activity::Kind::Stopwatch,
+            // A paused timer is one with time still to run before it is due.
+            paused: summary.tone == ui::live_activity::Tone::Neutral && countdown > 0,
+        })
     }
 
-    /// The due timer Clocks wants announced, by its id and in the app's own words when it has
-    /// them (the desktop's otherwise): what the bar announces once.
+    /// The due event Clocks wants announced, by its id and in the app's own
+    /// words when it has them (the desktop's otherwise): what the bar
+    /// announces once.
     pub(crate) fn due_timer(&self) -> Option<(String, String, String)> {
-        let activity = self.clock.board().activity(crate::chrome::CLOCKS_APP)?;
-        let activity: ClocksActivity = serde_json::from_value(activity).ok()?;
-        let id = activity.notification_id?;
-        let title = if activity.notification_title.is_empty() {
+        let announced = self
+            .activities
+            .published(crate::chrome::CLOCKS_APP)?
+            .announce?;
+        let title = if announced.title.is_empty() {
             crate::i18n::t("clock-due-title")
         } else {
-            activity.notification_title
+            announced.title
         };
-        let body = if activity.notification_body.is_empty() {
+        let body = if announced.body.is_empty() {
             crate::i18n::t("clock-due-body")
         } else {
-            activity.notification_body
+            announced.body
         };
-        Some((id, title, body))
+        Some((announced.id, title, body))
     }
 
     /// The running applications' tray items, in the order they registered: each's key, the
@@ -844,45 +851,6 @@ fn notice_actions(
                 })
         })
         .collect()
-}
-
-/// What the clocks app puts on its live activity, as the bar reads it: the timer or stopwatch
-/// running.
-#[derive(serde::Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "active, stopwatch, paused and overlay are independent fields of the activity Clocks shows"
-)]
-struct ClocksActivity {
-    #[serde(default = "active_unless_told")]
-    active: bool,
-    #[serde(default)]
-    activity_id: Option<String>,
-    /// Its label, such as `Tea`; absent from an activity that is not a timer.
-    #[serde(default)]
-    label: String,
-    /// What the timer has left, or the stopwatch has run, in seconds.
-    #[serde(default)]
-    remaining_secs: u64,
-    #[serde(default)]
-    stopwatch: bool,
-    #[serde(default)]
-    paused: bool,
-    /// An overlay the person may have put away.
-    #[serde(default)]
-    overlay: bool,
-    /// The due timer Clocks wants announced, by id, and in its own words when it has them.
-    #[serde(default)]
-    notification_id: Option<String>,
-    #[serde(default)]
-    notification_title: String,
-    #[serde(default)]
-    notification_body: String,
-}
-
-/// An app that names no `active` shows its activity.
-fn active_unless_told() -> bool {
-    true
 }
 
 /// The runs of the session's agents as the desk names them: each run, each entry of its

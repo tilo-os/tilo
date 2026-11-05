@@ -121,8 +121,6 @@ pub struct Shown {
     pub people: Rect,
     /// The full bar's status cluster.
     pub tray: Rect,
-    /// The floating clock, while it floats.
-    pub clock: Rect,
     /// The open menu or card; zero when none is open.
     pub popover: Rect,
     /// The workspace menu's rows as shown, while it is open.

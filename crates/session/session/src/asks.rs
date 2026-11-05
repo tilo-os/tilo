@@ -60,13 +60,11 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::ShowPerson(person)) => {
                     self.people.borrow().show_person(&person);
                 }
-                // The floating clock: what the person pressed there is
-                // Clocks' own to carry out, or the bar's to put away.
-                DesktopAsk::Intent(ChromeIntent::ClockCommand {
-                    command,
-                    activity_id,
-                }) => self.clock.press(&command, activity_id.as_deref()),
-                DesktopAsk::Intent(ChromeIntent::HideClock) => self.clock.hide(),
+                // Pulling an activity out of the bar's pill: its card is
+                // the floating layer's to draw.
+                DesktopAsk::Intent(ChromeIntent::ExpandActivity { app, activity }) => {
+                    self.activities.expand(&app, &activity);
+                }
                 // A click on an application's tray icon is the
                 // application's own to answer.
                 DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {

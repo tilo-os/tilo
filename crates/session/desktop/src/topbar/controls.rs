@@ -420,27 +420,23 @@ impl TopBarChrome {
         }
     }
 
-    /// Pointer motion: where the pointer is, for clicks, and a floating
-    /// clock being dragged. A wheel over the bar is
-    /// nobody's: the bar has nothing to scroll and nothing to cycle.
+    /// Pointer motion: where the pointer is, for clicks. A wheel over the
+    /// bar is nobody's: the bar has nothing to scroll and nothing to cycle.
     pub(super) fn handle_pointer_motion(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        handled: &mut bool,
+        _handled: &mut bool,
     ) -> bool {
         let WindowEvent::CursorMoved { position, .. } = event else {
             return false;
         };
         let point = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor = Some(point);
-        if self.clock_touch_id.is_none() && self.move_clock_drag_to(point) {
-            *handled = true;
-        }
         true
     }
 
-    pub(super) fn handle_left_release(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
+    pub(super) fn handle_left_release(&mut self, event: &WindowEvent, _handled: &mut bool) -> bool {
         if !matches!(
             event,
             WindowEvent::MouseInput {
@@ -450,9 +446,6 @@ impl TopBarChrome {
             }
         ) {
             return false;
-        }
-        if self.clock_touch_id.is_none() && self.clock_drag_offset.take().is_some() {
-            *handled = true;
         }
         true
     }
@@ -465,16 +458,7 @@ impl TopBarChrome {
                 button: winit::event::MouseButton::Left,
                 ..
             }
-        ) || self.clock_touch_id.is_some()
-        {
-            return;
-        }
-        let Some(point) = self.last_cursor else {
-            self.handle_left_click(handled);
-            return;
-        };
-        if self.activate_clock_control_at(point) || self.begin_clock_drag_at(point) {
-            *handled = true;
+        ) {
             return;
         }
         self.handle_left_click(handled);
