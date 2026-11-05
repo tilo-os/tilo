@@ -1,5 +1,4 @@
-//! The history a recovery re-sends for one retained publication, and what
-//! re-sending it costs, each built once.
+//! The history one retained publication stands for, each built once.
 //!
 //! A publication's history is the publication applied with every change it
 //! depends on, taken from the admitted record: the walk loads the
@@ -31,10 +30,10 @@
 //! applies the rest: the same changes in the same order again, for the size of
 //! the edit (and a copy).
 //!
-//! Both a history and its reservation depend only on the publication's bytes
-//! and on changes named by their hashes, so they are remembered by those
-//! bytes; a remembered history is reused only while the admitted record still
-//! holds its heads, and with them every change it contains.
+//! A history depends only on the publication's bytes and on changes named by
+//! their hashes, so it is remembered by those bytes; a remembered history is
+//! reused only while the admitted record still holds its heads, and with them
+//! every change it contains.
 use super::err;
 use automerge::{Automerge, Change, ChangeHash, ReadDoc};
 use collab_types::DocumentMutation;
@@ -48,13 +47,8 @@ use tilo_lock::MutexRecover as _;
 /// Histories kept: one per publication the governor has not yet
 /// acknowledged, for a few records at a time.
 const REMEMBERED_HISTORIES: usize = 32;
-/// Their combined size in ops, and that of the merges: each is a whole copy
-/// of its record.
+/// Their combined size in ops: each is a whole copy of its record.
 const REMEMBERED_OPS: u64 = 2_000_000;
-/// Merged histories kept, one per list of publications merged together.
-const REMEMBERED_MERGES: usize = 8;
-/// Reservations kept, one per set of publications reserved together.
-const REMEMBERED_RESERVATIONS: usize = 64;
 
 /// A publication's identity: the exact bytes its history is built from.
 pub(super) type Key = [u8; 32];
@@ -92,28 +86,26 @@ pub(super) fn of(
         build(mutation, admitted)?
     };
     let history = Arc::new(history);
-    #[cfg(test)]
-    BUILDS.with(|count| count.set(count.get().saturating_add(1)));
     remember(key, &history);
     Ok(history)
 }
 
 #[cfg(test)]
 thread_local! {
-    static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static REBUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// How many histories this thread has built rather than reused.
-#[cfg(test)]
-pub(super) fn builds() -> usize {
-    BUILDS.with(std::cell::Cell::get)
-}
-
-/// How many of those it built from nothing rather than extending another.
+/// How many histories this thread has built from nothing rather than
+/// extending another.
 #[cfg(test)]
 pub(super) fn rebuilds() -> usize {
     REBUILDS.with(std::cell::Cell::get)
+}
+
+/// Forget what this thread remembers, so the next answer is computed anew.
+#[cfg(test)]
+pub(super) fn forget() {
+    HISTORIES.with(|histories| histories.borrow_mut().clear());
 }
 
 /// The history [`build`] builds for `mutation`, made from a remembered
@@ -251,14 +243,6 @@ fn pop_ready(
     let mut taken = taken.into_iter();
     queue.retain(|_| !taken.next().unwrap_or(false));
     Some(())
-}
-
-/// Forget what this thread remembers, so the next answer is computed anew.
-#[cfg(test)]
-pub(super) fn forget() {
-    HISTORIES.with(|histories| histories.borrow_mut().clear());
-    MERGES.with(|merges| merges.borrow_mut().clear());
-    RESERVATIONS.with(|reservations| reservations.borrow_mut().clear());
 }
 
 /// The publication `mutation` and its dependencies from `admitted`, as the
@@ -430,85 +414,10 @@ fn remembered_in<T: 'static, R>(
 
 #[cfg(not(test))]
 static HISTORIES: Mutex<VecDeque<Remembered>> = Mutex::new(VecDeque::new());
-#[cfg(not(test))]
-static MERGES: Mutex<VecDeque<Merged>> = Mutex::new(VecDeque::new());
-#[cfg(not(test))]
-static RESERVATIONS: Mutex<VecDeque<(Key, usize)>> = Mutex::new(VecDeque::new());
 #[cfg(test)]
 thread_local! {
     static HISTORIES: std::cell::RefCell<VecDeque<Remembered>> =
         const { std::cell::RefCell::new(VecDeque::new()) };
-    static MERGES: std::cell::RefCell<VecDeque<Merged>> =
-        const { std::cell::RefCell::new(VecDeque::new()) };
-    static RESERVATIONS: std::cell::RefCell<VecDeque<(Key, usize)>> =
-        const { std::cell::RefCell::new(VecDeque::new()) };
-}
-
-/// The histories of several publications on one route merged, by the
-/// publications in merge order.
-struct Merged {
-    parts: Vec<Key>,
-    history: Arc<Automerge>,
-    ops: u64,
-}
-
-/// The histories `parts` merged in order: the first, then each next one's
-/// changes it lacks, as `Automerge::merge` takes them. With `keys`, the
-/// publications of `parts`, a merge of all but the last few is remembered:
-/// the next edit adds one publication, so its merge is that one's changes.
-pub(super) fn merged(
-    keys: Option<&[Key]>,
-    parts: &[Arc<Automerge>],
-) -> Result<Arc<Automerge>, String> {
-    let first = parts.first().ok_or("recovery history has no part")?;
-    let (done, mut merged) = keys
-        .and_then(remembered_merge)
-        .unwrap_or_else(|| (1, Arc::clone(first)));
-    for part in parts.iter().skip(done) {
-        let doc = Arc::make_mut(&mut merged);
-        let added = doc.get_changes_added(part);
-        doc.apply_changes(added).map_err(err)?;
-    }
-    if let Some(keys) = keys
-        && keys.len() > 1
-        && keys.len() == parts.len()
-    {
-        remember_merge(keys, &merged);
-    }
-    Ok(merged)
-}
-
-/// The remembered merge of the longest start of `keys`, and its length.
-fn remembered_merge(keys: &[Key]) -> Option<(usize, Arc<Automerge>)> {
-    remembered_in(&MERGES, |merges| {
-        merges
-            .iter()
-            .filter(|entry| keys.starts_with(&entry.parts))
-            .max_by_key(|entry| entry.parts.len())
-            .map(|entry| (entry.parts.len(), Arc::clone(&entry.history)))
-    })
-}
-
-fn remember_merge(keys: &[Key], history: &Arc<Automerge>) {
-    let ops = history.stats().num_ops;
-    if ops > REMEMBERED_OPS {
-        return;
-    }
-    remembered_in(&MERGES, |merges| {
-        merges.retain(|entry| entry.parts != keys);
-        merges.push_back(Merged {
-            parts: keys.to_vec(),
-            history: Arc::clone(history),
-            ops,
-        });
-        let mut total = merges.iter().map(|entry| entry.ops).sum::<u64>();
-        while merges.len() > REMEMBERED_MERGES || total > REMEMBERED_OPS {
-            let Some(oldest) = merges.pop_front() else {
-                break;
-            };
-            total = total.saturating_sub(oldest.ops);
-        }
-    });
 }
 
 fn remembered(key: Key, admitted: &Automerge) -> Option<Arc<Automerge>> {
@@ -560,46 +469,6 @@ fn remember(key: Key, history: &Arc<Automerge>) {
                 break;
             };
             total = total.saturating_sub(oldest.ops);
-        }
-    });
-}
-
-/// The identity of a route's reservation: everything its encoded size
-/// depends on besides the bytes of the histories, which `parts` name.
-pub(super) fn reservation_key(
-    workspace: &str,
-    app: &str,
-    record: &str,
-    selected: [u8; 32],
-    parts: &[Key],
-) -> Key {
-    let mut hasher = blake3::Hasher::new_derive_key("tilo recovery reservation v1");
-    for text in [workspace, app, record] {
-        hasher.update(&(text.len() as u64).to_le_bytes());
-        hasher.update(text.as_bytes());
-    }
-    hasher.update(&selected);
-    for part in parts {
-        hasher.update(part);
-    }
-    *hasher.finalize().as_bytes()
-}
-
-pub(super) fn remembered_reservation(key: Key) -> Option<usize> {
-    remembered_in(&RESERVATIONS, |reservations| {
-        reservations
-            .iter()
-            .find(|(entry, _)| *entry == key)
-            .map(|(_, bytes)| *bytes)
-    })
-}
-
-pub(super) fn remember_reservation(key: Key, bytes: usize) {
-    remembered_in(&RESERVATIONS, |reservations| {
-        reservations.retain(|(entry, _)| *entry != key);
-        reservations.push_back((key, bytes));
-        while reservations.len() > REMEMBERED_RESERVATIONS {
-            reservations.pop_front();
         }
     });
 }

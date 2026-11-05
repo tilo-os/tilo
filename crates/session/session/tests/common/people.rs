@@ -807,12 +807,7 @@ impl Device {
                 let _ = writeln!(apps, "{}:\n{shown}", entry.path().display());
             }
         }
-        let log: Vec<String> = self
-            .read_line_of_log()
-            .lines()
-            .filter(|line| !line.contains("reconciliation blocked"))
-            .map(str::to_owned)
-            .collect();
+        let log: Vec<String> = self.read_line_of_log().lines().map(str::to_owned).collect();
         let tail = log
             .iter()
             .rev()

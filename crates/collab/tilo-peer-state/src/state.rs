@@ -60,7 +60,7 @@ mod workspace_effects;
 mod workspace_membership;
 mod workspace_refusals;
 mod workspace_shortcuts;
-pub use local_outbox::{LocalRecoveryReservation, Reseal};
+pub use local_outbox::Reseal;
 mod held;
 mod joined;
 mod media_governance;
@@ -622,7 +622,6 @@ impl StatePeer {
                 documents: Shared::default(),
                 pending: VecDeque::new(),
                 pending_bytes: 0,
-                checkpoint_times: Shared::default(),
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
                 native_cut_publisher: None,
@@ -853,15 +852,23 @@ impl StatePeer {
         Ok(cert)
     }
 
+    /// Whether `device` is a known, unrevoked device, at no particular time:
+    /// for evidence a device signed earlier, of any person taking part.
+    #[must_use]
+    fn known_device(&self, device: &[u8; 32]) -> bool {
+        self.core.certificates.get(device).is_some() && !self.core.revocations.is_revoked(device)
+    }
+
     /// Whether `device` is a known, unrevoked device of the owner's, at no
     /// particular time: for evidence a device of theirs signed earlier.
     #[must_use]
     pub fn signed_by_owner(&self, device: &[u8; 32]) -> bool {
-        self.core
-            .certificates
-            .get(device)
-            .is_some_and(|cert| cert.user_public_key == self.core.owner)
-            && !self.core.revocations.is_revoked(device)
+        self.known_device(device)
+            && self
+                .core
+                .certificates
+                .get(device)
+                .is_some_and(|cert| cert.user_public_key == self.core.owner)
     }
 
     fn apply_governance_doc(
@@ -947,18 +954,6 @@ impl StatePeer {
             .collect::<Vec<_>>();
         rows.sort();
         rows
-    }
-    pub(crate) fn fresh_checkpoint_for(&self, app: &str, record: &str, now: SystemTime) -> bool {
-        self.core
-            .checkpoint_times
-            .get(&Route {
-                app: app.into(),
-                record: record.into(),
-            })
-            .is_some_and(|at| {
-                now.duration_since(*at)
-                    .is_ok_and(|age| age <= Duration::from_secs(300))
-            })
     }
     /// The person who owns the workspace: their root key.
     #[must_use]
@@ -1207,35 +1202,6 @@ impl StatePeer {
 
     pub fn pending_count(&self) -> usize {
         self.core.pending.len()
-    }
-    /// This only authorizes recovery of an overtaken sequence. It is not
-    /// acknowledgement: `covers()` additionally requires causal change inclusion.
-    pub(crate) fn checkpoint_sequence_covers(&self, message: &NeighbourMsg) -> bool {
-        let NeighbourMsg::AppDocument {
-            app_id,
-            cluster_id,
-            record_id,
-            envelope,
-            ..
-        } = message
-        else {
-            return false;
-        };
-        if cluster_id != &self.core.workspace {
-            return false;
-        }
-        self.core
-            .documents
-            .get(&Route {
-                app: app_id.clone(),
-                record: record_id.clone(),
-            })
-            .and_then(|document| {
-                document
-                    .covered
-                    .get(&hex::encode(envelope.author.as_bytes()))
-            })
-            .is_some_and(|floor| *floor >= envelope.seq)
     }
     pub fn covers(&self, message: &NeighbourMsg) -> bool {
         let NeighbourMsg::AppDocument {
@@ -1963,7 +1929,7 @@ impl StatePeer {
         // The governance may name a record this replica holds nothing of and
         // that no one can send it: an empty one. Held before the writes
         // waiting on it are tried, so the first one builds on the record.
-        covered_records::hold_covered_empty_records(self, now)?;
+        covered_records::hold_covered_empty_records(self)?;
         let pending = std::mem::take(&mut self.core.pending);
         self.core.pending_bytes = 0;
         let mut applied = changed;
@@ -2191,7 +2157,10 @@ impl StatePeer {
                 },
             ));
         }
-        let historical_validation = retained_replay && !strict_report;
+        // A retained frame is history by nature: its author signed it when it
+        // was fresh, and a store or relay hands it over later. It is decided as
+        // of its own timestamp, never re-signed.
+        let historical_validation = retained_replay;
         let authorization_time = if historical_validation {
             envelope.timestamp
         } else {
@@ -2595,12 +2564,7 @@ impl StatePeer {
         } else {
             InputDisposition::MetadataOnly
         };
-        self.core.documents.insert(route.clone(), candidate);
-        // Pending drains catch rejection and keep the outer candidate. Install
-        // checkpoint freshness only after every fallible admission step succeeds.
-        if governed_checkpoint {
-            self.core.checkpoint_times.insert(route, now);
-        }
+        self.core.documents.insert(route, candidate);
         Ok(AdmissionReport::new(
             primary,
             ReceiveOutcome {
@@ -3165,7 +3129,8 @@ impl StatePeer {
         }
         Ok(Some((receipt, accepted)))
     }
-    /// The owner's durable receipt for a route, as governance holds it.
+    /// The workspace's durable receipt for a route, as governance holds it:
+    /// written by any participant or store whose device this replica knows.
     fn durable_receipt(
         &self,
         app: &str,
@@ -3183,7 +3148,7 @@ impl StatePeer {
         if coverage.workspace != self.core.workspace
             || coverage.app != app
             || coverage.record != record
-            || !self.signed_by_owner(&coverage.author)
+            || !self.known_device(&coverage.author)
         {
             return Err("durable receipt authority/route mismatch".into());
         }
@@ -3518,7 +3483,6 @@ impl StatePeer {
                 documents: Shared::default(),
                 pending,
                 pending_bytes,
-                checkpoint_times: Shared::default(),
                 exact_admissions,
                 admission_v5: version >= 5,
                 native_cut_publisher: None,

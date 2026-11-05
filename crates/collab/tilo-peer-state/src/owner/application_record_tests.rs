@@ -276,27 +276,156 @@ fn actual_empty_record_creation_is_durable_idempotent_and_reopens_with_custody()
             Ok(())
         })
         .unwrap();
-    // The original signed snapshot is durably retained, but the native relay
-    // only sends admitted incremental projections, never raw snapshots.
+    // The original signed snapshot is in custody, published as the frame its
+    // creator signed: no checkpoint of anyone else's is needed to send it.
     let custody = reopened.outgoing_status(workspace, fixture.now).unwrap();
     assert_eq!(custody.pending, 1);
-    assert_eq!(custody.blocked, 1);
-    assert!(
-        reopened
-            .reconcile_outgoing(workspace, &fixture.key, fixture.now)
-            .unwrap_err()
-            .contains("fresh genuine governor checkpoint")
-    );
+    assert_eq!(custody.blocked, 0);
+    reopened.retire_outgoing(workspace).unwrap();
     reopened
         .with_outgoing(workspace, fixture.now, |_, outgoing| {
             assert_eq!(
                 outgoing.entries().count(),
-                0,
-                "the relay must never downgrade a retained governor snapshot to a delta"
+                1,
+                "the record's own creation is published"
             );
             Ok(())
         })
         .unwrap();
+}
+
+/// Let a member author an app's records: an administered workspace command
+/// this device is allowed to give.
+fn grant_app_authorship(fixture: &Fixture, app: &str) {
+    fixture
+        .owner
+        .commit_workspace_membership_command(
+            crate::owner_commit::OwnerCommitRequest {
+                workspace: testing::WORKSPACE.into(),
+                operation: crate::owner_commit::CommitOperation::WorkspaceMembershipCommand {
+                    invocation: uuid::Uuid::new_v4(),
+                    caller: fixture.certificate.clone(),
+                    command:
+                        crate::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                            app: app.into(),
+                        },
+                },
+            },
+            &fixture.key,
+            fixture.now,
+        )
+        .unwrap();
+}
+
+/// One write of this device's record, committed to its custody.
+fn publish_write(fixture: &Fixture, workspace: crate::owner::WorkspaceId, key: &str) {
+    use automerge::transaction::Transactable as _;
+    let message = fixture
+        .owner
+        .with_current(workspace, |view| {
+            let mut document =
+                automerge::AutoCommit::load(&view.peer().document("so.tilo.chat", "").unwrap())
+                    .unwrap();
+            let before = document.get_heads();
+            document.put(automerge::ROOT, key, key).unwrap();
+            document.commit_edit("fixture", key);
+            view.peer().clone().publication_mut().publish_incremental(
+                "so.tilo.chat",
+                "",
+                document.save_after(&before),
+                &fixture.key,
+                fixture.now,
+            )
+        })
+        .unwrap();
+    fixture
+        .owner
+        .commit_document(
+            crate::owner::publication::request(&message).unwrap(),
+            fixture.now,
+        )
+        .unwrap();
+}
+
+/// A member of the workspace, not one of its owner's devices, restarts with
+/// its retained frames and publishes them as it signed them: nothing it sends
+/// waits for an owner's checkpoint. A peer handed the later frame first asks
+/// for what that frame builds on, and converges once it arrives.
+#[test]
+fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() {
+    let fixture = member_device_fixture();
+    let workspace = crate::owner::WorkspaceId::parse(testing::WORKSPACE).unwrap();
+    let path = fixture.directory.path().join("owner.json");
+    grant_app_authorship(&fixture, "so.tilo.chat");
+    assert!(
+        fixture
+            .owner
+            .prepare_application_record(
+                workspace,
+                &fixture.certificate,
+                &fixture.key,
+                &route(),
+                fixture.now
+            )
+            .unwrap()
+    );
+    // Two writes of this device, the second building on the first.
+    publish_write(&fixture, workspace, "first");
+    publish_write(&fixture, workspace, "second");
+    let reopened = open_file(&path).unwrap();
+    let custody = reopened.outgoing_status(workspace, fixture.now).unwrap();
+    assert_eq!(
+        custody.pending, 4,
+        "the authorship grant, the record's creation and two writes"
+    );
+    assert_eq!(
+        custody.blocked, 0,
+        "every retained frame publishes as it was signed"
+    );
+    reopened.retire_outgoing(workspace).unwrap();
+    let frames = reopened
+        .with_outgoing(workspace, fixture.now, |_, outgoing| {
+            Ok(outgoing
+                .entries()
+                .map(|entry| entry.bytes().to_vec())
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    assert_eq!(frames.len(), 4);
+    let frames = frames
+        .into_iter()
+        .map(|bytes| postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&bytes).unwrap())
+        .collect::<Vec<_>>();
+    // A peer that never saw the first write receives the second one first.
+    let origin = |fixture: &Fixture| {
+        crate::TransportOrigin::RetainedRelayDelta(fixture.certificate.device_public_key)
+    };
+    let mut peer = fixture.governor.peer().clone();
+    let held = peer
+        .receive_from_report(origin(&fixture), frames[3].clone(), fixture.now)
+        .unwrap();
+    assert_eq!(
+        held.primary(),
+        &crate::InputDisposition::RetryLater(crate::MissingPrerequisite::RecordCheckpoint)
+    );
+    for frame in &frames[0..=2] {
+        peer.receive_from_report(origin(&fixture), frame.clone(), fixture.now)
+            .unwrap();
+    }
+    let landed = peer
+        .receive_from_report(origin(&fixture), frames[3].clone(), fixture.now)
+        .unwrap();
+    assert!(
+        matches!(landed.primary(), crate::InputDisposition::Duplicate(_)),
+        "the held write landed once what it builds on arrived: {:?}",
+        landed.primary()
+    );
+    let authored = reopened
+        .with_current(workspace, |view| {
+            Ok(view.peer().document("so.tilo.chat", ""))
+        })
+        .unwrap();
+    assert_eq!(peer.document("so.tilo.chat", ""), authored);
 }
 
 #[test]

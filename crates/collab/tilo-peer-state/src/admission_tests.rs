@@ -2688,10 +2688,6 @@ fn a_record_covered_as_empty_is_held_from_its_coverage() {
             .is_empty()
     );
     assert!(!joiner.checkpoint_pending("test.app", "tab:2"));
-    assert!(
-        joiner.fresh_checkpoint_for("test.app", "tab:2", now),
-        "the coverage is the record's current checkpoint"
-    );
     assert_eq!(
         joiner.document("test.app", "tab:1"),
         None,

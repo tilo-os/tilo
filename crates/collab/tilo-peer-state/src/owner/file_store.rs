@@ -18,7 +18,6 @@
 use crate::owner::{
     Change, LimitedWriter, MAX_AUTHORITY_BYTES, NativeAuthorityStorage, NativeWorkspaceOwner,
     Store,
-    publication::preflight_workspace,
     record::{StoredPendingEnrollment, StoredWorkspace},
 };
 use parking_lot::RwLock;
@@ -192,7 +191,9 @@ fn read_record(path: &Path) -> Result<(NativeAuthorityStorage, Layout), String> 
     };
     // A record written as one file, by a build before the split: read whole,
     // and kept beside it from here on, leaving this file as it is.
-    let record = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let mut record: NativeAuthorityStorage =
+        serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    drop_recovery_projections(&mut record);
     Ok((record, Layout::Whole))
 }
 
@@ -218,17 +219,31 @@ fn read_index(path: &Path, index: StoredIndex) -> Result<(NativeAuthorityStorage
         }
         workspaces.insert(workspace, stored);
     }
-    let record = NativeAuthorityStorage {
+    let mut record = NativeAuthorityStorage {
         revision: index.revision,
         workspaces,
         pending: index.pending,
     };
+    drop_recovery_projections(&mut record);
     Ok((record, Layout::Index(index.held)))
+}
+
+/// A recovery projection is a re-signed copy of frames this build re-sends
+/// as their signed originals. A record that holds one still loads; the copy
+/// is dropped here, and the record keeps its originals in custody until the
+/// workspace retires them.
+fn drop_recovery_projections(record: &mut NativeAuthorityStorage) {
+    record.workspaces.values_mut().for_each(|workspace| {
+        if let Some(publication) = workspace.publication.as_mut() {
+            publication.clear_projection();
+        }
+    });
 }
 
 /// Compact JSON of one workspace's record, within its file's cap.
 fn part_bytes(stored: &StoredWorkspace) -> Result<Vec<u8>, String> {
-    preflight_workspace(stored)?;
+    crate::owner::limits::preflight(stored, MAX_AUTHORITY_BYTES)
+        .map_err(|error| error.to_string())?;
     let mut bytes = LimitedWriter::new(Vec::new(), MAX_AUTHORITY_BYTES);
     serde_json::to_writer(&mut bytes, stored).map_err(|error| error.to_string())?;
     Ok(bytes.into_inner())

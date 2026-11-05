@@ -8,8 +8,7 @@
 //! hold it.
 
 use super::{
-    AcceptedCheckpoint, AutoCommit, ChannelState, Ed25519PublicKey, Route, StatePeer, SystemTime,
-    backend, err,
+    AcceptedCheckpoint, AutoCommit, ChannelState, Ed25519PublicKey, Route, StatePeer, backend, err,
 };
 
 /// Hold every record the workspace's governance covers as empty and `peer`
@@ -18,13 +17,8 @@ use super::{
 /// The workspace holds such a record and every member may write it, its desk's
 /// for one. The replica holds it as if the checkpoint had reached it, so a
 /// write of its own builds on a record it has, and the checkpoint it would
-/// retransmit is the one the coverage names. Held at `now`, when the governance
-/// naming it reached this replica: the checkpoint is as current as the
-/// workspace document it is read from.
-pub(super) fn hold_covered_empty_records(
-    peer: &mut StatePeer,
-    now: SystemTime,
-) -> Result<usize, String> {
+/// retransmit is the one the coverage names.
+pub(super) fn hold_covered_empty_records(peer: &mut StatePeer) -> Result<usize, String> {
     let Some(workspace) = peer.core.workspace_doc.as_deref() else {
         return Ok(0);
     };
@@ -63,9 +57,6 @@ pub(super) fn hold_covered_empty_records(
                 .or_default();
             *floor = (*floor).max(*sequence);
         }
-        // The coverage row is the governor's checkpoint of this route, so the
-        // record is covered as freshly as the governance that names it.
-        peer.core.checkpoint_times.insert(route.clone(), now);
         peer.core.documents.insert(
             route,
             backend::PeerDocument {

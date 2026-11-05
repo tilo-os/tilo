@@ -10,12 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use web_time::SystemTime;
 
-mod reservation;
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use reservation::check_actual_projection_bound;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use reservation::preflight_workspace;
-
 /// A key holder sealing a record's merged history — `seal(app, record,
 /// snapshot)` — under that record's channel's current epoch, with checkpoint
 /// retention: what a device folding the sealed history it holds publishes in
@@ -25,7 +19,7 @@ pub type SealRecord<'a> =
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2 + 1;
+pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
     version: u32,
@@ -33,11 +27,18 @@ pub(crate) struct StoredPublication {
     next_ordinal: u64,
     #[serde(deserialize_with = "read_entries")]
     pub(crate) entries: Vec<StoredOutgoing>,
-    #[serde(deserialize_with = "read_entries")]
+    /// Recovery projections an earlier build signed for its expiring
+    /// frames. This build re-sends the signed originals instead, so the list
+    /// is read and then dropped (`file_store::read_record`); it stays in the
+    /// format so records that hold one still load.
+    #[serde(
+        default,
+        deserialize_with = "read_entries",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub(crate) projection: Vec<StoredOutgoing>,
     #[serde(default, deserialize_with = "read_entries")]
     governance: Vec<StoredOutgoing>,
-    reservation: reservation::StoredReservation,
 }
 impl Default for StoredPublication {
     fn default() -> Self {
@@ -48,7 +49,6 @@ impl Default for StoredPublication {
             entries: Vec::new(),
             projection: Vec::new(),
             governance: Vec::new(),
-            reservation: reservation::StoredReservation::default(),
         }
     }
 }
@@ -87,7 +87,6 @@ impl<'a> NativeOutgoing<'a> {
             .governance
             .iter()
             .chain(self.state.entries.iter())
-            .chain(self.state.projection.iter())
             .map(|entry| entry.id)
     }
     pub fn entries(&self) -> impl Iterator<Item = NativeOutgoingEntry<'a>> {
@@ -96,7 +95,6 @@ impl<'a> NativeOutgoing<'a> {
             .governance
             .iter()
             .chain(self.state.entries.iter())
-            .chain(self.state.projection.iter())
             .enumerate()
             .filter(move |(index, _)| allowed.get(*index).copied().unwrap_or(false))
             .map(|(_, entry)| NativeOutgoingEntry(entry))
@@ -127,6 +125,13 @@ impl<'a> NativeOutgoingEntry<'a> {
         } else {
             Retention::Checkpoint
         }
+    }
+}
+impl StoredPublication {
+    /// Drop the recovery projections an earlier build signed: this build
+    /// re-sends the signed originals instead.
+    pub(crate) fn clear_projection(&mut self) {
+        self.projection.clear();
     }
 }
 fn read_entries<'de, D: serde::Deserializer<'de>>(
@@ -248,8 +253,7 @@ pub(crate) fn status(
     let total = publication
         .governance
         .len()
-        .saturating_add(publication.entries.len())
-        .saturating_add(publication.projection.len());
+        .saturating_add(publication.entries.len());
     Ok(NativeOutgoingStatus {
         pending: total,
         blocked: total.saturating_sub(allowed.iter().filter(|allowed| **allowed).count()),
@@ -269,9 +273,6 @@ fn allowed(
     }
     let governance_len = publication.governance.len();
     for (index, entry) in publication.entries.iter().enumerate() {
-        if !fresh(entry, now) {
-            continue;
-        }
         let message: NeighbourMsg =
             postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
         let NeighbourMsg::AppDocument {
@@ -283,10 +284,11 @@ fn allowed(
         else {
             return Err("invalid native outgoing document".into());
         };
-        // An entry whose class is a checkpoint is published only when it is
-        // this device's sealed compaction: a cleartext snapshot is the
-        // governor's baseline, which a member never releases.
-        if !entry.incremental && envelope.kind != OpKind::Compaction {
+        // A sealed write expires with the channel epoch it was made under:
+        // its key holder renews it ([`NativeWorkspaceOwner::renew_outgoing`]),
+        // and the relay never re-sends the expired original beside a renewal.
+        // A cleartext frame is re-sent as it was signed, however old it is.
+        if envelope.encryption.is_some() && !fresh(entry, now) {
             continue;
         }
         if let Some(slot) = allowed.get_mut(governance_len.saturating_add(index)) {
@@ -297,34 +299,6 @@ fn allowed(
                     .ok()
                     .flatten()
                     .is_some();
-        }
-    }
-    if !publication.projection.is_empty() {
-        let originals = decode_entries(&publication.entries)?;
-        let projection = decode_entries(&publication.projection)?;
-        if view
-            .peer
-            .outbox()
-            .authorize_local_recovery_projection(
-                &originals,
-                None,
-                &projection,
-                view.device().device_public_key,
-                now,
-            )
-            .is_ok()
-        {
-            for (index, entry) in publication.projection.iter().enumerate() {
-                if let Some(slot) = publication
-                    .governance
-                    .len()
-                    .checked_add(publication.entries.len())
-                    .and_then(|slot| slot.checked_add(index))
-                    .and_then(|slot| allowed.get_mut(slot))
-                {
-                    *slot = entry.incremental && fresh(entry, now);
-                }
-            }
         }
     }
     Ok(allowed)
@@ -356,7 +330,6 @@ fn bounds(publication: &StoredPublication) -> Result<usize, String> {
         || publication.revision == 0
         || publication.next_ordinal == 0
         || publication.entries.len() > MAX_ENTRIES
-        || publication.projection.len() > MAX_ENTRIES
         || publication.governance.len() > 1
     {
         return Err("invalid native outgoing publication or entry capacity".into());
@@ -370,16 +343,9 @@ fn bounds(publication: &StoredPublication) -> Result<usize, String> {
                 .checked_add(entry.bytes.len())
                 .ok_or("native outgoing byte overflow")
         })?;
-    if bytes > MAX_BYTES
-        || publication
-            .projection
-            .iter()
-            .try_fold(0usize, |sum, entry| sum.checked_add(entry.bytes.len()))
-            .is_none_or(|size| size > MAX_BYTES)
-    {
+    if bytes > MAX_BYTES {
         return Err("native outgoing byte capacity exceeded".into());
     }
-    publication.reservation.bounds()?;
     Ok(bytes)
 }
 pub(crate) fn request(message: &NeighbourMsg) -> Result<OwnerCommitRequest, String> {
@@ -419,10 +385,9 @@ pub(crate) fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), 
 }
 /// Whether a member publishes this document as a retained delta.
 ///
-/// A member never replaces a record's retained checkpoint under its own
-/// relay author, except by compacting: a cleartext snapshot is the
-/// governor's baseline and stays a checkpoint, which [`allowed`] never
-/// releases and the session refuses.
+/// A cleartext snapshot keeps the checkpoint class the classifier gives it:
+/// it is the record's whole state, and the class tells the store it stands as
+/// the record's checkpoint rather than one more change after it.
 ///
 /// A content-key ciphertext the classifier calls a checkpoint is published
 /// as a delta instead, unless it is a compaction: the host then appends it
@@ -736,31 +701,16 @@ pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> R
     }];
     Ok(())
 }
-fn append(view: &mut NativeCommittedView, bytes: Vec<u8>, projected: bool) -> Result<(), String> {
+fn append(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
     if state(view)?
         .entries
         .iter()
-        .chain(state(view)?.projection.iter())
         .any(|entry| entry.id == id && entry.bytes == bytes)
     {
         return Ok(());
     }
-    if projected {
-        let projection = &state(view)?.projection;
-        if projection.len() >= MAX_ENTRIES
-            || projection
-                .iter()
-                .map(|entry| entry.bytes.len())
-                .sum::<usize>()
-                .checked_add(bytes.len())
-                .is_none_or(|size| size > MAX_BYTES)
-        {
-            return Err("native recovery projection capacity exceeded".into());
-        }
-    } else {
-        reserve(view, &bytes)?;
-    }
+    reserve(view, &bytes)?;
     let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
     let (timestamp_ns, channel, incremental) = metadata(&message)?;
     let binding = request(&message)?.binding()?;
@@ -777,12 +727,7 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>, projected: bool) -> Re
         .revision
         .checked_add(1)
         .ok_or("native publication revision exhausted")?;
-    let target = if projected {
-        &mut publication.projection
-    } else {
-        &mut publication.entries
-    };
-    target.push(StoredOutgoing {
+    publication.entries.push(StoredOutgoing {
         ordinal,
         id,
         bytes,
@@ -794,8 +739,7 @@ fn append(view: &mut NativeCommittedView, bytes: Vec<u8>, projected: bool) -> Re
     Ok(())
 }
 pub(crate) fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
-    append(view, bytes, false)?;
-    reservation::refresh(view)
+    append(view, bytes)
 }
 pub(crate) fn has_exact(view: &NativeCommittedView, bytes: &[u8]) -> Result<bool, String> {
     Ok(state(view)?
@@ -835,7 +779,6 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
         .governance
         .iter()
         .chain(publication.entries.iter())
-        .chain(publication.projection.iter())
     {
         if entry.ordinal == 0
             || entry.ordinal >= publication.next_ordinal
@@ -863,24 +806,13 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
             validate_exact(&view.peer, &message, view.device().device_public_key)?;
         }
     }
-    for entries in [&publication.entries, &publication.projection] {
-        if entries
-            .windows(2)
-            .any(|pair| matches!(pair, [first, second] if first.ordinal >= second.ordinal))
-        {
-            return Err("native publication ordinal order mismatch".into());
-        }
+    if publication
+        .entries
+        .windows(2)
+        .any(|pair| matches!(pair, [first, second] if first.ordinal >= second.ordinal))
+    {
+        return Err("native publication ordinal order mismatch".into());
     }
-    let originals = decode_entries(&publication.entries)?;
-    if !publication.projection.is_empty() {
-        view.peer.outbox().validate_local_recovery_projection(
-            &originals,
-            None,
-            &decode_entries(&publication.projection)?,
-            view.device().device_public_key,
-        )?;
-    }
-    reservation::validate(view, &originals)?;
     Ok(())
 }
 
@@ -974,7 +906,7 @@ fn validate_member_changes(
     Ok(())
 }
 /// An exact replay changes no peer state; reuse its barrier only when there
-/// is no retirement, reservation repair or checkpoint refresh to publish.
+/// is no retirement or checkpoint refresh to publish.
 pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool, String> {
     let publication = state(view)?;
     let originals = decode_entries(&publication.entries)?;
@@ -982,11 +914,6 @@ pub(crate) fn exact_replay_unchanged(view: &NativeCommittedView) -> Result<bool,
         if retired(&view.peer, message, view.device().device_public_key).unwrap_or(false) {
             return Ok(false);
         }
-    }
-    if reservation::validate(view, &originals).is_err()
-        || (!publication.projection.is_empty() && !publication.reservation.has_recovery())
-    {
-        return Ok(false);
     }
     // A member's own workspace changes wait for the governance that retires
     // them, which any replay may bring.
@@ -1010,42 +937,7 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
             remove.insert(entry.id);
         }
     }
-    // A projection also carries the sequence whose durable watermark retires
-    // its originals. While any original still owes recovery, keep it: the next
-    // reconciliation reuses it while it is current. Clearing it here signed a
-    // fresh retransmission at every reconciliation, without bound, for each
-    // original the governor already holds but has not yet acknowledged.
-    let remaining = publication
-        .entries
-        .iter()
-        .filter(|entry| !remove.contains(&entry.id))
-        .cloned()
-        .collect::<Vec<_>>();
-    let owes_recovery = decode_entries(&remaining)
-        .and_then(|originals| {
-            view.peer.outbox().reserve_local_recovery(
-                &originals,
-                None,
-                view.device().device_public_key,
-            )
-        })
-        .is_ok_and(|reservation| reservation.entries() > 0);
-    // A projection has no user receipt/exact index. Empty obligations prove its
-    // whole history is in the actual durable governor receipt, independently of
-    // whether this retransmission sequence itself was observed by the governor.
-    let remove_projection = !publication.projection.is_empty()
-        && !owes_recovery
-        && decode_entries(&publication.projection)
-            .and_then(|projection| {
-                view.peer.outbox().validate_local_recovery_projection(
-                    &[],
-                    None,
-                    &projection,
-                    view.device().device_public_key,
-                )
-            })
-            .is_ok();
-    if !remove.is_empty() || remove_projection {
+    if !remove.is_empty() {
         let publication = view
             .record
             .publication
@@ -1054,15 +946,11 @@ pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
         publication
             .entries
             .retain(|entry| !remove.contains(&entry.id));
-        if remove_projection {
-            publication.projection.clear();
-        }
         publication.revision = publication
             .revision
             .checked_add(1)
             .ok_or("native publication revision exhausted")?;
     }
-    reservation::refresh(view)?;
     Ok(())
 }
 pub(crate) fn retry_covered(view: &NativeCommittedView, bytes: &[u8]) -> Result<bool, String> {
@@ -1106,51 +994,22 @@ impl NativeWorkspaceOwner {
     ) -> Result<NativeOutgoingStatus, String> {
         self.with_current(workspace, |view| status(view, now))
     }
-    /// Retire what the governor admitted and replace expired increments by
-    /// a fresh recovery projection signed with `key`.
+    /// Retire every retained frame the workspace has refused or a durable
+    /// receipt names, and commit the retirement.
     ///
     /// # Errors
-    /// `key` is not the enrolled device, the workspace is fenced or the record
-    /// cannot be published.
-    pub fn reconcile_outgoing(
-        &self,
-        workspace: WorkspaceId,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<(), String> {
+    /// The workspace is not held here or is fenced, or the retirement cannot
+    /// be committed.
+    pub fn retire_outgoing(&self, workspace: WorkspaceId) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
-        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
-            return Err("native outgoing signer differs from selected device".into());
-        }
+        let now = SystemTime::now();
         candidate
             .peer
             .permissions(candidate.device().device_public_key, now)
             .map_err(|error| error.to_string())?;
         let before = state(&candidate)?.revision;
         retire(&mut candidate)?;
-        let originals = decode_entries(&state(&candidate)?.entries)?;
-        let old = decode_entries(&state(&candidate)?.projection)?;
-        let replacement = candidate
-            .peer
-            .outbox_mut()
-            .reconcile_local_recovery_projection(&originals, None, &old, key, now)?;
-        if replacement != old {
-            let publication = candidate
-                .record
-                .publication
-                .as_mut()
-                .ok_or("publication absent")?;
-            publication.projection.clear();
-            publication.revision = publication
-                .revision
-                .checked_add(1)
-                .ok_or("native projection revision exhausted")?;
-            for message in replacement {
-                append(&mut candidate, encode(&message, MAX_BYTES)?, true)?;
-            }
-        }
-        reservation::refresh(&mut candidate)?;
         if before != state(&candidate)?.revision {
             candidate.record.peer = candidate.peer.durable()?;
             candidate.record.generation = candidate
@@ -1159,12 +1018,7 @@ impl NativeWorkspaceOwner {
                 .ok_or("native owner generation exhausted")?;
             self.publish_workspace(workspace, candidate, None)?;
         }
-        // Re-read the committed workspace so a publication that cannot be served is reported.
-        self.with_current(workspace, |view| {
-            state(view)?;
-            allowed(view, now)?;
-            Ok(())
-        })
+        Ok(())
     }
     /// Renew this device's sealed writes that expired in custody before the
     /// governor retired them, through `reseal`, the channels' key holder
@@ -1218,13 +1072,12 @@ impl NativeWorkspaceOwner {
                 .ok_or("publication absent")?
                 .entries
                 .retain(|kept| kept.id != entry.id);
-            append(&mut candidate, encode(&renewal, MAX_BYTES)?, false)?;
+            append(&mut candidate, encode(&renewal, MAX_BYTES)?)?;
             renewed = true;
         }
         if !renewed {
             return Ok(());
         }
-        reservation::refresh(&mut candidate)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate
             .generation()
@@ -1289,7 +1142,7 @@ impl NativeWorkspaceOwner {
             match made {
                 Ok(bytes) => {
                     candidate.peer = attempt;
-                    append(&mut candidate, bytes, false)?;
+                    append(&mut candidate, bytes)?;
                     compacted = compacted.saturating_add(1);
                 }
                 Err(error) => {
@@ -1301,7 +1154,6 @@ impl NativeWorkspaceOwner {
         if compacted == 0 {
             return Ok(0);
         }
-        reservation::refresh(&mut candidate)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate
             .generation()

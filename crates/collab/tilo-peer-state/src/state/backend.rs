@@ -239,7 +239,6 @@ pub(super) struct PeerCore {
     pub(super) documents: Shared<BTreeMap<Route, StoredDocument>>,
     pub(super) pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
     pub(super) pending_bytes: usize,
-    pub(super) checkpoint_times: Shared<BTreeMap<Route, SystemTime>>,
     pub(super) exact_admissions: ExactAdmissions,
     pub(super) admission_v5: bool,
     // Transient native cut context is never part of the durable DTO.
@@ -258,7 +257,6 @@ impl Clone for PeerCore {
             documents: self.documents.clone(),
             pending: self.pending.clone(),
             pending_bytes: self.pending_bytes,
-            checkpoint_times: self.checkpoint_times.clone(),
             exact_admissions: self.exact_admissions.clone(),
             admission_v5: self.admission_v5,
             native_cut_publisher: self.native_cut_publisher,

@@ -406,14 +406,11 @@ impl Scope {
         if !self.pinned_to(&hint, &device, continuity) {
             return Err("native publication session changed".into());
         }
-        // Reconciliation may persist a genuine authorized successor. Its
-        // failure must not erase or prevent other fresh retained frames.
-        if let Err(error) = self.connect.owner.reconcile_outgoing(
-            self.connect.workspace,
-            &identity.device_signing_key,
-            std::time::SystemTime::now(),
-        ) {
-            tracing::warn!(workspace = %self.connect.workspace, %error, "native publication reconciliation blocked");
+        // Retiring what the workspace refused or receipted persists a new
+        // record generation. Its failure must not prevent sending what is
+        // still in custody.
+        if let Err(error) = self.connect.owner.retire_outgoing(self.connect.workspace) {
+            tracing::warn!(workspace = %self.connect.workspace, %error, "native publication retirement not committed");
         }
         if let Some(reseal) = reseal
             && let Err(error) = self.connect.owner.renew_outgoing(

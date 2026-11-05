@@ -2,9 +2,12 @@ use super::*;
 use crate::TransportOrigin;
 use automerge::AutoCommit;
 use automerge::ROOT;
+use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
+use collab_types::{DocumentMutation, Ed25519PublicKey, OpKind, SignedOp};
 use tilo_user_identity::DeviceCert;
 use tilo_user_identity::RevocationList;
+use web_time::Duration;
 
 fn fixture() -> (
     StatePeer,
@@ -156,8 +159,7 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
             later,
         )
         .unwrap();
-    let history = member.clone();
-    let mut member = StatePeer::restore(
+    let member = StatePeer::restore(
         &member.durable().unwrap(),
         member.workspace_id(),
         member.owner_certificates()[0].clone(),
@@ -184,15 +186,9 @@ fn local_outbox_revoked_custody_survives_restore_but_signing_and_current_lookup_
     let before = member.durable().unwrap();
     assert!(
         member
-            .outbox_mut()
-            .reconcile_local_recovery_projection(
-                std::slice::from_ref(&original),
-                Some(&history),
-                &[],
-                &key,
-                later,
-            )
-            .is_err()
+            .permissions(key.verifying_key().to_bytes(), later)
+            .is_err(),
+        "a revoked device signs nothing new"
     );
     assert_eq!(member.durable().unwrap(), before);
     assert_eq!(postcard::to_allocvec(&original).unwrap(), original_bytes);
@@ -304,7 +300,7 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
     governor
         .receive_from_report(
             TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-            second.clone(),
+            second,
             now,
         )
         .unwrap();
@@ -335,7 +331,6 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
             )
             .unwrap();
     }
-    assert!(member.checkpoint_sequence_covers(&original));
     assert!(
         member
             .durable_coverage("test.app", "tab:1")
@@ -349,20 +344,29 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
             .unwrap(),
         "same visible text and a high author watermark do not cover missing change identity"
     );
-    let renewed = member
-        .outbox_mut()
-        .reconcile_local_recovery_projection(&[original.clone(), second], None, &[], &key, later)
+}
+
+#[test]
+fn a_durable_receipt_retires_a_retained_original_the_workspace_now_holds() {
+    let (mut governor, mut member, governor_key, key, _, now) = fixture();
+    let original = local_edit(&mut member, &key, now, false, "retained");
+    let later = now + Duration::from_secs(301);
+    // The device re-sends the frame exactly as it signed it; the workspace
+    // admits it as retained history, however old it is.
+    governor
+        .receive_from_report(
+            TransportOrigin::RetainedRelayDelta(key.verifying_key().to_bytes()),
+            original.clone(),
+            later,
+        )
         .unwrap();
-    assert!(!renewed.is_empty());
-    for message in &renewed {
-        governor
-            .receive_from_report(
-                TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
-                message.clone(),
-                later,
-            )
-            .unwrap();
-    }
+    assert!(
+        !member
+            .outbox()
+            .retained_local_document_retired(&original, key.verifying_key().to_bytes())
+            .unwrap(),
+        "no receipt reached the author yet"
+    );
     checkpoint(&mut governor, &mut member, &governor_key, later, true);
     assert!(
         member
@@ -371,60 +375,3 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
             .unwrap()
     );
 }
-
-#[test]
-fn local_outbox_builds_each_pending_publication_history_once() {
-    let (_, mut member, _, key, _, now) = fixture();
-    let selected = key.verifying_key().to_bytes();
-    let mut originals = Vec::new();
-    for edit in 0..6 {
-        originals.push(local_edit(
-            &mut member,
-            &key,
-            now,
-            false,
-            &format!("edit-{edit}"),
-        ));
-        let before = super::history::builds();
-        let rebuilt = super::history::rebuilds();
-        let reserved = member
-            .outbox()
-            .reserve_local_recovery(&originals, None, selected)
-            .unwrap();
-        assert_eq!(reserved.entries(), 1, "one route");
-        member
-            .outbox()
-            .validate_local_recovery_projection(&originals, None, &[], selected)
-            .unwrap();
-        assert_eq!(
-            member
-                .outbox()
-                .reserve_local_recovery(&originals, None, selected)
-                .unwrap(),
-            reserved
-        );
-        assert_eq!(
-            super::history::builds().saturating_sub(before),
-            1,
-            "edit {edit}: only the new publication's history is built"
-        );
-        if edit > 0 {
-            assert_eq!(
-                super::history::rebuilds(),
-                rebuilt,
-                "edit {edit}: the new history extends the previous edit's"
-            );
-        }
-        super::history::forget();
-        assert_eq!(
-            member
-                .outbox()
-                .reserve_local_recovery(&originals, None, selected)
-                .unwrap(),
-            reserved
-        );
-    }
-}
-
-#[path = "projection_tests.rs"]
-mod projection_tests;

@@ -292,7 +292,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_membership_reconciles_to_a_reopenable_governor_checkpoint() {
+    fn durable_membership_retires_to_a_reopenable_governor_checkpoint() {
         let mut fixture = fixture();
         let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let add = request(
@@ -306,10 +306,7 @@ mod tests {
             .owner
             .commit_workspace_membership_command(add, &fixture.key, fixture.now)
             .unwrap();
-        fixture
-            .owner
-            .reconcile_outgoing(workspace, &fixture.key, fixture.now)
-            .unwrap();
+        fixture.owner.retire_outgoing(workspace).unwrap();
 
         let reopened =
             crate::owner::open_file(&fixture.directory.path().join("owner.json")).unwrap();
@@ -321,10 +318,7 @@ mod tests {
                     .collect::<Vec<_>>())
             })
             .unwrap();
-        assert!(
-            !frames.is_empty(),
-            "reconciliation must retain a checkpoint"
-        );
+        assert!(!frames.is_empty(), "retirement must retain a checkpoint");
         for frame in frames {
             let message: NeighbourMsg = postcard::from_bytes(&frame).unwrap();
             fixture

@@ -379,17 +379,6 @@ pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
         .map(|entry| entry.bytes.clone())
         .collect())
 }
-/// The exact bytes of every recovery projection entry.
-///
-/// # Errors
-/// The workspace has no publication state.
-pub fn projection(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
-    Ok(publication::state(view)?
-        .projection
-        .iter()
-        .map(|entry| entry.bytes.clone())
-        .collect())
-}
 /// # Errors
 /// As the owner's own outgoing encoding.
 pub fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
@@ -406,11 +395,6 @@ pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String>
 /// As the owner's own local append.
 pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
     publication::append_local(view, bytes)
-}
-/// # Errors
-/// The actual projection outgrew the reserve admitted for it.
-pub fn check_actual_projection_bound(view: &NativeCommittedView) -> Result<(), String> {
-    publication::check_actual_projection_bound(view)
 }
 pub fn peer_mut(view: &mut NativeCommittedView) -> &mut StatePeer {
     &mut view.peer
