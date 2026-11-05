@@ -583,19 +583,31 @@ fi
 
 # A throwaway identity's certificates last 24 hours; mint a fresh one well
 # before that, rather than have the session refuse an expired chain.
+#
+# A state directory the caller filled with a real identity is never given a
+# throwaway one: the two trees a session reads it from (`TILO_IDENTITY_ROOT`,
+# now holding `device/cert.bin`) are the person's, and minting over them would
+# discard the identity the caller put there.
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
 marker=$identity_dir/throwaway-test-identity
-if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
-    # A new identity is a new person: the native workspace the old one
-    # governs belongs to someone else now.
-    say "discarding the throwaway identity and its desktop"
-    rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
-        "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
-        "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
-    mkdir -p "$TILO_IDENTITY_ROOT"
-    mkdir -m 700 "$state/secrets"
+keep_identity=0
+if ((!reset_identity)) && [[ -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
+    say "keeping the identity already in $TILO_IDENTITY_ROOT"
+    keep_identity=1
 fi
-if [[ ! -f $marker ]]; then
+if ((!keep_identity)); then
+    if ((reset_identity)) || { [[ -f $marker ]] && [[ -n $(find "$marker" -mmin +1200) ]]; }; then
+        # A new identity is a new person: the native workspace the old one
+        # governs belongs to someone else now.
+        say "discarding the throwaway identity and its desktop"
+        rm -rf "$identity_dir" "$TILO_IDENTITY_ROOT" "$state/secrets" \
+            "$XDG_CONFIG_HOME"/tilo/state.json "$XDG_CONFIG_HOME"/tilo/state.json.* \
+            "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
+        mkdir -p "$TILO_IDENTITY_ROOT"
+        mkdir -m 700 "$state/secrets"
+    fi
+fi
+if ((!keep_identity)) && [[ ! -f $marker ]]; then
     # Nobody completes first-login setup here; a headless pass mints the
     # development identity a dev image would, then exits.
     say "minting a throwaway identity"

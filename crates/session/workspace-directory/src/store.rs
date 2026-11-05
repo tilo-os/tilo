@@ -111,6 +111,10 @@ pub struct Store {
     /// slot is made only once the host admits it keeps the name it was
     /// listed by ([`Store::listed_name`]).
     names: std::cell::RefCell<BTreeMap<String, String>>,
+    /// The community site each workspace was joined as its home through, by
+    /// the workspace granted: the person's community is theirs once a host
+    /// admits them to it, which is after the door grants ([`Store::community_of`]).
+    communities: std::cell::RefCell<BTreeMap<String, String>>,
     asks: std::cell::RefCell<Option<mpsc::UnboundedSender<Ask>>>,
     answers: std::cell::RefCell<Option<mpsc::UnboundedReceiver<Answer>>>,
     /// What wakes the caller's loop as the task answers, so a directory being
@@ -464,6 +468,11 @@ impl Store {
             outcome = "granted",
             "join: the workspace is joined and its slot is next"
         );
+        if let Some(site) = community {
+            self.communities
+                .borrow_mut()
+                .insert(granted.workspace.clone(), site.to_owned());
+        }
         self.joined.borrow_mut().push(Joined {
             name: name.to_owned(),
             granted,
@@ -476,6 +485,20 @@ impl Store {
     /// workspace by the name it was chosen under, not its id.
     pub fn listed_name(&self, workspace: &str) -> Option<String> {
         self.names.borrow().get(workspace).cloned()
+    }
+
+    /// The community site `workspace` was joined as its home through, while
+    /// the person's membership of it is not settled: the host admits this
+    /// device after the door grants, and only then is the community theirs.
+    pub fn community_of(&self, workspace: &str) -> Option<String> {
+        self.communities.borrow().get(workspace).cloned()
+    }
+
+    /// Forget the site `workspace` was joined through, once its host admitted
+    /// this device or refused it: the join is settled either way, and a
+    /// refused one is asked again by the community's own follow.
+    pub fn forget_community(&self, workspace: &str) {
+        self.communities.borrow_mut().remove(workspace);
     }
 
     /// What became of the last read or join, when it went wrong.

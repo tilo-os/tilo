@@ -473,6 +473,7 @@ impl PeerGovernanceMut<'_> {
         }
         if let Some(old) = self.peer.core.certificates.get(&cert.device_public_key)
             && old.as_ref() != cert
+            && !super::supersedes(old.as_ref(), cert)
         {
             return Err("certificate conflict".into());
         }
@@ -558,6 +559,7 @@ impl PeerGovernanceMut<'_> {
             admission: None,
             admissions: Vec::new(),
             delegate: None,
+            workspace_delegations: Vec::new(),
         };
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));

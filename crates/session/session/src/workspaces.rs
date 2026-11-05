@@ -1199,16 +1199,6 @@ impl crate::Shared {
         if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
         }
-        // A community joined on its own is a decision of the person's: from
-        // here on, no device of theirs asks their community's door again —
-        // not to join it, and not to rejoin it once they left.
-        if let Some(site) = &joined.community
-            && let Some(personal) = &self.personal
-        {
-            personal
-                .borrow_mut()
-                .decide_community(site, CommunityState::Decided);
-        }
         self.redeem_invitation(joined);
         Ok(())
     }
@@ -1349,6 +1339,20 @@ impl crate::Shared {
                         // belongs.
                         joined_notice(&self.notices, &listed);
                     }
+                    // A community whose home the host admitted is the
+                    // person's: from here on, no device of theirs asks its
+                    // door again — not to join it, and not to rejoin it once
+                    // they left. Only now, with the workspace held: a
+                    // community marked decided when its host refused the
+                    // enrollment was never joined, and nothing asked again.
+                    if let Some(site) = self.directory_store.community_of(&key) {
+                        if let Some(personal) = &self.personal {
+                            personal
+                                .borrow_mut()
+                                .decide_community(&site, CommunityState::Decided);
+                        }
+                        self.directory_store.forget_community(&key);
+                    }
                 }
                 Err(error) => {
                     tracing::info!(
@@ -1371,6 +1375,10 @@ impl crate::Shared {
                     // The sheet says why to a person who opens it again, and
                     // the banner says it where they are now.
                     tracing::warn!(%key, %error, "a workspace was not joined");
+                    // A community whose host refused this device is not
+                    // joined: the join is forgotten, and the community's own
+                    // follow asks its door again when a network comes back.
+                    self.directory_store.forget_community(&key);
                 }
             }
             if enrolled.member {

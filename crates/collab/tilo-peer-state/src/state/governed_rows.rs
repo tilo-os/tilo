@@ -19,6 +19,66 @@ pub(crate) struct GovernedIdentity {
     /// bytes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delegate: Option<GovernedDelegateRow>,
+    /// The workspace delegations a build before [`super::DURABLE_BASE_VERSION`]
+    /// wrote in this row: it let another device issue invitations for a
+    /// workspace. Workspaces no longer have them, so nothing here reads one to
+    /// act on; they are kept because the row's bytes, and the media
+    /// authorization basis computed over them, are a digest a stored policy
+    /// still names. Written back as they were read, never added to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) workspace_delegations: Vec<WorkspaceDelegation>,
+}
+
+/// A workspace delegation as a build before [`super::DURABLE_BASE_VERSION`]
+/// wrote it, read for the media authorization basis and nothing else. The
+/// fields are that layout's; nothing here interprets them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkspaceDelegation {
+    pub(crate) version: u32,
+    pub(crate) room: String,
+    pub(crate) workspace_id: u64,
+    pub(crate) authority_device_public_key: [u8; 32],
+    pub(crate) delegate: DeviceCert,
+    pub(crate) permissions: WorkspaceDelegationPermissions,
+    pub(crate) nonce: [u8; 16],
+    pub(crate) expires_at_ns: Option<u64>,
+    #[serde(with = "serde_bytes")]
+    pub(crate) signature: [u8; 64],
+}
+
+/// What a [`WorkspaceDelegation`] let its delegate do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct WorkspaceDelegationPermissions {
+    pub(crate) issue_invitations: bool,
+    pub(crate) admit_invited_members: bool,
+}
+
+impl Default for GovernedIdentity {
+    fn default() -> Self {
+        Self {
+            device_cert: DeviceCert {
+                user_public_key: [0; 32],
+                device_public_key: [0; 32],
+                device_label: String::new(),
+                capabilities: tilo_user_identity::DeviceCapabilities {
+                    can_own_workspaces: false,
+                    can_admit_devices: false,
+                    can_act_as_host: false,
+                    can_read_all_workspaces: false,
+                    foreign: false,
+                    can_administer_devices: false,
+                },
+                issued_at_ns: 0,
+                expires_at_ns: None,
+                signature: [0; 64],
+            },
+            revocations: Vec::new(),
+            admission: None,
+            admissions: Vec::new(),
+            delegate: None,
+            workspace_delegations: Vec::new(),
+        }
+    }
 }
 
 impl GovernedIdentity {
