@@ -363,12 +363,11 @@ fn a_heading_is_a_disclosure_in_the_lists_accessibility_children() {
     assert_eq!(done.value.as_deref(), Some("2"));
     assert_eq!(done.state.expanded, Some(false));
     assert!(!done.state.focused);
-    // The retained rows map onto their own nodes, the headings standing before them.
-    assert_eq!(
-        (0..list.mounted.len())
-            .map(|child| Widget::accessibility_child_parent(&list, child))
-            .collect::<Vec<_>>(),
-        [Some(1), Some(2), Some(4), Some(5)],
+    // The list builds each mounted row's node itself, headings standing before
+    // them: the walk never visits the row widgets.
+    assert!(
+        (0..list.mounted.len()).all(|child| Widget::accessibility_represents_child(&list, child)),
+        "every mounted row is a node of the list's own"
     );
 }
 

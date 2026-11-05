@@ -16,6 +16,25 @@ pub(super) struct RenameField<K> {
     pub(super) input: crate::widget::TextInput,
 }
 
+/// What a row's inline rename field says in the accessibility tree, short of
+/// building its node: its text, where it stands, and its own state.
+#[derive(PartialEq)]
+pub(super) struct RenameStamp {
+    text: String,
+    bounds: Rect,
+    state: crate::widget::text_input::TextAccessibilityState,
+}
+
+impl<K> RenameField<K> {
+    pub(super) fn stamp(&self) -> RenameStamp {
+        RenameStamp {
+            text: self.input.value().to_owned(),
+            bounds: self.input.get_rect(),
+            state: self.input.accessibility_state(),
+        }
+    }
+}
+
 impl<M: ListModel> VirtualList<M> {
     /// Rename a row in place. `F2`, [`Self::begin_rename`] and (with
     /// [`Self::rename_on_double_click`]) a double click open a field over the row's label;

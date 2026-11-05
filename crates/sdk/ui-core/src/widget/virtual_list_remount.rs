@@ -78,6 +78,11 @@ impl<M: ListModel> VirtualList<M> {
         for row in self.mounted.get(self.placed_near()).unwrap_or_default() {
             row.widget.collect_damage(regions);
         }
+        // The field renaming a row in place draws over that row as part of the
+        // list, and says where its own pixels changed.
+        if let Some(field) = self.rename.as_ref() {
+            field.input.collect_damage_for(self, regions);
+        }
         if let Some(changed) = regions.get_mut(first..) {
             for rect in changed {
                 *rect = rect.intersect(self.rect);
@@ -150,6 +155,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
             .mounted
             .iter()
             .filter_map(super::MountedRow::laid_out_node)
+            .chain(self.letting_go.iter().map(|(_, row)| row.node))
             .collect();
         self.reconcile_mounted();
         // The rows it built are the ones laid out here.
@@ -178,10 +184,12 @@ impl<M: ListModel + 'static> VirtualList<M> {
         for gone in before.into_iter().filter(|gone| !children.contains(gone)) {
             remount.unmount(gone);
         }
-        // The rows replaced are out of the layout: they go.
+        // The rows replaced, and the rows the list let go of, are out of
+        // the layout: they go.
         for row in &mut self.mounted {
             row.replacing = None;
         }
+        self.letting_go.clear();
         carried
     }
 }

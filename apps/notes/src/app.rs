@@ -2848,16 +2848,20 @@ impl Widget for NotesApp {
     }
 
     /// The main panel says whether its change is described (a header that
-    /// rebuilt its widgets); the shell's columns changing is a rebuild.
+    /// rebuilt its widgets); the shell's columns changing is a rebuild. The
+    /// page tree hangs under a column slot the shell made, not under the
+    /// shell's own widgets, so its rows are mounted where they stand from
+    /// here.
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
         let main = self.main.take_structure_change();
         let shell = self.shell.take_structure_change();
+        let sidebar = self.sidebar.take_structure_change();
         let outline = if self.outline.take_structure_dirty() {
             ui::widget::StructureChange::Rebuild
         } else {
             ui::widget::StructureChange::None
         };
-        main.join(shell).join(outline)
+        main.join(shell).join(sidebar).join(outline)
     }
 
     fn build_layout(

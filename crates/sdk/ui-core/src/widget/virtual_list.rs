@@ -44,6 +44,9 @@ use groups::Groups;
 pub use vec_model::VecListModel;
 #[path = "virtual_list_remount.rs"]
 mod remount;
+
+#[path = "virtual_list_reconcile.rs"]
+mod reconcile;
 use remount::row_kept;
 #[path = "virtual_list_choice.rs"]
 mod choice;
@@ -347,6 +350,11 @@ pub struct VirtualList<M: ListModel> {
     delegate_selection: bool,
     viewport: SparseVirtualViewport<M::Key>,
     mounted: Vec<MountedRow<M::Key>>,
+    /// Rows the list let go of in a reconcile whose nodes the retained
+    /// layout still holds, at the place they stood: they keep the layout
+    /// walk's place for the rows that replace them, and their widgets
+    /// alive, until a remount unmounts their nodes.
+    letting_go: Vec<(usize, LaidOutRow)>,
     selection: KeySelection<M::Key>,
     multi_select: bool,
     /// Moving the focused row by keyboard (or assistive technology) also
@@ -562,6 +570,7 @@ impl<M: ListModel> VirtualList<M> {
             delegate_selection: false,
             viewport,
             mounted: Vec::new(),
+            letting_go: Vec::new(),
             selection: KeySelection::new(),
             multi_select: false,
             follow_focus: false,
@@ -926,53 +935,6 @@ impl<M: ListModel> VirtualList<M> {
         &self.model
     }
 
-    pub fn update_model<R>(&mut self, update: impl FnOnce(&mut M) -> R) -> R {
-        let anchor = self.capture_anchor();
-        let result = update(&mut self.model);
-        self.forget_tree();
-        self.mounted.clear();
-        self.reconcile_model(anchor.as_ref());
-        result
-    }
-
-    /// Apply a typed mutation batch to an owned model. Delegates whose stable
-    /// keys survive structural edits remain live; only `RowsChanged` keys (or
-    /// every key for `Reset`) are rebuilt.
-    pub fn update_model_changes<R>(
-        &mut self,
-        changes: &[ListModelChange<M::Key>],
-        update: impl FnOnce(&mut M) -> R,
-    ) -> R {
-        let anchor = self.capture_anchor();
-        self.capture_list_change(changes);
-        let result = update(&mut self.model);
-        self.forget_tree();
-        self.apply_model_changes(changes);
-        self.reconcile_model(anchor.as_ref());
-        result
-    }
-
-    fn reconcile_model(&mut self, anchor: Option<&SparseAnchor<M::Key>>) {
-        // What the rows were grouped by may have moved with them.
-        self.regrouped();
-        self.viewport
-            .reconcile(self.model.len(), |key| self.model.index_of(key), anchor);
-        self.selection
-            .reconcile(|key| self.model.index_of(key).is_some());
-        self.focused_key = self
-            .focused_key
-            .take()
-            .filter(|key| self.model.index_of(key).is_some());
-        // A heading the rows moved away from lets the keyboard go.
-        self.focused_group = self.focused_group.take().filter(|(heading, index)| {
-            groups::group_of(&self.model, *index, self.tail_title.as_deref())
-                .is_some_and(|group| group.heading == *heading)
-        });
-        self.request_dirty = true;
-        self.keep_end();
-        self.visible_window_changed();
-    }
-
     /// The row `key` takes the keyboard: a heading that had it lets go.
     /// Give the row of `key` the keyboard, as a click or a reveal does; the selection
     /// stays where it was unless the list follows the focus.
@@ -1016,129 +978,6 @@ impl<M: ListModel> VirtualList<M> {
             .scroll_to_index(index, ScrollAlignment::Nearest);
         self.note_scrolled();
         self.visible_window_changed();
-    }
-
-    /// Before a structural change the person just made (an insert, a
-    /// removal, a move: `motion::ListChange`), note where the mounted rows
-    /// stand, so the next frame moves the survivors from there and fades
-    /// arrivals in. A change nobody just asked for (a sync), a reset, a
-    /// shortcut's result and reduced motion show at once.
-    fn capture_list_change(&mut self, changes: &[ListModelChange<M::Key>]) {
-        let structural = changes.iter().any(|change| {
-            matches!(
-                change,
-                ListModelChange::RowsInserted { .. }
-                    | ListModelChange::RowsRemoved { .. }
-                    | ListModelChange::RowsMoved { .. }
-            )
-        });
-        let resets = changes
-            .iter()
-            .any(|change| matches!(change, ListModelChange::Reset));
-        let source = crate::collection_transition::RowMotions::<M::Key>::caused_by_hand(
-            crate::time::now(),
-            self.reduce_motion,
-        )
-        .filter(|_| structural && !resets);
-        let inserts = changes
-            .iter()
-            .any(|change| matches!(change, ListModelChange::RowsInserted { .. }));
-        let before = self
-            .mounted
-            .iter()
-            .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)));
-        self.row_motion.capture(before, inserts, source);
-    }
-
-    /// Start the motion of a change noted before this frame, and forget
-    /// rows that have arrived. A row already moving continues from where it
-    /// is drawn.
-    fn start_row_motion(&mut self, motion: crate::tokens::EffectiveMotion) {
-        let shown = self
-            .mounted
-            .iter()
-            .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)));
-        self.row_motion.start(shown, motion, crate::time::now());
-    }
-
-    fn apply_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
-        if changes
-            .iter()
-            .any(|change| matches!(change, ListModelChange::Reset))
-        {
-            self.mounted.clear();
-            return;
-        }
-        let changed_keys = changes
-            .iter()
-            .filter_map(|change| match change {
-                ListModelChange::RowsChanged { keys } => Some(keys.iter()),
-                ListModelChange::RowsInserted { .. }
-                | ListModelChange::RowsRemoved { .. }
-                | ListModelChange::RowsMoved { .. }
-                | ListModelChange::Reset => None,
-            })
-            .flatten()
-            .cloned()
-            .collect::<HashSet<_>>();
-        self.mounted.retain(|row| !changed_keys.contains(&row.key));
-    }
-
-    /// Reconcile a source that mutated through shared interior state.
-    pub fn notify_model_changed(&mut self) {
-        let anchor = self.last_anchor.clone();
-        self.reconcile_model(anchor.as_ref());
-    }
-
-    /// Reconcile a specific batch from a source mutated through shared
-    /// interior state.
-    pub fn notify_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
-        if changes.is_empty() {
-            return;
-        }
-        // Rows whose content changed, and nothing else: every key stays where it was, so the
-        // changed rows are built anew and mounted in place ([`Self::invalidate_rows`]), not the
-        // list rebuilt.
-        if changes
-            .iter()
-            .all(|change| matches!(change, ListModelChange::RowsChanged { .. }))
-        {
-            let keys = changes
-                .iter()
-                .filter_map(|change| match change {
-                    ListModelChange::RowsChanged { keys } => Some(keys.iter().cloned()),
-                    _ => None,
-                })
-                .flatten()
-                .collect::<Vec<_>>();
-            self.invalidate_rows(keys);
-            return;
-        }
-        let anchor = self.last_anchor.clone();
-        self.capture_list_change(changes);
-        self.apply_model_changes(changes);
-        self.reconcile_model(anchor.as_ref());
-    }
-
-    pub fn invalidate_rows(&mut self, keys: impl IntoIterator<Item = M::Key>) {
-        let keys = keys.into_iter().collect::<HashSet<_>>();
-        self.regroup_keys(keys.iter());
-        let before = self.invalidated.len();
-        self.invalidated.extend(
-            self.mounted
-                .iter()
-                .filter(|row| keys.contains(&row.key))
-                .map(|row| row.key.clone()),
-        );
-        if self.invalidated.len() != before {
-            // Built anew and mounted where they stand, as rows a scroll
-            // brings near are: a changed row costs its own layout and paint,
-            // not the window's (`StructureChange::Children`). A row that
-            // comes back a different height moves the others, which the
-            // remount measures and lays out.
-            self.remount = true;
-            self.layout_dirty = true;
-        }
     }
 
     #[must_use]
@@ -1336,144 +1175,6 @@ impl<M: ListModel> VirtualList<M> {
             self.visible_window_changed();
         }
         changed
-    }
-
-    fn capture_anchor(&self) -> Option<SparseAnchor<M::Key>> {
-        self.viewport
-            .capture_anchor(|index| self.model.key_at(index))
-    }
-
-    fn refresh_anchor(&mut self) {
-        self.last_anchor = self.capture_anchor();
-    }
-
-    fn visible_window_changed(&mut self) {
-        self.structure_dirty = true;
-        self.layout_dirty = true;
-        self.refresh_anchor();
-    }
-
-    fn reconcile_mounted(&mut self) {
-        let interaction = self.interaction;
-        let range = self.mount_window();
-        let window = range.clone();
-        // What the tree rows are, before any of them is built: a row reads its depth and
-        // whether its subtasks show from what this leaves in its marks.
-        self.shape_tree(&range);
-        if self.request_dirty || self.requested_range.as_ref() != Some(&range) {
-            self.model.request_range(range.clone());
-            self.requested_range = Some(range.clone());
-            self.request_dirty = false;
-        }
-        let old_keys = self
-            .mounted
-            .iter()
-            .map(|row| row.key.clone())
-            .collect::<Vec<_>>();
-        let mut old = std::mem::take(&mut self.mounted)
-            .into_iter()
-            .map(|row| (row.key.clone(), row))
-            .collect::<HashMap<_, _>>();
-        self.groups.clear_folded();
-        let mut seen = HashSet::new();
-        let mut mounted = Vec::with_capacity(range.len());
-        let mut replaced = false;
-        let now = crate::motion::frame_now();
-        for index in range {
-            let Some(key) = self.model.key_at(index) else {
-                continue;
-            };
-            if !self.row_open(index) {
-                // A closed group: its rows take no room and are never built, and its
-                // heading's band stands where its first row would (placed with the bands).
-                if self.row_starts(index) {
-                    // The heading still takes its band's room: it is what the person presses
-                    // to open the group again.
-                    self.groups.fold(index);
-                    let band = self.groups.height;
-                    // ratchet-allow(legacy_size_api): the row's height, not a text's, is measured.
-                    self.viewport.measure(index, key, band);
-                } else {
-                    self.viewport.collapse(index, key);
-                }
-                continue;
-            }
-            if self.tree.is_some() {
-                // Under a folded row: out of the way, never built, as a closed group's are.
-                if self.tree_hidden.contains(&key) {
-                    self.viewport.collapse(index, key);
-                    continue;
-                }
-                // Shown again, a row measures as it did: the room it takes is its own again.
-                self.viewport.expand(index, &key);
-            }
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            let mounted_state = self.observe_row(index, &key, now);
-            let selection = if self.selection_aware {
-                self.row_selection(index)
-            } else {
-                RowSelection::default()
-            };
-            let previous = old.remove(&key);
-            let keep = previous.as_ref().is_some_and(|row| {
-                !self.invalidated.contains(&row.key)
-                    && row.state == mounted_state
-                    && (!self.selection_aware
-                        || row.selection == selection
-                        || row
-                            .widget
-                            .as_any()
-                            .is_some_and(|any| any.is::<crate::widget::ListRow>()))
-            });
-            let mut row = match previous {
-                Some(row) if keep => row,
-                previous => {
-                    replaced = true;
-                    let widget = match &mounted_state {
-                        MountedRowState::Ready => {
-                            (self.row_builder)(&self.model, index, &key, selection)
-                        }
-                        state => self.arriving_row(index, state),
-                    };
-                    self.row_builds = self.row_builds.wrapping_add(1);
-                    MountedRow {
-                        widget,
-                        key: key.clone(),
-                        index,
-                        stamp: self.row_builds,
-                        state: mounted_state,
-                        selection,
-                        node: None,
-                        // The retained layout holds the row it replaces
-                        // until a remount lets go of it.
-                        replacing: previous.and_then(MountedRow::laid_out),
-                    }
-                }
-            };
-            row.widget.set_interaction_environment(interaction);
-            row.index = index;
-            mounted.push(row);
-        }
-        let next_keys = mounted
-            .iter()
-            .map(|row| row.key.clone())
-            .collect::<Vec<_>>();
-        if old_keys != next_keys || (replaced && self.layout_node.is_none()) {
-            self.structure_dirty = true;
-        } else if replaced {
-            // The same rows, some built anew (their content or selection
-            // changed): each new one is mounted where the old one stood
-            // (`remount_rows`), and the others keep their layout.
-            self.remount = true;
-            self.layout_dirty = true;
-        }
-        self.arrivals.retain(now, |key| seen.contains(key));
-        self.invalidated.clear();
-        self.mounted = mounted;
-        self.apply_row_tooltips();
-        self.mounted_range = window;
     }
 
     fn row_at_cursor(&self) -> Option<(usize, M::Key)> {
@@ -1993,6 +1694,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         self.structure_dirty = false;
         self.remount = false;
+        // The tree built here holds no node of an earlier one: the rows let
+        // go of are gone from it.
+        self.letting_go.clear();
         self.layout_node = Some(node);
         node
     }
@@ -2000,7 +1704,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     /// Rows a scroll brought near are mounted in place, and those it took
     /// away let go of; the rows themselves carry out their own changes.
     fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
-        if self.remount {
+        if self.remount || self.structure_dirty {
             return self.remount_rows(remount);
         }
         self.mounted
@@ -2625,8 +2329,27 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     /// The rows as the retained layout holds them: a row built anew since
     /// stands there as the row it replaces, until the remount mounts it.
     fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
-        for row in &self.mounted {
-            visitor(row.laid_out_widget());
+        if self.letting_go.is_empty() {
+            for row in &self.mounted {
+                visitor(row.laid_out_widget());
+            }
+            return true;
+        }
+        // The rows let go of stand where the layout holds them, among the
+        // rows that took their place.
+        let mut rows = self
+            .mounted
+            .iter()
+            .map(|row| (row.index, row.laid_out_widget()))
+            .chain(
+                self.letting_go
+                    .iter()
+                    .map(|(place, row)| (*place, row.widget.as_ref() as &dyn Widget)),
+            )
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|(place, _)| *place);
+        for (_, widget) in rows {
+            visitor(widget);
         }
         true
     }
@@ -2773,17 +2496,16 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         dirty
     }
 
-    /// Mounting the rows a scroll brought near, and letting go of the ones
-    /// it took away, is described: they come and go inside what the list
-    /// shows, and a mounted row draws itself whole. Any other change to the
-    /// rows (a model change, a rebuilt delegate) is not.
+    /// Rows mounted and let go — those a scroll brought near or took away,
+    /// those the model re-keyed, reordered, or whose content was built
+    /// anew — are mounted where they stand ([`Self::remount_rows`]) and
+    /// draw themselves whole: the list shows them come and go. Only with
+    /// no layout of its own to mount under does the host build the tree.
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         use crate::widget::StructureChange;
-        let mut change = if std::mem::take(&mut self.structure_dirty) {
-            StructureChange::Rebuild
-        } else if self.remount {
-            // Reported until the rows are mounted, in place where the host
-            // can ([`Widget::remount_children`]) or by a rebuild.
+        // Reported until the rows are mounted, in place where the host can
+        // ([`Widget::remount_children`]) or by a rebuild of the tree.
+        let mut change = if self.structure_dirty || self.remount {
             if self.layout_node.is_some() {
                 StructureChange::Children
             } else {

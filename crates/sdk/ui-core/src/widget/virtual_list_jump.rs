@@ -36,7 +36,7 @@ impl<M: ListModel> VirtualList<M> {
     /// The row showing the item the reader has not seen, as the list holds its rows now: the
     /// model's own answer, or, for a model of plain values (nothing a conversation holds), the
     /// keys the host gave.
-    fn unread_row(&self) -> Option<M::Key> {
+    pub(super) fn unread_row(&self) -> Option<M::Key> {
         let item = self.unread.as_deref()?;
         self.model
             .key_presenting(item)
@@ -76,7 +76,7 @@ impl<M: ListModel> VirtualList<M> {
     /// above the view, else to the newest row while the reader is away from its end. A
     /// transcript with nothing unread offers only the way to what is now.
     #[must_use]
-    fn jump(&self) -> Option<crate::widget::conversation::Jump> {
+    pub(super) fn jump(&self) -> Option<crate::widget::conversation::Jump> {
         use crate::widget::conversation::Jump;
         if !self.follow_end || self.model.is_empty() {
             return None;
@@ -96,7 +96,7 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Take the reader to the first unread row, if there is one: it comes into view, and the
     /// rows arriving after it no longer move the reader.
-    fn jump_to_unread(&mut self) {
+    pub(super) fn jump_to_unread(&mut self) {
         let Some(key) = self.unread_row() else {
             return;
         };
@@ -114,7 +114,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Take the reader back to the newest row, following what arrives from then on.
-    fn jump_to_present(&mut self) {
+    pub(super) fn jump_to_present(&mut self) {
         crate::motion::note_source(crate::tokens::MotionSource::Pointer);
         self.at_end = true;
         let _ = self.scroll.to.take_over(crate::motion::frame_now());
@@ -122,7 +122,7 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// Take the way back the pill offers.
-    fn follow_pill(&mut self) {
+    pub(super) fn follow_pill(&mut self) {
         match self.jump() {
             Some(crate::widget::conversation::Jump::Unread) => self.jump_to_unread(),
             Some(crate::widget::conversation::Jump::Present) => self.jump_to_present(),
@@ -133,7 +133,10 @@ impl<M: ListModel> VirtualList<M> {
     /// The pill's rectangle in `area`, when it shows one: against the trailing edge of the
     /// column the rows stand in, a gutter in and a control's height above the foot, as wide as
     /// its word at the caption size.
-    fn pill_rect_for(&self, area: Rect) -> Option<(crate::widget::conversation::Jump, Rect)> {
+    pub(super) fn pill_rect_for(
+        &self,
+        area: Rect,
+    ) -> Option<(crate::widget::conversation::Jump, Rect)> {
         let jump = self.jump()?;
         let gutter = self.gutter.max(self.bleed);
         let width = (area.width() * 0.5).min(self.pill_width);
@@ -148,12 +151,12 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     /// The pill's rectangle as the last layout placed it, for the pointer and a press.
-    fn pill_rect(&self) -> Option<Rect> {
+    pub(super) fn pill_rect(&self) -> Option<Rect> {
         self.pill_rect_for(self.rect).map(|(_, rect)| rect)
     }
 
     /// The pill as it draws: what it offers, where, and whether it is hovered.
-    fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
+    pub(super) fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
         Some(crate::widget::conversation::JumpFace::new(jump, rect).hovered(self.jump_hovered))
     }
@@ -161,7 +164,7 @@ impl<M: ListModel> VirtualList<M> {
     /// How far a list that follows its end stands its rows down while they are shorter than its
     /// box: a transcript's few messages sit at its foot, by the composer, where the next one
     /// arrives, and none of them moves when the list grows past its box.
-    fn end_slack(&self) -> f64 {
+    pub(super) fn end_slack(&self) -> f64 {
         if self.follow_end {
             (self.viewport.viewport() - self.viewport.content_extent()).max(0.0)
         } else {

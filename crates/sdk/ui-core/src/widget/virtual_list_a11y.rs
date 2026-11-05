@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::edit::RenameStamp;
 use super::groups::{Band, Group, HEADING_TARGET};
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -51,6 +52,10 @@ struct RowAccessInputs {
     index: usize,
     count: usize,
     bounds: Option<Rect>,
+    /// The row widget's own box: it is laid out after the row is built, and
+    /// moves with the window, so a node kept from a frame it was not in
+    /// still stands only while it does.
+    widget: Rect,
     focused: bool,
     selected: bool,
     /// Whether the row's menu can be asked for.
@@ -64,6 +69,8 @@ struct RowAccessInputs {
     semantic: Option<String>,
     /// What the row is showing instead of the delegate's own row, if anything.
     state: RowStateStamp,
+    /// The inline rename field over the row, while one is open on it.
+    renaming: Option<RenameStamp>,
 }
 
 /// The part of [`MountedRowState`] a row's node says.
@@ -192,46 +199,55 @@ impl<M: ListModel> VirtualList<M> {
                 _ => false,
             };
         }
-        let Some(key) = self.key_for_semantic_target(target) else {
-            return false;
-        };
-        let Some(index) = self.model.index_of(&key) else {
-            return false;
-        };
-        match action {
-            Action::Focus => {
-                self.focus_row(key.clone());
-                self.select_focused(key, false);
-                self.scroll_to_index(index);
-                true
-            }
-            Action::Activate => {
-                if !matches!(
-                    self.model.row_state(index),
-                    crate::arriving::Arrival::Ready(())
-                ) {
-                    return false;
+        if let Some(key) = self.key_for_semantic_target(target)
+            && let Some(index) = self.model.index_of(&key)
+        {
+            return match action {
+                Action::Focus => {
+                    self.focus_row(key.clone());
+                    self.select_focused(key, false);
+                    self.scroll_to_index(index);
+                    true
                 }
-                self.focus_row(key.clone());
-                self.activate_key(key);
-                true
-            }
-            Action::ScrollIntoView => {
-                self.scroll_to_index(index);
-                true
-            }
-            // A tree row folds what stands under it, as its disclosure does.
-            Action::Expand | Action::Collapse if self.tree.is_some() => {
-                self.fold_row(&key, matches!(action, Action::Collapse))
-            }
-            Action::ShowContextMenu if self.menu.is_some() => {
-                let point = self
-                    .row_box(index)
-                    .map_or(self.rect.center(), |row| row.center());
-                self.open_row_menu(key, point)
-            }
-            _ => false,
+                Action::Activate => {
+                    if !matches!(
+                        self.model.row_state(index),
+                        crate::arriving::Arrival::Ready(())
+                    ) {
+                        return false;
+                    }
+                    self.focus_row(key.clone());
+                    self.activate_key(key);
+                    true
+                }
+                Action::ScrollIntoView => {
+                    self.scroll_to_index(index);
+                    true
+                }
+                // A tree row folds what stands under it, as its disclosure does.
+                Action::Expand | Action::Collapse if self.tree.is_some() => {
+                    self.fold_row(&key, matches!(action, Action::Collapse))
+                }
+                Action::ShowContextMenu if self.menu.is_some() => {
+                    let point = self
+                        .row_box(index)
+                        .map_or(self.rect.center(), |row| row.center());
+                    self.open_row_menu(key, point)
+                }
+                _ => false,
+            };
         }
+        // A row's own controls name the row, not the list: the row answers for
+        // them, as it did when the walk reached it as a widget of its own.
+        for row in &mut self.mounted {
+            if row
+                .widget
+                .perform_semantic_action(target, action, state, path)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     /// The accessibility children the list carries, in reading order: each group's heading
@@ -311,6 +327,7 @@ impl<M: ListModel> VirtualList<M> {
             index: row.index,
             count,
             bounds: self.row_box(row.index),
+            widget: row.widget.get_rect(),
             focused: self.is_focused && self.focused_key.as_ref() == Some(&row.key),
             selected: self.selection.is_selected(&row.key),
             menu: self.menu.is_some(),
@@ -319,6 +336,11 @@ impl<M: ListModel> VirtualList<M> {
             expanded,
             semantic: self.semantic_key.as_ref().map(|encode| encode(&row.key)),
             state: RowStateStamp::from(&row.state),
+            renaming: self
+                .rename
+                .as_ref()
+                .filter(|field| field.key == row.key)
+                .map(|field| field.stamp()),
         }
     }
 
