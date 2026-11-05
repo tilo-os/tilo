@@ -12,7 +12,7 @@
 //! [`AgendaPopoverFace::header`], hit-tests its controls with
 //! [`AgendaPopoverLayout`], and never positions a control itself.
 
-use vello::kurbo::{Line, Point, Rect, Stroke};
+use vello::kurbo::{Point, Rect};
 
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
@@ -188,18 +188,13 @@ impl<'a> AgendaPopoverFace<'a> {
         let theme = &inner;
         let inset = f64::from(theme.tokens.spacing.rhythm.section);
         let grip_len = f64::from(theme.tokens.spacing.rhythm.group) * 1.75;
-        let grip_y = panel.y0 + inset / 2.0;
-        // The drag handle: the line a person takes hold of.
-        let grip = Line::new(
-            Point::new(panel.center().x - grip_len, grip_y),
-            Point::new(panel.center().x + grip_len, grip_y),
-        );
-        ctx.scene.stroke(
-            &Stroke::new(3.0),
+        // The drag handle every floating surface shares: the same pill, from
+        // the same ink, in the same place.
+        crate::surface::floating_drag_grip(
+            ctx.scene,
             ctx.transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &grip,
+            panel,
+            theme.tokens.colors.text_dim,
         );
         let title_style = theme.text(TextRole::Label);
         let reading_style = theme
