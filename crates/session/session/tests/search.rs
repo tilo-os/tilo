@@ -410,7 +410,7 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
     let mut session = session(Rc::new(Host::default()));
     session.step(Duration::from_millis(1)).expect("step");
     invoke(&mut session, DESK_RESOURCE, "search", serde_json::json!({}));
-    await_search(&mut session, Some(""));
+    await_search(&mut session, None);
     let titles: Vec<String> = rows(&session)
         .into_iter()
         .filter(|row| row.kind == SEARCH_ROW_KIND)
@@ -441,7 +441,7 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
     );
     await_search(&mut session, Some("leave"));
     assert!(
-        row(&session, "Leave workspace").is_some(),
+        titled(&session, "Leave workspace").is_some(),
         "typing finds the way out: {:?}",
         rows(&session)
             .into_iter()
