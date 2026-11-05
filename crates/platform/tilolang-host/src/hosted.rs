@@ -82,11 +82,10 @@ pub struct Spec {
 /// loaded packages.
 type SurfaceInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 
-/// What one action of one record was read as: the record, the action, and whether it can run now.
-type Read = (String, String, tilo_actions::Availability);
-
-/// What a record's actions were read as, with the tree they were read from.
-type Reads = (Rc<ResourceSpec>, Vec<Read>);
+/// What the actions of one published resource were read as: whether each can run now, by the
+/// action's id. `None` for an action whose app keeps no requirement its subject decides, so a
+/// resource's requirements are read once and not asked again while nothing they read moves.
+type Read = std::collections::HashMap<String, Option<tilo_actions::Availability>>;
 
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
@@ -99,9 +98,10 @@ struct Surface {
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
     publications: RefCell<Publications>,
-    /// Per record, each action's availability as it was last read, with the tree it was read
-    /// from: a record's requirements are read again only when its tree is built again.
-    availability: RefCell<std::collections::BTreeMap<String, Reads>>,
+    /// Per published resource, each of its actions' availability as it was last read: a
+    /// resource's requirements are read again only when what they read moves, not when the tree
+    /// holding the resource is built again around a change to one of its neighbours.
+    availability: RefCell<std::collections::BTreeMap<String, Read>>,
 }
 
 impl Surface {
@@ -156,8 +156,8 @@ impl Surface {
             .iter()
             .map(|(doc, tree)| (doc.clone(), Rc::clone(tree)))
             .collect();
-        for (doc, tree) in trees {
-            out.push(self.available(&doc, &tree));
+        for (_doc, tree) in trees {
+            out.push(self.available(&tree));
         }
         let words = self.host.runtime().words();
         for package in self.host.packages() {
@@ -173,19 +173,11 @@ impl Surface {
         out
     }
 
-    /// The record `doc` is published as, its actions' availability as its app says it now: the
-    /// requirements of a record are read again when its tree is built again, and taken from the
-    /// read before while the tree is the one they were read for.
-    fn available(&self, doc: &str, tree: &Rc<ResourceSpec>) -> ResourceSpec {
-        let mut published = (**tree).clone();
-        let mut cache = self.availability.borrow_mut();
-        let held = cache
-            .get(doc)
-            .filter(|(from, _)| Rc::ptr_eq(from, tree))
-            .map(|(_, said)| said.clone());
-        let mut said = Vec::new();
-        fill_availability(&self.host, &mut published, held.as_deref(), &mut said);
-        cache.insert(doc.to_owned(), (Rc::clone(tree), said));
+    /// The record `doc` is published as, its actions' availability as its app says it now (see
+    /// [`fill_availability`]).
+    fn available(&self, tree: &ResourceSpec) -> ResourceSpec {
+        let mut published = tree.clone();
+        fill_availability(&self.host, &self.availability, &mut published);
         published
     }
 }
@@ -230,36 +222,40 @@ fn reads_again(surface: &Surface, changed: &[String]) -> Vec<String> {
 }
 
 /// Set each action's availability on `resource` and the items under it, as `host` says it now:
-/// from `held`, what they were read as for the same tree, and read from the app otherwise. What
-/// each action is set to is appended to `said`.
+/// read from the app for a resource whose own requirements nothing has moved since, and taken
+/// from `cache` otherwise. Each resource is remembered by its own id, so a change to one item of a
+/// record of ten thousand reads that item's requirements again, and the record's above it, and no
+/// other item's.
 fn fill_availability(
     host: &Host,
+    cache: &RefCell<std::collections::BTreeMap<String, Read>>,
     resource: &mut ResourceSpec,
-    held: Option<&[Read]>,
-    said: &mut Vec<Read>,
 ) {
+    let read = match cache.borrow().get(resource.id.as_str()) {
+        Some(read) => read.clone(),
+        None => {
+            let mut read = Read::new();
+            for action in &resource.actions {
+                read.insert(
+                    action.id.clone(),
+                    host.availability(resource.id.as_str(), &action.id),
+                );
+            }
+            cache
+                .borrow_mut()
+                .insert(resource.id.as_str().to_owned(), read.clone());
+            read
+        }
+    };
     for action in &mut resource.actions {
-        let availability = held
-            .and_then(|held| {
-                held.iter()
-                    .find(|(id, name, _)| id.as_str() == resource.id.as_str() && name == &action.id)
-            })
-            .map(|(_, _, availability)| availability.clone())
-            .or_else(|| host.availability(resource.id.as_str(), &action.id));
         // An action the app keeps no requirement for keeps what it is published as: a host
         // action beside it (undo, redo) says for itself whether it can run now.
-        let Some(availability) = availability else {
-            continue;
-        };
-        action.type_mut().contract.availability = availability.clone();
-        said.push((
-            resource.id.as_str().to_owned(),
-            action.id.clone(),
-            availability,
-        ));
+        if let Some(Some(availability)) = read.get(action.id.as_str()) {
+            action.type_mut().contract.availability = availability.clone();
+        }
     }
     for child in &mut resource.children {
-        fill_availability(host, child, held, said);
+        fill_availability(host, cache, child);
     }
 }
 
