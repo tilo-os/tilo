@@ -1,12 +1,13 @@
 //! "Make from this": a task made from a chat message through the message's own menu, the title
 //! it takes from what the message says, the link each way afterwards, and what the two views
-//! show of it: the task's line naming the message it came from, the message's chip drawing the
-//! task as its own row does.
+//! show of it: the task's row naming the message it came from, the message drawing the task in
+//! its own row view.
 
 use automerge::AutoCommit;
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{LinkHow, Store as _};
 use tilolang_runtime::value::ResourceRef;
+use tilolang_runtime::view::BindTarget;
 use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
@@ -103,18 +104,26 @@ fn messages(view: &mut ViewInstance) -> Vec<ResourceRef> {
         .collect()
 }
 
-/// The card the transcript draws for the task `task`, on whichever row it stands: rows are built
-/// as they show, so the card is looked for in each row's own tree.
-fn chip(view: &mut ViewInstance, task: &ResourceRef) -> UiNode {
+/// The row the message draws for the task `task`: the task's own row view, its checkbox bound to
+/// that task's state. Rows are built as they show, so the row is looked for in each row's own
+/// tree.
+fn task_row(view: &mut ViewInstance, task: &ResourceRef) -> UiNode {
     let rows = rows(view);
     for row in &rows {
-        let mut cards = Vec::new();
-        find_all(row, "ui.Card", &mut cards);
-        if let Some(card) = cards
-            .into_iter()
-            .find(|card| ref_of(card, "item").map(|r| r.id_string()) == Some(task.id_string()))
-        {
-            return card.clone();
+        let mut drawn = Vec::new();
+        find_all(row, "ui.ListRow", &mut drawn);
+        if let Some(drawn) = drawn.into_iter().find(|list_row| {
+            list_row.props.get("title") == Some(&Value::text(SAID))
+                && list_row.props.get("bind") == Some(&Value::text("checkbox"))
+                && list_row.binding.as_ref().is_some_and(|binding| {
+                    matches!(
+                        &binding.target,
+                        BindTarget::Field { target, .. }
+                            if target.id_string() == task.id_string()
+                    )
+                })
+        }) {
+            return drawn.clone();
         }
     }
     panic!(
@@ -238,26 +247,29 @@ fn a_task_made_from_a_message_links_both_ways() {
         [(task.id_string(), LinkHow::CreatedFrom)]
     );
 
-    // The task's page names the message it came from, as a line that opens it.
+    // The task's page names the message it came from, as a quiet row under the title that opens
+    // it.
     let page = ada.host.open_resource(&task, None).unwrap();
-    let origin = all(&page, "ui.Link")
+    let origin = all(&page, "ui.ListRow")
         .into_iter()
-        .find(|link| ref_of(link, "item").map(|r| r.id_string()) == Some(message.id_string()))
+        .find(|row| ref_of(row, "item").map(|r| r.id_string()) == Some(message.id_string()))
         .expect("the task's page says what it was made from");
-    assert_eq!(origin.props.get("url"), Some(&Value::text(SAID)));
+    assert_eq!(origin.props.get("title"), Some(&Value::text(SAID)));
+    assert!(
+        origin.props.contains_key("prefix"),
+        "the row says that the task was made from the message"
+    );
 
-    // The message's view draws the task in a card of its own, as the task's row view draws it:
-    // not done yet.
+    // The message's view draws the task in its own row, as the task's row view draws it: not done
+    // yet.
     let done = |view: &mut ViewInstance| {
-        let card = chip(view, &task);
-        let row = find(&card, "ui.ListRow").expect("the card draws the task through its row view");
-        assert_eq!(row.props.get("title"), Some(&Value::text(SAID)));
+        let row = task_row(view, &task);
         view.bound_value(&row.key)
     };
     let mut channel = ada.host.open_resource(&design, None).unwrap();
     assert_eq!(done(&mut channel), Some(Value::Bool(false)));
 
-    // Checking the task off shows on the chip: the same card, the row it draws done.
+    // Checking the task off shows on the message: the same row, drawn done.
     call(&ada, TASKS_APP, "check", vec![Value::resource(&task)]);
     ada.commit();
     let mut channel = ada.host.open_resource(&design, None).unwrap();

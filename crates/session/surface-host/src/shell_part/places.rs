@@ -553,14 +553,6 @@ fn nodes_of<'a>(
     }
 }
 
-/// The resource the `prop` of `node` names.
-fn ref_of(node: &tilolang_tilo::runtime::UiNode, prop: &str) -> Option<ResourceRef> {
-    match node.props.get(prop) {
-        Some(Value::Ref(r)) => Some((*r.target).clone()),
-        _ => None,
-    }
-}
-
 /// The waiting states the canvas shows, in its tree or in a row of one of its lists: a list's
 /// rows are built as they show.
 fn skeletons(
@@ -595,9 +587,10 @@ fn rows(view: &mut tilolang_tilo::runtime::ViewInstance) -> Vec<tilolang_tilo::r
     rows
 }
 
-/// The cards the canvas draws for the resource `of`, wherever they stand: the rows of a list
-/// are built as they show.
-fn cards(
+/// The rows the canvas draws of the task `of`, wherever they stand: the task's own row view as
+/// the message's reference to it draws it, its checkbox bound to a field of the reading the
+/// session publishes. The rows of a list are built as they show.
+fn task_rows(
     view: &mut tilolang_tilo::runtime::ViewInstance,
     of: &ResourceRef,
 ) -> Vec<tilolang_tilo::runtime::UiNode> {
@@ -605,10 +598,20 @@ fn cards(
     let mut found = Vec::new();
     for row in &rows(view) {
         let mut here = Vec::new();
-        nodes_of(row, "ui.Card", &mut here);
+        nodes_of(row, "ui.ListRow", &mut here);
         found.extend(
             here.into_iter()
-                .filter(|card| ref_of(card, "item").map(|r| r.id_string()) == Some(of.id_string()))
+                .filter(|list_row| {
+                    list_row.props.get("title") == Some(&Value::text(SAID))
+                        && list_row.props.get("bind") == Some(&Value::text("checkbox"))
+                        && list_row.binding.as_ref().is_some_and(|binding| {
+                            matches!(
+                                &binding.target,
+                                tilolang_tilo::runtime::view::BindTarget::Field { target, .. }
+                                    if target.id_string() == of.id_string()
+                            )
+                        })
+                })
                 .cloned(),
         );
     }
@@ -670,9 +673,9 @@ fn chat_place(mut room: Room) -> (ShellPart, Rc<SessionLink>, Room, ArrangementR
     (part, link, room, arrangement)
 }
 
-/// The card the chat place draws for the task made from its message, once the session served the
+/// The row the chat place draws for the task made from its message, once the session served the
 /// tasks package its views asked for.
-fn card_once_loaded(
+fn row_once_loaded(
     part: &mut ShellPart,
     link: &SessionLink,
     arrangement: &ArrangementReading,
@@ -682,11 +685,8 @@ fn card_once_loaded(
         session_turn(link, arrangement, room);
         part.prepare_frame();
         let mut view = canvas(part);
-        let card = cards(&mut view, &room.task)
-            .pop()
-            .filter(|card| texts(card).contains(&SAID.to_owned()));
-        if let Some(card) = card {
-            return card;
+        if let Some(row) = task_rows(&mut view, &room.task).pop() {
+            return row;
         }
     }
     panic!(
@@ -695,11 +695,11 @@ fn card_once_loaded(
     );
 }
 
-/// A chat window with no tasks window open waits for the tasks package its message's card needs:
+/// A chat window with no tasks window open waits for the tasks package its message's row needs:
 /// a view that reads a resource of a type no loaded package declares asks for that app's package,
 /// and the place shows its waiting state rather than nothing until it comes.
 #[test]
-fn a_chat_place_waits_for_the_tasks_package_the_card_it_draws_reads() {
+fn a_chat_place_waits_for_the_tasks_package_the_row_it_draws_reads() {
     let _settled = ui::motion::testing::settled();
     let room = room();
     // What the message's reading says was made from it: the task, as its own app keeps it.
@@ -725,33 +725,27 @@ fn a_chat_place_waits_for_the_tasks_package_the_card_it_draws_reads() {
         view.tree()
     );
     assert!(
-        cards(&mut view, &room.task).is_empty(),
-        "no card is drawn before the tasks package is loaded: {:#?}",
+        task_rows(&mut view, &room.task).is_empty(),
+        "no row of the task is drawn before the tasks package is loaded: {:#?}",
         view.tree()
     );
 
     // The session serves the ask: the tasks package is published as the place's own is, the
-    // task's reading with it, and the card the message draws appears through the task's row
-    // view.
-    card_once_loaded(&mut part, &link, &arrangement, &mut room);
+    // task's reading with it, and the message's reference to the task draws it through the
+    // task's row view.
+    let row = row_once_loaded(&mut part, &link, &arrangement, &mut room);
     assert!(
         room.needed.contains(TASKS_APP),
         "the tasks package was asked for"
     );
-    let mut view = canvas(&part);
-    let card = cards(&mut view, &room.task)
-        .pop()
-        .expect("the card is drawn");
-    let mut rows = Vec::new();
-    nodes_of(&card, "ui.ListRow", &mut rows);
     assert_eq!(
-        rows.first().and_then(|row| row.props.get("title")),
+        row.props.get("title"),
         Some(&Value::text(SAID)),
-        "the card draws the task through its row view: {card:#?}"
+        "the row draws the task through its row view: {row:#?}"
     );
 }
 
-/// The card a chat place draws for a task made from its message ticks to done when the task is
+/// The row a chat place draws for a task made from its message ticks to done when the task is
 /// finished in Tasks, with no Tasks window open: it is the task's own row view, drawn over the
 /// reading the session publishes.
 #[test]
@@ -759,21 +753,18 @@ fn a_chat_place_ticks_the_task_made_from_its_message_done() {
     let _settled = ui::motion::testing::settled();
     let room = room();
     let (mut part, link, mut room, arrangement) = chat_place(room);
-    card_once_loaded(&mut part, &link, &arrangement, &mut room);
+    row_once_loaded(&mut part, &link, &arrangement, &mut room);
     let mut view = canvas(&part);
-    let card = cards(&mut view, &room.task)
+    let row = task_rows(&mut view, &room.task)
         .pop()
-        .expect("the card is drawn");
-    let mut rows = Vec::new();
-    nodes_of(&card, "ui.ListRow", &mut rows);
-    let row = rows.first().expect("the card draws the row").to_owned();
+        .expect("the chat place draws the task");
     assert_eq!(
         view.bound_value(&row.key),
         Some(Value::Bool(false)),
         "the task is not done"
     );
 
-    // Ben finishes the task in Tasks, with no Tasks window open: the message's card ticks.
+    // Ben finishes the task in Tasks, with no Tasks window open: the message's row ticks.
     room.service
         .invoke(
             &room.task.id_string(),
@@ -787,15 +778,12 @@ fn a_chat_place_ticks_the_task_made_from_its_message_done() {
         part.prepare_frame();
     }
     let mut view = canvas(&part);
-    let card = cards(&mut view, &room.task)
+    let row = task_rows(&mut view, &room.task)
         .pop()
         .unwrap_or_else(|| panic!("the chat place still draws the task"));
-    let mut rows = Vec::new();
-    nodes_of(&card, "ui.ListRow", &mut rows);
-    let row = rows.first().expect("the card draws the row").to_owned();
     assert_eq!(
         view.bound_value(&row.key),
         Some(Value::Bool(true)),
-        "the card shows the task done"
+        "the row shows the task done"
     );
 }
