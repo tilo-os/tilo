@@ -992,6 +992,14 @@ impl Core {
             Imp::Steps => {
                 let versions = self.store.borrow().versions(at).map_err(trapped)?;
                 self.read_versions_of(at);
+                // Which of its changes the person has not seen, so a history draws the line
+                // where what they saw ends: the newest steps are the ones since they looked.
+                let person = self.looking()?;
+                let unseen: Vec<String> = self
+                    .unseen_read(&person, at)?
+                    .into_iter()
+                    .map(|v| v.change)
+                    .collect();
                 let mut steps: Vec<Vec<crate::store::Version>> = Vec::new();
                 for v in versions {
                     match steps.last_mut() {
@@ -1017,6 +1025,7 @@ impl Core {
                     }));
                     let mine = last.task.is_none()
                         && self.looking_now().as_deref() == Some(last.who.as_str());
+                    let fresh = step.iter().any(|v| unseen.contains(&v.change));
                     let versions = step
                         .into_iter()
                         .map(|v| self.version_value(v, at))
@@ -1027,6 +1036,7 @@ impl Core {
                         task,
                         Value::List(versions),
                         Value::Bool(mine),
+                        Value::Bool(fresh),
                     ]));
                 }
                 Value::List(out)

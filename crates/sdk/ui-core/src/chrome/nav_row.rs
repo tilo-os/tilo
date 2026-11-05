@@ -59,6 +59,10 @@ pub enum NavCount {
     /// Something that wants attention (unread, mentions): the one filled
     /// badge in a navigation list, in the person's own colour.
     Live(u32),
+    /// What changed behind the place since the person last looked: figures
+    /// in the person's own colour, with no badge, drawn beside the count so
+    /// the two read apart.
+    Changed(u32),
 }
 
 impl NavCount {
@@ -66,7 +70,7 @@ impl NavCount {
     #[must_use]
     pub fn value(self) -> u32 {
         match self {
-            Self::Neutral(n) | Self::Live(n) => n,
+            Self::Neutral(n) | Self::Live(n) | Self::Changed(n) => n,
         }
     }
 
@@ -95,6 +99,9 @@ pub struct NavRowFace<'a> {
     pub label: &'a str,
     pub icon: Option<Icon>,
     pub count: Option<NavCount>,
+    /// What changed behind the place since the person last looked, drawn left
+    /// of the count: what is new to them, apart from what it holds.
+    pub changed: Option<NavCount>,
     /// Nesting level below the top level of its section.
     pub depth: usize,
     /// Quiet leading inset for destinations beneath a named section.
@@ -154,6 +161,7 @@ impl<'a> NavRowFace<'a> {
             label,
             icon: None,
             count: None,
+            changed: None,
             depth: 0,
             under_section: false,
             disclosure: None,
@@ -189,6 +197,13 @@ impl<'a> NavRowFace<'a> {
     #[must_use]
     pub fn count(mut self, count: NavCount) -> Self {
         self.count = (count.value() > 0).then_some(count);
+        self
+    }
+
+    /// What changed behind the place since the person last looked. Zero shows nothing.
+    #[must_use]
+    pub fn changed(mut self, changed: u32) -> Self {
+        self.changed = (changed > 0).then_some(NavCount::Changed(changed));
         self
     }
 
@@ -376,6 +391,8 @@ pub struct NavRowLayout {
     pub meta: Option<Rect>,
     /// The count, or `None` while actions take its place.
     pub count: Option<Rect>,
+    /// What changed since the person last looked, left of the count.
+    pub changed: Option<Rect>,
     /// The status dot.
     pub status: Option<Rect>,
     /// Trailing action squares, in action order.
@@ -666,7 +683,7 @@ fn count_style(theme: &Theme, count: NavCount) -> TextStyle {
     let style = theme.text(TextRole::Caption).numeric();
     match count {
         NavCount::Neutral(_) => style,
-        NavCount::Live(_) => style.strong(),
+        NavCount::Live(_) | NavCount::Changed(_) => style.strong(),
     }
 }
 
@@ -814,11 +831,24 @@ fn list_layout(
         let (w, h) = (f64::from(w), f64::from(h));
         let rect = match count {
             NavCount::Neutral(_) => trailing_rect(trailing, mid, w, h),
+            NavCount::Changed(_) => trailing_rect(trailing, mid, w, h),
             NavCount::Live(_) => {
                 let height = h + s1;
                 trailing_rect(trailing, mid, (w + s2).max(height), height)
             }
         };
+        trailing = rect.x0 - s2;
+        rect
+    });
+    // What changed since the person last looked stands left of what the place holds: the
+    // two read apart, and a rail has room for the mark only.
+    let changed = face
+        .changed
+        .filter(|_| quiet && face.style == NavRowStyle::List);
+    let changed = changed.map(|changed| {
+        let style = count_style(theme, changed);
+        let (w, h) = text_renderer.measure_style(&changed.text(), None, &style);
+        let rect = trailing_rect(trailing, mid, f64::from(w), f64::from(h));
         trailing = rect.x0 - s2;
         rect
     });
@@ -873,6 +903,7 @@ fn list_layout(
         status_label,
         meta,
         count,
+        changed,
         status,
         actions,
     }
@@ -899,7 +930,7 @@ fn rail_layout(theme: &Theme, face: &NavRowFace<'_>) -> NavRowLayout {
                 icon.y0 + dot / 2.0,
             ))
         }
-        NavCount::Neutral(_) => None,
+        NavCount::Neutral(_) | NavCount::Changed(_) => None,
     });
     NavRowLayout {
         selection,
@@ -916,6 +947,7 @@ fn rail_layout(theme: &Theme, face: &NavRowFace<'_>) -> NavRowLayout {
         status_label: None,
         meta: None,
         count,
+        changed: None,
         status: None,
         actions: Vec::new(),
     }
@@ -1105,6 +1137,17 @@ pub fn paint_nav_row(
             rect,
         );
     }
+    if let (Some(changed), Some(rect)) = (face.changed, layout.changed) {
+        paint_count(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            face.style,
+            changed,
+            rect,
+        );
+    }
     if let (Some(status), Some(rect)) = (face.status, layout.status) {
         scene.fill(
             Fill::NonZero,
@@ -1201,6 +1244,9 @@ fn paint_count(
     let (w, h) = text_renderer.measure_style(&text, None, &text_style);
     let ink = match count {
         NavCount::Neutral(_) => colors.text_tertiary,
+        // What changed since the person last looked is theirs to see, in their own colour,
+        // with no badge: the badge is for what waits on them.
+        NavCount::Changed(_) => colors.intent.you,
         NavCount::Live(_) => {
             let fill = colors.intent.you;
             scene.fill(

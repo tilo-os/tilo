@@ -620,19 +620,28 @@ view home(t: Tasks) {
             ui.NavList(selected: place) {
                 for f in side {
                     let held = if f.counts { t.items.matching(f).len() } else { 0 }
-                    // A count of zero shows nothing: the badge says what waits.
+                    let changed = unseen(t.items.matching(f))
+                    // A count of zero shows nothing: the badge says what waits, the count in
+                    // the person's own colour what changed since they last looked.
                     ui.NavItem(
                         f,
                         f.label,
                         icon: f.icon,
                         count: if held > 0 { .some(held) } else { .none },
+                        unseen: if changed > 0 { .some(changed) } else { .none },
                     ) {
                         on select: set(place, f)
                     }
                 }
                 ui.NavSection("Projects", add: new_project(t)) {
                     for p in t.projects {
-                        ui.NavItem(Task.project(p), p.name, icon: .folder) {
+                        let changed = unseen(t.items.matching(Task.project(p)))
+                        ui.NavItem(
+                            Task.project(p),
+                            p.name,
+                            icon: .folder,
+                            unseen: if changed > 0 { .some(changed) } else { .none },
+                        ) {
                             on select: set(place, Task.project(p))
                         }
                     }

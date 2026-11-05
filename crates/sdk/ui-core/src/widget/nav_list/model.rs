@@ -53,6 +53,7 @@ impl NavStatus {
 pub(crate) struct NavItemSpec {
     pub icon: Option<Icon>,
     pub count: Option<NavCount>,
+    pub changed: Option<u32>,
     pub depth: usize,
     pub under_section: bool,
     pub secondary: Option<String>,
@@ -551,6 +552,7 @@ impl NavModel {
                     under_section,
                     icon: item.icon,
                     count: item.count,
+                    changed: item.changed,
                     depth,
                     secondary: item.secondary.clone(),
                     meta: item.meta.clone(),

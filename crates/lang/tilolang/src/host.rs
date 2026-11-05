@@ -267,6 +267,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether the person looking made it, outside any task run.",
             ),
+            (
+                "unseen",
+                "Bool",
+                "Whether the person looking has not seen it: history draws the line where \
+                 what they saw ends, over the steps since they last looked.",
+            ),
         ],
     },
     ValueType {

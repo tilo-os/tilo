@@ -1341,6 +1341,13 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "label",
+          "doc": "What the line says, where the app marks its own line (a history's \"Since you last looked\"): empty for the toolkit's word for a conversation's new messages.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
@@ -6592,6 +6599,13 @@
         {
           "name": "count",
           "doc": "How many things it holds: a quiet count in tertiary ink.",
+          "type": {
+            "option": "int"
+          }
+        },
+        {
+          "name": "unseen",
+          "doc": "How many of what it holds changed since the person last looked (`unseen(items)`): a figure in the person's own colour beside the count, so a place says what is new to them apart from what it holds. Zero shows nothing.",
           "type": {
             "option": "int"
           }

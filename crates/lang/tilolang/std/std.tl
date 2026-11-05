@@ -46,17 +46,26 @@ view list<R, T, S>(
         sidebar: {
             if not places.is_empty() {
                 ui.NavList(selected: if query == "" { "all" } else { query }) {
-                    ui.NavItem("all", everything, icon: kind.icon) {
+                    let changed = unseen(items)
+                    ui.NavItem(
+                        "all",
+                        everything,
+                        icon: kind.icon,
+                        unseen: if changed > 0 { .some(changed) } else { .none },
+                    ) {
                         on select: set(query, "")
                     }
                     for p in places {
-                        // A count of zero shows nothing: the badge says what waits.
+                        // A count of zero shows nothing: the badge says what waits, and the
+                        // count in the person's colour what changed since they last looked.
                         let held = if p.counts { items.matching(p.query).len() } else { 0 }
+                        let changed = unseen(items.matching(p.query))
                         ui.NavItem(
                             p.query,
                             p.label,
                             icon: p.icon,
                             count: if held > 0 { .some(held) } else { .none },
+                            unseen: if changed > 0 { .some(changed) } else { .none },
                         ) {
                             on select: set(query, p.query)
                         }
@@ -599,79 +608,101 @@ view suggestions<R>(of: R) {
 /// holds now, each as the field's type shows it; a step of several opens to each of them. A step
 /// the person looking made offers Undo for it, and a run's step Undo for the whole run; each
 /// change of theirs in a longer step is undone on its own.
+///
+/// The steps since the person last looked (`unseen(of)`) stand first, under a line that says
+/// so: what changed while they were away is what they pick up, and the steps under the line
+/// are what they have seen.
 view history<R>(of: R) {
     lens open: Text = ""
     let steps = steps(of)
+    let fresh = steps.filter(s -> s.unseen)
+    let older = steps.filter(s -> not s.unseen)
     if not steps.is_empty() {
         section(phrase("tilolang-history")) {
-            for s in steps {
-                let key = "{s.at}/{s.who}"
-                let single = s.versions.len() == 1
-                // What was done: the sentence its last change says, or, for a step of a run,
-                // who ran it and what it ran.
-                stack(gap: .related) {
-                    row(gap: .related, align: .center) {
-                        avatar(s.who)
-                        stack(gap: .tight) {
-                            if let run = s.task {
-                                if let v = s.versions.last() {
-                                    ui.Text(v.actor, role: .label)
-                                }
-                                ui.Text(run.title, role: .caption, secondary: true)
-                            } else if let v = s.versions.last() {
-                                std.version_sentence(v)
-                            }
-                            if not single {
-                                ui.Text(
-                                    phrase("tilolang-history-changes", count: s.versions.len()),
-                                    role: .caption,
-                                    secondary: true,
-                                )
-                            }
-                        }
-                        spacer()
-                        ui.Time(s.at, role: .caption, secondary: true)
-                        if let run = s.task {
-                            ui.Button(phrase("tilolang-history-undo-run")) {
-                                on press: undo(run)
-                            }
-                        } else if single and s.mine {
-                            if let v = s.versions.last() {
-                                ui.Button(phrase("tilolang-undo")) {
-                                    on press: undo(v)
-                                }
-                            }
-                        }
+            for s in fresh {
+                history_step(s, open)
+            }
+            if not fresh.is_empty() and not older.is_empty() {
+                ui.UnreadDivider(
+                    label: phrase("tilolang-since-looked"),
+                    name: phrase("tilolang-since-looked"),
+                )
+            }
+            for s in older {
+                history_step(s, open)
+            }
+        }
+    }
+}
+
+/// One step of a history: who made it, what they did and how long ago, and the fields it
+/// changed, each with what it held before beside what it holds now. A step of several opens to
+/// each of its changes, one at a time: `open` names the step whose changes show.
+view history_step<S>(s: host.Step, open: State<S>) {
+    let key = "{s.at}/{s.who}"
+    let single = s.versions.len() == 1
+    // What was done: the sentence its last change says, or, for a step of a run,
+    // who ran it and what it ran.
+    stack(gap: .related) {
+        row(gap: .related, align: .center) {
+            avatar(s.who)
+            stack(gap: .tight) {
+                if let run = s.task {
+                    if let v = s.versions.last() {
+                        ui.Text(v.actor, role: .label)
                     }
-                    if single {
-                        if let v = s.versions.last() {
-                            std.version_changes(v)
-                        }
-                    } else if open == key {
-                        ui.Button(phrase("tilolang-history-hide")) {
-                            on press: set(open, "")
-                        }
-                        for v in s.versions {
-                            stack(gap: .tight) {
-                                row(gap: .related, align: .center) {
-                                    std.version_sentence(v)
-                                    spacer()
-                                    ui.Time(v.at, role: .caption, secondary: true)
-                                    if v.mine {
-                                        ui.Button(phrase("tilolang-undo")) {
-                                            on press: undo(v)
-                                        }
-                                    }
-                                }
-                                std.version_changes(v)
-                            }
-                        }
-                    } else {
-                        ui.Button(phrase("tilolang-history-show")) {
-                            on press: set(open, key)
-                        }
+                    ui.Text(run.title, role: .caption, secondary: true)
+                } else if let v = s.versions.last() {
+                    std.version_sentence(v)
+                }
+                if not single {
+                    ui.Text(
+                        phrase("tilolang-history-changes", count: s.versions.len()),
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+            }
+            spacer()
+            ui.Time(s.at, role: .caption, secondary: true)
+            if let run = s.task {
+                ui.Button(phrase("tilolang-history-undo-run")) {
+                    on press: undo(run)
+                }
+            } else if single and s.mine {
+                if let v = s.versions.last() {
+                    ui.Button(phrase("tilolang-undo")) {
+                        on press: undo(v)
                     }
                 }
+            }
+        }
+        if single {
+            if let v = s.versions.last() {
+                std.version_changes(v)
+            }
+        } else if open == key {
+            ui.Button(phrase("tilolang-history-hide")) {
+                on press: set(open, "")
+            }
+            for v in s.versions {
+                stack(gap: .tight) {
+                    row(gap: .related, align: .center) {
+                        std.version_sentence(v)
+                        spacer()
+                        ui.Time(v.at, role: .caption, secondary: true)
+                        if v.mine {
+                            ui.Button(phrase("tilolang-undo")) {
+                                on press: undo(v)
+                            }
+                        }
+                    }
+                    std.version_changes(v)
+                }
+            }
+        } else {
+            ui.Button(phrase("tilolang-history-show")) {
+                on press: set(open, key)
             }
         }
     }
