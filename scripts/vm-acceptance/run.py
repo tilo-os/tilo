@@ -314,7 +314,8 @@ def stage_base_engines(vm: TiloVm, source: Path, destination: Path) -> list[str]
     The engine is built only in an image's browser stage and the registry may not
     offer it, so a CI host has none; the base the cohort is installed on runs the
     same pinned version whenever the pin did not move. The assembly still verifies
-    its signature, and still refuses the cohort when no host bundle has the pin."""
+    its signature, and leaves out the apps whose engine neither this host nor the
+    registry offers."""
     staged = []
     for version in engine_pins(source):
         if vm.root_exec(f"test -f /usr/lib/tilo-runtime/{shlex.quote(version)}/bundle.toml "
