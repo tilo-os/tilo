@@ -168,11 +168,7 @@ fn bo_changes_mark_adas_row_and_place_and_her_own_changes_never_do() {
 
     // Bo raises the rent's priority and makes a task of his own.
     call(&bo, "set_priority_high", vec![rent.clone()]);
-    let present = call(
-        &bo,
-        "new_task",
-        vec![root.clone(), Value::text("Order a present")],
-    );
+    let present = call(&bo, "new_task", vec![root, Value::text("Order a present")]);
     bo.commit();
     ada.sync_with(&mut bo);
 
@@ -274,11 +270,7 @@ fn page(view: &mut ViewInstance) -> (Vec<String>, Option<usize>, Vec<&'static st
 #[test]
 fn a_tasks_page_stands_the_line_since_ada_last_looked_over_the_steps_since() {
     let (mut ada, mut bo, root) = workspace();
-    let rent = call(
-        &ada,
-        "new_task",
-        vec![root.clone(), Value::text("Pay rent")],
-    );
+    let rent = call(&ada, "new_task", vec![root, Value::text("Pay rent")]);
     ada.commit();
     ada.sync_with(&mut bo);
     call(&bo, "set_priority_high", vec![rent.clone()]);
