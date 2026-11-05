@@ -22,7 +22,7 @@ use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
@@ -237,6 +237,7 @@ pub async fn start_host_serving(
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy,
+            live: LiveConfig::default(),
         })
         .await
         .unwrap();
@@ -281,6 +282,7 @@ pub async fn start_workspace_host(
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
+            live: LiveConfig::default(),
         })
         .await
         .unwrap();

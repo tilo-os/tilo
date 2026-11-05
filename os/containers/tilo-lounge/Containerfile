@@ -55,5 +55,7 @@ ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
 #       behind the ingress).
 # 9780: the relay's plain listener the ingress forwards the workspace's own
 #       host to.
-EXPOSE 8790 9780
+# 9781/udp: the pages' live plane (WebTransport), which the ingress publishes
+#       on its own address.
+EXPOSE 8790 9780 9781/udp
 ENTRYPOINT ["/usr/local/bin/tilo-lounge"]

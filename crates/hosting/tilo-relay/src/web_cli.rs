@@ -75,6 +75,18 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
+    /// The UDP address of the live plane (WebTransport), when a proxy forwards
+    /// to it: `0.0.0.0:9781` behind an ingress that publishes it. By default
+    /// the plane shares `--web`'s address and port where UDP allows it.
+    #[arg(long = "web-live", value_name = "ADDR", requires = "web")]
+    pub web_live: Option<SocketAddr>,
+    /// The `https://host[:port]` origin pages dial the live plane at, when a
+    /// proxy publishes it at another host or port than the host's own origin
+    /// on the port the plane bound (such as `https://live.example`, whose UDP
+    /// 443 the proxy forwards). The port it names is the one pages dial, 443
+    /// when it names none.
+    #[arg(long = "web-live-origin", value_name = "ORIGIN", requires = "web")]
+    pub web_live_origin: Option<String>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
     /// Tilo app opens this host's links: announced in catalogue locators,
     /// so `share-link` and bots mint links under it. Overrides the config's
@@ -366,6 +378,10 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                     .join("fetch-proxy.prom"),
             ),
         }),
+        live: tilo_relay::web::LiveConfig {
+            listen: args.web_live,
+            origin: args.web_live_origin.clone(),
+        },
     }
 }
 

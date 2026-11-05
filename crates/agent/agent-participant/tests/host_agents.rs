@@ -59,7 +59,7 @@ use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
@@ -125,6 +125,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
+            live: LiveConfig::default(),
         })
         .await
         .unwrap();

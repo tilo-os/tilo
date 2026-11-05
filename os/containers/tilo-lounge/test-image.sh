@@ -27,8 +27,8 @@ user=$(inspect_image '{{.OCIv1.Config.User}}')
 [[ $user == 10001 ]] || fail "the image runs as $user, not uid 10001"
 entrypoint=$(inspect_image '{{json .OCIv1.Config.Entrypoint}}')
 [[ $entrypoint == '["/usr/local/bin/tilo-lounge"]' ]] || fail "the entrypoint is $entrypoint"
-for port in 8790 9780; do
-  inspect_image '{{json .OCIv1.Config.ExposedPorts}}' | grep -Fq "\"$port/tcp\"" \
+for port in 8790/tcp 9780/tcp 9781/udp; do
+  inspect_image '{{json .OCIv1.Config.ExposedPorts}}' | grep -Fq "\"$port\"" \
     || fail "port $port is not exposed"
 done
 revision=$(inspect_image '{{index .OCIv1.Config.Labels "org.opencontainers.image.revision"}}')
@@ -73,4 +73,4 @@ done
 cmp -s "$root/usr/share/fonts/tilo/manifest.toml" "$repo_root/crates/sdk/ui-core/assets/fonts/manifest.toml" \
   || fail "the installed font catalog is not the one this build pins"
 
-echo "ok: the Lounge image runs as 10001, serves 8790 and 9780, and carries the programs, the bot program and the catalog of $revision"
+echo "ok: the Lounge image runs as 10001, serves 8790/tcp, 9780/tcp and 9781/udp, and carries the programs, the bot program and the catalog of $revision"

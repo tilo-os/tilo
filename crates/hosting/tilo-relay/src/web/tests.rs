@@ -927,12 +927,30 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         limits: super::WebLimits::default(),
         country: None,
         fetch_proxy: None,
+        live: LiveConfig::default(),
     };
     let identity = tls::Identity::load(&config.tls).unwrap();
     let plane = relay.plane.as_ref().expect("the relay runs a live plane");
     plane.pages.serve_pages(sessions.clone());
     let live = wt::Live::start(plane, &identity, &config, "https://127.0.0.1").unwrap();
     let answered = live.info.clone();
+    // Published behind a proxy: the plane binds where it was told and pages
+    // are told the origin they dial, with the port that origin names.
+    let published = WebConfig {
+        live: super::LiveConfig {
+            listen: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+            origin: Some("https://live.example".into()),
+        },
+        ..config.clone()
+    };
+    let published = wt::Live::start(plane, &identity, &published, "https://127.0.0.1").unwrap();
+    assert_eq!(published.info.webtransport_origin, "https://live.example");
+    assert_eq!(published.info.webtransport_port, 443);
+    assert_eq!(
+        published.bound.ip(),
+        std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
+    );
+    drop(published);
     let web = Arc::new(Web {
         sessions,
         host_info: HostInfo {

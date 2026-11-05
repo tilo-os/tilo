@@ -76,6 +76,25 @@ pub struct WebConfig {
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
+    /// The live plane the pages join, and where they dial it.
+    pub live: LiveConfig,
+}
+
+/// The live plane (WebTransport on UDP): the address its socket binds and the
+/// origin pages are told to dial it at. A proxy that publishes the plane
+/// somewhere other than the host's own origin, on a port of its choosing,
+/// names both.
+#[derive(Clone, Debug, Default)]
+pub struct LiveConfig {
+    /// The UDP address the page carrier binds. An address is the one a proxy
+    /// forwards to, so it binds exactly there or the host stops. Default: the
+    /// HTTPS listener's address and port, reusing the port where UDP allows
+    /// it and letting the kernel pick otherwise.
+    pub listen: Option<SocketAddr>,
+    /// The `https://host[:port]` origin pages dial the page carrier at. The
+    /// port it names is the one pages use, 443 when it names none. Default:
+    /// the relay's own origin's host on the port the socket bound.
+    pub origin: Option<String>,
 }
 
 /// The request header a proxy in front of the host names the client's
@@ -279,7 +298,8 @@ impl Relay {
     /// # Errors
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
-    /// certificate cannot be loaded or an address cannot be bound.
+    /// certificate cannot be loaded or an address cannot be bound (the live
+    /// plane's included).
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
@@ -315,6 +335,11 @@ impl Relay {
         )
         .map_err(failed)?;
         let live_tasks = std::mem::take(&mut live.tasks);
+        tracing::info!(
+            origin = %live.info.webtransport_origin,
+            udp = %live.bound,
+            "serving the live plane"
+        );
         let web = Arc::new(Web {
             sessions: sessions.clone(),
             host_info: HostInfo { host_cert },
