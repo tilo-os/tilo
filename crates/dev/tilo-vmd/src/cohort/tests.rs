@@ -18,8 +18,8 @@ fn elf(needed: &[&str], foreign: bool) -> Vec<u8> {
     bytes
 }
 
-fn app_elf(foreign: bool) -> Vec<u8> {
-    let mut bytes = elf(&["libruntime_dylib.so"], foreign);
+fn app_elf_needing(needed: &[&str], foreign: bool) -> Vec<u8> {
+    let mut bytes = elf(needed, foreign);
     let old_headers = bytes.get(64..176).unwrap().to_vec();
     let table = bytes.len();
     let offset = table.checked_add(168).unwrap();
@@ -80,6 +80,11 @@ fn runtime(layer: &Path, work: &Path, case: &str) -> String {
         .unwrap()
         .public_key_hex();
     let mut includes = vec![library];
+    if case == "engine_app" {
+        let engine = work.join("libtilo_settings_engine.so");
+        fs::write(&engine, elf(&["libruntime_dylib.so"], false)).unwrap();
+        includes.push(engine);
+    }
     if case != "incomplete" {
         let membership = work.join("system-app-cohort.json");
         let mut apps = vec!["so.tilo.fixture".into()];
@@ -159,6 +164,18 @@ fn pin(layer: &Path, name: &str, key: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
 }
 
+/// The libraries a fixture app's entry links.
+fn app_needs(case: &str) -> &'static [&'static str] {
+    match case {
+        // An app whose code is an engine the cohort ships (Settings): its
+        // entry links the engine dylib, and that links the toolkit.
+        "engine_app" => &["libtilo_settings_engine.so"],
+        // An app that links no toolkit at all.
+        "no_toolkit" => &[],
+        _ => &["libruntime_dylib.so"],
+    }
+}
+
 fn package(layer: &Path, work: &Path, version: &str, case: &str) -> InstalledPackage {
     package_named(layer, work, version, case, "fixture")
 }
@@ -175,7 +192,10 @@ fn package_named(
     let binary = payload.join("bin/fixture");
     fs::write(
         &binary,
-        app_elf(matches!(case, "arch" | "empty_isa_foreign")),
+        app_elf_needing(
+            app_needs(case),
+            matches!(case, "arch" | "empty_isa_foreign"),
+        ),
     )
     .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
@@ -463,7 +483,14 @@ fn verify_subject(root: &Path, case: &str) {
     );
     if matches!(
         case,
-        "valid" | "dual_isa" | "service" | "empty_isa" | "retired" | "engine" | "stale_archive"
+        "valid"
+            | "dual_isa"
+            | "service"
+            | "empty_isa"
+            | "retired"
+            | "engine"
+            | "engine_app"
+            | "stale_archive"
     ) {
         assert!(result.is_ok(), "{}", result.err().unwrap());
         let cohort = result.unwrap();
@@ -533,6 +560,8 @@ fn complete_cohort_replays_real_signatures_payload_and_native_closure() {
         "engine",
         "engine_publisher",
         "engine_directory",
+        "engine_app",
+        "no_toolkit",
         "app_publisher",
         "payload_escape",
         "stale_archive",
