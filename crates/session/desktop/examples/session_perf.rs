@@ -9,7 +9,9 @@
 //!   buffer, so a tab's tile is only the arriving placeholder and the frame is
 //!   the desk's chrome (strips, tab bars, edges);
 //! * `apps` — the page: every tab mounts its app component and the surface
-//!   draws it (word processor, chat and notes in the fixture).
+//!   draws it (word processor, chat and notes in the fixture);
+//! * `activities` — the floating layer's cards over a desk: three of them,
+//!   one ticking, then one dragged across the surface.
 //!
 //! Numbers per profile, all from the production frame path
 //! ([`ui::headless::FrameHarness`]):
@@ -19,6 +21,9 @@
 //! * `steady` — 120 forced frames with nothing changed: what a frame owes
 //!   while something animates;
 //! * `typing` — 60 keystrokes into a focused document (the `apps` profile);
+//! * `tick` — frames while a timer's reading moves on: what one changed
+//!   card costs, and that it damages only its own ground (`activities`);
+//! * `drag` — frames while a card follows the pointer (`activities`);
 //! * `idle` — frames offered after settling that find no work to do.
 //!
 //! Every phase reports its allocations: a steady frame must not allocate.
@@ -130,6 +135,8 @@ enum Profile {
     Arriving,
     /// The page: the tab mounts and draws its app.
     Apps,
+    /// The floating layer over a desk: three activity cards, one ticking.
+    Activities,
 }
 
 impl Profile {
@@ -137,6 +144,7 @@ impl Profile {
         match self {
             Self::Arriving => "arriving",
             Self::Apps => "apps",
+            Self::Activities => "activities",
         }
     }
 }
@@ -368,6 +376,243 @@ fn peak_rss_mib() -> Option<f64> {
     Some(kib / 1024.0)
 }
 
+/// One phase as a budget check reads it.
+fn phase_json(phase: &Phase) -> serde_json::Value {
+    let Some(report) = &phase.report else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "frames": phase.frames,
+        "wall_us": phase.wall_us,
+        "allocs": phase.allocs,
+        "allocs_per_frame": phase.allocs_per_frame(),
+        "bytes": phase.bytes,
+        "p50_us": report.total.p50_us,
+        "p95_us": report.total.p95_us,
+        "max_us": report.total.max_us,
+        "draw_p95_us": report.draw.p95_us,
+        "layout_p95_us": report.build_layout.p95_us + report.apply_layout.p95_us,
+    })
+}
+
+/// The floating layer's own frames, hosted as both hosts host it: three
+/// activity cards docked in the corner, one of them ticking, and a card
+/// dragged across the surface. What it measures is the layer alone, so the
+/// numbers are the cards' cost rather than the desk's.
+fn run_activities(json_path: Option<String>, device: String) -> Result<(), String> {
+    use ui::floating_layer::{Card, Corner, Placement};
+    use ui::live_activity::{Control, ControlKind, Kind, Summary};
+    use ui::vello::kurbo::{Point, Rect, Vec2};
+    use ui::widget::floating_surface::painted_bounds;
+    use ui::winit::dpi::PhysicalPosition;
+    use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+    let placement = Placement {
+        work: Rect::new(0.0, 44.0, 1600.0, 1000.0),
+        bar: Rect::new(0.0, 0.0, 1600.0, 44.0),
+        banners: None,
+        readout: None,
+    };
+    let timer = |value: String| {
+        Summary::new(Kind::Timer, "Tea", value)
+            .with_id("tea")
+            .with_progress(0.5)
+            .with_control(Control::new("toggle", "Pause", ControlKind::Primary))
+            .with_control(Control::new("close", "End", ControlKind::Close))
+    };
+    let feed = |seconds: u64| tilo_activities::Feed {
+        placement,
+        corner: Corner::BottomRight,
+        cards: vec![
+            Card::new(
+                "so.tilo.clocks",
+                timer(format!("{}:{:02}", 4 + seconds / 60, seconds % 60)),
+            ),
+            Card::new(
+                "so.tilo.music",
+                Summary::new(Kind::Music, "Album", "Track 1").with_id("music"),
+            ),
+            Card::new(
+                "so.tilo.chat",
+                Summary::new(Kind::Call, "Ada", "12:04").with_id("call"),
+            ),
+        ],
+        expanded: false,
+    };
+
+    let start = Instant::now();
+    let surface = tilo_activities::ActivitiesSurface::new(None);
+    let link = surface.link();
+    let mut harness = FrameHarness::new(State::new(), Box::new(surface), (1600, 1000));
+    let build_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+
+    link.publish(feed(0));
+    harness.begin_profiling();
+    let start = Instant::now();
+    harness.profile_frame();
+    let first_frame_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    let first = harness.take_profile_samples();
+
+    // Steady: the three cards stand still.
+    let steady = measure_frames(&mut harness, "steady", 120);
+
+    // Ticking: the timer's reading moves on every frame. What the session
+    // does between frames (a new feed) is its own cost; the frame counted
+    // here is the layer's, and it may touch the card that changed only.
+    for seconds in 1..=3 {
+        link.publish(feed(seconds));
+        harness.profile_frame();
+    }
+    harness.clear_profile_samples();
+    let mut tick = Phase::default();
+    let mut tick_violations = 0usize;
+    let mut tick_ratio = 0.0f64;
+    let start = Instant::now();
+    for seconds in 4..124 {
+        link.publish(feed(seconds));
+        start_allocations();
+        harness.profile_frame();
+        let (allocs, bytes) = stop_allocations();
+        tick.allocs += allocs;
+        tick.bytes += bytes;
+        tick.frames += 1;
+        let shown = link.shown();
+        let Some(changed) = shown
+            .cards
+            .iter()
+            .find(|(app, activity, _)| app == "so.tilo.clocks" && activity == "tea")
+            .map(|(_, _, rect)| *rect)
+        else {
+            tick_violations += 1;
+            continue;
+        };
+        let expected = painted_bounds(changed, harness.theme());
+        let ground = expected.area();
+        tick_ratio = tick_ratio.max(if ground > 0.0 {
+            shown.damage.area() / ground
+        } else {
+            f64::INFINITY
+        });
+        if shown.damage.is_zero_area() || shown.damage.union(expected) != expected {
+            tick_violations += 1;
+        }
+    }
+    tick.wall_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    tick.report = Some(report_of("tick", harness.take_profile_samples()));
+
+    // Dragging: the top card follows the pointer, 120 frames of it.
+    harness.settle_for_capture(ui::time::Duration::from_millis(500));
+    let device_id = DeviceId::dummy();
+    let grab = link
+        .shown()
+        .cards
+        .first()
+        .map(|(_, _, rect)| Point::new(rect.x0 + 24.0, rect.y0 + 24.0))
+        .ok_or_else(|| "the layer showed no card to drag".to_string())?;
+    harness.send_host_event(&WindowEvent::CursorMoved {
+        device_id,
+        position: PhysicalPosition::new(grab.x, grab.y),
+    });
+    harness.send_host_event(&WindowEvent::MouseInput {
+        device_id,
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    harness.profile_frame();
+    let mut drag = Phase::default();
+    let mut drag_violations = 0usize;
+    let mut drag_ratio = 0.0f64;
+    let width = |shown: &tilo_activities::Shown| shown.cards.first().map(|(_, _, rect)| *rect);
+    let start = Instant::now();
+    let mut pointer = grab;
+    for _ in 0..120 {
+        let before = width(&link.shown());
+        pointer += Vec2::new(2.0, 1.0);
+        harness.send_host_event(&WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(pointer.x, pointer.y),
+        });
+        start_allocations();
+        harness.profile_frame();
+        let (allocs, bytes) = stop_allocations();
+        drag.allocs += allocs;
+        drag.bytes += bytes;
+        drag.frames += 1;
+        let shown = link.shown();
+        let Some(after) = width(&shown) else {
+            drag_violations += 1;
+            continue;
+        };
+        let ground = match before {
+            Some(before) => painted_bounds(before, harness.theme())
+                .union(painted_bounds(after, harness.theme())),
+            None => painted_bounds(after, harness.theme()),
+        };
+        let area = ground.area();
+        drag_ratio = drag_ratio.max(if area > 0.0 {
+            shown.damage.area() / area
+        } else {
+            f64::INFINITY
+        });
+        if shown.damage.union(ground) != ground {
+            drag_violations += 1;
+        }
+    }
+    drag.wall_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    drag.report = Some(report_of("drag", harness.take_profile_samples()));
+
+    println!("device {device}, profile activities");
+    println!("build            {:>8.2} ms", build_us as f64 / 1000.0);
+    println!(
+        "first frame      {:>8.2} ms",
+        first_frame_us as f64 / 1000.0
+    );
+    for (name, phase, ratio, violations) in [
+        ("steady", &steady, 0.0, 0),
+        ("tick", &tick, tick_ratio, tick_violations),
+        ("drag", &drag, drag_ratio, drag_violations),
+    ] {
+        println!("{name} ({} frames)", phase.frames);
+        if let Some(report) = &phase.report {
+            println!("  total         {}", stat(&report.total));
+            println!("  draw          {}", stat(&report.draw));
+        }
+        println!(
+            "  allocations  {:.1} per frame   damage ratio {ratio:.2}, \
+             {violations} frames touching other ground",
+            phase.allocs_per_frame()
+        );
+    }
+
+    if let Some(path) = json_path {
+        let value = serde_json::json!({
+            "kind": "session",
+            "device": device,
+            "profile": "activities",
+            "build_us": build_us,
+            "first_frame_us": first_frame_us,
+            "first_frame_layout_us": first.first().map_or(0, |f| f.build_layout_us + f.apply_layout_us),
+            "first_frame_draw_us": first.first().map_or(0, |f| f.draw_us),
+            "steady": phase_json(&steady),
+            "tick": {
+                "damage_ratio": tick_ratio,
+                "damage_violations": tick_violations,
+                "allocs_per_frame": tick.allocs_per_frame(),
+                "body": phase_json(&tick),
+            },
+            "drag": {
+                "damage_ratio": drag_ratio,
+                "damage_violations": drag_violations,
+                "allocs_per_frame": drag.allocs_per_frame(),
+                "body": phase_json(&drag),
+            },
+        });
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+        println!("wrote {path}");
+    }
+    Ok(())
+}
+
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -397,7 +642,12 @@ fn run() -> Result<(), String> {
                 profile = match args.next().expect("--profile needs a name").as_str() {
                     "arriving" => Profile::Arriving,
                     "apps" => Profile::Apps,
-                    other => return Err(format!("--profile takes arriving or apps, not {other}")),
+                    "activities" => Profile::Activities,
+                    other => {
+                        return Err(format!(
+                            "--profile takes arriving, apps or activities, not {other}"
+                        ));
+                    }
                 }
             }
             "--help" | "-h" => {
@@ -412,6 +662,10 @@ fn run() -> Result<(), String> {
         }
     }
     let tabs_per_window = tabs_per_window.clamp(1, 3);
+    let device = std::env::var("TILO_PERF_DEVICE").unwrap_or_else(|_| "unlabelled".into());
+    if profile == Profile::Activities {
+        return run_activities(json_path, device);
+    }
 
     let (tree, resolver, _retained) = fixture(profile, tabs_per_window);
     let wake: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
@@ -483,7 +737,6 @@ fn run() -> Result<(), String> {
     let idle_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
     drop(handle);
 
-    let device = std::env::var("TILO_PERF_DEVICE").unwrap_or_else(|_| "unlabelled".into());
     let total = steady.report.as_ref().unwrap().total;
     let steady_lines = steady
         .report
@@ -546,23 +799,6 @@ fn run() -> Result<(), String> {
     }
 
     if let Some(path) = json_path {
-        let frames = |phase: &Phase| -> serde_json::Value {
-            let Some(report) = &phase.report else {
-                return serde_json::Value::Null;
-            };
-            serde_json::json!({
-                "frames": phase.frames,
-                "wall_us": phase.wall_us,
-                "allocs": phase.allocs,
-                "allocs_per_frame": phase.allocs_per_frame(),
-                "bytes": phase.bytes,
-                "p50_us": report.total.p50_us,
-                "p95_us": report.total.p95_us,
-                "max_us": report.total.max_us,
-                "draw_p95_us": report.draw.p95_us,
-                "layout_p95_us": report.build_layout.p95_us + report.apply_layout.p95_us,
-            })
-        };
         let first = first_samples.first();
         let value = serde_json::json!({
             "kind": "session",
@@ -577,8 +813,8 @@ fn run() -> Result<(), String> {
             "first_frame_bytes": first_bytes,
             "first_frame_layout_us": first.map_or(0, |f| f.build_layout_us + f.apply_layout_us),
             "first_frame_draw_us": first.map_or(0, |f| f.draw_us),
-            "steady": frames(&steady),
-            "typing": frames(&typing),
+            "steady": phase_json(&steady),
+            "typing": phase_json(&typing),
             "idle_offered_frames": idle_frames,
             "idle_working_frames": idle_worked,
             "idle_us_per_frame": idle_us as f64 / idle_frames as f64,

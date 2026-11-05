@@ -65,6 +65,7 @@ tilo-app-state = { path = "../../system/app-state" }
 tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
 tilo-tts = { path = "../../system/tts" }
+tilo-activities = { path = "../activities" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 
 # The palette's proof that it stands over the windows: the compositor's own

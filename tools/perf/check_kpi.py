@@ -6,9 +6,9 @@ here are what a person is owed on that class of device:
 
 - `session_perf` (`crates/session/desktop/examples/session_perf.rs`) — build,
   first frame, a steady frame, a typing frame, idle frames that did work; it
-  names its tile profile (`arriving` for the native session, `apps` for the
-  page), and a device class keeps one budget table per profile because the
-  two fill a window differently;
+  names its profile (`arriving` for the native session, `apps` for the page,
+  `activities` for the floating layer's cards), and a device class keeps one
+  budget table per profile because they fill a window differently;
 - `startup_marks` (`tools/perf/startup_marks.py`) — the native session's own
   startup marks, from process start to the first presented frame;
 - `web_startup` (`tools/perf/web_startup.mjs`) — a page load in a browser, from
@@ -38,9 +38,10 @@ BUDGETS = REPO / "tools" / "perf" / "kpi-budgets.toml"
 #: fields of that kind's JSON.
 KINDS = ("session", "startup_marks", "web_startup")
 
-#: The tile profiles a session measurement names: the native session draws
-#: chrome over its windows, the page draws chrome and its apps.
-PROFILES = ("arriving", "apps")
+#: The profiles a session measurement names: the native session draws chrome
+#: over its windows, the page draws chrome and its apps, and the floating layer
+#: draws activity cards over a desk.
+PROFILES = ("arriving", "apps", "activities")
 
 
 class Budgets:
