@@ -45,7 +45,8 @@ use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::HOST_RESOURCE;
 use tilolang_tilo::publish::package_resource_id;
 use tilolang_tilo::publish::{
-    Caller, Committer, Planner, Publications, host_resource, publish_availability, publish_package,
+    Caller, Committer, Moved, Planner, Publications, host_resource, publish_availability,
+    publish_package,
 };
 use tilolang_tilo::{HostEffect, OpenEffect};
 
@@ -182,8 +183,8 @@ impl Surface {
     }
 }
 
-/// Forget what actions were read as, for the records `changed` and every record their tree links
-/// to them: a requirement reads what an item holds and what holds it.
+/// Forget what actions were read as, for the resources `changed` and everything their tree links
+/// them to: a requirement reads what an item holds and what holds it, up and down.
 fn forget_reads(surface: &Surface, changed: &[String]) {
     surface.availability.borrow_mut().retain(|doc, _| {
         !changed.iter().any(|changed| {
@@ -198,19 +199,19 @@ fn forget_reads(surface: &Surface, changed: &[String]) {
     });
 }
 
-/// The records whose actions are read again after `changed`: the changed records, and every
-/// package's own resource, whose actions may read the whole workspace.
-fn reads_again(surface: &Surface, changed: &[String]) -> Vec<String> {
-    let publications = surface.publications.borrow();
-    let mut again: Vec<String> = changed
-        .iter()
-        .filter_map(|doc| {
-            publications
-                .trees()
-                .get(doc)
-                .map(|tree| tree.id.as_str().to_owned())
-        })
-        .collect();
+/// The resources whose actions a catalogue reads again after `moved`: the changed resources, and
+/// every package's own resource, whose actions may read the whole workspace.
+fn reads_again(surface: &Surface, moved: &Moved) -> Vec<String> {
+    let mut again: Vec<String> = match moved {
+        Moved::These(these) => these.clone(),
+        Moved::Everything => surface
+            .publications
+            .borrow()
+            .trees()
+            .keys()
+            .cloned()
+            .collect(),
+    };
     again.extend(
         surface
             .host
@@ -219,6 +220,26 @@ fn reads_again(surface: &Surface, changed: &[String]) -> Vec<String> {
             .map(|package| package_resource_id(&package.meta.app)),
     );
     again
+}
+
+/// What the actions of `resource` are read as now, as `host` says, remembered in `cache` for the
+/// changes that leave this resource where it is.
+fn read_actions(
+    host: &Host,
+    cache: &RefCell<std::collections::BTreeMap<String, Read>>,
+    resource: &ResourceSpec,
+) -> Read {
+    let mut read = Read::new();
+    for action in &resource.actions {
+        read.insert(
+            action.id.clone(),
+            host.availability(resource.id.as_str(), &action.id),
+        );
+    }
+    cache
+        .borrow_mut()
+        .insert(resource.id.as_str().to_owned(), read.clone());
+    read
 }
 
 /// Set each action's availability on `resource` and the items under it, as `host` says it now:
@@ -233,19 +254,7 @@ fn fill_availability(
 ) {
     let read = match cache.borrow().get(resource.id.as_str()) {
         Some(read) => read.clone(),
-        None => {
-            let mut read = Read::new();
-            for action in &resource.actions {
-                read.insert(
-                    action.id.clone(),
-                    host.availability(resource.id.as_str(), &action.id),
-                );
-            }
-            cache
-                .borrow_mut()
-                .insert(resource.id.as_str().to_owned(), read.clone());
-            read
-        }
+        None => read_actions(host, cache, resource),
     };
     for action in &mut resource.actions {
         // An action the app keeps no requirement for keeps what it is published as: a host
@@ -379,6 +388,10 @@ pub struct Hosted {
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
+    /// The update of the published records through which each action's availability was read
+    /// ([`Surface::inputs`]): what a change reached after it is read again before anything is
+    /// built, ([`forget_reads`]).
+    reads_from: u64,
     /// Why the surface was last refused instead of published: empty once it publishes.
     refused: Vec<tilo_actions::ContractViolation>,
     registry: ActionRegistry,
@@ -488,6 +501,7 @@ impl Hosted {
             directory: PublishedDirectory::default(),
             directory_behind: false,
             published_from: None,
+            reads_from: 0,
             refused: Vec::new(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
@@ -973,6 +987,14 @@ impl Hosted {
         {
             return;
         }
+        // An action's availability follows what its app's requirements read, which a change
+        // moves without moving a label: what a change reached is read again, and everything
+        // when the journal no longer says what it was.
+        match surface.publications.borrow().changed_since(self.reads_from) {
+            Some(Moved::These(changed)) => forget_reads(&surface, &changed),
+            None | Some(Moved::Everything) => surface.availability.borrow_mut().clear(),
+        }
+        self.reads_from = inputs.2;
         if self.relabel(&surface, inputs.clone()) {
             return;
         }
@@ -1146,12 +1168,9 @@ impl Hosted {
         // A change moves what a requirement of an action reads without moving a label: the
         // records it changed offer what they can run now, and a package's own actions may read
         // the whole workspace a change moves (a task checked, and `Clear done` can run now).
-        let Some(changed_docs) = surface.publications.borrow().changed_since(taken.2) else {
+        let Some(moved) = surface.publications.borrow().changed_since(taken.2) else {
             return false;
         };
-        // A record's requirements are read from what it holds and what holds it: a change to
-        // one moves every read around it, up and down the tree it is published in.
-        forget_reads(surface, &changed_docs);
         let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
             return false;
         };
@@ -1174,7 +1193,7 @@ impl Hosted {
         }
         // A catalogue the window holds says what its actions could run when it was sent: what
         // moved since is offered whole, the way a label alone is not.
-        for resource in reads_again(surface, &changed_docs) {
+        for resource in reads_again(surface, &moved) {
             for index in state.indices(&resource).unwrap_or_default() {
                 let Some(descriptor) = descriptors.get(*index) else {
                     continue;

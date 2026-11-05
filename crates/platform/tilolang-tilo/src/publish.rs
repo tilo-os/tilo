@@ -550,6 +550,15 @@ fn item_resource(types: &ActionTypes, item: &crate::record::DynRecord, path: &st
 /// Only a record that appeared, or one that changed as a whole, is read and built in full, and
 /// that happens on a thread of its own, from a snapshot of the store, as search's first index
 /// does ([`crate::search::SearchIndex`]): until it ends, updates change nothing.
+/// What the updates since a revision changed, as a reader of an action's availability needs it.
+pub enum Moved {
+    /// These resources changed, by published resource id: a record's own, and every item's under
+    /// it.
+    These(Vec<String>),
+    /// Every resource: an update since read them all again, and what it changed is every one.
+    Everything,
+}
+
 pub struct Publications {
     watch: crate::store::Watch,
     /// Each the very tree it was while the record publishes the same: a reader holding it
@@ -587,9 +596,10 @@ pub struct Publications {
     /// is published as: an action's availability follows what its app's requirements read, which
     /// a change may move without moving a label.
     moved: u64,
-    /// The documents each recent update saw change, by [`Self::moved`], oldest first: what a
-    /// reader holding an earlier count reads the requirements of again.
-    motions: std::collections::VecDeque<(u64, Vec<String>)>,
+    /// The resources each recent update saw change, by [`Self::moved`], oldest first, and
+    /// `None` for an update that read everything again: what a reader holding an earlier count
+    /// reads the requirements of again.
+    motions: std::collections::VecDeque<(u64, Option<Vec<String>>)>,
 }
 
 /// A record built whole off the frame: its tree and the resource whose text names it.
@@ -885,13 +895,17 @@ impl Publications {
         self.moved
     }
 
-    /// The documents that changed since the update counted `since`, each once: a record the
-    /// store wrote, whether or not it changed what is published of it. `None` when what changed
-    /// that long ago is no longer kept.
+    /// The resources that changed since the update counted `since`, each once; every resource
+    /// when an update since read everything again, and `None` when what changed that long ago is
+    /// no longer kept, which reads every resource too.
+    ///
+    /// A resource is the record itself or one of its items: what a requirement of an item reads
+    /// is named as the item, so a change to one item reads that item's requirements again and
+    /// leaves every other item's as they were.
     #[must_use]
-    pub fn changed_since(&self, since: u64) -> Option<Vec<String>> {
+    pub fn changed_since(&self, since: u64) -> Option<Moved> {
         if since == self.moved {
-            return Some(Vec::new());
+            return Some(Moved::These(Vec::new()));
         }
         if since > self.moved {
             return None;
@@ -901,11 +915,19 @@ impl Publications {
         if self.motions.get(first)?.0 != since.wrapping_add(1) {
             return None;
         }
-        let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (_, docs) in self.motions.iter().skip(first) {
-            out.extend(docs.iter().cloned());
+        if self
+            .motions
+            .iter()
+            .skip(first)
+            .any(|(_, moved)| moved.is_none())
+        {
+            return Some(Moved::Everything);
         }
-        Some(out.into_iter().collect())
+        let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (_, moved) in self.motions.iter().skip(first) {
+            out.extend(moved.iter().flatten().cloned());
+        }
+        Some(Moved::These(out.into_iter().collect()))
     }
 
     /// How many times the updates so far have read every record in full: what publishing a
@@ -1024,16 +1046,28 @@ impl Publications {
         // its own (a task checked, and `Clear done` can run now): a surface holding the actions
         // reads the requirements of the records that changed again, whether or not the record
         // is published as something else.
-        if !changes.is_empty() {
+        if all || !changes.is_empty() {
             self.moved = self.moved.saturating_add(1);
-            let mut docs: std::collections::BTreeSet<String> =
-                changes.docs.keys().cloned().collect();
-            docs.extend(changes.whole.iter().cloned());
+            // Every resource a change named, not its record alone: what an item's requirement
+            // reads is the item, and a record of ten thousand items reads one item's again.
+            let moved = if all || changes.everything {
+                None
+            } else {
+                let mut resources: std::collections::BTreeSet<String> = changes
+                    .docs
+                    .values()
+                    .flatten()
+                    .map(|key| key.resource.clone())
+                    .collect();
+                // A document that may have changed anywhere is its record's own resource, and
+                // everything under it.
+                resources.extend(changes.whole.iter().cloned());
+                Some(resources.into_iter().collect())
+            };
             if self.motions.len() >= MOTIONS_KEPT {
                 self.motions.pop_front();
             }
-            self.motions
-                .push_back((self.moved, docs.into_iter().collect()));
+            self.motions.push_back((self.moved, moved));
         }
         touched
     }

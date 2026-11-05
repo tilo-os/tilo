@@ -2434,7 +2434,7 @@ fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
 
 /// The workspace the interactions are measured in: what a person who has used Tasks for years
 /// keeps.
-const SEEDED: usize = 2_000;
+const SEEDED: usize = 10_000;
 
 /// A budget for one interaction, in UI-thread CPU microseconds.
 #[derive(Clone, Copy, Debug)]
