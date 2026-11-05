@@ -859,11 +859,11 @@ impl Inner {
     }
 }
 
-/// Whether a value of the type `ty` is a reference to a resource: a record, or one inside an
-/// option.
+/// Whether a value of the type `ty` is a reference to a resource: a record, a union of records,
+/// or one inside an option.
 fn names_a_resource(ty: &crate::meta::Ty) -> bool {
     match ty {
-        crate::meta::Ty::Record(_) => true,
+        crate::meta::Ty::Record(_) | crate::meta::Ty::Union(_) => true,
         crate::meta::Ty::Option(inner) => names_a_resource(inner),
         _ => false,
     }
