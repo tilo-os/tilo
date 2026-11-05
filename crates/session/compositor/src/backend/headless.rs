@@ -662,8 +662,9 @@ impl Backend for HeadlessBackend {
         &mut self,
         state: &mut State,
         target: &crate::capture::Target,
+        held: crate::capture::Held,
     ) -> Result<Screenshot, crate::capture::CaptureError> {
-        crate::capture::read_back::<_, GlesTexture>(&mut self.renderer, state, target)
+        crate::capture::read_back::<_, GlesTexture>(&mut self.renderer, state, target, held)
     }
 
     fn read_back_scaled(

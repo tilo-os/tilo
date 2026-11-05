@@ -1938,7 +1938,24 @@ impl Compositor {
     /// What an output (or part of one) or a window shows now, read back as
     /// rows of R, G, B, A: what a share stream pushes.
     pub fn read_back(&mut self, target: &capture::Target) -> Result<Screenshot, Error> {
-        Ok(self.data.backend.read_back(&mut self.data.state, target)?)
+        Ok(self
+            .data
+            .backend
+            .read_back(&mut self.data.state, target, capture::Held::Back)?)
+    }
+
+    /// What a display shows now as the person in front of it sees it — the
+    /// session's own look at its displays, for a check, not a copy that
+    /// leaves the session: a locked display is read as the lock screen, not
+    /// as the placeholder a screenshot of it gets.
+    ///
+    /// # Errors
+    /// The display is gone or asleep, or nothing could be rendered.
+    pub fn read_back_shown(&mut self, target: &capture::Target) -> Result<Screenshot, Error> {
+        Ok(self
+            .data
+            .backend
+            .read_back(&mut self.data.state, target, capture::Held::Nothing)?)
     }
 
     /// What `region` of the output `name` shows now — its top-left corner

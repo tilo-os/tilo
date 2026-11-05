@@ -530,6 +530,7 @@ impl Backend for DrmBackend {
         &mut self,
         state: &mut State,
         target: &crate::capture::Target,
+        held: crate::capture::Held,
     ) -> Result<crate::backend::Screenshot, crate::capture::CaptureError> {
         let mut inner = self.inner.borrow_mut();
         if !inner.active {
@@ -545,6 +546,7 @@ impl Backend for DrmBackend {
             &mut renderer,
             state,
             target,
+            held,
         )
     }
 

@@ -27,7 +27,8 @@
 //! What it answers, as the tools that drive a desktop need it:
 //!
 //! - `snapshot` (`tilo-control snapshot PATH`): a PNG of every display, each at its place in the
-//!   layout, as the portal's screenshot of the screen takes it ([`crate::capture::picture`]);
+//!   layout, as the person in front of them sees it — the lock screen included while the session
+//!   is locked, which no copy that leaves the session shows ([`crate::capture::shown`]);
 //! - `provision_test_identity` (`tilo-control raw '{"op":"provision_test_identity"}'`), which
 //!   mints the throwaway identity a development session opens its desk with instead of first-use
 //!   setup, as the shell's does for a dev image;
@@ -2212,12 +2213,13 @@ fn type_text(compositor: &mut Compositor, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Write a PNG of every display, each at its place in the layout, to `path`.
+/// Write a PNG of every display, each at its place in the layout, as the
+/// person in front of them sees it, to `path`.
 fn snapshot(compositor: &mut Compositor, path: &str) -> Result<(), (&'static str, String)> {
     if path.is_empty() {
         return Err(("invalid_path", "snapshot path must not be empty".to_owned()));
     }
-    let picture = crate::capture::picture(compositor).map_err(|why| ("snapshot_failed", why))?;
+    let picture = crate::capture::shown(compositor).map_err(|why| ("snapshot_failed", why))?;
     picture
         .save_with_format(path, image::ImageFormat::Png)
         .map_err(|error| ("snapshot_failed", format!("{path}: {error}")))
