@@ -838,8 +838,6 @@ d-vidcax4k = Workspace menu
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
 
-d-k7lksxkj = Status icons
-
 d-hac3p23j = Volume status
     .w-volume-muted = Volume, muted
     .w-volume = Volume, { $percent }%
