@@ -238,7 +238,8 @@ fn enroll_contact(
     hex::encode(certificate.user_public_key)
 }
 
-/// Everything the workspace publishes about `owner`'s state, as peers can read it.
+/// Everything the workspace publishes about `owner`'s state, as peers can read
+/// it: the record's durable peer and the outgoing frames still in custody.
 fn public_owner_bytes(
     owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
     workspace: tilo_desktop_model::WorkspaceId,
@@ -247,7 +248,6 @@ fn public_owner_bytes(
         .with_current(workspace, |view| {
             let mut bytes = vec![tilo_peer_state::owner::testing::durable_peer(view).to_vec()];
             bytes.extend(tilo_peer_state::owner::testing::entries(view)?);
-            bytes.extend(tilo_peer_state::owner::testing::projection(view)?);
             Ok(bytes)
         })
         .unwrap()
