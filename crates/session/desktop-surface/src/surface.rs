@@ -52,8 +52,8 @@ use strip::{strip_row, strip_style};
 mod arrivals;
 mod artwork;
 #[cfg(test)]
-#[cfg(test)]
 mod close_button_tests;
+#[cfg(test)]
 mod close_motion_tests;
 mod displays;
 mod history;
