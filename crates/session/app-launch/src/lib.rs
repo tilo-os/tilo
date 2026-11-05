@@ -31,6 +31,10 @@
 //! downloaded has no entry until they add one, so the registry follows its
 //! windows, offers it, and keeps the entry Tilo writes for it — one session
 //! resource the search and the app sheets read.
+//!
+//! `memory` is where the apps the person is not looking at go: the session
+//! moves each app between the foreground and background tiers of its cgroup
+//! by what it can see, and gives memory back from the background ones first.
 
 pub mod authority;
 pub mod doors;
@@ -38,6 +42,7 @@ pub mod downloaded;
 pub mod env;
 pub mod instance;
 pub mod launch;
+mod memory;
 pub mod plan;
 pub mod routing;
 pub mod spawner;

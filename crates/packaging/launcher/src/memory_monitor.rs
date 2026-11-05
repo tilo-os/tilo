@@ -1,5 +1,7 @@
-//! The spawner's memory watch: reads pressure and the app tree, runs the
-//! policy ([`crate::memory_pressure`]) and carries out what it decides.
+//! The memory watch: samples a [`Source`] of cgroups, runs the policy
+//! ([`crate::memory_pressure`]) and carries out what it decides through
+//! [`Effects`]. A delegated app tree is one source ([`TreeSource`]); a
+//! session's apps are another (`tilo_app_launch`'s memory module).
 //!
 //! It sleeps while memory is calm. PSI triggers on `/proc/pressure/memory`
 //! and on the tree's `memory.pressure` (150 ms of stall within 2 s, the
@@ -8,7 +10,7 @@
 //! [`CALM_SAMPLES`] samples, and sleeps again. Where no trigger can be armed
 //! (an old kernel) it samples every [`FALLBACK_INTERVAL`] instead.
 //!
-//! What it does to the tree: `memory.reclaim` on background apps, and
+//! What a tree source does: `memory.reclaim` on background apps, and
 //! `cgroup.kill` on the one app or job the policy ends. An ended app's cause
 //! is recorded before the kill, so the compositor, reaping the app's
 //! launcher, learns why it ended ([`Shared::ends`]); an ended job is reported
@@ -17,7 +19,7 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -130,15 +132,24 @@ impl Shared {
 }
 
 /// Where a sample's readings come from.
-pub trait Source {
+pub trait Source: Send {
     /// The machine's memory pressure; `None` when it cannot be read.
     fn system(&mut self) -> Option<Psi>;
-    /// Every app's main leaf and job.
+    /// Every app's main leaf, job or scope.
     fn units(&mut self) -> Vec<Unit>;
+    /// The pressure files whose stall should wake the watch besides the
+    /// machine's own: those of the cgroups below what is watched.
+    fn pressure_files(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+    /// Whether what was watched is gone: the watch ends then.
+    fn over(&self) -> bool {
+        false
+    }
 }
 
 /// What carries the policy's decisions out.
-pub trait Effects {
+pub trait Effects: Send {
     fn reclaim(&mut self, dir: &Path, bytes: u64);
     fn end(&mut self, unit: &Unit, growth: u64);
 }
@@ -176,6 +187,14 @@ fn read_psi(path: &Path) -> Option<Psi> {
 impl Source for TreeSource {
     fn system(&mut self) -> Option<Psi> {
         read_psi(&self.system).or_else(|| read_psi(&self.tree.join("memory.pressure")))
+    }
+
+    fn pressure_files(&self) -> Vec<PathBuf> {
+        vec![self.tree.join("memory.pressure")]
+    }
+
+    fn over(&self) -> bool {
+        !self.tree.exists()
     }
 
     fn units(&mut self) -> Vec<Unit> {
@@ -295,20 +314,92 @@ fn arm(path: &Path) -> io::Result<OwnedFd> {
     Ok(OwnedFd::from(file))
 }
 
-/// Watch `tree` on a thread of its own, for the life of the spawner.
-pub fn spawn(tree: PathBuf, shared: Arc<Shared>) {
-    let started = std::thread::Builder::new()
-        .name("tilo-memory-watch".into())
-        .spawn(move || watch(&tree, &shared));
-    if let Err(error) = started {
-        eprintln!("tilo-spawner: memory pressure goes unwatched: {error}");
+/// A watch running on a thread of its own.
+pub struct Watch {
+    /// Written to end the watch at once: the thread waits on it with the
+    /// pressure triggers.
+    stop: OwnedFd,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Watch {
+    /// Watch pressure through `source`, carrying out what the policy decides
+    /// with `effects`, on a thread named `name`.
+    ///
+    /// # Errors
+    ///
+    /// No descriptor to stop it with or no thread to run it on.
+    pub fn spawn(
+        name: &str,
+        source: Box<dyn Source>,
+        effects: Box<dyn Effects>,
+    ) -> io::Result<Self> {
+        // SAFETY: eventfd takes the flags it documents and returns a new
+        // descriptor this process owns alone.
+        let stop = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if stop < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the kernel just returned this descriptor, and nothing else
+        // owns it.
+        let stop = unsafe {
+            use std::os::fd::FromRawFd as _;
+            std::os::fd::OwnedFd::from_raw_fd(stop)
+        };
+        let waiting = stop.try_clone()?;
+        let thread = std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || watch(source, effects, &waiting))?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+
+    /// End the watch now, and wait for its thread to notice.
+    pub fn stop(mut self) {
+        self.halt();
+    }
+
+    fn halt(&mut self) {
+        let one = 1_u64.to_ne_bytes();
+        // SAFETY: writing one event to the eventfd this value owns alone.
+        unsafe { libc::write(self.stop.as_raw_fd(), one.as_ptr().cast(), one.len()) };
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
-fn watch(tree: &Path, shared: &Arc<Shared>) {
-    let mut triggers: Vec<OwnedFd> = [Path::new(SYSTEM_PRESSURE), &tree.join("memory.pressure")]
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.halt();
+    }
+}
+
+/// Watch `tree` on a thread of its own, for the life of the spawner.
+///
+/// # Errors
+///
+/// As [`Watch::spawn`].
+pub fn spawn(tree: PathBuf, shared: Arc<Shared>) -> io::Result<Watch> {
+    Watch::spawn(
+        "tilo-memory-watch",
+        Box::new(TreeSource {
+            tree,
+            system: PathBuf::from(SYSTEM_PRESSURE),
+            shared: Arc::clone(&shared),
+        }),
+        Box::new(TreeEffects { shared }),
+    )
+}
+
+fn watch(mut source: Box<dyn Source>, mut effects: Box<dyn Effects>, stop: &OwnedFd) {
+    let mut watched = source.pressure_files();
+    watched.insert(0, PathBuf::from(SYSTEM_PRESSURE));
+    let mut triggers: Vec<OwnedFd> = watched
         .into_iter()
-        .filter_map(|path| match arm(path) {
+        .filter_map(|path| match arm(&path) {
             Ok(fd) => Some(fd),
             Err(error) => {
                 eprintln!(
@@ -319,17 +410,12 @@ fn watch(tree: &Path, shared: &Arc<Shared>) {
             }
         })
         .collect();
-    let mut source = TreeSource {
-        tree: tree.to_path_buf(),
-        system: PathBuf::from(SYSTEM_PRESSURE),
-        shared: Arc::clone(shared),
-    };
-    let mut effects = TreeEffects {
-        shared: Arc::clone(shared),
-    };
     let mut policy = Policy::new();
     let mut calm_samples = CALM_SAMPLES;
     loop {
+        if source.over() {
+            return;
+        }
         let timeout = if calm_samples < CALM_SAMPLES {
             Some(SAMPLE_INTERVAL)
         } else if triggers.is_empty() {
@@ -337,15 +423,16 @@ fn watch(tree: &Path, shared: &Arc<Shared>) {
         } else {
             None
         };
-        let fired = wait(&mut triggers, timeout);
-        if !tree.exists() {
+        match wait(&mut triggers, stop.as_raw_fd(), timeout) {
+            Wake::Stop => return,
+            // Pressure the averages do not show yet: sample from now on.
+            Wake::Trigger => calm_samples = 0,
+            Wake::Timeout => {}
+        }
+        if source.over() {
             return;
         }
-        if fired {
-            // Pressure the averages do not show yet: sample from now on.
-            calm_samples = 0;
-        }
-        let Some(system) = step(&mut policy, &mut source, &mut effects) else {
+        let Some(system) = step(&mut policy, &mut *source, &mut *effects) else {
             continue;
         };
         if Policy::calm(system) {
@@ -360,9 +447,19 @@ fn watch(tree: &Path, shared: &Arc<Shared>) {
     }
 }
 
-/// Sleep until a trigger fires or `timeout` passes. Drops a trigger that
-/// broke (its cgroup went away). Returns whether a trigger fired.
-fn wait(triggers: &mut Vec<OwnedFd>, timeout: Option<Duration>) -> bool {
+/// What ended a wait.
+enum Wake {
+    /// A pressure trigger fired.
+    Trigger,
+    /// The timeout passed.
+    Timeout,
+    /// The watch was asked to end.
+    Stop,
+}
+
+/// Sleep until a trigger fires, the watch is stopped, or `timeout` passes.
+/// Drops a trigger that broke (its cgroup went away).
+fn wait(triggers: &mut Vec<OwnedFd>, stop: RawFd, timeout: Option<Duration>) -> Wake {
     let mut fds: Vec<libc::pollfd> = triggers
         .iter()
         .map(|fd| libc::pollfd {
@@ -371,22 +468,29 @@ fn wait(triggers: &mut Vec<OwnedFd>, timeout: Option<Duration>) -> bool {
             revents: 0,
         })
         .collect();
+    fds.push(libc::pollfd {
+        fd: stop,
+        events: libc::POLLIN,
+        revents: 0,
+    });
     let millis = timeout.map_or(-1, |timeout| {
         i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX)
     });
-    if fds.is_empty() {
-        std::thread::sleep(timeout.unwrap_or(FALLBACK_INTERVAL));
-        return false;
-    }
     let count = libc::nfds_t::try_from(fds.len()).unwrap_or(0);
     // SAFETY: `fds` holds `count` valid pollfd entries.
     let ready = unsafe { libc::poll(fds.as_mut_ptr(), count, millis) };
     if ready <= 0 {
-        return false;
+        return Wake::Timeout;
+    }
+    if fds
+        .last()
+        .is_some_and(|fd| fd.revents & (libc::POLLIN | libc::POLLERR | libc::POLLNVAL) != 0)
+    {
+        return Wake::Stop;
     }
     let mut fired = false;
     let mut broken = Vec::new();
-    for (index, fd) in fds.iter().enumerate() {
+    for (index, fd) in fds.iter().enumerate().take(triggers.len()) {
         if fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
             broken.push(index);
         } else if fd.revents & libc::POLLPRI != 0 {
@@ -398,7 +502,7 @@ fn wait(triggers: &mut Vec<OwnedFd>, timeout: Option<Duration>) -> bool {
             drop(triggers.remove(index));
         }
     }
-    fired
+    if fired { Wake::Trigger } else { Wake::Timeout }
 }
 
 #[cfg(test)]

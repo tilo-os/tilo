@@ -274,6 +274,29 @@ impl Apps {
         *self.desktop.borrow_mut() = Some(desktop);
     }
 
+    /// The windows the person can see, as the desk last laid them out: the
+    /// front tab of each group on the strip in front, and the dialogs
+    /// floating over those. `None` while no desk is mounted, when nothing is
+    /// known about what is in view.
+    pub fn windows_in_view(&self) -> Option<Vec<u64>> {
+        let desktop = self.desktop.borrow().clone()?;
+        let layout = desktop.with_policy(|policy| policy.layout());
+        Some(
+            layout
+                .shown
+                .into_iter()
+                .chain(layout.floating)
+                .map(|(window, _)| window)
+                .collect(),
+        )
+    }
+
+    /// Put every app this session runs in the tier of what the person can
+    /// see: `on_screen` is the process of each window the desk shows.
+    pub fn tier_by_visibility(&self, on_screen: &[u32]) {
+        self.state.borrow().spawner.tier_by_visibility(on_screen);
+    }
+
     /// The session is ending: every app it started that still runs is asked
     /// to end with it.
     pub fn end_running(&self) {

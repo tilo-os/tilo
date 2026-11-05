@@ -3,8 +3,12 @@
 //! Every app the launcher starts is put in the foreground tier
 //! ([`Tier::Foreground`]): a CPU and IO weight well above the default and a
 //! memory-low floor, so apps outrank batch work and a starting app is not
-//! paged out from under itself. Nothing here demotes: an app the person is not
-//! looking at still uses every idle cycle, and the image's slices
+//! paged out from under itself. Moving an app between the tiers is the same
+//! write ([`crate::app_cgroup::set_tier`]): the session puts the apps the
+//! person can see in the foreground tier and the ones they cannot in the
+//! background tier, whose weight is below default and whose floor is none, so
+//! the machine gives memory back from those first under pressure. An app in
+//! either tier still uses every idle cycle; the image's slices
 //! (`session.slice`, `app.slice`, `background.slice`) decide who yields.
 //!
 //! The values are systemd resource-control properties, written onto the app's

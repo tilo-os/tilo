@@ -55,9 +55,10 @@ impl crate::Session {
 }
 
 /// End the app whose process is `pid`: its whole app cgroup — the launcher,
-/// its jobs, everything it started — when the launcher put it in one, and the
-/// process itself otherwise. A hung app acts on no polite signal, so this one
-/// cannot be caught.
+/// its jobs, everything it started — when the launcher put it in one (in the
+/// delegated tree or in a scope of its own), and the process itself
+/// otherwise. A hung app acts on no polite signal, so this one cannot be
+/// caught.
 fn end_app(pid: u32) {
     // An app the session runs is never the session itself: a client in this
     // process is a fixture, and the compositor's disconnect has ended it.
@@ -67,7 +68,7 @@ fn end_app(pid: u32) {
     #[cfg(target_os = "linux")]
     if let Some(cgroup) = std::fs::read_to_string(format!("/proc/{pid}/cgroup"))
         .ok()
-        .and_then(|cgroup| launcher::app_cgroup::app_cgroup_of(&cgroup))
+        .and_then(|cgroup| launcher::app_cgroup::app_cgroup_at(&cgroup))
         && launcher::app_cgroup::kill(&launcher::app_cgroup::fs_path(&cgroup)).is_ok()
     {
         return;

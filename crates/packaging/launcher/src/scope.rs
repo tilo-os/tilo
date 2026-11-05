@@ -45,7 +45,10 @@ const SESSION_TARGET: &str = "tilo-graphical-session.target";
 
 /// The slice every app scope lives in, per the desktop-environment
 /// convention (<https://systemd.io/DESKTOP_ENVIRONMENTS>).
-const APP_SLICE: &str = "app.slice";
+pub const APP_SLICE: &str = "app.slice";
+
+/// Unit name prefix of a launch's own scope ([`unit_name`]).
+pub const UNIT_PREFIX: &str = "app-tilo-";
 
 /// What happens to an app's scope when the kernel OOM killer kills one of
 /// its processes: only that process dies (see the module docs).
@@ -66,7 +69,7 @@ pub const JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 #[must_use]
 pub fn unit_name(app_id: &str, pid: u32) -> Option<String> {
     let escaped = escape_name(app_id)?;
-    let unit = format!("app-tilo-{escaped}-{pid}.scope");
+    let unit = format!("{UNIT_PREFIX}{escaped}-{pid}.scope");
     (unit.len() <= UNIT_NAME_MAX).then_some(unit)
 }
 

@@ -36,6 +36,7 @@ mod app_icons;
 mod app_liveness;
 mod app_names;
 mod app_sheets;
+mod app_tiers;
 pub mod arrangement;
 mod asks;
 mod automation;

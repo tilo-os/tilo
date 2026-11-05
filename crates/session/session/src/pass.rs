@@ -587,6 +587,9 @@ impl Session {
         // Which apps stopped answering reaches the desk, and the person's
         // Wait or Force quit reaches the compositor.
         self.follow_app_liveness();
+        // The apps the person can see keep the foreground tier; the ones they
+        // cannot give memory back first when the machine runs low.
+        self.follow_app_tiers();
         // The menu the reading says is up has its view over the desk, and
         // the view goes when the menu does.
         self.follow_window_menu();

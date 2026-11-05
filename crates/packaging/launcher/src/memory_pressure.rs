@@ -2,9 +2,9 @@
 //!
 //! Running out of memory must never freeze or crash the session. Long before
 //! the kernel's OOM killer acts, a machine with compressed swap thrashes: it
-//! spends its time paging, input stalls, frames stop. So the session's app
-//! spawner watches memory pressure (PSI: `/proc/pressure/memory`, the app
-//! tree's and each app's `memory.pressure`) and acts in two steps:
+//! spends its time paging, input stalls, frames stop. So the watch over a
+//! session's apps samples memory pressure (PSI: `/proc/pressure/memory` and
+//! the apps' own `memory.pressure`) and acts in two steps:
 //!
 //! 1. **Rising pressure:** reclaim from apps in the background tier
 //!    (`memory.reclaim`), a quarter of what each holds, at most every few
@@ -19,8 +19,9 @@
 //!    anything else.
 //!
 //! This module is the policy alone, a pure function of the readings it is
-//! given ([`Policy::tick`]); `crate::memory_monitor` reads the cgroup tree and
-//! carries the actions out.
+//! given ([`Policy::tick`]); [`crate::memory_monitor`] samples a source on a
+//! thread of its own and carries the actions out, and the session's app launch
+//! is the source of the apps it runs (`tilo_app_launch`'s memory module).
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;

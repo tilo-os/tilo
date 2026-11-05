@@ -208,6 +208,49 @@ pub fn current_is_app_cgroup() -> bool {
         .is_some_and(|cgroup| app_cgroup_of(&cgroup).is_some())
 }
 
+/// Whether a cgroup directory name is a launch's own scope
+/// ([`crate::scope::unit_name`]).
+fn is_app_scope(name: &str) -> bool {
+    name.strip_prefix(crate::scope::UNIT_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".scope"))
+        .is_some_and(|rest| {
+            rest.rsplit_once('-')
+                .is_some_and(|(id, pid)| !id.is_empty() && pid.parse::<u32>().is_ok())
+        })
+}
+
+/// The app cgroup a `/proc/<pid>/cgroup` text places a process in, in either
+/// cgroup an app is launched into: a leaf of the delegated tree
+/// ([`app_cgroup_of`]) or the scope of its own a launch asks for
+/// ([`crate::scope`], [`scope_of`]). A process in a cgroup an app created
+/// below its own counts as in that app.
+#[must_use]
+pub fn app_cgroup_at(cgroup: &str) -> Option<String> {
+    app_cgroup_of(cgroup).or_else(|| scope_of(cgroup))
+}
+
+/// The `app-tilo-<app id>-<pid>.scope` a `/proc/<pid>/cgroup` text places a
+/// process in, as a path below [`CGROUP_ROOT`]; `None` for a process outside
+/// the app slice's own scopes, and for one in another unit of the slice (a
+/// service, a delegated tree).
+#[must_use]
+pub fn scope_of(cgroup: &str) -> Option<String> {
+    let path = unified_path(cgroup)?;
+    let mut end = 0_usize;
+    let mut in_slice = false;
+    for part in path.split('/') {
+        end = end.saturating_add(part.len()).saturating_add(1);
+        if in_slice {
+            return is_app_scope(part)
+                .then(|| path.get(..end.saturating_sub(1)))
+                .flatten()
+                .map(str::to_string);
+        }
+        in_slice = part == crate::scope::APP_SLICE;
+    }
+    None
+}
+
 /// The cgroupfs directory of a unified-hierarchy path.
 #[must_use]
 pub fn fs_path(cgroup: &str) -> PathBuf {
@@ -395,6 +438,18 @@ pub fn tier_of(dir: &Path) -> Option<Tier> {
         crate::priority::BACKGROUND_WEIGHT => Some(Tier::Background),
         _ => None,
     }
+}
+
+/// Put the app cgroup at `dir` in `tier`, writing the files a launch is born
+/// with ([`crate::priority::tier_properties`] through [`apply`]): the tier a
+/// launch starts in and the one it is moved to are one path, for an app tree
+/// leaf and for a scope alike.
+///
+/// # Errors
+///
+/// The first failed write, as [`apply`].
+pub fn set_tier(dir: &Path, tier: Tier, total: Option<u64>) -> Result<(), String> {
+    apply(dir, &crate::priority::tier_properties(tier, total))
 }
 
 /// What `memory.events` of a cgroup counts, for it and everything below it.
@@ -733,6 +788,59 @@ mod tests {
             Path::new(
                 "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-41.scope"
             )
+        );
+    }
+
+    #[test]
+    fn a_launch_scope_of_its_own_is_an_app_cgroup_too() {
+        let scope = "/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-so.tilo.notes-4126.scope";
+        for text in [
+            format!("0::{scope}\n"),
+            // A process in a cgroup an app made below its own is in that app.
+            format!("0::{scope}/inner\n"),
+        ] {
+            assert_eq!(scope_of(&text).as_deref(), Some(scope), "{text}");
+            assert_eq!(app_cgroup_at(&text).as_deref(), Some(scope), "{text}");
+        }
+        // The app slice holds more than app scopes: a service, the delegated
+        // tree and its leaves, the manager itself, and the session.
+        for other in [
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/cc-model-router.service\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-41.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-41.scope/app-so.tilo.notes-3\n",
+            "0::/user.slice/user-1000.slice/user@1000.service\n",
+            "0::/user.slice/user-1000.slice/session-2.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-4126.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-other-4126.scope\n",
+        ] {
+            assert_eq!(scope_of(other), None, "{other}");
+        }
+        // A tree leaf is still found by the tree's own form.
+        let leaf = format!("0::{TREE}/app-so.tilo.notes-3\n");
+        assert_eq!(
+            app_cgroup_at(&leaf).as_deref(),
+            Some(format!("{TREE}/app-so.tilo.notes-3").as_str())
+        );
+    }
+
+    #[test]
+    fn putting_an_app_in_a_tier_writes_what_a_launch_is_born_with() {
+        let app = tempfile::tempdir().unwrap();
+        for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
+            std::fs::write(app.path().join(file), "").unwrap();
+        }
+        set_tier(app.path(), Tier::Background, Some(32 << 30)).unwrap();
+        assert_eq!(tier_of(app.path()), Some(Tier::Background));
+        assert_eq!(
+            std::fs::read_to_string(app.path().join("io.weight")).unwrap(),
+            "default 50"
+        );
+        set_tier(app.path(), Tier::Foreground, Some(32 << 30)).unwrap();
+        assert_eq!(tier_of(app.path()), Some(Tier::Foreground));
+        assert_eq!(
+            std::fs::read_to_string(app.path().join("memory.low")).unwrap(),
+            (4_u64 << 30).to_string()
         );
     }
 

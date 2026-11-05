@@ -150,7 +150,10 @@ pub fn serve(socket: &OwnedFd, events: Option<OwnedFd>, tree: Option<PathBuf>) -
         Ok(listener) => server.jobs = Some(listener),
         Err(error) => eprintln!("tilo-spawner: apps start no jobs of their own: {error}"),
     }
-    crate::memory_monitor::spawn(server.dir.clone(), Arc::clone(&server.shared));
+    match crate::memory_monitor::spawn(server.dir.clone(), Arc::clone(&server.shared)) {
+        Ok(watch) => server.memory = Some(watch),
+        Err(error) => eprintln!("tilo-spawner: memory pressure goes unwatched: {error}"),
+    }
     send(socket, &[b"ready", server.dir.as_os_str().as_bytes()], &[])?;
     server.run(socket)
 }
@@ -251,6 +254,8 @@ struct Server {
     answered: HashSet<PathBuf>,
     jobs: Option<JobsListener>,
     job_clients: Vec<OwnedFd>,
+    /// The memory watch over the tree, for as long as this spawner runs.
+    memory: Option<crate::memory_monitor::Watch>,
     shared: Arc<Shared>,
 }
 
@@ -295,6 +300,7 @@ impl Server {
             answered: HashSet::new(),
             jobs: None,
             job_clients: Vec::new(),
+            memory: None,
             shared: Arc::new(Shared::default()),
         })
     }
@@ -426,11 +432,11 @@ impl Server {
             match std::fs::create_dir(&dir) {
                 Ok(()) => {
                     // Every app starts in the foreground tier (see `priority`).
-                    let tier = crate::priority::tier_properties(
+                    if let Err(error) = app_cgroup::set_tier(
+                        &dir,
                         crate::priority::Tier::Foreground,
                         self.total_memory,
-                    );
-                    if let Err(error) = app_cgroup::apply(&dir, &tier) {
+                    ) {
                         eprintln!("tilo-spawner: {app_id} starts without its tier: {error}");
                     }
                     return Ok(dir);
