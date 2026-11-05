@@ -1077,14 +1077,14 @@ impl BrowserShell {
             }
             ChromeIntent::ToggleProfile => self.toggle_profile(),
             // The bar asks for these only for what this page never shows it,
-            // so none reaches here: no clock overlay or clock activity in
-            // the snapshot (`HideClock`, `ClockCommand`), no continuity offer
-            // from another device (`AcceptContinuity`, `DismissContinuity`),
-            // and no tray items from running applications (`AppTray`).
-            // Listed rather than caught by a wildcard, so a new request is
-            // handled or explained here.
-            ChromeIntent::HideClock
-            | ChromeIntent::ClockCommand { .. }
+            // so none reaches here: no clock activity in the snapshot
+            // (`ExpandActivity`, `ShowActivity`), no continuity offer from
+            // another device (`AcceptContinuity`, `DismissContinuity`), and
+            // no tray items from running applications (`AppTray`). Listed
+            // rather than caught by a wildcard, so a new request is handled
+            // or explained here.
+            ChromeIntent::ExpandActivity { .. }
+            | ChromeIntent::ShowActivity(_)
             | ChromeIntent::AcceptContinuity
             | ChromeIntent::DismissContinuity
             | ChromeIntent::AppTray { .. } => {}
