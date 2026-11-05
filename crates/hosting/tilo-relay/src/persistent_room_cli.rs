@@ -1295,6 +1295,11 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
+    // The certificate this host serves the workspace with: a build renamed
+    // the host's own after a workspace was made with it, and the host took
+    // the record's back (`Workspaces::serving_certificate`). Every governed
+    // operation below names it, so a renamed certificate is no refusal.
+    let host_cert = workspaces.serving_certificate().clone();
     // The removals moderation made before the door had them, taken over once
     // and kept out for the rest of their day.
     let adopted = workspaces

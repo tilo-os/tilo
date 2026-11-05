@@ -1059,6 +1059,51 @@ impl WorkspaceAuthority {
     }
 }
 
+/// `host`, serving with the certificate the workspace records under `dir`
+/// name, when they are the same device: the record's authority is the one the
+/// workspace was made with, and every comparison a host makes for its
+/// workspace is exact. A record of another device — or one too old to read —
+/// leaves the host's own, and opening refuses it as before.
+fn host_serving(mut host: WorkspaceServices, dir: &Path) -> WorkspaceServices {
+    let names = std::fs::read_dir(dir).ok().into_iter().flatten().flatten();
+    for entry in names {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "room") {
+            continue;
+        }
+        let Ok(authority) = record_authority(&path) else {
+            continue;
+        };
+        if authority.device_public_key == host.cert.device_public_key
+            && authority.user_public_key == host.cert.user_public_key
+            && authority.capabilities == host.cert.capabilities
+        {
+            host.cert = authority;
+        }
+        break;
+    }
+    host
+}
+
+/// The certificate a workspace record names as its authority, read from the
+/// record's own bytes: a version 2 or 3 record starts with the same five
+/// fields, and the authority is the fifth.
+fn record_authority(path: &Path) -> Result<DeviceCert, String> {
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let mut rest: &[u8] = &bytes;
+    let (_, tail) = postcard::take_from_bytes::<u32>(rest).map_err(|error| error.to_string())?;
+    rest = tail;
+    let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
+    rest = tail;
+    let (_, tail) = postcard::take_from_bytes::<u64>(rest).map_err(|error| error.to_string())?;
+    rest = tail;
+    let (_, tail) = postcard::take_from_bytes::<String>(rest).map_err(|error| error.to_string())?;
+    rest = tail;
+    let (cert, _) =
+        postcard::take_from_bytes::<DeviceCert>(rest).map_err(|error| error.to_string())?;
+    Ok(cert)
+}
+
 impl std::fmt::Debug for Workspaces {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Workspaces")
@@ -1107,6 +1152,11 @@ impl Workspaces {
     /// unpublished governance retained, its members' new records created.
     pub(crate) async fn open(host: WorkspaceServices, dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        // A workspace a host made keeps the certificate it made it with:
+        // everything done for it compares that certificate exactly, so a host
+        // whose own was renamed serves with the record's own (the same key
+        // and validity, verified), rather than refusing the workspace.
+        let host = host_serving(host, &dir);
         let listings = listing::Listings::open(&dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
         let (plane, jobs) = device_plane::plane(Arc::clone(&workspaces), host.key.clone());
@@ -1150,7 +1200,6 @@ impl Workspaces {
             let workspace =
                 GovernedWorkspace::open(path.clone(), &this.inner.host.cert, device.as_ref())
                     .map_err(|error| format!("{}: record: {error}", path.display()))?;
-            tracing::info!(path = %path.display(), "the record read");
             workspaces.insert(
                 workspace.workspace().to_owned(),
                 Arc::new(AsyncMutex::new(workspace)),
@@ -1191,6 +1240,14 @@ impl Workspaces {
         this.follow_activity();
         this.inner.hosting.resume().await;
         Ok(this)
+    }
+
+    /// The certificate this host serves its workspaces with: its own, or the
+    /// one a workspace it opened was made with, when a build renamed the
+    /// host's since (see [`host_serving`]).
+    #[must_use]
+    pub fn serving_certificate(&self) -> &DeviceCert {
+        &self.inner.host.cert
     }
 
     /// Create a new governed workspace named `name`.
