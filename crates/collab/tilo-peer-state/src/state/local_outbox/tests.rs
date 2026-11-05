@@ -346,6 +346,71 @@ fn local_outbox_watermark_and_half_checkpoint_never_acknowledge_missing_changes(
     );
 }
 
+/// `refuser` files its verdict on `message`, and `author` learns the
+/// workspace that now carries it.
+fn refuse_into(
+    refuser: &mut StatePeer,
+    cert: &DeviceCert,
+    key: &SigningKey,
+    message: &NeighbourMsg,
+    reason: &str,
+    author: &mut StatePeer,
+    now: SystemTime,
+) {
+    refuser
+        .workspace_mut()
+        .refuse_write(cert, message, reason, key, now)
+        .unwrap();
+    author
+        .receive_from(
+            TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+            refuser.workspace_message(),
+            now,
+        )
+        .unwrap();
+}
+
+#[test]
+fn only_a_permanent_refusal_of_the_very_write_retires_a_retained_frame() {
+    let (mut governor, mut member, governor_key, key, _, now) = fixture();
+    let governor_cert = governor.owner_certificates()[0].clone();
+    let waiting = local_edit(&mut member, &key, now, false, "waiting");
+    let refused = local_edit(&mut member, &key, now, false, "refused");
+    // A store waiting for a write it has not seen has not spent this one.
+    refuse_into(
+        &mut governor,
+        &governor_cert,
+        &governor_key,
+        &waiting,
+        "missing dependency",
+        &mut member,
+        now,
+    );
+    // The write refused for good is the workspace's answer.
+    refuse_into(
+        &mut governor,
+        &governor_cert,
+        &governor_key,
+        &refused,
+        "no permission",
+        &mut member,
+        now,
+    );
+    assert!(
+        member
+            .outbox()
+            .retained_local_document_retired(&refused, key.verifying_key().to_bytes())
+            .unwrap()
+    );
+    assert!(
+        !member
+            .outbox()
+            .retained_local_document_retired(&waiting, key.verifying_key().to_bytes())
+            .unwrap(),
+        "a refusal names one write, not the next"
+    );
+}
+
 #[test]
 fn a_durable_receipt_retires_a_retained_original_the_workspace_now_holds() {
     let (mut governor, mut member, governor_key, key, _, now) = fixture();

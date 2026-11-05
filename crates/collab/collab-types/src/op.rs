@@ -228,7 +228,7 @@ static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
 /// Sequence for a document write signed outside its record owner's
 /// serialized turn: never below wall-clock microseconds and strictly
 /// increasing within the process, so the owner's own dense `floor + 1`
-/// reservations (recovery projections) cannot take it first.
+/// allocations cannot take it first.
 ///
 /// This is the one process-wide allocator for caller-signed document
 /// writes; every SDK document signer and every out-of-turn test signer

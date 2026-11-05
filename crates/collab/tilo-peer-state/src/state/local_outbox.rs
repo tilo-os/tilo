@@ -142,9 +142,10 @@ impl PeerOutbox<'_> {
         }
     }
     /// Whether the workspace this replica holds retired the write:
-    /// a participant or store refused that write of its author on its record,
-    /// or holds a durable receipt that names it. Either is the workspace's
-    /// answer that the frame is spent, and only those.
+    /// a participant or store refused that very write for good, or holds a
+    /// durable receipt that names it. Either is the workspace's answer that
+    /// the frame is spent, and only those: a refusal that waits for another
+    /// write retires nothing.
     pub fn retained_local_document_retired(
         self,
         message: &NeighbourMsg,
@@ -158,10 +159,11 @@ impl PeerOutbox<'_> {
             .into_iter()
             .any(|refusal| {
                 refusal.workspace == self.peer.core.workspace
+                    && refusal.reason.permanent()
                     && refusal.app == local.route.app
                     && refusal.record == local.route.record
                     && refusal.author == local.admission.author()
-                    && refusal.seq >= local.admission.sequence()
+                    && refusal.seq == local.admission.sequence()
             })
         {
             return Ok(true);
