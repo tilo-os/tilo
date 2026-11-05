@@ -98,6 +98,7 @@ fn summary(snapshot: &ShellSnapshot) -> Summary {
         snapshot.label.clone(),
         ui::format::timecode(snapshot.remaining_secs),
     )
+    .with_icon(if snapshot.stopwatch { "clock" } else { "timer" })
     .with_tone(tone)
     .with_control(Control::new(
         run,

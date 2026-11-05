@@ -428,9 +428,10 @@ fn the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest
     assert!(pill(&[]).is_empty());
 }
 
-/// An activity with controls sorts its close last and draws at most three.
+/// An activity with controls sorts its close last and draws three actions
+/// beside it.
 #[test]
-fn a_summary_draws_at_most_three_controls_with_the_close_last() {
+fn a_summary_draws_three_actions_with_the_close_last() {
     let mut summary = activity(Kind::Call, "call");
     for (id, kind) in [
         ("close", ControlKind::Close),
@@ -445,7 +446,7 @@ fn a_summary_draws_at_most_three_controls_with_the_close_last() {
         .iter()
         .map(|control| control.id.as_str())
         .collect();
-    assert_eq!(shown, ["mute", "video", "close"]);
+    assert_eq!(shown, ["mute", "video", "more", "close"]);
     assert_eq!(
         summary.first_control().map(|control| control.id.as_str()),
         Some("mute")
@@ -458,8 +459,8 @@ fn a_summary_draws_at_most_three_controls_with_the_close_last() {
 }
 
 /// Whatever an activity says, its parts stand inside the card the layer
-/// sizes for it: the header with its two controls, then its reading, its
-/// progress and the controls it offers.
+/// sizes for it: the header with its glyph and two controls, then its hero,
+/// its subtitle, its progress and the controls it offers.
 #[test]
 fn a_cards_parts_fit_the_height_card_size_reserves() {
     for summary in sets().into_iter().flatten() {
@@ -467,13 +468,14 @@ fn a_cards_parts_fit_the_height_card_size_reserves() {
         let inside = rect.inflate(-CARD_PADDING, -CARD_PADDING);
         let parts = card_parts(rect, &summary);
         for part in [
-            ("mark", parts.mark),
-            ("title", parts.title),
+            ("icon", parts.icon),
             ("collapse", parts.collapse),
             ("close", parts.close),
+            ("hero", parts.hero),
         ]
         .into_iter()
-        .chain(parts.value.map(|part| ("value", part)))
+        .chain(parts.title.map(|part| ("title", part)))
+        .chain(parts.subtitle.map(|part| ("subtitle", part)))
         .chain(parts.progress.map(|part| ("progress", part)))
         {
             assert!(
@@ -484,7 +486,9 @@ fn a_cards_parts_fit_the_height_card_size_reserves() {
             );
         }
         assert!(parts.collapse.x1 <= parts.close.x0 - 3.5);
-        assert!(parts.title.x1 <= parts.collapse.x0);
+        if let Some(title) = parts.title {
+            assert!(title.x1 <= parts.collapse.x0);
+        }
         assert_eq!(parts.controls.len(), summary.action_controls().len());
         for (id, control) in &parts.controls {
             assert!(

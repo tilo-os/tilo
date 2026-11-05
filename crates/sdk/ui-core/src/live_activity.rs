@@ -15,8 +15,9 @@
 use serde::{Deserialize, Serialize};
 
 /// The most controls a summary names: what fits a card's row, and what the
-/// bar's pill and keyboard reach.
-pub const MAX_CONTROLS: usize = 3;
+/// bar's pill and keyboard reach. A song names three (previous, play or
+/// pause, next) beside the close its card's header carries.
+pub const MAX_CONTROLS: usize = 4;
 
 /// What an activity is. It decides where the activity sits in the bar's pill
 /// and whether it wants a card of its own.
@@ -64,6 +65,21 @@ impl Kind {
     pub const fn asks_for_a_card(self) -> bool {
         matches!(self, Self::Call | Self::Navigation | Self::PictureInPicture)
     }
+
+    /// The lucide glyph that stands for this kind of activity, for a card
+    /// whose app names no icon of its own.
+    #[must_use]
+    pub const fn glyph(self) -> &'static str {
+        match self {
+            Self::Call => "phone",
+            Self::Navigation => "navigation",
+            Self::Timer => "timer",
+            Self::Stopwatch => "clock",
+            Self::Music => "music",
+            Self::PictureInPicture => "monitor",
+            Self::Other => "layers",
+        }
+    }
 }
 
 /// How loudly an activity reads: its bar in the card, and the pill's dot.
@@ -102,6 +118,11 @@ pub struct Control {
     pub label: String,
     #[serde(default)]
     pub kind: ControlKind,
+    /// The glyph the button shows instead of its label, by lucide name
+    /// ("play", "skip-back"): a media control reads as its icon, and its
+    /// label is still what assistive technology says.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
 }
 
 impl Control {
@@ -111,7 +132,15 @@ impl Control {
             id: id.into(),
             label: label.into(),
             kind,
+            icon: String::new(),
         }
+    }
+
+    /// The same control drawn as `icon`, by lucide name.
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = icon.into();
+        self
     }
 }
 
@@ -126,6 +155,14 @@ pub struct Summary {
     pub kind: Kind,
     /// What it is, in the app's words: "Tea", "Ada", "9th Street".
     pub title: String,
+    /// The line under it: the artist of a song, who is speaking, the street
+    /// the directions turn onto.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subtitle: String,
+    /// The app's own glyph, by lucide name ("timer", "music"): a card's
+    /// header shows it, so a glance says which app the activity is.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub icon: String,
     /// What it reads now: "4:32", "2 min", "muted".
     #[serde(default)]
     pub value: String,
@@ -150,11 +187,38 @@ impl Summary {
             id: String::new(),
             kind,
             title: title.into(),
+            subtitle: String::new(),
+            icon: String::new(),
             value: value.into(),
             countdown: None,
             progress: None,
             tone: Tone::Neutral,
             controls: Vec::new(),
+        }
+    }
+
+    /// The line under the title: the artist, the speaker, the street.
+    #[must_use]
+    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = subtitle.into();
+        self
+    }
+
+    /// The app's own glyph, by lucide name.
+    #[must_use]
+    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
+        self.icon = icon.into();
+        self
+    }
+
+    /// The glyph a card's header shows: the app's own, or the one its kind
+    /// stands for.
+    #[must_use]
+    pub fn glyph(&self) -> &str {
+        if self.icon.is_empty() {
+            self.kind.glyph()
+        } else {
+            &self.icon
         }
     }
 
@@ -199,6 +263,25 @@ impl Summary {
             return self.value.clone();
         }
         format!("{}  {}", self.title, self.value)
+    }
+
+    /// What a card shows largest: the reading when it has one, else the
+    /// title. A timer's countdown is what a glance is after; a song has no
+    /// countdown, and its track is.
+    #[must_use]
+    pub fn hero(&self) -> &str {
+        if self.value.is_empty() {
+            &self.title
+        } else {
+            &self.value
+        }
+    }
+
+    /// The title a card's header says above its hero, when the hero is not
+    /// the title itself.
+    #[must_use]
+    pub fn header_title(&self) -> Option<&str> {
+        (!self.value.is_empty() && !self.title.is_empty()).then_some(self.title.as_str())
     }
 
     /// Where this activity stands in the pill: its kind first, then a timer

@@ -767,8 +767,9 @@ mod tests {
         let card = layer.layout().cards.first().expect("a card").rect;
         let grab = Point::new(card.x0 + 40.0, card.y0 + 6.0);
         assert!(layer.pointer_button(grab, true).is_empty());
-        assert!(layer.pointer_motion(Point::new(grab.x - 900.0, grab.y - 300.0)));
-        let asks = layer.pointer_button(Point::new(grab.x - 900.0, grab.y - 300.0), false);
+        // Thrown near the left edge: the card settles onto it.
+        assert!(layer.pointer_motion(Point::new(grab.x - 914.0, grab.y - 300.0)));
+        let asks = layer.pointer_button(Point::new(grab.x - 914.0, grab.y - 300.0), false);
         let Some(Ask::Moved {
             app,
             activity,
@@ -862,7 +863,7 @@ mod tests {
         let rows = card_parts(rect, &summary);
         assert!(rows.controls.first().expect("a control").1.y1 <= rect.y1);
         assert!(rows.close.y1 <= rect.y1);
-        assert!(rows.value.expect("a reading").y0 >= rows.title.y1 - 0.5);
+        assert!(rows.hero.y0 >= rows.icon.y1 - 0.5);
         assert!(card_radius(rect, &Theme::dark()) > 0.0);
     }
 }

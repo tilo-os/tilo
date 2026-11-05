@@ -71,6 +71,7 @@ fn timer() -> Card {
         "so.tilo.clocks",
         Summary::new(Kind::Timer, "Tea", "4:32")
             .with_id("tea")
+            .with_icon("timer")
             .with_progress(0.5)
             .with_control(Control::new("toggle", "Pause", ControlKind::Primary))
             .with_control(Control::new(
@@ -82,13 +83,22 @@ fn timer() -> Card {
     )
 }
 
+/// A song: its track, who plays it, and the three controls a deck offers.
 fn music() -> Card {
     Card::new(
         "so.tilo.music",
-        Summary::new(Kind::Music, "Ada Lovelace", "Goldberg Variations")
+        Summary::new(Kind::Music, "Goldberg Variations", "")
             .with_id("playing")
+            .with_icon("music")
+            .with_subtitle("Glenn Gould")
             .with_progress(0.25)
-            .with_control(Control::new("toggle", "Pause", ControlKind::Primary)),
+            .with_control(
+                Control::new("previous", "Previous", ControlKind::Secondary).with_icon("skip-back"),
+            )
+            .with_control(Control::new("toggle", "Pause", ControlKind::Primary).with_icon("pause"))
+            .with_control(
+                Control::new("next", "Next", ControlKind::Secondary).with_icon("skip-forward"),
+            ),
     )
 }
 
@@ -97,6 +107,7 @@ fn call() -> Card {
         "so.tilo.chat",
         Summary::new(Kind::Call, "Mira", "on the call")
             .with_id("mira")
+            .with_icon("phone")
             .with_control(Control::new("toggle", "Join", ControlKind::Primary))
             .with_control(Control::new("close", "Leave", ControlKind::Close)),
     )
@@ -107,6 +118,7 @@ fn transfer() -> Card {
         "so.tilo.files",
         Summary::new(Kind::Other, "Field notes", "62%")
             .with_id("field-notes")
+            .with_icon("folder")
             .with_control(Control::new("close", "Stop", ControlKind::Close)),
     )
 }

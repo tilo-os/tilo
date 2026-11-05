@@ -31,22 +31,26 @@ pub const MAX_CARDS: usize = 3;
 
 /// A card's inside margin.
 const CARD_PADDING: f64 = 14.0;
-/// Its header row: the title, the collapse and the close.
+/// Its header row: the app's glyph, the title, the collapse and the close.
 const CARD_HEADER: f64 = 24.0;
-/// Its reading: the countdown or what it says.
-const CARD_VALUE: f64 = 30.0;
+/// The glyph that heads a card, square.
+const CARD_ICON: f64 = 16.0;
+/// What stands between the glyph and the title.
+const CARD_TITLE_GAP: f64 = 8.0;
+/// Its hero line: the reading, or the title when it has none.
+const CARD_HERO: f64 = 36.0;
+/// The line under the hero: an artist, who is speaking.
+const CARD_SUBTITLE: f64 = 18.0;
+/// Between a card's hero and the line under it.
+const CARD_LINE_GAP: f64 = 2.0;
 /// Its progress bar.
 const CARD_PROGRESS: f64 = 6.0;
 /// Its row of controls.
-const CARD_CONTROLS: f64 = 34.0;
+const CARD_CONTROLS: f64 = 30.0;
 /// The space between the rows of a card.
 const CARD_ROW_GAP: f64 = 10.0;
 /// A header control: the collapse and the close, square.
 const CARD_HEADER_CONTROL: f64 = 24.0;
-/// The tone mark before a card's title.
-const CARD_MARK: f64 = 8.0;
-/// What stands between the mark and the title.
-const CARD_TITLE_GAP: f64 = 8.0;
 
 /// Which corner of the work area the cards dock in. It is the person's choice
 /// on this device, never shared.
@@ -158,15 +162,16 @@ pub struct Layer {
     pub folded: Vec<Folded>,
 }
 
-/// How big an activity's card is on `work`: the sheet's token width (never
-/// wider than the display) and the height of the rows the summary has.
+/// How big an activity's card is on `work`: one token's width (never wider
+/// than the display) and the height of the rows the summary has, so a card
+/// is as tall as what it says and no taller.
 #[must_use]
 pub fn card_size(work: Rect, summary: &Summary) -> Size {
     let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
-    let width = f64::from(Metrics::BASE.panel_width_sheet).min(widest);
-    let mut height = 2.0 * CARD_PADDING + CARD_HEADER;
-    if !summary.value.is_empty() {
-        height += CARD_ROW_GAP + CARD_VALUE;
+    let width = f64::from(Metrics::BASE.panel_width_utility).min(widest);
+    let mut height = 2.0 * CARD_PADDING + CARD_HEADER + CARD_ROW_GAP + CARD_HERO;
+    if !summary.subtitle.is_empty() {
+        height += CARD_LINE_GAP + CARD_SUBTITLE;
     }
     if summary.progress.is_some() {
         height += CARD_ROW_GAP + CARD_PROGRESS;
@@ -186,18 +191,22 @@ pub fn narrow(work: Rect) -> bool {
 /// Where the parts of a card stand on it, as the frame draws them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Parts {
-    /// The mark before the title: a dot of the activity's own tone.
-    pub mark: Rect,
-    /// The title, beside the mark.
-    pub title: Rect,
+    /// The app's glyph at the header's leading edge, tinted by the tone.
+    pub icon: Rect,
+    /// The title on the header line, when the hero is the card's reading.
+    pub title: Option<Rect>,
     /// The header's two controls, right-aligned.
     pub collapse: Rect,
     pub close: Rect,
-    /// The card's reading and its progress bar, where the summary has them,
-    /// and the row of controls it offers, in the order they stand below the
-    /// header.
-    pub value: Option<Rect>,
+    /// The hero line: the reading, or the title when it has none.
+    pub hero: Rect,
+    /// The line under the hero, where the summary has one.
+    pub subtitle: Option<Rect>,
+    /// The card's progress bar, where the summary has one, and the row of
+    /// controls it offers, in the order they stand below the header.
     pub progress: Option<Rect>,
+    /// The well the offered controls stand in, where the summary has any.
+    pub controls_row: Option<Rect>,
     pub controls: Vec<(String, Rect)>,
 }
 
@@ -225,27 +234,37 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         close.x0 - gap,
         header.y0 + CARD_HEADER_CONTROL,
     );
-    let mark_left = inside.x0 + CARD_MARK / 2.0;
-    let mark = Rect::from_center_size(
-        Point::new(mark_left, f64::midpoint(header.y0, header.y1)),
-        Size::new(CARD_MARK, CARD_MARK),
+    let icon = Rect::from_center_size(
+        Point::new(
+            inside.x0 + CARD_ICON / 2.0,
+            f64::midpoint(header.y0, header.y1),
+        ),
+        Size::new(CARD_ICON, CARD_ICON),
     );
-    let title = Rect::new(
-        mark_left + CARD_MARK / 2.0 + CARD_TITLE_GAP,
-        header.y0,
-        collapse.x0 - CARD_TITLE_GAP,
-        header.y1,
-    );
+    let title = summary.header_title().map(|_| {
+        Rect::new(
+            icon.x1 + CARD_TITLE_GAP,
+            header.y0,
+            collapse.x0 - CARD_TITLE_GAP,
+            header.y1,
+        )
+    });
     let mut cursor = header.y1;
-    let mut row = |height: f64| {
-        cursor += CARD_ROW_GAP;
+    let mut row = |height: f64, gap: f64| {
+        cursor += gap;
         let rect = Rect::new(inside.x0, cursor, inside.x1, cursor + height);
         cursor += height;
         rect
     };
-    let value = (!summary.value.is_empty()).then(|| row(CARD_VALUE));
-    let progress = summary.progress.is_some().then(|| row(CARD_PROGRESS));
-    let controls_row = summary.has_actions().then(|| row(CARD_CONTROLS));
+    let hero = row(CARD_HERO, CARD_ROW_GAP);
+    let subtitle = (!summary.subtitle.is_empty()).then(|| row(CARD_SUBTITLE, CARD_LINE_GAP));
+    let progress = summary
+        .progress
+        .is_some()
+        .then(|| row(CARD_PROGRESS, CARD_ROW_GAP));
+    let controls_row = summary
+        .has_actions()
+        .then(|| row(CARD_CONTROLS, CARD_ROW_GAP));
     let shown = summary.action_controls();
     let mut controls = Vec::with_capacity(shown.len());
     if let Some(controls_row) = controls_row {
@@ -262,12 +281,14 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         }
     }
     Parts {
-        mark,
+        icon,
         title,
         collapse,
         close,
-        value,
+        hero,
+        subtitle,
         progress,
+        controls_row,
         controls,
     }
 }
