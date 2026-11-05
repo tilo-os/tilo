@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1.7
+# The Lounge's host: tilo-relay's persistent public workspace with the
+# deployment routes beside it (/mode, /avatars/<name>, /discord/callback) and
+# the Discord bridge in the same process. Nothing here compiles: the programs
+# are built by tools/ci/publish/lounge-binaries.sh and laid out with the bot
+# programs and the product font catalog by lounge-context.sh.
+# Pinned on registry.fedoraproject.org, which keeps superseded digests;
+# quay.io prunes them, so a digest pinned there stops resolving.
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475 AS runtime
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Tilo Lounge" \
+      org.opencontainers.image.description="One always-on public Tilo workspace, hosted with its Discord bridge" \
+      org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"
+# This stage installs from live Fedora repositories, not the frozen snapshot
+# the OS images use. Tilo never ships Cisco's OpenH264: with the base's
+# fedora-cisco-openh264 repository enabled, its `openh264` would satisfy
+# libopenh264.so ahead of Fedora's `noopenh264` stub for any package that
+# links it, so the repository goes before the install and the resolved image
+# is checked after it (os/scripts/verify-no-cisco-openh264.sh, copied into the
+# context by tools/ci/publish/lounge-context.sh).
+# ca-certificates is the trust store tilo-net reads for Discord's API and the
+# fetch proxy; the binaries themselves are static against the rest of Fedora.
+RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify-no-cisco-openh264.sh,ro \
+  rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo \
+  && microdnf install -y --setopt=install_weak_deps=0 ca-certificates \
+  && microdnf clean all \
+  && command -v bash rpm grep sort tr >/dev/null \
+  && bash /run/tilo-verify-no-cisco-openh264.sh
+# tilo-relay, and the Discord connector's outside worker beside it (the
+# connector finds `<app>-worker` next to the relay it runs under).
+COPY bin/ /usr/local/bin/
+# Bot programs the deployment installs by path (TILO_ROOMS_BOTS) and the app
+# components they run lay text out from a container, which has no system
+# fonts: the product catalog sits where a Tilo binary looks for it.
+COPY bots/ /usr/local/share/tilo/bots/
+COPY fonts/ /usr/share/fonts/tilo/
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/tilo-lounge
+USER 10001
+# TILO_SOURCE_REVISION is what GET /mode reports, so the running build can be
+# compared with the digest the deployment pins. A container has no Secret
+# Service: the workspace root and its bots' secrets are sealed files on the
+# state volume, and /run/secrets is mounted from the operator's secrets.
+# The session limits are the measured capacity of one such host: 100 guests
+# and 2000 watching pages at 122 MiB and 1.1 cores, plus the handshakes and
+# grants those hold. They are the relay's own variables, so the deployment may
+# still raise them without a new image.
+ENV TILO_SOURCE_REVISION=${SOURCE_REVISION} \
+    TILO_ROOMS_STATE=/run/tilo-rooms \
+    TILO_SECRETS_DIR=/run/tilo-rooms/secrets \
+    TILO_RELAY_MAX_WEB_SESSIONS=2164 \
+    TILO_RELAY_MAX_HANDSHAKES=1024 \
+    TILO_RELAY_MAX_ROOM_GRANTS=34624
+# 8790: the deployment routes (/mode, /avatars, /discord/callback, plain HTTP
+#       behind the ingress).
+# 9780: the relay's plain listener the ingress forwards the workspace's own
+#       host to.
+EXPOSE 8790 9780
+ENTRYPOINT ["/usr/local/bin/tilo-lounge"]

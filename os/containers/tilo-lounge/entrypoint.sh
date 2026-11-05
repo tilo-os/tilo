@@ -1,0 +1,158 @@
+#!/bin/sh
+# The Lounge's host: tilo-relay's persistent public workspace, the deployment
+# routes beside it (/mode, /avatars/<name>, /discord/callback) and the Discord
+# bridge, all in one process, read from the TILO_ROOMS_* the deployment sets.
+#
+# Required:
+#   TILO_ROOMS_PERSISTENT     the workspace's name; its state lives in
+#                             $TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT
+#   TILO_ROOMS_ROOT_FILE      its owner root, 64 hex characters, mounted from
+#                             the operator's secrets
+#   TILO_ROOMS_RELAY_ORIGIN   the https:// origin the ingress publishes for the
+#                             relay: its pages, its avatars and the callback
+#   TILO_ROOMS_DESCRIPTION    what the public directory says the workspace is;
+#                             listed, anyone joins through its door at
+#                             TILO_ROOMS_DEFAULT_ROLE
+#   TILO_ROOMS_WEB_ENTRY      the Tilo app's web entry the links it mints open
+#
+# Everything else has the default below. Any other TILO_ROOMS_* variable stops
+# the start: this host does not read it, and a deployment that still sets what
+# the host no longer honors must not start believing it does.
+set -eu
+
+fail() {
+  echo "tilo-lounge: $*" >&2
+  exit 2
+}
+
+known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION
+TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
+TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
+TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_STATE
+TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
+TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_HTTP TILO_ROOMS_FETCH_PROXY
+TILO_ROOMS_MODERATION_KEY_FILE TILO_ROOMS_MODERATION_MODEL
+TILO_ROOMS_DISCORD_CLIENT_ID TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE
+TILO_ROOMS_DISCORD_REDIRECT_URL TILO_ROOMS_DISCORD_AUTHORIZE_URL
+TILO_ROOMS_DISCORD_API_BASE TILO_ROOMS_DISCORD_TOKEN_FILE'
+known=$(printf '%s' "$known" | tr '\n' ' ')
+for variable in $(env | sed -n 's/^\(TILO_ROOMS_[A-Za-z0-9_]*\)=.*/\1/p'); do
+  case " $known " in
+    *" $variable "*) ;;
+    *) fail "$variable is not a setting this image reads; remove it from the deployment" ;;
+  esac
+done
+
+name=${TILO_ROOMS_PERSISTENT:-}
+[ -n "$name" ] || fail 'TILO_ROOMS_PERSISTENT is required: the workspace this host serves'
+root=${TILO_ROOMS_ROOT_FILE:-}
+[ -n "$root" ] || fail 'TILO_ROOMS_ROOT_FILE is required: the workspace owner root, 64 hex characters'
+origin=${TILO_ROOMS_RELAY_ORIGIN:-}
+[ -n "$origin" ] || fail 'TILO_ROOMS_RELAY_ORIGIN is required: the https:// origin the ingress publishes'
+description=${TILO_ROOMS_DESCRIPTION:-}
+[ -n "$description" ] || fail 'TILO_ROOMS_DESCRIPTION is required: what the public directory says the workspace is'
+entry=${TILO_ROOMS_WEB_ENTRY:-}
+[ -n "$entry" ] || fail 'TILO_ROOMS_WEB_ENTRY is required: the Tilo app web entry the links open'
+origin=${origin%/}
+dir=${TILO_ROOMS_STATE:-/run/tilo-rooms}/$name
+
+# comma_flags VALUE FLAG: FLAG and one comma-separated, trimmed entry of VALUE
+# per entry. The settings it splits (origins, app ids, channel names) hold no
+# spaces.
+comma_flags() {
+  rest=$1
+  while [ -n "$rest" ]; do
+    case $rest in
+      *,*) item=${rest%%,*}; rest=${rest#*,} ;;
+      *) item=$rest; rest= ;;
+    esac
+    item=$(printf '%s' "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -z "$item" ] || printf '%s %s ' "$2" "$item"
+  done
+}
+
+set -- room \
+  --state "$dir/relay" \
+  --persistent "$name" \
+  --root-file "$root" \
+  --room-id-file "$dir/room-id" \
+  --member-limits \
+  --room-records \
+  --public-avatars "$dir/avatars" \
+  --public-avatars-url "$origin/avatars" \
+  --listing-description "$description" \
+  --default-role "${TILO_ROOMS_DEFAULT_ROLE:-editor}" \
+  --layout "${TILO_ROOMS_LAYOUT:-shared}" \
+  --inactive-after-days "${TILO_ROOMS_INACTIVE_AFTER_DAYS:-30}" \
+  --web 127.0.0.1:9781 \
+  --tls dev \
+  --web-plain "${TILO_ROOMS_RELAY_PLAIN:-0.0.0.0:9780}" \
+  --public-origin "$origin" \
+  --http "${TILO_ROOMS_HTTP:-0.0.0.0:8790}" \
+  --web-entry "$entry" \
+  --allowed-origin "$origin"
+
+if [ -n "${TILO_ROOMS_NAME:-}" ]; then
+  set -- "$@" --workspace-name "$TILO_ROOMS_NAME"
+fi
+if [ "${TILO_ROOMS_FETCH_PROXY:-1}" != 0 ]; then
+  set -- "$@" --fetch-proxy
+fi
+
+# A chat with no channel has nowhere for a visitor's first message to go, and
+# the workspace's apps are its Chat unless the deployment says otherwise.
+set -- "$@" $(comma_flags "${TILO_ROOMS_CHAT_CHANNELS-general}" --chat-channel)
+set -- "$@" $(comma_flags "${TILO_ROOMS_SEED_APPS-so.tilo.chat}" --seed-app)
+set -- "$@" $(comma_flags "${TILO_ROOMS_AUTHOR_APPS:-}" --author-app)
+set -- "$@" $(comma_flags "${TILO_ROOMS_SITE_ORIGINS:-}" --allowed-origin)
+if [ -n "${TILO_ROOMS_FEEDBACK_CHANNEL:-}" ]; then
+  set -- "$@" --feedback-channel "$TILO_ROOMS_FEEDBACK_CHANNEL"
+fi
+
+# Bot programs the workspace installs at its first start, each a directory
+# entry or a program on this host with its inputs: `<source> key=value …`,
+# separated by `;` (spaces are part of a spec, so these do not word-split).
+bots=${TILO_ROOMS_BOTS:-}
+while [ -n "$bots" ]; do
+  case $bots in
+    *';'*) spec=${bots%%;*}; bots=${bots#*;} ;;
+    *) spec=$bots; bots= ;;
+  esac
+  spec=$(printf '%s' "$spec" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+  [ -z "$spec" ] || set -- "$@" --bot "$spec"
+done
+
+# The moderation agent runs only with a key; the model is the relay's unless
+# the deployment names one.
+moderation=${TILO_ROOMS_MODERATION_KEY_FILE:-}
+if [ -z "$moderation" ] && [ -r /run/secrets/moderation-model-key ]; then
+  moderation=/run/secrets/moderation-model-key
+fi
+if [ -n "$moderation" ]; then
+  set -- "$@" --moderation-key-file "$moderation"
+  if [ -n "${TILO_ROOMS_MODERATION_MODEL:-}" ]; then
+    set -- "$@" --moderation-model "$TILO_ROOMS_MODERATION_MODEL"
+  fi
+fi
+
+# "Connect Discord": the app's client id and secret, the callback this host's
+# --http answers at, and Discord's own API unless the deployment names another.
+if [ -n "${TILO_ROOMS_DISCORD_CLIENT_ID:-}" ]; then
+  set -- "$@" \
+    --discord-client-id "$TILO_ROOMS_DISCORD_CLIENT_ID" \
+    --discord-client-secret-file "${TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE:-/run/secrets/discord-client-secret}" \
+    --discord-redirect-url "${TILO_ROOMS_DISCORD_REDIRECT_URL:-$origin/discord/callback}" \
+    --discord-authorize-url "${TILO_ROOMS_DISCORD_AUTHORIZE_URL:-https://discord.com/oauth2/authorize}"
+  if [ -n "${TILO_ROOMS_DISCORD_API_BASE:-}" ]; then
+    set -- "$@" --discord-api-base "$TILO_ROOMS_DISCORD_API_BASE"
+  fi
+fi
+
+# The bridge's bot token matters only while bots run; without the mounted file
+# the host is left alone rather than handed a path that does not open.
+token=${TILO_ROOMS_DISCORD_TOKEN_FILE:-/run/secrets/discord-bot-token}
+if [ -r "$token" ]; then
+  set -- "$@" --discord-token-file "$token"
+fi
+
+exec tilo-relay "$@"

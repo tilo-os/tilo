@@ -1,0 +1,91 @@
+# Tilo Lounge
+
+One always-on public Tilo workspace, hosted by one process: `tilo-relay`'s
+persistent public workspace, the deployment routes beside it, and the Discord
+bridge whose bot programs it runs.
+
+```
+GET /mode                 {"relay":"up","revision":"<commit>"}   the readiness probe
+GET /avatars/<name>       an avatar a bridged author published (immutable)
+GET /discord/callback     Discord's OAuth redirect: links the account, then
+                          sends the browser back to the web entry with its
+                          one-time link secret
+anything else             404; anything but GET     405
+```
+
+The workspace's own pages are the Tilo app at the web entry; browsers reach
+the workspace through the ingress that forwards the workspace's origin to
+`9780`. The process serves the routes on `8790` and the relay on `9780`, both
+plain HTTP behind that ingress, which ends TLS.
+
+## The deployment's environment
+
+`entrypoint.sh` turns it into the host's flags and refuses any other
+`TILO_ROOMS_*` with exit status 2, so a deployment that still sets what this
+image no longer reads fails at start instead of running with a silent half of
+its settings. Required:
+
+| variable | what it is |
+| --- | --- |
+| `TILO_ROOMS_PERSISTENT` | the workspace's name; its state is `$TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT` |
+| `TILO_ROOMS_ROOT_FILE` | the workspace's owner root, 64 hex characters, from the operator's secrets |
+| `TILO_ROOMS_RELAY_ORIGIN` | the `https://` origin the ingress publishes: pages, avatars and the callback |
+| `TILO_ROOMS_DESCRIPTION` | what the public directory says the workspace is; listed, anyone joins through its door |
+| `TILO_ROOMS_WEB_ENTRY` | the Tilo app's web entry the links the host mints open |
+
+Optional, with these defaults:
+
+| variable | default | what it is |
+| --- | --- | --- |
+| `TILO_ROOMS_NAME` | the name, capitalized | the name people see |
+| `TILO_ROOMS_DEFAULT_ROLE` | `editor` | the role everyone who joins through the door gets |
+| `TILO_ROOMS_LAYOUT` | `shared` | every member sees the same strips and windows |
+| `TILO_ROOMS_CHAT_CHANNELS` | `general` | comma-separated channels the Chat opens with |
+| `TILO_ROOMS_FEEDBACK_CHANNEL` | none | the channel members report problems to |
+| `TILO_ROOMS_SEED_APPS` | `so.tilo.chat` | comma-separated apps authored at the first start |
+| `TILO_ROOMS_AUTHOR_APPS` | every first-party app | comma-separated apps members write through |
+| `TILO_ROOMS_BOTS` | none | `;`-separated bot specs (`<program or directory entry> key=value …`) |
+| `TILO_ROOMS_INACTIVE_AFTER_DAYS` | `30` | days without a session before a member stops being one |
+| `TILO_ROOMS_STATE` | `/run/tilo-rooms` | the volume the workspace lives on |
+| `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
+| `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
+| `TILO_ROOMS_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
+| `TILO_ROOMS_FETCH_PROXY` | on | `0` turns the fetch proxy off |
+| `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |
+| `TILO_ROOMS_MODERATION_MODEL` | the relay's | the model it asks |
+| `TILO_ROOMS_DISCORD_CLIENT_ID` | none | the Discord application members connect, once sign-in is set up |
+| `TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE` | `/run/secrets/discord-client-secret` | its secret |
+| `TILO_ROOMS_DISCORD_REDIRECT_URL` | `$TILO_ROOMS_RELAY_ORIGIN/discord/callback` | where Discord sends the browser back |
+| `TILO_ROOMS_DISCORD_AUTHORIZE_URL` | `https://discord.com/oauth2/authorize` | Discord's consent page |
+| `TILO_ROOMS_DISCORD_API_BASE` | `https://discord.com` | where Discord's API is, for a test server |
+| `TILO_ROOMS_DISCORD_TOKEN_FILE` | `/run/secrets/discord-bot-token` | the bridge's bot token, read when the file is there |
+
+`TILO_SOURCE_REVISION` is the image's own revision, which `/mode` reports;
+`TILO_SECRETS_DIR` already points into the state volume, where the workspace
+root is kept sealed. The relay's session limits
+(`TILO_RELAY_MAX_WEB_SESSIONS`, `TILO_RELAY_MAX_HANDSHAKES`,
+`TILO_RELAY_MAX_ROOM_GRANTS`) are the image's defaults and the deployment's to
+raise.
+
+## State on the volume
+
+```
+$TILO_ROOMS_STATE/$TILO_ROOMS_PERSISTENT/
+  relay/         the workspace's own state: identity, host key, records,
+                 bots, blobs, seeded apps
+  room-id        the workspace's UUID, kept across restarts
+  avatars/       avatars the hosts serves at /avatars/<name>
+  secrets/       this host's secret store (TILO_SECRETS_DIR), sealed files
+```
+
+The layout is the one the wrapper this image replaces left on the volume: a
+migrated deployment keeps its workspace, its identity and its bot state.
+
+## Building
+
+`tools/ci/publish/lounge-binaries.sh` builds the programs and
+`tools/ci/publish/lounge-context.sh` lays out the build context; the
+`publish-site` workflow (dispatch-only, main) builds this image and the web
+entry from one commit, tests both and publishes `dev-<commit>`.
+`test-entrypoint.sh` asserts the environment-to-flags mapping and
+`test-image.sh` what the built image must carry.
