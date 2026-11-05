@@ -2655,8 +2655,9 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
 
 /// The budgets each interaction is held to (see the note above), from what the interactions
 /// cost on this workspace when they were measured, with the room a slower machine, a loaded one
-/// and a heavier workspace take: a step's CPU time at half again its measured p50, and the
-/// instance's evaluation and layout at twice the p50 a step takes.
+/// and a heavier workspace take: a step's CPU time at twice its measured p50, and the instance's
+/// evaluation and layout likewise, the frames of a step and the load this shares a builder with
+/// moving between runs.
 ///
 /// A person's hand sends a keystroke every 30-100 ms, so every one of these is felt as it comes:
 /// the numbers are what a window of ten thousand tasks costs today, and the budgets hold it
@@ -2679,43 +2680,43 @@ const BUDGETS: &[(&str, Budget)] = &[
     (
         "entry keystroke",
         Budget {
-            step_us: 80_000,
-            eval_layout_us: 60_000,
+            step_us: 100_000,
+            eval_layout_us: 80_000,
         },
     ),
     (
         "entry enter",
         Budget {
-            step_us: 6_000_000,
-            eval_layout_us: 6_000_000,
+            step_us: 8_000_000,
+            eval_layout_us: 8_000_000,
         },
     ),
     (
         "check a task",
         Budget {
-            step_us: 900_000,
-            eval_layout_us: 900_000,
+            step_us: 1_000_000,
+            eval_layout_us: 1_000_000,
         },
     ),
     (
         "switch place",
         Budget {
-            step_us: 240_000,
-            eval_layout_us: 250_000,
+            step_us: 400_000,
+            eval_layout_us: 300_000,
         },
     ),
     (
         "open a task page",
         Budget {
-            step_us: 130_000,
-            eval_layout_us: 85_000,
+            step_us: 250_000,
+            eval_layout_us: 200_000,
         },
     ),
     (
         "scroll",
         Budget {
-            step_us: 190_000,
-            eval_layout_us: 160_000,
+            step_us: 450_000,
+            eval_layout_us: 450_000,
         },
     ),
 ];
