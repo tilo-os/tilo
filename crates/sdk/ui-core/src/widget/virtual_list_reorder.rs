@@ -49,6 +49,27 @@ impl<M: ListModel> VirtualList<M> {
             .is_some_and(|row| !row.claims_pointer(cursor))
     }
 
+    /// Show `source` being dragged to just before `before`, for a capture: the row lifts under
+    /// a pointer resting on the seam above `before` and the drop line shows. Nothing moves
+    /// unless a real release follows. Whether both rows stand placed, so it showed.
+    pub fn stage_reorder(&mut self, source: &M::Key, before: &M::Key) -> bool {
+        // The rows stand where they are drawn only once the list is laid out.
+        if self.rect.is_zero_area() {
+            return false;
+        }
+        let (Some(from), Some(to)) = (self.row_rect(source), self.row_rect(before)) else {
+            return false;
+        };
+        let now = crate::time::now();
+        self.reorder.begin(source.clone(), from.center());
+        // Inside the top tenth of `before`: the seam above it.
+        let at = Point::new(to.center().x, to.y0 + to.height() * 0.1);
+        self.last_cursor = Some(at);
+        self.last_tick = Some(now);
+        self.update_reorder_pointer(at, now);
+        true
+    }
+
     pub(super) fn update_reorder_pointer(&mut self, cursor: Point, now: Instant) {
         let candidate = self.reorder_candidate(cursor);
         let model = &self.model;

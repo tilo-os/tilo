@@ -62,7 +62,6 @@ fn shows_rail(h: &FrameHarness) -> bool {
     h.root::<NavShell>()
         .sidebar_ref::<NavList>()
         .expect("the sidebar is the list")
-        .tree()
         .is_rail()
 }
 

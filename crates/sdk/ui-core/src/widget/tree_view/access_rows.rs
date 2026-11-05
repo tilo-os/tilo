@@ -53,10 +53,6 @@ struct AccessRowsContext<'a> {
     spacing: crate::tokens::Spacing,
     /// Whether every row carries the move buttons.
     reorderable: bool,
-    /// For a navigation list, the revision of what its rows are read from
-    /// beyond their own inputs: the model (labels, keys, what each row
-    /// shows), the checks the rows show and the presentation's theme.
-    nav: Option<u64>,
 }
 
 impl AccessRowsContext<'_> {
@@ -75,7 +71,6 @@ impl AccessRowsContext<'_> {
                 .collect(),
             spacing: self.spacing,
             reorderable: self.reorderable,
-            nav: self.nav,
         }
     }
 }
@@ -100,10 +95,8 @@ struct AccessRowInputs<'a> {
     /// Which of [`TreeMove::ALL`] the hierarchy has room for.
     moves: [bool; 4],
     description: Option<Cow<'a, str>>,
-    /// What the row reads from the model. A navigation row leaves it to the
-    /// context's revision ([`AccessRowsContext::nav`]), which changes with
-    /// the model, so a kept row costs no label compare or key allocation.
-    model: Option<AccessRowModel<'a>>,
+    /// What the row reads from the model.
+    model: AccessRowModel<'a>,
 }
 
 /// What a plain tree row reads from its model.
@@ -130,11 +123,11 @@ impl AccessRowInputs<'_> {
             description: self
                 .description
                 .map(|description| Cow::Owned(description.into_owned())),
-            model: self.model.map(|model| AccessRowModel {
-                shows_row_actions: model.shows_row_actions,
-                label: Cow::Owned(model.label.into_owned()),
-                semantic_key: model.semantic_key,
-            }),
+            model: AccessRowModel {
+                shows_row_actions: self.model.shows_row_actions,
+                label: Cow::Owned(self.model.label.into_owned()),
+                semantic_key: self.model.semantic_key,
+            },
         }
     }
 }
@@ -268,16 +261,6 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         self.access_row_builds.get()
     }
 
-    /// Run `walk` with no row kept, as a tree that keeps none walks, and
-    /// keep the rows kept before it again afterwards.
-    #[cfg(test)]
-    pub(crate) fn walk_keeping_nothing<R>(&self, walk: impl FnOnce() -> R) -> R {
-        let kept = self.access_rows.replace(KeptAccessRows::default());
-        let walked = walk();
-        *self.access_rows.borrow_mut() = kept;
-        walked
-    }
-
     /// What every node row of this walk shares.
     fn access_rows_context(&self, row_count: usize) -> AccessRowsContext<'_> {
         AccessRowsContext {
@@ -292,7 +275,6 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 .collect(),
             spacing: self.spacing,
             reorderable: self.reorder_validator.is_some() && self.reorder_commit.is_some(),
-            nav: self.nav_revision(),
         }
     }
 
@@ -305,11 +287,11 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         depth: usize,
     ) -> Option<AccessRowInputs<'_>> {
         let label = self.model.label(id)?;
-        let model = (!self.is_nav()).then(|| AccessRowModel {
+        let model = AccessRowModel {
             shows_row_actions: self.model.shows_row_actions(id),
             label: Cow::Borrowed(label),
             semantic_key: self.model.semantic_key(id),
-        });
+        };
         let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
         Some(AccessRowInputs {
             bounds: self.access_row_bounds(index),
@@ -322,7 +304,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 .then(|| self.expanded.contains(&id)),
             selected: self.selection.is_selected(&id),
             checked: self.access_row_checked(id),
-            menu: self.access_row_has_menu(id),
+            menu: self.access_row_has_menu(),
             focused: self.row_has_focus(TreeRowKey::Node(id)),
             moves: TreeMove::ALL
                 .map(|movement| reorderable && self.move_target(id, movement).is_some()),
@@ -365,22 +347,16 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
         holds
     }
 
-    /// The row's checkbox state: a navigation row's check, or the box a row
-    /// decoration painted. `None` for a row with no checkbox.
+    /// The row's checkbox state: the box a row decoration painted. `None`
+    /// for a row with no checkbox.
     fn access_row_checked(&self, id: NodeId) -> Option<bool> {
-        self.nav_semantics(id)
-            .and_then(|(_, checked)| checked)
-            .or_else(|| self.row_checks.get(&id).copied())
+        self.row_checks.get(&id).copied()
     }
 
     /// Whether a reader is offered the row's menu, which the pointer opens by
     /// right click, the menu key or the row's own more button.
-    fn access_row_has_menu(&self, id: NodeId) -> bool {
-        if self.is_nav() {
-            self.nav_row_has_menu(id)
-        } else {
-            self.context_menu_items.is_some()
-        }
+    fn access_row_has_menu(&self) -> bool {
+        self.context_menu_items.is_some()
     }
 
     /// Whether `key`'s row itself (not one of its buttons) has focus.
@@ -424,7 +400,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
                 false,
                 self.selection.is_selected(&id),
                 self.access_row_checked(id),
-                self.access_row_has_menu(id),
+                self.access_row_has_menu(),
             ),
             TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index) {
                 Arrival::Ready(_) => return None,
@@ -474,19 +450,6 @@ impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
             && let Some(description) = self.row_descriptions.get(&id)
         {
             item = item.with_description(description.clone());
-        }
-        if let TreeRowKey::Node(id) = key
-            && let Some((Some(description), _)) = self.nav_semantics(id)
-        {
-            item = item.with_description(description);
-        }
-        // How many things the place holds, where it draws that number: a reader hears the count
-        // the row shows beside it.
-        if let TreeRowKey::Node(id) = key
-            && let Some(super::NavRowSpec::Item(held)) = self.nav_spec(id)
-            && let Some(count) = held.count
-        {
-            item = item.with_value(count.value().to_string());
         }
         if let TreeRowKey::Node(id) = key
             && let Some(semantic) = self.model.semantic_key(id)

@@ -25,6 +25,8 @@ pub(super) struct KeptAccessRows<K> {
     rows: HashMap<K, KeptRow>,
     /// Counts the walks, to tell the rows the last one reached.
     walk: u64,
+    /// The row nodes walks built rather than kept.
+    builds: usize,
 }
 
 impl<K> Default for KeptAccessRows<K> {
@@ -32,6 +34,7 @@ impl<K> Default for KeptAccessRows<K> {
         Self {
             rows: HashMap::new(),
             walk: 0,
+            builds: 0,
         }
     }
 }
@@ -88,6 +91,22 @@ impl From<&MountedRowState> for RowStateStamp {
 }
 
 impl<M: ListModel> VirtualList<M> {
+    /// The row nodes walks built rather than kept, since the list was made.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn access_row_builds_for_test(&self) -> usize {
+        self.access_rows.borrow().builds
+    }
+
+    /// Run `walk` with no row kept, as a list that keeps none walks, and
+    /// keep the rows kept before it again afterwards.
+    #[cfg(test)]
+    pub(crate) fn walk_keeping_nothing<R>(&self, walk: impl FnOnce() -> R) -> R {
+        let kept = self.access_rows.replace(KeptAccessRows::default());
+        let walked = walk();
+        *self.access_rows.borrow_mut() = kept;
+        walked
+    }
+
     /// The node of one mounted row: a list item holding the row's own semantics.
     pub(super) fn row_node(
         &self,
@@ -126,6 +145,14 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(description) = child.as_ref().and_then(|node| node.description.clone()) {
             item.description = Some(description);
         }
+        // A row that says how deep it stands is a tree item of its own list: its level, whether
+        // what stands under it shows, and the value it reads (a count) are the row's.
+        if let Some(own) = child.as_ref().filter(|node| node.level.is_some()) {
+            item.role = Role::TreeItem;
+            item.level = own.level;
+            item.state.expanded = own.state.expanded;
+            item.value.clone_from(&own.value);
+        }
         // A tree row says how deep it stands and, where it has subtasks, whether they show.
         if let Some(marks) = &self.tree {
             item = item.with_level(marks.depth(&row.key).saturating_add(1) as usize);
@@ -155,6 +182,11 @@ impl<M: ListModel> VirtualList<M> {
                 .with_action_target(format!("key:{key}"))
                 .with_semantic_key(key);
         }
+        // The name the row's own widget gives it for assistive technology stands over the key.
+        if let Some(semantic) = child.as_ref().and_then(|node| node.semantic_key.clone()) {
+            item.key = Some(crate::a11y::hash_key(&semantic));
+            item.semantic_key = Some(semantic);
+        }
         // A row renamed in place carries the field over its label, as a tree's row does, so a
         // reader reaches the title it edits.
         let field = self
@@ -168,8 +200,21 @@ impl<M: ListModel> VirtualList<M> {
                     input
                 })
             });
-        if field.is_some() || child.is_some() {
-            item = item.with_children(field.into_iter().chain(child).collect());
+        // A row that is a tree item of its own is this node: its controls stand under the
+        // item itself, not under a second node of the same row.
+        let child = child.map(|node| {
+            if node.level.is_some() {
+                node.children
+            } else {
+                vec![node]
+            }
+        });
+        let children: Vec<AccessNode> = field
+            .into_iter()
+            .chain(child.into_iter().flatten())
+            .collect();
+        if !children.is_empty() {
+            item = item.with_children(children);
         }
         item
     }
@@ -297,6 +342,7 @@ impl<M: ListModel> VirtualList<M> {
             // The row was built anew, or something it shows moved: the node it
             // makes now stands in for the last one only where they agree.
             let node = self.row_node(row, enabled);
+            kept.builds = kept.builds.saturating_add(1);
             if let Some(kept_row) = kept.rows.get_mut(&row.key)
                 && *kept_row.node == node
             {

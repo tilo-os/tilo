@@ -35,6 +35,15 @@ impl<K> RenameField<K> {
     }
 }
 
+/// A row that says where its title stands, for the field renaming it in place to stand over
+/// it, in the role the title reads in: asked for through
+/// [`capability`](crate::widget::capability::capability).
+pub trait RowRenameField {
+    /// Where the rename field stands over the row's title, and the role it reads in. `None`
+    /// leaves it where the list puts it.
+    fn rename_field(&self) -> Option<(Rect, crate::tokens::TextRole)>;
+}
+
 impl<M: ListModel> VirtualList<M> {
     /// Rename a row in place. `F2`, [`Self::begin_rename`] and (with
     /// [`Self::rename_on_double_click`]) a double click open a field over the row's label;
@@ -69,7 +78,11 @@ impl<M: ListModel> VirtualList<M> {
         if self.on_rename.is_none() {
             return false;
         }
-        let Some(index) = self.model.index_of(key) else {
+        let Some(index) = self
+            .model
+            .index_of(key)
+            .filter(|index| self.model.renames(*index))
+        else {
             return false;
         };
         let Some(label) = self.model.label(index) else {
@@ -77,13 +90,15 @@ impl<M: ListModel> VirtualList<M> {
         };
         // A field draws over the label the row's own widget paints, so its chrome takes the
         // title's place rather than doubly printing it.
+        let placed = self.rename_rect(index, key);
+        let role = placed.map_or(crate::tokens::TextRole::Body, |(_, role)| role);
         let mut input = crate::widget::TextInput::local()
             .with_plain_chrome()
-            .with_text_role(crate::tokens::TextRole::Body)
+            .with_text_role(role)
             .with_initial_value(&label);
         input.set_focus(true);
         self.focus_row(key.clone());
-        if let Some(rect) = self.rename_rect(index, key) {
+        if let Some((rect, _)) = placed {
             input.apply_layout_external(rect);
         }
         self.rename = Some(Box::new(RenameField {
@@ -124,17 +139,32 @@ impl<M: ListModel> VirtualList<M> {
         self.rename = None;
     }
 
-    /// Where the rename field sits over the row of `key`: over its label, from the row's
-    /// content column at its depth, to its trailing edge.
-    fn rename_rect(&self, index: usize, key: &M::Key) -> Option<Rect> {
+    /// Where the rename field sits over the row of `key`, in the role its title reads in: where
+    /// the mounted row says its label stands ([`RowRenameField`]), else over its label from the
+    /// row's content column at its depth to its trailing edge.
+    fn rename_rect(&self, index: usize, key: &M::Key) -> Option<(Rect, crate::tokens::TextRole)> {
+        if let Some(placed) = self
+            .mounted
+            .iter()
+            .find(|row| row.key == *key)
+            .and_then(|row| {
+                crate::widget::capability::capability::<dyn RowRenameField>(&*row.widget)
+            })
+            .and_then(RowRenameField::rename_field)
+        {
+            return Some(placed);
+        }
         let row = self.row_box(index)?;
         let depth = f64::from(self.tree.as_ref().map_or(0, |marks| marks.depth(key)));
         let x0 = row.x0 + self.lead + depth * self.disclosure;
-        Some(Rect::new(
-            x0,
-            row.y0,
-            (self.lift_rect(0.0, 0.0).x1 - self.bleed).max(x0 + 1.0),
-            row.y1,
+        Some((
+            Rect::new(
+                x0,
+                row.y0,
+                (self.lift_rect(0.0, 0.0).x1 - self.bleed).max(x0 + 1.0),
+                row.y1,
+            ),
+            crate::tokens::TextRole::Body,
         ))
     }
 
@@ -148,7 +178,7 @@ impl<M: ListModel> VirtualList<M> {
             self.rename = None;
             return;
         };
-        let Some(rect) = self.rename_rect(index, &field.key) else {
+        let Some((rect, _)) = self.rename_rect(index, &field.key) else {
             return;
         };
         if let Some(field) = self.rename.as_mut()

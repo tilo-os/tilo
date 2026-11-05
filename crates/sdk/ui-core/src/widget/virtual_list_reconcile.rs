@@ -310,10 +310,25 @@ impl<M: ListModel> VirtualList<M> {
                         || row
                             .widget
                             .as_any()
-                            .is_some_and(|any| any.is::<crate::widget::ListRow>()))
+                            .is_some_and(|any| any.is::<crate::widget::ListRow>())
+                        // A row that paints the selection it is handed takes the new one.
+                        || (self.delegate_selection
+                            && crate::widget::capability::capability::<dyn super::RowSelectionSink>(
+                                row.widget.as_ref(),
+                            )
+                            .is_some()))
             });
             let mut row = match previous {
-                Some(row) if keep => row,
+                Some(mut row) if keep => {
+                    if self.delegate_selection
+                        && row.selection != selection
+                        && let Some(sink) = super::selection_sink(&mut *row.widget)
+                    {
+                        sink.take_selection(selection);
+                        row.selection = selection;
+                    }
+                    row
+                }
                 previous => {
                     replaced = true;
                     let widget = match &mounted_state {

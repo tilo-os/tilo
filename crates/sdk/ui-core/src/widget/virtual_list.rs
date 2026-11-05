@@ -61,6 +61,7 @@ mod menu;
 use menu::RowMenus;
 #[path = "virtual_list_edit.rs"]
 mod edit;
+pub use edit::RowRenameField;
 #[path = "virtual_list_jump.rs"]
 mod jump;
 #[path = "virtual_list_reorder.rs"]
@@ -199,6 +200,12 @@ pub trait ListModel {
     /// for a leaf, or a model that holds no tree.
     fn accepts_children(&self, _index: usize) -> bool {
         false
+    }
+
+    /// Whether the row `index` can be renamed in place ([`VirtualList::on_rename`]): `F2`, a
+    /// double click and [`VirtualList::begin_rename`] open a field only over a row that does.
+    fn renames(&self, _index: usize) -> bool {
+        true
     }
 
     /// Whether the row `index` has subtasks to disclose, whether or not any of them stands in
