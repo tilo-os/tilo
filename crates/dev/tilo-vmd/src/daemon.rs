@@ -299,6 +299,17 @@ fn prepare_slot_session(
     } else {
         system_layers(slots, layers, record, own)?
     };
+    if record.kind == SlotKind::Device && session.login.is_none() {
+        // A board's supervisor starts the compositor as a system transient
+        // unit in the host's mount namespace: no drop-in can bind a view under
+        // it, so the layers merge into the host `/usr` instead. Those links
+        // survive a reboot, so `systemd-sysext` has already merged them here
+        // and only a set that changed is refreshed.
+        if apply.link_sysext(&paths)? {
+            apply.sysext_refresh()?;
+        }
+        return Ok(());
+    }
     let mut dropin = apply.session_layer_dropin(&record.name, generation.number, &paths)?;
     if session.stand_in {
         dropin.push_str(&apply.slot_identity_environment(&session.user)?);
@@ -389,7 +400,7 @@ pub fn restore_slots(
             }
         };
         // A board's own session is enabled and may have started on the bare
-        // image before this ran: it restarts onto the view it now binds.
+        // image before this ran: it restarts onto the merged `/usr`.
         let started = |apply: &mut dyn Apply| {
             if !session.stand_in && apply.unit_state(&session.unit) == "active" {
                 let uid = apply::session_uid(apply, &session)?;
