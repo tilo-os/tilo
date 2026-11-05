@@ -85,8 +85,8 @@ read and undone.
 it happens.
 
 - What the run creates appears near where the person asked: the shell places a reference
-  to it beside the ask's anchor, as if the person had activated it (shell.md §3). It is the
-  person's arrangement change, attributed to the ask, undone with the run.
+  to it beside the ask's anchor, as if the person had activated it (shell.md §3). It is an
+  arrangement change, attributed to the ask, undone with the run.
 - The run's presence moves to what it's working on, like a collaborator's: its face on the
   window or row it is reading or changing. Presence comes from the steps; the agent does not
   report it.
