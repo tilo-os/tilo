@@ -6,18 +6,18 @@
  * about what the link opens.
  *
  * `?embed=1` is the page inside another site (the homepage's live
- * preview): a workspace whose host has an admission door is first visited as
- * the workspace's visitor person, a member with the role its host gives
- * visitors, so scrolling past stores nothing, and the visitor joins as
- * themselves on their first click, tap or key press. A
- * visitor who already joined that host comes back at once. The embedding page,
- * if it is the web host's embedder (`entry.json` `embedder`), hears
- * `{type: 'tilo-embed', state}`: `watching`, `joined`, or `full` /
- * `unavailable` when it should show its static fallback. A visitor the host
- * has no seat for watches live instead and is let in once a seat frees up.
+ * preview): it shows nothing of the workspace until the visitor's first
+ * click, tap or key press, then reloads and joins as this browser's own
+ * person, as the site itself would. A person who already joined that host
+ * comes back at once. The embedding page, if it is the web host's embedder
+ * (`entry.json` `embedder`), hears `{type: 'tilo-embed', state}`: `idle`
+ * until the page joined (`joined`), and again after a failure, when the site
+ * shows its static fallback. A full workspace answers the door with
+ * `503 Retry-After`, and the page waits on the reconnect screen for a seat
+ * like anyone else.
  */
 import {AdmissionError} from './admission.mjs';
-import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine} from './arrival.mjs';
+import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
@@ -37,10 +37,10 @@ import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, 
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
 import {
-  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, HostAdmissionError,
+  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
   hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
-  doorPresence, joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
-  settleFailedWorkspace, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
+  membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
+  settleFailedWorkspace, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
 
 /** Set for the one reload that joins an embed's visiting page as the person. */
@@ -589,10 +589,6 @@ function rendererCard({reason, steps}) {
   document.body.append(form);
 }
 
-// Refusals that pass: the host is at its member cap, busy, or this address
-// asked too often. The visitor watches meanwhile.
-const seatless = error => error instanceof HostAdmissionError && ['full', 'unavailable', 'too-many'].includes(error.code);
-
 /** Report a page's uncaught errors to the host that admitted it through its
  * door (size-capped and rate-limited there, logged and never stored). */
 function reportErrors(door) {
@@ -652,13 +648,10 @@ export async function startEntryPage({mode}) {
   let embedder = null;
   const tell = state => { if (embed && embedder && parent !== window) parent.postMessage({type: 'tilo-embed', state}, embedder); };
   let joinNow = false;
-  try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: watch first. */ }
-  /** How this page entered through a host's door: `joined`, `watching` (until a gesture) or `seatless`. */
-  let entered = null;
-  let retryAfter = null;
-  /** Why the door had no seat for this page (`full`, `too-many`, `unavailable`), when it watches instead. */
-  let seatlessBecause = null;
-  /** The workspace whose door this page watches through. */
+  try { joinNow = sessionStorage.getItem(JOIN_NOW) === '1'; sessionStorage.removeItem(JOIN_NOW); } catch { /* No storage: no gesture asked yet. */ }
+  /** Whether this page got in through a host's door as the browser's own person (rather than by an invitation or an account). */
+  let enteredViaDoor = false;
+  /** The workspace whose door this page was let in through, or waits at. */
   let visitedAt = null;
   globalThis.tiloInvites = 0;
   /** Keeping the person this page joined as (`identity-actions.mjs`), once there is one. */
@@ -822,32 +815,33 @@ export async function startEntryPage({mode}) {
     enterViaHost: async ({workspace, room}) => {
       reportErrors(workspace.admission);
       workspaceName = workspace.name || workspaceName;
-      const watch = async () => spectate({workspace, runtime});
       visitedAt = workspace;
+      // An embed joins nothing before the visitor does something: it takes no
+      // seat and makes no person, and its site shows its static fallback
+      // until the first click, tap or key press (`{idle: true}`: nothing
+      // mounts). A browser that already joined this host comes in at once.
       if (embed && !joinNow && !keptMembership(workspace)) {
-        entered = 'watching';
-        return watch();
+        tell('idle');
+        document.documentElement.dataset.entry = 'idle';
+        joinOnFirstGesture(status);
+        return {idle: true};
       }
-      try {
-        // A device paired to a person kept elsewhere reconnects as them,
-        // and never makes a person of its own.
-        const kept = keptMembership(workspace);
-        const identity = kept?.paired ? undefined : await browserPerson();
-        // A page that came back here by itself because the host turned it
-        // away (session-refusal.mjs) joins under the name it went by.
-        displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
-        const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode,
-          wait: next => reconnect.wait({...next, reason: 'refused', origin: workspace.host.origin, build: PAGE_BUILD})});
-        reconnect.done();
-        entered = 'joined';
-        return peer;
-      } catch (error) {
-        if (!seatless(error)) throw error;
-        entered = 'seatless';
-        retryAfter = error.retryAfter;
-        seatlessBecause = error.code;
-        return watch();
-      }
+      // A device paired to a person kept elsewhere reconnects as them,
+      // and never makes a person of its own.
+      const kept = keptMembership(workspace);
+      const identity = kept?.paired ? undefined : await browserPerson();
+      // A page that came back here by itself because the host turned it
+      // away (session-refusal.mjs) joins under the name it went by.
+      displayName = chosenDisplayName(identity?.userPublicKey ?? kept?.userPublicKey) ?? rejoinedName() ?? defaultDisplayName(identity?.userPublicKey ?? kept?.userPublicKey);
+      // A workspace with no seat right now (full, or this address asking too
+      // often) is waited out on the reconnect screen, as long as its door
+      // asked: the page joins as the same person once there is room.
+      const peer = await joinViaHost({workspace, identity, displayName, runtime, onPairingCode: showPairingCode,
+        wait: next => reconnect.wait({...next, origin: workspace.host.origin, build: PAGE_BUILD,
+          retryAfterMs: Number.isFinite(next.error?.retryAfter) ? next.error.retryAfter * 1000 : 0})});
+      reconnect.done();
+      enteredViaDoor = true;
+      return peer;
     },
     // A peer in the home workspace while the page is in another workspace, which
     // carries the desktop's problem reports to the home's channel. Only for
@@ -970,7 +964,8 @@ export async function startEntryPage({mode}) {
       return;
     }
     opened = page;
-    if (entered) void showVisitState({entered, retryAfter, because: seatlessBecause, workspace: visitedAt, workspaceName, tell, status});
+    // An embed that joined says so: its site takes its fallback away.
+    if (enteredViaDoor) tell('joined');
     // Only the desktop lists host actions: a single app's mount refuses them.
     const hostActions = mode === 'desktop' && page.mount?.setHostActions && !embed
       ? hostActionParts(page.mount, ['identity', 'machine', 'workspaces', 'workspace', 'tab']) : null;
@@ -985,7 +980,7 @@ export async function startEntryPage({mode}) {
     if (page.peer) page.peer.onStatus?.(() => bar.look());
     else if (!page.mount) noDesktop = true;
     bar.look();
-    if (!embed && !entered && !viaTicket && page.peer && here.kind === 'room') {
+    if (!embed && !enteredViaDoor && !viaTicket && page.peer && here.kind === 'room') {
       // A workspace entered as a member: offered again from the person's other workspaces.
       const entry = {origin: here.host, room: here.room ?? page.peer.workspace};
       remembering(() => {
@@ -1121,7 +1116,7 @@ export async function startEntryPage({mode}) {
       followRefusal({
         peer: page.peer,
         displayName: () => displayName,
-        canRejoin: () => Boolean(home?.admission) && ['joined', 'watching', 'seatless'].includes(entered)
+        canRejoin: () => Boolean(home?.admission) && enteredViaDoor
           && !remembering(() => keptMembership(home))?.paired,
         rejoin: async () => {
           await closeWorkspace(page);
@@ -1192,7 +1187,7 @@ export async function startEntryPage({mode}) {
       location.reload();
       return;
     }
-    if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
+    if (embed) tell('idle');
     // Stopped after the host let the person in: opening the desktop failed.
     const inside = stoppedInside(admitted, root.arrival);
     // Plain words and a way to try again (index.html); the cause, thrown
@@ -1582,41 +1577,27 @@ function pagePerson(page) {
   return page.peer ? page.peer.userPublicKey ?? null : currentIdentity()?.userPublicKey ?? null;
 }
 
-/** Reload this page to join the workspace it watches. */
+/** Reload this page to join the workspace it shows, as this browser's own person. */
 function joinByReload() {
-  try { sessionStorage.setItem(JOIN_NOW, '1'); } catch { /* A kept membership or a full workspace decides then. */ }
+  try { sessionStorage.setItem(JOIN_NOW, '1'); } catch { /* A kept membership decides then. */ }
   location.reload();
 }
 
 /**
- * What a visitor let in through a host's door sees beyond the workspace,
- * said as the door's presence has it (`visitLine`): as a watching embed, the
- * invitation to join on the first gesture (captured, so the visiting
- * surface never sees it), unless only invitees get in or nobody joins for
- * now; without a seat, that they watch live and are let in when one frees
- * up (asked after the host's Retry-After, with jitter so a full workspace is not
- * asked by everyone at once).
+ * Ask the visitor to join: the embed's first click, tap or key press joins
+ * as this browser's own person, on the page that loads for it. The gesture is
+ * captured, so the visiting surface never sees it.
  */
-async function showVisitState({entered, retryAfter, because = null, workspace, workspaceName, tell, status}) {
-  if (entered === 'joined') { tell('joined'); return; }
-  tell('watching');
-  const embed = entered === 'watching';
-  const offerJoin = () => {
-    status.textContent = 'Click or type to join';
-    const gesture = event => {
-      for (const type of ['pointerdown', 'keydown']) removeEventListener(type, gesture, true);
-      event.preventDefault();
-      event.stopPropagation();
-      status.textContent = 'Joining…';
-      joinByReload();
-    };
-    for (const type of ['pointerdown', 'keydown']) addEventListener(type, gesture, true);
+function joinOnFirstGesture(status) {
+  status.textContent = 'Click or type to join';
+  const gesture = event => {
+    for (const type of ['pointerdown', 'keydown']) removeEventListener(type, gesture, true);
+    event.preventDefault();
+    event.stopPropagation();
+    status.textContent = 'Joining…';
+    joinByReload();
   };
-  const [presence, messages] = await Promise.all([doorPresence(workspace), localeMessagesSoon()]);
-  const {line, join} = visitLine({entered, because, presence, workspace: workspaceName, messages});
-  if (join === 'gesture') { offerJoin(); return; }
-  status.textContent = line;
-  if (join === 'seat') joinWhenSeated({workspace, retryAfter, join: embed ? offerJoin : joinByReload});
+  for (const type of ['pointerdown', 'keydown']) addEventListener(type, gesture, true);
 }
 
 /**
@@ -1631,8 +1612,9 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
   if (peer?.userPublicKey && peer.userPublicKey !== identity.userPublicKey) return null;
   const mac = /Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? '');
   const actions = createIdentityActions({
-    // A watching peer goes by no name of its own; the person's own desktop
-    // (no peer) and a workspace they joined do.
+    // A peer that cannot set a name of its own (a guest the relay admitted)
+    // goes by none; the person's own desktop (no peer) and a workspace they
+    // joined do.
     identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: !peer || peer.setDisplayName ? naming : null,
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),

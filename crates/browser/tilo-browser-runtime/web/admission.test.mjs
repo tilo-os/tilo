@@ -55,14 +55,24 @@ test('the own desktop opens without a peer for whom the home’s gate is open, o
     enterViaHost: async () => { kept = true; return {room: room.room, dispose: async () => { disposed = true; }}; }});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: commons, deps: letIn.deps}), {peer: null});
   assert.ok(disposed, 'the door’s peer is let go: the own desktop has none');
-  // A door with no seat lets the page watch, which keeps no membership:
-  // still nothing of their own.
-  const watching = doors({ownDesktopOpen: async () => false, enterViaHost: async () => ({watching: true, dispose: async () => {}})});
-  await assert.rejects(admit({scope: {kind: 'own'}, home: commons, deps: watching.deps}), {name: 'AdmissionError', code: 'no-access'});
+  // A door with nothing to admit yet (an embed before its visitor's first
+  // gesture) keeps no membership: still nothing of their own.
+  const idle = doors({ownDesktopOpen: async () => false, enterViaHost: async () => ({idle: true})});
+  await assert.rejects(admit({scope: {kind: 'own'}, home: commons, deps: idle.deps}), {name: 'AdmissionError', code: 'no-access'});
   // A home without a door gates nothing.
   const bare = doors({ownDesktopOpen: async () => false});
   assert.deepEqual(await admit({scope: {kind: 'own'}, home: {name: 'Team', host: {origin: room.host}}, deps: bare.deps}), {peer: null});
   assert.deepEqual(bare.calls, []);
+});
+
+test('an embed the door has nothing to admit yet mounts nothing', async () => {
+  // Before its visitor's first gesture the page joins nothing and tells the
+  // site to show its fallback: no peer, no mount.
+  const idleDoor = async () => ({idle: true});
+  const listed = doors({workspaceAt: () => commons, enterViaHost: idleDoor});
+  assert.deepEqual(await admit({scope: room, deps: listed.deps}), {peer: null, idle: true});
+  const bare = doors({workspaceAt: () => commons, enterViaHost: idleDoor});
+  assert.deepEqual(await admit({scope: {kind: 'room', host: room.host, room: null}, deps: bare.deps}), {peer: null, idle: true});
 });
 
 test('a host whose listed workspace has an admission door lets the person in when the browser has no account there', async () => {

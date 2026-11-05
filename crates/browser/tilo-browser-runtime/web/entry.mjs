@@ -281,7 +281,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which workspace it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
-  const {peer} = await admit({
+  const {peer, idle} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
     home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
@@ -292,6 +292,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
+  // Nothing to mount: an embed shows its site's fallback until the visitor
+  // does something (`entry-page.mjs`).
+  if (idle) return null;
   if (peer) deps.onAdmitted?.(peer);
   // A link that names no workspace is let in through its host's door: the workspace
   // the door admits to is that host's listed workspace.

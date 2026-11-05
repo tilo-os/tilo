@@ -43,9 +43,9 @@ export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
   installNodeCertificate, MAX_DISPLAY_NAME_BYTES, nodeInstallInfo, publishEnvelope, publishProfile, signInWithPasskey, storagePersisted, unlockIdentity,
 } from './root-identity.mjs';
-// The workspaces a page can open and guest admission, for hosts of this
-// module (Tilo Cloud) that import only the peer.
-export {joinViaHost, listedWorkspaces, spectate, workspaceAt} from './workspaces.mjs';
+// The workspaces a page can open, for hosts of this module (Tilo Cloud) that
+// import only the peer.
+export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
 /** Per record, how many unread preview ops a member's stream may leave: a
