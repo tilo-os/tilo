@@ -846,14 +846,17 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
             .is_some_and(|expires| expires > tilo_clock::unix_now_ns()),
         "and it has not run out"
     );
-    let active = session.handle().read(|tree| {
-        tree.active_workspace()
-            .map(|workspace| workspace.id().to_string())
-    });
-    assert_eq!(
-        active.as_deref(),
-        Some(lounge.workspace.as_str()),
-        "the person lands in the lounge: the renewal was admitted"
+    // The workspace is held before it is in front: the person lands in it a
+    // frame later, so wait for the landing rather than sampling the frame.
+    wait_until(
+        &mut session,
+        "the person lands in the lounge: the renewal was admitted",
+        |session| {
+            session.handle().read(|tree| {
+                tree.active_workspace()
+                    .is_some_and(|workspace| workspace.id().to_string() == lounge.workspace)
+            })
+        },
     );
 }
 
