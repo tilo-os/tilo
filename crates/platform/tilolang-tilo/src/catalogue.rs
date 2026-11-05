@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldType, NamedType, Surface, VerbSurface};
+use tilolang::meta::NamedRootMeta;
 use tilolang::meta::SearchMeta;
 use tilolang_runtime::meta::{
     ActionMeta, DefaultMeta, EffectClass, EnumMeta, FieldMeta, MergeKind, PackageMeta, ParamMeta,
@@ -122,15 +123,19 @@ pub struct NativeSurface {
 }
 
 impl NativeSurface {
-    /// The package this app publishes: [`described`], its actions named by the catalogue
-    /// ([`action_id`]).
+    /// The package this app publishes: its actions named by the catalogue ([`action_id`]), and
+    /// the root a program names its own record by ([`record_root`]).
     ///
     /// # Errors
     /// The surface does not read.
     pub fn package(&self) -> Result<PackageMeta, String> {
-        let mut meta = described(&self.app, &self.title, &self.surface)?;
+        let (surfaces, instances) = read_surfaces(&self.surface)?;
+        let mut meta = package_with(&self.app, &self.title, &surfaces, &instances);
         for action in &mut meta.actions {
             action.id = action_id(&meta.app, &action.id);
+        }
+        if let Some(root) = record_root(&self.app, &surfaces, &kind_names(&surfaces, &instances)) {
+            meta.named_roots.push(root);
         }
         Ok(meta)
     }
@@ -192,25 +197,58 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
         .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
 }
 
-/// The package of the app `app` named `title` whose `surface.toml` is `text`: what
-/// [`native_app`] reads from a directory, for a description a binary carries.
+/// The package of the app `app` named `title` whose `surface.toml` is `text`: a description a
+/// binary carries, its actions named as the surface names them.
 ///
-/// This is the one loader: `tilolang check` reads an app's directory with it ([`native_app`]),
-/// and a task's host reads the surfaces its session hands it ([`NativeSurface::package`]), so a
-/// program compiles against the same package either way. A native app's actions are named by
-/// its app there ([`action_id`]), because a catalogue of installed apps holds many apps' verbs.
+/// A task's host and `tilolang check` both read a native app through this one reader, so a
+/// program compiles against the same package either way: [`NativeSurface::package`] adds what
+/// only an app the session does not run has, its actions named by its app ([`action_id`]) and
+/// its record a root a program names ([`record_root`]).
 ///
 /// # Errors
 /// The text is not a surface file.
 pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
+    let (surfaces, instances) = read_surfaces(text)?;
+    Ok(package_with(app, title, &surfaces, &instances))
+}
+
+/// The resources `text` publishes, and the kinds `instances` marks: the ones whose verbs act on
+/// the one resource they are called on.
+///
+/// # Errors
+/// The text is not a surface file.
+fn read_surfaces(text: &str) -> Result<(Vec<Surface>, Vec<String>), String> {
     let surfaces = parse_surfaces(text)?;
-    let instances: Vec<String> = surfaces
+    let instances = surfaces
         .iter()
         .zip(published(text)?)
         .filter(|(_, published)| published.instances)
         .map(|(surface, _)| surface.kind.clone())
         .collect();
-    Ok(package_with(app, title, &surfaces, &instances))
+    Ok((surfaces, instances))
+}
+
+/// The named root of a native app's own record: the first resource of its surface that stores
+/// fields (`chat.workspace`), which its verbs are declared on and whose history its steps are
+/// taken back with. A program names it where such a verb takes the record
+/// (`chat.rename_channel(chat.workspace, ...)`), and reaches the app through it without reading
+/// it. `None` for an app whose surface stores nothing, whose resource is no record a program
+/// could name.
+fn record_root(
+    app: &str,
+    surfaces: &[Surface],
+    kinds: &BTreeMap<String, String>,
+) -> Option<NamedRootMeta> {
+    let kind = surfaces
+        .iter()
+        .find(|surface| !surface.fields.is_empty())
+        .map(|surface| surface.kind.as_str())?;
+    let ty = kinds.get(kind)?;
+    Some(NamedRootMeta {
+        name: snake_case(ty),
+        ty: format!("{app}#{ty}"),
+        published: Some(kind.to_owned()),
+    })
 }
 
 /// The packages a tilolang package may `use` that are no tilolang package directory: the
@@ -343,7 +381,7 @@ pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
 fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[String]) -> PackageMeta {
     let mut reader = Reader {
         app,
-        kinds: BTreeMap::new(),
+        kinds: kind_names(surfaces, instances),
         declared: BTreeMap::new(),
         meta: PackageMeta {
             app: app.to_owned(),
@@ -351,13 +389,23 @@ fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[Strin
             ..PackageMeta::default()
         },
     };
-    // A resource with stored fields is a type; one without is where loose verbs are. A
-    // resource whose name a record or enum of the app already has is named by more of its kind
-    // (`tilo.workspace.emoji`, holding `Emoji` records, is `WorkspaceEmoji`).
+    for surface in surfaces {
+        reader.surface(surface);
+    }
+    reader.meta
+}
+
+/// The type name of each resource kind of `surfaces`. A resource with stored fields is a type;
+/// one without is where loose verbs are. A resource whose name a record or enum of the app
+/// already has is named by more of its kind (`tilo.workspace.emoji`, holding `Emoji` records, is
+/// `WorkspaceEmoji`). A resource of a kind of `instances` is a type too, though it stores no
+/// fields: its verbs act on the one resource they are called on.
+fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, String> {
     let named: Vec<&str> = surfaces
         .iter()
         .flat_map(|surface| surface.types.iter().map(|ty| ty.name.as_str()))
         .collect();
+    let mut kinds = BTreeMap::new();
     for surface in surfaces {
         if !surface.fields.is_empty() || instances.contains(&surface.kind) {
             let short = kind_type_name(&surface.kind);
@@ -366,13 +414,10 @@ fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[Strin
             } else {
                 short
             };
-            reader.kinds.insert(surface.kind.clone(), name);
+            kinds.insert(surface.kind.clone(), name);
         }
     }
-    for surface in surfaces {
-        reader.surface(surface);
-    }
-    reader.meta
+    kinds
 }
 
 struct Reader<'a> {

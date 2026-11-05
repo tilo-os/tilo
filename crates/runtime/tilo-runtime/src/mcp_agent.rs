@@ -2532,23 +2532,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if !parsed.segments.is_empty() || action != tilo_actions::remote::APPLICATION_OPEN_ACTION {
             return Err(Self::not_running_note(&parsed.app, true));
         }
-        let value = Box::pin(self.invoke_one(OneCall {
-            provider: Addressed {
-                provider: tilo_actions::remote::workspace_provider(&self.workspace),
-                app_id: None,
-            },
-            workspace: true,
-            revision: None,
-            resource: format!(
-                "{}{app_id}",
-                tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
-            ),
-            action: tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
-            arguments,
-            invocation_id: invocation,
-            wait_ms,
-        }))
-        .await?;
+        let value = self
+            .open_in_workspace(app_id, arguments, invocation, wait_ms)
+            .await?;
         let mut reply = outcome(&value);
         if reply.failed {
             return Ok(reply);
@@ -2569,6 +2555,68 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             reply.text.push_str(&listing.text);
         }
         Ok(reply)
+    }
+
+    /// The workspace's `open` of the app `app_id`, with `arguments` for the files it opens
+    /// there: the workspace's answer, which names the instance it started at [`super::OPENED_PEER`].
+    async fn open_in_workspace(
+        &self,
+        app_id: &str,
+        arguments: serde_json::Map<String, Value>,
+        invocation: Option<String>,
+        wait_ms: Option<u64>,
+    ) -> Result<Value, String> {
+        Box::pin(self.invoke_one(OneCall {
+            provider: Addressed {
+                provider: tilo_actions::remote::workspace_provider(&self.workspace),
+                app_id: None,
+            },
+            workspace: true,
+            revision: None,
+            resource: format!(
+                "{}{app_id}",
+                tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
+            ),
+            action: tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+            arguments,
+            invocation_id: invocation,
+            wait_ms,
+        }))
+        .await
+    }
+
+    /// The provider of a running instance of the installed app `app_id`, starting the app in
+    /// the workspace when none runs yet: where an invocation of the app's own door goes.
+    async fn opened_provider(&self, app_id: &str, wait_ms: Option<u64>) -> Result<String, String> {
+        match self.app_ref(app_id).await? {
+            AppRef::Running { provider, .. } => Ok(provider),
+            AppRef::Installed { app_id, opens } => {
+                if !opens {
+                    return Err(Self::may_not_open(&app_id));
+                }
+                let value = self
+                    .open_in_workspace(&app_id, serde_json::Map::new(), None, wait_ms)
+                    .await?;
+                if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
+                    return Err(format!("{app_id} did not open: {}", outcome(&value).text));
+                }
+                if let Some(error) = value.pointer("/opened/error").and_then(Value::as_str) {
+                    return Err(format!("{app_id} did not open: {error}"));
+                }
+                // The instance the workspace started, as it names it; a workspace naming none
+                // lets the caller find it among the running ones.
+                if let Some(peer) = value.pointer(super::OPENED_PEER).and_then(Value::as_u64) {
+                    return Ok(peer.to_string());
+                }
+                let (_, running) = self.providers().await?;
+                running
+                    .iter()
+                    .rev()
+                    .find(|(_, instance)| instance["app_id"].as_str() == Some(app_id.as_str()))
+                    .map(|(peer, _)| peer.clone())
+                    .ok_or_else(|| format!("{app_id} opened, but no instance of it runs"))
+            }
+        }
     }
 
     async fn agent_status(&self, args: &AgentStatusArgs) -> Result<Reply, String> {

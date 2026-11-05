@@ -744,6 +744,40 @@ mod tests {
         )
     }
 
+    /// Tasks, as the app publishes it.
+    fn tasks() -> PackageMeta {
+        native(
+            "so.tilo.tasks",
+            "Tasks",
+            include_str!("../../../../apps/tasks/surface.toml"),
+        )
+    }
+
+    /// Answer the `count` invocations the door is sent with `answer` (one JSON line), and hand
+    /// back the invocations it was sent.
+    fn answering(
+        door: UnixStream,
+        count: usize,
+        answer: &'static str,
+    ) -> std::thread::JoinHandle<Vec<Json>> {
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(door.try_clone().expect("a clone"));
+            let mut door = door;
+            let mut seen = Vec::new();
+            for _ in 0..count {
+                let mut line = String::new();
+                if reader.read_line(&mut line).expect("a call") == 0 {
+                    break;
+                }
+                let message: Json = serde_json::from_str(&line).expect("a JSON call");
+                seen.push(message["invoke"].clone());
+                door.write_all(answer.as_bytes()).expect("answered");
+                door.write_all(b"\n").expect("answered");
+            }
+            seen
+        })
+    }
+
     /// What a program run answered, and how it ended.
     fn ran(task: &Task, source: &str) -> Json {
         task.session.run(
@@ -757,7 +791,7 @@ mod tests {
     fn a_program_names_a_native_apps_types_and_reads_its_fields() {
         let (task, _reader, _door) = task_with(&[chat()]);
         // Field reads against the app's published surface: a type-check is all a program does
-        // with them until it reaches the app.
+        // with them while the app's record stays in the app.
         let answer = ran(
             &task,
             "for c in find(chat.Channel) {\n    print(c.name, c.archived)\n}",
@@ -765,13 +799,110 @@ mod tests {
         assert_eq!(answer["state"], "failed", "{answer:#}");
         let why = answer["detail"].as_str().unwrap_or_default();
         assert!(why.contains("so.tilo.chat"), "{why}");
-        assert!(why.contains("is not yet reachable from a program"), "{why}");
+        assert!(why.contains("is not yet readable from a program"), "{why}");
         // A field the app does not publish is an error in the program, as in `tilolang check`.
         let wrong = ran(
             &task,
             "for c in find(chat.Channel) {\n    print(c.colour)\n}",
         );
         assert_eq!(wrong["state"], "rejected", "{wrong:#}");
+    }
+
+    #[test]
+    fn a_native_apps_record_is_a_root_a_program_names() {
+        let (task, _reader, _door) = task_with(&[chat(), tasks()]);
+        let catalogue = task.session.catalogue();
+        let roots = |app: &str| -> Vec<(String, String)> {
+            catalogue[app]["signatures"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|signature| signature["kind"] == "root")
+                .map(|signature| {
+                    (
+                        signature["name"].as_str().unwrap_or_default().to_owned(),
+                        signature["call"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect()
+        };
+        // The app the program invokes the record of, and how it writes it.
+        assert_eq!(
+            roots("chat"),
+            [("workspace".to_owned(), "chat.workspace".to_owned())],
+            "{catalogue:#}"
+        );
+        assert_eq!(
+            roots("tasks"),
+            [("tracker".to_owned(), "tasks.tracker".to_owned())],
+            "{catalogue:#}"
+        );
+    }
+
+    #[test]
+    fn a_program_changes_native_apps_through_their_actions() {
+        let (task, _reader, door) = task_with(&[chat(), tasks()]);
+        let calls = answering(door, 2, r#"{"ok": {}}"#);
+        let answer = ran(
+            &task,
+            "chat.rename_channel(chat.workspace, \"general\", \"town\")\ntasks.create(tasks.tracker, \"Ship it\")",
+        );
+        let calls = calls.join().expect("the door");
+        assert_eq!(answer["state"], "done", "{answer:#}");
+        assert_eq!(
+            calls,
+            [
+                json!({
+                    "app": "so.tilo.chat",
+                    "resource": "chat.workspace",
+                    "action": "rename-channel",
+                    "arguments": {"channel": "general", "name": "town"},
+                }),
+                json!({
+                    "app": "so.tilo.tasks",
+                    "resource": "tasks.tracker",
+                    "action": "create",
+                    "arguments": {
+                        "title": "Ship it",
+                        "parent": null,
+                        "body": null,
+                        "status": null,
+                        "assignee": null,
+                    },
+                }),
+            ]
+        );
+        assert_eq!(answer["changed"], 2, "{answer:#}");
+        // Both steps reach the task's history on the records the apps publish, so `undo task`
+        // takes them back like any tl app's.
+        assert_eq!(
+            answer["history"],
+            json!([
+                {"app": "so.tilo.chat", "resource": "chat.workspace", "published": false},
+                {"app": "so.tilo.tasks", "resource": "tasks.tracker", "published": false},
+            ])
+        );
+    }
+
+    #[test]
+    fn a_native_action_the_app_refuses_fails_the_program_and_changes_nothing() {
+        let (task, _reader, door) = task_with(&[chat()]);
+        let calls = answering(
+            door,
+            1,
+            r#"{"refused": "the workspace asks its members before renaming"}"#,
+        );
+        let answer = ran(
+            &task,
+            "chat.rename_channel(chat.workspace, \"general\", \"town\")",
+        );
+        let calls = calls.join().expect("the door");
+        assert_eq!(calls.len(), 1, "{calls:#?}");
+        assert_eq!(answer["state"], "failed", "{answer:#}");
+        let why = answer["detail"].as_str().unwrap_or_default();
+        assert!(why.contains("asks its members before renaming"), "{why}");
+        assert_eq!(answer["changed"], 0, "{answer:#}");
+        assert_eq!(answer["history"], json!([]), "{answer:#}");
     }
 
     #[test]

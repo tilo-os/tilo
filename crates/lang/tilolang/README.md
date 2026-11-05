@@ -125,8 +125,11 @@ resources, records and enums of its committed `surface.toml`, as types (`chat.Wo
 signatures against them. The language's tool (`tilolang check`) finds native apps among the
 `--path` directories (`--path apps/chat`, or `--path apps`), and an agent's task is handed the
 same catalogue by the session it runs in: every installed app's surface for its workspace, read
-by one loader. Reading native records and invoking native actions come later; a program that
-reaches for one now compiles and fails at run with one refusal naming the app.
+by one loader. Invoking a native app's verb, or setting a field of its record, is the app's own
+action: it goes to the app through the session's broker, which decides it as it decides the
+agent's own call and starts the app when it is not running, and the step sits in the task's
+history with every other. Reading what a native record holds comes later; a program that reads
+one now compiles and fails at run with one refusal naming the app.
 
 ## Syntax reference
 
