@@ -653,6 +653,7 @@ fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
     );
     assert!((alone.center().x - bar.center_lane.center().x).abs() < 1e-9);
 
+    let one = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
     chrome.borrow_mut().activities = vec![
         tea,
         ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Coffee", "0:30")
@@ -660,11 +661,10 @@ fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
     ];
     lay_out_and_draw(&mut bar, 1600.0);
     assert_eq!(bar.center_pill().more, 1, "one activity waits behind it");
-    assert!(
-        bar.center_rect.width() > alone.width(),
-        "its dot widens the pill: {:?} against {alone:?}",
-        bar.center_rect
-    );
+    // The band follows its target, so the pill it grows into is what the
+    // width is asked for: a dot is part of the pill, not painted over it.
+    let two = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
+    assert!(two > one, "its dot widens the pill: {two} against {one}");
 }
 
 fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
