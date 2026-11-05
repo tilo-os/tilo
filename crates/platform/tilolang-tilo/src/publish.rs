@@ -164,6 +164,10 @@ pub fn action_type(
     let build = move |subject: &Target, args: &ActionArgs| {
         let json = args.to_json();
         let caller = planner.caller();
+        // What the invocation is made from, as the caller named it with the arguments.
+        let from = args
+            .from()
+            .and_then(|from| ResourceRef::parse_id(&from.resource, from.kind.clone()));
         let request = PlanRequest {
             app: &app,
             kind: &kind,
@@ -171,9 +175,7 @@ pub fn action_type(
             resource: subject.get::<String>().map(String::as_str),
             args: &json,
             caller: caller.as_ref(),
-            // The published action is invoked on its subject; what it is made from is the
-            // caller's to name, and only a caller that plans an action itself can.
-            from: None,
+            from: from.as_ref(),
         };
         planner
             .plan(&request)

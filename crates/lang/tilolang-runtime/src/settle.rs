@@ -514,6 +514,7 @@ impl Core {
             action: rec.action.clone(),
             args,
             author: Some(identity.clone()),
+            from: None,
         };
         Ok(match self.run_action(&ctx, &aref)? {
             ActionOutcome::Done(v) => ("done".to_owned(), self.result_text(&v), String::new()),

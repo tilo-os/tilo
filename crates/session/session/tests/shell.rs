@@ -1323,6 +1323,7 @@ fn an_apps_open_the_shell_calls_starts_it() {
             resource: "app.so.tilo.sheets".to_owned(),
             action: "open".to_owned(),
             arguments: std::collections::BTreeMap::new(),
+            from: None,
         });
     until(&mut session, |_| !apps.invoked.borrow().is_empty());
     assert_eq!(

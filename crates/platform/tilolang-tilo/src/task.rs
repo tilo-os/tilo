@@ -600,6 +600,7 @@ fn published_call(
         action,
         args,
         subject,
+        from,
         ..
     } = invocation
     else {
@@ -639,6 +640,7 @@ fn published_call(
         };
         arguments.insert(name.clone(), json);
     }
+    made_from(from.as_ref(), &mut arguments, &published_id);
     Ok(json!({
         "app": app,
         "resource": resource,
@@ -646,6 +648,22 @@ fn published_call(
         "arguments": arguments,
         "published": true,
     }))
+}
+
+/// What the invocation is made from, when it is made from something, among the arguments the
+/// door takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
+/// its source with.
+fn made_from(
+    from: Option<&ResourceRef>,
+    arguments: &mut serde_json::Map<String, Json>,
+    published: impl Fn(&ResourceRef) -> String,
+) {
+    if let Some(from) = from {
+        arguments.insert(
+            tilo_actions::params::FROM_ARGUMENT.to_owned(),
+            json!({"ref": published(from), "ty": from.ty}),
+        );
+    }
 }
 
 /// The `arguments` of the action `action` declared by `meta`: each of `args` (past the first
@@ -698,6 +716,7 @@ fn native_call(
             action,
             args,
             subject,
+            from,
             ..
         } => {
             let Some(record) = record else {
@@ -710,11 +729,15 @@ fn native_call(
             let resource = subject
                 .as_ref()
                 .map_or_else(|| record.to_owned(), ResourceRef::id_string);
+            let mut arguments = arguments_of(apps, meta, action, args, subject.is_some())?;
+            if let Json::Object(arguments) = &mut arguments {
+                made_from(from.as_ref(), arguments, ResourceRef::id_string);
+            }
             Ok(json!({
                 "app": app,
                 "resource": resource,
                 "action": crate::catalogue::published_verb(app, action),
-                "arguments": arguments_of(apps, meta, action, args, subject.is_some())?,
+                "arguments": arguments,
             }))
         }
         Invocation::Edit {
@@ -772,7 +795,11 @@ fn call_of(
 ) -> Result<Json, String> {
     match invocation {
         Invocation::Action {
-            app, action, args, ..
+            app,
+            action,
+            args,
+            from,
+            ..
         } => {
             let subject = meta.subject_of(
                 &meta
@@ -787,11 +814,15 @@ fn call_of(
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
                 _ => package_resource_id(app),
             };
+            let mut arguments = arguments_of(apps, meta, action, args, subject.is_some())?;
+            if let Json::Object(arguments) = &mut arguments {
+                made_from(from.as_ref(), arguments, ResourceRef::id_string);
+            }
             Ok(json!({
                 "app": app,
                 "resource": resource,
                 "action": action,
-                "arguments": arguments_of(apps, meta, action, args, subject.is_some())?,
+                "arguments": arguments,
             }))
         }
         Invocation::Edit {
@@ -1359,6 +1390,7 @@ mod tests {
             destructive: false,
             author: None,
             subject: Some(record),
+            from: None,
         };
         let answer = invoker.invoke(&invocation);
         assert!(

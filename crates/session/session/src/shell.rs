@@ -508,7 +508,7 @@ impl Shell {
     ) {
         let mut invoke = invoke;
         self.link.serve(|ask: &Ask| {
-            let arguments: Map<String, Value> = ask
+            let mut arguments: Map<String, Value> = ask
                 .arguments
                 .iter()
                 .map(|(name, value)| {
@@ -516,6 +516,14 @@ impl Shell {
                     (name.clone(), typed(value, ty))
                 })
                 .collect();
+            // What the invocation is made from goes with its arguments: the app that takes it
+            // records what it makes as made from it.
+            if let Some(from) = &ask.from {
+                arguments.insert(
+                    tilo_actions::params::FROM_ARGUMENT.to_owned(),
+                    from.to_json(),
+                );
+            }
             invoke(&ask.resource, &ask.action, &arguments)
         });
     }

@@ -226,6 +226,32 @@ pub(crate) struct Offered<'m> {
     pub(crate) rest: &'m [ParamMeta],
     /// Whether it is presented for the subject: its own actions are, its holder's not.
     pub(crate) present: bool,
+    /// The resource the invocation is made from, when it is made from one.
+    pub(crate) from: Option<ResourceRef>,
+    /// The group the menu folds it under, when it is not the action's own.
+    pub(crate) group: Option<String>,
+    /// The label the menu gives it, when it is not the action's own.
+    pub(crate) label: Option<String>,
+}
+
+/// What a make offer is made from: the title the made resource starts with, and the type the
+/// subject is, which a parameter of the action may take.
+struct Source {
+    title: String,
+    app: String,
+    name: String,
+}
+
+impl Source {
+    /// Whether the type `ty`, written in the package `app`, is the type of this source.
+    fn names_param(&self, ty: &str, app: &str) -> bool {
+        let named = |key: &crate::meta::TypeKey| key.app == self.app && key.name == self.name;
+        match crate::meta::parse_ty(ty, app) {
+            Ok(crate::meta::Ty::Record(key)) => named(&key),
+            Ok(crate::meta::Ty::Union(keys)) => keys.iter().any(named),
+            _ => false,
+        }
+    }
 }
 
 /// The longest run of a conversation's unread messages a mention count reads: one page of
@@ -1392,6 +1418,7 @@ impl Core {
                 .clone()
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Bool(meta.default_view(ty).is_some()),
+            Value::Bool(meta.row_view(ty).is_some()),
         ]))
     }
 
@@ -1484,6 +1511,9 @@ impl Core {
                         .get(places_of(action).saturating_add(1)..)
                         .unwrap_or_default(),
                     present: true,
+                    from: None,
+                    group: None,
+                    label: None,
                 };
                 found.push((action.role.as_deref() == Some("primary"), at, index, shown));
             }
@@ -1519,17 +1549,174 @@ impl Core {
                         ],
                         rest,
                         present: false,
+                        from: None,
+                        group: None,
+                        label: None,
                     };
                     found.push((action.role.as_deref() == Some("primary"), at, index, shown));
                 }
             }
         }
         found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
+        // What it already offers as itself is not offered again as something to make: an
+        // action written for the subject is where a person finds it.
+        let direct: Vec<&str> = found
+            .iter()
+            .map(|(_, _, _, shown)| shown.action.id.as_str())
+            .collect();
         let mut out = Vec::new();
         for (_, _, _, shown) in found {
             out.extend(self.action_value(&shown, Some(subject))?);
         }
+        // Last, under the menu's one group, what can be made from it: a submenu of its own at
+        // the end, so what the app offers the item stays what a person reads first.
+        for shown in self.make_offers(subject, own.as_ref(), &packages)? {
+            if direct.contains(&shown.action.id.as_str()) {
+                continue;
+            }
+            out.extend(self.action_value(&shown, None)?);
+        }
         Ok(out)
+    }
+
+    /// The actions that can make something of `subject`: for every type of the packages this
+    /// runtime runs, the create action that makes it — one whose result is that type, whose
+    /// first parameter is the package's root it puts it in, and whose other parameters are a
+    /// title (the title its type is called by) and what it may default. The made resource is
+    /// made from `subject` and starts with its title. One per type: the action that takes a
+    /// source of `subject`'s type when the package declares one, since that action was written
+    /// for what the subject is.
+    fn make_offers<'m>(
+        &self,
+        subject: &RefValue,
+        own: Option<&(Rc<Package>, Rc<crate::registry::TypeInfo>)>,
+        packages: &'m [Rc<Package>],
+    ) -> HResult<Vec<Offered<'m>>> {
+        let source = match own {
+            Some((pkg, info)) => {
+                let Some(ty) = pkg.meta.types.iter().find(|ty| ty.id == info.id) else {
+                    return Ok(Vec::new());
+                };
+                Some(Source {
+                    title: self.title_of(&subject.target, &pkg.meta, ty)?,
+                    app: pkg.meta.app.clone(),
+                    name: info.name.clone(),
+                })
+            }
+            None => None,
+        };
+        let group = self.words.borrow().word("tilolang-make", &[], "Make");
+        let mut found: Vec<(usize, usize, bool, Offered<'m>)> = Vec::new();
+        for (rank, pkg) in packages.iter().enumerate() {
+            for action in pkg.meta.offered_actions() {
+                let Some((at, source_arg, shown)) =
+                    self.make_offer(pkg, action, source.as_ref(), subject, &group)
+                else {
+                    continue;
+                };
+                match found
+                    .iter_mut()
+                    .find(|(pkg, ty, _, _)| *pkg == rank && *ty == at)
+                {
+                    // A source of its type beats the plain create action of the same type.
+                    Some(held) if source_arg && !held.2 => {
+                        *held = (rank, at, source_arg, shown);
+                    }
+                    Some(_) => {}
+                    None => found.push((rank, at, source_arg, shown)),
+                }
+            }
+        }
+        found.sort_by_key(|(pkg, ty, _, _)| (*pkg, *ty));
+        Ok(found.into_iter().map(|(_, _, _, shown)| shown).collect())
+    }
+
+    /// The offer of making what `action` makes from a subject of the `source`'s type: `action`
+    /// makes a type its package declares, puts it in the package's root its first parameter
+    /// names, and takes the source, when a parameter's type is the source's type, and the title
+    /// its type is called by; what it leaves to default means a menu runs it as it is. Answers
+    /// the type it makes, whether the source is a parameter of it, and the offer.
+    fn make_offer<'m>(
+        &self,
+        pkg: &'m Rc<Package>,
+        action: &'m crate::meta::ActionMeta,
+        source: Option<&Source>,
+        subject: &RefValue,
+        group: &str,
+    ) -> Option<(usize, bool, Offered<'m>)> {
+        let meta = &pkg.meta;
+        // What it makes: the type as code writes it (`Task`), one the package declares.
+        let result = action.result.as_deref()?;
+        let Ok(crate::meta::Ty::Record(made)) = crate::meta::parse_ty(result, &meta.app) else {
+            return None;
+        };
+        let (at, ty) = meta
+            .types
+            .iter()
+            .enumerate()
+            .find(|(_, ty)| ty.name == made.name)?;
+        let title = ty.fields.iter().find(|field| {
+            field
+                .role
+                .as_ref()
+                .is_some_and(|role| role.word() == "title")
+        })?;
+        let root = action.params.first().and_then(|param| {
+            meta.roots
+                .iter()
+                .find(|root| names_type(meta, &param.ty, root))
+        })?;
+        // The package's root the made resource stands in: one this runtime holds, or, for an
+        // app it sends to, one that app holds.
+        let root = ResourceRef::root(format!("root-{root}"), root.clone());
+        if !pkg.foreign && self.store.borrow().type_of(&root).is_err() {
+            return None;
+        }
+        let source = source?;
+        let mut args = vec![Value::Ref(RefValue {
+            target: Rc::new(root),
+            author: None,
+        })];
+        let mut source_arg = false;
+        let mut title_arg = false;
+        let mut fits = true;
+        for param in action.params.iter().skip(1) {
+            if !source_arg && source.names_param(&param.ty, &meta.app) {
+                args.push(Value::Ref(subject.clone()));
+                source_arg = true;
+            } else if !title_arg && param.name == title.name && param.ty == "Text" {
+                args.push(Value::Text(source.title.clone()));
+                title_arg = true;
+            } else if param.default.is_some() {
+                break;
+            } else {
+                fits = false;
+                break;
+            }
+        }
+        // An action left asking for something after what this offer gives is one a menu cannot
+        // run.
+        let done = action
+            .params
+            .iter()
+            .skip(args.len())
+            .all(|param| param.default.is_some());
+        if !(fits && title_arg && done) {
+            return None;
+        }
+        Some((
+            at,
+            source_arg,
+            Offered {
+                action,
+                args,
+                rest: &[],
+                present: false,
+                from: Some(ResourceRef::clone(&subject.target)),
+                group: Some(group.to_owned()),
+                label: Some(sentence(&ty.name)),
+            },
+        ))
     }
 
     /// The action `reference` names (`new_project(t)`, as a view hands it to a prop that shows
@@ -1548,6 +1735,9 @@ impl Core {
             args: reference.args.clone(),
             rest: &[],
             present: false,
+            from: reference.from.clone(),
+            group: None,
+            label: None,
         };
         let value = self
             .action_value(&shown, None)?
@@ -1571,11 +1761,14 @@ impl Core {
         subject: Option<&RefValue>,
     ) -> HResult<Option<Value>> {
         let action = shown.action;
-        let mut label = self.words.borrow().word(
-            &tilolang::messages::key_of(&action.id),
-            &[],
-            &label_of(action),
-        );
+        let mut label = match &shown.label {
+            Some(label) => label.clone(),
+            None => self.words.borrow().word(
+                &tilolang::messages::key_of(&action.id),
+                &[],
+                &label_of(action),
+            ),
+        };
         let mut icon = action.icon.clone();
         let mut on: Option<bool> = None;
         if let Some(subject) = subject
@@ -1650,10 +1843,12 @@ impl Core {
                 action: action.id.clone(),
                 args: shown.args.clone(),
                 author,
+                from: shown.from.clone(),
             }),
-            action
+            shown
                 .group
                 .clone()
+                .or_else(|| action.group.clone())
                 .map_or_else(Value::none, |group| Value::some(Value::Text(group))),
             Value::Bool(action.frequent),
             Value::Bool(available),

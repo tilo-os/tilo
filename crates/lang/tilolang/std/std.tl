@@ -507,6 +507,43 @@ view thread_chip<T>(thread: T, count: Int) {
     }
 }
 
+/// What `of` was made from, when an action made it from another resource: that resource's title
+/// as a line that opens it. A resource made on its own shows nothing.
+view origin<R>(of: R) {
+    if let made = created(of), f = made.from {
+        ui.Link(
+            meta(f).title,
+            label: phrase("tilolang-origin", title: meta(f).title),
+            item: f,
+            role: .caption,
+        )
+    }
+}
+
+/// What `linked(of)` returns, each a card that opens it: drawn through its type's row view, so
+/// its state shows there (a done item shows done), above its type's name. Links by a field are
+/// left out: the page of the resource holding the field draws that reference, as its own
+/// section of related things, so drawing it here again would show it twice.
+view linked<R>(of: R) {
+    let links = linked(of).filter(l -> l.how != "field")
+    if not links.is_empty() {
+        row(gap: .related, wrap: true) {
+            for l in links {
+                ui.Card(item: l.of) {
+                    stack(gap: .tight) {
+                        if meta(l.of).row {
+                            show(l.of, row: true)
+                        } else {
+                            text(meta(l.of).title)
+                        }
+                        text(meta(l.of).type_name, role: .caption, secondary: true)
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one task run, is an entry saying who made it, what
 /// they did and how long ago. What they did is the sentence its last change says

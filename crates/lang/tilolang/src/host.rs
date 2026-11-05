@@ -367,6 +367,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether it opens in a window of its own: its type has a default view.",
             ),
+            (
+                "row",
+                "Bool",
+                "Whether its type declares a row view, the one a list of its type draws each item through.",
+            ),
         ],
     },
     ValueType {

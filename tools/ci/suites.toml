@@ -809,6 +809,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/links.rs",
+  "crates/platform/tilolang-tilo/tests/make_from.rs",
   "crates/platform/tilolang-tilo/tests/naming.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",

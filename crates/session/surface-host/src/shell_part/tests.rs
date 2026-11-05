@@ -252,11 +252,13 @@ fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
                 resource: DESK_RESOURCE.to_owned(),
                 action: "dismiss-notice".to_owned(),
                 arguments: BTreeMap::from([("notice".to_owned(), "1".to_owned())]),
+                from: None,
             },
             Ask {
                 resource: DESK_RESOURCE.to_owned(),
                 action: "clear-notices".to_owned(),
                 arguments: BTreeMap::new(),
+                from: None,
             },
         ],
         "refusals {:?}",
@@ -561,6 +563,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
             resource: "app.so.tilo.sheets".to_owned(),
             action: "open".to_owned(),
             arguments: BTreeMap::new(),
+            from: None,
         }],
         "{:?}",
         part.refusals()
@@ -874,6 +877,7 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
                 resource: "desktop:tab:7".to_owned(),
                 action: "close-tab".to_owned(),
                 arguments: BTreeMap::new(),
+                from: None,
             }),
             "with strips {strips:?}"
         );
@@ -1011,6 +1015,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
             resource: "desktop:desk".to_owned(),
             action: "search".to_owned(),
             arguments: BTreeMap::from([("query".to_owned(), "quarterly".to_owned())]),
+            from: None,
         }),
     );
 }

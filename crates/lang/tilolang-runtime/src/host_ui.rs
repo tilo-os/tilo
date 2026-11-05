@@ -220,6 +220,7 @@ impl Core {
                 value,
             ],
             author,
+            from: None,
         }))
     }
 
@@ -237,6 +238,7 @@ impl Core {
             action: THEN_ACTION.to_owned(),
             args: vec![first, next],
             author,
+            from: None,
         }))
     }
 
@@ -261,6 +263,7 @@ impl Core {
             action: OPEN_ACTION.to_owned(),
             args: vec![target, Value::Text(view), Value::Bool(front)],
             author,
+            from: None,
         }))
     }
 
@@ -303,6 +306,7 @@ impl Core {
             action: UNDO_ACTION.to_owned(),
             args,
             author,
+            from: None,
         }))
     }
 

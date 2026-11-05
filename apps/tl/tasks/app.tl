@@ -780,6 +780,7 @@ view task_page(t: Task) {
         }
         // What follows the heading stands in its body, under the text its title leads to.
         std.body() {
+            std.origin(t)
             section("Subtasks") {
                 // A task with no subtasks puts no tree up, and the walk over the tasks under
                 // this one is made only once there is one.
@@ -820,6 +821,7 @@ view task_page(t: Task) {
                     }
                 }
             }
+            std.linked(t)
             std.history(t)
         }
     }
@@ -1028,6 +1030,21 @@ scenario "a task that is late" -> Task {
         ),
     )
     call
+}
+
+/// A task whose notes name another one: its page draws the task it names as a card beside it.
+scenario "a task naming another" -> Task {
+    let flat = tasks.projects.insert(Project(name: "Move flat"))
+    let van = tasks.items.insert(
+        Task(title: "Book the van", project: flat, due: 2026-07-10, priority: .high),
+    )
+    tasks.items.insert(
+        Task(
+            title: "Pack the kitchen",
+            project: flat,
+            notes: RichText("Put everything in ", van, " before the morning."),
+        ),
+    )
 }
 
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.

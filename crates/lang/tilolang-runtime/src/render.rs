@@ -33,6 +33,9 @@ const SHOWN: &str = "of";
 /// The property of a `show` node naming the view it draws the resource through (its id or
 /// name); empty or absent for its type's default view.
 const SHOWN_AS: &str = "view";
+/// `show(r, row: true)`: draw the resource as a list of its type draws each item, through the
+/// row its type declares.
+const SHOWN_AS_ROW: &str = "row";
 /// The prefix of the properties of such a node that carry the view's arguments.
 const ARG_PREFIX: &str = "arg.";
 /// The prefix of the kind of the node a UI loop lowers to (`for:<app>:<row view id>`): one row
@@ -818,19 +821,31 @@ impl Core {
             Some(Value::Text(view)) if !view.is_empty() => Some(view.as_str()),
             _ => None,
         };
+        // A flag a view wrote as `row: true` reaches the node as `1`, as every flag does.
+        let row = match props.get(SHOWN_AS_ROW) {
+            Some(Value::Bool(flag)) => *flag,
+            Some(Value::Int(n)) => *n != 0,
+            _ => false,
+        };
         let chosen = match named {
             Some(_) => None,
+            None if row => None,
             None => self.chosen_view(shown, offer, acc),
         };
         let view = {
             let registry = self.registry.borrow();
-            match named {
-                Some(view) => registry.view_of_type(ty, view).ok_or_else(|| {
+            match (named, row) {
+                (Some(view), _) => registry.view_of_type(ty, view).ok_or_else(|| {
                     RuntimeError::Package(format!(
                         "`show`: `{ty}` has no view `{view}` that takes it alone"
                     ))
                 })?,
-                None => match chosen {
+                (None, true) => registry.row_view(ty).ok_or_else(|| {
+                    RuntimeError::Package(format!(
+                        "`show`: the type `{ty}` declares no row view to draw it as a row"
+                    ))
+                })?,
+                (None, false) => match chosen {
                     Some(view) => view,
                     None => registry.default_view(ty).ok_or_else(|| {
                         RuntimeError::Package(format!(

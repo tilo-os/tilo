@@ -74,6 +74,8 @@ tilolang-thread-replies = { $count ->
     [one] 1 reply
    *[other] { $count } replies
 }
+tilolang-make = Make
+tilolang-origin = From { $title }
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.

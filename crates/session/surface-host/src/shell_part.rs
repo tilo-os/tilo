@@ -602,6 +602,8 @@ pub struct Ask {
     pub resource: String,
     pub action: String,
     pub arguments: BTreeMap<String, String>,
+    /// The resource the invocation is made from, when it is made from one.
+    pub from: Option<ui::tilo_actions::params::MadeFrom>,
 }
 
 /// How far from an output's edge the pointer resting there counts as at it: a bar or dock
@@ -2730,6 +2732,7 @@ impl ShellPart {
             resource: DESK_RESOURCE.to_owned(),
             action: action.to_owned(),
             arguments,
+            from: None,
         });
     }
 

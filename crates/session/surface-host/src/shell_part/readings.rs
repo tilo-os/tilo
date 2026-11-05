@@ -227,6 +227,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 action,
                 args,
                 subject: Some(subject),
+                from,
                 ..
             } => {
                 let subject_id = subject.id_string();
@@ -243,6 +244,12 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                     resource: subject_id,
                     action: action.clone(),
                     arguments,
+                    from: from
+                        .as_ref()
+                        .map(|from| ui::tilo_actions::params::MadeFrom {
+                            resource: from.id_string(),
+                            kind: from.ty.clone(),
+                        }),
                 }
             }
             Invocation::Action {
@@ -254,6 +261,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 resource: self.session.get(action).cloned().unwrap_or_default(),
                 action: action.clone(),
                 arguments: session_arguments(self.verbs.get(action), args),
+                from: None,
             },
             Invocation::Action { name, .. } => {
                 return Invoked::Failed(format!(
@@ -277,6 +285,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                         ("field".to_owned(), field_id.clone()),
                         ("value".to_owned(), argument_text(value)),
                     ]),
+                    from: None,
                 }
             }
         };

@@ -481,6 +481,7 @@ impl Runtime {
             action: action.to_owned(),
             args,
             author: None,
+            from: None,
         };
         self.core.record_suggestion(invoker, &aref, suggestion)
     }

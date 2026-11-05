@@ -502,6 +502,14 @@ impl Registry {
         pkg.meta.default_view(&ty).map(str::to_owned)
     }
 
+    /// The id of the row view a list of `ty` (an id) draws each item through: the one the
+    /// type's package declares as its row.
+    pub fn row_view(&self, ty: &str) -> Option<ViewId> {
+        let ty = self.type_id(ty)?;
+        let pkg = self.package(self.types.get(&ty)?)?;
+        pkg.meta.row_view(&ty).map(str::to_owned)
+    }
+
     /// The id of the type `ty` names: a type id, or another app's type as its resources name
     /// it (`app#Type`, [`crate::foreign`]).
     pub fn type_id(&self, ty: &str) -> Option<TypeId> {

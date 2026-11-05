@@ -31,6 +31,9 @@ pub enum Invocation {
         /// The resource it is invoked on: the subject an action of another app names as the
         /// resource whose door takes the child invocation.
         subject: Option<ResourceRef>,
+        /// The resource the invocation is made from, when it is made from one: the door that
+        /// takes it records what it makes as made from it.
+        from: Option<ResourceRef>,
     },
     /// The field `field` (its name; `field_id` its id) of the resource `target` set to `value`.
     Edit {

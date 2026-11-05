@@ -560,7 +560,7 @@ impl Core {
         invoker: &Principal,
         aref: &ActionRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
-        self.invoke_direct_from(invoker, aref, None)
+        self.invoke_direct_from(invoker, aref, aref.from.as_ref())
     }
 
     /// [`Core::invoke_direct`] of an invocation made from the resource `from`: what the
@@ -1044,6 +1044,7 @@ impl Core {
                     Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
                     _ => None,
                 }),
+            from: aref.from.clone(),
         })
     }
 
@@ -1418,6 +1419,7 @@ impl Core {
             action,
             args,
             author,
+            from: None,
         }))
     }
 

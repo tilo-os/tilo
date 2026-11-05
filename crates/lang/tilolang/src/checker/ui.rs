@@ -752,6 +752,11 @@ impl Checker<'_> {
             self.prop(Ex::local(n, Ty::View), "view", v, a.value.span);
             return;
         }
+        if p.name == "show" && name == "row" {
+            let v = self.expr_as(&a.value, &Ty::Bool);
+            self.prop(Ex::local(n, Ty::View), "row", v, a.value.span);
+            return;
+        }
         if p.name == "show" && name == "of" {
             let v = self.expr(&a.value, None);
             if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
