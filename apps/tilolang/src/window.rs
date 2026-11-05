@@ -26,8 +26,9 @@ use tilolang_tilo::instance::{self, Config, Instance, Mode, Outgoing, Platform, 
 use tilolang_tilo::personal::{Keep, Personal};
 use tilolang_tilo::runtime::{OutsideSink, ResourceRef};
 use tilolang_tilo::{HostEffect, OpenEffect};
-use ui::framework::{PersonRecord, ResourceSurface, RunMode};
+use ui::framework::{ResourceSurface, RunMode, WorkspaceRecord};
 use ui::tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
+use ui::tilo_resource::Invoke;
 use ui::widget::controls::ControlResult;
 use ui::widget::{AppModel, Element, ModelPath, Widget};
 
@@ -204,10 +205,10 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
-    /// The person's own record of the workspace, when the window has it: the window and lens
-    /// state they set and what they have seen, so the place they picked is still theirs after a
-    /// restart and on their other devices ([`Personal`]).
-    personal: Option<PersonRecord<Personal>>,
+    /// The workspace's record of each person's own state, when the window has it: the window and
+    /// lens state they set and what they have seen, so the place they picked is still theirs
+    /// after a restart and on their other devices ([`Personal`]).
+    personal: Option<WorkspaceRecord<Personal>>,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -307,37 +308,54 @@ impl Window {
     }
 
     /// This window keeping the person's own state of the workspace in `record`: the window and
-    /// lens state they set in their views, and what they have seen. What their record holds is
+    /// lens state they set in their views, and what they have seen. What their entries hold is
     /// given to the views when the window shows ([`Self::bring_personal`]), and what they change
-    /// is kept back into it ([`Self::keep_personal`]).
+    /// is kept back into them ([`Self::keep_personal`]).
     #[must_use]
-    pub fn keeping_personal(mut self, record: Option<PersonRecord<Personal>>) -> Self {
+    pub fn keeping_personal(mut self, record: Option<WorkspaceRecord<Personal>>) -> Self {
         self.personal = record;
         self
     }
 
-    /// Give the views what the person's own record keeps: how their window shows its resource,
+    /// Give the views what the record keeps of this person: how their window shows its resource,
     /// where they are in it, and what they have seen. A slot already holding its value is left
     /// alone, so this runs every frame.
-    fn bring_personal(&mut self, record: &PersonRecord<Personal>) {
-        let kept = record.get();
+    fn bring_personal(&mut self, record: &WorkspaceRecord<Personal>) {
+        let state = record.get();
+        let kept = state.of(&self.me);
         self.instance.set_view_states(
             kept.slots
                 .iter()
-                .map(|slot| (slot.key(&self.me), slot.value.clone())),
+                .map(|slot| (slot.key(), slot.value.clone())),
         );
         self.instance.set_seen(
             kept.seen
                 .iter()
-                .map(|(resource, mark)| (resource.clone(), Some(mark.clone()))),
-            &kept.runs,
+                .map(|seen| (seen.resource.clone(), Some(seen.mark.clone()))),
+            &kept
+                .runs
+                .iter()
+                .map(|reviewed| reviewed.run.clone())
+                .collect::<Vec<_>>(),
         );
     }
 
-    /// Keep what the person changed of their own state since the last frame in their record:
-    /// the window and lens state they set, and what they marked seen. A change their record
-    /// cannot take stays on this device, told once, rather than stopping the window.
-    fn keep_personal(&mut self, record: &PersonRecord<Personal>) {
+    /// Keep what this person changed of their own state since the last frame in the record: the
+    /// window and lens state they set, and what they marked seen. A change the record cannot take
+    /// stays on this device, told once, rather than stopping the window.
+    fn keep_personal(&mut self, record: &WorkspaceRecord<Personal>) {
+        let keep_it = |keep: &Keep, what: &str| {
+            let invoke = match Invoke::<Personal>::apply(keep) {
+                Ok(invoke) => invoke,
+                Err(why) => {
+                    tracing::debug!(%why, "the change does not encode");
+                    return;
+                }
+            };
+            if let Err(error) = record.invoke(&invoke) {
+                tracing::warn!(%error, "personal: {what} stays on this device");
+            }
+        };
         let writes = self.instance.take_view_writes();
         let seen = self.instance.take_seen();
         for (key, value) in writes {
@@ -348,9 +366,7 @@ impl Window {
                     continue;
                 }
             };
-            if let Err(error) = record.apply(&keep) {
-                tracing::warn!(%error, "personal: a view's state stays on this device");
-            }
+            keep_it(&keep, "a view's state");
         }
         for write in seen {
             // Someone else's mark is not this person's to keep.
@@ -360,24 +376,32 @@ impl Window {
                     resource,
                     mark,
                 } if person.eq_ignore_ascii_case(&self.me) => Keep::Seen {
+                    person: self.me.clone(),
                     resource,
                     mark: Some(mark),
                 },
                 tilolang_tilo::runtime::seen::SeenWrite::Run { person, run }
                     if person.eq_ignore_ascii_case(&self.me) =>
                 {
-                    let mut runs: Vec<String> = record.with(|state| state.runs.clone());
+                    let mut runs: Vec<String> = record
+                        .get()
+                        .of(&self.me)
+                        .runs
+                        .into_iter()
+                        .map(|reviewed| reviewed.run)
+                        .collect();
                     if !runs.contains(&run) {
                         runs.push(run);
                         runs.sort();
                     }
-                    Keep::Runs { runs }
+                    Keep::Runs {
+                        person: self.me.clone(),
+                        runs,
+                    }
                 }
                 _ => continue,
             };
-            if let Err(error) = record.apply(&keep) {
-                tracing::warn!(%error, "personal: what the person saw stays on this device");
-            }
+            keep_it(&keep, "what the person saw");
         }
     }
 

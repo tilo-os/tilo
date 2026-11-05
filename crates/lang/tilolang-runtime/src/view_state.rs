@@ -11,10 +11,11 @@
 //! Every change bumps the slot's generation, which is how a view that read the slot knows to
 //! run again.
 //!
-//! What the person changes of a declared slot is kept in their own record of the workspace, not
-//! in this process's memory: the host takes each change ([`ViewStates::take_writes`]) and keeps
-//! it, and gives back what it kept when a window opens ([`ViewStates::restore`]), so the place a
-//! person picked is still theirs after a restart and on their other devices. What the runtime
+//! What the person changes of a declared slot is kept under their entries of the workspace's
+//! record of it, not in this process's memory: the host takes each change
+//! ([`ViewStates::take_writes`]) and keeps it, and gives back what it kept when a window opens
+//! ([`ViewStates::restore`]), so the place a person picked is still theirs after a restart and
+//! on their other devices. What the runtime
 //! itself keeps are platform readings (lenses present on a resource, seen marks, deliveries):
 //! those are [`ViewStates::set`]'s, and are never written to a record.
 
@@ -148,14 +149,15 @@ impl ViewStates {
     }
 
     /// Change a slot the person set in a view: kept as [`ViewStates::set`] keeps it, and once
-    /// for the host to write to the person's own record.
+    /// for the host to write under the person's entries of the workspace's record.
     pub fn write(&mut self, key: StateKey, value: Value) {
         self.set(key.clone(), value.clone());
         self.writes.push((key, value));
     }
 
     /// Give back what the person changed since this was last asked: what the host keeps in
-    /// their own record. A slot changed twice is handed over once, as it is now.
+    /// their entries of the workspace's record. A slot changed twice is handed over once,
+    /// as it is now.
     pub fn take_writes(&mut self) -> Vec<(StateKey, Value)> {
         let mut writes: Vec<(StateKey, Value)> = Vec::new();
         for (key, _) in std::mem::take(&mut self.writes) {

@@ -26,6 +26,13 @@ pub const WORKSPACE_RECORDS: &[WorkspaceRecord] = &[
         app: "so.tilo.chat",
         kind: "tilo.workspace.emoji",
     },
+    // Each person's place in the workspace's tilolang apps: their windows' and
+    // lenses' state and what they have seen, kept once for every package of the
+    // language rather than per package (`tilolang-tilo::personal`).
+    WorkspaceRecord {
+        app: "tilo.host",
+        kind: "tilolang.personal",
+    },
 ];
 
 /// The id of the workspace record of `kind` in any room: one per kind, the
@@ -61,5 +68,14 @@ mod tests {
         );
         assert!(workspace_record("so.tilo.chat", &workspace_record_id("chat.workspace")).is_none());
         assert!(workspace_record("so.tilo.chat", "tab:0000000000000000").is_none());
+        let personal = workspace_record_id("tilolang.personal");
+        assert_eq!(
+            workspace_record("tilo.host", &personal).map(|record| record.kind),
+            Some("tilolang.personal")
+        );
+        assert!(
+            workspace_record("so.tilo.lang.tasks", &personal).is_none(),
+            "one record for every package of the language, not one per package"
+        );
     }
 }

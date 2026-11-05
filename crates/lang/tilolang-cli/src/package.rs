@@ -186,7 +186,8 @@ ext = []
         version = toml_string(&options.version),
         runtime = toml_string(&options.tilo_runtime),
         tilolang = toml_string(&options.tilolang_runtime),
-        // The app's workspace record, and the record each person keeps their own state of it in.
+        // The app's workspace record, and the workspace's record of each person's own state
+        // of it, which every app of the language opens.
         record_kinds = [
             toml_string(RECORD_KIND),
             toml_string(tilolang::PERSONAL_RECORD_KIND),

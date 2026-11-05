@@ -14,6 +14,7 @@ use tilo_actions::surface::{
     VerbSurface,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
+use tilo_resource::Resource as _;
 use tilolang_runtime::meta::Ty;
 
 use crate::action::{CREATE_ACTION, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
@@ -340,13 +341,6 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 /// The record unit, where an action writes unless it says otherwise.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
-/// The verb keeping one slot of window or lens state in the person's own record.
-pub const VIEW_STATE: &str = "view-state";
-/// The verb keeping one seen mark in it.
-pub const SEEN: &str = "seen";
-/// The verb keeping the task runs a person reviewed in it.
-pub const RUNS: &str = "seen-runs";
-
 fn edit_verbs() -> Vec<VerbSurface> {
     let verb = |id: &str, label: &str, value: Json, ty: FieldType| VerbSurface {
         id: id.to_owned(),
@@ -536,38 +530,6 @@ pub fn host_surface() -> Surface {
     }
 }
 
-/// The surface of the person's own record of the app's workspace: what a change to their window
-/// and lens state and their seen marks names, in a record only they read
-/// (`crate::personal`). It is a person record kind, so a workspace lets the app make
-/// it and each person's instance keeps its own.
-#[must_use]
-pub fn personal_surface() -> Surface {
-    let verb = |id: &str, label: &str| VerbSurface {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        description: None,
-        kind: ActionKind::Undoable,
-        destructive: false,
-        incoming_message: false,
-        params: Vec::new(),
-        writes: vec![RECORD_UNIT.to_owned()],
-        field: None,
-    };
-    Surface {
-        kind: tilolang::PERSONAL_RECORD_KIND.to_owned(),
-        label: "Your state".to_owned(),
-        version: VERSION,
-        person: true,
-        verbs: vec![
-            verb(VIEW_STATE, "Keep a view's state"),
-            verb(SEEN, "Keep what is seen"),
-            verb(RUNS, "Keep reviewed runs"),
-        ],
-        fields: Vec::new(),
-        types: Vec::new(),
-    }
-}
-
 #[derive(Serialize)]
 struct SurfaceFile<'a> {
     resources: &'a [Surface],
@@ -596,7 +558,7 @@ pub fn surface_toml_reading(
     packages: &[&Meta],
     reads: &[Meta],
 ) -> Result<Vec<u8>, toml::ser::Error> {
-    let mut resources = vec![host_surface(), personal_surface()];
+    let mut resources = vec![host_surface(), crate::personal::Personal::surface()];
     for meta in packages {
         resources.extend(package_surfaces(meta));
     }

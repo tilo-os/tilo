@@ -85,11 +85,7 @@ impl Workspace {
 
     /// The window of `app` over an empty workspace as `person`, keeping `record` as their own
     /// state of it: the window and lens state they pick, and what they have seen.
-    fn personal(
-        app: &str,
-        person: &str,
-        record: ui::prelude::PersonRecord<tilolang_tilo::personal::Personal>,
-    ) -> Self {
+    fn personal(app: &str, person: &str, record: WorkspaceRecord<Personal>) -> Self {
         crate::app::builtin::choose(app);
         let meta = crate::app::builtin::package_named(app).expect("a built-in package");
         let sink = MemorySink::new();
@@ -106,11 +102,7 @@ impl Workspace {
     }
 
     /// [`Self::personal`] with `app`'s first scenario staged.
-    fn personal_seeded(
-        app: &str,
-        person: &str,
-        record: ui::prelude::PersonRecord<tilolang_tilo::personal::Personal>,
-    ) -> Self {
+    fn personal_seeded(app: &str, person: &str, record: WorkspaceRecord<Personal>) -> Self {
         let mut workspace = Self::personal(app, person, record);
         let scenario = crate::app::builtin::package_named(app)
             .and_then(|meta| meta.scenarios.first())

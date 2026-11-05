@@ -686,6 +686,23 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 "the launched app is the worker of its own route"
             );
 
+            // A record every app of the workspace opens is the workspace's,
+            // not its owner's alone: any app of the workspace holds its route,
+            // and the workspace's grants on the owner decide its changes.
+            let shared = collab_types::WORKSPACE_RECORDS
+                .iter()
+                .find(|record| record.app != env.route.app_id)
+                .expect("a record every app of the workspace opens, kept by another app");
+            let workspace_record = CrdtRoute::record(
+                shared.app,
+                env.route.cluster_id.clone(),
+                collab_types::workspace_record_id(shared.kind),
+            );
+            let kept = app
+                .join_channel(&workspace_record.channel_key(), &identity)
+                .await
+                .expect("an app of the workspace joins its workspace's record");
+
             // Another app's route in the same workspace, which this app
             // declares no read of: the launch vouches for nothing there.
             let other = CrdtRoute::record("so.tilo.notes", env.route.cluster_id.clone(), "notes-1");
@@ -695,7 +712,7 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
                 .err()
                 .expect("another app's route is not this app's to join");
             assert!(refused.to_string().contains("so.tilo.notes"), "{refused:?}");
-            drop((own, app));
+            drop((kept, own, app));
             rig.stop().await;
         })
         .await;
