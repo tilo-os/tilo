@@ -668,7 +668,7 @@ fn panel_pixel(frame: &Screenshot, output_width: i32) -> [u8; 4] {
     pixel(
         frame,
         physical - width() * scale.max(1) / 2,
-        frame.height as i32 / 4,
+        i32::try_from(frame.height).expect("a frame's height fits a pixel coordinate") / 4,
     )
 }
 

@@ -1,4 +1,4 @@
-//! The panel at a HiDPI display's scale: every control the old panel offered
+//! The panel at a `HiDPI` display's scale: every control the old panel offered
 //! is there, drawn at the size a 2× panel needs, and driving each one changes
 //! the setting it names.
 //!
@@ -18,7 +18,7 @@
 use std::rc::Rc;
 
 use tilo_quick_settings::host::{FixtureHost, Lent};
-use tilo_quick_settings::{Page, QsEffect, QsSection, QuickSettings, QuickSettingsApp, scenarios};
+use tilo_quick_settings::{QsEffect, QsSection, QuickSettings, QuickSettingsApp, scenarios};
 use ui::framework::testing::HeadlessApp;
 use ui::vello::kurbo::Rect;
 
