@@ -14,7 +14,8 @@
 //!
 //! Which versions are marked at all: every version someone else made, a person's or an agent's
 //! alike, and none the person made themselves. What the person has not seen is what changed
-//! under their hands, whoever changed it (§4).
+//! under their hands, whoever changed it (§4), and only where they looked: a resource they
+//! never looked at is new to them, not changed.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,10 +67,14 @@ pub fn seen_key(person: &str, resource: &str) -> StateKey {
     StateKey::runtime(SEEN_WINDOW, Some(person.to_owned()), resource)
 }
 
+/// The state under [`SEEN_WINDOW`] that holds the task runs a person reviewed, not a mark of a
+/// resource.
+pub const RUNS_STATE: &str = "$runs";
+
 /// The slot holding the task runs `person` reviewed: the state no resource id names.
 #[must_use]
 pub fn runs_key(person: &str) -> StateKey {
-    seen_key(person, "$runs")
+    seen_key(person, RUNS_STATE)
 }
 
 /// Whether `version` is one the host marks for `person`: a change anyone else made, a person's
@@ -82,6 +87,10 @@ pub fn is_marked(version: &Version, person: &str) -> bool {
 /// Which of `versions` (oldest first) `person` has not seen, oldest first: those after their
 /// mark and after their own newest version, which are marked ([`is_marked`]) and not of a run
 /// they reviewed (`runs`).
+///
+/// A resource the person neither looked at nor changed has nothing unseen for them: what they
+/// never looked at is new to them, not changed under their hands. So a place's count of what
+/// changed since they last looked costs what they looked at, never what the place holds.
 #[must_use]
 pub fn unseen(
     versions: &[Version],
@@ -89,6 +98,10 @@ pub fn unseen(
     mark: Option<&SeenMark>,
     runs: &[String],
 ) -> Vec<Version> {
+    let own = versions.iter().rposition(|v| v.who == person);
+    if mark.is_none() && own.is_none() {
+        return Vec::new();
+    }
     let mut from = 0;
     if let Some(mark) = mark {
         from = match versions.iter().rposition(|v| v.change == mark.change) {
@@ -99,7 +112,7 @@ pub fn unseen(
                 .map_or(0, |at| at.saturating_add(1)),
         };
     }
-    if let Some(own) = versions.iter().rposition(|v| v.who == person) {
+    if let Some(own) = own {
         from = from.max(own.saturating_add(1));
     }
     versions
@@ -146,7 +159,8 @@ mod tests {
             version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
         ];
         let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
-        // Nothing seen: what the agent and Ben changed, and none of Ada's own.
+        // Nothing marked: what the agent and Ben changed after Ada's own change, and none of
+        // her own.
         assert_eq!(
             changes(unseen(&versions, "ada", None, &[])),
             ["c2", "c3", "c4"]
@@ -159,6 +173,9 @@ mod tests {
         );
         // Ben edited c3 after c2: what he made is his, and what came after is not.
         assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
+        // Cy never looked at it and never changed it: nothing of it is unseen for him, however
+        // much changed.
+        assert!(unseen(&versions, "cy", None, &[]).is_empty());
         // A mark whose change the log no longer names stands by its time.
         let gone = SeenMark {
             change: "compacted".to_owned(),
@@ -180,8 +197,8 @@ mod tests {
             version("agent:a", "2026-10-30T09:03:00Z", "c4", true),
         ];
         let changes = |list: Vec<Version>| list.into_iter().map(|v| v.change).collect::<Vec<_>>();
-        // Every type's, with nothing to declare: Ben's change is unseen for Ada, and so is
-        // the agent's.
+        // Every type's, with nothing to declare: Ben's change is unseen for Ada, whose own
+        // change c1 is where she looked, and so is the agent's.
         assert_eq!(changes(unseen(&versions, "ada", None, &[])), ["c3", "c4"]);
         // Never one's own: Ben's own newest change bounds what he has seen, so the agent's
         // later change is all he has not.

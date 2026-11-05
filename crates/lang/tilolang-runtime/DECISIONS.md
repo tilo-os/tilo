@@ -213,10 +213,16 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   shared by default, and a reader who is told what a colleague changed can deal with it as they
   deal with an agent's. What the person made themselves is never marked: their own change is
   the newest they have seen of it.
+- **What the person never looked at is not marked**: a resource with neither a mark of theirs
+  nor a version of theirs has nothing unseen for them (`seen::unseen`). It is new to them, not
+  changed under their hands, and "since you last looked" needs a look. So the marks a window
+  shows a person are the same marks a place's count adds up: no item is marked in one place and
+  uncounted in the other.
 - **A place shows how many of what it lists is unseen** (`unseen(items)`): the items of a
-  collection or a list with a version after the person's mark of each, counted from the store's
-  versions index, so a window's sidebar says what changed without the app counting anything and
-  without reading the workspace record.
+  collection or of a list the person looked at that carry a change after their mark of them,
+  counted from the store's versions index. It is answered from the person's marks, never by
+  checking the place's items one by one: a place's count costs what the person has looked at,
+  not what the place holds, so a workspace of any size counts in the same time.
 
 ## Performance by default
 

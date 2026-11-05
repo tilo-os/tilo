@@ -16,7 +16,8 @@ use crate::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 use crate::registry::Package;
 use crate::render::Offer;
 use crate::runtime::Reading;
-use crate::seen::SeenMark;
+use crate::seen::{RUNS_STATE, SeenMark};
+use crate::store::Listing;
 use crate::value::{ActionRef, EnumValue, RefValue, ResourceRef, Value};
 use crate::view_state::StateKey;
 use tilolang::types::Ty;
@@ -41,6 +42,25 @@ fn with_time(shown: &Value, at: &str) -> Value {
         held.clone(),
         Value::Opt(Some(Box::new(Value::Text(at.to_owned())))),
     ])
+}
+
+/// Whether `id` (`doc/item`, as [`ResourceRef::id_string`] writes it) names one of `items`: an
+/// item of the collection `listing` reads, or a resource of the list.
+fn holds_item(items: &Value, listing: Option<&Listing>, id: &str) -> bool {
+    match items {
+        Value::Coll(coll) => {
+            let (Some((doc, Some(item))), Some(listing)) = (crate::value::split_id(id), listing)
+            else {
+                return false;
+            };
+            doc == coll.target.doc && matches!(listing.position(item), Some(Some(_)))
+        }
+        Value::List(list) => list.iter().any(|item| match item {
+            Value::Ref(reference) => reference.target.id_string() == id,
+            _ => false,
+        }),
+        _ => false,
+    }
 }
 
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
@@ -335,6 +355,7 @@ impl Core {
             }
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
+            Imp::UnseenCount => self.unseen_count_import(a),
             Imp::MetaOf => {
                 let subject = self.val(a.h(0)?)?;
                 let meta = match subject {
@@ -417,6 +438,75 @@ impl Core {
             Value::some(Value::resource(&at))
         });
         self.ret_h(value)
+    }
+
+    /// `unseen(items)`: how many of `items` — the items of a collection, or the resources of a
+    /// list — the person looking has not seen: the ones they looked at that someone changed
+    /// after their mark of them.
+    ///
+    /// Answered from the person's marks, never by checking the place's items one by one: what
+    /// they never looked at has nothing unseen for them, so a place of the sidebar costs what
+    /// the person has looked at, never what the place holds.
+    fn unseen_count_import(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let items = self.val(a.h(0)?)?;
+        let person = self.looking()?;
+        let count = self
+            .unseen_count_of(&person, &items)
+            .map_err(crate::engine::HostFail::Trap)?;
+        crate::core::ret_i64(i64::try_from(count).unwrap_or(i64::MAX))
+    }
+
+    /// How many of `items` carry what `person` has not seen ([`Self::unseen_count_import`]),
+    /// read by the frame running: it runs again when a mark of theirs moves, or when a version
+    /// of an item of the place arrives.
+    pub(crate) fn unseen_count_of(&self, person: &str, items: &Value) -> Result<usize, String> {
+        let marks = self
+            .view_states
+            .borrow()
+            .slots_of(crate::seen::SEEN_WINDOW, person);
+        // The person's marks are what the count is made of: it moves when any of them does.
+        for (key, value, generation) in &marks {
+            self.note_state_read(key.clone(), *generation, value);
+        }
+        let marked: Vec<(String, SeenMark)> = marks
+            .into_iter()
+            .filter(|(key, _, _)| key.state != RUNS_STATE)
+            .filter_map(|(key, value, _)| Some((key.state, mark_of(Some(&value))?)))
+            .collect();
+        if marked.is_empty() {
+            return Ok(0);
+        }
+        let listing = match items {
+            Value::Coll(coll) => Some(self.coll_listing(coll)?),
+            _ => None,
+        };
+        let runs = self.seen_runs(person);
+        let mut count: usize = 0;
+        for (resource, mark) in marked {
+            if !holds_item(items, listing.as_deref(), &resource) {
+                continue;
+            }
+            let Some(at) = ResourceRef::parse_id(&resource, String::new()) else {
+                continue;
+            };
+            // The item's own type, so a change of any field of it is read as one: it may make
+            // the item unseen, or seen.
+            let Ok(ty) = self.store.borrow().type_of(&at) else {
+                continue;
+            };
+            let at = ResourceRef { ty, ..at };
+            let versions = self
+                .store
+                .borrow()
+                .versions(&at)
+                .map_err(|e| e.to_string())?;
+            self.read_versions_of(&at);
+            if crate::seen::unseen(&versions, person, Some(&mark), &runs).is_empty() {
+                continue;
+            }
+            count = count.saturating_add(1);
+        }
+        Ok(count)
     }
 
     /// `workspace.me`: the person the view is shown to, which the frame running carries as the

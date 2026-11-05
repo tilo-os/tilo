@@ -230,6 +230,7 @@ imports! {
     VersionEnd = "version_end" ([H, I32] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
+    UnseenCount = "unseen_count" ([H] -> [I64]);
     FirstUnseen = "first_unseen" ([H, H, H] -> [H]);
     Mentions = "mentions" ([H, H, H] -> [I64]);
     Steps = "steps" ([H] -> [H]);
