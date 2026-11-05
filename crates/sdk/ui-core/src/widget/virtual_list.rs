@@ -374,6 +374,9 @@ pub struct VirtualList<M: ListModel> {
     /// ([`VirtualList::on_activate_view`]).
     opens: Option<(crate::widget::view_choice::ViewChoice, KeyCallback<M::Key>)>,
     on_activate: Option<KeyCallback<M::Key>>,
+    /// A press on a row opens it, without waiting for a second one
+    /// ([`VirtualList::open_on_press`]).
+    open_on_press: bool,
     /// Told a row's subtasks folded or opened ([`VirtualList::on_fold`]).
     on_fold: Option<FoldCallback<M::Key>>,
     /// The menu the rows and the list's own space open ([`VirtualList::with_context_menu`]).
@@ -584,6 +587,7 @@ impl<M: ListModel> VirtualList<M> {
             view: None,
             opens: None,
             on_activate: None,
+            open_on_press: false,
             on_fold: None,
             menu: None,
             row_builds: 0,

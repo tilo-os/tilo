@@ -736,6 +736,36 @@ fn pointer_input_separates_delegate_presses_drag_scroll_and_selection() {
 }
 
 #[test]
+fn a_press_opens_the_row_of_a_list_that_opens_on_press() {
+    let opened = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let door = Rc::clone(&opened);
+    let model = VecListModel::new((0_u64..3).collect(), |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(60.0)
+    .with_semantic_key(ToString::to_string)
+    .open_on_press()
+    .on_activate_view("probe-list", move |key| door.borrow_mut().push(key));
+    let (taffy, node) = lay_out(&mut list, 200.0);
+
+    dispatch(&mut list, &cursor(10.0), &taffy, node);
+    dispatch(&mut list, &left(ElementState::Pressed), &taffy, node);
+    dispatch(&mut list, &left(ElementState::Released), &taffy, node);
+
+    assert_eq!(*opened.borrow(), vec![0], "one press opens the row");
+    assert!(
+        list.selection().is_selected(&0),
+        "the row it opened is the choice"
+    );
+}
+
+#[test]
 fn list_reorder_previews_and_commits_valid_drops_only() {
     {
         let mut list = VirtualList::from_items(

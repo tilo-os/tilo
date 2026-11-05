@@ -1169,6 +1169,9 @@ pub struct ListRow {
     pub(crate) shared_after_trailing: Option<f64>,
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
+    /// What a reader hears of the row beyond its name and value; it is not
+    /// shown to the pointer.
+    description: Option<String>,
     status: Option<(StatusKind, String)>,
     /// An unseen change of what the row shows ([`Self::change`]).
     change: Option<Changed>,
@@ -1270,6 +1273,7 @@ impl ListRow {
             shared_after_trailing: None,
             leading_tooltip: None,
             tooltip: None,
+            description: None,
             status: None,
             change: None,
             struck: false,
@@ -1681,6 +1685,15 @@ impl ListRow {
     #[must_use]
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// What a reader hears of the row beyond its name and value — a task's
+    /// status beside its reference, say. It stays out of the pointer's way:
+    /// the row explains itself to a reader, not on hover.
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
@@ -3149,6 +3162,9 @@ impl Widget for ListRow {
             .with_semantic_key(self.activation.id());
         if let Some(tooltip) = &self.leading_tooltip {
             node.description = Some(tooltip.clone());
+        }
+        if let Some(description) = &self.description {
+            node.description = Some(description.clone());
         }
         // The face numbers the actions it shows; address each by its place
         // among all the row's actions, as its binding is, and say where it

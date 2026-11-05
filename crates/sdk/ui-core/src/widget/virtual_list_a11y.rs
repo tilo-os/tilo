@@ -117,6 +117,15 @@ impl<M: ListModel> VirtualList<M> {
                 .context_menu(self.menu.is_some())
                 .disabled(!enabled),
         );
+        // A row that is a control of its own — a task's box, say — keeps its state and what it
+        // explains of itself on the node the list gives it, so a reader hears one row rather
+        // than a row and an unnamed child of it.
+        if let Some(checked) = child.as_ref().and_then(|node| node.state.checked) {
+            item.state.checked = Some(checked);
+        }
+        if let Some(description) = child.as_ref().and_then(|node| node.description.clone()) {
+            item.description = Some(description);
+        }
         // A tree row says how deep it stands and, where it has subtasks, whether they show.
         if let Some(marks) = &self.tree {
             item = item.with_level(marks.depth(&row.key).saturating_add(1) as usize);
@@ -230,6 +239,17 @@ impl<M: ListModel> VirtualList<M> {
                         .map_or(self.rect.center(), |row| row.center());
                     self.open_row_menu(key, point)
                 }
+                // A row that carries a box of its own takes the tick, as a
+                // press on the box does.
+                Action::ToggleCheck => self
+                    .mounted
+                    .iter_mut()
+                    .find(|mounted| mounted.key == key)
+                    .is_some_and(|mounted| {
+                        mounted
+                            .widget
+                            .perform_semantic_action(target, action, state, path)
+                    }),
                 _ => false,
             };
         }

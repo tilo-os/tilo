@@ -1,6 +1,6 @@
 //! What a screen reader gets from the task list: every row a named item it
-//! can open, a box it can tick to finish the issue, and the menu a right
-//! click opens — all on the same actions the pointer uses.
+//! can open, tick to finish the issue, and open a menu on — all on the same
+//! actions the pointer uses.
 
 #![allow(
     clippy::expect_used,
@@ -40,22 +40,6 @@ fn id_of(app: &mut TestApp<App>, name: &str, role: Role) -> NodeId {
         .0
 }
 
-/// The row's box, which sits among the row's children.
-fn row_box(app: &mut TestApp<App>, name: &str) -> ui::accesskit::Node {
-    let row = named(app, name, Role::TreeItem);
-    let nodes = app.harness().a11y_nodes();
-    row.children()
-        .iter()
-        .find_map(|child| {
-            nodes
-                .iter()
-                .find(|(id, node)| id == child && node.role() == Role::CheckBox)
-                .cloned()
-        })
-        .unwrap_or_else(|| panic!("the box beside {name:?}"))
-        .1
-}
-
 fn status_of(app: &TestApp<App>, title: &str) -> Status {
     app.state()
         .issues
@@ -89,7 +73,8 @@ fn choose(app: &mut TestApp<App>, item: &str) {
     app.settle();
 }
 
-/// The list publishes each issue as a row a reader reads, opens and acts on.
+/// The list publishes each issue as a row a reader reads, opens, finishes
+/// and acts on.
 #[test]
 fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
     let mut app = open();
@@ -100,7 +85,8 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
     app.settle();
 
     // Each row is a tree item named as the list reads, with its spoken
-    // status, and the actions a press on it and a right click make.
+    // status, the state of its box, and the actions a press on it and a
+    // right click make.
     for (number, title) in [(1, "Write the launch notes"), (2, "Book the room")] {
         let name = format!("#{number}  {title}");
         let row = named(&mut app, &name, Role::TreeItem);
@@ -117,16 +103,17 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
             "{name:?} says no status: {:?}",
             row.description()
         );
+        assert_eq!(
+            row.toggled(),
+            Some(Toggled::False),
+            "{name:?} reads unfinished"
+        );
     }
 
-    // The box beside a row is a checked control of its own: activating it
-    // finishes the issue without moving it.
-    let box_ = row_box(&mut app, "#1  Write the launch notes");
-    assert_eq!(box_.label(), Some("#1  Write the launch notes"));
-    assert_eq!(box_.toggled(), Some(Toggled::False));
-    let box_id = id_of(&mut app, "#1  Write the launch notes", Role::CheckBox);
+    // Ticking a row's box finishes the issue without moving it.
+    let row_id = id_of(&mut app, "#1  Write the launch notes", Role::TreeItem);
     app.harness()
-        .perform_a11y_action(box_id, &ui::a11y::Action::ToggleCheck)
+        .perform_a11y_action(row_id, &ui::a11y::Action::ToggleCheck)
         .expect("the box toggles");
     app.settle();
     assert_eq!(status_of(&app, "Write the launch notes"), Status::Done);
@@ -136,8 +123,7 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
         "finishing an issue keeps its place"
     );
     let row = named(&mut app, "#1  Write the launch notes", Role::TreeItem);
-    let box_ = row_box(&mut app, "#1  Write the launch notes");
-    assert_eq!(box_.toggled(), Some(Toggled::True), "the box reads done");
+    assert_eq!(row.toggled(), Some(Toggled::True), "the row reads done");
     assert!(
         row.description().is_some_and(|said| said.contains("Done")),
         "the row reads done: {:?}",

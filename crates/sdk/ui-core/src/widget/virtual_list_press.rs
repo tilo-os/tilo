@@ -14,6 +14,13 @@ impl<M: ListModel> VirtualList<M> {
         let state = modifiers.state();
         let toggle = state.control_key() || state.super_key();
         let extend = state.shift_key();
+        if self.open_on_press && !toggle && !extend {
+            // Opening the row is one act: the selection it moves onto the way is not reported
+            // as a choice of its own.
+            self.focus_row(key.clone());
+            self.activate_key(key);
+            return;
+        }
         self.apply_selection(key.clone(), toggle, extend);
         self.focus_row(key.clone());
         if toggle || extend {
