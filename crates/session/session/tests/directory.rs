@@ -937,9 +937,22 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
     ask_to_join(&mut session, &lounge.workspace);
     // The person chose Join, so the sheet closes as it starts (see
     // `follow_directory`): what became of the join is said where they are.
-    wait_until(&mut session, "the host refused the enrollment", |session| {
-        listing(session, "Lounge").action == ListingAction::TryAgain
+    // The host answered the door before the enrollment was asked of it, so
+    // its refusal comes back as an answer, not as the join's patience spent.
+    let refused = common::wait_maybe(&mut session, |session| {
+        (listing(session, "Lounge").action == ListingAction::TryAgain).then_some(())
     });
+    assert!(
+        refused.is_some(),
+        "the host refused the enrollment, so the row offers to join again: the sheet says \
+         {:?}; the shell's refusals: {:?}; the session says: {:?}",
+        session
+            .workspace_directory()
+            .expect("the session hosts the workspace directory")
+            .directory(),
+        session.shell_refusals(),
+        session.accessible_labels()
+    );
     // The person stays where they were: no empty workspace was ever shown to
     // arrive in, and none was taken away again.
     let in_front_after = session
@@ -962,14 +975,20 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
     );
     // The failure reaches the person as a banner, in the door's own words,
     // not as protocol text and not as an empty workspace they land in.
-    wait_until(&mut session, "the refusal is said as a banner", |session| {
+    let bannered = common::wait_maybe(&mut session, |session| {
         session
             .notifications()
             .log()
             .history()
             .iter()
             .any(|notice| notice.title.contains("join") || notice.body.contains("Lounge"))
+            .then_some(())
     });
+    assert!(
+        bannered.is_some(),
+        "the refusal is said as a banner where the person is: the session says: {:?}",
+        session.accessible_labels()
+    );
     let said: Vec<String> = session
         .notifications()
         .log()

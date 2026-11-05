@@ -159,7 +159,10 @@ pub(crate) fn follow_directory(
                     outcome = "slot removed",
                     "join: the desk would not make the workspace's slot, so nothing was joined"
                 );
-                directory.set_note(Some(error));
+                directory.failing(tilo_sheets::words(
+                    "directory-join-failed",
+                    &[("name", &joined.name), ("error", &error)],
+                ));
             }
         }
         if let Some(seat) = seat {
@@ -167,12 +170,10 @@ pub(crate) fn follow_directory(
         }
     }
     // A join the person chose closed the sheet when it started. What became
-    // of it arrives after, so a failure said by the sheet is shown where the
-    // person now is — a banner — rather than in a sheet that left.
-    if let Some(note) = directory.take_unseen_note()
-        && seat.is_none_or(|seat| !seat.presentation().is_drawn())
-    {
-        failure_notice(notices, &note);
+    // of it arrives after, so a join that failed is said where the person is
+    // now — a banner — rather than in a sheet that left.
+    for said in directory.take_failures_to_say() {
+        failure_notice(notices, &said);
     }
     let Some(seat) = seat else {
         return;
@@ -1266,25 +1267,26 @@ impl crate::Shared {
                         .map(|workspace| workspace.name.clone())
                 })
                 .unwrap_or_else(|| key.clone());
+            // The name the site listed the workspace under, not the id the
+            // desk numbers it by: a join that is refused says which
+            // workspace stayed away by the name the person chose it under.
+            let listed = self
+                .directory_store
+                .listed_name(&key)
+                .unwrap_or_else(|| name.clone());
             match &enrolled.result {
                 Ok(()) => {
                     tracing::info!(
                         target: JOIN_FLOW_TARGET,
                         workspace = %key,
                         slot = enrolled.slot.0,
-                        name = %name,
+                        name = %listed,
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
                     // The slot is made now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the desk a refused join left is the desk it found.
-                    // It shows the name the site listed it under, not the id
-                    // the desk would number it by.
-                    let listed = self
-                        .directory_store
-                        .listed_name(&key)
-                        .unwrap_or_else(|| name.clone());
                     self.open_joined_workspace(&key, &listed);
                     // The person is told the workspace is theirs now, where
                     // they are: the sheet closed as soon as they chose Join,
@@ -1296,7 +1298,7 @@ impl crate::Shared {
                         target: JOIN_FLOW_TARGET,
                         workspace = %key,
                         slot = enrolled.slot.0,
-                        name = %name,
+                        name = %listed,
                         %error,
                         outcome = "slot removed",
                         "join: the host refused the enrollment, so no workspace was joined and the person stays where they were"
@@ -1309,21 +1311,25 @@ impl crate::Shared {
                     if let Some(held) = self.slot_of(&key) {
                         self.release_workspace(held);
                     }
-                    // The sheet says why to a person looking at it; a session
-                    // nobody is looking at says it here too.
+                    // The sheet says why to a person who opens it again, and
+                    // the banner says it where they are now.
                     tracing::warn!(%key, %error, "a workspace was not joined");
                 }
             }
-            self.directory_store.enrolled(&key, &name, &enrolled.result);
+            self.directory_store
+                .enrolled(&key, &listed, &enrolled.result);
             settled = true;
         }
         let Some(seat) = &self.directory else {
             return;
         };
         if settled {
-            if self.directory_store.settling() {
-                seat.show(directory::view(&self.directory_store, &self.handle));
-            } else {
+            // The sheet lists the directory as it now stands, a refusal
+            // included: its row says the join did not happen and offers to
+            // join again, so the directory a person opens next is not the one
+            // they left while the join was on its way.
+            seat.show(directory::view(&self.directory_store, &self.handle));
+            if !self.directory_store.settling() {
                 // The person lands in the workspace they joined: the
                 // directory has nothing left to say.
                 seat.presentation().close();

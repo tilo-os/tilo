@@ -437,9 +437,9 @@ pub(crate) struct Store {
     status: std::cell::RefCell<Status>,
     listed: std::cell::RefCell<Vec<Listed>>,
     note: std::cell::RefCell<Option<String>>,
-    /// The note already shown where the person was, so a failure is said once
-    /// off the sheet.
-    seen_note: std::cell::RefCell<Option<String>>,
+    /// The join failures not yet said to the person where they are: the sheet
+    /// leaves when a join starts, so what became of it is said off the sheet.
+    say: std::cell::RefCell<Vec<String>>,
     /// One join at a time.
     joining: std::cell::RefCell<Option<String>>,
     /// The join whose enrollment into its workspace is on its way, by the
@@ -637,7 +637,7 @@ impl Store {
         match result {
             Ok(()) => *self.note.borrow_mut() = None,
             Err(reason) => {
-                *self.note.borrow_mut() = Some(tilo_sheets::words(
+                self.failing(tilo_sheets::words(
                     "directory-join-failed",
                     &[("name", name), ("error", reason)],
                 ));
@@ -711,7 +711,7 @@ impl Store {
                         );
                         // The sheet says why, and the row says it was not
                         // joined, to try again.
-                        *self.note.borrow_mut() = Some(tilo_sheets::words(
+                        self.failing(tilo_sheets::words(
                             "directory-join-failed",
                             &[("name", &name), ("error", &reason)],
                         ));
@@ -739,7 +739,7 @@ impl Store {
                             outcome = "failed",
                             "join: the pasted link or code joined no workspace"
                         );
-                        *self.note.borrow_mut() = Some(tilo_sheets::words(
+                        self.failing(tilo_sheets::words(
                             "directory-code-failed",
                             &[("error", &reason)],
                         ));
@@ -785,15 +785,18 @@ impl Store {
         *self.note.borrow_mut() = note;
     }
 
-    /// Take the note a join left behind, so a failure that outlived the sheet
-    /// is shown where the person now is: `Some` once, as the note changes.
-    pub(crate) fn take_unseen_note(&self) -> Option<String> {
-        let note = self.note.borrow().clone()?;
-        if self.seen_note.borrow().as_deref() == Some(note.as_str()) {
-            return None;
-        }
-        *self.seen_note.borrow_mut() = Some(note.clone());
-        Some(note)
+    /// Say a join that failed: the sheet says it, and so does the banner
+    /// where the person is now, since a join the person chose took the sheet
+    /// with it when it started.
+    pub(crate) fn failing(&self, said: String) {
+        *self.note.borrow_mut() = Some(said.clone());
+        self.say.borrow_mut().push(said);
+    }
+
+    /// Take what became of the joins that failed since this was last asked,
+    /// each as the sheet says it: the person is told wherever they are.
+    pub(crate) fn take_failures_to_say(&self) -> Vec<String> {
+        std::mem::take(&mut *self.say.borrow_mut())
     }
 }
 
@@ -1786,5 +1789,32 @@ mod tests {
         assert!(!activity.contains("12"), "{activity}");
         let members = members_line(&listed).expect("a listing with members");
         assert!(members.contains("12"), "{members}");
+    }
+
+    #[test]
+    fn a_join_on_its_way_is_not_a_failure_to_say() {
+        let store = Store::default();
+        store.expect_enrollment("1d198715");
+        assert!(
+            store.take_failures_to_say().is_empty(),
+            "the sheet says the join is on its way; the person is not told it failed"
+        );
+        store.enrolled(
+            "1d198715",
+            "Lounge",
+            &Err("the workspace's host refused: invitation was cancelled".into()),
+        );
+        assert_eq!(
+            store.take_failures_to_say(),
+            [
+                "Couldn't join Lounge: the workspace's host refused: invitation was cancelled"
+                    .to_owned()
+            ],
+            "the refusal is said where the person is, in the host's own words"
+        );
+        assert!(
+            store.take_failures_to_say().is_empty(),
+            "and it is said once"
+        );
     }
 }
