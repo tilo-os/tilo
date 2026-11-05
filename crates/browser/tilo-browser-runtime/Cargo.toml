@@ -45,6 +45,10 @@ tilo-desktop-search = { version = "0.1.0", path = "../../session/desktop-search"
 # The native shell's chrome widgets: top bar, backdrop, launchpad.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 tilo-desktop = { version = "0.1.0", path = "../../session/desktop" }
+# The workspace directory's sheet, and the reads and joins behind it: the
+# session's own, over the page's `fetch`.
+tilo-sheets = { version = "0.1.0", path = "../../session/sheets" }
+tilo-workspace-directory = { version = "0.1.0", path = "../../session/workspace-directory" }
 serde.workspace = true
 serde_json.workspace = true
 # Warnings and errors reach the console (src/console_log.rs).
@@ -75,6 +79,7 @@ tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identit
 ed25519-dalek.workspace = true
 hex.workspace = true
 uuid.workspace = true
+url.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 tokio = { workspace = true, features = ["sync"] }
 

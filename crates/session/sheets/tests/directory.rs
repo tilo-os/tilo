@@ -8,12 +8,16 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{
-    Directory, DirectoryApp, DirectoryEffect, DirectorySeat, Listing, ListingAction, Status,
+    self, Directory, DirectoryApp, DirectoryEffect, DirectorySeat, Listing, ListingAction, Status,
 };
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
+use ui::headless::FrameHarness;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -21,12 +25,16 @@ fn staged(scenario: &str) -> HeadlessApp<DirectoryApp> {
     HeadlessApp::<DirectoryApp>::capture_at(Some(scenario), VIEWPORT).unwrap()
 }
 
-fn says(app: &mut HeadlessApp<DirectoryApp>, text: &str) -> bool {
-    app.harness().a11y_nodes().iter().any(|(_, node)| {
+fn frame_says(frame: &FrameHarness, text: &str) -> bool {
+    frame.a11y_nodes().iter().any(|(_, node)| {
         node.label().is_some_and(|label| label.contains(text))
             || node.description().is_some_and(|said| said.contains(text))
             || node.value().is_some_and(|value| value.contains(text))
     })
+}
+
+fn says(app: &mut HeadlessApp<DirectoryApp>, text: &str) -> bool {
+    frame_says(app.harness(), text)
 }
 
 fn listing(key: &str, name: &str, action: ListingAction) -> Listing {
@@ -186,4 +194,57 @@ fn a_join_running_holds_the_other_buttons() {
         "{buttons:?}"
     );
     assert!(held.iter().all(|(_, disabled)| *disabled), "{buttons:?}");
+}
+
+#[test]
+fn the_sheet_alone_lists_a_fixture_and_asks_through_the_door_it_was_given() {
+    // One surface, two hosts: the session's window and a web page both build
+    // this sheet from the directory they keep, the search they keep, and their
+    // own way to ask. Mounted with nothing but those three, it lists what the
+    // directory holds and asks through the door it was handed.
+    let asked: Rc<RefCell<Vec<DirectoryEffect>>> = Rc::default();
+    let ask: directory::Ask = {
+        let asked = Rc::clone(&asked);
+        Rc::new(move |effect| asked.borrow_mut().push(effect))
+    };
+    let query = ui::LocalState::new(String::new());
+    let inputs = ui::headless::fixture_runner_inputs();
+    let mut frame = FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        directory::sheet(&directory(), &query, &ask),
+        VIEWPORT,
+        inputs.theme,
+        inputs.text_renderer,
+        ui::collaboration::local_user_id(),
+    );
+    frame.relayout();
+    assert!(
+        frame_says(&frame, "Gardeners"),
+        "the fixture's first listing"
+    );
+    assert!(
+        frame_says(&frame, "Chess club"),
+        "the fixture's second listing"
+    );
+    frame
+        .perform_named(
+            "directory-search",
+            &A11yAction::SetValue("garden".to_owned()),
+        )
+        .unwrap();
+    frame.relayout();
+    // The search is the host's: it keeps it, and builds the sheet again when
+    // it moves (the page's directory compares its revision as the window's
+    // switch does).
+    assert_eq!(query.with(String::clone), "garden");
+    frame
+        .perform_named("directory-row-garden", &A11yAction::Activate)
+        .unwrap();
+    frame.relayout();
+    assert_eq!(
+        asked.borrow().as_slice(),
+        [DirectoryEffect::Join {
+            key: "garden".to_owned()
+        },]
+    );
 }

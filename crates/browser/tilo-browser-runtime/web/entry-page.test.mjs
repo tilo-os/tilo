@@ -68,7 +68,7 @@ async function fixture({boot, remembered = [], own = false, search = '', session
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
     .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
-    .replace('isPublicHome, joinViaHost,', 'isPublicHome,')
+    .replace('isPublicHome, joinGranted, joinViaHost,', 'isPublicHome, joinGranted,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
@@ -132,14 +132,14 @@ test('workspaces another host held at the origin of the page host are no longer 
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Invite someone']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace', 'Invite someone']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
 test('the page keeps switch and invitation actions together and dispatches both', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Invite someone']);
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace', 'Invite someone']);
   diagnostics.onHostAction('invite-someone');
   await tick();
   assert.deepEqual(calls, ['invite']);

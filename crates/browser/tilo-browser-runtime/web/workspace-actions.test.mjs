@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createWorkspaceActions, INVITE, invitedLine, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
+import {createWorkspaceActions, INVITE, invitedLine, JOIN_WORKSPACE, NEW_WORKSPACE, WAITING} from './workspace-actions.mjs';
 
 test('an invited wait-list entry says how long ago it was invited', () => {
   const now = Date.UTC(2026, 9, 24, 12);
@@ -53,7 +53,7 @@ test('the owner invites with a link, hears once who asks, and lets them in from 
     inviteLink: text => `https://tilo.so/#/@node.example:8443/w/${WORKSPACE}?invite=${text}`,
     ui: {share: async offer => { shared.push(offer); }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id, INVITE.id, WAITING.id]);
+  assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id, JOIN_WORKSPACE.id, INVITE.id, WAITING.id]);
 
   await actions.perform(INVITE.id);
   assert.deepEqual(calls, [['invite', {role: 'editor'}]]);
@@ -76,7 +76,7 @@ test('a member the workspace lets invite hears who asks to join and lets them in
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
     every: run => { polls.push(run); return () => {}; }, inviteLink: text => text, ui: {fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [INVITE.id, WAITING.id]);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, INVITE.id, WAITING.id]);
   assert.equal(banners.length, 1);
   assert.equal(banners[0].title, 'Bo asks to join');
   await actions.perform(banners[0].action.id);
@@ -99,7 +99,7 @@ test('the wait list is listed with who waits, gets no banner, and each address i
   await actions.attach(mount);
   await polls[0]();
   // Nobody to let in now: the inviter finds the address in the list.
-  assert.deepEqual(ids(shown.at(-1)), [INVITE.id, WAITING.id]);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, INVITE.id, WAITING.id]);
   assert.equal(banners.length, 0);
   await actions.perform(WAITING.id);
   assert.deepEqual(await listed.load(), {people: [], waitList: [ed]});
@@ -140,12 +140,12 @@ test('a member who just invited someone hears who asks to join, though the host 
   const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
     inviteLink: text => text, ui: {share: async () => {}, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [INVITE.id]);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, INVITE.id]);
   shownWaiting = true;
   await actions.perform(INVITE.id);
   assert.deepEqual(calls, [['invite', {role: 'editor'}]]);
   await polls[0]?.();
-  assert.deepEqual(ids(shown.at(-1)), [INVITE.id, WAITING.id]);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, INVITE.id, WAITING.id]);
   assert.equal(banners.at(-1)?.title, 'Cy asks to join');
 });
 
@@ -156,7 +156,7 @@ test('someone the workspace does not let invite is never asked to let anyone in'
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
     every: () => { polled = true; return () => {}; }, inviteLink: text => text, ui: {}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [INVITE.id]);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, INVITE.id]);
   await actions.perform(WAITING.id);
   assert.equal(polled, false);
   assert.deepEqual(banners, []);
@@ -214,7 +214,7 @@ test('a member of a workspace that is not public still invites with a signed inv
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)}, inviteLink: text => text,
     ui: {share: async offer => { shared.push(offer); }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.equal(shown.at(-1)[0].title, INVITE.title);
+  assert.equal(shown.at(-1).find(action => action.id === INVITE.id).title, INVITE.title);
   await actions.perform(INVITE.id);
   assert.deepEqual(calls, [['invite', {role: 'editor'}]]);
   assert.equal(shared[0].link, 'SIGNED-invitation');
@@ -238,7 +238,7 @@ test('a new workspace is made on a machine the person set up, and opened', async
     open: async where => { opened.push(where); },
     ui: {askWorkspaceName: save => save('Acme'), fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id]);
+  assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id, JOIN_WORKSPACE.id]);
   await actions.perform(NEW_WORKSPACE.id);
   assert.deepEqual(calls, [['lobby', origin], ['create', 'Acme'], ['enter', WORKSPACE], ['dispose']]);
   // Opened as held by the machine's host, which the browser remembers it under.

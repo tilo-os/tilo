@@ -94,6 +94,8 @@ mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
+mod directory;
+#[cfg(target_arch = "wasm32")]
 mod feedback_code;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;

@@ -247,6 +247,11 @@ struct Config {
     /// (`#?link=`); the profile card asks the person to confirm it.
     #[serde(default)]
     link_offer: Option<String>,
+    /// The workspace directory this page browses (`mountDesktop({directory})`):
+    /// the site whose directory it lists, the person a join is made as, and
+    /// the workspaces the page holds.
+    #[serde(default)]
+    directory: Option<crate::directory::PageDirectoryConfig>,
 }
 
 impl Config {
@@ -1174,6 +1179,7 @@ fn present_desktop(
             about: config.about.clone(),
             build: config.build.clone(),
             link_offer: config.link_offer.clone(),
+            directory: config.directory.clone(),
         },
         Rc::clone(&requests),
         crate::shell::ChromeSources {

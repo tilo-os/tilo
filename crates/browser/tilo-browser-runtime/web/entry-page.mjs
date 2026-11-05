@@ -38,7 +38,8 @@ import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE, invitedLine} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
-  hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
+  heldWorkspaces, hostDeviceOf, hostToReconnect, isPublicHome, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
+  keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedWorkspace, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
@@ -716,6 +717,9 @@ export async function startEntryPage({mode}) {
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
     ...(query.has('invite') ? {onInvite: () => { globalThis.tiloInvites += 1; }} : {}),
+    // The directory sheet's Join, which its door granted: the page joins with
+    // the invitation it answered, then shows the workspace.
+    onJoinGranted: joined => { void openGrantedWorkspace(joined); },
     // The render state is for tests and tools (data-phase, data-frames on
     // the root element); the bar only tells the person something they can
     // act on, unless the page was opened with ?debug.
@@ -819,6 +823,22 @@ export async function startEntryPage({mode}) {
     mountDesktop: async (surface, options) => {
       const identity = options.peer ? null : currentIdentity() ?? await browserIdentity({create: false}).catch(() => null);
       return mountDesktop(surface, identity ? {author: identity.userPublicKey, ...options} : options);
+    },
+    // The workspace directory its desktop browses (`mountDesktop({directory})`):
+    // this site's listings, the person a join is made as, and the workspaces
+    // this page holds.
+    directory: () => {
+      if (!admitting?.entry?.base) return null;
+      const scope = admitting.scope ?? null;
+      const current = scope?.kind === 'room'
+        ? {kind: 'room', host: scope.host, room: scope.room ?? admitted?.workspace ?? null, name: workspaceName} : null;
+      const user = currentIdentity()?.userPublicKey;
+      return {
+        site: admitting.entry.base,
+        ...(user ? {person: {userPublicKey: user,
+          name: displayName ?? chosenDisplayName(user) ?? defaultDisplayName(user)}} : {}),
+        held: heldWorkspaces({entered: enteredWorkspaces(), current}),
+      };
     },
     ownDesktopOpen: home => ownDesktopOpen(home),
     enterViaHost: async ({workspace, room}) => {
@@ -955,6 +975,27 @@ export async function startEntryPage({mode}) {
         device: custody.slot ? profileDevice(profile, globalThis.localStorage, custody.slot) : device,
         runtime, requireExistingCertificate: true}));
     },
+  };
+
+  /** The directory sheet's Join: its door granted this page an invitation
+   * into a listed workspace, so the page joins with it as it joins one from a
+   * link, then shows it. */
+  const openGrantedWorkspace = async joined => {
+    if (!opened) return;
+    try {
+      // The same join an invitation link takes, which keeps the membership so
+      // the opened page reconnects as this person.
+      const {peer, origin, room, name} = await joinGranted(joined, {
+        join: options => deps.joinWorkspace(options), displayName: displayName ?? null,
+      });
+      await peer?.dispose?.();
+      await openWorkspace({choice: {origin, room, name}, page: opened, status});
+    } catch (error) {
+      console.warn('joining a listed workspace:', error);
+      const messages = await localeMessagesSoon();
+      const said = failureMessage(error, {workspace: joined?.name ?? null, loaded: Boolean(runtime), admitted: true, messages});
+      await card(said ?? 'That workspace did not let this page in.', [['Close', null]]);
+    }
   };
   try {
     const page = await boot({mode, surface, status, deps, diagnostics, onStep: arrive});

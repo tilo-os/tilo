@@ -86,6 +86,18 @@ pub(crate) enum HostRequest {
     /// profile names them, and wears an account's picture until the person
     /// uploads their own (`onHostAction('set-linked', {accounts})`).
     Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
+    /// The directory's door let this person into a workspace
+    /// (`mountDesktop({onJoinGranted})`): the invitation it granted them, the
+    /// one-time token the page redeems it with at `origin`, and the workspace
+    /// to open.
+    Joined {
+        origin: String,
+        invitation: String,
+        #[serde(rename = "admissionToken")]
+        admission_token: String,
+        workspace: String,
+        name: String,
+    },
 }
 
 /// The page's host action that lets the person choose their name; the
@@ -128,6 +140,10 @@ pub(crate) struct HostOffers {
     /// A linked-account offer's token the page arrived with: the profile
     /// card opens on it, asking the person to confirm.
     pub link_offer: Option<String>,
+    /// The workspace directory this page browses (`mountDesktop({directory})`):
+    /// a page has no community site, identity on disk or desk of its own to
+    /// read one from.
+    pub directory: Option<crate::directory::PageDirectoryConfig>,
 }
 
 /// Who this desktop's person is when they make something in the workspace,
@@ -448,6 +464,9 @@ pub(crate) struct BrowserShell {
     people_open: bool,
     /// The roster pinned out of the popover, and following someone.
     pinned: people::PagePeople,
+    /// The workspace directory, over the page while it is up: the session's
+    /// own sheet, with this page's site, person and workspaces.
+    directory: crate::directory::PageDirectory,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -528,9 +547,14 @@ impl BrowserShell {
             || self.picker.needs_animation_frame()
             || (self.people_open && self.people.needs_animation_frame())
             || self.pinned.needs_animation_frame()
-            || [&self.desk as &dyn Widget, &self.top, &self.profile]
-                .iter()
-                .any(|child| child.needs_redraw())
+            || [
+                &self.desk as &dyn Widget,
+                &self.top,
+                &self.profile,
+                &self.directory,
+            ]
+            .iter()
+            .any(|child| child.needs_redraw())
     }
 
     pub fn new(
@@ -588,6 +612,13 @@ impl BrowserShell {
             tilo_menu,
             offers.mac,
         );
+        // The page's directory: over the desk, from this page's own site,
+        // person and workspaces (`mountDesktop({directory})`).
+        let directory = crate::directory::PageDirectory::new(
+            Rc::clone(&requests),
+            offers.directory.as_ref(),
+            &chrome.wake,
+        );
         Self {
             desk,
             top,
@@ -602,6 +633,7 @@ impl BrowserShell {
             people: CollaboratorsOverlay::default(),
             people_open: false,
             pinned: people::PagePeople::new(),
+            directory,
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -1074,6 +1106,12 @@ impl BrowserShell {
             match ask {
                 DesktopAsk::Intent(intent) => {
                     let _ = self.page_intent(intent);
+                }
+                // The workspace menu's "Join a workspace…", which the page
+                // offers with the session's host actions: the directory the
+                // session's shell opens, over the page's own site.
+                DesktopAsk::HostAction(id) if id == tilo_desktop::desktop_host::JOIN_WORKSPACE => {
+                    self.directory.open();
                 }
                 DesktopAsk::HostAction(id) => {
                     // The empty desk's welcome verbs are the desktop's own,
@@ -1572,6 +1610,7 @@ impl Widget for BrowserShell {
         changed |= self.top.update(state, path);
         changed |= self.desk.update(state, path);
         changed |= self.follow_asks();
+        changed |= self.directory.follow();
         self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
@@ -1602,23 +1641,27 @@ impl Widget for BrowserShell {
         let top = self.top.build_layout(taffy, theme, map);
         let profile = self.profile.build_layout(taffy, theme, map);
         let pinned = self.pinned.build_layout(taffy, theme, map);
+        let directory = self.directory.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        taffy.widget_node(style, &[desk, top, profile, pinned], map, self)
+        taffy.widget_node(style, &[desk, top, profile, pinned, directory], map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [desk, top, profile, pinned] = taffy.children(node).unwrap_or_default()[..] {
+        if let [desk, top, profile, pinned, directory] =
+            taffy.children(node).unwrap_or_default()[..]
+        {
             self.desk.apply_layout(taffy, desk, inner);
             self.top.apply_layout(taffy, top, inner);
             self.profile.apply_layout(taffy, profile, inner);
             self.pinned.apply_layout(taffy, pinned, inner);
+            self.directory.apply_layout(taffy, directory, inner);
         }
     }
 
@@ -1647,6 +1690,9 @@ impl Widget for BrowserShell {
             self.people.clear();
             self.pinned.set_panel(None);
         }
+        // Over everything but the picker, while the person browses the
+        // directory.
+        self.directory.draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);
@@ -1655,7 +1701,8 @@ impl Widget for BrowserShell {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let [desk, top, profile, _] = ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
+        let [desk, top, profile, _, directory] =
+            ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
         else {
             return;
         };
@@ -1676,6 +1723,16 @@ impl Widget for BrowserShell {
                 self.picker
                     .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
             return;
+        }
+        // The directory sheet, like the profile card: it takes what it
+        // covers, the keyboard and the press that dismisses it.
+        if self.directory.is_open() {
+            self.directory
+                .handle_event(event, &mut ctx.reborrow(ctx.path, directory));
+            if *ctx.handled {
+                self.directory.follow();
+                return;
+            }
         }
         self.hints.heard(event, ui::time::now());
         if self.people_event(event, ctx) {
@@ -1711,6 +1768,7 @@ impl Widget for BrowserShell {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.people_open
             && !self.people.wants_pointer_capture()
+            && !self.directory.is_open()
             && !self.pinned.wants_pointer_capture()
             && self.cursor.is_none_or(|point| !self.pinned.contains(point))
             && !self.top.menu_open()
@@ -1727,7 +1785,13 @@ impl Widget for BrowserShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.desk, &self.top, &self.profile, &self.pinned]
+        vec![
+            &self.desk,
+            &self.top,
+            &self.profile,
+            &self.pinned,
+            &self.directory,
+        ]
     }
 
     fn visit_retained_components(
@@ -1753,6 +1817,7 @@ impl Widget for BrowserShell {
             &mut self.top,
             &mut self.profile,
             &mut self.pinned,
+            &mut self.directory,
         ]
     }
 
@@ -1788,9 +1853,14 @@ impl Widget for BrowserShell {
     /// child, says here that it moves.
     fn needs_animation_frame(&self) -> bool {
         self.hints.needs_animation_frame(ui::time::now())
-            || [&self.desk as &dyn Widget, &self.top, &self.profile]
-                .iter()
-                .any(|child| child.needs_animation_frame())
+            || [
+                &self.desk as &dyn Widget,
+                &self.top,
+                &self.profile,
+                &self.directory,
+            ]
+            .iter()
+            .any(|child| child.needs_animation_frame())
     }
 
     /// The earliest wake any part of the page asked for.

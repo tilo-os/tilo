@@ -11,8 +11,9 @@ use crate::Listed;
 use crate::store::Store;
 
 /// A workspace the caller already holds: its id, the key its desk knows it
-/// by, and the name it shows.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// by, and the name it shows. A caller that keeps no desk says them itself
+/// (`Hold` is read from a page's `mountDesktop({directory})`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Held {
     /// The workspace's id, as a listing names it.
     pub workspace: String,

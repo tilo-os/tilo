@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, leaveWaitList, waitListing, confirmWaitList, waitListStanding, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, leaveWaitList, waitListing, confirmWaitList, waitListStanding, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -797,4 +797,38 @@ test('the person switches between the home and the workspaces they entered, neve
       subtitle: 'Workspace · globex.example · did not open last time'},
     {id: 'open-workspace:https://rooms.example/TEAM', title: 'Open Team', label: 'Team', source: 'workspaces', subtitle: 'Workspace · rooms.example'},
   ]);
+});
+
+test('the directory lists the workspaces this page holds by the host actions that open them, the one in front included', () => {
+  const held = heldWorkspaces({
+    entered: [
+      {origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Commons'},
+      // The same workspace remembered twice is offered once.
+      {origin: 'https://rooms.example/', room: 'WORKSPACE', name: 'Commons'},
+      {origin: 'https://garden.example', room: 'GARDEN', name: null},
+    ],
+    current: {kind: 'room', host: 'https://rooms.example/join', room: 'HERE', name: 'Here'},
+  });
+  assert.deepEqual(held, [
+    {workspace: 'HERE', key: 'open-workspace:https://rooms.example/HERE', name: 'Here'},
+    {workspace: 'WORKSPACE', key: 'open-workspace:https://rooms.example/WORKSPACE', name: 'Commons'},
+    {workspace: 'GARDEN', key: 'open-workspace:https://garden.example/GARDEN', name: 'garden.example'},
+  ]);
+  // A page in no workspace holds only what it remembered.
+  assert.deepEqual(heldWorkspaces({entered: [], current: {kind: 'own'}}), []);
+});
+
+test('a join the directory was granted is made with its invitation and token, then opened under its name', async () => {
+  const joined = [];
+  const grant = await joinGranted(
+    {origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', workspace: 'WORKSPACE', name: 'Gardeners'},
+    {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Brave Otter'},
+  );
+  assert.deepEqual(joined, [{origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', displayName: 'Brave Otter'}]);
+  assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Gardeners'});
+});
+
+test('a grant that carries no invitation joins nothing', async () => {
+  await assert.rejects(() => joinGranted({origin: 'https://rooms.example', invitation: ''}, {join: async () => {}}), TypeError);
+  await assert.rejects(() => joinGranted({origin: '', invitation: 'INV'}, {join: async () => {}}), TypeError);
 });

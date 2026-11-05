@@ -321,6 +321,43 @@ export function workspaceActions(choices, {current = null} = {}) {
   });
 }
 
+/**
+ * The workspaces this page holds, as the directory sheet shows them
+ * (`mountDesktop({directory: {held}})`, `Held` in the runtime): each by the
+ * workspace id a site lists it as, and by the host action id that opens it.
+ * `current` (the scope in front) comes too, so the workspace the page is in
+ * says Open rather than Join.
+ */
+export function heldWorkspaces({entered = [], current = null} = {}) {
+  const held = [];
+  const seen = new Set();
+  const add = (origin, room, name) => {
+    if (!origin || !room || seen.has(room)) return;
+    seen.add(room);
+    const at = originOf(origin);
+    held.push({workspace: room, key: `${OPEN_WORKSPACE}${at}/${room}`, name: name || new URL(at).host});
+  };
+  if (current?.kind === 'room') add(current.host, current.room, current.name ?? null);
+  for (const entry of entered) add(entry?.origin, entry?.room, entry?.name ?? null);
+  return held;
+}
+
+/**
+ * Join the workspace a site's directory let this person into
+ * (`mountDesktop({onJoinGranted})`): the sheet's Join already asked the
+ * door, so the page joins with what it answered — the invitation, and the
+ * one-time token only this page can redeem — through the same join a link's
+ * invitation takes (`join`, the page's `joinWorkspace`), then shows it.
+ * Resolves to `{peer, origin, room, name}`.
+ */
+export async function joinGranted({origin, invitation, admissionToken = '', workspace = null, name = null}, {join, displayName = null, ...connectOptions} = {}) {
+  if (!origin || !invitation) throw new TypeError('a granted join names the origin that granted it, and its invitation');
+  if (typeof join !== 'function') throw new TypeError('a granted join needs the page\'s join');
+  const peer = await join({...connectOptions, origin, invitation, admissionToken, ...(displayName ? {displayName} : {})});
+  const room = peer?.workspace ?? workspace;
+  return {peer, origin: originOf(origin), room, name: name || room};
+}
+
 /** What a person the host took out of a workspace is told. */
 export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
 
