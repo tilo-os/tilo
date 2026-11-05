@@ -467,3 +467,44 @@ fn a_renewal_a_persons_device_signed_replaces_the_joined_certificate_it_came_fro
         "a renewal may not widen what the device may do"
     );
 }
+
+/// A device that holds its own root keeps it in its identity record, not
+/// only in `user-identity/privkey.bin`. It reissues its own certificate, so
+/// it is never the device that has to ask the person's other devices — and a
+/// session that mistook it for one would leave it presenting a certificate
+/// that ran out.
+#[test]
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+fn a_device_holding_its_own_root_renews_itself_rather_than_through_the_fleet() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (personal, paths, expired) = aged_throwaway(tmp.path(), 36 * HOUR);
+    let now = tilo_clock::unix_now_ns();
+    assert!(expired.is_expired_at(now));
+    assert!(
+        !paths.user_privkey.exists(),
+        "this device's root lives in its identity record"
+    );
+    assert!(
+        joined_device_renewal_due(&paths, now).is_none(),
+        "this device reissues its own certificate, so nothing is asked of the person's devices"
+    );
+    assert!(
+        next_device_certificate_renewal(&personal, &paths).is_some_and(|due| due <= now),
+        "so the reissue is due here, before the certificate is presented"
+    );
+    // A device that joined the person's identity holds no root: nothing here
+    // can reissue its certificate, so it is the one that asks their devices.
+    let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+        .expect("this device's identity record");
+    let mut joined = expired;
+    joined.capabilities = tilo_user_identity::DeviceCapabilities::member();
+    joined.signature = [0; 64];
+    let digest = tilo_user_identity::device_cert_signing_digest(&joined).expect("a digest to sign");
+    joined.signature = identity.sign(&digest).expect("the joined certificate");
+    persist::write_device_cert(&paths.device_cert, &joined).expect("the joined certificate");
+    assert_eq!(
+        joined_device_renewal_due(&paths, now).map(|held| held.device_public_key),
+        Some(joined.device_public_key),
+        "a joined device's due certificate is renewed by the person's devices"
+    );
+}

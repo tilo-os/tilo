@@ -18,6 +18,11 @@
 //! failed on — the fabric coming back, custody becoming available — through
 //! [`tilo_identity_host::provisioning::RENEWAL_CAUSES`], and the running
 //! renewal loop picks up the new expiry on its own.
+//!
+//! A join renews before it presents its certificate
+//! ([`before_presenting`]): a device that reissues its own does so there,
+//! and a joined device waits for the ask the pass may already have under
+//! way, so what a host is shown is never a certificate that ran out.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -37,12 +42,18 @@ pub(crate) struct FleetRenewal {
     paths: IdentityPaths,
     /// The directory this session's identity record lives in.
     identity_dir: std::path::PathBuf,
+    /// The person's fabric the ask goes over: none while this session has
+    /// none, and then nothing is asked.
+    fabric: Option<SharedLink>,
     /// When the last ask ended without a renewal: what keeps a failure from
     /// being retried on every pass.
-    asked_at: Arc<Mutex<Option<Instant>>>,
+    asked_at: Mutex<Option<Instant>>,
     /// Whether a renewal ask is under way: the worker clears it however it
     /// ends, so the next pass after a failure may ask again.
-    asking: Arc<std::sync::atomic::AtomicBool>,
+    asking: std::sync::atomic::AtomicBool,
+    /// One ask at a time: a join needing the renewal waits here for the ask
+    /// already under way instead of asking over it.
+    one_at_a_time: Mutex<()>,
 }
 
 impl FleetRenewal {
@@ -54,64 +65,52 @@ impl FleetRenewal {
     /// ([`tilo_identity_host::provisioning::ensure_collaboration_identity`]),
     /// and for a session with no identity at all.
     #[must_use]
-    pub(crate) fn for_joined_device() -> Option<Self> {
+    pub(crate) fn for_joined_device(fabric: Option<SharedLink>) -> Option<Self> {
         let identity_dir = runtime_identity::identity_dir_from_env().ok()?;
         let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
         if !tilo_user_identity::persist::joined_device_is_enrolled(&paths).ok()? {
             return None;
         }
-        Some(Self::new(identity_dir, paths))
+        Some(Self::new(identity_dir, paths, fabric))
     }
 
     /// The renewal of the joined device whose identity lives in
-    /// `identity_dir`, holding the keys and certificate at `paths`.
+    /// `identity_dir`, holding the keys and certificate at `paths`, asking
+    /// over `fabric`.
     #[must_use]
-    pub(crate) fn new(identity_dir: std::path::PathBuf, paths: IdentityPaths) -> Self {
+    pub(crate) fn new(
+        identity_dir: std::path::PathBuf,
+        paths: IdentityPaths,
+        fabric: Option<SharedLink>,
+    ) -> Self {
         Self {
             paths,
             identity_dir,
-            asked_at: Arc::new(Mutex::new(None)),
-            asking: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            fabric,
+            asked_at: Mutex::new(None),
+            asking: std::sync::atomic::AtomicBool::new(false),
+            one_at_a_time: Mutex::new(()),
         }
     }
 
     /// One pass: when this device joined a person's identity and its
     /// certificate is due, ask the person's devices for a renewal, off the
     /// loop. Returns whether an ask started.
-    pub(crate) fn follow(&self, fabric: &SharedLink) -> bool {
+    pub(crate) fn follow(self: &Arc<Self>) -> bool {
         use std::sync::atomic::Ordering;
         if self.asking.load(Ordering::Acquire) {
             return false;
         }
-        let now = tilo_clock::unix_now_ns();
-        let Some(held) =
-            tilo_identity_host::provisioning::joined_device_renewal_due(&self.paths, now)
-        else {
-            return false;
-        };
-        if self
-            .asked_at
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_some_and(|ended| ended.elapsed() < RETRY_AFTER)
-        {
+        if due(&self.paths).is_none() || self.asked_recently() {
             return false;
         }
         self.asking.store(true, Ordering::Release);
-        let fabric = Arc::clone(fabric);
-        let paths = self.paths.clone();
-        let identity_dir = self.identity_dir.clone();
-        let asking = Arc::clone(&self.asking);
-        let asked_at = Arc::clone(&self.asked_at);
+        let this = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("tilo-device-renewal".into())
             .spawn(move || {
-                ask(&fabric, &identity_dir, &paths, &held);
-                asked_at
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .replace(Instant::now());
-                asking.store(false, Ordering::Release);
+                this.ask_due();
+                this.asking.store(false, Ordering::Release);
             });
         if let Err(error) = spawned {
             tracing::warn!(%error, "could not start renewing this device's certificate");
@@ -120,6 +119,100 @@ impl FleetRenewal {
         }
         true
     }
+
+    /// Ask the person's devices for the renewal now, and wait for it: what a
+    /// join does before it presents this device's certificate, so the host
+    /// is shown the renewal rather than one that ran out. An ask the pass
+    /// already has under way is waited for; one that just failed is asked
+    /// again only for a certificate that has run out, which cannot wait.
+    pub(crate) fn renew_now(&self) {
+        let _one = self.lock_ask();
+        let Some(held) = due(&self.paths) else {
+            return;
+        };
+        if self.asked_recently() && !held.is_expired_at(tilo_clock::unix_now_ns()) {
+            return;
+        }
+        self.ask_with(&held);
+    }
+
+    /// Whether the last ask has just ended without a renewal: what keeps a
+    /// person's device that is not answering from being asked again at once.
+    fn asked_recently(&self) -> bool {
+        self.asked_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|ended| ended.elapsed() < RETRY_AFTER)
+    }
+
+    /// The ask one at a time: an ask under way holds this, and another waits
+    /// for it to finish rather than asking over it.
+    fn lock_ask(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.one_at_a_time
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Ask the person's devices for the renewal of what is due and install
+    /// the answer, alone.
+    fn ask_due(&self) {
+        let _one = self.lock_ask();
+        // An ask that was waited for has renewed it or failed: either way
+        // there is nothing due.
+        if let Some(held) = due(&self.paths) {
+            self.ask_with(&held);
+        }
+    }
+
+    /// Ask the person's devices to renew `held` and install the answer, with
+    /// the ask already held.
+    fn ask_with(&self, held: &tilo_user_identity::DeviceCert) {
+        let Some(fabric) = &self.fabric else {
+            return;
+        };
+        ask(fabric, &self.identity_dir, &self.paths, held);
+        self.asked_at
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(Instant::now());
+    }
+}
+
+/// The certificate this device holds that is due for renewal now, when it
+/// joined a person's identity and has to ask their devices.
+fn due(paths: &IdentityPaths) -> Option<tilo_user_identity::DeviceCert> {
+    tilo_identity_host::provisioning::joined_device_renewal_due(paths, tilo_clock::unix_now_ns())
+}
+
+/// Renew this device's certificate before it is presented to a host: an
+/// enrollment that joins a workspace.
+///
+/// A device that holds its own root reissues what is due itself
+/// ([`tilo_onboarding_host::firstboot::renew_due_device_certificates`]);
+/// one that joined a person's identity asks their devices and waits for the
+/// renewal. A certificate still outside its validity is said here, so what a
+/// host is shown is never one it refuses.
+///
+/// # Errors
+///
+/// What the reissue of a certificate held here failed on, or that a
+/// certificate outside its validity could not be renewed.
+pub(crate) fn before_presenting(renewal: Option<&FleetRenewal>) -> Result<(), String> {
+    tilo_onboarding_host::firstboot::renew_due_device_certificates()
+        .map_err(|error| error.to_string())?;
+    if let Some(renewal) = renewal {
+        renewal.renew_now();
+    }
+    tilo_identity_host::provisioning::device_certificate_clock_refusal(
+        &tilo_identity_host::provisioning::collaboration_identity_paths(),
+        tilo_clock::unix_now_ns(),
+    )
+    .map_or(Ok(()), |refusal| {
+        Err(format!(
+            "this device's certificate is outside its validity and could not be renewed \
+             before the join: {refusal}"
+        ))
+    })
 }
 
 /// Ask the person's devices to renew `held` and install the answer, saying

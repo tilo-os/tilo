@@ -1222,6 +1222,7 @@ impl crate::Shared {
             slot,
             workspace_id: workspace,
             invitation: joined.granted.invitation.clone(),
+            renewal: self.fleet_renewal.clone(),
         });
         match asked {
             Ok(()) => {

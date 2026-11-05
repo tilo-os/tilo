@@ -204,6 +204,7 @@ impl Device {
                 slot,
                 workspace_id,
                 invitation: host.invitation(self.person(), request),
+                renewal: None,
             })
             .expect("the plane takes the enrollment");
         let deadline = tilo_test_env::hang_deadline();

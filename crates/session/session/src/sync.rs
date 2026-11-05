@@ -687,6 +687,10 @@ pub struct Enrolling {
     pub workspace_id: DeskWorkspaceId,
     /// The invitation itself, verified for this person before it got here.
     pub invitation: String,
+    /// Renewing this device's certificate before it is presented, when this
+    /// device joined a person's identity: the ask the session's pass may
+    /// already have under way, waited for rather than presented past.
+    pub(crate) renewal: Option<std::sync::Arc<crate::mount::renewal::FleetRenewal>>,
 }
 
 /// What became of an enrollment, and the workspace it was for.
@@ -2595,22 +2599,23 @@ async fn redeem(
     link: Option<&ChannelLink>,
 ) -> Result<(), String> {
     let topic = workspace_topic_id(request.workspace_id);
-    // A certificate due for renewal is renewed before it is presented: a
-    // device that slept past the hour its certificate ran out presents the
-    // renewal, not the certificate the host refuses. A renewal loop that is
-    // not running has nothing to renew with, and the enrollment answers with
-    // the certificate custody already holds.
-    let renewing = tokio::task::spawn_blocking(|| {
-        tilo_onboarding_host::firstboot::renew_due_device_certificates()
+    // Renewal precedes presentation: a device that slept past the end of its
+    // certificate joins with the renewal, reissued here or signed by the
+    // person's devices, and a join that cannot renew says why rather than
+    // presenting what the host refuses.
+    let renewal = request.renewal.clone();
+    let before = tokio::task::spawn_blocking(move || {
+        crate::mount::renewal::before_presenting(renewal.as_deref())
     })
     .await;
-    if let Ok(Err(error)) = renewing {
-        tracing::warn!(
-            target: tilo_startup_metrics::JOIN_FLOW_TARGET,
-            workspace = %request.workspace_id,
-            %error,
-            "renewal: the certificate due before this join could not be renewed; presenting what custody holds"
-        );
+    match before {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(error),
+        Err(error) => {
+            return Err(format!(
+                "the renewal before this join did not finish: {error}"
+            ));
+        }
     }
     // The workspace is joined as this computer's person: the device's own
     // certificate signs the enrollment, so there is nothing to pick here.

@@ -474,7 +474,7 @@ struct Shared {
     settings: mount::settings_sync::SettingsSync,
     /// A joined device's certificate, renewed through the person's devices
     /// once it is due: this device holds no root to reissue it with.
-    fleet_renewal: Option<mount::renewal::FleetRenewal>,
+    fleet_renewal: Option<std::sync::Arc<mount::renewal::FleetRenewal>>,
     /// The overview's pictures and the clock they fly on, which its panel
     /// in the chrome draws with.
     overview: mount::overview::Overview,
@@ -1831,7 +1831,7 @@ impl Session {
             conversation,
             seats,
             hosted: !options.machine.is_owned(),
-            fabric,
+            fabric: fabric.clone(),
             vpn,
             devices: mount::devices::Devices::default(),
             bluetooth: bluetooth_handoff::Handoffs::default(),
@@ -1892,7 +1892,8 @@ impl Session {
             arrangement,
             underway: busy,
             settings: mount::settings_sync::SettingsSync::new(),
-            fleet_renewal: mount::renewal::FleetRenewal::for_joined_device(),
+            fleet_renewal: mount::renewal::FleetRenewal::for_joined_device(fabric)
+                .map(std::sync::Arc::new),
             overview,
             dictation,
             emoji,

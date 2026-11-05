@@ -235,10 +235,15 @@ pub fn next_device_certificate_renewal(identity_dir: &Path, paths: &IdentityPath
 /// [`install_renewed_certificate`]. This answers `Some(held)` when such a
 /// renewal is due, so a caller knows to ask.
 ///
+/// Whether this device holds the person's root is
+/// [`persist::joined_device_is_enrolled`]'s question, not a file's presence:
+/// a primary device keeps its root in its identity record as well as beside
+/// it, and reissues its own certificate however due it is.
+///
 /// [`ensure_collaboration_identity`]: crate::provisioning::ensure_collaboration_identity
 #[must_use]
 pub fn joined_device_renewal_due(paths: &IdentityPaths, now_ns: u64) -> Option<DeviceCert> {
-    if paths.user_privkey.exists() {
+    if !persist::joined_device_is_enrolled(paths).ok()? {
         return None;
     }
     let held = persist::read_device_cert(&paths.device_cert).ok()?;

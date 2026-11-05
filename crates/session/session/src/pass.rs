@@ -628,7 +628,7 @@ impl Session {
             // the person's devices are reachable, this asks them for the
             // renewal the certificate is due.
             if let Some(renewal) = &self.shared.fleet_renewal {
-                renewal.follow(fabric);
+                renewal.follow();
             }
             // The person's settings follow them between their devices on the
             // same fabric: what they set here is offered to it, and what
