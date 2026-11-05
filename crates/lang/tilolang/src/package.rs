@@ -269,7 +269,8 @@ pub fn check_package(
 fn emit_package(a: Analysis) -> Compiled {
     let fx = effects::analyze(&a.ir, &a.env.app);
     let mut meta = build_meta(&a.module, &a.env, &fx, &a.ir.states);
-    meta.views.extend(row_views(&a.ir, &a.env.app, &fx));
+    meta.views
+        .extend(row_views(&a.ir, &a.env.app, &fx, &a.ir.states));
     meta.words.clone_from(&a.ir.words);
     meta.at_event = at_event_fns(&a.ir, &a.env.app);
     let bare = codegen::emit(&a.ir, None);
@@ -360,8 +361,30 @@ fn at_event_fns(ir: &crate::ir::Module, app: &str) -> Vec<FnMeta> {
         .collect()
 }
 
-/// The views the checker made of UI loop bodies: the host calls them like declared views.
-fn row_views(ir: &crate::ir::Module, app: &str, fx: &Effects) -> Vec<ViewMeta> {
+/// The `window` and `lens` declarations a view holds, as the host reads them to answer a
+/// `bind`.
+fn state_meta<'a>(
+    states: impl Iterator<Item = &'a crate::resolve::StateInfo>,
+    app: &str,
+) -> Vec<StateMeta> {
+    states
+        .map(|s| StateMeta {
+            id: s.id.clone(),
+            name: s.name.clone(),
+            layer: s.layer.word().to_string(),
+            ty: s.ty.meta_text(app),
+        })
+        .collect()
+}
+
+/// The views the checker made of UI loop bodies: the host calls them like declared views, with
+/// the state the templates their bodies expand declare (`<row view id>:<template>.<state>`).
+fn row_views(
+    ir: &crate::ir::Module,
+    app: &str,
+    fx: &Effects,
+    template_states: &[(String, crate::resolve::StateInfo)],
+) -> Vec<ViewMeta> {
     ir.views
         .iter()
         .map(|v| ViewMeta {
@@ -371,7 +394,13 @@ fn row_views(ir: &crate::ir::Module, app: &str, fx: &Effects) -> Vec<ViewMeta> {
             params: params_meta(&v.params, app),
             anchors: Vec::new(),
             reaches: fx.reaches.get(v.func).cloned().unwrap_or_default(),
-            state: Vec::new(),
+            state: state_meta(
+                template_states
+                    .iter()
+                    .filter(|(view, _)| *view == v.id)
+                    .map(|(_, s)| s),
+                app,
+            ),
             presents: None,
             row_of: Some(v.owner.clone()),
         })
@@ -668,23 +697,15 @@ fn build_meta(
                     params: params_meta(&c.params, app),
                     anchors,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
-                    state: env
-                        .states
-                        .iter()
-                        .filter(|s| s.view == v.name.name)
-                        .chain(
+                    state: state_meta(
+                        env.states.iter().filter(|s| s.view == v.name.name).chain(
                             template_states
                                 .iter()
                                 .filter(|(view, _)| *view == c.id)
                                 .map(|(_, s)| s),
-                        )
-                        .map(|s| StateMeta {
-                            id: s.id.clone(),
-                            name: s.name.clone(),
-                            layer: s.layer.word().to_string(),
-                            ty: s.ty.meta_text(app),
-                        })
-                        .collect(),
+                        ),
+                        app,
+                    ),
                     presents: None,
                     row_of: None,
                 });

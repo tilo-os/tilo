@@ -135,16 +135,12 @@ fn a_task_is_made_filed_under_a_project_and_checked_off() {
 
 #[test]
 fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
-    let (mut ada, root) = workspace();
-    call(&ada, "quick_add", vec![root.clone(), Value::text("")]);
-    ada.commit();
+    let (ada, _) = workspace();
+    let mut view = ada.view(APP);
+    // An entry with nothing in it adds nothing.
+    enter(&mut view, "");
     assert!(items(&ada).is_empty(), "an empty entry adds nothing");
-    call(
-        &ada,
-        "quick_add",
-        vec![root, Value::text("Water the plants")],
-    );
-    ada.commit();
+    enter(&mut view, "Water the plants");
     let made = items(&ada);
     assert_eq!(made.len(), 1);
     assert_eq!(
@@ -156,36 +152,34 @@ fn a_quick_add_adds_what_was_typed_and_nothing_for_an_empty_entry() {
         Value::none(),
         "into the inbox"
     );
+    assert_eq!(
+        view.bound_value(&entry(&view)),
+        Some(Value::text("")),
+        "the entry is cleared once the task it made is listed"
+    );
 }
 
 #[test]
 fn a_quick_add_reads_when_it_is_due_in_the_persons_zone() {
     // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
-    let (mut ada, root) = workspace();
+    let (mut ada, _) = workspace();
     ada.host
         .runtime()
         .set_clock(|| "2026-10-29T20:00:00Z".to_owned());
     ada.host.runtime().set_zone(|| 9 * 3600);
-    for entry in [
+    let mut view = ada.view(APP);
+    for text in [
         "Call the landlord tomorrow 9am",
         "Pay rent fri",
         "Plan the trip next week",
         "Renew the passport in 3 days",
         "Water the plants",
     ] {
-        call(&ada, "quick_add", vec![root.clone(), Value::text(entry)]);
+        enter(&mut view, text);
     }
     // On Today, what does not say when is due today.
-    call(
-        &ada,
-        "quick_add",
-        vec![
-            root,
-            Value::text("Buy oat milk"),
-            Value::none(),
-            Value::Bool(true),
-        ],
-    );
+    go_to(&mut view, "Today");
+    enter(&mut view, "Buy oat milk");
     ada.commit();
     let day = |d: &str| Value::some(Value::text(d));
     let made: Vec<(Value, Value, Value)> = items(&ada)
@@ -1110,6 +1104,26 @@ pub(crate) fn go_to(view: &mut ViewInstance, place: &str) {
         node.props.get("label") == Some(&Value::text(place))
     });
     view.fire(&key, "select").unwrap();
+    view.poll_patches().unwrap();
+}
+
+/// The entry at the foot of the list the window shows: where a person types what to add.
+fn entry(view: &ViewInstance) -> String {
+    key_of(view, "ui.TextInput", &|node| {
+        matches!(
+            node.props.get("entry"),
+            Some(Value::Bool(true) | Value::Int(1))
+        )
+    })
+}
+
+/// Type `text` in the list's entry and press Enter, as a person adds a task.
+fn enter(view: &mut ViewInstance, text: &str) {
+    let key = entry(view);
+    view.edit(&key, &Value::text(text)).unwrap();
+    view.poll_patches().unwrap();
+    view.fire_with(&key, "submit", Some(&Value::text(text)))
+        .unwrap();
     view.poll_patches().unwrap();
 }
 
