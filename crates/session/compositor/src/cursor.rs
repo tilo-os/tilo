@@ -620,9 +620,7 @@ mod tests {
             [0x00, 0x00, 0x00, 0xff],
             "and its first, at one to one"
         );
-        let occupied_last = (0..64)
-            .filter(|&y| (0..64).any(|x| pixel(x, y)[3] > 0))
-            .last();
+        let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
         assert_eq!(
             occupied_last,
             Some(47),
@@ -644,9 +642,7 @@ mod tests {
             [0xff, 0x00, 0xff, 0xff],
             "the last corner pixel"
         );
-        let occupied_last = (0..64)
-            .filter(|&y| (0..64).any(|x| pixel(x, y)[3] > 0))
-            .last();
+        let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
         assert_eq!(
             occupied_last,
             Some(23),
@@ -671,9 +667,7 @@ mod tests {
                 [0xff, 0x00, 0xff, 0xff],
                 "at {scale} the pointer's last pixel is in the plane, not a crop of it"
             );
-            let occupied_last = (0..64)
-                .filter(|&y| (0..64).any(|x| pixel(x, y)[3] > 0))
-                .last();
+            let occupied_last = (0..64).rfind(|&y| (0..64).any(|x| pixel(x, y)[3] > 0));
             assert_eq!(
                 occupied_last,
                 Some(pixels - 1),
