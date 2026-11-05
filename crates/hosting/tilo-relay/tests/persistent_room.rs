@@ -1070,7 +1070,7 @@ fn answers_its_avatars(
 
 /// What Discord's consent page comes back with: on to the entry when the
 /// person said no, and a page saying why when the round trip was not one this
-/// host started.
+/// host started or Discord did not confirm it.
 fn answers_its_sign_in(runtime: &tokio::runtime::Runtime, management: std::net::SocketAddr) {
     let declined = get(runtime, management, "/discord/callback?error=access_denied");
     assert_eq!(declined.status, 302);
@@ -1089,6 +1089,20 @@ fn answers_its_sign_in(runtime: &tokio::runtime::Runtime, management: std::net::
         String::from_utf8_lossy(&malformed.body).contains("href=\"https://tilo.example/\""),
         "{}",
         String::from_utf8_lossy(&malformed.body)
+    );
+    // A round trip this host did start, whose account Discord would not
+    // confirm (the workspace's Discord is unreachable from a test): the
+    // browser is not sent on as if it had linked anything.
+    let unconfirmed = get(
+        runtime,
+        management,
+        "/discord/callback?code=the-code&state=0123456789abcdef0123456789abcdef",
+    );
+    assert_eq!(unconfirmed.status, 400);
+    assert!(
+        String::from_utf8_lossy(&unconfirmed.body).contains("Discord didn't confirm"),
+        "{}",
+        String::from_utf8_lossy(&unconfirmed.body)
     );
 }
 
