@@ -21,20 +21,22 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, bail, ensure};
-use ed25519_dalek::{Signer as _, SigningKey};
+use ed25519_dalek::SigningKey;
 use tilo_relay::daemon::RelayIdentity;
 use tilo_relay::web::WebHandle;
 use tilo_relay::workspaces::{WaitListed, Workspaces};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
-use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, WorkspaceRole, join_proof_digest};
+use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_relay_session::workspaces::SetMemberRoleRequest;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
 
 mod bots;
-use bots::{hand_to_discord, offer_sign_in, start_bots};
+mod discord_sign_in;
+mod http;
+use bots::{offer_sign_in, start_bots};
 
 /// The secret store this host keeps workspace roots in.
 pub(crate) const SECRET_APP: &str = "so.tilo.relay";
@@ -42,7 +44,6 @@ const MINUTE_MS: u64 = 60 * 1000;
 /// Guests pruned in one governance change: the workspace is held while it
 /// commits, and each removal costs time in proportion to its members.
 const PRUNE_BATCH: usize = 100;
-const NS_PER_SEC: u64 = 1_000_000_000;
 
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PersistentArgs {
@@ -204,14 +205,28 @@ pub struct PersistentArgs {
     /// account (OAuth 2, `identify`); with the redirect and consent page
     /// below, the workspace offers "Connect Discord". The workspace's host keeps the
     /// client secret and trades the code itself.
-    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url"])]
+    #[arg(long = "discord-client-id", value_name = "ID", requires_all = ["discord_redirect_url", "discord_authorize_url", "discord_client_secret_file"])]
     pub discord_client_id: Option<String>,
-    /// Where Discord sends the browser back: the workspace host's callback.
+    /// Where Discord sends the browser back: the workspace host's callback,
+    /// which `--http` serves.
     #[arg(long = "discord-redirect-url", value_name = "URL")]
     pub discord_redirect_url: Option<String>,
     /// Discord's consent page.
     #[arg(long = "discord-authorize-url", value_name = "URL")]
     pub discord_authorize_url: Option<String>,
+    /// The application's client secret, mounted from the operator's encrypted
+    /// secrets. The callback trades the code for the account with it, and it
+    /// never leaves this host.
+    #[arg(
+        long = "discord-client-secret-file",
+        value_name = "PATH",
+        requires = "discord_client_id"
+    )]
+    pub discord_client_secret_file: Option<PathBuf>,
+    /// Where Discord's API is (`/api/v10` is appended): Discord's own host
+    /// unless set.
+    #[arg(long = "discord-api-base", value_name = "URL")]
+    pub discord_api_base: Option<String>,
     /// The worker binary of a connector (`APP=PATH`), where it is not
     /// `<name>-worker` beside this binary; repeatable.
     #[arg(long = "connector-worker", value_name = "APP=PATH")]
@@ -241,6 +256,11 @@ pub struct PersistentArgs {
     /// The public URL `--public-avatars` is served at.
     #[arg(long = "public-avatars-url", value_name = "URL")]
     pub public_avatars_url: Option<String>,
+    /// Serve the deployment's plain-HTTP routes at this address: the health
+    /// page (`/mode`), the published avatars (`/avatars/<name>`) and Discord's
+    /// sign-in callback (`/discord/callback`), as an ingress publishes them.
+    #[arg(long = "http", value_name = "ADDR", requires = "persistent")]
+    pub http: Option<std::net::SocketAddr>,
     /// The largest file a member posts in the workspace's Chat that the workspace
     /// keeps once they left, in MiB; a larger one stays with its poster.
     #[arg(long = "attachment-max-mib", default_value_t = 25, value_parser = clap::value_parser!(u64).range(0..=64))]
@@ -260,12 +280,8 @@ pub struct PersistentArgs {
 pub(crate) struct PersistentRoom {
     pub workspaces: Workspaces,
     pub workspace: String,
-    pub root: SigningKey,
     pub host_cert: DeviceCert,
     pub web: WebHandle,
-    /// The Discord connector a bridge runs on, which a sign-in with Discord
-    /// that came back to the service is handed to.
-    pub discord: Option<Arc<tilo_connector::ConnectorProcess>>,
 }
 
 /// The workspace name people see for the persistent workspace `name` (a lowercase
@@ -1173,6 +1189,7 @@ pub(crate) async fn run(
     let listen = args.web.web.context("a workspace needs --web")?;
     let mut operator = operator_lines()?;
     let store = tilo_secrets::SecretStore::for_app(SECRET_APP);
+    let sign_in = discord_sign_in::SignIn::from_args(&persistent)?;
     let moderation = persistent
         .moderation_key_file
         .as_deref()
@@ -1384,10 +1401,24 @@ pub(crate) async fn run(
     let context = PersistentRoom {
         workspaces,
         workspace,
-        root,
         host_cert,
         web,
-        discord,
+    };
+    // The deployment's own routes: its health check and the addresses other
+    // services are configured with. Started once the room serves, so a health
+    // check that answers means people can get in.
+    let _management = match persistent.http {
+        Some(listen) => Some(
+            http::serve(http::Config {
+                listen,
+                avatars: persistent.public_avatars.clone(),
+                sign_in,
+                web_entry: args.web.web_entry.clone(),
+                discord: discord.clone(),
+            })
+            .await?,
+        ),
+        None => None,
     };
     let governance = Governance {
         owners,
@@ -1693,6 +1724,9 @@ async fn serve_operator(
         .wait_list_mail
         .as_ref()
         .and_then(|door| context.workspaces.mail_wait_list(door));
+    // A deployment that runs the room without an operator leaves its input at
+    // its end: the room then keeps serving, and only a command ends it.
+    let mut operator_open = true;
     loop {
         tokio::select! {
             Some(asked) = async {
@@ -1726,7 +1760,13 @@ async fn serve_operator(
                 }
                 reconcile_roles(context, governance, &mut previously_declared).await?;
             }
-            line = operator.recv() => match line {
+            line = operator.recv(), if operator_open => match line {
+                None => {
+                    operator_open = false;
+                    tracing::info!(
+                        "the operator closed its input; the workspace keeps serving"
+                    );
+                }
                 Some(Ok(command @ (OperatorCommand::WaitList { .. }
                 | OperatorCommand::Unlist { .. }
                 | OperatorCommand::Confirm { .. }
@@ -1738,11 +1778,8 @@ async fn serve_operator(
                         let _ = sender.send(queued);
                     }
                 }
-                Some(Ok(OperatorCommand::DiscordAuthorized { user_id, user_name, display_name, avatar, state_sha256, link_check })) => {
-                    hand_to_discord(context, user_id, user_name, display_name, avatar, state_sha256, link_check).await;
-                }
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
-                Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
+                Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),
             },
         }
@@ -1757,8 +1794,13 @@ async fn serve_operator(
 )]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::workspaces::{WorkspacesReply, WorkspacesRequest};
+    use ed25519_dalek::Signer as _;
+    use tilo_relay_protocol::workspaces::{
+        JoinReply, JoinStep, WorkspacesReply, WorkspacesRequest, join_proof_digest,
+    };
+    use tilo_user_identity::DeviceCapabilities;
     const DAY_MS: u64 = 24 * 3600 * 1000;
+    const NS_PER_SEC: u64 = 1_000_000_000;
 
     #[test]
     fn the_workspace_is_named_after_the_room_capitalized() {

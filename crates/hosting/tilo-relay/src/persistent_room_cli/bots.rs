@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::DeviceCert;
 
-use super::{BotSpec, PersistentArgs, PersistentRoom, input_value};
+use super::{BotSpec, PersistentArgs, input_value};
 
 /// Connect the workspace to the Discord server a bridge's inputs name
 /// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)),
@@ -200,34 +200,29 @@ fn slug_of(entry: &str) -> String {
         .collect()
 }
 
-/// Hand a sign-in with Discord that came back to the service to the workspace's
+/// Hand a sign-in with Discord that came back to the host to the workspace's
 /// Discord bridge, as an event of its connector: the bridge offers the
 /// account to the person who started it. Nothing secret is in it: the
 /// state and the token arrive hashed.
 pub(super) async fn hand_to_discord(
-    context: &PersistentRoom,
-    user_id: String,
-    user_name: String,
-    display_name: Option<String>,
-    avatar: Option<String>,
-    state_sha256: String,
-    link_check: String,
+    discord: Option<&Arc<tilo_connector::ConnectorProcess>>,
+    authorized: &super::discord_sign_in::Authorized,
 ) {
-    let Some(discord) = &context.discord else {
+    let Some(discord) = discord else {
         tracing::warn!(
             "a sign-in with Discord came back, but the workspace runs no Discord bridge"
         );
         return;
     };
     let event = discord::event::Authorized {
-        user_id,
+        user_id: authorized.user_id.clone(),
         user: Some(discord::event::UserName {
-            user_name,
-            display_name,
+            user_name: authorized.user_name.clone(),
+            display_name: authorized.display_name.clone(),
         }),
-        avatar,
-        state_sha256,
-        link_check,
+        avatar: authorized.avatar.clone(),
+        state_sha256: authorized.state_sha256.clone(),
+        link_check: authorized.link_check.clone(),
     };
     let id = discord::event::event_id::authorized(&event.link_check);
     let Ok(serde_json::Value::Object(payload)) = serde_json::to_value(&event) else {

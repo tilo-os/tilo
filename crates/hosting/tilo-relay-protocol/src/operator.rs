@@ -100,25 +100,6 @@ pub enum OperatorCommand {
         /// SHA-256 (hex) of the confirmation secret.
         confirm_sha256: String,
     },
-    /// Someone came back from Discord's consent page to the service's
-    /// callback, and Discord vouched for their account. The child hands it
-    /// to the workspace's Discord bridge, which offers the account to whoever
-    /// started the round trip (`state_sha256`) and holds the token whose
-    /// check `link_check` is. No answer: the browser is sent on at once and
-    /// asks the workspace for the offer itself.
-    DiscordAuthorized {
-        user_id: String,
-        user_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display_name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        avatar: Option<String>,
-        /// SHA-256 (hex) of the round trip's `state`.
-        state_sha256: String,
-        /// SHA-256 (hex) of SHA-256 (hex) of the token the browser was
-        /// sent on with.
-        link_check: String,
-    },
     /// Where the entry whose removal secret hashes to `removal_sha256`
     /// stands, for whoever left it. The child answers [`OperatorEvent::Standing`]
     /// or [`OperatorEvent::WaitListFailed`] for the same `request`.

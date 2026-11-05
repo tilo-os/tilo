@@ -10,9 +10,14 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Workspace {
     child: Child,
-    stdin: ChildStdin,
+    /// The operator's input; `None` once the operator closed it.
+    stdin: Option<ChildStdin>,
     events: mpsc::Receiver<OperatorEvent>,
 }
+
+/// The revision a published image reports at `/mode`: the commit it was built
+/// from, forty lowercase hex digits.
+const SOURCE_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn start(
     state: &std::path::Path,
@@ -31,6 +36,8 @@ fn start_with(
     let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("TILO_SECRETS_DIR", secrets)
         .env("TILO_RELAY_LOG", "warn")
+        // What a published image sets from the commit it was built from.
+        .env("TILO_SOURCE_REVISION", SOURCE_REVISION)
         .args(["room", "--state"])
         .arg(state.join("relay"))
         .args([
@@ -52,7 +59,7 @@ fn start_with(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn_locked()?;
-    let stdin = child.stdin.take().unwrap();
+    let stdin = Some(child.stdin.take().unwrap());
     let stdout = child.stdout.take().unwrap();
     let (sender, events) = mpsc::channel();
     std::thread::spawn(move || {
@@ -85,12 +92,28 @@ impl Workspace {
     }
 
     fn tell(&mut self, command: &OperatorCommand) {
-        self.stdin.write_all(command.to_line().as_bytes()).unwrap();
-        self.stdin.flush().unwrap();
+        let stdin = self.stdin.as_mut().expect("the operator's input is open");
+        stdin.write_all(command.to_line().as_bytes()).unwrap();
+        stdin.flush().unwrap();
+    }
+
+    /// The operator goes away, as it does in a deployment that runs the room
+    /// without one: its input is at its end.
+    fn close_operator(&mut self) {
+        self.stdin = None;
     }
 
     fn stop(mut self) {
-        self.tell(&OperatorCommand::Shutdown {});
+        match self.stdin.take() {
+            Some(mut stdin) => {
+                let _ = stdin.write_all(OperatorCommand::Shutdown {}.to_line().as_bytes());
+                let _ = stdin.flush();
+            }
+            // Nobody is left to tell: the room stops with its process.
+            None => {
+                let _ = self.child.kill();
+            }
+        }
         let _ = self.child.wait();
     }
 
@@ -941,5 +964,228 @@ fn a_persistent_room_reopens_after_hard_stops() {
         assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
         visiting.close();
     });
+    room.stop();
+}
+
+/// One answer from the deployment's plain-HTTP routes.
+struct Answer {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Answer {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// A GET to `addr`, as a health check, a browser following a link or a
+/// Discord sign-in coming back does.
+async fn try_get(addr: std::net::SocketAddr, path: &str) -> Result<Answer, String> {
+    use http_body_util::BodyExt as _;
+    let request = hyper::Request::get(path)
+        .header(hyper::header::HOST, "localhost")
+        .body(http_body_util::Full::new(bytes::Bytes::new()))
+        .map_err(|error| error.to_string())?;
+    let tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tcp))
+            .await
+            .map_err(|error| error.to_string())?;
+    tokio::spawn(connection);
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| error.to_string())?
+        .to_bytes()
+        .to_vec();
+    Ok(Answer {
+        status,
+        headers,
+        body,
+    })
+}
+
+/// `try_get` once the listener answers, until the hang bound passes.
+fn get(runtime: &tokio::runtime::Runtime, addr: std::net::SocketAddr, path: &str) -> Answer {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match runtime.block_on(try_get(addr, path)) {
+            Ok(answer) => return answer,
+            Err(error) if std::time::Instant::now() < deadline => {
+                let _ = error;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("nothing answered {path} at {addr}: {error}"),
+        }
+    }
+}
+
+/// The room as its deployment runs it: no operator at all, and the plain-HTTP
+/// routes the ingress publishes — the health check, the avatars its bots
+/// publish and Discord's sign-in callback — answering beside the browser
+/// listener, whose door still logs a page's error and answers it.
+#[test]
+fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
+    /// What a bot publishes as an avatar: content-addressed PNG bytes.
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(state.join("avatars")).unwrap();
+    std::fs::write(
+        state
+            .join("avatars")
+            .join(blake3::hash(PNG).to_hex().to_string()),
+        PNG,
+    )
+    .unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let secret = scratch.path().join("discord-client-secret");
+    std::fs::write(&secret, "s3cret").unwrap();
+
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let management = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (web_plain, http) = (plain.to_string(), management.to_string());
+    let avatars = state.join("avatars");
+    let avatars = avatars.to_str().unwrap();
+    let secret = secret.to_str().unwrap();
+    let mut room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+            "--web-entry",
+            "https://tilo.example/",
+            "--http",
+            &http,
+            "--public-avatars",
+            avatars,
+            "--public-avatars-url",
+            "https://eu1.example/avatars",
+            "--discord-client-id",
+            "123",
+            "--discord-client-secret-file",
+            secret,
+            "--discord-redirect-url",
+            "https://eu1.example/discord/callback",
+            "--discord-authorize-url",
+            "https://discord.com/oauth2/authorize",
+            // Discord itself, in production; no test reaches it.
+            "--discord-api-base",
+            "http://127.0.0.1:9",
+        ],
+    )
+    .unwrap();
+    // The deployment runs the room with nobody at the operator's end.
+    room.close_operator();
+    let (workspace, _) = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let mode = get(&runtime, management, "/mode");
+    assert_eq!(mode.status, 200, "{}", String::from_utf8_lossy(&mode.body));
+    let mode: serde_json::Value = serde_json::from_slice(&mode.body).unwrap();
+    assert_eq!(mode["relay"], "up", "the health check a deploy waits on");
+    assert_eq!(mode["revision"], SOURCE_REVISION, "the image it built");
+
+    let name = blake3::hash(PNG).to_hex().to_string();
+    let avatar = get(&runtime, management, &format!("/avatars/{name}"));
+    assert_eq!(avatar.status, 200);
+    assert_eq!(avatar.header("content-type"), Some("image/png"));
+    assert_eq!(avatar.body, PNG, "the published bytes, as they are");
+    assert_eq!(
+        avatar.header("cache-control"),
+        Some("public, max-age=31536000, immutable"),
+        "a content address never changes"
+    );
+    assert_eq!(
+        get(
+            &runtime,
+            management,
+            &format!("/avatars/{}", "0".repeat(64))
+        )
+        .status,
+        404,
+        "an avatar the workspace did not publish"
+    );
+    assert_eq!(get(&runtime, management, "/avatars/not-a-hash").status, 404);
+
+    // Discord's consent page sent the person back saying no: on to Tilo.
+    let declined = get(
+        &runtime,
+        management,
+        "/discord/callback?error=access_denied",
+    );
+    assert_eq!(declined.status, 302);
+    assert_eq!(declined.header("location"), Some("https://tilo.example/"));
+    // A callback that carries no round trip of ours says so and leads back.
+    let malformed = get(
+        &runtime,
+        management,
+        "/discord/callback?code=the-code&state=short",
+    );
+    assert_eq!(malformed.status, 400);
+    assert_eq!(
+        malformed.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(
+        String::from_utf8_lossy(&malformed.body).contains("href=\"https://tilo.example/\""),
+        "{}",
+        String::from_utf8_lossy(&malformed.body)
+    );
+    assert_eq!(get(&runtime, management, "/join").status, 404);
+    assert_eq!(get(&runtime, management, "/wait-list").status, 404);
+
+    // The pages' own error reports still land on the door and are answered as
+    // reports always are.
+    let reported = runtime.block_on(async {
+        use tilo_browser_peer::HttpClient as _;
+        Plain(plain)
+            .post(
+                &format!("/peer/v1/directory/{workspace}/errors"),
+                None,
+                br#"{"kind":"error","message":"boom","page":"/","build":"abc"}"#.to_vec(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(reported.0, 204, "{}", String::from_utf8_lossy(&reported.1));
+
     room.stop();
 }

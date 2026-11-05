@@ -166,7 +166,7 @@ reason = "the kind of an account the service publishes into the person's account
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
 enum = "OperatorCommand"
-reason = "one JSON line per command between the workspace service and the room process it starts from the same image; the line names its command (`tag = \"op\"`), so the pre-admission and spectator commands go by name, and the protocol version (announced in `Started`, refused when it is another) is bumped from 4 to 5 with them, so neither side reads a line written by the other"
+reason = "one JSON line per command between the workspace service and the room process it starts from the same image; the line names its command (`tag = \"op\"`), so the pre-admission and spectator commands go by name, and the protocol version (announced in `Started`, refused when it is another) is bumped from 4 to 5 with them, so neither side reads a line written by the other; the Discord sign-in command went the same way when the host that signs in began answering Discord's callback itself"
 
 [[break]]
 file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
