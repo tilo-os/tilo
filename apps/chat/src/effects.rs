@@ -92,8 +92,8 @@ pub enum ChatEffect {
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
     /// Open the conversation with a certified person public key, as the read
-    /// of it is answered.
-    #[effect(view, returns, audience = "agents")]
+    /// of it is answered: it changes only whose view is showing what.
+    #[effect(view, returns, audience = "agents", participant)]
     OpenDirectConversation { public_key: String },
     /// Send to the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
