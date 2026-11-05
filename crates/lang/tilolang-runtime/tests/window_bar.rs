@@ -111,6 +111,23 @@ mod cases {
             .collect()
     }
 
+    /// The records a collection field of `at` holds, in order.
+    fn refs(w: &Installed, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
+        let Value::List(items) =
+            w.rt.read(at, field)
+                .unwrap_or_else(|e| panic!("{field} of {at:?}: {e}"))
+        else {
+            panic!("{field} of {at:?} is a list");
+        };
+        items
+            .into_iter()
+            .map(|item| match item {
+                Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
+                other => panic!("{field} holds a reference, not {other:?}"),
+            })
+            .collect()
+    }
+
     /// `node` and the child holding `key` at every step down to it.
     fn path_to<'a>(tree: &'a UiNode, key: &str) -> Option<Vec<&'a UiNode>> {
         if tree.key == key {
@@ -385,13 +402,19 @@ view quiet_page(q: Quiet) {
         let w = install(BOARD);
         let root = w.root("Board");
         let column = returned_ref(w.call("new_column", vec![Value::resource(&root)]));
-        let card = returned_ref(w.call(
+        w.call(
             "new_card",
             vec![
                 Value::resource(&column),
                 Value::text("Merge the offline queue"),
             ],
-        ));
+        );
+        let card = refs(&w, &column, "cards").pop().expect("the card it made");
+        assert_eq!(
+            w.rt.read(&card, "title").unwrap(),
+            Value::text("Merge the offline queue"),
+            "the card is named what the entry typed"
+        );
         let window = w.window("card_page", &card);
         let tree = window.tree();
         let title = of_kind(tree, "ui.TextInput")
