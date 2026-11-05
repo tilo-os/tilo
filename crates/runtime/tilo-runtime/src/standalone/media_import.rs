@@ -78,15 +78,9 @@ fn owner_revision(
         if current.owner().map(String::as_str) == Some(account) {
             // Only structural ownership authorizes this action. Task progress,
             // receipts, layout and delegated grants cannot revoke owner custody.
-            // Retain completed transfers so an away-and-back transfer also
-            // invalidates an approval minted before the transfer.
-            revision = serde_json::to_vec(&(
-                &current.id(),
-                current.owner(),
-                &current.ownership_transfer_audit,
-            ))
-            .ok()
-            .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
+            revision = serde_json::to_vec(&(&current.id(), current.owner()))
+                .ok()
+                .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
         }
     });
     revision.ok_or_else(|| anyhow::anyhow!("legacy import requires the current destination owner"))

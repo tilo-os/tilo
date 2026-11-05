@@ -1,32 +1,9 @@
-//! What the People tab offers: the ownership action named by what it does,
-//! and which of a member's controls can be taken. The tab itself is drawn by
-//! the sheet.
-
-use super::{UserId, Workspace, public_key_member_id};
-use crate::i18n::t;
-
-/// What the People tab's ownership button does for `local_user` now, by
-/// outcome: its label, and the label of the ownership action it leads to.
-/// `None` when they can do nothing about ownership.
-#[must_use]
-pub fn ownership_button(ws: &Workspace, local_user: &UserId) -> Option<(String, String)> {
-    let owner = ws.owner() == Some(local_user);
-    match &ws.pending_ownership_transfer {
-        Some(pending) if public_key_member_id(pending.recipient) == *local_user => Some((
-            t("workspace-settings-ownership-accept-phrase"),
-            t("workspace-settings-ownership-accept"),
-        )),
-        Some(_) if owner => Some((
-            t("workspace-settings-ownership-cancel-short"),
-            t("workspace-settings-ownership-cancel"),
-        )),
-        None if owner => Some((
-            t("workspace-settings-ownership-transfer"),
-            t("workspace-settings-ownership-propose"),
-        )),
-        _ => None,
-    }
-}
+//! Which of a member's controls can be taken. The tab itself is drawn by the
+//! sheet.
+//!
+//! A workspace's owner is structural: it is set when the workspace is made and
+//! is not a role the workspace hands out, so the tab offers no ownership
+//! control of its own.
 
 /// Whether a member's row offers their role and Remove: never for the
 /// owner, whose role is a fact of the workspace, and never Remove for
@@ -41,38 +18,8 @@ pub fn member_row_offers(is_workspace_owner: bool, user: &str, local_user: &str)
 
 #[cfg(test)]
 mod tests {
-    use super::super::CapRole;
     use super::*;
-    use crate::i18n::t_args;
-    use tilo_desktop_model::WorkspaceSlot;
-
-    #[test]
-    fn the_ownership_button_says_what_it_will_do() {
-        let (owner_key, owner_public) = collab_types::generate_keypair();
-        let (_, recipient_public) = collab_types::generate_keypair();
-        let owner = hex::encode(owner_public.as_bytes());
-        let recipient = hex::encode(recipient_public.as_bytes());
-        let mut ws = Workspace::new(WorkspaceSlot(92), "Studio");
-        ws.set_owner(owner.clone());
-        ws.admit(recipient.clone(), CapRole::Editor);
-        let label =
-            |ws: &Workspace, who: &String| ownership_button(ws, who).map(|(label, _)| label);
-
-        assert_eq!(label(&ws, &owner).as_deref(), Some("Transfer ownership"));
-        assert_eq!(label(&ws, &recipient), None, "a member has nothing to do");
-
-        ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-            ws.id().to_string(),
-            [9; 32],
-            owner_public,
-            recipient_public,
-            u64::MAX,
-            &owner_key,
-        )
-        .ok();
-        assert_eq!(label(&ws, &owner).as_deref(), Some("Cancel transfer"));
-        assert_eq!(label(&ws, &recipient).as_deref(), Some("Accept ownership"));
-    }
+    use crate::i18n::{t, t_args};
 
     #[test]
     fn a_row_offers_only_what_can_be_done_and_states_facts_apart() {

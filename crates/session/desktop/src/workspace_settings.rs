@@ -40,7 +40,7 @@ pub use agents_pane::{
     agent_summaries,
 };
 
-pub use people_pane::{member_row_offers, ownership_button};
+pub use people_pane::member_row_offers;
 
 /// The host's application catalogue, as workspace settings name apps and
 /// offer them as default openers.
@@ -100,10 +100,6 @@ pub use tilo_desktop_model::{
     APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
     PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, REVOKE_ACTION_ID,
 };
-
-fn public_key_member_id(key: collab_types::Ed25519PublicKey) -> UserId {
-    hex::encode(key.as_bytes())
-}
 
 pub fn role_label(role: CapRole) -> String {
     t(match role {
@@ -982,39 +978,6 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
     (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
-/// Where the workspace's ownership transfer stands, for the People tab.
-#[must_use]
-pub fn ownership_transfer_status(
-    ws: &Workspace,
-    names: &crate::collaborators::PeopleNames,
-    local_user: &UserId,
-) -> Option<String> {
-    let proposal = ws.pending_ownership_transfer.as_ref()?;
-    let recipient = public_key_member_id(proposal.recipient);
-    let owner = public_key_member_id(proposal.current_owner);
-    let name_of = |id: &str| {
-        names
-            .get(id)
-            .map_or_else(|| member_name_or_short_id(ws, id), str::to_owned)
-    };
-    if &recipient == local_user {
-        Some(t_args(
-            "workspace-settings-ownership-offered",
-            &[("owner", name_of(&owner).into())],
-        ))
-    } else if &owner == local_user {
-        Some(t_args(
-            "workspace-settings-ownership-waiting",
-            &[("recipient", name_of(&recipient).into())],
-        ))
-    } else {
-        Some(t_args(
-            "workspace-settings-ownership-pending",
-            &[("recipient", name_of(&recipient).into())],
-        ))
-    }
-}
-
 /// One line on what a service member may do in the workspace and for how long.
 fn service_member_detail(service: &ServiceMember) -> String {
     use tilo_action_policy::ActionKind;
@@ -1355,53 +1318,6 @@ mod members_tests {
     }
 
     #[test]
-    fn a_pending_transfer_reads_differently_to_each_side() {
-        let (owner_key, owner_public) = collab_types::generate_keypair();
-        let (_, recipient_public) = collab_types::generate_keypair();
-        let owner = public_key_member_id(owner_public);
-        let recipient = public_key_member_id(recipient_public);
-        let mut ws = Workspace::new(WorkspaceSlot(91), "Research");
-        ws.set_owner(owner.clone());
-        ws.admit(recipient.clone(), CapRole::Editor);
-        ws.collaborators
-            .push(tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited());
-        ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-            ws.id().to_string(),
-            [8; 32],
-            owner_public,
-            recipient_public,
-            u64::MAX,
-            &owner_key,
-        )
-        .ok();
-        let names = crate::collaborators::PeopleNames::default();
-        let to_recipient = ownership_transfer_status(&ws, &names, &recipient).expect("offered");
-        assert!(
-            to_recipient.contains("offered you ownership"),
-            "{to_recipient}"
-        );
-        let to_owner = ownership_transfer_status(&ws, &names, &owner).expect("waiting");
-        assert!(to_owner.contains("Morgan"), "{to_owner}");
-        assert!(
-            !to_owner.contains(&short_id(&recipient)),
-            "a person is named, never shown as a key: {to_owner}"
-        );
-        let to_other =
-            ownership_transfer_status(&ws, &names, &"someone-else".to_string()).expect("pending");
-        assert!(to_other.contains("Morgan"), "{to_other}");
-        assert_eq!(
-            ownership_transfer_status(&ws_without_pending(), &names, &owner),
-            None
-        );
-    }
-
-    fn ws_without_pending() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot(92), "Research");
-        ws.set_owner("owner-user");
-        ws
-    }
-
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -1485,7 +1401,7 @@ mod members_tests {
                 &PEER.to_string(),
                 CapRole::Owner,
             );
-            assert!(refusal.is_err(), "ownership is transferred, not handed out");
+            assert!(refusal.is_err(), "ownership is not handed out");
             assert_eq!(ws.role_of(PEER), Some(CapRole::Viewer));
             assert_eq!(ws.owner().map(String::as_str), Some(OWNER));
         }

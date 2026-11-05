@@ -102,10 +102,83 @@ fn show_tab(
     app.settle();
 }
 
-/// The People tab gives a member another role, and the workspace holds it
-/// afterwards, with the sheet's row saying so.
+/// The desk's search, as it publishes it while it is open.
+fn search_open(session: &Session) -> Option<ResourceSpec> {
+    fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    find(
+        &session.resources(),
+        tilo_desktop::desk_verbs::SEARCH_RESOURCE,
+    )
+}
+
+/// The People tab gives each member another role, and the workspace holds
+/// both afterwards, with the sheet's rows saying so.
 #[test]
-fn workspace_settings_sets_a_members_role() {
+fn workspace_settings_sets_each_members_role() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada", "bo"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "people".to_owned(),
+        },
+    );
+    for (member, role) in [("ada", "Editor"), ("bo", "Commenter")] {
+        press(&mut app, &format!("ws-people-role-{member}"));
+        activate(&mut app, role);
+        session.step(Duration::from_millis(1)).unwrap();
+        app.settle();
+    }
+    let roles = session.handle().read(|tree| {
+        let workspace = tree.active_workspace().expect("a workspace in front");
+        (workspace.role_of("ada"), workspace.role_of("bo"))
+    });
+    assert_eq!(
+        roles,
+        (
+            Some(tilo_action_policy::Role::Editor),
+            Some(tilo_action_policy::Role::Commenter)
+        ),
+        "the workspace holds each member's new role"
+    );
+    let listed = session
+        .workspace_settings()
+        .expect("workspace settings")
+        .settings()
+        .people
+        .people;
+    for (member, key) in [("ada", "editor"), ("bo", "commenter")] {
+        let row = listed
+            .iter()
+            .find(|person| person.key == member)
+            .unwrap_or_else(|| panic!("the sheet lists {member}"));
+        assert_eq!(
+            row.role_key.as_deref(),
+            Some(key),
+            "the sheet's row for {member} says which role they have"
+        );
+    }
+}
+
+/// The People tab says what the owner's role is instead of offering it: who
+/// owns the workspace is a fact of it, so their row has no role control and
+/// no one chooses a new owner here.
+#[test]
+fn the_people_tab_offers_the_owners_role_as_a_fact() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -120,18 +193,25 @@ fn workspace_settings_sets_a_members_role() {
             tab: "people".to_owned(),
         },
     );
-    press(&mut app, "ws-people-role-ada");
-    activate(&mut app, "Editor");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
-    let role = session.handle().read(|tree| {
+    let owner = session.handle().read(|tree| {
         tree.active_workspace()
-            .and_then(|workspace| workspace.role_of("ada"))
+            .and_then(|workspace| workspace.owner().cloned())
     });
-    assert_eq!(
-        role,
-        Some(tilo_action_policy::Role::Editor),
-        "ada is an editor of the workspace"
+    let owner = owner.expect("the workspace has an owner");
+    assert!(
+        app.harness()
+            .perform_named(
+                &format!("ws-people-role-{owner}"),
+                &ui::a11y::Action::Activate
+            )
+            .is_err(),
+        "the owner's row offers no role to choose"
+    );
+    assert!(
+        app.harness()
+            .perform_named("ws-people-ownership", &ui::a11y::Action::Activate)
+            .is_err(),
+        "the tab offers no ownership control"
     );
     let row = session
         .workspace_settings()
@@ -140,13 +220,64 @@ fn workspace_settings_sets_a_members_role() {
         .people
         .people
         .into_iter()
-        .find(|person| person.key == "ada")
-        .expect("the sheet lists ada");
+        .find(|person| person.key == owner)
+        .expect("the sheet lists the owner");
     assert_eq!(
-        row.role_key.as_deref(),
-        Some("editor"),
-        "the sheet's row says which role she has"
+        row.offers,
+        tilo_sheets::workspace_settings::Offers::Nothing,
+        "the owner's row shows their role and offers nothing"
     );
+}
+
+/// No tab of workspace settings sends a person to the search: every control
+/// there changes the workspace or asks the session for a surface it shows, so
+/// none of them opens a search that finds nothing.
+#[test]
+fn no_workspace_settings_tab_leads_into_the_search() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    for tab in [
+        "general",
+        "people",
+        "agents",
+        "permissions",
+        "apps",
+        "emoji",
+    ] {
+        show_tab(
+            &mut session,
+            &mut app,
+            &WorkspaceSettingsEffect::ShowTab {
+                tab: tab.to_owned(),
+            },
+        );
+        assert!(
+            search_open(&session).is_none(),
+            "the {tab} tab opens no search"
+        );
+    }
+    // The two controls that used to, when the governance actions they
+    // searched were published, are gone.
+    show_tab(
+        &mut session,
+        &mut app,
+        &WorkspaceSettingsEffect::ShowTab {
+            tab: "permissions".to_owned(),
+        },
+    );
+    for gone in ["ws-permissions-roles", "ws-people-ownership"] {
+        assert!(
+            app.harness()
+                .perform_named(gone, &ui::a11y::Action::Activate)
+                .is_err(),
+            "{gone} is not offered"
+        );
+    }
 }
 
 /// The Permissions tab gives ada a permission beyond her role, and takes it

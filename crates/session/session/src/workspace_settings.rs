@@ -15,7 +15,6 @@ use tilo_action_policy::{Answer, Refusal, Role, Subject};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
-use tilo_desktop::desk_verbs::DESK_RESOURCE;
 use tilo_desktop::workspace_settings::{self as domain, agent_access};
 use tilo_desktop_model::{DesktopTree, UserId, Workspace, role_from_id, role_id};
 use tilo_desktop_surface::DesktopHandle;
@@ -25,7 +24,6 @@ use tilo_sheets::file_picker::FilePickerSeat;
 use tilo_sheets::workspace_settings as sheet;
 
 use crate::engine::Engine;
-use crate::keys::{Invocation, Invocations};
 use crate::lists::AppLists;
 use crate::workspaces::{DeviceChoice, Personal};
 
@@ -255,7 +253,6 @@ pub(crate) fn follow(
     seat: Option<&sheet::WorkspaceSettingsSeat>,
     fed: &Feeding<'_>,
     intents: &RefCell<Vec<ChromeIntent>>,
-    invocations: &Invocations,
 ) {
     let Some(seat) = seat else {
         return;
@@ -326,12 +323,6 @@ pub(crate) fn follow(
             sheet::WorkspaceSettingsEffect::Invite => {
                 intents.borrow_mut().push(ChromeIntent::Invite);
             }
-            sheet::WorkspaceSettingsEffect::Ownership => {
-                open_search(invocations, ownership_query(handle, person));
-            }
-            sheet::WorkspaceSettingsEffect::SavedRoles => {
-                open_search(invocations, t("workspace-settings-query-saved-roles"));
-            }
             sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
                 next_workspace_default(handle, person, &fed.lists, &resource);
             }
@@ -349,26 +340,6 @@ pub(crate) fn follow(
             ),
         }
     }
-}
-
-/// What the ownership button does here, as the search opens on it.
-fn ownership_query(handle: &DesktopHandle, person: &UserId) -> String {
-    // The button is named by what it does; search opens on that action,
-    // which asks before it transfers anything.
-    handle
-        .read(|tree| {
-            tree.active_workspace()
-                .and_then(|ws| domain::ownership_button(ws, person))
-                .map(|(_, action)| action)
-        })
-        .unwrap_or_else(|| t("workspace-settings-ownership-transfer"))
-}
-
-/// Open the search on `query`, where the row the person needs is.
-fn open_search(invocations: &Invocations, query: String) {
-    invocations
-        .borrow_mut()
-        .push(Invocation::new(DESK_RESOURCE, "search").with("query", query));
 }
 
 /// Apply `edit` to the workspace in front as `person`, and keep the tree
@@ -875,14 +846,12 @@ fn own_name() -> Option<String> {
     ui::local_identity::load().map(|identity| identity.display_name)
 }
 
-/// The People tab: who shares the workspace, their roles, and where its
-/// ownership stands.
+/// The People tab: who shares the workspace and their roles.
 fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People {
     let content = domain::people::content(ws, names, person, ws.is_owner(person));
     sheet::People {
         count: content.count,
         status: content.status,
-        ownership: content.ownership,
         header: content.header,
         you_tag: content.you_tag,
         remove: content.remove,
@@ -974,10 +943,6 @@ fn permissions(
                 t("workspace-settings-view-only")
             },
         },
-        saved_roles: t_args(
-            "workspace-settings-saved-roles",
-            &[("count", ws.presets.len().into())],
-        ),
         manage,
         composer: sheet::Composer {
             header: t("workspace-settings-grant-header"),

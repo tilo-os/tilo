@@ -1,10 +1,10 @@
-//! The People tab's content: how many share the workspace and where its
-//! ownership stands, then one entry per person with their role and what the
-//! viewer may offer them, in the viewer's words.
+//! The People tab's content: how many share the workspace, then one entry per
+//! person with their role and what the viewer may offer them, in the viewer's
+//! words.
 
 use super::{
     CapRole, UserId, Workspace, member_row_name, member_row_offers, members_authority_note,
-    ordered_roster, ownership_button, ownership_transfer_status, role_label,
+    ordered_roster, role_label,
 };
 use crate::collaborators::PeopleNames;
 use crate::i18n::{t, t_args};
@@ -38,10 +38,8 @@ pub enum Offers {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeopleContent {
     pub count: String,
-    /// Where ownership stands, or what removing someone does.
+    /// What the tab says under the count: what removing someone does.
     pub status: String,
-    /// The ownership action the viewer can take, by what it does.
-    pub ownership: Option<String>,
     pub header: String,
     pub you_tag: String,
     pub remove: String,
@@ -102,9 +100,7 @@ pub fn content(
             "workspace-settings-members-count",
             &[("count", roster.len().into())],
         ),
-        status: ownership_transfer_status(ws, names, viewer)
-            .unwrap_or_else(|| t("workspace-settings-members-help")),
-        ownership: ownership_button(ws, viewer).map(|(label, _)| label),
+        status: t("workspace-settings-members-help"),
         header: t("workspace-settings-people-header"),
         you_tag: t("workspace-settings-you"),
         remove: t("workspace-settings-remove"),

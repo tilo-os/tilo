@@ -532,17 +532,10 @@ impl View {
 }
 
 /// What a workspace holds that this device reads and no other device needs:
-/// the ownership ceremony's records, the defaults for opening each kind of
-/// resource, which windows this device streams to which peer, and the fields
-/// an older build wrote there.
+/// the defaults for opening each kind of resource, which windows this device
+/// streams to which peer, and the fields an older build wrote there.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Local {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     #[serde(default, skip_serializing_if = "default_apps_unset")]
     default_apps: desktop_policy::WorkspaceDefaults,
     #[serde(
@@ -557,9 +550,6 @@ struct Local {
 impl Local {
     fn of(workspace: &Workspace) -> Self {
         Self {
-            pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
-            ownership_transfer_audit: workspace.ownership_transfer_audit.clone(),
-            ownership_transfer_cancellations: workspace.ownership_transfer_cancellations.clone(),
             default_apps: workspace.default_apps.clone(),
             shared_surfaces: workspace.shared_surfaces.clone(),
             retired_fields: workspace.retired_fields.clone(),
@@ -568,19 +558,13 @@ impl Local {
 
     /// Give `workspace` what the document recorded of it.
     fn apply(self, workspace: &mut Workspace) {
-        workspace.pending_ownership_transfer = self.pending_ownership_transfer;
-        workspace.ownership_transfer_audit = self.ownership_transfer_audit;
-        workspace.ownership_transfer_cancellations = self.ownership_transfer_cancellations;
         workspace.default_apps = self.default_apps;
         workspace.shared_surfaces = self.shared_surfaces;
         workspace.retired_fields = self.retired_fields;
     }
 
     fn is_empty(&self) -> bool {
-        self.pending_ownership_transfer.is_none()
-            && self.ownership_transfer_audit.is_empty()
-            && self.ownership_transfer_cancellations.is_empty()
-            && default_apps_unset(&self.default_apps)
+        default_apps_unset(&self.default_apps)
             && self.shared_surfaces.is_empty()
             && self.retired_fields.is_empty()
     }

@@ -217,14 +217,11 @@ fn the_people_tab_lists_everyone_with_what_the_viewer_may_change() {
     ] {
         assert!(says(&mut owner, text), "{text:?} is shown");
     }
-    assert!(enabled(&mut owner, "Transfer ownership"));
-
     let mut member = staged("people-member");
     assert!(says(
         &mut member,
         "Only admins can change roles or remove people."
     ));
-    assert!(!says(&mut member, "Transfer ownership"));
 }
 
 #[test]

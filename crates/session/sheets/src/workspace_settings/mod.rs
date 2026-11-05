@@ -128,9 +128,6 @@ pub enum WorkspaceSettingsEffect {
     /// Look at what was done in the workspace
     #[effect(own_device, kind = "read")]
     ReviewActivity,
-    /// Transfer the workspace's ownership, or answer a transfer
-    #[effect(own_device, kind = "read")]
-    Ownership,
     /// Admit an agent to the workspace
     #[effect(own_device, kind = "read")]
     AddAgent,
@@ -202,9 +199,6 @@ pub enum WorkspaceSettingsEffect {
         #[param("The permission, by its key in the list")]
         grant: String,
     },
-    /// Open the workspace's saved roles
-    #[effect(own_device, kind = "read")]
-    SavedRoles,
     /// Have the next app open a kind of file or link for everyone here
     #[effect(attended)]
     NextWorkspaceDefault {

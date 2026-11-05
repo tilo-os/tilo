@@ -687,7 +687,6 @@ impl Shared {
             self.workspace_settings.as_ref(),
             &self.workspace_settings_feed(),
             &self.intents,
-            &self.invocations,
         );
         workspace_settings::refresh(
             self.workspace_settings.as_ref(),
