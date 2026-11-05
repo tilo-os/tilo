@@ -366,11 +366,6 @@ pub(super) fn command_bytes(command: &SdkCommand) -> Option<usize> {
         SdkCommand::DisplayControl { command, .. } => {
             std::mem::size_of::<SdkCommand>().checked_add(command.capacity())
         }
-        SdkCommand::PersonChat {
-            command, original, ..
-        } => std::mem::size_of::<SdkCommand>()
-            .checked_add(command.capacity())?
-            .checked_add(original.capacity()),
         SdkCommand::Published(command) => match command {
             super::PublishedCommand::Watch { resource, .. } => {
                 std::mem::size_of::<SdkCommand>().checked_add(resource.len())

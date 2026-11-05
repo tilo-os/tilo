@@ -4,7 +4,7 @@
 //! toolkit: an app host running tilolang apps as wasm instances, a browser
 //! worker, a host in thin mode. The toolkit builds on it and keeps its paths
 //! (`ui::collaboration`, `ui::record`, `ui::app_surface`,
-//! `ui::local_identity`, `ui::local_document_action`, `ui::person_chat`,
+//! `ui::local_identity`, `ui::local_document_action`,
 //! `ui::portable_storage`), so native apps
 //! compile unchanged.
 //!
@@ -108,7 +108,6 @@ pub mod history_source;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
-pub mod person_chat;
 pub mod portable_storage;
 pub mod record;
 pub mod state;
@@ -165,16 +164,15 @@ pub mod approved_checks;
 mod broker;
 pub mod browser_service_sessions;
 #[cfg(feature = "broker-transport")]
-pub mod external_moderation;
-#[cfg(feature = "broker-transport")]
-pub mod write_attribution_lane;
-#[cfg(feature = "broker-transport")]
-pub use broker::person_chat_command;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
+#[cfg(feature = "broker-transport")]
+pub mod external_moderation;
 pub mod handoff;
 mod history;
+#[cfg(feature = "broker-transport")]
+pub mod write_attribution_lane;
 
 mod surface_publication;
 pub use runtime_collab::{SurfaceDelta, SurfaceTable};

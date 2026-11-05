@@ -62,10 +62,8 @@ mod native_media;
 mod native_task_confirmation;
 mod native_task_execution;
 mod native_task_launch;
-mod person_chat;
 #[cfg(test)]
 mod policy_turn_tests;
-mod private_draft;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published;
@@ -3438,7 +3436,6 @@ pub struct AppBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
-    private_drafts: Mutex<private_draft::Drafts>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
@@ -3620,7 +3617,6 @@ impl AppBrokerState {
         clear!(self.invocation_subscribers);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
-        clear!(self.private_drafts);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
         clear!(self.workspace_governance_peers);
@@ -3765,20 +3761,12 @@ impl AppBrokerState {
             Self::CANCELLATION_GRACE,
         );
         self.expire_workspace_opens(now);
-        if let Ok(mut drafts) = self.private_drafts.lock() {
-            drafts.retain(|_, entry| entry.expires > now);
-        }
     }
 
     /// When the next pending invocation can expire. `None` while nothing is
     /// in flight, so the accept loop parks instead of waking every 100 ms.
     fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
         let opens = self.workspace_opens.next_deadline();
-        let drafts = self
-            .private_drafts
-            .lock()
-            .ok()
-            .and_then(|drafts| drafts.values().map(|entry| entry.expires).min());
         let pending = self.pending_invocations.lock().ok()?;
         pending
             .values()
@@ -3795,7 +3783,6 @@ impl AppBrokerState {
                 })
             })
             .chain(opens)
-            .chain(drafts)
             .min()
     }
 
@@ -4214,7 +4201,6 @@ impl AppBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
-                private_drafts: Mutex::new(HashMap::default()),
                 approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),

@@ -27,7 +27,6 @@ mod history_content;
 #[cfg(not(target_arch = "wasm32"))]
 mod join_service;
 mod limits;
-mod old_direct_conversations;
 mod publication;
 mod record;
 pub mod renewal;
@@ -55,10 +54,6 @@ pub use history_content::HistoryContent;
 #[cfg(not(target_arch = "wasm32"))]
 pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
-pub use old_direct_conversations::{
-    OLD_CONVERSATION_NOT_OPENED, OldConversation, OldConversationPage, OldDirectConversations,
-    OldMessage, person_store_key,
-};
 pub use publication::{NativeOutgoing, NativeOutgoingEntry, validate_file_layout};
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,

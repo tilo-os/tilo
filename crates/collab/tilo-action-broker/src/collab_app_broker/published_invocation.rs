@@ -121,66 +121,6 @@ impl OriginalInvocationData {
         )
     }
 
-    pub(super) fn private_draft_caller(
-        self: &Arc<Self>,
-        state: &Arc<AppBrokerState>,
-        peer: u64,
-        worker: &PrivateWorkerRegistration,
-        token: uuid::Uuid,
-    ) -> Result<tilo_user_identity::DeviceCert, String> {
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Argument {
-            token: uuid::Uuid,
-        }
-        let argument = self
-            .request
-            .argument
-            .as_deref()
-            .ok_or("private draft token missing")?;
-        let argument: Argument = serde_json::from_str(
-            argument
-                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
-                .unwrap_or(argument),
-        )
-        .map_err(|_| "invalid private draft action arguments")?;
-        if self.route != worker.route
-            || self.request.address.action != "adopt-private-draft"
-            || argument.token != token
-        {
-            return Err("original private draft action or token changed".into());
-        }
-        let restricted = match &self.caller {
-            InvocationCaller::Certified {
-                caller,
-                foreign_restriction,
-            } => {
-                *foreign_restriction
-                    || caller.admitted.verified.capped
-                    || caller.admitted.host_scope.is_some()
-            }
-            InvocationCaller::Local { admitted, .. } => {
-                admitted.verified.capped || admitted.host_scope.is_some()
-            }
-            InvocationCaller::NativePerson { .. } => false,
-        };
-        let original = OriginalInvocation {
-            broker: Arc::downgrade(state),
-            peer,
-            worker: TargetCustody::Registered(Box::new(worker.clone())),
-            data: self.clone(),
-        };
-        original.check_execution_frontier(state)?;
-        original.check_lifecycle()?;
-        let certificate = original.certificate()?;
-        if restricted || original.agent_id().is_some() || certificate.capabilities.foreign {
-            return Err("private draft adoption requires the original certified person".into());
-        }
-        let certificate = certificate.clone();
-        drop(original);
-        Ok(certificate)
-    }
-
     pub(super) fn display_caller(
         self: &Arc<Self>,
         state: &Arc<AppBrokerState>,

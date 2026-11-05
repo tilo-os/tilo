@@ -821,14 +821,6 @@ fn seams(
         // What people ask this session's agents to do: a run is the broker's
         // to deliver, and its reports come back to the run.
         tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
-        // A person's private conversations are kept in their workspaces'
-        // private person state, beside the owner's own record: Chat reads and
-        // writes them through the owner this session opened, where this
-        // device is the workspace's host, and follows them by its watch.
-        person_chat: Seam::when(engine.map(|engine| {
-            std::sync::Arc::new(crate::person_chat::PersonChat::new(engine))
-                as tilo_action_broker::services::person_chat::PersonChatService
-        })),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -1517,7 +1509,7 @@ mod tests {
             None,
         );
         let decisions = decided.decisions();
-        assert_eq!(decisions.len(), 42, "the broker's seams, each decided");
+        assert_eq!(decisions.len(), 41, "the broker's seams, each decided");
         let mut names = std::collections::BTreeSet::new();
         for (name, why) in &decisions {
             assert!(names.insert(*name), "`{name}` is decided once");

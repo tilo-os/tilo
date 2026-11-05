@@ -336,8 +336,9 @@ pub enum Service {
     AudioOutput,
     /// `native_media::Request` -> `native_media::Snapshot`, JSON.
     NativeMedia,
-    /// A person-chat or private-draft command and its reply.
-    PersonChat,
+    /// Retired: the private person-chat and draft commands. Kept in place so
+    /// every service after it keeps its position on the wire.
+    RetiredPersonChat,
     /// `SpeakerCommand` -> `SpeakerReply`, JSON; the Settings app's only.
     Speaker,
     /// A realtime command and its reply, JSON.

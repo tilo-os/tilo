@@ -518,7 +518,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
             for service in [
                 Service::AudioOutput,
                 Service::NativeMedia,
-                Service::PersonChat,
+                Service::RetiredPersonChat,
                 Service::Speaker,
                 Service::Realtime,
                 Service::NearbyTransfer,
@@ -543,7 +543,7 @@ async fn a_service_command_is_answered_or_refused_on_its_call() {
                 endpoint
                     .call(Operation::Command {
                         channel: Handle(77),
-                        service: Service::PersonChat,
+                        service: Service::RetiredPersonChat,
                         body: Vec::new(),
                         on_behalf_of: Vec::new(),
                     })

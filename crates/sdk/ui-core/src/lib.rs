@@ -281,9 +281,7 @@ pub mod desk_widgets {
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod deferred;
 pub mod lazy_code;
-pub use ::collaboration::person_chat;
 pub mod personal_dictionary;
-pub mod private_draft;
 pub mod text_assistance;
 pub mod text_break;
 pub mod text_detect;

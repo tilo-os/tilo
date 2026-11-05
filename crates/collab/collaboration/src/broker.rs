@@ -247,34 +247,6 @@ pub fn speaker_command(
 
 static DISPLAY_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::OnceLock::new();
 
-pub fn person_chat_command(command: Vec<u8>, original: Vec<u8>) -> Result<Vec<u8>, String> {
-    if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
-        return Err("invalid private conversation request".into());
-    }
-    let sender = PUBLISHED_COMMAND_BRIDGE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .map_err(|_| "private person bridge unavailable")?
-        .as_ref()
-        .and_then(tokio_mpsc::WeakSender::upgrade)
-        .ok_or("private conversations need the certified native host")?;
-    let (reply, receiver) = mpsc::sync_channel(1);
-    if !enqueue_sdk_command(
-        &sender,
-        SdkCommand::PersonChat {
-            command,
-            original,
-            reply,
-        },
-        DISPLAY_COMMAND_BUDGET.get_or_init(BridgeState::new),
-    ) {
-        return Err("private conversation queue unavailable".into());
-    }
-    receiver
-        .recv_timeout(Duration::from_secs(4))
-        .map_err(|_| "private conversation reply unavailable".to_string())?
-}
-
 /// Ask the native host to inspect or change its display transaction. Call off
 /// the frame thread; the existing bridge and response wait remain bounded.
 ///
@@ -1054,11 +1026,6 @@ enum SdkCommand {
         app_id: String,
         command: runtime_collab::SpeakerCommand,
         reply: mpsc::SyncSender<Result<runtime_collab::SpeakerReply, String>>,
-    },
-    PersonChat {
-        command: Vec<u8>,
-        original: Vec<u8>,
-        reply: mpsc::SyncSender<Result<Vec<u8>, String>>,
     },
     DisplayControl {
         origin: runtime_collab::settings::DisplayOrigin,
@@ -4126,32 +4093,6 @@ async fn drive_shovel(
                         .map_err(|error| error.to_string())
                 } else {
                     Err("primary collaboration route is unavailable".into())
-                };
-                let _ = reply.send(result);
-            }
-            SdkCommand::PersonChat {
-                command,
-                original,
-                reply,
-            } => {
-                let result = if let Some(key) = primary.as_ref()
-                    && let Some(route) = routes.get_mut(key)
-                {
-                    tokio::time::timeout(Duration::from_secs(3), async {
-                        if let Ok(request) = serde_json::from_slice::<
-                            runtime_collab::private_draft::Request,
-                        >(&command)
-                        {
-                            route.channel.private_draft(&request, &original).await
-                        } else {
-                            route.channel.person_chat(&command, &original).await
-                        }
-                    })
-                    .await
-                    .map_err(|_| "private conversation host timed out".to_string())
-                    .and_then(|result| result.map_err(|error| error.to_string()))
-                } else {
-                    Err("private conversation primary channel unavailable".into())
                 };
                 let _ = reply.send(result);
             }

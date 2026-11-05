@@ -381,9 +381,10 @@ impl ChannelSession {
                     let reply = channel.remote_action_dispatch(body);
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
-                Service::PersonChat => channel
-                    .person_chat_dispatch(body, on_behalf_of)
-                    .map(|reply| -> Answering { Box::pin(std::future::ready(Ok(reply))) }),
+                // Retired with the private person-chat store it served.
+                Service::RetiredPersonChat => {
+                    Err("the private conversation service is retired".to_owned())
+                }
             };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }

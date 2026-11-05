@@ -22,7 +22,7 @@ use crate::{
     ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
     SpeakerReply, SurfaceDelta, TaskRunEnvelope, TaskRunUpdate, WifiContinuityCommand,
     WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput, audio_output,
-    committed_document, file_clipboard, native_media, open_selected, private_draft,
+    committed_document, file_clipboard, native_media, open_selected,
 };
 use crate::{
     MAX_NEARBY_TRANSFER_WIRE_BYTES, MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES,
@@ -555,50 +555,6 @@ impl ChannelHandle {
             channel: Arc::clone(&self.channel),
             subscription: tokio::sync::Mutex::new(subscription),
         })))
-    }
-
-    /// Fetch or acknowledge an ephemeral editor on the certified native channel.
-    /// The private command lane carries this separate closed envelope; no
-    /// editor body enters the action protocol or person-message persistence.
-    ///
-    /// # Errors
-    /// Refuses a missing original invocation, denied transport or oversized reply.
-    pub async fn private_draft(
-        &self,
-        request: &private_draft::Request,
-        original: &[u8],
-    ) -> Result<Vec<u8>, NotAvailable> {
-        if original.len() != 16 {
-            return Err(refused("private draft requires original invocation"));
-        }
-        let command =
-            serde_json::to_vec(request).map_err(|_| refused("invalid private draft request"))?;
-        let reply = self.command(Service::PersonChat, command, original).await?;
-        if reply.len() > 128 * 1024 {
-            return Err(refused("private draft reply exceeds bound"));
-        }
-        Ok(reply)
-    }
-
-    /// Invoke the person-only private host door; unsupported hosts fail closed.
-    ///
-    /// # Errors
-    /// Returns unavailable if certification or the private owner command fails.
-    pub async fn person_chat(
-        &self,
-        command: &[u8],
-        original: &[u8],
-    ) -> Result<Vec<u8>, NotAvailable> {
-        if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
-            return Err(refused("invalid private conversation request"));
-        }
-        let reply = self
-            .command(Service::PersonChat, command.to_vec(), original)
-            .await?;
-        if reply.len() > 1024 * 1024 {
-            return Err(refused("private conversation reply exceeds bound"));
-        }
-        Ok(reply)
     }
 
     /// Send PCM or controls to this launched application's output-only service.
