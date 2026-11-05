@@ -470,25 +470,20 @@ impl DesktopHost {
     /// reaches.
     ///
     /// `None` when `address` is not the platform search door.
-    ///
-    /// # Errors
-    /// Never: opening search asks nothing first, and a request its own action
-    /// refuses is one the caller made against the published contract.
     fn open_platform_search(
-        &mut self,
+        &self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::DoorError>
-    {
+    ) -> Option<ui::host_operation::ResourceOperationStart> {
         if !ui::search::is_search_address(address) {
-            return Ok(None);
+            return None;
         }
         let request = ui::search::SearchRequest::from_arguments(arguments);
         let handle = self.desk.borrow().policy.handle().clone();
-        handle.open_search(ui::search::Scope::Workspace, request.query.clone());
-        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+        handle.open_search(ui::search::Scope::Workspace, request.query);
+        Some(ui::host_operation::ResourceOperationStart::Completed(
             ui::tilo_actions::ActionOutput::default(),
-        )))
+        ))
     }
 
     /// Read touchpad gestures by `config` from the next one on; `None`
@@ -583,7 +578,7 @@ impl crate::Published for DesktopHost {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
         }
-        if let Some(answered) = self.open_platform_search(address, arguments)? {
+        if let Some(answered) = self.open_platform_search(address, arguments) {
             return Ok(answered);
         }
         crate::Published::invoke(&mut self.desk.borrow_mut().host, address, arguments, look)
@@ -599,7 +594,7 @@ impl crate::Published for DesktopHost {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
         }
-        if let Some(answered) = self.open_platform_search(address, arguments)? {
+        if let Some(answered) = self.open_platform_search(address, arguments) {
             return Ok(answered);
         }
         crate::Published::invoke_as(
