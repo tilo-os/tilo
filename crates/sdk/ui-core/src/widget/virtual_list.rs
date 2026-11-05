@@ -419,6 +419,9 @@ pub struct VirtualList<M: ListModel> {
     feel: crate::motion::Feel,
     reduce_motion: bool,
     vbar: Scrollbar,
+    /// The bar laid over the rows' trailing edge and faded out at rest, in place of the bar
+    /// standing in a gutter beside them ([`Self::overlay_scrollbar`]).
+    overlay_bar: Option<crate::widget::OverlayScrollbar>,
     /// `metrics.scrollbar_gutter` and the row lift's bleed, from the last
     /// layout's theme.
     gutter: f64,
@@ -627,6 +630,7 @@ impl<M: ListModel> VirtualList<M> {
             feel: crate::motion::Feel::Standard,
             reduce_motion: false,
             vbar: Scrollbar::vertical(),
+            overlay_bar: None,
             gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
@@ -761,6 +765,15 @@ impl<M: ListModel> VirtualList<M> {
     /// and lift no selection, as a page's rows do, so their content shares
     /// the edge of the page around the list. Rows of a list stand one lift's
     /// bleed in from its edges otherwise.
+    /// The scroll bar lies over the rows' trailing edge, shown while they scroll or the
+    /// pointer is at it and faded out at rest, and the rows keep their whole width: for a
+    /// sidebar, whose rows read as one column with the pane beside it.
+    #[must_use]
+    pub fn overlay_scrollbar(mut self) -> Self {
+        self.overlay_bar = Some(crate::widget::OverlayScrollbar::vertical());
+        self
+    }
+
     #[must_use]
     pub const fn flush(mut self) -> Self {
         self.stance = RowStance::Flush;
@@ -1122,6 +1135,9 @@ impl<M: ListModel> VirtualList<M> {
         if !self.scroll_metrics().overflows() {
             return None;
         }
+        if let Some(bar) = &self.overlay_bar {
+            return Some(bar.track(self.rect));
+        }
         let track = self.corners.clear(
             crate::widget::scrollbar::vertical_track(self.rect, self.gutter),
             true,
@@ -1442,6 +1458,11 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        if let Some(mut bar) = self.overlay_bar.take() {
+            let handled = self.handle_overlay_bar_event(&mut bar, event, scale_factor);
+            self.overlay_bar = Some(bar);
+            return handled;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -1486,6 +1507,57 @@ impl<M: ListModel> VirtualList<M> {
                 button: MouseButton::Left,
                 ..
             } => self.vbar.release(),
+            _ => false,
+        }
+    }
+
+    /// [`Self::handle_scrollbar_event`] for the bar laid over the rows.
+    fn handle_overlay_bar_event(
+        &mut self,
+        bar: &mut crate::widget::OverlayScrollbar,
+        event: &WindowEvent,
+        scale_factor: f64,
+    ) -> bool {
+        let metrics = self.scroll_metrics();
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor = Some(point);
+                if bar.is_dragging() {
+                    if let Some(offset) = bar.drag_to(self.rect, metrics, point) {
+                        self.set_scroll_offset(offset);
+                    }
+                    return true;
+                }
+                bar.update_pointer(self.rect, metrics, point);
+                false
+            }
+            WindowEvent::CursorLeft { .. } => {
+                bar.pointer_left();
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(point) = self.last_cursor else {
+                    return false;
+                };
+                match bar.press(self.rect, metrics, point) {
+                    PressOutcome::Thumb => true,
+                    PressOutcome::Page(offset) => {
+                        self.set_scroll_offset(offset);
+                        true
+                    }
+                    PressOutcome::Miss => false,
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => bar.release(),
             _ => false,
         }
     }
@@ -1653,6 +1725,9 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             self.scroll.momentum.stop();
         }
         self.gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        if let Some(bar) = &mut self.overlay_bar {
+            bar.set_theme(theme);
+        }
         self.bleed = match self.stance {
             RowStance::Flush => 0.0,
             RowStance::Bleed => crate::chrome::row_bleed(theme),
@@ -2054,7 +2129,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         scene.pop_layer();
         let transform = frame_transform;
 
-        if let Some(track) = self.scrollbar_track() {
+        if let Some(bar) = &self.overlay_bar {
+            bar.note_offset(self.viewport.offset());
+            bar.paint(scene, transform, self.rect, self.scroll_metrics(), theme);
+        } else if let Some(track) = self.scrollbar_track() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -2498,6 +2576,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             || self.reorder.is_tracking()
             || self.vbar.is_dragging()
             || self
+                .overlay_bar
+                .as_ref()
+                .is_some_and(crate::widget::OverlayScrollbar::is_dragging)
+            || self
                 .mounted
                 .iter()
                 .any(|row| row.widget.wants_pointer_capture())
@@ -2505,7 +2587,10 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
 
     fn needs_animation_frame(&self) -> bool {
         let now = crate::time::now();
-        self.scroll.momentum.is_active()
+        self.overlay_bar
+            .as_ref()
+            .is_some_and(crate::widget::OverlayScrollbar::needs_animation_frame)
+            || self.scroll.momentum.is_active()
             || self
                 .scroll
                 .momentum
@@ -2631,7 +2716,14 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.arrivals_wake()
+        let bar = self
+            .overlay_bar
+            .as_ref()
+            .and_then(crate::widget::OverlayScrollbar::next_wake_deadline);
+        match (self.arrivals_wake(), bar) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn mark_drawn(&mut self) {

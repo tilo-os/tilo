@@ -108,7 +108,7 @@ impl<M: ListModel + 'static> VirtualList<M> {
     /// its top in the list less [`Self::layout_offset`]. Only a row whose
     /// place changed is touched, so taffy keeps every other row's layout.
     pub(super) fn place_rows(&mut self, taffy: &mut TaffyTree<()>) {
-        self.rows_beside_bar = self.scroll_metrics().overflows();
+        self.rows_beside_bar = self.overlay_bar.is_none() && self.scroll_metrics().overflows();
         let left = length(px(self.lead));
         let right = length(px(self.trailing_inset()));
         let places = self

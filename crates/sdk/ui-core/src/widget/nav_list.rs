@@ -843,6 +843,7 @@ impl NavList {
         .filling()
         // A navigation row lays out its own insets and paints its own lift.
         .flush()
+        .overlay_scrollbar()
         .selection_follows_focus()
         .with_semantic_key(Clone::clone)
         .on_select(move |key, _| select_shared.borrow_mut().choose(&key))
