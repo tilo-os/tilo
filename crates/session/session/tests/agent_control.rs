@@ -194,7 +194,10 @@ fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) 
             refused.pointer("/err/code").and_then(Value::as_str),
             Some("not_allowed"),
             "{when}, the control protocol answers no `{}`: {refused}",
-            request["op"]
+            request
+                .get("op")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
         );
         let message = refused
             .pointer("/err/message")

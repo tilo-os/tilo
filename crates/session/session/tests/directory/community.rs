@@ -118,12 +118,14 @@ struct Cable {
 impl Cable {
     /// A machine with nothing plugged in.
     fn offline() -> Self {
-        let mut network = tilo_connectivity_service::model::Network::default();
-        network.link = Some(tilo_connectivity_service::model::Link {
-            kind: tilo_connectivity_service::model::LinkKind::Offline,
-            name: None,
-            signal: 0,
-        });
+        let network = tilo_connectivity_service::model::Network {
+            link: Some(tilo_connectivity_service::model::Link {
+                kind: tilo_connectivity_service::model::LinkKind::Offline,
+                name: None,
+                signal: 0,
+            }),
+            ..tilo_connectivity_service::model::Network::default()
+        };
         Self {
             network: Rc::new(RefCell::new(network)),
             news: Rc::new(Cell::new(false)),

@@ -307,7 +307,7 @@ impl Shared {
             PowerEffect::Lock => self.commands.borrow_mut().push(SessionCommand::Lock),
             PowerEffect::LogOut => self.commands.borrow_mut().push(SessionCommand::LogOut),
             PowerEffect::ShutDown if self.hosted => {
-                self.commands.borrow_mut().push(SessionCommand::End)
+                self.commands.borrow_mut().push(SessionCommand::End);
             }
             // The desktop it runs in owns the machine's power and its
             // session switching; the menu does not offer these here, and a

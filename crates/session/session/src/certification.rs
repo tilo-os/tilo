@@ -1122,7 +1122,7 @@ mod tests {
 
         /// An unsigned renewal of the certificate `held`, issued `at`,
         /// expiring a day after it.
-        fn renewal(&self, held: &DeviceCert, at: u64) -> DeviceCert {
+        fn renewal(held: &DeviceCert, at: u64) -> DeviceCert {
             let mut cert = held.clone();
             cert.issued_at_ns = at;
             cert.expires_at_ns = Some(at.saturating_add(24 * 60 * 60 * 1_000_000_000));
@@ -1132,7 +1132,7 @@ mod tests {
 
         /// An unsigned renewal of the certificate it holds, issued now.
         fn unsigned_renewal(&self) -> DeviceCert {
-            self.renewal(&self.held, tilo_clock::unix_now_ns())
+            Self::renewal(&self.held, tilo_clock::unix_now_ns())
         }
     }
 
@@ -1270,7 +1270,7 @@ mod tests {
         // and the fleet already holds a later one.
         let now = tilo_clock::unix_now_ns();
         let newer = joined.at(now);
-        let stale = joined.renewal(&joined.held, joined.held.issued_at_ns.saturating_add(1));
+        let stale = Joined::renewal(&joined.held, joined.held.issued_at_ns.saturating_add(1));
 
         let (laptop, other, laptop_id, other_id) = pair_of(&joined.device_key, 0x4b);
         set_keys(&laptop_id, Arc::new(NoKey));
@@ -1288,11 +1288,11 @@ mod tests {
         let now = tilo_clock::unix_now_ns();
         // Before it runs out, nothing is due.
         assert!(
-            !tilo_identity_host::provisioning::joined_device_renewal_due(
+            tilo_identity_host::provisioning::joined_device_renewal_due(
                 &joined.paths,
                 joined.held.issued_at_ns
             )
-            .is_some()
+            .is_none()
         );
         // Once it has, the certificate it holds is what is renewed.
         let due = tilo_identity_host::provisioning::joined_device_renewal_due(&joined.paths, now)

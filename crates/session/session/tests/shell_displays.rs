@@ -539,8 +539,8 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
 #[test]
 fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
     let _settled = ui::motion::testing::settled();
-    let width = i32::try_from((WIDTH as f64 * 2.0) as u32).unwrap();
-    let height = i32::try_from((HEIGHT as f64 * 2.0) as u32).unwrap();
+    let width = WIDTH * 2;
+    let height = HEIGHT * 2;
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
