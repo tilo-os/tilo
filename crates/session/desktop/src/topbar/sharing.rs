@@ -2,6 +2,9 @@
 //! cursor and avatar settle on, who is watching or sharing, and the continuity
 //! chip beside them.
 
+/// The sharing pill's glyph: the eye that says the windows are shared.
+static SHARE_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::Eye];
+
 use super::*;
 
 impl TopBarChrome {
@@ -397,69 +400,34 @@ impl TopBarChrome {
             self.sharing_indicator_rect = Rect::ZERO;
             return right_x;
         };
+        // Sharing is one bar chip: the eye, the words, and the state's tone
+        // washed into the chip's body — warning where someone controls the
+        // windows, the accent while they only view.
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         let color = if controllers > 0 {
-            colors.semantic.warning
+            tokens.colors.semantic.warning
         } else {
-            colors.intent.accent_ink
+            tokens.colors.intent.accent_ink
         };
-        let style = tokens.typography.style(TextRole::Caption);
         let available = (right_x - self.center_lane.x1 - 48.0).clamp(28.0, 180.0);
-        let label = text_renderer.elide_to_width_style(
-            &label,
-            ui::num::f32_of_f64(available),
-            &style.clone().with_weight(TextWeight::Semibold),
-        );
-        let (label_w, label_h) = text_renderer.measure_style(
-            &label,
-            None,
-            &style.clone().with_weight(TextWeight::Semibold),
-        );
-        let width = f64::from(label_w) + 31.0;
-        self.sharing_indicator_rect = Rect::new(
-            right_x - width,
-            center_y - BAR_CONTROL_PX / 2.0,
-            right_x,
-            center_y + BAR_CONTROL_PX / 2.0,
-        );
-        let pill = RoundedRect::from_rect(
+        let chip = ui::widget::BarChipFace::new(&label, &[])
+            .icons(SHARE_GLYPH)
+            .label(&label)
+            .label_width(f64::from(available))
+            .tone(color)
+            .at_height(BAR_CONTROL_PX)
+            .hovered(false)
+            .focused(
+                self.focus_ring_visible()
+                    && self.focused_control.as_deref() == Some(Self::CONTROL_COLLABORATORS),
+            );
+        let width = chip.width(text_renderer, theme);
+        self.sharing_indicator_rect =
+            ui::widget::BarChipFace::place_at(right_x - width, center_y, width, BAR_CONTROL_PX);
+        let _ = chip.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.sharing_indicator_rect,
-            ui::chrome::ChromeRole::Selector.radius(theme, BAR_CONTROL_PX),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            color.with_alpha_factor(0.18),
-            None,
-            &pill,
-        );
-        ui::icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(
-                self.sharing_indicator_rect.x0 + 7.0,
-                center_y - 6.0,
-                self.sharing_indicator_rect.x0 + 19.0,
-                center_y + 6.0,
-            ),
-            ui::icons::Icon::Eye,
-            color,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_renderer.draw_style(
-            scene,
-            &label,
-            colors.text_primary,
-            at(
-                transform,
-                (
-                    self.sharing_indicator_rect.x0 + 23.0,
-                    center_y - f64::from(label_h) / 2.0,
-                ),
-            ),
-            None,
-            &style.with_weight(TextWeight::Semibold),
+            tokens.colors.surfaces.base,
         );
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }

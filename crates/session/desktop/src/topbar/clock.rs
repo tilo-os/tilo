@@ -4,10 +4,9 @@
 //! add and close controls a person drags it by.
 
 use super::{
-    Affine, BAR_CONTROL_PX, ButtonRole, CENTER_INSET_PX, CacheFingerprint, ChromeIntent,
-    ClockActivity, ClockSnapshot, Duration, Instant, Line, NARROW_MENU_BAR_PX, Point, Rect,
-    RoundedRect, Scene, Stroke, TextRenderer, TextRole, TextStyle, TextWeight, Theme, TopBarChrome,
-    TopBarPresence, Widget, WindowEvent, at, paint_bar_selector, t,
+    Affine, BAR_CONTROL_PX, CENTER_INSET_PX, CacheFingerprint, ChromeIntent, ClockActivity,
+    ClockSnapshot, Duration, Instant, NARROW_MENU_BAR_PX, Point, Rect, Scene, TextRenderer,
+    TextRole, TextStyle, TextWeight, Theme, TopBarChrome, TopBarPresence, Widget, WindowEvent, t,
 };
 
 impl TopBarChrome {
@@ -181,10 +180,6 @@ impl TopBarChrome {
         // The quiet selector pill comes and goes with the activity.
         let pill = self.center_activity_opacity(now);
         if pill > 0.0 {
-            let band_rr = RoundedRect::from_rect(
-                band,
-                ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
-            );
             if pill < 1.0 {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -194,12 +189,14 @@ impl TopBarChrome {
                     &band.inflate(2.0, 2.0),
                 );
             }
-            paint_bar_selector(
+            // The live activity keeps a quiet selector pill: the bar
+            // control's own whole lift, from its face.
+            ui::widget::BarControlFace::new("").open(true).paint_lift(
                 scene,
                 transform,
-                &band_rr,
-                ui::chrome::SelectionState::active(true),
+                band,
                 theme,
+                theme.tokens.colors.surfaces.base,
             );
             if pill < 1.0 {
                 scene.pop_layer();
@@ -311,23 +308,27 @@ impl TopBarChrome {
         center_y: f64,
         content_cx: f64,
     ) {
+        use ui::widget::TextLineFace;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let s = self.clock_widget_text();
         let style = tokens.typography.style(TextRole::Body);
-        // Measured at the draw weight — Bold advances wider
-        // than Regular, so centering would drift otherwise.
-        let weight = self.clock_text_weight();
-        let (tw, th) = text_renderer.measure_style(&s, None, &style.clone().with_weight(weight));
-        let tx = content_cx - f64::from(tw) / 2.0;
-        let ty = center_y - f64::from(th) / 2.0;
-        text_renderer.draw_style(
-            scene,
-            &s,
+        // Measured at the draw weight — Bold advances wider than Regular, so
+        // centring drifts otherwise. One centred line, through the shared
+        // text-line painter.
+        let line =
+            TextLineFace::styled(&s, &style, TextRole::Body).weight(self.clock_text_weight());
+        let (tw, th) = line.measure(text_renderer);
+        let rect = Rect::new(
+            content_cx - tw / 2.0,
+            center_y - th / 2.0,
+            content_cx + tw / 2.0,
+            center_y + th / 2.0,
+        );
+        line.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
             colors.text_primary,
-            at(transform, (tx, ty)),
-            None,
-            &style.with_weight(weight),
         );
     }
 
@@ -473,6 +474,7 @@ impl TopBarChrome {
         let Some(_headline) = self.activity_headline.as_deref() else {
             return;
         };
+        use ui::widget::TextLineFace;
         let style = theme.text(TextRole::Caption);
         // Keep activity in one line. `measure(..., Some(width))` wraps at
         // word boundaries, which made a large-text notification grow to two
@@ -482,21 +484,19 @@ impl TopBarChrome {
         // geometry at every text scale and viewport width.
         let max_width = self.activity_content_width(theme);
         let label = self.activity_display_label(text_renderer, &style, max_width);
-        let (w, h) = text_renderer.measure_style(
-            &label,
-            None,
-            &style.clone().with_weight(TextWeight::Medium),
+        let line =
+            TextLineFace::styled(&label, &style, TextRole::Caption).weight(TextWeight::Medium);
+        let (w, h) = line.measure(text_renderer);
+        let rect = Rect::new(
+            center_x - w / 2.0,
+            center_y - h / 2.0,
+            center_x + w / 2.0,
+            center_y + h / 2.0,
         );
-        text_renderer.draw_style(
-            scene,
-            &label,
+        line.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            rect,
             theme.tokens.colors.text_primary,
-            at(
-                transform,
-                (center_x - f64::from(w) / 2.0, center_y - f64::from(h) / 2.0),
-            ),
-            None,
-            &style.clone().with_weight(TextWeight::Medium),
         );
     }
 
@@ -544,6 +544,7 @@ impl TopBarChrome {
         theme: &Theme,
         activity: &ClockActivity,
     ) {
+        use ui::widget::{AgendaControl, AgendaEntry, AgendaLabels, AgendaPopoverFace};
         let (width, height) = (clock_overlay_width(self.rect.x1), CLOCK_OVERLAY_HEIGHT);
         let fallback = Point::new((self.rect.x1 - width - 16.0).max(8.0), self.rect.y1 + 16.0);
         let clamped = clamp_clock_overlay(
@@ -555,85 +556,52 @@ impl TopBarChrome {
         let panel = Rect::from_origin_size(clamped, (width, height));
         self.clock_overlay_pos = Some(clamped);
         self.clock_overlay_rect = panel;
-        // A Panel (HIG §9.1): `radii.panel`, the floating material and a
-        // floating shadow. Was `surfaces.raised` at a literal 18 px radius
-        // with no shadow: the tone of a field well, floating over the desktop.
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, panel.height());
-        ui::surface::shadow(
-            scene,
-            transform,
+        // The floating timer is a Panel: the shared agenda popover paints its
+        // material, grip, headline, reading and controls, so the timer is the
+        // same floating surface as every other one.
+        let entry = AgendaEntry::new(
+            activity.label.clone(),
+            ui::format::timecode(activity.remaining_secs),
+        );
+        let entry = if activity.paused {
+            entry.paused()
+        } else {
+            entry
+        };
+        let labels = AgendaLabels {
+            toggle: t(if activity.paused {
+                "topbar-clock-resume"
+            } else {
+                "topbar-clock-pause"
+            }),
+            add: t(if activity.stopwatch {
+                "topbar-clock-lap"
+            } else {
+                "topbar-clock-add-minute"
+            }),
+            close: t(if activity.stopwatch {
+                "topbar-clock-close-stopwatch"
+            } else {
+                "topbar-clock-close-timer"
+            }),
+        };
+        let control = |focus: Option<u8>| match focus {
+            Some(0) => Some(AgendaControl::Toggle),
+            Some(1) => Some(AgendaControl::Add),
+            Some(2) => Some(AgendaControl::Close),
+            _ => None,
+        };
+        let face =
+            AgendaPopoverFace::new(&entry, &labels).focused(control(self.clock_control_focus));
+        let (layout, _) = face.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             panel,
-            radius,
-            &theme.tokens.elevation.floating,
-        );
-        ui::surface::panel(scene, transform, panel, radius, theme);
-        let grip = Line::new(
-            Point::new(panel.center().x - 14.0, panel.y0 + 9.0),
-            Point::new(panel.center().x + 14.0, panel.y0 + 9.0),
-        );
-        scene.stroke(
-            &Stroke::new(3.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &grip,
-        );
-        text_renderer.draw_style(
-            scene,
-            &activity.label,
-            theme.tokens.colors.text_dim,
-            at(transform, (panel.x0 + 18.0, panel.y0 + 21.0)),
-            None,
-            &theme.text(TextRole::Label),
-        );
-        let elapsed = ui::format::timecode(activity.remaining_secs);
-        text_renderer.draw_style(
-            scene,
-            &elapsed,
-            theme.tokens.colors.text_primary,
-            at(transform, (panel.x0 + 18.0, panel.y0 + 43.0)),
-            None,
-            &theme.text(TextRole::Heading).with_weight(TextWeight::Bold),
         );
         [
             self.clock_pause_rect,
             self.clock_add_rect,
             self.clock_close_rect,
-        ] = clock_overlay_controls(panel);
-        let [pause_label, add_label, close_label] = clock_overlay_labels(activity);
-        ui::widget::Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ui::widget::ButtonFace::new(self.clock_pause_rect, &pause_label)
-                .role(ButtonRole::Primary)
-                .icon(if activity.paused {
-                    ui::icons::Icon::Play
-                } else {
-                    ui::icons::Icon::Pause
-                })
-                .focused(self.clock_control_focus == Some(0)),
-        );
-        ui::widget::Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ui::widget::ButtonFace::new(self.clock_add_rect, &add_label)
-                .focused(self.clock_control_focus == Some(1)),
-        );
-        ui::widget::Button::paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &ui::widget::ButtonFace::new(self.clock_close_rect, "")
-                .role(ButtonRole::Plain)
-                .icon(ui::icons::Icon::X)
-                .accessible_name(&close_label)
-                .focused(self.clock_control_focus == Some(2)),
-        );
+        ] = [layout.toggle, layout.add, layout.close];
     }
 
     pub(super) fn handle_clock_keyboard(
@@ -891,21 +859,6 @@ impl TopBarChrome {
 
 pub(super) const CLOCK_OVERLAY_HEIGHT: f64 = 150.0;
 
-/// The floating clock's pause, add and close control labels.
-pub(super) fn clock_overlay_labels(activity: &ClockActivity) -> [String; 3] {
-    let pause = if activity.paused {
-        "topbar-clock-resume"
-    } else {
-        "topbar-clock-pause"
-    };
-    let (add, close) = if activity.stopwatch {
-        ("topbar-clock-lap", "topbar-clock-close-stopwatch")
-    } else {
-        ("topbar-clock-add-minute", "topbar-clock-close-timer")
-    };
-    [t(pause), t(add), t(close)]
-}
-
 pub(super) fn clamp_clock_overlay(
     position: Point,
     overlay: (f64, f64),
@@ -924,28 +877,6 @@ pub(super) fn clamp_clock_overlay(
 
 pub(super) fn clock_overlay_width(viewport_width: f64) -> f64 {
     (viewport_width - 16.0).clamp(204.0, 252.0)
-}
-
-pub(super) fn clock_overlay_controls(panel: Rect) -> [Rect; 3] {
-    let left = panel.x0 + 12.0;
-    let right = panel.x1 - 12.0;
-    let gap = 6.0;
-    let width = (right - left - gap) / 2.0;
-    // The floating surface is commonly used directly on a touch screen.
-    // Keep every action at the platform's 44px minimum rather than inheriting
-    // the compact 36px desktop-button height.
-    let y0 = panel.y1 - 56.0;
-    let y1 = panel.y1 - 12.0;
-    [
-        Rect::new(left, y0, left + width, y1),
-        Rect::new(left + width + gap, y0, right, y1),
-        Rect::new(
-            panel.x1 - 52.0,
-            panel.y0 + 8.0,
-            panel.x1 - 8.0,
-            panel.y0 + 52.0,
-        ),
-    ]
 }
 
 pub(super) fn clock_overlay_drag_region(panel: Rect) -> Rect {

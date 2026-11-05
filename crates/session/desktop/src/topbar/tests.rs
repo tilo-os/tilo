@@ -1,4 +1,3 @@
-use super::clock::clock_overlay_controls;
 use super::*;
 use automerge::AutoCommit;
 use tilo_desktop_model::{
@@ -147,12 +146,24 @@ fn floating_clock() -> TopBarChrome {
         });
     }
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-    bar.clock_overlay_rect = Rect::new(100.0, 80.0, 352.0, 238.0);
-    [
-        bar.clock_pause_rect,
-        bar.clock_add_rect,
-        bar.clock_close_rect,
-    ] = clock_overlay_controls(bar.clock_overlay_rect);
+    // The controls stand where the popover paints them: paint it once, at the
+    // size the host gives it, so the fixture is its drawn layout.
+    let theme = Theme::default();
+    let activity = ClockActivity {
+        label: "Tea".into(),
+        remaining_secs: 125,
+        overlay: true,
+        ..Default::default()
+    };
+    bar.clock_overlay_pos = Some(Point::new(100.0, 80.0));
+    let mut scene = Scene::new();
+    bar.draw_clock_overlay(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut TextRenderer::new(),
+        &theme,
+        &activity,
+    );
     bar
 }
 

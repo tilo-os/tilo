@@ -1157,25 +1157,21 @@ impl NotificationStack {
         // The floating card the banners it stands in for are made of.
         ui::widget::toast::paint_card_surface(ctx.scene, ctx.transform, card_rect, 1.0, ctx.theme);
         let label = lock_suppressed_label(count);
-        // Centre on the measured line, not the font size (HIG §7a).
-        let max_width = f32_of_f64(width - CARD_PADDING_X * 2.0);
-        let (_, label_h) = ctx
-            .text_renderer
-            .measure_style(&label, Some(max_width), &title_style);
-        ctx.text_renderer.draw_style(
-            ctx.scene,
-            &label,
-            ctx.theme.tokens.colors.text_dim,
-            ctx.transform.pre_translate(
-                (
-                    card_rect.x0 + CARD_PADDING_X,
-                    card_rect.y0 + (TOAST_HEIGHT - f64::from(label_h)) / 2.0,
-                )
-                    .into(),
-            ),
-            Some(max_width),
-            &title_style,
+        // Centre on the measured line, not the font size (HIG §7a): the
+        // shared text-line painter starts at the card's pad and centres on
+        // the card's middle line.
+        let inner = Rect::new(
+            card_rect.x0 + CARD_PADDING_X,
+            card_rect.y0,
+            card_rect.x1 - CARD_PADDING_X,
+            card_rect.y1,
         );
+        let ink = ctx.theme.tokens.colors.text_dim;
+        let mut ui_ctx =
+            ui::paint::PaintCtx::new(ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme);
+        ui::widget::TextLineFace::styled(&label, &title_style, TextRole::Caption)
+            .start()
+            .paint(&mut ui_ctx, inner, ink);
         card_rect
     }
 
@@ -1199,21 +1195,18 @@ impl NotificationStack {
         // Like a banner's own body, the card is pressable as a whole and
         // shows no hover film: passing over it is not aiming at it.
         ui::widget::toast::paint_card_surface(ctx.scene, ctx.transform, rect, 1.0, ctx.theme);
-        let max_width = f32_of_f64((rect.width() - CARD_PADDING_X * 2.0).max(1.0));
-        ctx.text_renderer.draw_style(
-            ctx.scene,
-            label,
-            ctx.theme.tokens.colors.text_primary,
-            ctx.transform.pre_translate(
-                (
-                    rect.x0 + CARD_PADDING_X,
-                    rect.y0 + (rect.height() - label_h) / 2.0,
-                )
-                    .into(),
-            ),
-            Some(max_width),
-            &style,
+        let inner = Rect::new(
+            rect.x0 + CARD_PADDING_X,
+            rect.y0 + (rect.height() - label_h) / 2.0,
+            rect.x1 - CARD_PADDING_X,
+            rect.y0 + (rect.height() + label_h) / 2.0,
         );
+        let ink = ctx.theme.tokens.colors.text_primary;
+        let mut ui_ctx =
+            ui::paint::PaintCtx::new(ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme);
+        ui::widget::TextLineFace::styled(label, &style, TextRole::Label)
+            .start()
+            .paint(&mut ui_ctx, inner, ink);
         self.register_target(BannerTarget::More, rect, label);
         self.action_buttons
             .push((rect, label.to_owned(), BannerTarget::More.key()));

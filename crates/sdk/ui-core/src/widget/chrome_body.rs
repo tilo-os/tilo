@@ -133,6 +133,53 @@ impl Described for ChromeBody {
     }
 }
 
+/// The square body of a bar standing edge to edge in the screen's own edge,
+/// in `rect`: the theme's bar finish over its own panel ground and the edge
+/// the theme gives it along its foot. Bars cast no rule at the screen's edge
+/// (design-language.md), so a square body paints no outline; a shell's bar
+/// paints this and its controls on top.
+pub fn paint_bar_body(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    theme: &Theme,
+    ground: Color,
+    flush: crate::part_paint::Sides,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let body = RoundedRect::from_rect(rect, 0.0);
+    // The sides that stand on the display's own edge are flush: the body
+    // draws no rim, edge or hairline there, so no pixel of another colour
+    // shows between it and the screen's edge.
+    crate::backdrop::fill_role_flush(
+        scene,
+        transform,
+        &body,
+        crate::tokens::SurfaceRole::Bar,
+        theme.finish(crate::tokens::SurfaceRole::Bar),
+        theme,
+        ground,
+        flush,
+    );
+    let (width, ink) = crate::surface::border(theme).unwrap_or_else(|| {
+        (
+            1.0,
+            if theme.finish(crate::tokens::SurfaceRole::Bar).hairline() {
+                crate::chrome::chrome_hairline(theme)
+            } else {
+                Color::TRANSPARENT
+            },
+        )
+    });
+    if ink.components[3] <= 0.0 {
+        return;
+    }
+    let rule = Rect::new(rect.x0, rect.y1 - width, rect.x1, rect.y1);
+    scene.fill(vello::peniko::Fill::NonZero, transform, ink, None, &rule);
+}
+
 impl ChromeBody {
     /// The sides of a square body that stand on the display's own edge.
     ///

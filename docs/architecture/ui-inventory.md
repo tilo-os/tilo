@@ -46,12 +46,12 @@ file with one visible surface and several helpers is one row.
 
 | # | Surface | Files | Counts | What it draws by hand | Replace with | Exists? |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | **Top bar: status cluster (tray pill, badges, media indicator)** | `crates/session/desktop/src/topbar/tray.rs` | 11 (panel 6, text 4, row 1) | the tray pill's ground and critical-battery highlight, notification badge pill, media indicator pill, app-tray hit fills; every glyph's label painted as text | `BarControlFace` for the pill (already used for the selector), `BadgeFace`/`Avatar` `paint_overflow` for the count, `MediaTransport`/`ToastCard`-style card for the media pill, `IconWidget`/`Icon` for the glyphs | partly: `BarControlFace`, `BadgeFace.paint_overflow` exist; a **bar status-cluster component** (slots + count + media line as one control) does not |
-| 2 | **Top bar: clock lane and its overlay** | `crates/session/desktop/src/topbar/clock.rs` | 8 (panel 3, text 4, row 1) | centre band's lift, the clock overlay panel and its bands, the clock's own labels | `FloatingPanelFace`/`paint_panel` for the overlay, `ListRow`/`Section` for its rows, `Text`/`TextStack` for the time, `Toggle`/`Button` for its controls | partly: `FloatingPanelFace` exists; a **clock/agenda popover** (a title, a date line, rows, a pause control) does not |
-| 3 | **Top bar: people, sharing and invite chips** | `topbar/people.rs` (3), `topbar/sharing.rs` (2), `topbar/avatar_ask.rs` (2), `topbar/workspace.rs` (1), `topbar/controls.rs` (1) | 9 (panel 6, text 3) | avatar-chip pills, invite pill, watching chip, sharing and continuity pills, the ask dot, the Tilo mark's plate, focus ring | `ui::presence::FaceStack` (already used for the faces), `BarControlFace` for each pill, `Button`/`IconButton` for the ask and invite, `paint_focus_ring` for the ring | partly: `FaceStack` and `BarControlFace` exist; a **bar chip** (faces + label + press, one control) does not |
-| 4 | **Top bar: strips and workspace name** | `topbar/strips.rs` (1), `topbar.rs` (3) | 4 (panel 2, text 1, metric 1) | the workspace-name field's label, the bar body's ground and border, the overlay surface a popover hangs on | `FloatingPanelFace` for the popover ground, `Text` for the field label, `Chrome`/`SurfaceRole::Bar` for the bar body (already used through `backdrop::fill_role`) | yes for the panel; the bar body has a shared `Chrome` component |
-| 5 | **Notification banners (stack, toasts, "more" card, lock redaction)** | `desktop-surface/src/notifications/stack.rs` (2), `notifications/reader.rs` (3) | 5 (text 5) | the locked-session card's label, the "more" card's label, the reader page's paragraphs | `ui::widget::toast::ToastCard`/`paint_card` (already the cards' ground) for all three; the reader page from `Text`/`Section` | yes: `ToastCard`, `paint_card`; the **reader's body** needs no new component, only composition |
-| 6 | **Notification centre (the retained list)** | `desktop-surface/src/notifications/center.rs` | 20 (panel 6, text 12, row 1, metric 1) | the panel's rows and groups, group chevrons and counts, the pager, the "cleared" band, the severity rail, the per-row controls | `ListRowFace` for a row (it already uses `ButtonFace` for its buttons), `SectionHeaderFace` for a group's band, `EmptyState` for the cleared state, `ScrollRegion` for the list, `Chip` for the count | mostly: `ListRowFace`, `SectionHeaderFace`, `EmptyState.paint`, `ScrollRegion` exist; a **notification-centre list** (a hosted stack with groups, paging and per-row controls) does not |
+| 1 | **Top bar: status cluster (tray pill, badges, media indicator)** | `crates/session/desktop/src/topbar/tray.rs` | 0 (converted) | — (`StatusCluster` for the pill, badge and critical battery; `BarChipFace` for the media indicator; `BarControlFace::paint_lift` for a tray icon) | `StatusCluster`, `BarChip` | yes |
+| 2 | **Top bar: clock lane and its overlay** | `crates/session/desktop/src/topbar/clock.rs` | 0 (converted) | — (`AgendaPopoverFace` for the overlay, `TextLineFace` for the time and the live activity, `BarControlFace::paint_lift` for the activity's pill) | `AgendaPopover`, `TextLineFace` | yes |
+| 3 | **Top bar: people, sharing and invite chips** | `topbar/people.rs`, `topbar/sharing.rs`, `topbar/avatar_ask.rs`, `topbar/workspace.rs`, `topbar/controls.rs` | 0 (converted) | — (`BarChipFace` for the people, invite, watching and sharing chips, `BarControlFace::paint_lift` for the Tilo mark, `FloatingPanelFace` for the ask pill, `FactsFace` for its words, `paint_focus_ring` for the bar's ring) | `BarChip`, `paint_focus_ring` | yes |
+| 4 | **Top bar: strips and workspace name** | `topbar/strips.rs`, `topbar.rs` | 0 (converted) | — (`BarChipFace` for the strip's name, `TextInput` for the naming field, `paint_bar_body` for the bar's own body) | `BarChip`, `TextInput`, `paint_bar_body` | yes |
+| 5 | **Notification banners (stack, toasts, "more" card, lock redaction)** | `desktop-surface/src/notifications/stack.rs`, `notifications/reader.rs` | 0 (converted) | — (`ToastCard`/`paint_card` for the cards' ground, `TextLineFace` for their labels, `TextBlockFace` for the reader's page) | `ToastCard`, `TextLineFace`, `TextBlockFace` | yes |
+| 6 | **Notification centre (the retained list)** | `desktop-surface/src/notifications/center.rs` | 0 (converted) | — (`paint_control_row` for a row, a group's band and the cleared band; `paint_severity_rail` for the rail; `TextLineFace`/`TextBlockFace` for every line; `paint_focus_ring` for the selection; `ButtonFace` for every button) | `paint_control_row`, `TextLineFace`, `paint_severity_rail` | yes |
 | 7 | **Lock screen** | `crates/session/sheets/src/lock.rs` | 0 | — (the one `RoundedRect` is a clip mask for the refusal shake and the idle fade, not a panel; the screen is `Text`, `TextInput`, `Button` and `PasscodeKeyboard` on `ui::auth_backdrop`) | — | yes |
 | 8 | **"Join a workspace…" sheet** | `crates/session/sheets/src/directory.rs` | 0 | — (converted: `ModalDialog`, `ListRow`, `TextInput`; the decorator only reads Enter/Escape) | — | yes |
 | 9 | **Sheets built on `ModalDialog`** | `sheets/src/{add_app,uninstall,portal/view,displays,shortcut_guide,workspace_settings/*}.rs` | 0 | — | — | yes |
@@ -121,11 +121,11 @@ component serves both.
    row cards, cycler and footer, and is shared with the workspace settings
    sheet (`crates/session/sheets/src/workspace_settings/`), which draws the
    same shape composed. API: `SettingsLensTab { id, icon, label, count }`.
-3. **Bar chip** — `BarChip::new(id, label).faces(stack).icon(icon).on_press(..)`:
+3. **Bar chip** — **built:** `BarChipFace::new(name, faces).label(..).icons(&[..]).tone(..).hovered(..).paint(..)`,
    one bar control that holds a face stack, a label and a press, on
-   `BarControlFace`. Replaces the people, invite, watching, sharing and
-   continuity pills and the tray cluster's shape.
-4. **Bar status cluster** — `StatusCluster::new().slot(StatusSlot::Bell { count }).slot(StatusSlot::Volume(..)).slot(StatusSlot::Network(..)).slot(StatusSlot::Battery(..))`:
+   `BarControlFace`; `BarChip` is its described, retained form. Replaces the
+   people, invite, watching, sharing and strip-name pills.
+4. **Bar status cluster** — **built:** `StatusClusterFace::new(&slots, StatusCluster::new().battery(..)).paint(..)`,
    the tray pill as one control with square slots, a badge and the
    critical-battery highlight. Replaces `topbar/tray.rs`.
 5. **Window picture card** — `PreviewCard::new(window_id).title(..).app_mark(..).chosen(bool).hint(&[KeyHint])`:
@@ -139,10 +139,11 @@ component serves both.
 7. **Emoji grid cell** — `EmojiCell::new(name, glyph).chosen(bool).secondary(line).remove(action)`:
    the cell the picker and `apps/osk`'s emoji panel both draw. API:
    `EmojiGrid::new(groups).search(SearchField).filter(query)`.
-8. **Notification centre list** — `NotificationList::new(rows).groups().page(..).empty(EmptyState)`:
+8. **Notification centre list** — **built:** `NotificationListView::new(rows, start).capacity(..).cursor(..).cleared(..).paint(..)`,
    grouped rows with a per-row control set, paging and a cleared band, on
-   `ListRowFace` and `SectionHeaderFace`, with a `ScrollRegion`. Replaces
-   `desktop-surface/src/notifications/center.rs`.
+   `SectionHeaderFace` and `ListRowFace`. The centre paints its own rows
+   with `paint_control_row` and the shared text painters, so the list's
+   composition and the centre's row geometry agree.
 9. **OSD pill** — `Readout::new(icon, name).value(label).level(f64).tone(Tone)`,
    on the floating material, with `paint_level_gauge`. Replaces
    `desktop/src/osd.rs`.
@@ -150,16 +151,17 @@ component serves both.
     the glance-to-card behaviour and the frame a desk widget's card stands on.
     Replaces the frame in `desktop/src/desk_widgets/paint.rs`; the cards'
     contents then use `FaceStack`, `StatTile` and `MediaTransport`.
-11. **Quick Settings list language** — promote `desktop-surface/src/drill_in.rs`
-    (`control_fill`, `control_radius`, `paint_control`, `DrillInList`,
-    `draw_empty`) into `ui::widget` as `QuickList`/`QuickRow`, so the panel,
-    the notification centre and any settings page share one list, and the
-    local copy goes.
+11. **Quick Settings list language** — **partly built:** `ui::widget::{control_fill, control_radius, paint_control_row, paint_severity_rail}`,
+    the Control paint the panel, the notification centre and every settings
+    page share. `desktop-surface/src/drill_in.rs` still carries its own
+    `paint_control` and `DrillInList`; they become wrappers over the
+    shared paint, and the list itself is promoted next.
 12. **Arrival hint** — `ArrivalHint::new(text).presence(rgb).action(..)`:
     the pill at a strip's edge saying who opened what. Replaces
     `desktop-surface/src/surface/arrivals.rs`'s `draw_hint`.
-13. **Clock/agenda popover** — `AgendaPopover::new(now, date).rows(runs).pause(action)`:
-    the clock's overlay, on `FloatingPanelFace` with `ListRow`s.
+13. **Clock/agenda popover** — **built:** `AgendaPopoverFace::new(&entry, &labels).focused(..).paint(..)`,
+    the clock's overlay on `FloatingPanelFace`, with its drag handle, reading
+    and pause, add and close controls.
 14. **Row-level field** — `SearchField` exists, but a sheet's embedded field
     (`FloatingPanelFace`'s header field) and the strip's naming field
     (`strip_switcher::draw_field`) draw the same thing by hand; a
