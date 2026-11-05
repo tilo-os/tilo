@@ -171,7 +171,13 @@ impl FloatingLayer {
                 .layout
                 .cards
                 .iter()
-                .map(|card| (card.app.clone(), card.summary.id.clone(), card.rect))
+                .map(|card| {
+                    (
+                        card.app.clone(),
+                        card.summary.id.clone(),
+                        self.dragged(card),
+                    )
+                })
                 .collect(),
             folded: self
                 .layout
@@ -678,6 +684,15 @@ mod tests {
         assert!(layer.pointer_button(point, true).is_empty());
         let moved = Point::new(point.x - 60.0, point.y + 40.0);
         assert!(layer.pointer_motion(moved));
+        let dragged = Rect::from_origin_size(
+            Point::new(grabbed.x0 - 60.0, grabbed.y0 + 40.0),
+            grabbed.size(),
+        );
+        assert_eq!(
+            layer.shown().cards[0].2,
+            dragged,
+            "the layer reports the card where the pointer holds it, not where it settled"
+        );
         layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
         let damage = layer.damage();
         assert_eq!(

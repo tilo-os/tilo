@@ -108,12 +108,9 @@ impl ActivityCardFace<'_> {
             let mut ctx = PaintCtx::new(scene, transform, text, theme);
             ProgressBarFace::new(progress).paint(&mut ctx, row);
         }
+        let offered = summary.action_controls();
         for (id, rect) in &parts.controls {
-            let Some(control) = summary
-                .action_controls()
-                .into_iter()
-                .find(|control| control.id == *id)
-            else {
+            let Some(control) = offered.iter().find(|control| control.id == *id) else {
                 continue;
             };
             let role = match control.kind {
