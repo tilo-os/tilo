@@ -2259,6 +2259,9 @@ fn wait_for(session: &mut Session) -> Option<Duration> {
     }
 }
 
+#[path = "session/activities.rs"]
+mod activities;
+
 #[path = "session/desk.rs"]
 mod desk;
 #[path = "session/hung.rs"]

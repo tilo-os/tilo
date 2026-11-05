@@ -57,16 +57,7 @@ pub enum BarEffect {
 }
 
 /// The screenshot scenarios ([`crate::fixture`]).
-pub(crate) const SCENARIOS: &[&str] = &[
-    "bar",
-    "menu",
-    "profile",
-    "focused",
-    "displays",
-    "narrow",
-    "activity",
-    "activity-phone",
-];
+pub(crate) const SCENARIOS: &[&str] = &["bar", "menu", "profile", "focused", "displays", "narrow"];
 
 /// The bar app: the bar surface over [`TopBar`].
 pub struct TopBarApp;
