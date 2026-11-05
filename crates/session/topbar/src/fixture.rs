@@ -8,6 +8,7 @@ use tilo_desktop::chrome::{
 use tilo_desktop::profile_card::ProfileModel;
 use tilo_desktop::workspace_menu::{WorkspaceAction, WorkspaceChoice, WorkspaceMenuModel};
 use tilo_desktop_model::{Collaborator, DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
+use ui::live_activity::{Control, ControlKind, Kind, Summary};
 use ui::vello::kurbo::Rect;
 
 use crate::link::{BarFeed, BarPlace, Placement};
@@ -17,7 +18,7 @@ use crate::link::{BarFeed, BarPlace, Placement};
 pub fn viewport(scenario: Option<&str>) -> (u32, u32) {
     match scenario {
         Some("displays") => (2560, 800),
-        Some("narrow") => (420, 800),
+        Some("narrow" | "activity-phone") => (420, 800),
         _ => (1280, 800),
     }
 }
@@ -105,6 +106,23 @@ fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
     }
 }
 
+/// The timer the pill names, and the activity waiting behind it.
+fn activities(scenario: Option<&str>) -> Vec<Summary> {
+    let tea = Summary::new(Kind::Timer, "Tea", "4:32")
+        .with_id("tea")
+        .with_progress(0.5)
+        .with_control(Control::new("toggle", "Pause", ControlKind::Primary))
+        .with_control(Control::new("close", "End", ControlKind::Close));
+    match scenario {
+        Some("activity") => vec![
+            tea,
+            Summary::new(Kind::Music, "Ada Lovelace", "Goldberg Variations").with_id("playing"),
+        ],
+        Some("activity-phone") => vec![tea],
+        _ => Vec::new(),
+    }
+}
+
 fn profile() -> ProfileModel {
     ProfileModel {
         name: "Quinn".into(),
@@ -144,6 +162,7 @@ pub fn feed(scenario: Option<&str>) -> BarFeed {
             identity: String::new(),
         }),
         invite: Invite::when(true),
+        activities: activities(scenario),
         ..DesktopChromeSnapshot::default()
     };
     BarFeed {
