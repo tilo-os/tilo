@@ -1655,6 +1655,21 @@ impl Resolver<'_> {
                 let inner = args
                     .first()
                     .map_or(Ty::Error, |a| self.resolve_type(a, set_per_key));
+                if name.name == "Filter" {
+                    return match inner {
+                        Ty::Record(key) if field_position => {
+                            self.err("E023", te.span, format!("`Filter<{}>` is a value code holds and a query takes, not a stored field's type", key.name));
+                            Ty::Error
+                        }
+                        Ty::Record(key) => Ty::Filter(key),
+                        Ty::Error => Ty::Error,
+                        other => {
+                            let t = other.display(&self.env.app);
+                            self.err("E013", te.span, format!("`Filter<T>` is the filters of a type's items; `{t}` is no resource type"));
+                            Ty::Error
+                        }
+                    };
+                }
                 let boxed = Box::new(inner);
                 let ty = match name.name.as_str() {
                     "List" => Ty::List(boxed),

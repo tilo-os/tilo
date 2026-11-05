@@ -189,6 +189,12 @@ impl Checker<'_> {
                     self.not_a_value_of_import(&alias, &name.name, e.span);
                     return Ex::error();
                 }
+                // `Task.today`: a filter the type declares, as the value a query takes.
+                if let Some(Ty::Record(key)) = self.type_named(base)
+                    && let Some(ex) = self.filter_value(&key, name, None, e.span)
+                {
+                    return ex;
+                }
                 let b = self.expr(base, None);
                 self.field_read(b, name)
             }
@@ -707,6 +713,13 @@ impl Checker<'_> {
             Ty::Enum(_) | Ty::Option(_) | Ty::Result(..) | Ty::Tuple(_) | Ty::List(_) => {
                 Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool)
             }
+            // Filters compare by the query they ask: the filter `Task.inbox` and the entry
+            // `filters(Task)` lists for it are the same.
+            Ty::Filter(_) => Ex::host(
+                Imp::StrEq,
+                vec![Self::filter_query(l), Self::filter_query(r)],
+                Ty::Bool,
+            ),
             Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
                 Ex::host(Imp::StrEq, vec![l, r], Ty::Bool)
             }
@@ -794,6 +807,14 @@ impl Checker<'_> {
             Ty::Error => Ex::error(),
             Ty::Identifier => self.identifier_part(b, name),
             Ty::RichText => self.rich_part(b, name),
+            // A filter's fields: what a query names it by, what a control shows, what it asks.
+            Ty::Filter(_) => {
+                let key = super::platform::host_ty("Filter");
+                let Ty::Record(key) = key else {
+                    return Ex::error();
+                };
+                self.value_field(b, &key, name).unwrap_or_else(Ex::error)
+            }
             Ty::Record(key) => {
                 if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
                 {

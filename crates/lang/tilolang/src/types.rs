@@ -223,6 +223,10 @@ pub enum Ty {
     Option(Box<Ty>),
     /// The built-in enum `.ok(value) | .err(error)`.
     Result(Box<Ty>, Box<Ty>),
+    /// `Filter<T>`: one filter a type declares, as a value: what `T.today` names, what
+    /// `filters(T)` lists, and what a query takes. Held as its catalogue entry, the
+    /// `host.Filter` the list's places and search's chips read.
+    Filter(TypeKey),
     /// A declared `enum`: a host handle holding the variant and its payload.
     Enum(TypeKey),
     /// `A | B`: a reference to a resource of any of these types, in order, at least two.
@@ -335,6 +339,7 @@ impl Ty {
             Self::Map(t) => format!("Map<{}>", t.meta_text(own_app)),
             Self::Collection(t) => format!("Collection<{}>", t.meta_text(own_app)),
             Self::Option(t) => format!("Option<{}>", t.meta_text(own_app)),
+            Self::Filter(k) => format!("Filter<{}>", Self::Record(k.clone()).meta_text(own_app)),
             Self::Result(t, e) => {
                 format!("Result<{}, {}>", t.meta_text(own_app), e.meta_text(own_app))
             }
@@ -374,6 +379,7 @@ impl Ty {
             Self::Map(t) => format!("Map<{}>", t.display(own_app)),
             Self::Collection(t) => format!("Collection<{}>", t.display(own_app)),
             Self::Option(t) => format!("Option<{}>", t.display(own_app)),
+            Self::Filter(k) => format!("Filter<{}>", Self::Record(k.clone()).display(own_app)),
             Self::Result(t, e) => {
                 format!("Result<{}, {}>", t.display(own_app), e.display(own_app))
             }
@@ -663,7 +669,7 @@ impl MetaTy<'_> {
                 }
                 Some(Ty::Result(ok, err))
             }
-            "List" | "Set" | "Map" | "Collection" | "Option" => {
+            "List" | "Set" | "Map" | "Collection" | "Option" | "Filter" => {
                 if !self.eat('<') {
                     return None;
                 }
@@ -676,6 +682,10 @@ impl MetaTy<'_> {
                     "Set" => Ty::Set(inner),
                     "Map" => Ty::Map(inner),
                     "Collection" => Ty::Collection(inner),
+                    "Filter" => match *inner {
+                        Ty::Record(key) => Ty::Filter(key),
+                        _ => return None,
+                    },
                     _ => Ty::Option(inner),
                 })
             }

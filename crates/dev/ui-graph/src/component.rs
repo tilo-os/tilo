@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 5;
+pub const FORMAT_VERSION: u32 = 6;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -228,6 +228,7 @@ pub fn companion(name: &str) -> Option<(&str, Companion)> {
 }
 
 /// A typed value a component takes.
+#[allow(clippy::struct_excessive_bools, reason = "independent switches")]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Prop {
@@ -245,6 +246,10 @@ pub struct Prop {
     /// words it shows: a view's literal given to it is never a message to translate.
     #[serde(default, skip_serializing_if = "is_false")]
     pub data: bool,
+    /// Whether it names the value among its siblings (a list's chosen item, a row's key): a
+    /// filter given to it stands for the query it asks, which the host compares by.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub identity: bool,
 }
 
 /// Child content a component takes.

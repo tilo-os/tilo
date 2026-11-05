@@ -1,21 +1,17 @@
-//! The imports behind `query(T, ...)`, `items.matching(q)`, `filters(T)` and the parts of a
-//! `std.Identifier` (see [`crate::query`]).
+//! The imports behind `query(T, ...)`, `items.matching(q)`, the filters a type declares
+//! (`filters(T)`, `Task.today`) and the parts of a `std.Identifier` (see [`crate::query`]).
 
 use std::rc::Rc;
 
-use tilolang::meta::{FilterKind, TypeMeta};
-use tilolang::pred::{CmpOp, Lit as LangLit, Operand, Pred as LangPred};
+use tilolang::meta::{FilterKind, FilterMeta, TypeMeta};
 
 use crate::abi::Imp;
-use crate::colls::field_reads;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
-use crate::ids::ModuleHash;
-use crate::meta::{EnumMeta, FieldMeta, FieldRole};
+use crate::meta::EnumMeta;
 use crate::query::{Clock, Query, Term, find, resolve};
-use crate::registry::TypeInfo;
 use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
-use crate::value::{CollRef, RefValue, Value};
+use crate::value::{RefValue, Value};
 
 impl Core {
     /// The clock queries are read against: the host's, to the minute, so a view that asks
@@ -251,7 +247,7 @@ impl Core {
         ))
     }
 
-    /// `filters(ty)`: the filters of the type `ty`, each a `host.Filter` (key, label, icon,
+    /// `filters(ty)`: the filters of the type `ty`, each a `Filter<ty>` (key, label, icon,
     /// query, toggle); an enum's is one per case.
     pub(crate) fn filters_import(&self, ty: i32) -> HResult<Value> {
         let ty = self.text(ty)?;
@@ -265,12 +261,47 @@ impl Core {
         Ok(Value::List(filters_of(declared, &pkg.meta.enums)))
     }
 
-    /// The schema's catalogue of a type, as a view asks for it: `filters(T)`, or the
-    /// `places(T, in: root)` a window's sidebar offers.
+    /// `filter_lit(ty, key, value)`: one filter of a type as code names it (`Task.today`,
+    /// `Task.project(p)`), the value `filters(ty)` lists it as and a query takes it: the
+    /// query it asks (`is:today`, `project:<id>`), what a control shows it as, whether it is a
+    /// toggle, and whether its count is one to show.
+    pub(crate) fn filter_lit_import(&self, ty: i32, key: i32, value: i32) -> HResult<Value> {
+        let ty = self.text(ty)?;
+        let key = self.text(key)?;
+        let value = self.val(value)?;
+        let filter = {
+            let registry = self.registry.borrow();
+            let (pkg, _) = registry.type_info(&ty).ok_or_else(|| {
+                format!("filter: type `{ty}` is not declared by any loaded package")
+            })?;
+            let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
+                return trap(format!("filter: type `{ty}` is not declared"));
+            };
+            let Some(f) = declared.search.filters.iter().find(|f| f.key == key) else {
+                let keys: Vec<&str> = declared
+                    .search
+                    .filters
+                    .iter()
+                    .map(|f| f.key.as_str())
+                    .collect();
+                return trap(format!(
+                    "filter: `{}` declares no filter `{key}`; its filters: {}",
+                    declared.name,
+                    keys.join(", ")
+                ));
+            };
+            valued_filter(f, &pkg.meta.enums, &value)
+                .map_err(|why| format!("filter: `{}.{key}`: {why}", declared.name))?
+        };
+        Ok(filter)
+    }
+
+    /// The type's catalogue, as a view asks for it: `filters(T)` lists it, and `filter_lit`
+    /// is one of its entries.
     pub(crate) fn catalogue_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let found = match imp {
             Imp::Filters => self.filters_import(a.h(0)?)?,
-            _ => self.places_import(a.h(0)?, a.h(1)?)?,
+            _ => self.filter_lit_import(a.h(0)?, a.h(1)?, a.h(2)?)?,
         };
         self.ret_h(found)
     }
@@ -283,26 +314,36 @@ impl Core {
     }
 }
 
-/// The filters of `ty` as `host.Filter` values: a toggle each for a Bool or a named filter,
-/// one per case for an enum, one with no query for a filter whose value is picked.
+/// One entry of a type's catalogue: a filter as the value `Filter<T>` holds it — what a query
+/// names it by, what a control shows it as, its icon, the query choosing it asks, whether it
+/// is a toggle, and whether its count is one to show.
+fn filter_value(
+    key: &str,
+    label: &str,
+    icon: Option<&str>,
+    query: String,
+    toggle: bool,
+    counts: bool,
+) -> Value {
+    Value::Tuple(vec![
+        Value::text(key),
+        Value::text(label),
+        icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
+        Value::Text(query),
+        Value::Bool(toggle),
+        Value::Bool(counts),
+    ])
+}
+
+/// The filters of `ty` as `Filter<T>` values: a toggle each for a Bool or a named filter, one
+/// per case for an enum, one with no query for a filter whose value is picked.
 #[must_use]
 pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Value> {
-    let filter =
-        |key: &str, label: &str, icon: Option<&str>, query: String, toggle: bool, counts: bool| {
-            Value::Tuple(vec![
-                Value::text(key),
-                Value::text(label),
-                icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
-                Value::Text(query),
-                Value::Bool(toggle),
-                Value::Bool(counts),
-            ])
-        };
     let mut out = Vec::new();
     for f in &ty.search.filters {
         match f.kind {
             FilterKind::Bool | FilterKind::Predicate => {
-                out.push(filter(
+                out.push(filter_value(
                     &f.key,
                     &f.label,
                     f.icon.as_deref(),
@@ -311,209 +352,97 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                     f.count,
                 ));
             }
-            FilterKind::Enum => {
-                let name =
-                    f.ty.trim_start_matches("Set<")
-                        .trim_start_matches("Option<")
-                        .trim_end_matches('>')
-                        .trim_start_matches("enum ");
-                let last = name.rsplit('.').next().unwrap_or(name);
-                match enums.iter().find(|e| e.name == last || e.id == name) {
-                    Some(e) => {
-                        for v in &e.variants {
-                            let label = if v.label.is_empty() {
-                                &v.name
-                            } else {
-                                &v.label
-                            };
-                            out.push(filter(
-                                &f.key,
-                                label,
-                                v.icon.as_deref(),
-                                format!("{}:{}", f.key, v.name),
-                                true,
-                                false,
-                            ));
-                        }
+            FilterKind::Enum => match enum_of(f, enums) {
+                Some(e) => {
+                    for v in &e.variants {
+                        let label = if v.label.is_empty() {
+                            &v.name
+                        } else {
+                            &v.label
+                        };
+                        out.push(filter_value(
+                            &f.key,
+                            label,
+                            v.icon.as_deref(),
+                            format!("{}:{}", f.key, v.name),
+                            true,
+                            false,
+                        ));
                     }
-                    None => out.push(filter(&f.key, &f.label, None, String::new(), false, false)),
                 }
-            }
-            _ => out.push(filter(&f.key, &f.label, None, String::new(), false, false)),
+                None => out.push(filter_value(
+                    &f.key,
+                    &f.label,
+                    None,
+                    String::new(),
+                    false,
+                    false,
+                )),
+            },
+            _ => out.push(filter_value(
+                &f.key,
+                &f.label,
+                None,
+                String::new(),
+                false,
+                false,
+            )),
         }
     }
     out
 }
 
-/// How a place is written for the app drawing it: the filters a sidebar shows a place for.
-fn place_value(key: &str, label: &str, icon: Option<&str>, count: usize, counts: bool) -> Value {
-    let some = |text: Option<&str>| {
-        text.map_or_else(Value::none, |t| Value::some(Value::Text(t.to_owned())))
-    };
-    Value::Tuple(vec![
-        Value::Text(key.to_owned()),
-        Value::Text(label.to_owned()),
-        some(icon),
-        Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
-        Value::Bool(counts),
-    ])
+/// The enum a filter's field declares, when it is one of cases: `status` of `enum Status`.
+fn enum_of<'a>(f: &FilterMeta, enums: &'a [EnumMeta]) -> Option<&'a EnumMeta> {
+    let name =
+        f.ty.trim_start_matches("Set<")
+            .trim_start_matches("Option<")
+            .trim_end_matches('>')
+            .trim_start_matches("enum ");
+    let last = name.rsplit('.').next().unwrap_or(name);
+    enums.iter().find(|e| e.name == last || e.id == name)
 }
 
-impl Core {
-    /// `places(T, in: root)`: the places a window of the root's items offers in its sidebar, as
-    /// a `List<host.Place>`: the item type's filters that are on or off, in the order the type
-    /// declares them, each the query `is:<key>` and how many of the items it holds. Nothing else
-    /// is a place: what a window shows beside them is the app's own.
-    ///
-    /// A place counts the items it holds that are open, unless its filter says what is done
-    /// with — the index's answer, never a scan.
-    pub(crate) fn places_import(&self, ty: i32, root: i32) -> HResult<Value> {
-        let ty = self.text(ty)?;
-        let root = self.ref_arg(root)?;
-        let (pkg, info) = self
-            .registry
-            .borrow()
-            .type_info(&ty)
-            .ok_or_else(|| format!("places: `{ty}` is no type a loaded package declares"))?;
-        let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
-            return trap(format!("places: `{ty}` is not declared"));
-        };
-        let (root_pkg, _) = self
-            .registry
-            .borrow()
-            .type_info(&root.target.ty)
-            .ok_or_else(|| {
-                format!(
-                    "places: the root `{}` is of `{}`, no type a loaded package declares",
-                    root.target.id_string(),
-                    root.target.ty
-                )
-            })?;
-        let Some(root_declared) = root_pkg.meta.types.iter().find(|t| t.id == root.target.ty)
-        else {
-            return trap(format!("places: `{}` is not declared", root.target.ty));
-        };
-        let author = Some(self.module_of_frame()?);
-        let Some((items, _)) = self.holding(&root, root_declared, &ty, author) else {
-            return trap(format!(
-                "places: the root `{}` holds no collection of `{}`",
-                root.target.id_string(),
-                declared.name
-            ));
-        };
-        // A place counts what it leaves open: the flag saying an item is finished is what the
-        // count leaves out, unless the place's own filter says what is done with, and then it
-        // counts what it holds.
-        let done = declared
-            .fields
-            .iter()
-            .find(|field| field.role.as_ref().is_some_and(FieldRole::is_done));
-        let places = self.filter_places(declared, &items, &info, &pkg.meta.enums, done)?;
-        Ok(Value::List(places))
-    }
-
-    /// The places the type's own filters make: one for each filter that is on or off, holding
-    /// the items it says, counted as what they leave open.
-    fn filter_places(
-        &self,
-        declared: &TypeMeta,
-        items: &Rc<CollRef>,
-        info: &TypeInfo,
-        enums: &[EnumMeta],
-        done: Option<&FieldMeta>,
-    ) -> HResult<Vec<Value>> {
-        let mut places = Vec::new();
-        for filter in &declared.search.filters {
-            if !matches!(filter.kind, FilterKind::Bool | FilterKind::Predicate) {
-                continue;
-            }
-            let query = format!("is:{}", filter.key);
-            let count = self.place_count(items, declared, info, enums, &query, done)?;
-            places.push(place_value(
-                &query,
-                &filter.label,
-                filter.icon.as_deref(),
-                count,
-                filter.count,
+/// The filter `f` with the value `v` a program names it with (`Task.project(p)`,
+/// `Task.priority(.high)`): the query it asks (`project:<id>`, `priority:high`), the label a
+/// control shows for it, and whether it is a toggle. A filter given a value is none: its
+/// value is what it asks, so no single place is on or off.
+fn valued_filter(f: &FilterMeta, enums: &[EnumMeta], v: &Value) -> Result<Value, String> {
+    let (query, label) = match v {
+        Value::Opt(None) => (format!("is:{}", f.key), f.label.clone()),
+        Value::Opt(Some(v)) => {
+            return valued_filter(f, enums, v);
+        }
+        Value::Bool(b) => (format!("{}:{b}", f.key), f.label.clone()),
+        Value::Int(n) => (format!("{}:{n}", f.key), f.label.clone()),
+        Value::Float(n) => (format!("{}:{n}", f.key), f.label.clone()),
+        Value::Text(t) => (format!("{}:{t}", f.key), f.label.clone()),
+        Value::Enum(e) => {
+            let label = enum_of(f, enums)
+                .and_then(|meta| meta.variants.iter().find(|x| x.name == e.variant))
+                .map(|x| x.label.clone())
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| e.variant.clone());
+            (format!("{}:{}", f.key, e.variant), label)
+        }
+        Value::Ref(r) => (
+            format!("{}:{}", f.key, r.target.id_string()),
+            f.label.clone(),
+        ),
+        other => {
+            return Err(format!(
+                "it takes a value of its field's type, not {}",
+                other.kind_name()
             ));
         }
-        Ok(places)
-    }
-
-    /// The root's collection of the type `ty`, with the root's field holding it, when the root
-    /// declares one.
-    fn holding(
-        &self,
-        at: &RefValue,
-        holder: &TypeMeta,
-        ty: &str,
-        author: Option<ModuleHash>,
-    ) -> Option<(Rc<CollRef>, FieldMeta)> {
-        for field in &holder.fields {
-            let Ok((_, f)) = self.lookup_field(&at.target, &field.id) else {
-                continue;
-            };
-            let Ok(item) = self.item_type(&f.ty) else {
-                continue;
-            };
-            if item.id != ty {
-                continue;
-            }
-            let held = Rc::new(CollRef {
-                target: Rc::clone(&at.target),
-                field: f.id,
-                item: item.id.clone(),
-                author,
-                filter: None,
-                order: None,
-            });
-            return Some((held, field.clone()));
-        }
-        None
-    }
-
-    /// How many items a place holds: the items of the collection `items` whose query `query`
-    /// holds of, with the items the type's `done` flag marks finished left out unless the query
-    /// says what is done with, counted from the index's columns.
-    ///
-    /// # Errors
-    ///
-    /// A message when the query is not one the type's filters read.
-    fn place_count(
-        &self,
-        items: &Rc<CollRef>,
-        declared: &TypeMeta,
-        info: &TypeInfo,
-        enums: &[EnumMeta],
-        query: &str,
-        done: Option<&FieldMeta>,
-    ) -> HResult<usize> {
-        let clock = self.query_clock()?;
-        let viewer = self.looking().ok();
-        let parsed = find(query).map_err(|why| format!("places: `{query}`: {why}"))?;
-        let resolved = resolve(&parsed, declared, enums, &clock, viewer.as_deref())?;
-        self.note_time(clock.changes_at());
-        let mut pred = resolved.pred;
-        // A place counts what it leaves open, never what is done with; a filter that names the
-        // flag itself already says what it leaves open.
-        if let Some(done) = done
-            && !pred.fields().iter().any(|held| **held == done.id)
-        {
-            pred = LangPred::And(vec![
-                pred,
-                LangPred::Cmp(
-                    CmpOp::Eq,
-                    Operand::Field(done.id.clone()),
-                    Operand::Lit(LangLit::Bool(false)),
-                ),
-            ]);
-        }
-        let Some(read) = field_reads(&pred, info) else {
-            return trap(format!(
-                "places: `{query}` cannot be read as a filter of `{}`",
-                declared.name
-            ));
-        };
-        self.coll_count(&Rc::new(items.queried(read, None)))
-    }
+    };
+    let toggle = matches!(v, Value::Opt(None)) && f.kind.is_toggle();
+    Ok(filter_value(
+        &f.key,
+        &label,
+        f.icon.as_deref(),
+        query,
+        toggle,
+        f.count,
+    ))
 }

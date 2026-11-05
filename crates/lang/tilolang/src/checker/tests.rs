@@ -741,6 +741,70 @@ fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
 }
 
 #[test]
+fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
+    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (count: true)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
+    let view = "view board(b: Board) {\n    window place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
+    let (m, ids) = lower(&format!("{FILTERS}{view}"));
+    let task = ids.get("Task").expect("id").to_string();
+    let query_field = crate::host::value_field("Filter", "query").expect("query");
+    // The values the view names are the filters the type declares, by its id and their keys:
+    // `Task.inbox`, `Task.project(p)`. The host turns each into what search says, so no query
+    // text is written here.
+    let mut lits = Vec::new();
+    let mut from_filters = 0;
+    for g in m.funcs.iter().filter(|g| g.name.starts_with("board")) {
+        visit(g, &mut |e| match &e.kind {
+            Ek::Host(Imp::FilterLit, args) => lits.push((
+                args.first().and_then(text).map(str::to_owned),
+                args.get(1).and_then(text).map(str::to_owned),
+            )),
+            Ek::Host(Imp::TupleGetH, args) if matches!(args.get(1).map(|e| &e.kind), Some(Ek::I32(at)) if *at as usize == query_field) =>
+            {
+                from_filters += 1;
+            }
+            _ => {}
+        });
+    }
+    assert_eq!(
+        lits,
+        vec![
+            (Some(task.clone()), Some("inbox".to_owned())),
+            (Some(task.clone()), Some("project".to_owned())),
+            (Some(task), Some("project".to_owned())),
+        ],
+        "the filter value the state starts in, and the project places"
+    );
+    assert!(
+        from_filters >= 4,
+        "the query the state asks, the two places chosen, and the list's `selected`: {from_filters}"
+    );
+    for g in m.funcs.iter().filter(|g| g.name.starts_with("board")) {
+        assert!(
+            !strings(g)
+                .iter()
+                .any(|s| s.starts_with("is:") || s.starts_with("project:")),
+            "no search text is written: {:?}",
+            strings(g)
+        );
+    }
+    // A filter the type does not declare is a compile error, not a query the index answers
+    // with nothing.
+    for wrong in ["Task.todays", "Task.inbo"] {
+        let found = diagnostics(&format!(
+            "{FILTERS}view board(b: Board) {{\n    for t in b.tasks.matching({wrong}) {{\n        text(t.title)\n    }}\n}}"
+        ));
+        let said = found.iter().find(|d| d.code == "E105").unwrap_or_else(|| {
+            panic!("{wrong} is a compile error: {found:#?}");
+        });
+        assert!(
+            said.message.contains("declares no filter") && said.message.contains("Task.inbox"),
+            "{wrong}: {}",
+            said.message
+        );
+    }
+}
+
+#[test]
 fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
     // A field marked `(title)` bound by a text field is the document's title; bound by code to
     // read, it is the text alone, and the code is never sent a prop it does not declare.

@@ -14,6 +14,7 @@ pub struct NavListProps {
     pub title: Option<String>,
     /// The key of the place shown now.
     #[component(data)]
+    #[component(identity)]
     pub selected: Option<String>,
     /// A compact rail of icons that fits beside the content at every width.
     pub rail: bool,
@@ -67,6 +68,7 @@ pub struct NavItemProps {
     /// What names the place across changes: what selection reports.
     #[component(required, positional)]
     #[component(data)]
+    #[component(identity)]
     pub key: String,
     /// What the place is called.
     #[component(required, positional)]

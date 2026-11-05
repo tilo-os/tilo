@@ -190,7 +190,7 @@ imports! {
     (CollMoveTo, "coll_move_to", "iiil", ""),
     (Query, "query", "iiii", "i"),
     (Filters, "filters", "i", "i"),
-    (Places, "places", "ii", "i"),
+    (FilterLit, "filter_lit", "iii", "i"),
     (IdentPart, "ident_part", "ii", "i"),
     (RichNew, "rich_new", "i", "i"),
     (RichPart, "rich_part", "ii", "i"),

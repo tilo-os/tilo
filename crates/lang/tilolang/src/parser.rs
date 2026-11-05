@@ -223,6 +223,7 @@ const TYPE_ARGS: &[&str] = &[
     "Map",
     "Collection",
     "Option",
+    "Filter",
     "Result",
     "State",
 ];

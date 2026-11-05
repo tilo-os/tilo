@@ -127,35 +127,6 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
-        name: "Place",
-        id: "host-place",
-        doc: "One place a collection app's sidebar offers: a filter of its items' type that is on or off (Inbox, Today). Choosing it is the window's query; what a window shows beside its places is the app's own.",
-        fields: &[
-            (
-                "key",
-                "Text",
-                "What the place holds, as people type it in search (`is:today`): what choosing it sets, and the query its list answers.",
-            ),
-            ("label", "Text", "What the place is called."),
-            (
-                "icon",
-                "Option<Text>",
-                "The name of its icon, when it has one.",
-            ),
-            (
-                "count",
-                "Int",
-                "How many of its items are open (the type's `(done)` flag unset), as the index counts them.",
-            ),
-            (
-                "counts",
-                "Bool",
-                "Whether its count is one to show: whether the filter declaring it says \
-                 `count: true`.",
-            ),
-        ],
-    },
-    ValueType {
         name: "Version",
         id: "host-version",
         doc: "A version of a resource, as history keeps it: who made it, when, by which action, in which task run, and what it did.",
@@ -379,7 +350,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Filter",
         id: "host-filter",
-        doc: "A filter of a type, as a list's places and search's chips show it: one per case of an enum's.",
+        doc: "A filter a type declares, as code names it and as a list's places and search's chips show it: one per case of an enum's.",
         fields: &[
             ("key", "Text", "What a query names it by: `done`, `status`."),
             ("label", "Text", "What its control shows."),
@@ -391,7 +362,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "query",
                 "Text",
-                "What choosing it asks, as people type it in search: `is:done`, `status:open`; empty for one whose value is picked.",
+                "What choosing it asks, as people type it in search: `is:done`, `status:open`, `project:<id>`; empty for a filter whose value is still to be picked.",
             ),
             (
                 "toggle",

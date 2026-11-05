@@ -1,8 +1,9 @@
-//! Places (search.md, "What a type declares"): a type's filters make the sidebar's places, each
-//! holding the items its predicate says and saying how many it holds where its filter declares
-//! `count: true`; a place is its predicate and nothing else — no membership, grouping, order or
-//! count of its own, and no place the type does not declare. What a window shows beside them
-//! (the projects its root holds) is the app's own.
+//! Filters (search.md, "What a type declares"): a type's filters are values the compiler knows
+//! (`Task.today`), what `filters(T)` lists and what a query takes; a list's places are the ones
+//! that are on or off, each holding the items its predicate says and saying how many it holds
+//! where its filter declares `count: true`. A filter is its predicate and nothing else — no
+//! membership, grouping, order or count of its own, and none the type does not declare. What a
+//! window shows beside them (the projects its root holds) is the app's own.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -72,20 +73,29 @@ view titles(b: Board, q: Text) {
 }
 
 view sidebar(b: Board) {
-    window place: Text = "is:inbox"
-    let side = places(Task, in: b)
+    window place: Filter<Task> = Task.inbox
     // A count of zero shows nothing: the badge says what waits.
     ui.NavList(selected: place) {
-        for p in side {
+        for f in filters(Task).filter(f -> f.toggle) {
+            let held = if f.counts { b.tasks.matching(f).len() } else { 0 }
             ui.NavItem(
-                p.key,
-                p.label,
-                icon: p.icon,
-                count: if p.counts and p.count > 0 { .some(p.count) } else { .none },
+                f,
+                f.label,
+                icon: f.icon,
+                count: if held > 0 { .some(held) } else { .none },
             ) {
-                on select: set(place, p.key)
+                on select: set(place, f)
             }
         }
+        // A place of a value: the project a task is filed under.
+        for p in b.projects {
+            ui.NavItem(Task.project(p), p.name, icon: .folder) {
+                on select: set(place, Task.project(p))
+            }
+        }
+    }
+    for t in b.tasks.matching(place) {
+        text(t.title)
     }
 }
 "#;
@@ -168,26 +178,45 @@ view sidebar(b: Board) {
                     vec![Value::resource(&self.board), Value::text(q)],
                 )
                 .unwrap();
-            of_kind(view.tree(), "ui.Text")
-                .iter()
-                .map(|t| text_prop(t, "value"))
-                .collect()
+            titles_of(view.tree())
         }
 
         fn places_of(&self) -> Vec<(String, Option<i64>)> {
             self.places_of_by(&me())
         }
 
-        /// The places the sidebar offers `who`.
-        fn places_of_by(&self, who: &Principal) -> Vec<(String, Option<i64>)> {
-            let view = self
-                .rt
+        /// The project named `name`.
+        fn project(&self, name: &str) -> ResourceRef {
+            let Value::List(items) = self.rt.read(&self.board, "projects").unwrap() else {
+                panic!("the board holds its projects in a collection");
+            };
+            items
+                .into_iter()
+                .find_map(|item| match item {
+                    Value::Ref(r)
+                        if self.rt.read(&r.target, "name").unwrap().as_text() == Some(name) =>
+                    {
+                        Some(ResourceRef::clone(&r.target))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no project named {name}"))
+        }
+
+        /// The sidebar opened with `who` looking.
+        fn sidebar_by(&self, who: &Principal) -> tilolang_runtime::ViewInstance {
+            self.rt
                 .open_view(
                     who,
                     &self.app.view("sidebar"),
                     vec![Value::resource(&self.board)],
                 )
-                .unwrap();
+                .unwrap()
+        }
+
+        /// The places the sidebar offers `who`.
+        fn places_of_by(&self, who: &Principal) -> Vec<(String, Option<i64>)> {
+            let view = self.sidebar_by(who);
             nav_items(view.tree())
                 .into_iter()
                 .map(|item| {
@@ -205,13 +234,21 @@ view sidebar(b: Board) {
         of_kind(node, "ui.NavItem")
     }
 
+    /// The titles a view shows as text, in order.
+    fn titles_of(node: &UiNode) -> Vec<String> {
+        of_kind(node, "ui.Text")
+            .iter()
+            .map(|t| text_prop(t, "value"))
+            .collect()
+    }
+
     #[test]
     fn the_places_are_the_types_own_filters_and_nothing_the_root_holds() {
         let t = Tasks::new();
         let places = t.places_of();
         let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
         assert_eq!(
-            keys,
+            &keys[..5],
             [
                 "is:inbox",
                 "is:today",
@@ -222,11 +259,11 @@ view sidebar(b: Board) {
             "the type's filters that are on or off, in the order it declares them, and nothing \
              else: a filter naming a reference is a value to pick in search, not a place: {places:?}"
         );
-        assert!(
-            !places.iter().any(|(key, _)| key.starts_with("project:")),
-            "the projects the root holds are a list the app draws, not places the type declares: \
-             {places:?}"
-        );
+        // The projects the root holds are a list the app draws of its own, and the key its item
+        // carries is the filter value it hands the list: the query that picks the project's
+        // tasks, which no app writes as text.
+        let project = format!("project:{}", t.project("Work").id_string());
+        assert_eq!(keys[5..], [project], "{places:?}");
     }
 
     #[test]
@@ -342,5 +379,45 @@ view sidebar(b: Board) {
             Some(&Value::Int(1)),
             "the place whose filter says it counts what is done with shows one"
         );
+    }
+
+    #[test]
+    fn a_place_of_a_value_picks_what_it_names_and_the_list_answers_with_it() {
+        let t = Tasks::new();
+        let project = t.project("Work");
+        let key = format!("project:{}", project.id_string());
+        let mut view = t.sidebar_by(&me());
+        assert_eq!(titles_of(view.tree()), ["undated"], "the inbox it starts in");
+        let item = nav_items(view.tree())
+            .into_iter()
+            .find(|node| node.props.get("key") == Some(&Value::text(&key)))
+            .unwrap_or_else(|| panic!("no place {key} in\n{}", dump(view.tree())))
+            .key
+            .clone();
+        view.fire(&item, "select").unwrap();
+        view.poll_patches().unwrap();
+        // `Task.project(p)` asks the project's tasks, and the window state holds the value: the
+        // list's chosen place is its query, which the platform writes from the value.
+        assert_eq!(
+            titles_of(view.tree()),
+            ["filed"],
+            "the task filed under the project"
+        );
+        assert_eq!(
+            text_prop(of_kind(view.tree(), "ui.NavList")[0], "selected"),
+            key,
+            "the window is on the project's place"
+        );
+        // The same value names the same place: choosing a toggle and coming back reads the same
+        // filter, and the project is chosen again by the equality of what they ask.
+        let toggle = nav_items(view.tree())
+            .into_iter()
+            .find(|node| node.props.get("key") == Some(&Value::text("is:done")))
+            .expect("the Done place")
+            .key
+            .clone();
+        view.fire(&toggle, "select").unwrap();
+        view.poll_patches().unwrap();
+        assert_eq!(titles_of(view.tree()), ["done"]);
     }
 }

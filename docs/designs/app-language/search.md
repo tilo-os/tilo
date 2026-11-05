@@ -44,6 +44,11 @@ type Message {
   or passed by an agent (`unread: true`).
 - `filter "Label" = expr` is a named test over the resource's own fields; the compiler checks it
   reads only this resource so it can be indexed.
+- A filter is a value of type `Filter<T>`: `Message.unread` names the one the type declares,
+  `filters(Message)` lists them, and `items.matching(Message.unread)` asks for it, so a window's
+  state can hold the place a person chose without a search string. `Message.labels(label)` is a
+  filter with its value (`label:urgent`); a name the type declares no filter for is a compile
+  error listing the ones it does.
 - `sort` sets the default order. Relevance is offered whenever there's text.
 - Text fields: `(title)` weighs most, `(body)` is prose, others are metadata, `(secret)` is never
   indexed.

@@ -246,7 +246,7 @@ impl Checker<'_> {
             if !p.data && self.st.ctx == Ctx::View && shows_words(&p.ty) {
                 self.mark_shown(value);
             }
-            self.typed_prop(n, d, name, &p.ty, &p.doc, value);
+            self.typed_prop(n, d, name, &p.ty, &p.doc, value, p.identity);
         } else if let Some(b) = d.binding(name)
             && d.event("change").is_some()
             && !self.is_place(value)
@@ -254,11 +254,11 @@ impl Checker<'_> {
             // A value the view does not hold (a device's volume, read from its reading) is
             // given, not bound: the control shows it, and the person's change goes to the
             // view's `on change(v)`, which asks whoever holds the value to change it.
-            self.typed_prop(n, d, name, &b.ty, &b.doc, value);
+            self.typed_prop(n, d, name, &b.ty, &b.doc, value, false);
         } else if let Some(b) = d.binding(name) {
             self.binding_prop(n, d, value, std::slice::from_ref(b), key);
         } else if let Some(s) = d.state(name) {
-            self.typed_prop(n, d, name, &s.ty, &s.doc, value);
+            self.typed_prop(n, d, name, &s.ty, &s.doc, value, false);
         } else if prims::NODE_ARGS.contains(&name) {
             self.apply_arg(n, "", name, value);
         } else {
@@ -437,8 +437,21 @@ impl Checker<'_> {
         ty: &Type,
         doc: &str,
         value: &ast::Expr,
+        identity: bool,
     ) {
         let node = Ex::local(n, Ty::View);
+        // A filter names the item it is: the host compares the prop's text with its siblings'
+        // keys, so the query the filter asks is what it is given.
+        let keyed =
+            matches!(ty, Type::Text) || matches!(ty, Type::Option(inner) if **inner == Type::Text);
+        if identity
+            && keyed
+            && let Some(filter) = self.filter_shaped(value)
+        {
+            let text = Self::filter_query(filter);
+            self.prop(node, name, text, value.span);
+            return;
+        }
         let mismatch = |this: &mut Self, found: &Ty| {
             let t = this.show(found);
             this.err(
@@ -464,7 +477,7 @@ impl Checker<'_> {
             Type::Option(inner)
                 if matches!(**inner, Type::Icon | Type::Choice { .. } | Type::Picture) =>
             {
-                self.typed_prop(n, d, name, inner, doc, value);
+                self.typed_prop(n, d, name, inner, doc, value, identity);
             }
             Type::Option(inner) if **inner == Type::Action => {
                 self.action_prop(n, name, value, &mismatch);
@@ -545,6 +558,33 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// The value of an identity prop, when it is a filter: `selected: place`, `ui.NavItem(Task.today)`.
+    /// A filter typed by name, or one a view state or a parameter holds. A value that is not one
+    /// takes the prop's own path, unchanged.
+    fn filter_shaped(&mut self, value: &ast::Expr) -> Option<Ex> {
+        let named = |this: &Self, base: &ast::Expr, name: &ast::Ident| {
+            let Some(Ty::Record(key)) = this.type_named(base) else {
+                return false;
+            };
+            this.env
+                .type_info(&key)
+                .is_some_and(|info| info.search.filter(&name.name).is_some())
+        };
+        let filters = match &value.kind {
+            ExprKind::Field { base, name } => named(self, base, name),
+            ExprKind::Call { callee, .. } => match &callee.kind {
+                ExprKind::Field { base, name } => named(self, base, name),
+                _ => false,
+            },
+            ExprKind::Ident(name) => self
+                .lookup(name)
+                .and_then(|(local, _)| self.st.locals.get(local as usize))
+                .is_some_and(|ty| matches!(ty, Ty::Filter(_))),
+            _ => false,
+        };
+        filters.then(|| self.expr(value, None))
     }
 
     /// A prop that is one action offered to the person (`ui.NavSection(add: g.add)`): the node

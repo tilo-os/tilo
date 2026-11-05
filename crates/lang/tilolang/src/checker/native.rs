@@ -701,6 +701,13 @@ impl Checker<'_> {
                     Ty::Record(key) if crate::host::is_value(&key) => {
                         self.value_field(b, &key, name)
                     }
+                    // A filter's icon is a name the platform knows, as a host value's is.
+                    Ty::Filter(_) => {
+                        let Ty::Record(key) = super::platform::host_ty("Filter") else {
+                            return None;
+                        };
+                        self.value_field(b, &key, name)
+                    }
                     // A resource's own `icon` field names the glyph it shows, as a
                     // host value's does: an app, an entry of the launcher, an item of a
                     // dock. Read as a field, its type tells whether it is a glyph or

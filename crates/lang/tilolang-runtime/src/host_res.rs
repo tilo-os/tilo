@@ -71,6 +71,7 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Length(_)
         | Ty::Choice(_)
         | Ty::Enum(_)
+        | Ty::Filter(_)
         | Ty::Result(..)
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());

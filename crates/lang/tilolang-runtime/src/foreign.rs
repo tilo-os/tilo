@@ -454,6 +454,7 @@ impl Decoder<'_> {
             | Ty::Repeat
             | Ty::Reminder
             | Ty::Principal
+            | Ty::Filter(_)
             | Ty::Length(_) => plain(json, ty),
             Ty::Option(inner) => match json {
                 Json::Null => Ok(Value::none()),

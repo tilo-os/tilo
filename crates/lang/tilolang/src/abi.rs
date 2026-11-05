@@ -204,7 +204,7 @@ imports! {
     CollMoveTo = "coll_move_to" ([H, H, H, I64] -> []);
     Query = "query" ([H, H, H, H] -> [H]);
     Filters = "filters" ([H] -> [H]);
-    Places = "places" ([H, H] -> [H]);
+    FilterLit = "filter_lit" ([H, H, H] -> [H]);
     IdentPart = "ident_part" ([H, I32] -> [H]);
     RichNew = "rich_new" ([H] -> [H]);
     RichPart = "rich_part" ([H, I32] -> [H]);

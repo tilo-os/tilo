@@ -106,7 +106,8 @@ impl Core {
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
             (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
-            // A host value (an action, a lens, a type's metadata) is held as its fields.
+            // A host value (an action, a lens, a type's metadata) is held as its fields, and so
+            // is a filter, held as the `host.Filter` its catalogue entry is.
             (Ty::Record(key), Value::Tuple(_)) => tilolang::host::is_value(key),
             (
                 Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder,
@@ -117,7 +118,7 @@ impl Core {
             | (Ty::List(_) | Ty::Collection(_), Value::Coll(_))
             | (Ty::Option(_), Value::Opt(_))
             | (Ty::Enum(_) | Ty::Result(..), Value::Enum(_))
-            | (Ty::Tuple(_), Value::Tuple(_))
+            | (Ty::Tuple(_) | Ty::Filter(_), Value::Tuple(_))
             | (Ty::Action, Value::Action(_))
             | (Ty::Principal, Value::Principal(_))
             | (Ty::View, _) => true,

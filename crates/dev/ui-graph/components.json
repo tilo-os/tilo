@@ -1,5 +1,5 @@
 {
-  "format": 5,
+  "format": 6,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -2839,7 +2839,8 @@
           "type": {
             "option": "text"
           },
-          "data": true
+          "data": true,
+          "identity": true
         },
         {
           "name": "rail",
@@ -6552,7 +6553,8 @@
           "type": "text",
           "required": true,
           "positional": true,
-          "data": true
+          "data": true,
+          "identity": true
         },
         {
           "name": "label",

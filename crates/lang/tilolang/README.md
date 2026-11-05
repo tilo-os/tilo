@@ -460,15 +460,18 @@ or Time, `today`, `now`, either plus or minus a duration, a duration from now (`
 range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a resource; an
 identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no value. Without
 `sort:`, the type's own order. Outside a view (an action, a flow) a query may leave out `in:`
-and look across the workspace. `items.matching("is:done due:-7d")` asks the same of a list,
-written as people type it in search, and `filters(T)` gives a type's filters as places and
-chips show them (`host.Filter`). `places(T, in: x)` gives what a window of `x`'s `T`s offers as
-places (`host.Place`): a place for each of `T`'s filters that is on or off, in the order `T`
-declares them, and nothing else. A place's `key` is the query choosing it sets (`is:today`); it
-counts what it leaves open, and `counts` says whether its filter asks for that count
-(`count: true`). What a window shows beside its places is the app's own, drawn by its view: the
-projects a root holds under a heading that adds one, or any other list of it, in the window's
-own `ui.NavList`.
+and look across the workspace. A filter is a value: `Task.today` names the one the type
+declares, `Task.project(p)` one with its value, and `items.matching(Task.today)`,
+`items.matching(Task.project(p), Task.done)` and `query(Task, in: x, Task.today)` ask them, no
+search text written. `filters(T)` lists the type's filters (`host.Filter`), each with the query
+choosing it asks, its label, icon, whether it is on or off and whether its place shows how many
+it holds; the filters that are on or off are what a list's places are, and a `ui.NavItem` given
+one, or a `ui.NavList` given the chosen one (`selected: place`), is keyed by it without the app
+writing a key. `items.matching("is:done due:-7d")` still asks the same of a list, written as
+people type it in search. A filter's fields also read as text (`f.query` is `is:today`), so a
+window's search box and a query's own words stay one language. What a window shows beside its
+places is the app's own, drawn by its view: the projects a root holds under a heading that adds
+one, or any other list of it, in the window's own `ui.NavList`.
 
 A filter is a predicate over the type's own fields, and nothing more: what a place holds is
 what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is

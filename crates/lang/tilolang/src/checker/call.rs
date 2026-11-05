@@ -49,6 +49,12 @@ impl Checker<'_> {
                         return self.call_foreign(&import, name, args, span);
                     }
                 }
+                // `Task.project(p)`: a filter of the type with the value it asks of.
+                if let Some(Ty::Record(key)) = self.type_named(base)
+                    && let Some(ex) = self.filter_value(&key, name, Some(args), span)
+                {
+                    return ex;
+                }
                 self.method(base, name, args, span)
             }
             _ => {
@@ -128,7 +134,6 @@ impl Checker<'_> {
             "dated" => return self.builtin_dated(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
-            "places" => return self.builtin_places(args, span),
             _ => {}
         }
         if prims::prim(name).is_some() {
