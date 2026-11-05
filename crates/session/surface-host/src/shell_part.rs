@@ -711,6 +711,10 @@ pub struct SessionLink {
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
+    /// The apps whose package a view composed in a place read a resource of before it was
+    /// loaded, by app id, each with the type it read: what the session publishes next
+    /// ([`SessionLink::take_wanted_packages`]).
+    wanted_packages: RefCell<BTreeMap<String, String>>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -2545,11 +2549,17 @@ impl ShellPart {
             }
         }
         // What the views composed in places read of other apps' resources before their
-        // readings came: the session is asked to publish those.
+        // readings came: the session is asked to publish those. What they read of a type no
+        // loaded package declared: the session is asked for that app's package.
         if let Some(host) = self.instance.host() {
             let wanted = host.runtime().take_wanted();
             if !wanted.is_empty() {
                 self.origin.borrow().link.want(wanted);
+            }
+            let packages: BTreeMap<String, String> =
+                host.runtime().take_wanted_packages().into_iter().collect();
+            if !packages.is_empty() {
+                self.origin.borrow().link.want_packages(packages);
             }
         }
         // The exchanges ran until neither side had more to say, unless they ran out first:

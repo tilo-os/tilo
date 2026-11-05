@@ -122,9 +122,9 @@ fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title:
     note
 }
 
-/// The person's arrangement: one placed strip on the canvas, its one place showing `record` by
-/// the notes app's editor.
-fn arrangement(record: &str) -> ArrangementReading {
+/// The person's arrangement: one placed strip on the canvas, its one place showing `record` as
+/// the type `shows` through the view `shown_as` (`""`: the type's default view).
+fn arrangement(record: &str, shows: &str, shown_as: &str) -> ArrangementReading {
     ArrangementReading {
         workspaces: vec![ArrangementWorkspaceReading {
             key: "w1".to_owned(),
@@ -149,18 +149,23 @@ fn arrangement(record: &str) -> ArrangementReading {
         places: vec![ArrangementPlaceReading {
             key: "p1".to_owned(),
             strip: "s1".to_owned(),
-            shows: "Note".to_owned(),
-            shown_as: "note_editor".to_owned(),
+            shows: shows.to_owned(),
+            shown_as: shown_as.to_owned(),
             record: record.to_owned(),
             ..ArrangementPlaceReading::default()
         }],
     }
 }
 
+/// The notes app's editor, drawing the note `record`.
+fn note_arrangement(record: &str) -> ArrangementReading {
+    arrangement(record, "Note", "note_editor")
+}
+
 /// The shell part showing `note` in a place, its reading published, drawn.
 fn showing(service: &RecordService, note: &str) -> (ShellPart, Rc<SessionLink>) {
     let (mut part, link) = part_with(reading_with_windows());
-    let arrangement = arrangement(note);
+    let arrangement = note_arrangement(note);
     link.publish_arrangement(arrangement.clone());
     assert!(
         follow(&link, &arrangement, service),
@@ -270,7 +275,7 @@ fn a_place_composes_the_notes_editor_over_the_note_and_an_edit_there_changes_the
     let note = note(&mut service, &meta, "Groceries");
 
     let (mut part, link) = showing(&service, &note);
-    let arrangement = arrangement(&note);
+    let arrangement = note_arrangement(&note);
 
     let view = canvas(&part);
     let title_field = field_id(&meta, "Note", "title");
@@ -369,7 +374,7 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     let (mut service, meta) = notebook();
     let note = note(&mut service, &meta, "Groceries");
     let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
-    let mut arrangement = arrangement(&note);
+    let mut arrangement = note_arrangement(&note);
     // The one place names no view: it falls back to its type's default view.
     let placed = arrangement
         .places
@@ -410,5 +415,366 @@ fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
     assert!(
         bounds.width() > 0.0 && bounds.height() > 0.0,
         "the editor is laid out with room: {bounds:?}"
+    );
+}
+
+const CHAT: &str = include_str!("../../../../../apps/tl/chat/app.tl");
+const CHAT_IDS: &str = include_str!("../../../../../apps/tl/chat/app.ids");
+const TASKS: &str = include_str!("../../../../../apps/tl/tasks/app.tl");
+const TASKS_IDS: &str = include_str!("../../../../../apps/tl/tasks/app.ids");
+const CHAT_APP: &str = "so.tilo.lang.chat";
+const TASKS_APP: &str = "so.tilo.lang.tasks";
+
+/// What Bo writes, and what the task made from it is called.
+const SAID: &str = "can someone book the van for Saturday?";
+
+/// Commit what the runtime made on its own to `record`, as a session's record takes it.
+fn commit(host: &Host, record: &mut tilo_resource::Doc) {
+    for committed in host.take_committed() {
+        tilo_actions_apply(host, record, &committed.action);
+    }
+}
+
+/// The value the action `action` of `meta` gives when the person runs it with `args`.
+fn call(host: &Host, meta: &tilolang_tilo::runtime::Meta, action: &str, args: Vec<Value>) -> Value {
+    let id = action_id(meta, action);
+    match host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (id.as_str(), args))
+        .unwrap()
+    {
+        tilolang_tilo::runtime::InvokeOutcome::Done(value) => value,
+        other => panic!("{action}: {other:?}"),
+    }
+}
+
+/// The resource a value names.
+fn target(value: &Value) -> ResourceRef {
+    match value {
+        Value::Ref(r) => (*r.target).clone(),
+        other => panic!("a resource: {other:?}"),
+    }
+}
+
+/// The room the session publishes: a chat with the channel `design` and Bo's message in it, a
+/// tasks app, and the task Ada made from that message through its own menu.
+struct Room {
+    service: RecordService,
+    channel: String,
+    message: ResourceRef,
+    task: ResourceRef,
+    tasks: tilolang_tilo::runtime::Meta,
+    /// The readings the session follows for the shell's places, by id, each with its type: what
+    /// it reads again for the ones a change touched.
+    following: BTreeMap<String, String>,
+    /// The apps whose packages a view read a type of before it was loaded, kept for the rest of
+    /// the session: what the session publishes with the packages the places show.
+    needed: std::collections::BTreeSet<String>,
+}
+
+fn room() -> Room {
+    let record = tilo_resource::Doc::new();
+    let host = Host::new(&record, Principal::new("ada"), || None).unwrap();
+    let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
+    let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();
+    // Both roots exist, as they do once each app's window was opened in the workspace.
+    let all = Value::resource(&host.root_of(CHAT_APP).unwrap());
+    let tasks_root = Value::resource(&host.root_of(TASKS_APP).unwrap());
+    let mut record = record;
+    commit(&host, &mut record);
+    let team = call(
+        &host,
+        &chat.meta,
+        "new_category",
+        vec![all, Value::text("Team")],
+    );
+    let design = call(
+        &host,
+        &chat.meta,
+        "add_channel",
+        vec![team, Value::text("design")],
+    );
+    commit(&host, &mut record);
+    let said = Value::Rich(tilolang_tilo::runtime::rich::RichValue::from_text(SAID));
+    let message = call(
+        &host,
+        &chat.meta,
+        "send",
+        vec![design.clone(), said, Value::none()],
+    );
+    commit(&host, &mut record);
+    // The task is made from the message, as the message's own menu makes it.
+    let message = target(&message);
+    let id = action_id(&tasks.meta, "new_task");
+    let made = match host
+        .runtime()
+        .invoke_action_from(
+            &Principal::new("ada"),
+            (id.as_str(), vec![tasks_root, Value::text(SAID)]),
+            &message,
+        )
+        .unwrap()
+    {
+        tilolang_tilo::runtime::InvokeOutcome::Done(made) => made,
+        other => panic!("new_task: {other:?}"),
+    };
+    commit(&host, &mut record);
+    Room {
+        service: RecordService::new(record, host, "ada"),
+        channel: target(&design).id_string(),
+        message,
+        task: published(&target(&made)),
+        tasks: tasks.meta,
+        following: BTreeMap::new(),
+        needed: std::collections::BTreeSet::new(),
+    }
+}
+
+/// `record` as the session publishes it to another app: `tl:<app>:<id>`, of the type
+/// `<app>#<Type>`.
+fn published(record: &ResourceRef) -> ResourceRef {
+    let schema = tilolang_tilo::schema::lookup(&record.ty).expect("a tilolang record");
+    let id = format!("tl:{}:{}", schema.app, record.id_string());
+    ResourceRef::parse_id(&id, format!("{}#{}", schema.app, schema.name))
+        .expect("a published resource id")
+}
+
+/// Every node of `kind` under `node`.
+fn nodes_of<'a>(
+    node: &'a tilolang_tilo::runtime::UiNode,
+    kind: &str,
+    out: &mut Vec<&'a tilolang_tilo::runtime::UiNode>,
+) {
+    if node.kind == kind {
+        out.push(node);
+    }
+    for child in &node.children {
+        nodes_of(child, kind, out);
+    }
+}
+
+/// The resource the `prop` of `node` names.
+fn ref_of(node: &tilolang_tilo::runtime::UiNode, prop: &str) -> Option<ResourceRef> {
+    match node.props.get(prop) {
+        Some(Value::Ref(r)) => Some((*r.target).clone()),
+        _ => None,
+    }
+}
+
+/// The waiting states the canvas shows, in its tree or in a row of one of its lists: a list's
+/// rows are built as they show.
+fn skeletons(
+    view: &mut tilolang_tilo::runtime::ViewInstance,
+) -> Vec<tilolang_tilo::runtime::UiNode> {
+    let _ = view.poll_patches();
+    let mut found = Vec::new();
+    let mut here = Vec::new();
+    nodes_of(view.tree(), "ui.Skeleton", &mut here);
+    found.extend(here.into_iter().cloned());
+    for row in rows(view) {
+        let mut here = Vec::new();
+        nodes_of(&row, "ui.Skeleton", &mut here);
+        found.extend(here.into_iter().cloned());
+    }
+    found
+}
+
+/// The rows of every list the canvas draws.
+fn rows(view: &mut tilolang_tilo::runtime::ViewInstance) -> Vec<tilolang_tilo::runtime::UiNode> {
+    let mut lists = Vec::new();
+    nodes_of(view.tree(), "ui.VirtualList", &mut lists);
+    let keys: Vec<String> = lists.iter().map(|list| list.key.clone()).collect();
+    let mut rows = Vec::new();
+    for key in keys {
+        for index in 0..view.list_len(&key).unwrap_or(0) {
+            if let Ok(Some(row)) = view.row(&key, index) {
+                rows.push(row.clone());
+            }
+        }
+    }
+    rows
+}
+
+/// The cards the canvas draws for the resource `of`, wherever they stand: the rows of a list
+/// are built as they show.
+fn cards(
+    view: &mut tilolang_tilo::runtime::ViewInstance,
+    of: &ResourceRef,
+) -> Vec<tilolang_tilo::runtime::UiNode> {
+    let _ = view.poll_patches();
+    let mut found = Vec::new();
+    for row in &rows(view) {
+        let mut here = Vec::new();
+        nodes_of(row, "ui.Card", &mut here);
+        found.extend(
+            here.into_iter()
+                .filter(|card| ref_of(card, "item").map(|r| r.id_string()) == Some(of.id_string()))
+                .cloned(),
+        );
+    }
+    found
+}
+
+/// One turn of the session over the shell's asks, as the session runs it: the package of each
+/// app the places show and of each app a view read a type of, and the reading of each resource a
+/// place names and of each the views read. `needed` keeps the apps asked for, as the session
+/// keeps them for the rest of its run. Whether anything was published.
+fn session_turn(link: &SessionLink, arrangement: &ArrangementReading, room: &mut Room) -> bool {
+    let mut needed = std::mem::take(&mut room.needed);
+    needed.extend(link.take_wanted_packages().into_keys());
+    let mut apps = needed.clone();
+    room.needed = needed;
+    for ty in super::readings::placed_records(arrangement, &room.service.resources()).values() {
+        if let Some(app) = super::readings::app_of(ty) {
+            apps.insert(app.to_owned());
+        }
+    }
+    let mut packages = BTreeMap::new();
+    for app in apps {
+        if let Some(module) = room.service.module(&app) {
+            packages.insert(app, module);
+        }
+    }
+    let mut changed = link.publish_packages(packages);
+    changed |= link.follow_places(arrangement, &room.service.resources(), |id| {
+        room.service.read(id)
+    });
+    for (id, ty) in link.take_wanted() {
+        room.following.insert(id, ty);
+    }
+    // The session reads again the readings a change touched; the test reads them all, as every
+    // one of them is what the place draws.
+    for (id, ty) in &room.following {
+        if let Some(reading) = room.service.read(id) {
+            changed |= link.publish_reading(id, ty, reading);
+        }
+    }
+    changed
+}
+
+/// A chat window with no tasks window open draws the task made from a message once the tasks
+/// package is loaded: a view that reads a resource of a type no loaded package declares asks
+/// for that app's package, shows its waiting state until it comes, and draws the card after.
+#[test]
+fn a_chat_place_draws_the_task_made_from_a_message_once_the_tasks_package_is_loaded() {
+    let _settled = ui::motion::testing::settled();
+    let mut room = room();
+    let arrangement = arrangement(
+        &format!("tl:{CHAT_APP}:{}", room.channel),
+        "TextChannel",
+        "channel",
+    );
+    let (mut part, link) = part_with(reading_with_windows());
+    link.publish_arrangement(arrangement.clone());
+    // What the message's reading says was made from it: the task, as its own app keeps it.
+    let reading = room
+        .service
+        .read(&format!("tl:{CHAT_APP}:{}", room.message.id_string()))
+        .unwrap();
+    assert!(
+        reading.to_string().contains(&room.task.id_string()),
+        "the message's reading carries what was made from it: {reading:#}"
+    );
+
+    // The first turns publish the chat package, which the place shows, and the readings its
+    // views read: the channel's, and the reading of each message it lists.
+    part.prepare_frame();
+    assert!(
+        session_turn(&link, &arrangement, &mut room),
+        "the place's channel has a reading"
+    );
+    part.prepare_frame();
+    session_turn(&link, &arrangement, &mut room);
+    part.prepare_frame();
+
+    // The message's view draws the task made from it, of a type no package loaded here
+    // declares: the views ask for that app's package, and the place shows its waiting state
+    // rather than nothing.
+    assert!(
+        !link.package_apps().iter().any(|app| app == TASKS_APP),
+        "no tasks window is open: its package is not loaded"
+    );
+    assert!(link.wants_packages(), "the views ask for the tasks package");
+    let mut view = canvas(&part);
+    assert!(
+        !skeletons(&mut view).is_empty(),
+        "the place shows its waiting state: {:#?}",
+        view.tree()
+    );
+    assert!(
+        cards(&mut view, &room.task).is_empty(),
+        "no card is drawn before the tasks package is loaded: {:#?}",
+        view.tree()
+    );
+
+    // The session serves the ask: the tasks package is published as the place's own is, the
+    // task's reading with it, and the card the message draws appears through the task's row
+    // view.
+    let mut card = None;
+    for _ in 0..8 {
+        session_turn(&link, &arrangement, &mut room);
+        part.prepare_frame();
+        card = cards(&mut canvas(&part), &room.task)
+            .pop()
+            .filter(|card| texts(card).contains(&SAID.to_owned()));
+        if card.is_some() {
+            break;
+        }
+    }
+    assert!(
+        card.is_some(),
+        "the chat place draws the task made from the message: asked for {:?}",
+        room.needed
+    );
+    assert!(
+        room.needed.contains(TASKS_APP),
+        "the tasks package was asked for"
+    );
+
+    let mut view = canvas(&part);
+    let card = cards(&mut view, &room.task)
+        .pop()
+        .expect("the card is drawn");
+    let row = {
+        let mut rows = Vec::new();
+        nodes_of(&card, "ui.ListRow", &mut rows);
+        rows.into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the card draws the task through its row view: {card:#?}"))
+            .clone()
+    };
+    assert_eq!(row.props.get("title"), Some(&Value::text(SAID)));
+    assert_eq!(
+        view.bound_value(&row.key),
+        Some(Value::Bool(false)),
+        "the task is not done"
+    );
+
+    // Ben finishes the task in Tasks, with no Tasks window open: the message's card ticks.
+    room.service
+        .invoke(
+            &room.task.id_string(),
+            &action_id(&room.tasks, "check"),
+            &Map::new(),
+        )
+        .unwrap();
+    room.service.settle();
+    for _ in 0..8 {
+        session_turn(&link, &arrangement, &mut room);
+        part.prepare_frame();
+    }
+    let mut view = canvas(&part);
+    let card = cards(&mut view, &room.task)
+        .pop()
+        .unwrap_or_else(|| panic!("the chat place still draws the task"));
+    let row = {
+        let mut rows = Vec::new();
+        nodes_of(&card, "ui.ListRow", &mut rows);
+        rows.into_iter().next().unwrap().clone()
+    };
+    assert_eq!(
+        view.bound_value(&row.key),
+        Some(Value::Bool(true)),
+        "the card shows the task done"
     );
 }

@@ -124,6 +124,9 @@ pub struct Core {
     /// The resources of apps this runtime does not run: how they print, and their readings, as
     /// the host gives them.
     pub foreign: RefCell<crate::foreign::Foreign>,
+    /// The apps a view read a resource of before their package was loaded here: what the host
+    /// loads ([`crate::Runtime::take_wanted_packages`]).
+    pub wanted_packages: RefCell<crate::foreign::WantedPackages>,
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
@@ -238,6 +241,7 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
+            wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
             row_place: RefCell::new(None),
         });

@@ -71,6 +71,27 @@ impl SessionLink {
         self.wanted.borrow_mut().extend(wanted);
     }
 
+    /// The apps whose package the shell's views read a resource of before it was loaded, by
+    /// app id, each with the type as the view named it (`<app>#<Type>`): what the session
+    /// publishes next, as it publishes the packages of the apps whose places show. Each app is
+    /// handed out once.
+    #[must_use]
+    pub fn take_wanted_packages(&self) -> BTreeMap<String, String> {
+        std::mem::take(&mut *self.wanted_packages.borrow_mut())
+    }
+
+    /// Whether the shell's views wait on packages the session has not been asked for yet.
+    #[must_use]
+    pub fn wants_packages(&self) -> bool {
+        !self.wanted_packages.borrow().is_empty()
+    }
+
+    /// The shell's views read a resource of `wanted` (each an app and the type it read) before
+    /// that app's package was loaded.
+    pub(super) fn want_packages(&self, wanted: BTreeMap<String, String>) {
+        self.wanted_packages.borrow_mut().extend(wanted);
+    }
+
     /// Publish the reading of every resource a place of `arrangement` names, from what the
     /// session publishes: `resources`, its catalogue, says each one's kind and `read` its
     /// reading. A place naming nothing the catalogue holds as a tilolang record keeps its

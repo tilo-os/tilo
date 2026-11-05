@@ -133,8 +133,51 @@ impl Foreign {
     }
 
     /// Keep `error` as one a read gave for want of a reading that has not arrived yet.
-    fn remember_waiting(&self, error: &str) {
+    pub(crate) fn remember_waiting(&self, error: &str) {
         self.waiting.borrow_mut().insert(error.to_owned());
+    }
+
+    /// What links to `target`, each with how, as the reading of it says (`$links`): a resource
+    /// of another app carries its links in its reading, as it carries its fields, because the
+    /// store that keeps them runs where the app's code runs, not here.
+    ///
+    /// # Errors
+    ///
+    /// A message when no reading of it arrived yet, kept as a read waiting on one.
+    pub(crate) fn links(
+        &self,
+        target: &ResourceRef,
+    ) -> Result<Vec<(ResourceRef, crate::store::LinkHow)>, String> {
+        let at = Self::key(target);
+        if !self.readings.contains_key(&at) {
+            let why = format!(
+                "no reading of `{}` arrived yet: its app publishes it through the session",
+                target.id_string()
+            );
+            self.remember_waiting(&why);
+            return Err(why);
+        }
+        let Some((json, _)) = self.source(&at) else {
+            return Ok(Vec::new());
+        };
+        let Some(items) = json.get(crate::store::LINKS).and_then(Json::as_array) else {
+            return Ok(Vec::new());
+        };
+        let mut links = Vec::new();
+        for item in items {
+            let named = ["ref", "ty", "how"].map(|field| item.get(field).and_then(Json::as_str));
+            let [Some(id), Some(ty), Some(how)] = named else {
+                continue;
+            };
+            let (Some(link), Some(how)) = (
+                ResourceRef::parse_id(id, ty.to_owned()),
+                crate::store::LinkHow::of_word(how),
+            ) else {
+                continue;
+            };
+            links.push((link, how));
+        }
+        Ok(links)
     }
 
     /// The resources a view read before their readings came in, each its id and type, since
@@ -401,6 +444,71 @@ pub fn arrived_key() -> StateKey {
 #[must_use]
 pub fn known_key() -> StateKey {
     StateKey::runtime(crate::platform::LENS_WINDOW, None, "$readings")
+}
+
+/// The view state slot that moves when another app's package arrives here: a view call that
+/// read a resource of a type no loaded package declared ([`WantedPackages`]) runs again, and
+/// draws it through its app's own views.
+#[must_use]
+pub fn packages_key() -> StateKey {
+    StateKey::runtime(crate::platform::LENS_WINDOW, None, "$packages-arrived")
+}
+
+/// The apps whose package a view read a resource of before the package was loaded: the types
+/// it named, by app. The host loads each app's package ([`crate::Runtime::load_foreign_package`]),
+/// and the view that read it runs again then ([`packages_key`]).
+///
+/// Each app is asked for once: a package that never declares the type it was asked for, or one
+/// no host can serve, leaves the view call its waiting state instead of asking again every
+/// frame. Unloading the app forgets the ask, so a package that comes again is loaded again.
+#[derive(Debug, Default)]
+pub struct WantedPackages {
+    /// The types read of each app, by app, since the host last took them.
+    wanted: BTreeMap<String, String>,
+    /// Every app asked for, by app: an app is asked for once until it is unloaded.
+    asked: std::collections::BTreeSet<String>,
+    /// How many packages arrived here: the value the slot that moves on each stands at.
+    arrivals: u64,
+}
+
+impl WantedPackages {
+    /// Ask for the package that declares `ty`, a type a view read a resource of (`app#Type`).
+    /// Whether such a package can arrive at all: `false` for a type that is no app's (a bare
+    /// type id), whose read is a fault, not one waiting.
+    pub(crate) fn want(&mut self, ty: &str) -> bool {
+        let Some(key) = foreign_type(ty) else {
+            return false;
+        };
+        if self.asked.insert(key.app.clone()) {
+            self.wanted.insert(key.app, ty.to_owned());
+        }
+        true
+    }
+
+    /// The apps asked for since the last call, each with the type as the view named it: what
+    /// the host serves.
+    pub(crate) fn take(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.wanted).into_iter().collect()
+    }
+
+    /// Whether an app a view asked for has not been loaded yet.
+    pub(crate) fn wants(&self) -> bool {
+        !self.wanted.is_empty()
+    }
+
+    /// The app `app`'s package arrived: nothing more is asked of it. How many packages arrived
+    /// here so far ([`packages_key`] moves with it).
+    pub(crate) fn arrived(&mut self, app: &str) -> u64 {
+        self.wanted.remove(app);
+        self.arrivals = self.arrivals.saturating_add(1);
+        self.arrivals
+    }
+
+    /// The app `app`'s package was unloaded: a view that reads a resource of it asks again.
+    pub(crate) fn forget(&mut self, app: &str) {
+        self.wanted.remove(app);
+        self.asked.remove(app);
+    }
 }
 
 /// `json` as the value `ty` declares, as a reading of another app publishes it.

@@ -1285,12 +1285,25 @@ impl Core {
     fn links_import(&self, a: &Args<'_>) -> HResult<Value> {
         let target = self.ref_arg(a.h(0)?)?;
         let at = &target.target;
-        self.read_links_of(at);
-        // What links to a resource of an app this runtime does not run is kept where that app
-        // runs: nothing of it is held here.
+        // What links to a resource of another app is kept where that app runs, and comes here
+        // in its reading (`$links`), which the view runs again on when it moves.
         if crate::foreign::is_foreign(at) {
-            return Ok(Value::List(Vec::new()));
+            let key = crate::foreign::reading_key(at);
+            self.note_reading(key);
+            let links = self.foreign.borrow().links(at)?;
+            return Ok(Value::List(
+                links
+                    .into_iter()
+                    .map(|(of, how)| {
+                        Value::Tuple(vec![
+                            Value::resource(&of),
+                            Value::Text(how.word().to_owned()),
+                        ])
+                    })
+                    .collect(),
+            ));
         }
+        self.read_links_of(at);
         let links = self
             .store
             .borrow()
@@ -1393,14 +1406,11 @@ impl Core {
     /// What the platform shows of the type `ty`, and of the resource `r` of it when there is
     /// one: a `host.Meta`.
     fn type_meta(&self, ty: &str, r: Option<&RefValue>) -> HResult<Value> {
-        // Another app's resource names its type `app#Type`, as its readings come in.
-        let resolved = self.registry.borrow().type_id(ty);
-        let ty = resolved.as_deref().unwrap_or(ty);
-        let (pkg, _) =
-            self.registry.borrow().type_info(ty).ok_or_else(|| {
-                format!("meta: type `{ty}` is not declared by any loaded package")
-            })?;
+        // Another app's resource names its type `app#Type`, as its readings come in: a type
+        // whose package is not loaded here asks for it, and the call runs again when it comes.
+        let (pkg, info) = self.type_of_ref(ty)?;
         let meta = &pkg.meta;
+        let ty = info.id.as_str();
         let Some(declared) = meta.types.iter().find(|t| t.id == ty) else {
             return trap(format!("meta: type `{ty}` is not declared"));
         };

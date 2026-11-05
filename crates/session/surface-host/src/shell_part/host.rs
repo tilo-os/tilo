@@ -225,6 +225,10 @@ impl SurfaceHost for ShellPart {
         if self.origin.borrow().due() || self.origin.borrow().link.wants() {
             return Some(std::time::Instant::now());
         }
+        // A package a view read a type of and the session has not been asked for yet.
+        if self.origin.borrow().link.wants_packages() {
+            return Some(std::time::Instant::now());
+        }
         // The session's own deadline (the switcher's panel coming up) is due as soon as it is.
         self.widgets
             .next_deadline()

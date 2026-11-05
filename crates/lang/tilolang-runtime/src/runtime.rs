@@ -251,6 +251,7 @@ impl Runtime {
     /// `Package` for a description that does not read, or one that reuses another package's
     /// declaration ids.
     pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
+        let app = meta.app.clone();
         let hash = ModuleHash::of_bytes(&meta.to_json_bytes());
         let pkg = crate::registry::Package::foreign(hash, meta).map_err(RuntimeError::Package)?;
         let hash = self
@@ -261,6 +262,7 @@ impl Runtime {
             .map(|pkg| pkg.hash.clone())
             .map_err(RuntimeError::Package)?;
         self.publish_types();
+        self.package_arrived(&app);
         Ok(hash)
     }
 
@@ -278,6 +280,7 @@ impl Runtime {
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
+        let app = meta.app.clone();
         let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
             .map_err(RuntimeError::Package)?;
         self.core
@@ -286,7 +289,18 @@ impl Runtime {
             .add(pkg)
             .map_err(RuntimeError::Package)?;
         self.publish_types();
+        self.package_arrived(&app);
         Ok(hash)
+    }
+
+    /// Another app's package is loaded: a view call that read a resource of a type no package
+    /// declared until now runs again, and draws it through that app's own views.
+    fn package_arrived(&self, app: &str) {
+        let arrivals = self.core.wanted_packages.borrow_mut().arrived(app);
+        self.core.view_states.borrow_mut().set(
+            crate::foreign::packages_key(),
+            Value::Int(i64::try_from(arrivals).unwrap_or(i64::MAX)),
+        );
     }
 
     /// Unload the app `app` this runtime does not run, which nothing here shows any more: its
@@ -295,6 +309,7 @@ impl Runtime {
     pub fn unload_foreign(&self, app: &str) -> bool {
         let removed = self.core.registry.borrow_mut().remove_foreign(app);
         self.core.foreign.borrow_mut().forget_app(app);
+        self.core.wanted_packages.borrow_mut().forget(app);
         removed
     }
 
@@ -304,6 +319,19 @@ impl Runtime {
     /// out once; until its reading comes, it reads as it would start.
     pub fn take_wanted(&self) -> Vec<(String, String)> {
         self.core.foreign.borrow_mut().take_wanted()
+    }
+
+    /// The apps whose package a view read a resource of before it was loaded here, each with
+    /// the type as the view named it (`<app>#<Type>`): what the host loads
+    /// ([`Runtime::load_foreign_package`]). Each app is asked for once; until its package
+    /// comes, the view that read it shows its waiting state.
+    pub fn take_wanted_packages(&self) -> Vec<(String, String)> {
+        self.core.wanted_packages.borrow_mut().take()
+    }
+
+    /// Whether a view waits on the package of an app no host has served yet.
+    pub fn wants_packages(&self) -> bool {
+        self.core.wanted_packages.borrow().wants()
     }
 
     /// Whether `error` — a view call's failure — was waiting on a reading that has not arrived

@@ -403,16 +403,22 @@ impl Core {
             state_seen: Vec::new(),
             changes_at: None,
         };
-        let key = crate::foreign::arrived_key();
-        let generation = self.view_states.borrow().generation(&key);
-        let seen = self
-            .view_states
-            .borrow()
-            .get(&key)
-            .cloned()
-            .unwrap_or_else(Value::none);
-        acc.state_reads.push((key.clone(), generation));
-        acc.state_seen.push((key, seen));
+        // The call runs again when the reading it waited on comes, or when the package of the
+        // app whose type no loaded package declared arrives ([`crate::foreign::packages_key`]).
+        for key in [
+            crate::foreign::arrived_key(),
+            crate::foreign::packages_key(),
+        ] {
+            let generation = self.view_states.borrow().generation(&key);
+            let seen = self
+                .view_states
+                .borrow()
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(Value::none);
+            acc.state_reads.push((key.clone(), generation));
+            acc.state_seen.push((key, seen));
+        }
         let root = UiNode {
             kind: "ui.Skeleton".to_owned(),
             key: "waiting".to_owned(),

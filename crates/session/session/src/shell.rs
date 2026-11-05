@@ -73,6 +73,10 @@ pub(crate) struct Shell {
     reading: std::collections::BTreeMap<String, String>,
     /// How often each was read for the shell.
     reads: std::collections::BTreeMap<String, u64>,
+    /// The apps whose packages a view composed in a place read a type of before it was
+    /// loaded, by app id: published with the packages the places show, and kept for the rest
+    /// of the session (a view keeps drawing what it read once the card is there).
+    needed: std::collections::BTreeSet<String>,
     /// How many of the session's turns read some of them: what the views composed in places
     /// waited on comes in one turn for everything one run of them read, not one per resource.
     rounds: u64,
@@ -124,6 +128,7 @@ impl Shell {
             followed: None,
             reading: std::collections::BTreeMap::new(),
             reads: std::collections::BTreeMap::new(),
+            needed: std::collections::BTreeSet::new(),
             rounds: 0,
             record: Rc::new(RefCell::new(tilo_resource::Doc::new())),
             parts: Vec::new(),
@@ -337,31 +342,40 @@ impl Shell {
         services: &mut Services,
     ) {
         let wanted = self.link.take_wanted();
+        // A view composed in a place read a resource of a type no loaded package declared: its
+        // app's package is published like those a place shows, so the place draws it through
+        // that app's own views.
+        let mut asked = false;
+        for app in self.link.take_wanted_packages().into_keys() {
+            asked |= self.needed.insert(app);
+        }
         let key = (services.revision(), arrangement.clone());
-        let moved_on = self.followed.as_ref() != Some(&key);
+        let moved_on = asked || self.followed.as_ref() != Some(&key);
         if !moved_on && wanted.is_empty() {
             return;
         }
         let mut fresh: Vec<(String, String)> = Vec::new();
-        if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-            let placed = tilo_surface_host::shell_part::readings::placed_records(
-                arrangement,
-                &services.resources(),
-            );
+        if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+            let mut placed = std::collections::BTreeMap::new();
+            if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
+                placed = tilo_surface_host::shell_part::readings::placed_records(
+                    arrangement,
+                    &services.resources(),
+                );
+            }
             let mut packages = std::collections::BTreeMap::new();
-            for ty in placed.values() {
-                let Some(app) = tilo_surface_host::shell_part::readings::app_of(ty) else {
-                    continue;
-                };
+            let app_of = tilo_surface_host::shell_part::readings::app_of;
+            let mut apps: std::collections::BTreeSet<&str> =
+                self.needed.iter().map(String::as_str).collect();
+            apps.extend(placed.values().filter_map(|ty| app_of(ty)));
+            for app in apps {
                 if let Some(module) = services.module(app) {
                     packages.insert(app.to_owned(), module);
                 }
             }
-            // A resource of an app no place shows any more is followed no more.
-            self.reading.retain(|_, ty| {
-                tilo_surface_host::shell_part::readings::app_of(ty)
-                    .is_some_and(|app| packages.contains_key(app))
-            });
+            // A resource of an app no package is published of any more is followed no more.
+            self.reading
+                .retain(|_, ty| app_of(ty).is_some_and(|app| packages.contains_key(app)));
             self.link.publish_packages(packages);
             for (id, ty) in placed {
                 if !self.reading.contains_key(&id) {
