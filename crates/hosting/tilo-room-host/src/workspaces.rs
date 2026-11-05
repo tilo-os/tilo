@@ -2100,8 +2100,8 @@ impl Workspaces {
     /// members, to the workspace's governance as that member's device, as its
     /// governor: every participant then reads it in each record's channel
     /// readers, and its person's role decides what it may change. This is what
-    /// admits the page a public workspace certifies for a visitor, beside the
-    /// person's own desktops. Whether the workspace changed.
+    /// admits a member's further device beside the one that joined. Whether the
+    /// workspace changed.
     ///
     /// # Errors
     ///

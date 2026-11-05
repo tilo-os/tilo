@@ -1,12 +1,11 @@
 //! The persistent room as the room service runs it: a real `tilo-relay
-//! room --persistent` process spoken to over operator protocol 2.
+//! room --persistent` process spoken to over operator protocol 5.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
-use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Workspace {
@@ -102,15 +101,18 @@ impl Workspace {
     }
 }
 
+/// A fresh room has one member, its owner's root: the host holds no person of
+/// its own. It keeps that id and owner across restarts, and refuses a start
+/// under another root or none.
 #[test]
-fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_and_visitors() {
+fn a_persistent_room_keeps_its_id_and_owner_across_restarts() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
 
-    let mut room = start(&state, &root_file, &secrets).unwrap();
+    let room = start(&state, &root_file, &secrets).unwrap();
     let OperatorEvent::Started {
         workspace: Some(id),
         version,
@@ -121,60 +123,33 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         panic!("no governed room announced")
     };
     assert_eq!(version, VERSION);
-    room.tell(&OperatorCommand::PreAdmit {
-        user_public_key: "22".repeat(32),
-        token_sha256: "33".repeat(32),
-        label: "Brave Otter".into(),
-        role: WorkspaceRole::Editor,
-    });
-    let event = room.next(|e| {
-        matches!(
-            e,
-            OperatorEvent::PreAdmitted { .. } | OperatorEvent::PreAdmitRefused { .. }
-        )
-    });
-    let OperatorEvent::PreAdmitted {
-        token_sha256,
-        invitation,
-    } = event
+    // The workspace's only member is its owner; the host holds no person of
+    // its own, so nobody is a member before anyone joined.
+    let OperatorEvent::Online {
+        people,
+        members,
+        online,
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Online { .. }))
     else {
-        panic!("the pre-admission was refused: {event:?}");
+        panic!("no presence announced")
     };
-    assert_eq!(token_sha256, "33".repeat(32));
-    assert!(!invitation.is_empty());
-    room.tell(&OperatorCommand::PreAdmit {
-        user_public_key: "not-hex".into(),
-        token_sha256: "44".repeat(32),
-        label: "x".into(),
-        role: WorkspaceRole::Editor,
-    });
-    assert!(matches!(
-        room.next(|e| matches!(e, OperatorEvent::PreAdmitRefused { .. })),
-        OperatorEvent::PreAdmitRefused { .. }
-    ));
-
-    // A visiting page's device becomes the visitor person's: not the
-    // owner's, no capabilities, short-lived.
-    room.tell(&OperatorCommand::Spectate {
-        device_public_key: "66".repeat(32),
-    });
-    let event = room.next(|e| {
-        matches!(
-            e,
-            OperatorEvent::SpectatorCertified { .. } | OperatorEvent::SpectateRefused { .. }
-        )
-    });
-    let OperatorEvent::SpectatorCertified { certificate, .. } = event else {
-        panic!("the visiting page's device was refused: {event:?}");
-    };
-    assert_eq!(certificate.device_public_key, [0x66; 32]);
-    assert_ne!(hex::encode(certificate.user_public_key), user_public_key);
-    assert!(certificate.expires_at_ns.is_some());
-    assert!(!certificate.capabilities.can_own_workspaces);
+    assert_eq!(members, 1, "the owner is the workspace's only member");
+    assert_eq!(people, 0);
+    assert!(online.is_empty());
+    assert_eq!(
+        user_public_key,
+        hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[0x11; 32])
+                .verifying_key()
+                .to_bytes()
+        ),
+        "the member is the mounted owner root"
+    );
     room.stop();
 
-    // Restarted: the same room, and the same visitor person.
-    let mut room = start(&state, &root_file, &secrets).unwrap();
+    // Restarted: the same room, and still nobody else.
+    let room = start(&state, &root_file, &secrets).unwrap();
     let OperatorEvent::Started {
         workspace: Some(again),
         ..
@@ -183,22 +158,12 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
         panic!("no governed room announced")
     };
     assert_eq!(again, id);
-    room.tell(&OperatorCommand::Spectate {
-        device_public_key: "77".repeat(32),
-    });
-    let OperatorEvent::SpectatorCertified {
-        certificate: second,
-        ..
-    } = room.next(|e| {
-        matches!(
-            e,
-            OperatorEvent::SpectatorCertified { .. } | OperatorEvent::SpectateRefused { .. }
-        )
-    })
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
     else {
-        panic!("the visiting page's device was refused after a restart");
+        panic!("no presence announced")
     };
-    assert_eq!(second.user_public_key, certificate.user_public_key);
+    assert_eq!(members, 1, "the restart mints no second person");
     room.stop();
 
     // Another root mounted: the start is refused, so no other owner is minted.
@@ -211,87 +176,6 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     std::fs::remove_file(&root_file).unwrap();
     let mut missing = start(&state, &root_file, &secrets).unwrap();
     assert!(!missing.child.wait().unwrap().success());
-}
-
-/// Asks the room to pre-admit `visitors` all at once and waits for every
-/// answer: how long the last one took.
-fn pre_admit_all(room: &mut Workspace, visitors: std::ops::Range<usize>) -> Duration {
-    let asked = std::time::Instant::now();
-    let count = visitors.len();
-    for visitor in visitors {
-        let seed = visitor.to_le_bytes();
-        room.tell(&OperatorCommand::PreAdmit {
-            user_public_key: hex::encode(blake3::hash(&seed).as_bytes()),
-            token_sha256: hex::encode(blake3::hash(&[&seed[..], b"token"].concat()).as_bytes()),
-            label: format!("Guest {visitor}"),
-            role: WorkspaceRole::Editor,
-        });
-    }
-    for _ in 0..count {
-        let event = room.next(|e| {
-            matches!(
-                e,
-                OperatorEvent::PreAdmitted { .. } | OperatorEvent::PreAdmitRefused { .. }
-            )
-        });
-        assert!(
-            matches!(event, OperatorEvent::PreAdmitted { .. }),
-            "refused: {event:?}"
-        );
-    }
-    asked.elapsed()
-}
-
-/// Visitors arriving in bursts, as a launch brings them: every
-/// pre-admission of a burst is asked at once, burst after burst into a room
-/// that keeps the open grants of those before. The room service waits ten
-/// seconds for each answer before it turns that visitor away,
-/// and answered one at a time each answer waited for its own write, which
-/// grew with the grants already open: the third burst of 300 ran past the
-/// wait. Side by side, a burst shares its writes.
-///
-/// Measured against the machine itself rather than the clock, so a busy
-/// machine slows both sides alike: before each burst, a lone visitor's
-/// answer (the median of a few) is what one pre-admission takes then. One
-/// at a time, the last burst, the one with the most grants to write, took
-/// about 240 of those on a busy builder; side by side about 40 (the first
-/// burst is mostly signing, which no ordering shares). The bound sits
-/// between the two, on the last burst.
-#[test]
-fn bursts_of_pre_admissions_share_the_rooms_writes() {
-    const BURSTS: usize = 3;
-    const VISITORS: usize = 300;
-    const LONE: usize = 5;
-    // The last burst may take as long as half its visitors' lone answers.
-    const LONE_ANSWERS: u32 = 150;
-    let scratch = tempfile::tempdir().unwrap();
-    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
-    std::fs::create_dir_all(&state).unwrap();
-    let root_file = scratch.path().join("root");
-    std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let mut room = start(&state, &root_file, &secrets).unwrap();
-    room.next(|e| matches!(e, OperatorEvent::Started { .. }));
-    let mut lone_visitor = 1_000_000;
-    let mut measured = Vec::new();
-    for burst in 0..BURSTS {
-        let mut lone: Vec<Duration> = (0..LONE)
-            .map(|_| {
-                lone_visitor += 1;
-                pre_admit_all(&mut room, lone_visitor..lone_visitor + 1)
-            })
-            .collect();
-        lone.sort_unstable();
-        let one = lone[LONE / 2];
-        let took = pre_admit_all(&mut room, burst * VISITORS..(burst + 1) * VISITORS);
-        measured.push((took, one));
-    }
-    eprintln!("each burst of {VISITORS} took, beside one lone answer: {measured:?}");
-    let (took, lone) = measured[BURSTS - 1];
-    assert!(
-        took < lone * LONE_ANSWERS,
-        "the last burst of {VISITORS} took more than {LONE_ANSWERS} lone answers: {measured:?}"
-    );
-    room.stop();
 }
 
 /// The room process settles the apps it is told to let members write
@@ -428,24 +312,35 @@ fn page(
     )
 }
 
-/// Ask the room to certify a fresh page device as the workspace's visitor
-/// person, as the room service's `/spectate` does for the homepage embed, and
-/// admit it there as that member's device.
-fn spectate(room: &mut Workspace) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
-    let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
-        getrandom::SysRng,
+/// A person asks the room's door and redeems what it answers, as their
+/// computer does: their device and certificate, a member now.
+fn join_through_door(
+    runtime: &tokio::runtime::Runtime,
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    (device, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+    name: &str,
+) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::JoinReply;
+
+    let answer = runtime.block_on(ask_door(plain, workspace, &cert, name));
+    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&answer.invitation)
+        .unwrap();
+    let request_id = cert.device_public_key;
+    let admitted = runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+        &Plain(plain),
+        &invitation,
+        &cert,
+        &device,
+        request_id,
+        name,
+        answer.admission_token.as_bytes(),
     ));
-    room.tell(&OperatorCommand::Spectate {
-        device_public_key: hex::encode(key.verifying_key().to_bytes()),
-    });
-    match room.next(|e| {
-        matches!(
-            e,
-            OperatorEvent::SpectatorCertified { .. } | OperatorEvent::SpectateRefused { .. }
-        )
-    }) {
-        OperatorEvent::SpectatorCertified { certificate, .. } => (key, certificate),
-        other => panic!("the visiting page's device was refused: {other:?}"),
+    match admitted {
+        Ok(JoinReply::Admitted { .. }) => (device, cert),
+        other => panic!("{name} was not admitted: {other:?}"),
     }
 }
 
@@ -780,16 +675,14 @@ fn the_room_keeps_out_a_person_it_removed_before_the_door() {
     room.stop();
 }
 
-/// The homepage embed's path through the real room process: a page whose
-/// device the room certified as its visitor person's subscribes, reads the
-/// room's chat with its starting channel, and has every write refused as the
-/// viewer it is; the owner's root still admits none of its other devices by
-/// itself. The same room, telling its visitors they are its editors, takes
-/// the next page's write in: what a visitor may change is the role its
-/// workspace gives visitors, and nothing else about the page changes.
+/// A person who joined through the real room process's door subscribes, reads
+/// the room's chat with its starting channel, and has every write refused as
+/// the viewer the listing made them; the owner's root still admits none of its
+/// other devices by itself. The same room, listing people as its editors,
+/// takes the next person's write in: what someone may change is the role the
+/// listing gives them, and nothing else about the page changes.
 #[test]
-fn a_persistent_rooms_visitor_page_reads_the_room_and_writes_what_the_workspace_lets_visitors_write()
- {
+fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -801,63 +694,69 @@ fn a_persistent_rooms_visitor_page_reads_the_room_and_writes_what_the_workspace_
         .unwrap();
     let web_plain = plain.to_string();
 
-    let mut room = start_with(
-        &state,
-        &root_file,
-        &secrets,
-        &["--chat-channel", "general", "--web-plain", &web_plain],
-    )
-    .unwrap();
-    let (id, workspace_id) = announced(&room);
-    let visiting = spectate(&mut room);
-    let writer = spectate(&mut room);
-    let sibling = unenrolled_owner_device();
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(visitors_read_the_room_and_are_refused(
-            plain,
-            &id,
-            workspace_id,
-            visiting,
-            writer,
-            sibling,
-        ));
-    room.stop();
-
-    // The same room, visitors as its editors: a page of the same visitor
-    // person joins as it did before, and its write is taken in.
-    let mut room = start_with(
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let room = start_with(
         &state,
         &root_file,
         &secrets,
         &[
             "--chat-channel",
             "general",
+            "--listing-description",
+            "Coffee and tea",
             "--web-plain",
             &web_plain,
-            "--visitor-role",
+        ],
+    )
+    .unwrap();
+    let (id, workspace_id) = announced(&room);
+    let visiting = join_through_door(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
+    let writer = join_through_door(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
+    let sibling = unenrolled_owner_device();
+    runtime.block_on(persons_read_the_room_and_are_refused(
+        plain,
+        &id,
+        workspace_id,
+        visiting,
+        writer,
+        sibling,
+    ));
+    room.stop();
+
+    // The same room, listing people as its editors: a new person joins
+    // through the door as the others did, and their write is taken in.
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--chat-channel",
+            "general",
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
             "editor",
+            "--web-plain",
+            &web_plain,
         ],
     )
     .unwrap();
     let (same, _) = announced(&room);
     assert_eq!(same, id, "the same room opens");
-    let editor = spectate(&mut room);
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(an_editor_page_writes_and_is_committed(
-            plain,
-            &same,
-            workspace_id,
-            editor,
-        ));
+    let editor = join_through_door(&runtime, plain, &same, own_device(0x73, "Cy"), "Cy");
+    runtime.block_on(an_editor_page_writes_and_is_committed(
+        plain,
+        &same,
+        workspace_id,
+        editor,
+    ));
     room.stop();
 }
 
-/// The first start's pages: the visitor person reads the chat and its writes
-/// are refused, and a device of the owner the room never enrolled is not
-/// admitted.
-async fn visitors_read_the_room_and_are_refused(
+/// The first start's pages: two people who joined through the door read the
+/// chat and the viewer's writes are refused, and a device of the owner the
+/// room never enrolled is not admitted.
+async fn persons_read_the_room_and_are_refused(
     plain: std::net::SocketAddr,
     cluster: &str,
     workspace_id: u64,
@@ -873,23 +772,23 @@ async fn visitors_read_the_room_and_are_refused(
     let visiting = page(plain, visiting_key, visiting_cert, &host_cert);
     visiting.join(workspace_id).unwrap();
     visiting.open_route(route.clone()).unwrap();
-    assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
+    assert_page_reads_the_chat("Ana", &visiting, workspace_id, &route, &["general"]).await;
 
-    // Another page of the visitor person holds the role its workspace
-    // gives visitors, a viewer's: it reads the room and writes nothing.
+    // Another person holds the listing's default role, a viewer's: they read
+    // the room and write nothing.
     let writer = page(plain, writing_key, writing_cert, &host_cert);
     writer.join(workspace_id).unwrap();
     writer.open_route(route.clone()).unwrap();
-    assert_page_reads_the_chat("writer", &writer, workspace_id, &route, &["general"]).await;
+    assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
     writer
         .publish(
             route.clone(),
-            &DocumentMutation::Incremental(b"a visitor's edit".to_vec()),
+            &DocumentMutation::Incremental(b"a viewer's edit".to_vec()),
         )
         .unwrap();
     let mut committed = false;
     let refused = wait_for(
-        "the visitor's write to be refused",
+        "the viewer's write to be refused",
         || {
             committed |= writer
                 .drain()
@@ -904,7 +803,7 @@ async fn visitors_read_the_room_and_are_refused(
         || format!("{:?}", writer.status()),
     )
     .await;
-    assert!(!committed, "the visitor's write was committed: {refused:?}");
+    assert!(!committed, "the viewer's write was committed: {refused:?}");
 
     let other = page(plain, sibling_key, sibling_cert, &host_cert);
     other.join(workspace_id).unwrap();
@@ -933,8 +832,8 @@ async fn visitors_read_the_room_and_are_refused(
     visiting.close();
 }
 
-/// The restart's page: a page of the visitor person writes, and the room
-/// commits it, as its visitor role now lets it.
+/// The restart's page: a person who joined through the door writes, and the
+/// room commits it, as the listing's role now lets them.
 async fn an_editor_page_writes_and_is_committed(
     plain: std::net::SocketAddr,
     cluster: &str,
@@ -976,8 +875,8 @@ async fn an_editor_page_writes_and_is_committed(
 
 /// A room service stops its room hard (`podman rm -f`): killed after it
 /// decided things and wrote them, and killed again while it starts. Each
-/// next start opens the same room, settles its chat and lets a visiting
-/// page read it.
+/// next start opens the same room, settles its chat and lets a person who
+/// joins through its door read it.
 #[test]
 fn a_persistent_room_reopens_after_hard_stops() {
     const CHAT: &str = "so.tilo.chat";
@@ -996,6 +895,8 @@ fn a_persistent_room_reopens_after_hard_stops() {
         "general",
         "--chat-channel",
         "show-and-tell",
+        "--listing-description",
+        "Coffee and tea",
         "--web-plain",
         web_plain.as_str(),
     ];
@@ -1008,22 +909,10 @@ fn a_persistent_room_reopens_after_hard_stops() {
         other => panic!("no governed room announced: {other:?}"),
     };
 
-    let mut room = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
     let id = started(&room);
-    room.tell(&OperatorCommand::PreAdmit {
-        user_public_key: "22".repeat(32),
-        token_sha256: "33".repeat(32),
-        label: "Brave Otter".into(),
-        role: WorkspaceRole::Editor,
-    });
-    assert!(matches!(
-        room.next(|e| matches!(
-            e,
-            OperatorEvent::PreAdmitted { .. } | OperatorEvent::PreAdmitRefused { .. }
-        )),
-        OperatorEvent::PreAdmitted { .. }
-    ));
-    let _ = spectate(&mut room);
+    join_through_door(&runtime, plain, &id, own_device(0x74, "Ana"), "Ana");
     room.kill();
 
     // Killed again before it says it started.
@@ -1031,11 +920,11 @@ fn a_persistent_room_reopens_after_hard_stops() {
     std::thread::sleep(Duration::from_millis(300));
     starting.kill();
 
-    let mut room = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
     assert_eq!(started(&room), id, "the same room opens");
     let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
-    let (key, cert) = spectate(&mut room);
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
+    let (key, cert) = join_through_door(&runtime, plain, &id, own_device(0x75, "Ben"), "Ben");
+    runtime.block_on(async {
         let host_cert = tilo_browser_peer::host_info(&Plain(plain))
             .await
             .unwrap()

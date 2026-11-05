@@ -1095,9 +1095,7 @@ async fn approve_admitted(
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
                 Some(Ok(
-                    OperatorCommand::PreAdmit { .. }
-                    | OperatorCommand::Spectate { .. }
-                    | OperatorCommand::WaitList { .. }
+                    OperatorCommand::WaitList { .. }
                     | OperatorCommand::Unlist { .. }
                     | OperatorCommand::Confirm { .. }
                     | OperatorCommand::Standing { .. }

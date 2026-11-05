@@ -1,8 +1,8 @@
-//! Visitors who arrive one after another in a Lounge whose host governs it
-//! and takes part in its channels. The first visitor's page opens the workspace's
-//! records, so the host opens their channels; a visitor who comes
-//! later is handed the workspace's whole history under those channels and must
-//! find nothing in it written in the clear: the host writes nothing to a
+//! People who arrive one after another in a Lounge whose host governs it and
+//! takes part in its channels. The first person's page opens the workspace's
+//! records, so the host opens their channels; someone who comes later is
+//! handed the workspace's whole history under those channels and must find
+//! nothing in it written in the clear: the host writes nothing to a
 //! workspace whose records are sealed channels, not even the empty shared
 //! desktop a workspace whose channels it takes no part in starts with.
 
@@ -49,7 +49,7 @@ fn gather(page: &PeerHandle, notes: &mut Vec<Vec<u8>>, refused: &mut Vec<String>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
+async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(
         &alice,
@@ -139,7 +139,7 @@ async fn a_later_visitor_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     }
     assert!(
         refused.is_empty(),
-        "a visitor refused documents of the workspace: {refused:?}"
+        "a person was refused documents of the workspace: {refused:?}"
     );
 
     for page in pages {

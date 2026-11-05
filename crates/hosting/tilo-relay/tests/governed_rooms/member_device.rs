@@ -1,12 +1,10 @@
-//! A visitor is a member with the role the workspace gives it: the page
-//! device the workspace admits for the visitor person reads the workspace like
-//! any member's device, and writes only what that role writes — nothing as a
-//! Viewer, its changes as an Editor.
+//! A member's own second browser: the device their root certified is admitted
+//! as theirs, reads the workspace like any of their devices, and writes only
+//! what their role writes — nothing as a Viewer, its changes as an Editor.
 
 use tilo_peer_state::join::MemberRole;
 use tilo_relay::workspaces::{SetMemberRoleRequest, WorkspaceContent};
 use tilo_relay_protocol::refusal::{PLAIN_NOT_ALLOWED, plain_reason};
-use tilo_user_identity::{DeviceCert, sign_device_cert};
 
 use super::*;
 
@@ -67,31 +65,6 @@ async fn join(
             .unwrap();
     }
     replica
-}
-
-/// A page's device, certified by the visitor person's root for an hour and
-/// carrying no capabilities, as the workspace certifies it to a visiting page.
-fn page_device(visitor: &TestUser, seed: u8) -> TestDevice {
-    let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let now = tilo_clock::unix_now_ns();
-    let mut cert = DeviceCert {
-        user_public_key: visitor.user_pk,
-        device_public_key: sk.verifying_key().to_bytes(),
-        device_label: "Visitor".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-        },
-        issued_at_ns: now,
-        expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, &visitor.user_sk).unwrap();
-    TestDevice { sk, cert }
 }
 
 async fn connect(relay: &Relay, device: &TestDevice) -> RelayClient {
@@ -206,19 +179,18 @@ fn commit(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
+async fn a_members_second_browser_is_admitted_and_writes_what_the_role_writes() {
     let alice = TestUser::fresh("Alice");
     let bob = TestUser::fresh("Bob");
-    let visitor = TestUser::fresh("Watching visitors");
+    let carol = TestUser::fresh("Carol");
     let host = alice.enrol("alice-home", DeviceCapabilities::host());
     let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
     let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
-    let first = visitor.enrol("visitor-desk", DeviceCapabilities::member());
+    let carol_laptop = carol.enrol("carol-laptop", DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = start(state.path(), &alice, &host).await;
 
-    // Alice's workspace: Bob is an editor, the visitor person a viewer, as
-    // the workspace's host makes it for the people who visit.
+    // Alice's workspace: Bob is an editor, Carol a viewer.
     let room = create_and_enter(&relay, &laptop, "Plaza").await;
     let workspace_id = room.workspace_id;
     let mut bob_peer = join(
@@ -230,13 +202,13 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
         1,
     )
     .await;
-    // The visitor person's own device, which the invitation makes a member
-    // holding the Viewer role its host gives visitors.
-    let _visitor_device = join(
+    // Carol's first device, which the invitation makes a member holding the
+    // Viewer role her host gives her.
+    let _carol_laptop = join(
         &relay,
         &laptop,
         &room.workspace,
-        (&visitor, &first),
+        (&carol, &carol_laptop),
         MemberRole::Viewer,
         2,
     )
@@ -265,11 +237,11 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
     let bob_session = session(&relay, &phone, workspace_id).await;
     crate::common::wait_until_subscribed(&relay, workspace_id, &phone.device_pubkey()).await;
 
-    // A page's device is no member until the workspace admits it as the
-    // visitor person's: this is what every page met before its host did.
-    let page = page_device(&visitor, 40);
-    let page_key = page.device_pubkey();
-    let early = connect(&relay, &page).await;
+    // Carol's browser, a second device her root certified, is no member
+    // until the workspace admits it as hers.
+    let browser = carol.enrol("carol-browser", DeviceCapabilities::member());
+    let page_key = browser.device_pubkey();
+    let early = connect(&relay, &browser).await;
     assert_eq!(
         subscribe(&early, workspace_id).await,
         Err("device not in workspace membership".to_owned())
@@ -282,12 +254,12 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
         relay
             .workspaces()
             .unwrap()
-            .admit_member_device(&room.workspace, &page.cert)
+            .admit_member_device(&room.workspace, &browser.cert)
             .await
             .unwrap(),
-        "the workspace admits the page as the visitor person's device"
+        "the workspace admits Carol's browser as her device"
     );
-    let visiting = connect(&relay, &page).await;
+    let visiting = connect(&relay, &browser).await;
     assert_eq!(subscribe(&visiting, workspace_id).await, Ok(()));
     crate::common::wait_until_subscribed(&relay, workspace_id, &page_key).await;
     let mut doc = AutoCommit::new();
@@ -306,7 +278,7 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
         |peer, _| text(peer, "topic").as_deref() == Some("welcome"),
     )
     .await;
-    answer("Alice's write reaches the page", &visiting, |envelope| {
+    answer("Alice's write reaches the browser", &visiting, |envelope| {
         matches!(
             envelope,
             Envelope::Delta { author_device_public_key, .. }
@@ -321,19 +293,19 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
             have_heads: Vec::new(),
         })
         .unwrap();
-    answer("the page's sync is answered", &visiting, |envelope| {
+    answer("the browser's sync is answered", &visiting, |envelope| {
         matches!(envelope, Envelope::SyncResponse { .. }).then_some(())
     })
     .await;
-    // Asked what the room lets it change, the page hears it changes nothing:
-    // its person is its viewer.
+    // Asked what the room lets it change, the browser hears it changes
+    // nothing: its person is a viewer.
     for node in tilo_action_policy::roles::telling_nodes(&room.workspace) {
         assert_eq!(
             relay
                 .workspaces()
                 .unwrap()
                 .page_rooms(
-                    &page.cert,
+                    &browser.cert,
                     tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
                         workspace: room.workspace.clone(),
                         node: node.to_string(),
@@ -352,9 +324,9 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
         &bob_peer,
         &room.workspace,
         surface,
-        &page,
+        &browser,
         "topic",
-        "a visitor's edit",
+        "a viewer's edit",
         1,
     );
     commit(&visiting, workspace_id, [3; 16], page_key, &edit);
@@ -369,13 +341,13 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
     .await;
     assert_eq!(plain_reason(&refused), PLAIN_NOT_ALLOWED, "{refused}");
 
-    // The room's members see the page as one of them: Bob's presence reaches
-    // it, and its own reaches Alice, whose cursor it reads.
+    // The room's members see Carol's browser as one of them: Bob's presence
+    // reaches it, and its own reaches Alice, whose cursor it reads.
     bob_session
         .publish_presence(b"Bob's cursor".to_vec())
         .unwrap();
     let cursor = answer(
-        "Bob's presence reaches the page",
+        "Bob's presence reaches the browser",
         &visiting,
         |envelope| match envelope {
             Envelope::RetiredPresence { payload, .. } => {
@@ -389,7 +361,7 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
     .await;
     assert_eq!(cursor, b"Bob's cursor");
 
-    // Made an editor, the same page writes: the room's members take its
+    // Made an editor, the same browser writes: the room's members take its
     // change in, and Alice reads it.
     relay
         .workspaces()
@@ -399,7 +371,7 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
             &laptop.cert,
             SetMemberRoleRequest {
                 request_id: [4; 32],
-                user_public_key: visitor.user_pk,
+                user_public_key: carol.user_pk,
                 role: MemberRole::Editor,
             },
         )
@@ -409,22 +381,22 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
         &bob_peer,
         &room.workspace,
         surface,
-        &page,
+        &browser,
         "topic",
-        "a visitor writes",
+        "the editor writes",
         2,
     );
     commit(&visiting, workspace_id, [5; 16], page_key, &written);
     receive_until(
-        "the room takes in the page's change as its editor",
+        "the room takes in the browser's change as its editor",
         &alice_session,
         &mut alice_peer,
         &mut Vec::new(),
-        |peer, _| text(peer, "topic").as_deref() == Some("a visitor writes"),
+        |peer, _| text(peer, "topic").as_deref() == Some("the editor writes"),
     )
     .await;
 
-    // A page reads what the room's members read: the host answers it the
+    // A browser reads what the room's members read: the host answers it the
     // content those records reference.
     let image = b"an image a member posted".to_vec();
     let hash = blake3::hash(&image).to_hex().to_string();
@@ -451,7 +423,7 @@ async fn a_visitor_reads_the_workspace_and_writes_what_its_role_writes() {
         })
         .unwrap();
     let piece = answer(
-        "the host answers the page's request",
+        "the host answers the browser's request",
         &visiting,
         |envelope| match envelope {
             Envelope::RecordContent { frame, .. } => Some(frame),

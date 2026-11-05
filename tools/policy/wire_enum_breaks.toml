@@ -162,3 +162,13 @@ reason = "one JSON frame over the standard input and output between the messagin
 file = "crates/session/messaging-service/src/door.rs"
 enum = "PublicationKind"
 reason = "the kind of an account the service publishes into the person's accounts record, tagged by name on the same one-image door; the compositor turns it into that record's own fields, which keep no variant name, so the Tilo account kind went with the lane that received private texts"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
+enum = "OperatorCommand"
+reason = "one JSON line per command between the workspace service and the room process it starts from the same image; the line names its command (`tag = \"op\"`), so the pre-admission and spectator commands go by name, and the protocol version (announced in `Started`, refused when it is another) is bumped from 4 to 5 with them, so neither side reads a line written by the other"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
+enum = "OperatorEvent"
+reason = "one JSON line per event on the same one-image operator pipe, tagged by name (`tag = \"event\"`); the pre-admission and spectator events went with the commands that asked for them, and the protocol version is bumped from 4 to 5 in the same commit, so no reader of either version decodes the other's streams"
