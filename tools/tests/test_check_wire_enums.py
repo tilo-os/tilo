@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 
 from git_fixture import isolated_git_environment
@@ -30,9 +31,11 @@ class WireEnumTests(unittest.TestCase):
         subprocess.run(["git", *args], cwd=root, check=True, capture_output=True,
                        env=isolated_git_environment())
 
-    def judged(self, before, after, breaks=None):
-        with tempfile.TemporaryDirectory() as root:
-            root = Path(root)
+    @contextmanager
+    def repository(self, before, after, breaks=None):
+        """A repository whose main has `before`; `after` is the working tree's."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
             self.git(root, "init", "-q", "-b", "main")
             self.git(root, "config", "user.email", "t@example.com")
             self.git(root, "config", "user.name", "t")
@@ -46,7 +49,16 @@ class WireEnumTests(unittest.TestCase):
                 listed = root / "tools/policy/wire_enum_breaks.toml"
                 listed.parent.mkdir(parents=True)
                 listed.write_text(breaks)
+            yield root
+
+    def judged(self, before, after, breaks=None):
+        with self.repository(before, after, breaks) as root:
             return wire.against("main", root)
+
+    def staged_change(self, before, after, breaks=None):
+        with self.repository(before, after, breaks) as root:
+            self.git(root, "add", "-A")
+            return wire.staged(root)
 
     def test_variants_and_their_fields_are_read(self):
         found = wire.wire_enums(
@@ -117,6 +129,29 @@ class WireEnumTests(unittest.TestCase):
         self.assertEqual(
             self.judged(lifetime("Once", "Task"), lifetime("Once"), breaks), []
         )
+
+    def test_a_removal_staged_fails(self):
+        problems = self.staged_change(
+            lifetime("Once", "Task", "Until"), lifetime("Once", "Until")
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no longer has Task", problems[0])
+
+    def test_an_addition_staged_passes(self):
+        self.assertEqual(
+            self.staged_change(lifetime("Once"), lifetime("Once", "Until")), []
+        )
+
+    def test_only_the_index_is_judged(self):
+        with self.repository(lifetime("Once", "Task"), lifetime("Once")) as root:
+            self.assertEqual(wire.staged(root), [])
+
+    def test_a_file_renamed_within_its_crate_keeps_its_enums(self):
+        with self.repository(lifetime("Once", "Task"), lifetime("Once", "Task")) as root:
+            self.git(root, "mv", "crates/x/src/lib.rs", "crates/x/src/lifetime.rs")
+            (root / "crates/x/src/lib.rs").write_text("mod lifetime;\n")
+            self.git(root, "add", "-A")
+            self.assertEqual(wire.staged(root), [])
 
 
 if __name__ == "__main__":
