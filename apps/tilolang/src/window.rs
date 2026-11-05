@@ -23,9 +23,10 @@ use std::sync::Arc;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{self, Config, Instance, Mode, Outgoing, Platform, queue_commits};
+use tilolang_tilo::personal::{Keep, Personal};
 use tilolang_tilo::runtime::{OutsideSink, ResourceRef};
 use tilolang_tilo::{HostEffect, OpenEffect};
-use ui::framework::{ResourceSurface, RunMode};
+use ui::framework::{PersonRecord, ResourceSurface, RunMode};
 use ui::tilo_actions::{ActionAddress, ControlInvocation, InvocationId};
 use ui::widget::controls::ControlResult;
 use ui::widget::{AppModel, Element, ModelPath, Widget};
@@ -203,6 +204,10 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
+    /// The person's own record of the workspace, when the window has it: the window and lens
+    /// state they set and what they have seen, so the place they picked is still theirs after a
+    /// restart and on their other devices ([`Personal`]).
+    personal: Option<PersonRecord<Personal>>,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -256,6 +261,7 @@ impl Window {
             history: VecDeque::new(),
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
+            personal: None,
         }
     }
 
@@ -298,6 +304,81 @@ impl Window {
         self.record = Some(record.to_owned());
         self.place_indexes();
         self
+    }
+
+    /// This window keeping the person's own state of the workspace in `record`: the window and
+    /// lens state they set in their views, and what they have seen. What their record holds is
+    /// given to the views when the window shows ([`Self::bring_personal`]), and what they change
+    /// is kept back into it ([`Self::keep_personal`]).
+    #[must_use]
+    pub fn keeping_personal(mut self, record: Option<PersonRecord<Personal>>) -> Self {
+        self.personal = record;
+        self
+    }
+
+    /// Give the views what the person's own record keeps: how their window shows its resource,
+    /// where they are in it, and what they have seen. A slot already holding its value is left
+    /// alone, so this runs every frame.
+    fn bring_personal(&mut self, record: &PersonRecord<Personal>) {
+        let kept = record.get();
+        self.instance.set_view_states(
+            kept.slots
+                .iter()
+                .map(|slot| (slot.key(&self.me), slot.value.clone())),
+        );
+        self.instance.set_seen(
+            kept.seen
+                .iter()
+                .map(|(resource, mark)| (resource.clone(), Some(mark.clone()))),
+            &kept.runs,
+        );
+    }
+
+    /// Keep what the person changed of their own state since the last frame in their record:
+    /// the window and lens state they set, and what they marked seen. A change their record
+    /// cannot take stays on this device, told once, rather than stopping the window.
+    fn keep_personal(&mut self, record: &PersonRecord<Personal>) {
+        let writes = self.instance.take_view_writes();
+        let seen = self.instance.take_seen();
+        for (key, value) in writes {
+            let keep = match Keep::view(&key, &value) {
+                Ok(keep) => keep,
+                Err(why) => {
+                    tracing::debug!(%why, "the slot is no person's state");
+                    continue;
+                }
+            };
+            if let Err(error) = record.apply(&keep) {
+                tracing::warn!(%error, "personal: a view's state stays on this device");
+            }
+        }
+        for write in seen {
+            // Someone else's mark is not this person's to keep.
+            let keep = match write {
+                tilolang_tilo::runtime::seen::SeenWrite::Resource {
+                    person,
+                    resource,
+                    mark,
+                } if person.eq_ignore_ascii_case(&self.me) => Keep::Seen {
+                    resource,
+                    mark: Some(mark),
+                },
+                tilolang_tilo::runtime::seen::SeenWrite::Run { person, run }
+                    if person.eq_ignore_ascii_case(&self.me) =>
+                {
+                    let mut runs: Vec<String> = record.with(|state| state.runs.clone());
+                    if !runs.contains(&run) {
+                        runs.push(run);
+                        runs.sort();
+                    }
+                    Keep::Runs { runs }
+                }
+                _ => continue,
+            };
+            if let Err(error) = record.apply(&keep) {
+                tracing::warn!(%error, "personal: what the person saw stays on this device");
+            }
+        }
     }
 
     /// Where the indexes of this window's workspace are kept, when they are kept on disk: a past
@@ -678,6 +759,10 @@ impl Widget for Window {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let _phase = Phase::start("tl.update");
         self.view.flush();
+        let personal = self.personal.clone();
+        if let Some(record) = &personal {
+            self.bring_personal(record);
+        }
         let changed = {
             let _handled = Phase::start("tl.events");
             self.instance.update()
@@ -694,6 +779,9 @@ impl Widget for Window {
             }
         }
         let child = self.view.update(state, path);
+        if let Some(record) = &personal {
+            self.keep_personal(record);
+        }
         changed || received || child
     }
 

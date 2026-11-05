@@ -50,6 +50,11 @@ fn write_leb(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
+/// The record kind of a person's own state of an app's workspace: the window and lens state
+/// they set in views and what they have seen, kept in their own record of the workspace
+/// (`member:<person>:tilolang.personal`), on this device and their others, and in nobody else's.
+pub const PERSONAL_RECORD_KIND: &str = "tilolang.personal";
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageMeta {
     pub app: String,

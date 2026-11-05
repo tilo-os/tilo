@@ -10,6 +10,13 @@
 //! guest hands it over: Int, Float and Bool boxed like `some_i`, everything else as it is.
 //! Every change bumps the slot's generation, which is how a view that read the slot knows to
 //! run again.
+//!
+//! What the person changes of a declared slot is kept in their own record of the workspace, not
+//! in this process's memory: the host takes each change ([`ViewStates::take_writes`]) and keeps
+//! it, and gives back what it kept when a window opens ([`ViewStates::restore`]), so the place a
+//! person picked is still theirs after a restart and on their other devices. What the runtime
+//! itself keeps are platform readings (lenses present on a resource, seen marks, deliveries):
+//! those are [`ViewStates::set`]'s, and are never written to a record.
 
 use std::collections::HashMap;
 
@@ -113,6 +120,9 @@ impl StateKey {
 pub struct ViewStates {
     slots: HashMap<StateKey, (Value, u64)>,
     clock: u64,
+    /// What the person changed here since the host last took it
+    /// ([`ViewStates::take_writes`]), in the order they changed it.
+    writes: Vec<(StateKey, Value)>,
 }
 
 impl ViewStates {
@@ -131,9 +141,84 @@ impl ViewStates {
         self.clock
     }
 
-    /// Change a slot.
+    /// Change a slot the platform keeps here: a reading the host fills, not the person's state.
     pub fn set(&mut self, key: StateKey, value: Value) {
         self.clock = self.clock.saturating_add(1);
         self.slots.insert(key, (value, self.clock));
+    }
+
+    /// Change a slot the person set in a view: kept as [`ViewStates::set`] keeps it, and once
+    /// for the host to write to the person's own record.
+    pub fn write(&mut self, key: StateKey, value: Value) {
+        self.set(key.clone(), value.clone());
+        self.writes.push((key, value));
+    }
+
+    /// Give back what the person changed since this was last asked: what the host keeps in
+    /// their own record. A slot changed twice is handed over once, as it is now.
+    pub fn take_writes(&mut self) -> Vec<(StateKey, Value)> {
+        let mut writes: Vec<(StateKey, Value)> = Vec::new();
+        for (key, _) in std::mem::take(&mut self.writes) {
+            let Some((value, _)) = self.slots.get(&key) else {
+                continue;
+            };
+            let value = value.clone();
+            match writes.iter_mut().find(|(held, _)| *held == key) {
+                Some((_, held)) => *held = value,
+                None => writes.push((key, value)),
+            }
+        }
+        writes
+    }
+
+    /// Put a slot the person changed elsewhere — another device of theirs, or an earlier run —
+    /// back, without handing it back as a change of theirs. A slot already holding the value is
+    /// left alone, so views that read it do not run again for nothing.
+    pub fn restore(&mut self, key: StateKey, value: Value) -> bool {
+        if self.get(&key) == Some(&value) {
+            return false;
+        }
+        self.set(key, value);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn window(state: &str) -> StateKey {
+        StateKey::window("tasks", "ada", state)
+    }
+
+    #[test]
+    fn a_slot_changed_twice_is_handed_over_once_as_it_is_now() {
+        let mut states = ViewStates::default();
+        states.write(window("filter"), Value::text("All"));
+        states.write(window("filter"), Value::text("Today"));
+        assert_eq!(
+            states.take_writes(),
+            vec![(window("filter"), Value::text("Today"))]
+        );
+        assert_eq!(states.take_writes(), Vec::new(), "once");
+    }
+
+    #[test]
+    fn a_reading_the_runtime_sets_is_never_kept_in_a_record() {
+        let mut states = ViewStates::default();
+        let present = StateKey::runtime("tasks", None, "present");
+        states.set(present.clone(), Value::text("ada"));
+        assert_eq!(states.take_writes(), Vec::new());
+        assert_eq!(states.get(&present), Some(&Value::text("ada")));
+    }
+
+    #[test]
+    fn restoring_a_slot_that_already_holds_its_value_leaves_it_alone() {
+        let mut states = ViewStates::default();
+        assert!(states.restore(window("filter"), Value::text("Today")));
+        let generation = states.generation(&window("filter"));
+        assert!(!states.restore(window("filter"), Value::text("Today")));
+        assert_eq!(states.generation(&window("filter")), generation);
+        assert_eq!(states.take_writes(), Vec::new(), "a restore is no change");
     }
 }

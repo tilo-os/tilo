@@ -78,7 +78,7 @@ pub use host::{
     host_meta,
 };
 pub use ids::{Entropy, IdsError, IdsLock, OsEntropy, SeededEntropy};
-pub use meta::{PackageMeta, custom_section};
+pub use meta::{PERSONAL_RECORD_KIND, PackageMeta, custom_section};
 pub use package::{
     Binding, BlockKind, Compiled, CompiledBlock, CompiledProgram, FileSyntax, PROGRAM_APP_PREFIX,
     check, check_package, compile_block, compile_block_for, compile_package,

@@ -566,7 +566,7 @@ impl ViewInstance {
             StateLayer::Window => StateKey::window(window, principal, state),
             StateLayer::Lens => StateKey::lens(window, principal, state),
         };
-        self.core.view_states.borrow_mut().set(key, value.clone());
+        self.core.view_states.borrow_mut().write(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
@@ -649,7 +649,10 @@ impl ViewInstance {
             }
             _ => return Err(bad()),
         };
-        self.core.view_states.borrow_mut().set(key.clone(), stored);
+        self.core
+            .view_states
+            .borrow_mut()
+            .write(key.clone(), stored);
         Ok(EditOutcome::Applied)
     }
 

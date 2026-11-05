@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use tilolang_tilo::host::Host;
+use tilolang_tilo::personal::Personal;
 use tilolang_tilo::tilolang::PackageMeta;
 use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
 use ui::widget::Element;
@@ -191,6 +192,9 @@ impl ResourceApp for TlApp {
             }
             window
         };
+        // What the person picked in their views and what they have seen is theirs: it is kept in
+        // their own record of the workspace, and given back to the window when it opens.
+        let window = window.keeping_personal(cx.person::<Personal>());
         // What its runtime invokes is decided by the person's standing as the host keeps it.
         let mut window = window.with_standing(cx.standing());
         // Types whose origin is a mail server are kept in step with the servers of the

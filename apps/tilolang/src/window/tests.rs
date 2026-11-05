@@ -32,6 +32,7 @@ use super::*;
 
 mod mail;
 mod opening;
+mod personal;
 
 /// The text a value of the runtime holds.
 fn rt_text(value: &RtValue) -> String {
@@ -78,6 +79,44 @@ impl Workspace {
     fn staged(app: &str, scenario: &str) -> Self {
         let mut workspace = Self::new(app);
         workspace.window.stage(Some(scenario));
+        workspace.settle();
+        workspace
+    }
+
+    /// The window of `app` over an empty workspace as `person`, keeping `record` as their own
+    /// state of it: the window and lens state they pick, and what they have seen.
+    fn personal(
+        app: &str,
+        person: &str,
+        record: ui::prelude::PersonRecord<tilolang_tilo::personal::Personal>,
+    ) -> Self {
+        crate::app::builtin::choose(app);
+        let meta = crate::app::builtin::package_named(app).expect("a built-in package");
+        let sink = MemorySink::new();
+        let window = Window::new(meta.app.clone(), person.to_owned(), RunMode::Live)
+            .with_sink(sink.clone())
+            .keeping_personal(Some(record));
+        let mut workspace = Self {
+            doc: AutoCommit::new(),
+            window,
+            sink,
+        };
+        workspace.settle();
+        workspace
+    }
+
+    /// [`Self::personal`] with `app`'s first scenario staged.
+    fn personal_seeded(
+        app: &str,
+        person: &str,
+        record: ui::prelude::PersonRecord<tilolang_tilo::personal::Personal>,
+    ) -> Self {
+        let mut workspace = Self::personal(app, person, record);
+        let scenario = crate::app::builtin::package_named(app)
+            .and_then(|meta| meta.scenarios.first())
+            .map(|scenario| scenario.name.clone())
+            .expect("the package declares a scenario");
+        workspace.window.stage(Some(&scenario));
         workspace.settle();
         workspace
     }

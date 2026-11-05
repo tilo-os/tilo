@@ -943,6 +943,18 @@ impl Runtime {
         std::mem::take(&mut *self.core.seen_writes.borrow_mut())
     }
 
+    /// The window and lens state the person set in views since last asked, for the host to
+    /// keep in their own record: one entry per slot, as it is now.
+    pub fn take_view_writes(&self) -> Vec<(crate::view_state::StateKey, Value)> {
+        self.core.view_states.borrow_mut().take_writes()
+    }
+
+    /// Put back a slot of window or lens state the person's record keeps: what they picked
+    /// here before, or on another device of theirs. A slot already holding it is left alone.
+    pub fn set_view_state(&self, key: crate::view_state::StateKey, value: Value) -> bool {
+        self.core.view_states.borrow_mut().restore(key, value)
+    }
+
     /// The workspace's members now, from its membership, and how its grants decide who of
     /// them reads a resource (`None`: everyone reads everything the workspace holds). What
     /// `workspace.members`, `members(r)`, `p.kind()` and `p.role()` read; the host gives them
