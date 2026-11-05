@@ -65,6 +65,7 @@ type Task {
         filter "Today" = due <= today and not done (icon: .star, count: true)
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check)
+        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user, count: true)
         filter due
         filter project
         filter priority
@@ -529,49 +530,88 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
 }
 
-/// The tasks window: Inbox, Today, Upcoming and Done, each the filter its predicate says of the
-/// tasks, and the projects, each showing its tasks where they are. The place chosen is the
-/// window's, so everyone looking sees the same list; what is typed in the entry at its end is
-/// each person's own until Enter adds it.
+/// The place a project's tasks stand in: the query that files a task under it.
+fn project_place(p: Project) -> Text {
+    "project:{p.id()}"
+}
+
+/// The tasks window: Inbox, Today, Upcoming, Done and what is assigned to the person looking,
+/// each the filter its predicate says of the tasks, and the projects, each showing its tasks
+/// where they are. The place chosen is the window's, and a window's state is its person's own;
+/// what is typed in the entry at its end is their own too until Enter adds it.
 view home(t: Tasks) {
     window place: Text = "is:inbox"
-    // The sidebar's places are the schema's: this type's filters that are on or off, and a
-    // place per project. A priority is picked in search, not chosen as a place.
+    // A window that chose what the platform offered before this app declared it reads the app's
+    // filter now: the place a person had is the place they get.
+    let key = if place == "is:mine" { "is:assigned_to_me" } else { place }
+    // The places are this type's filters that are on or off, in the order it declares them; a
+    // priority is picked in search, not chosen as a place.
     let side = places(Task, in: t)
-    let chosen = side.places.find(p -> p.key == place)
-    let found = t.items.matching(place)
+    // What is assigned to the person looking is a place of its own where anyone else may be
+    // assigned it too: on their own, it holds all of it and tells them nothing.
+    let shared = workspace.members.len() > 1
+    let chosen = side.find(p -> p.key == key)
+    let found = t.items.matching(key)
     // What is done reads newest first, by the change that finished it; any other list by the
     // day it is due.
-    let shown = if place == "is:done" {
+    let shown = if key == "is:done" {
         found.sort_by(x -> updated(x), desc)
     } else { found.sort_by(.due) }
+    // The project whose place is chosen, when one is.
+    let project = t.projects.find(p -> project_place(p) == key)
     // A place of days, and a project's list, stand each task under the day it is due; a place
     // of what waits to be sorted or is done lists plainly. A project's list folds a finished
     // branch under its foot, so the open work it holds stands over what is done with.
-    let by_day = place == "is:today" or place == "is:upcoming" or chosen?.group != .none
-    let folds = chosen?.group != .none
-    let title = chosen?.label ?? "Tasks"
-    // A place that says `count: true` says how many wait in it: a project's place is its own
-    // list, not a tally.
-    let header_count: Option<Int> = if chosen?.counts ?? false {
-        .some(chosen?.count ?? 0)
+    let by_day = key == "is:today" or key == "is:upcoming" or project != .none
+    let folds = project != .none
+    let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
+    // A place that says `count: true` says how many wait in it, when any do: a project's place
+    // is its own list, not a tally.
+    let header_count: Option<Int> = if let c = chosen {
+        if c.counts and c.count > 0 { .some(c.count) } else { .none }
     } else { .none }
-    // A project's place adds to that project, in the place's own list.
-    let project = if chosen?.group != .none { t.projects.find(p -> p.name == title) } else { .none }
+    // Whether nothing waits in the place: the place's own count says what it leaves open, and
+    // a project's place counts that project's open tasks. Never a walk over the window's list,
+    // so the answer reads the same from three tasks to three thousand.
+    let open: Int = if let p = project {
+        t.items.matching("{project_place(p)} done:false").count()
+    } else { chosen?.count ?? 0 }
+    let all_done = open == 0
     // The entry says where what is typed will go.
     let entry_placeholder = if let p = project {
         "New task in {p.name}"
-    } else if place == "is:today" { "New task for today" } else { "New task" }
+    } else if key == "is:today" { "New task for today" } else { "New task" }
     ui.NavShell(
         content_kind: .document,
         sidebar_title: "Tasks",
         overview_title: title,
         overview_count: header_count,
     ) {
-        // What the place leaves open, as its sidebar says it: the rows of what is done with
-        // fold under the list, not into its count.
+        // The places this type's filters make, and the projects of its root under them: what a
+        // window offers in its sidebar is what the app declares.
         sidebar: {
-            std.sidebar(side, place)
+            ui.NavList(selected: key) {
+                for p in side {
+                    // A count of zero shows nothing: the badge says what waits.
+                    if p.key != "is:assigned_to_me" or shared {
+                        ui.NavItem(
+                            p.key,
+                            p.label,
+                            icon: p.icon,
+                            count: if p.counts and p.count > 0 { .some(p.count) } else { .none },
+                        ) {
+                            on select: set(place, p.key)
+                        }
+                    }
+                }
+                ui.NavSection("Projects", add: new_project(t)) {
+                    for p in t.projects {
+                        ui.NavItem(project_place(p), p.name, icon: .folder) {
+                            on select: set(place, project_place(p))
+                        }
+                    }
+                }
+            }
         }
         overview: {
             std.rows(
@@ -585,8 +625,8 @@ view home(t: Tasks) {
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),
-                all_done: if let c = chosen { c.count == 0 } else { false },
-                entry: text -> quick_add(t, text, project, place == "is:today"),
+                all_done: all_done,
+                entry: text -> quick_add(t, text, project, key == "is:today"),
                 entry_placeholder: entry_placeholder,
             ) { (x, under) ->
                 task_row(x, .day, under)

@@ -71,6 +71,12 @@ pub enum Operand<F> {
         day: bool,
         offset: i64,
     },
+    /// The person the predicate is asked for (`workspace.me` in a named filter, as a `Principal`
+    /// literal is written for a query's `assignee:me`). It is read when the predicate is asked
+    /// ([`Pred::viewer`]), so a filter naming them ("Assigned to me": `assignee ==
+    /// workspace.me`) reads differently for each of the people a workspace is shared with, and
+    /// is never kept as a column of its own.
+    Viewer,
 }
 
 /// What of the time a predicate is asked at it reads ([`Pred::clock_reads`]).
@@ -309,6 +315,45 @@ impl<F> Pred<F> {
         reads.day || reads.instant
     }
 
+    /// The same predicate with each [`Operand::Viewer`] as the person `who` names: whose list it
+    /// is.
+    #[must_use]
+    pub fn viewer(&self, who: &str) -> Self
+    where
+        F: Clone,
+    {
+        match self {
+            Self::Not(p) => Self::Not(Box::new(p.viewer(who))),
+            Self::And(ps) => Self::And(ps.iter().map(|p| p.viewer(who)).collect()),
+            Self::Or(ps) => Self::Or(ps.iter().map(|p| p.viewer(who)).collect()),
+            Self::Cmp(op, a, b) => Self::Cmp(*op, a.viewer(who), b.viewer(who)),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether it reads the person it is asked for ([`Operand::Viewer`]).
+    #[must_use]
+    pub fn reads_viewer(&self) -> bool {
+        let mut reads = false;
+        self.each_viewer(&mut || reads = true);
+        reads
+    }
+
+    fn each_viewer(&self, f: &mut impl FnMut()) {
+        match self {
+            Self::Not(p) => p.each_viewer(f),
+            Self::And(ps) | Self::Or(ps) => ps.iter().for_each(|p| p.each_viewer(f)),
+            Self::Cmp(_, a, b) => {
+                for side in [a, b] {
+                    if matches!(side, Operand::Viewer) {
+                        f();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// What of the time it is asked at it reads: what [`Self::at`] makes of it changes only
     /// when that does.
     #[must_use]
@@ -453,7 +498,18 @@ impl<F> Operand<F> {
                 day: *day,
                 offset: *offset,
             },
+            Self::Viewer => Operand::Viewer,
         })
+    }
+
+    fn viewer(&self, who: &str) -> Self
+    where
+        F: Clone,
+    {
+        match self {
+            Self::Viewer => Self::Lit(Lit::Principal(who.to_owned())),
+            other => other.clone(),
+        }
     }
 
     fn at(&self, now: i64, zone: i64) -> Self
@@ -495,9 +551,9 @@ impl<F> Operand<F> {
                     .as_text()
                     .map_or(0, |t| i64::try_from(t.chars().count()).unwrap_or(i64::MAX)),
             })),
-            // Bound before it is asked ([`Pred::bind`], [`Pred::at`]): one that is not holds
-            // nothing.
-            Self::Arg(_) | Self::Clock { .. } => Ok(Lit::Absent),
+            // Bound before it is asked ([`Pred::bind`], [`Pred::at`], [`Pred::viewer`]): one
+            // that is not holds nothing.
+            Self::Arg(_) | Self::Clock { .. } | Self::Viewer => Ok(Lit::Absent),
         }
     }
 }

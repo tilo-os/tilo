@@ -45,8 +45,6 @@ tilolang-invocation-failed = Fehlgeschlagen
 tilolang-invocation-denied = Nicht erlaubt
 tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
-# Der Ort in der Seitenleiste für das, was der Person zugewiesen ist und noch offen ist.
-tilolang-assigned-to-me = Mir zugewiesen
 # Wer eine Zeile des Verlaufs geschrieben hat: die Person selbst.
 tilolang-you = Du
 tilolang-empty = Noch nichts hier

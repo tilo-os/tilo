@@ -401,7 +401,9 @@ type Message {
 ```
 
 A named filter reads only the type's own fields and literals (`not done`, `due != .none`,
-`effort > 2`, `tags.len() > 0`), so the index keeps it as fields change.
+`effort > 2`, `tags.len() > 0`), and the two a filter is asked at and for: `today`/`now` and
+`workspace.me`, which is each person it is asked by (`filter "Assigned to me" = assignee ==
+workspace.me and not done`). The index keeps it as fields change.
 
 **Derived keys** (DECISIONS.md, "Derived keys"). A value that follows from the other records of
 a collection is declared on the type, not written: a branch is finished when it and everything
@@ -455,12 +457,13 @@ identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold n
 `sort:`, the type's own order. Outside a view (an action, a flow) a query may leave out `in:`
 and look across the workspace. `items.matching("is:done due:-7d")` asks the same of a list,
 written as people type it in search, and `filters(T)` gives a type's filters as places and
-chips show them (`host.Filter`). `places(T, in: x)` gives what a window of `x`'s `T`s offers in
-its sidebar, derived from the schema (`host.Sidebar`): a place for each of `T`'s filters that
-is on or off, and a group for each type a `T` names through an option while `x` holds a
-collection of it (`Task.project` with `Tasks.projects`: "Projects", its add the action that
-makes another). A place counts what it leaves open, and shows that count only where its filter
-says `count: true`; `std.sidebar(side, place)` draws it that way.
+chips show them (`host.Filter`). `places(T, in: x)` gives what a window of `x`'s `T`s offers as
+places (`host.Place`): a place for each of `T`'s filters that is on or off, in the order `T`
+declares them, and nothing else. A place's `key` is the query choosing it sets (`is:today`); it
+counts what it leaves open, and `counts` says whether its filter asks for that count
+(`count: true`). What a window shows beside its places is the app's own, drawn by its view: the
+projects a root holds under a heading that adds one, or any other list of it, in the window's
+own `ui.NavList`.
 
 A filter is a predicate over the type's own fields, and nothing more: what a place holds is
 what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is

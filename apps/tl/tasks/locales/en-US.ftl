@@ -255,6 +255,7 @@ d-tpvjqy5m = Clear done~present
 
 d-i2mhsb3h = Home
     .w-tasks = Tasks
+    .w-projects = Projects
     .w-no-task-selected = No task selected
 
 d-7froalwb = Project list

@@ -394,12 +394,6 @@ fn term_pred(
         }
         return Ok(text_pred(std::slice::from_ref(&term.value), ty));
     };
-    // `is:mine` (read as the toggle `mine:true`, as every `is:` is): what the person looking is
-    // assigned, still open. A type that names no member holds none of it, as a type with no text
-    // holds no word.
-    if key == "mine" && term.value == "true" {
-        return mine_pred(ty, viewer);
-    }
     if let Some(filter) = ty.search.filter(key) {
         return filter_pred(filter, &term.value, enums, clock, viewer)
             .map_err(|why| format!("`{key}:{}`: {why}", term.value));
@@ -493,6 +487,37 @@ fn person_lit(value: &str, viewer: Option<&str>) -> Result<Lit, String> {
     Ok(Lit::Principal(who))
 }
 
+/// A filter on the time it is asked at ("Today": `due <= today`) reads it now, and reads
+/// differently once the day (or the instant) it read moves on. One naming the person looking
+/// (`assignee == workspace.me`) is asked for here, so each person who asks reads their own.
+fn predicate_value(
+    declared: &Pred<String>,
+    value: &str,
+    clock: &Clock,
+    viewer: Option<&str>,
+) -> Result<Pred<String>, String> {
+    let reads = declared.clock_reads();
+    if reads.day {
+        // A day operand counts whole days from the person's day: it moves at midnight.
+        clock.read_day(0);
+    }
+    if reads.instant {
+        clock.read_instant();
+    }
+    let pred = declared.at(clock.now, clock.zone);
+    let pred = if pred.reads_viewer() {
+        let who = viewer.ok_or("`workspace.me` is only known where someone is looking")?;
+        pred.viewer(who)
+    } else {
+        pred
+    };
+    match value {
+        "true" => Ok(pred),
+        "false" => Ok(Pred::Not(Box::new(pred))),
+        _ => Err("a toggle is `true` or `false`".into()),
+    }
+}
+
 fn filter_pred(
     f: &FilterMeta,
     value: &str,
@@ -501,23 +526,8 @@ fn filter_pred(
     viewer: Option<&str>,
 ) -> Result<Pred<String>, String> {
     if f.kind == FilterKind::Predicate {
-        // A filter on the time it is asked at ("Today": `due <= today`) reads it now, and
-        // reads differently once the day (or the instant) it read moves on.
         let declared = f.pred.as_ref().ok_or("the filter has no predicate")?;
-        let reads = declared.clock_reads();
-        if reads.day {
-            // A day operand counts whole days from the person's day: it moves at midnight.
-            clock.read_day(0);
-        }
-        if reads.instant {
-            clock.read_instant();
-        }
-        let pred = declared.at(clock.now, clock.zone);
-        return match value {
-            "true" => Ok(pred),
-            "false" => Ok(Pred::Not(Box::new(pred))),
-            _ => Err("a toggle is `true` or `false`".into()),
-        };
+        return predicate_value(declared, value, clock, viewer);
     }
     let field = f.field.as_deref().ok_or("the filter is on no field")?;
     if f.optional {
@@ -763,38 +773,6 @@ fn span_of(text: &str, day: bool, clock: &Clock) -> Result<Span, String> {
             false,
         )
     })
-}
-
-/// The place of what the person looking is assigned, still open: the key a query asks it by,
-/// which every type with a member field holds.
-pub const MINE_PLACE: &str = "is:mine";
-
-/// `is:mine`: the items whose member field holds the person looking, still open — the place of
-/// what is theirs to do, and the same in every app whose type names who it belongs to.
-fn mine_pred(ty: &TypeMeta, viewer: Option<&str>) -> Result<Pred<String>, String> {
-    let member = ty
-        .search
-        .filters
-        .iter()
-        .find(|f| f.kind == FilterKind::Person)
-        .and_then(|f| f.field.clone())
-        .ok_or_else(|| {
-            format!(
-                "`is:mine` needs a field of {} naming who it belongs to (a `Principal` field)",
-                ty.name
-            )
-        })?;
-    let me = viewer.ok_or("`is:mine` is only known where someone is looking")?;
-    let mut parts = vec![eq(&member, Lit::Principal(me.to_owned()))];
-    // What is done with is no one's to do.
-    if let Some(done) = ty
-        .fields
-        .iter()
-        .find(|f| f.role.as_ref().is_some_and(crate::meta::FieldRole::is_done))
-    {
-        parts.push(eq(&done.id, Lit::Bool(false)));
-    }
-    Ok(Pred::And(parts))
 }
 
 /// `-received` or `received`: the field by name, and whether the latest or last comes first.

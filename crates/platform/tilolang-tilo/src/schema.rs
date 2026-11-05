@@ -261,6 +261,8 @@ pub enum ColumnKind {
     Ref,
     /// An identifier, `scheme:value`, without regard to case.
     Ident,
+    /// A person or agent of the workspace, by the id the host names them with.
+    Principal,
 }
 
 /// A filter column of a type (search.md, "Who indexes"): the index keeps, per collection of the

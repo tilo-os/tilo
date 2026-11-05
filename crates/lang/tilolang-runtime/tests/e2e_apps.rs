@@ -1180,8 +1180,8 @@ mod cases {
         assert_eq!(count("is:inbox"), Some(Value::Int(1)), "the unsorted task");
         assert_eq!(
             count("is:today"),
-            Some(Value::Int(0)),
-            "nothing is due today"
+            None,
+            "nothing is due today, so its badge says nothing"
         );
         assert_eq!(count("is:done"), None, "Done shows no count");
 

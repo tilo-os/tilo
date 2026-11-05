@@ -129,12 +129,12 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Place",
         id: "host-place",
-        doc: "One place a collection app's sidebar offers: a filter of its items' type that is on or off (Inbox, Today), or a resource its root holds (a project). Choosing it is the window's query.",
+        doc: "One place a collection app's sidebar offers: a filter of its items' type that is on or off (Inbox, Today). Choosing it is the window's query; what a window shows beside its places is the app's own.",
         fields: &[
             (
                 "key",
                 "Text",
-                "What the place holds, as people type it in search (`is:today`, `project:<id>`): what choosing it sets, and the query its list answers.",
+                "What the place holds, as people type it in search (`is:today`): what choosing it sets, and the query its list answers.",
             ),
             ("label", "Text", "What the place is called."),
             (
@@ -148,45 +148,10 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "How many of its items are open (the type's `(done)` flag unset), as the index counts them.",
             ),
             (
-                "group",
-                "Option<Text>",
-                "The heading it stands under, when it is one of a group's places; `.none` for a place of its own.",
-            ),
-            (
                 "counts",
                 "Bool",
                 "Whether its count is one to show: whether the filter declaring it says \
                  `count: true`.",
-            ),
-        ],
-    },
-    ValueType {
-        name: "PlaceGroup",
-        id: "host-place-group",
-        doc: "A heading over the places a root holds a collection of (a task's projects): the places of the group are the places the sidebar names that heading for.",
-        fields: &[
-            ("title", "Text", "What the heading says (`Projects`)."),
-            (
-                "add",
-                "Option<Action>",
-                "The action that makes another one of them, when the root's type declares it.",
-            ),
-        ],
-    },
-    ValueType {
-        name: "Sidebar",
-        id: "host-sidebar",
-        doc: "What a collection app's sidebar offers, derived from the schema of the items and of the root that holds them.",
-        fields: &[
-            (
-                "places",
-                "List<Place>",
-                "The places, in order: the item type's filters that are on or off, then those of each group.",
-            ),
-            (
-                "groups",
-                "List<PlaceGroup>",
-                "The groups, in order: one for each type the items name a resource of and the root holds a collection of.",
             ),
         ],
     },

@@ -23,6 +23,7 @@ type Task {
     status: Status
     effort: Int
     contact: std.Identifier = std.Identifier("tel:+10")
+    assignee: Option<Principal> = .none
     tags: Set<Text>
 
     search {
@@ -32,6 +33,7 @@ type Task {
         filter status
         filter effort
         filter contact
+        filter assignee
         filter tags
     }
 }
@@ -84,6 +86,10 @@ action set_effort(t: Task, effort: Int) {
 
 action tag(t: Task, tag: Text) {
     t.tags.add(tag)
+}
+
+action assign(t: Task, who: Principal) {
+    t.assignee = .some(who)
 }
 
 action untag(t: Task, tag: Text) {
@@ -402,6 +408,50 @@ fn filter_columns_answer_what_reading_every_item_finds_and_follow_every_change()
         let (kept, anew) = workspace.kept_and_anew();
         assert_eq!(kept, anew, "the columns after {action}");
     }
+}
+
+/// A field naming a person is a column like any other: a filter on it, or the one a named
+/// filter asks for, is a run of it, so counting how many tasks a person holds reads no task.
+#[test]
+fn a_person_a_filter_names_is_a_run_of_its_column() {
+    let mut workspace = Workspace::new();
+    let first = workspace.tasks()[0].clone();
+    workspace.call(
+        "assign",
+        vec![
+            Value::resource(&first),
+            Value::Principal(Principal::new("ada")),
+        ],
+    );
+    assert_eq!(workspace.listed("assignee:ada"), ["a"]);
+    assert_eq!(
+        workspace.listed("assignee:ada"),
+        workspace.anew("assignee:ada")
+    );
+    let before = workspace.evaluated();
+    assert_eq!(workspace.listed("assignee:ada"), ["a"]);
+    assert_eq!(workspace.evaluated(), before, "answered from the column");
+    // How many it holds is the run's length, which the column knows: what a place's count reads.
+    let listing = workspace.listing("assignee:ada");
+    assert!(listing.len_is_exact());
+    assert_eq!(listing.count(), 1);
+    // Unassigned is the value every task without one holds.
+    assert_eq!(workspace.listed("assignee:none"), ["b", "c", "d"]);
+    assert_eq!(
+        workspace.listed("assignee:none"),
+        workspace.anew("assignee:none")
+    );
+    // The columns follow the change, as a build from the record finds them.
+    workspace.call(
+        "assign",
+        vec![
+            Value::resource(&workspace.tasks()[1].clone()),
+            Value::Principal(Principal::new("ada")),
+        ],
+    );
+    assert_eq!(workspace.listed("assignee:ada"), ["a", "b"]);
+    let (kept, anew) = workspace.kept_and_anew();
+    assert_eq!(kept, anew, "the columns after assigning");
 }
 
 #[test]

@@ -165,6 +165,8 @@ pub fn write(kind: ColumnKind, lit: &Lit) -> Option<String> {
         (ColumnKind::Enum, Lit::Variant(v) | Lit::Text(v))
         | (ColumnKind::Ref, Lit::Ref(v) | Lit::Text(v)) => v.clone(),
         (ColumnKind::Ident, Lit::Ident(t) | Lit::Text(t)) => t.to_lowercase(),
+        // Who a resource is assigned to, by the id the workspace names them with.
+        (ColumnKind::Principal, Lit::Principal(p) | Lit::Text(p)) => p.clone(),
         _ => return None,
     })
 }

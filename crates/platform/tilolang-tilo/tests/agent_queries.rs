@@ -303,7 +303,9 @@ fn describe_gives_declarations_of_apps_types_actions_fields_and_resources() {
         "the declaration says the field is the one that is finished: {ty}"
     );
     assert!(
-        ty.contains("filters: inbox, today, upcoming, done, due, project, priority"),
+        ty.contains(
+            "filters: inbox, today, upcoming, done, assigned_to_me, due, project, priority"
+        ),
         "{ty}"
     );
     let action = printed(&w.run("describe(tasks.new_task)"));

@@ -799,8 +799,7 @@ type Task {
 }
 
 /// A field naming who an item belongs to is a filter of its own: `assignee:me` reads the same
-/// in every app that has one, and the place of what the person looking holds (`is:mine`) is
-/// read from it.
+/// in every app that has one.
 const MEMBERS: &str = r"
 /// A task someone does.
 type Task {
@@ -840,6 +839,64 @@ view mine(b: Board) {{
     assert_eq!(
         assignee.field.as_deref(),
         Some(field_id(task, "assignee").as_str())
+    );
+}
+
+#[test]
+fn a_named_filter_reads_the_person_it_is_asked_for() {
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+/// What the people of a workspace hold between them.
+type Shared {{
+    title: Text (title)
+    done: Bool (done) = false
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+
+    search {{
+        filter \"Mine\" = assignee == workspace.me and not done (count: true)
+    }}
+}}
+"
+    ))
+    .meta;
+    let shared = type_meta(&meta, "Shared");
+    let mine = shared.search.filter("mine").expect("mine");
+    assert!(mine.count);
+    let pred = mine.pred.as_ref().expect("a predicate");
+    let done = field_id(shared, "done");
+    assert_eq!(
+        pred,
+        &Pred::And(vec![
+            Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(shared, "assignee")),
+                Operand::Viewer
+            ),
+            Pred::Not(Box::new(Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(done),
+                Operand::Lit(Lit::Bool(true))
+            ))),
+        ]),
+        "the filter asks which item's assignee is the person looking"
+    );
+    assert!(pred.reads_viewer(), "it is asked for someone");
+    assert_eq!(
+        pred.viewer("ben"),
+        Pred::And(vec![
+            Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(shared, "assignee")),
+                Operand::Lit(Lit::Principal("ben".to_owned()))
+            ),
+            Pred::Not(Box::new(Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(shared, "done")),
+                Operand::Lit(Lit::Bool(true))
+            ))),
+        ]),
+        "and reads for whoever it is asked for"
     );
 }
 

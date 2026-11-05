@@ -1,7 +1,8 @@
 //! Places (search.md, "What a type declares"): a type's filters make the sidebar's places, each
 //! holding the items its predicate says and saying how many it holds where its filter declares
 //! `count: true`; a place is its predicate and nothing else — no membership, grouping, order or
-//! count of its own.
+//! count of its own, and no place the type does not declare. What a window shows beside them
+//! (the projects its root holds) is the app's own.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -32,6 +33,7 @@ type Task {
         filter "Today" = due <= today and not done (icon: .star, count: true)
         filter "Upcoming" = due > today and not done (icon: .calendar)
         filter "Done" = done (icon: .circle_check, count: true)
+        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user, count: true)
         filter project
     }
 }
@@ -71,7 +73,20 @@ view titles(b: Board, q: Text) {
 
 view sidebar(b: Board) {
     window place: Text = "is:inbox"
-    std.sidebar(places(Task, in: b), place)
+    let side = places(Task, in: b)
+    // A count of zero shows nothing: the badge says what waits.
+    ui.NavList(selected: place) {
+        for p in side {
+            ui.NavItem(
+                p.key,
+                p.label,
+                icon: p.icon,
+                count: if p.counts and p.count > 0 { .some(p.count) } else { .none },
+            ) {
+                on select: set(place, p.key)
+            }
+        }
+    }
 }
 "#;
 
@@ -139,16 +154,20 @@ view sidebar(b: Board) {
             self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap();
         }
 
-        fn view(&self, name: &str, extra: Vec<Value>) -> tilolang_runtime::ViewInstance {
-            let mut args = vec![Value::resource(&self.board)];
-            args.extend(extra);
-            self.rt
-                .open_view(&me(), &self.app.view(name), args)
-                .unwrap()
+        fn titles(&self, q: &str) -> Vec<String> {
+            self.titles_by(&me(), q)
         }
 
-        fn titles(&self, q: &str) -> Vec<String> {
-            let view = self.view("titles", vec![Value::text(q)]);
+        /// The titles `q` holds, as `who` sees them.
+        fn titles_by(&self, who: &Principal, q: &str) -> Vec<String> {
+            let view = self
+                .rt
+                .open_view(
+                    who,
+                    &self.app.view("titles"),
+                    vec![Value::resource(&self.board), Value::text(q)],
+                )
+                .unwrap();
             of_kind(view.tree(), "ui.Text")
                 .iter()
                 .map(|t| text_prop(t, "value"))
@@ -156,7 +175,19 @@ view sidebar(b: Board) {
         }
 
         fn places_of(&self) -> Vec<(String, Option<i64>)> {
-            let view = self.view("sidebar", vec![]);
+            self.places_of_by(&me())
+        }
+
+        /// The places the sidebar offers `who`.
+        fn places_of_by(&self, who: &Principal) -> Vec<(String, Option<i64>)> {
+            let view = self
+                .rt
+                .open_view(
+                    who,
+                    &self.app.view("sidebar"),
+                    vec![Value::resource(&self.board)],
+                )
+                .unwrap();
             nav_items(view.tree())
                 .into_iter()
                 .map(|item| {
@@ -175,15 +206,32 @@ view sidebar(b: Board) {
     }
 
     #[test]
-    fn the_person_an_item_belongs_to_has_a_place_of_their_own() {
+    fn the_places_are_the_types_own_filters_and_nothing_the_root_holds() {
         let t = Tasks::new();
-        let viewer = me();
-        let ben = Principal::new("ben");
-        // On their own, nothing is anyone's but theirs: no place of their own to offer.
-        assert!(
-            !t.places_of().iter().any(|(key, _)| key == "is:mine"),
-            "a workspace of one has no place for what is theirs"
+        let places = t.places_of();
+        let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "is:inbox",
+                "is:today",
+                "is:upcoming",
+                "is:done",
+                "is:assigned_to_me",
+            ],
+            "the type's filters that are on or off, in the order it declares them, and nothing \
+             else: a filter naming a reference is a value to pick in search, not a place: {places:?}"
         );
+        assert!(
+            !places.iter().any(|(key, _)| key.starts_with("project:")),
+            "the projects the root holds are a list the app draws, not places the type declares: \
+             {places:?}"
+        );
+    }
+
+    #[test]
+    fn a_filter_naming_the_person_looking_reads_differently_for_each_of_them() {
+        let t = Tasks::new();
         t.rt.set_members(
             vec![
                 Member::person("me", "owner"),
@@ -191,47 +239,37 @@ view sidebar(b: Board) {
             ],
             None,
         );
-        let places = t.places_of();
-        assert_eq!(
-            places[..5]
-                .iter()
-                .map(|(key, _)| key.as_str())
-                .collect::<Vec<_>>(),
-            ["is:inbox", "is:today", "is:upcoming", "is:done", "is:mine"],
-            "the place comes after the type's own, so the inbox stays the place a window opens \
-             on: {places:?}"
-        );
-        assert_eq!(
-            places[4],
-            ("is:mine".to_owned(), Some(0)),
-            "it counts what waits in it: {places:?}"
-        );
-        t.assign("later", &viewer);
+        let ben = Principal::new("ben");
+        t.assign("later", &me());
         t.assign("today", &ben);
         assert_eq!(
-            t.titles("is:mine"),
+            t.titles("is:assigned_to_me"),
             ["later"],
-            "what the viewer holds, open"
+            "the filter asks which task's assignee is the person looking"
         );
         assert_eq!(
-            t.places_of()[4],
-            ("is:mine".to_owned(), Some(1)),
-            "the place counts what the viewer has left"
+            t.titles_by(&ben, "is:assigned_to_me"),
+            ["today"],
+            "and reads differently for anyone else looking: {ben:?}"
+        );
+        let places = t.places_of();
+        assert_eq!(
+            places[4],
+            ("is:assigned_to_me".to_owned(), Some(1)),
+            "the place counts what the person looking holds open: {places:?}"
+        );
+        assert_eq!(
+            t.places_of_by(&ben)[4],
+            ("is:assigned_to_me".to_owned(), Some(1)),
+            "and counts each person's own: {places:?}"
         );
         t.finish("later", "2026-10-30T09:00:00Z");
         assert_eq!(
-            t.titles("is:mine"),
+            t.titles("is:assigned_to_me"),
             Vec::<String>::new(),
             "finished work leaves the place"
         );
-        assert_eq!(t.places_of()[4].1, Some(0), "and the place counts nothing");
-        // A workspace of one again: nothing is anyone's but theirs.
-        t.rt.set_members(vec![Member::person("me", "owner")], None);
-        let places = t.places_of();
-        assert!(
-            !places.iter().any(|(key, _)| key == "is:mine"),
-            "the place goes when the workspace has no one else in it: {places:?}"
-        );
+        assert_eq!(t.places_of()[4].1, None, "and a count of zero says nothing");
     }
 
     #[test]
@@ -259,11 +297,7 @@ view sidebar(b: Board) {
         assert_eq!(
             &keys[..4],
             ["is:inbox", "is:today", "is:upcoming", "is:done"],
-            "the type's filters make the first places, in the order it declares them: {places:?}"
-        );
-        assert!(
-            keys.get(4).is_some_and(|key| key.starts_with("project:")),
-            "then a place per project: {places:?}"
+            "the type's filters make the places, in the order it declares them: {places:?}"
         );
         // What waits in the inbox, and what is due: the two a person counts.
         assert_eq!(places[0].1, Some(1), "the inbox's one unsorted task");
@@ -273,10 +307,10 @@ view sidebar(b: Board) {
         // A place holds what its filter says, so a filter saying what is done with counts it:
         // the app's own `all_done` reads that zero, not a place's idea of what it holds.
         assert_eq!(places[3].1, Some(1), "what is done is counted as it is");
-        assert_eq!(places[4].1, None, "a project's tasks count nothing");
-        assert!(
-            places[4].0.starts_with("project:"),
-            "a project's place is keyed by the project: {places:?}"
+        assert_eq!(
+            places[4],
+            ("is:assigned_to_me".to_owned(), None),
+            "nothing is assigned to the person looking, so its badge says nothing: {places:?}"
         );
         // The sidebar draws those counts and no others.
         let view =

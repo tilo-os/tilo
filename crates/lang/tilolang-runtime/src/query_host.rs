@@ -11,7 +11,7 @@ use crate::colls::field_reads;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
 use crate::ids::ModuleHash;
-use crate::meta::{EnumMeta, FieldMeta, FieldRole, Meta, Ty, parse_ty};
+use crate::meta::{EnumMeta, FieldMeta, FieldRole};
 use crate::query::{Clock, Query, Term, find, resolve};
 use crate::registry::TypeInfo;
 use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
@@ -345,15 +345,8 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
     out
 }
 
-/// How a place's kind is written for `place_value`: the filters a sidebar shows a place for.
-fn place_value(
-    key: &str,
-    label: &str,
-    icon: Option<&str>,
-    count: usize,
-    group: Option<&str>,
-    counts: bool,
-) -> Value {
+/// How a place is written for the app drawing it: the filters a sidebar shows a place for.
+fn place_value(key: &str, label: &str, icon: Option<&str>, count: usize, counts: bool) -> Value {
     let some = |text: Option<&str>| {
         text.map_or_else(Value::none, |t| Value::some(Value::Text(t.to_owned())))
     };
@@ -362,31 +355,15 @@ fn place_value(
         Value::Text(label.to_owned()),
         some(icon),
         Value::Int(i64::try_from(count).unwrap_or(i64::MAX)),
-        some(group),
         Value::Bool(counts),
     ])
 }
 
-/// A field's name as a heading over what it holds: `projects` as "Projects".
-fn heading(field: &str) -> String {
-    let named = field.replace('_', " ");
-    let mut chars = named.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 impl Core {
-    /// `places(T, in: root)`: what a window of the root's items offers in its sidebar, derived
-    /// from the schema, as a `host.Sidebar`: a place for each of the item type's filters that is
-    /// on or off, in the order the type declares them, and a group for each type the items name
-    /// a resource of through an option field while the root holds a collection of it
-    /// (`Task.project: Option<Project>` with `Tasks.projects`: a place per project, under
-    /// "Projects", its add the action that makes another).
-    ///
-    /// A type that names who its items belong to, in a workspace shared with someone else, also
-    /// offers the place of what the person looking holds, last of the type's own places.
+    /// `places(T, in: root)`: the places a window of the root's items offers in its sidebar, as
+    /// a `List<host.Place>`: the item type's filters that are on or off, in the order the type
+    /// declares them, each the query `is:<key>` and how many of the items it holds. Nothing else
+    /// is a place: what a window shows beside them is the app's own.
     ///
     /// A place counts the items it holds that are open, unless its filter says what is done
     /// with — the index's answer, never a scan.
@@ -417,7 +394,7 @@ impl Core {
             return trap(format!("places: `{}` is not declared", root.target.ty));
         };
         let author = Some(self.module_of_frame()?);
-        let Some((items, _)) = self.holding(&root, root_declared, &ty, author.clone()) else {
+        let Some((items, _)) = self.holding(&root, root_declared, &ty, author) else {
             return trap(format!(
                 "places: the root `{}` holds no collection of `{}`",
                 root.target.id_string(),
@@ -431,19 +408,8 @@ impl Core {
             .fields
             .iter()
             .find(|field| field.role.as_ref().is_some_and(FieldRole::is_done));
-        Places {
-            core: self,
-            pkg: &pkg.meta,
-            declared,
-            info: &info,
-            root: &root,
-            root_pkg: &root_pkg.meta,
-            root_declared,
-            items,
-            done,
-            author,
-        }
-        .build()
+        let places = self.filter_places(declared, &items, &info, &pkg.meta.enums, done)?;
+        Ok(Value::List(places))
     }
 
     /// The places the type's own filters make: one for each filter that is on or off, holding
@@ -468,7 +434,6 @@ impl Core {
                 &filter.label,
                 filter.icon.as_deref(),
                 count,
-                None,
                 filter.count,
             ));
         }
@@ -505,47 +470,6 @@ impl Core {
             return Some((held, field.clone()));
         }
         None
-    }
-
-    /// The action that makes another of the type `target` on the root, when its package
-    /// declares one.
-    fn creator(&self, root: &RefValue, meta: &Meta, target: &str) -> HResult<Value> {
-        for action in meta.offered_actions() {
-            // A result names the type; a place asks for its id.
-            let makes_target = |result: &str| {
-                result == target
-                    || self
-                        .registry
-                        .borrow()
-                        .type_for(&tilolang::types::TypeKey {
-                            app: meta.app.clone(),
-                            name: result.to_owned(),
-                        })
-                        .as_deref()
-                        == Some(target)
-            };
-            if !action.result.as_deref().is_some_and(&makes_target) {
-                continue;
-            }
-            let [first, rest @ ..] = action.params.as_slice() else {
-                continue;
-            };
-            if !crate::platform::names_type(meta, &first.ty, &root.target.ty)
-                || !crate::platform::all_asked(meta, rest)
-            {
-                continue;
-            }
-            let shown = crate::platform::Offered {
-                action,
-                args: vec![Value::Ref(root.clone())],
-                rest,
-                present: false,
-            };
-            if let Some(value) = self.action_value(&shown, root)? {
-                return Ok(Value::some(value));
-            }
-        }
-        Ok(Value::none())
     }
 
     /// How many items a place holds: the items of the collection `items` whose query `query`
@@ -591,183 +515,5 @@ impl Core {
             ));
         };
         self.coll_count(&Rc::new(items.queried(read, None)))
-    }
-}
-
-/// A window's places, being drawn from the schema of its items and of the root that holds
-/// them: both declared types, the collection of items, and the flag that folds what is done.
-struct Places<'a> {
-    core: &'a Core,
-    pkg: &'a Meta,
-    declared: &'a TypeMeta,
-    info: &'a TypeInfo,
-    root: &'a RefValue,
-    root_pkg: &'a Meta,
-    root_declared: &'a TypeMeta,
-    items: Rc<CollRef>,
-    done: Option<&'a FieldMeta>,
-    author: Option<ModuleHash>,
-}
-
-impl Places<'_> {
-    /// The places of a sidebar: the type's own filters, what the person looking holds, then a
-    /// group of the ones the root holds.
-    fn build(&self) -> HResult<Value> {
-        let mut places = self.core.filter_places(
-            self.declared,
-            &self.items,
-            self.info,
-            &self.pkg.enums,
-            self.done,
-        )?;
-        if let Some(mine) = self.mine_place()? {
-            // After the type's own places, before the root's groups: a place to visit, never
-            // the one a window opens on.
-            places.push(mine);
-        }
-        let groups = self.group_places(&mut places)?;
-        Ok(Value::Tuple(vec![Value::List(places), Value::List(groups)]))
-    }
-
-    /// The place of what the person looking is assigned (`is:mine`), for a type that names who
-    /// its items belong to and a workspace they share with someone else: on their own, nothing
-    /// is anyone's but theirs, and the place says nothing a list of all of it does not.
-    fn mine_place(&self) -> HResult<Option<Value>> {
-        if !self
-            .declared
-            .search
-            .filters
-            .iter()
-            .any(|f| f.kind == FilterKind::Person)
-        {
-            return Ok(None);
-        }
-        let me = self.core.looking()?;
-        let members = self.core.read_members();
-        let shared = members.iter().any(|member| member.who.0 != me);
-        if !shared {
-            return Ok(None);
-        }
-        let query = crate::query::MINE_PLACE;
-        let count = self.core.place_count(
-            &self.items,
-            self.declared,
-            self.info,
-            &self.pkg.enums,
-            query,
-            self.done,
-        )?;
-        // The place's words are the platform's, not the app's: every app with a member field
-        // offers the same one.
-        let label = self
-            .core
-            .words
-            .borrow()
-            .word("tilolang-assigned-to-me", &[], "Assigned to me");
-        Ok(Some(place_value(
-            query,
-            &label,
-            Some("user"),
-            count,
-            None,
-            true,
-        )))
-    }
-
-    /// A place per resource of each type the items name through an option, while the root holds
-    /// a collection of that type: the places of `Task.project` are the root's projects.
-    fn group_places(&self, places: &mut Vec<Value>) -> HResult<Vec<Value>> {
-        let core = self.core;
-        let mut groups = Vec::new();
-        for field in &self.declared.fields {
-            let Ok(Ty::Option(inner)) = parse_ty(&field.ty, &self.pkg.app) else {
-                continue;
-            };
-            let Ty::Record(key) = *inner else { continue };
-            if tilolang::host::is_value(&key) {
-                continue;
-            }
-            // A type's collection of itself is its nesting, which its list shows where the
-            // item stands: a group of every item as a place of its own is no way to navigate.
-            if key.name == self.declared.name && key.app == self.pkg.app {
-                continue;
-            }
-            let Some(target) = core.registry.borrow().type_for(&key) else {
-                continue;
-            };
-            let Some((target_pkg, _)) = core.registry.borrow().type_info(&target) else {
-                continue;
-            };
-            let Some(target_declared) = target_pkg.meta.types.iter().find(|t| t.id == target)
-            else {
-                continue;
-            };
-            // A query names the field by its filter's key, so a field the type keeps out of
-            // filters names no place.
-            let Some(key) = self
-                .declared
-                .search
-                .filters
-                .iter()
-                .find(|f| f.field.as_deref() == Some(field.id.as_str()))
-            else {
-                continue;
-            };
-            let Some((held, held_field)) =
-                core.holding(self.root, self.root_declared, &target, self.author.clone())
-            else {
-                continue;
-            };
-            let title = heading(&held_field.name);
-            let add = core.creator(self.root, self.root_pkg, &target)?;
-            let title_field = target_declared
-                .fields
-                .iter()
-                .find(|f| matches!(f.role, Some(FieldRole::Title)));
-            let len = core.coll_len(&held)?;
-            let places_before = places.len();
-            for index in 0..len {
-                let item = core.coll_get(&held, index)?;
-                let Value::Ref(item) = item else { continue };
-                let mut label = String::new();
-                if let Some(title_field) = title_field {
-                    let (_, title_field) = core.lookup_field(&item.target, &title_field.id)?;
-                    if let Value::Text(read) =
-                        core.read_value(&item.target, &title_field, self.author.as_ref())?
-                    {
-                        label = read;
-                    }
-                    // The label is the item's, so a place runs again when that changes.
-                    if let Some(vs) = core.frames.borrow_mut().view_mut() {
-                        vs.reads
-                            .push((item.target.id_string(), title_field.id.clone()));
-                    }
-                }
-                let query = format!("{}:{}", key.key, item.target.id_string());
-                let count = core.place_count(
-                    &self.items,
-                    self.declared,
-                    self.info,
-                    &self.pkg.enums,
-                    &query,
-                    self.done,
-                )?;
-                places.push(place_value(
-                    &query,
-                    &label,
-                    None,
-                    count,
-                    Some(&title),
-                    false,
-                ));
-            }
-            // A heading with nothing under it and nothing to add is a dead end. With an add
-            // it is where the first one is made, so it stays while the collection is empty.
-            if places.len() == places_before && matches!(add, Value::Opt(None)) {
-                continue;
-            }
-            groups.push(Value::Tuple(vec![Value::Text(title), add]));
-        }
-        Ok(groups)
     }
 }

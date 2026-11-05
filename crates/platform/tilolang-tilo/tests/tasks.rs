@@ -1,6 +1,6 @@
 //! The Tasks app (`apps/tl/tasks`) on two replicas of one workspace: a task made, filed and
-//! checked off; Inbox, Today, Upcoming and Done as the places their roles make, read when they
-//! are asked; a quick add that adds what was typed and nothing for an empty entry; and two
+//! checked off; Inbox, Today, Upcoming and Done as the places its own filters make, read when
+//! they are asked; a quick add that adds what was typed and nothing for an empty entry; and two
 //! people changing one task at once.
 
 use automerge::AutoCommit;
@@ -2592,9 +2592,9 @@ fn sections(view: &ViewInstance) -> Vec<ShownSection> {
     out
 }
 
-/// The sidebar the schema draws: the type's own switch places in its order, counted where the
-/// role of a place makes its count one people read, and a group per type the root holds a
-/// collection of, its heading adding one of them.
+/// The sidebar the app draws: the type's own switch places in its order, counted where the
+/// filter of a place asks for a count, and the projects the root holds under a heading that
+/// adds one of them.
 #[test]
 fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
     let (mut ada, root) = workspace();
@@ -2630,14 +2630,14 @@ fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
     );
     assert_eq!(
         count(&view, "Inbox"),
-        Some(0),
-        "what waits to be sorted counts: {:?}",
+        None,
+        "what waits to be sorted counts, and a count of zero says nothing: {:?}",
         places(&view)
     );
     assert_eq!(
         count(&view, "Today"),
-        Some(0),
-        "and what is due does: {:?}",
+        None,
+        "and what is due says nothing while nothing is due: {:?}",
         places(&view)
     );
     assert_eq!(
@@ -2802,14 +2802,14 @@ fn a_place_whose_tasks_are_all_done_says_so() {
     let mut view = ada.view(APP);
     assert_eq!(
         count(&view, "Inbox"),
-        Some(0),
-        "nothing is open: {:?}",
+        None,
+        "nothing is open, so the place says nothing: {:?}",
         places(&view)
     );
     assert_eq!(
         count(&view, "Today"),
-        Some(0),
-        "and the day's place counts nothing open either"
+        None,
+        "and the day's place says nothing open either"
     );
     go_to(&mut view, "Groceries");
     let inline: Vec<&UiNode> = all(view.tree(), "ui.EmptyState")
@@ -2841,7 +2841,8 @@ fn a_place_whose_tasks_are_all_done_says_so() {
 /// A workspace that names who a task belongs to offers the place of what the person looking
 /// holds once someone else is in it, after the type's own places, so the place a window opens
 /// on does not move; on their own, nothing is anyone's but theirs and the place would say what
-/// a list of everything does.
+/// a list of everything does. The filter is the app's, over its own assignee field and the
+/// person looking; the sidebar is the app's too.
 #[test]
 fn a_shared_workspace_offers_the_place_of_what_the_person_looking_holds() {
     use tilolang_runtime::members::Member;

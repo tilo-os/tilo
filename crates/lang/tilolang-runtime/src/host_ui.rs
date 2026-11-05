@@ -94,7 +94,8 @@ impl Core {
     }
 
     /// A prop `name` of `node` that is one offered action (`ui.NavSection(add: g.add)`): an
-    /// action, or nothing, as `host.Action` says of it; the node's event `name` runs it.
+    /// action, or nothing, as `host.Action` says of it; the node's event `name` runs it. An
+    /// action the view names (`add: new_project(t)`) is shown by what it declares.
     fn offer_action(&self, node: i32, name: i32, value: i32) -> HResult<Option<Wasm>> {
         let (at, name) = (self.node_index(node)?, self.text(name)?);
         let offered = match self.val_whole(value)? {
@@ -102,7 +103,13 @@ impl Core {
             Value::Opt(Some(held)) => (*held).clone(),
             other => other,
         };
-        let (shown, run) = offered_action(&offered, &name)?;
+        let (shown, run) = match &offered {
+            Value::Action(reference) => {
+                let action = self.action_ref_value(reference)?;
+                offered_action(&action, &name)?
+            }
+            other => offered_action(other, &name)?,
+        };
         self.with_view(|vs| {
             let n = vs.nodes.get_mut(at).ok_or("unknown ui node")?;
             n.props.insert(name.clone(), shown);

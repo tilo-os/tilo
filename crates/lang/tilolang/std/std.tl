@@ -13,11 +13,11 @@
 /// items it says `empty` and the bar keeps the type's actions. The places in the sidebar are
 /// the item type's filters that are on or off (`filters(T)`), after all of the items, each with
 /// how many it holds where its filter says `count: true`; the one chosen is the window's
-/// query, as people type it in search (`is:done`), so each person sees the list they picked; a
-/// window starts on `place` (all of the items when empty). The place of all of the items is
-/// called `everything`, "All" and the item type's plural noun unless the app says. A `sort` view
-/// state is the bar's sort menu. Items whose type has a window of their own open in the next
-/// column; the list follows which one is open.
+/// query, as people type it in search (`is:done`), and a window's state is the person's own, not
+/// the workspace's; a window starts on `place` (all of the items when empty). The place of all
+/// of the items is called `everything`, "All" and the item type's plural noun unless the app
+/// says. A `sort` view state is the bar's sort menu. Items whose type has a window of their own
+/// open in the next column; the list follows which one is open.
 view list<R, T, S>(
     of: R,
     items: List<T>,
@@ -50,13 +50,13 @@ view list<R, T, S>(
                         on select: set(query, "")
                     }
                     for p in places {
+                        // A count of zero shows nothing: the badge says what waits.
+                        let held = if p.counts { items.matching(p.query).len() } else { 0 }
                         ui.NavItem(
                             p.query,
                             p.label,
                             icon: p.icon,
-                            count: if p.counts {
-                                .some(items.matching(p.query).len())
-                            } else { .none },
+                            count: if held > 0 { .some(held) } else { .none },
                         ) {
                             on select: set(query, p.query)
                         }
@@ -649,44 +649,6 @@ view version_changes(v: host.Version) {
                 ui.Text(c.label, role: .caption, secondary: true)
                 c.before
                 c.after
-            }
-        }
-    }
-}
-
-/// The places a collection app's window offers in its sidebar, derived from the schema of the
-/// items and of the root that holds them: one for each of the item type's filters that is on or
-/// off, and a group for each type the items name a resource of while the root holds a
-/// collection of it (a task's projects, under "Projects", with an add that makes another).
-/// Choosing a place sets `place`, the window's query: choosing one of the root's resources shows
-/// the items that name it where they are, in the same window (`places(S, in: of)` is what it
-/// draws).
-view sidebar(side: host.Sidebar, place: State<Text>) {
-    ui.NavList(selected: place) {
-        for p in side.places {
-            if p.group == .none {
-                ui.NavItem(
-                    p.key,
-                    p.label,
-                    icon: p.icon,
-                    count: if p.counts { .some(p.count) } else { .none },
-                ) {
-                    on select: set(place, p.key)
-                }
-            }
-        }
-        for g in side.groups {
-            ui.NavSection(g.title, add: g.add) {
-                for p in side.places.filter(x -> x.group == .some(g.title)) {
-                    ui.NavItem(
-                        p.key,
-                        p.label,
-                        icon: p.icon,
-                        count: if p.counts { .some(p.count) } else { .none },
-                    ) {
-                        on select: set(place, p.key)
-                    }
-                }
             }
         }
     }

@@ -49,8 +49,6 @@ tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed
 tilolang-embed-error = This block could not run
 tilolang-all = All { $kind }
-# The sidebar place of what the person looking is assigned, still open.
-tilolang-assigned-to-me = Assigned to me
 # The actor of a history line the person looking made.
 tilolang-you = You
 tilolang-empty = Nothing here yet

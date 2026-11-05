@@ -7,8 +7,10 @@
 //! checked here to be one the index can keep: it reads only the resource's own fields and
 //! literals and calls nothing, so a change to one field changes it and nothing else does. One
 //! may compare a field with the time it is asked at (`due <= today`, `due <= today + 7d`): that
-//! is read when the filter is asked, and the index answers it from the field's column. Lambdas
-//! of `filter` and `count` over a collection lower the same way, without the time.
+//! is read when the filter is asked, and the index answers it from the field's column. One may
+//! compare a field with the person it is asked for (`assignee == workspace.me`): that is read
+//! when the filter is asked too, for each of them. Lambdas of `filter` and `count` over a
+//! collection lower the same way, without the time.
 
 use crate::ast::{self, BinOp, Expr, ExprKind, SearchBlock, SearchEntryKind, StrPart, UnOp};
 use crate::diag::{Diagnostic, Span};
@@ -19,7 +21,7 @@ use crate::types::Ty;
 
 /// The words of a typed search that a filter's key cannot be: `is:done`, `sort:-due`,
 /// `in:list`.
-pub const RESERVED_KEYS: &[&str] = &["is", "sort", "in", "text", "mine"];
+pub const RESERVED_KEYS: &[&str] = &["is", "sort", "in", "text"];
 
 /// What a filter on a field of type `ty` is: its kind, whether it may hold no value (an option
 /// or a set) and whether it holds several (a set). `None` for a type no filter compares.
@@ -232,7 +234,7 @@ impl Ctx<'_> {
             }),
             Err((at, why)) => {
                 let msg = format!(
-                    "the filter \"{label}\" is not a predicate the index can keep: {why}. A named filter of {} reads only its own fields and literals (`not done`, `due != .none`, `priority > 2`, `not attachments.is_empty()`)",
+                    "the filter \"{label}\" is not a predicate the index can keep: {why}. A named filter of {} reads only its own fields, literals, the time it is asked at and the person it is asked for (`not done`, `due != .none`, `due <= today`, `assignee == workspace.me`)",
                     about(self.info)
                 );
                 self.err("E102", at, msg);
@@ -394,8 +396,8 @@ pub fn resolve(
         }
     }
     // A field naming who a resource belongs to is a filter whether the block lists it or not:
-    // `assignee:me` reads the same in every app that has one, and the place of what the
-    // person looking holds (`is:mine`) needs it. `hide` keeps it out, as it keeps any field.
+    // `assignee:me` reads the same in every app that has one. `hide` keeps it out, as it keeps
+    // any field.
     let person: Vec<FilterMeta> = info
         .fields
         .iter()
@@ -438,7 +440,7 @@ pub fn resolve(
 fn push_filter(ctx: &mut Ctx<'_>, out: &mut SearchMeta, filter: FilterMeta, span: Span) {
     if RESERVED_KEYS.contains(&filter.key.as_str()) {
         let msg = format!(
-            "a filter named `{}` reads as search's own word (`is:`, `sort:`, `in:`, `text:`, `mine:`); label it otherwise",
+            "a filter named `{}` reads as search's own word (`is:`, `sort:`, `in:`, `text:`); label it otherwise",
             filter.key
         );
         ctx.err("E104", span, msg);
@@ -775,11 +777,32 @@ impl Lower<'_> {
             };
             return Ok((Operand::Arg(u32::try_from(at).unwrap_or(u32::MAX)), ty));
         }
+        if let Some(viewer) = self.viewer(e) {
+            return Ok(viewer);
+        }
         if let Some(clock) = self.clock(e) {
             return clock;
         }
         let (lit, ty) = self.literal(e, want)?;
         Ok((Operand::Lit(lit), ty))
+    }
+
+    /// `workspace.me`, in a named filter: the person the filter is asked for
+    /// ([`Operand::Viewer`]), so what they hold reads differently for each of them. A lambda's
+    /// predicate is answered where it is written, so there it stays the view's own value.
+    fn viewer(&self, e: &Expr) -> Option<(Operand<String>, Ty)> {
+        if !matches!(self.fields, Fields::Own) {
+            return None;
+        }
+        match &e.kind {
+            ExprKind::Field { base, name }
+                if name.name == "me"
+                    && matches!(&base.kind, ExprKind::Ident(space) if space == "workspace") =>
+            {
+                Some((Operand::Viewer, Ty::Principal))
+            }
+            _ => None,
+        }
     }
 
     /// `today`, `now`, either plus or minus a duration (`today + 1d`, `now - 7d`), in a named

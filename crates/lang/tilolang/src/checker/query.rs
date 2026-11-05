@@ -73,9 +73,8 @@ impl Checker<'_> {
         )
     }
 
-    /// `places(T, in: root)`: what a window of `root`'s items offers in its sidebar, derived
-    /// from the schema: the type's filters that are on or off, and a group for each type the
-    /// items name a resource of while the root holds a collection of it, as a `host.Sidebar`.
+    /// `places(T, in: root)`: the places a window of `root`'s items offers in its sidebar: `T`'s
+    /// filters that are on or off, in the order it declares them, as a `List<host.Place>`.
     pub(super) fn builtin_places(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(key) = self.queried("places", args, span) else {
             return Ex::error();
@@ -109,7 +108,7 @@ impl Checker<'_> {
         Ex::host(
             Imp::Places,
             vec![Ex::str(&id), root],
-            super::platform::host_ty("Sidebar"),
+            Ty::List(Box::new(super::platform::host_ty("Place"))),
         )
     }
 

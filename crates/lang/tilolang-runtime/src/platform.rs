@@ -1484,9 +1484,32 @@ impl Core {
         found.sort_by_key(|(primary, pkg, index, _)| (!primary, *pkg, *index));
         let mut out = Vec::new();
         for (_, _, _, shown) in found {
-            out.extend(self.action_value(&shown, subject)?);
+            out.extend(self.action_value(&shown, Some(subject))?);
         }
         Ok(out)
+    }
+
+    /// The action `reference` names (`new_project(t)`, as a view hands it to a prop that shows
+    /// one: `ui.NavSection(add: new_project(t))`) as the `host.Action` a control shows it by.
+    pub(crate) fn action_ref_value(&self, reference: &ActionRef) -> HResult<Value> {
+        let pkg = self
+            .registry
+            .borrow()
+            .action_package(&reference.action)
+            .ok_or_else(|| format!("`{}` is no action of a loaded package", reference.action))?;
+        let action = pkg
+            .action(&reference.action)
+            .ok_or_else(|| format!("`{}` is no action", reference.action))?;
+        let shown = Offered {
+            action,
+            args: reference.args.clone(),
+            rest: &[],
+            present: false,
+        };
+        let value = self
+            .action_value(&shown, None)?
+            .ok_or_else(|| format!("`{}` is offered as nothing", reference.action))?;
+        Ok(value)
     }
 
     /// The resource holding the item `target`, with its type: where the store has it now.
@@ -1498,10 +1521,11 @@ impl Core {
     /// An offered action as a `host.Action`: presented for the subject (its label, icon and
     /// toggled state as its presentation view gives them now), the view taking what that read,
     /// and whether it can run on the subject now (`available`, with the `reason` it cannot).
+    /// Without a subject it is offered as it stands, its presentation unread.
     pub(crate) fn action_value(
         &self,
         shown: &Offered<'_>,
-        subject: &RefValue,
+        subject: Option<&RefValue>,
     ) -> HResult<Option<Value>> {
         let action = shown.action;
         let mut label = self.words.borrow().word(
@@ -1511,7 +1535,8 @@ impl Core {
         );
         let mut icon = action.icon.clone();
         let mut on: Option<bool> = None;
-        if shown.present
+        if let Some(subject) = subject
+            && shown.present
             && let Some(view) = &action.present
             && let Some(node) = self.present(view, subject)?
         {
