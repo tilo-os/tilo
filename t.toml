@@ -69,6 +69,11 @@ exclude = [
 # not give them.
 isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-vmd", "settings", "tilo-sandbox-core", "thumbnails", "runtime-bundle"] }
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
+# The apps the session's tests start (`tilo_test_env::sibling_binary`), as the session-siblings
+# setup in .config/nextest.toml names them for both packages: built once by this family's build
+# and kept with its test binaries, each shard is handed them (NEXTEST_BIN_EXE_<bin>) and the
+# setup builds nothing.
+starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 [[cargo]]
