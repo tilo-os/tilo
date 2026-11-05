@@ -12,6 +12,12 @@
 # TILO_SIBLING_BIN_<bin, - as _> (through nextest's NEXTEST_ENV), which
 # sibling_binary answers with.
 #
+# A binary the run was handed already is not built: t builds these once in its
+# test build (t.toml's `starts`), keeps them in the archive its shards run
+# from, and names each to the run as NEXTEST_BIN_EXE_<bin>. Built here, every
+# shard compiled the three apps again (~850 units, minutes a shard). With every
+# binary handed, Cargo does not run at all.
+#
 # A test run that is not a nextest run (`scripts/two-netns-share.sh`, a test
 # binary started by hand) runs this once before its tests, and the binaries it
 # leaves beside them are found there.
@@ -22,12 +28,29 @@ if [[ $# -eq 0 ]]; then
     exit 2
 fi
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+
+# Hand BIN's path at PATH to the run's tests.
+hand() {
+    if [[ -n "${NEXTEST_ENV:-}" ]]; then
+        echo "TILO_SIBLING_BIN_${1//-/_}=$2" >>"$NEXTEST_ENV"
+    fi
+}
+
 arguments=(build --locked --message-format=json-render-diagnostics)
 bins=()
 for binary; do
-    arguments+=(--package "${binary%%:*}" --bin "${binary#*:}")
-    bins+=("${binary#*:}")
+    bin=${binary#*:}
+    handed=$(printenv "NEXTEST_BIN_EXE_${bin}" || true)
+    if [[ -n "$handed" && -x "$handed" ]]; then
+        hand "$bin" "$handed"
+        continue
+    fi
+    arguments+=(--package "${binary%%:*}" --bin "$bin")
+    bins+=("$bin")
 done
+if [[ ${#bins[@]} -eq 0 ]]; then
+    exit 0
+fi
 cd "$repo"
 messages=$("${CARGO:-cargo}" "${arguments[@]}")
 for bin in "${bins[@]}"; do
@@ -38,7 +61,5 @@ for bin in "${bins[@]}"; do
         echo "$0: cargo named no executable for $bin" >&2
         exit 1
     fi
-    if [[ -n "${NEXTEST_ENV:-}" ]]; then
-        echo "TILO_SIBLING_BIN_${bin//-/_}=${path}" >>"$NEXTEST_ENV"
-    fi
+    hand "$bin" "$path"
 done

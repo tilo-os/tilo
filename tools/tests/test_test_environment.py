@@ -182,6 +182,53 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
 
 
+class SiblingBinaryTests(unittest.TestCase):
+    """tools/build-sibling-binaries.sh builds only what the run was not handed."""
+
+    def run_script(self, work: Path, cargo: str, *binaries: str, **handed: str):
+        fake = work / "cargo"
+        fake.write_text(f"#!/bin/sh\necho \"$*\" >>{work}/cargo-ran\n{cargo}\n")
+        fake.chmod(0o755)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CARGO": str(fake),
+               "NEXTEST_ENV": str(work / "env"), **handed}
+        result = subprocess.run(["bash", str(ROOT / "tools/build-sibling-binaries.sh"), *binaries],
+                                env=env, capture_output=True, text=True, check=False)
+        ran = (work / "cargo-ran").read_text() if (work / "cargo-ran").exists() else ""
+        told = (work / "env").read_text().splitlines() if (work / "env").exists() else []
+        return result, ran, told
+
+    def test_handed_binaries_are_told_and_never_built(self) -> None:
+        # t's archive holds them and names each as NEXTEST_BIN_EXE_<bin>: no Cargo runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for name in ("osk", "tilo-lock-screen"):
+                (work / name).write_text("#!/bin/sh\n")
+                (work / name).chmod(0o755)
+            result, ran, told = self.run_script(
+                work, "exit 9", "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+                **{"NEXTEST_BIN_EXE_tilo-lock-screen": str(work / "tilo-lock-screen"),
+                   "NEXTEST_BIN_EXE_osk": str(work / "osk")})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran, "")
+            self.assertEqual(told, [f"TILO_SIBLING_BIN_tilo_lock_screen={work}/tilo-lock-screen",
+                                    f"TILO_SIBLING_BIN_osk={work}/osk"])
+
+    def test_a_binary_not_handed_is_built_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for name in ("osk", "tilo-lock-screen"):
+                (work / name).write_text("#!/bin/sh\n")
+                (work / name).chmod(0o755)
+            built = f'echo \'{{"executable":"{work}/osk"}}\''
+            result, ran, told = self.run_script(
+                work, built, "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+                **{"NEXTEST_BIN_EXE_tilo-lock-screen": str(work / "tilo-lock-screen")})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran, "build --locked --message-format=json-render-diagnostics "
+                                  "--package osk --bin osk\n")
+            self.assertEqual(told[-1], f"TILO_SIBLING_BIN_osk={work}/osk")
+
+
 class CargoRunnerTests(unittest.TestCase):
     """tools/cargo-runner.sh isolates test harnesses and leaves `cargo run` alone."""
 
