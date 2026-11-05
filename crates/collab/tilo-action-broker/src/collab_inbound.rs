@@ -264,8 +264,7 @@ fn fan_out(
 /// learns the same records as it subscribes
 /// ([`crate::collab_core::BrokerChannels::tree_records_held`]).
 fn announce_record(fanout: &FanoutState, route: &CrdtRoute) {
-    if !ui::record::RecordId::parse(&route.record_id).is_some_and(|record| record.tree().is_some())
-    {
+    if ui::record::RecordId::parse(&route.record_id).is_none_or(|record| record.tree().is_none()) {
         return;
     }
     fanout.fanout_to_route(
