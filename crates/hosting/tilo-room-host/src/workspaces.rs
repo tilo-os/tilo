@@ -2096,45 +2096,6 @@ impl Workspaces {
         Ok(())
     }
 
-    /// Admit `cert`, a device certified by the root of one of `workspace`'s
-    /// members, to the workspace's governance as that member's device, as its
-    /// governor: every participant then reads it in each record's channel
-    /// readers, and its person's role decides what it may change. This is what
-    /// admits a member's further device beside the one that joined. Whether the
-    /// workspace changed.
-    ///
-    /// # Errors
-    ///
-    /// [`CollaborationError`] when the workspace is not governed here, the
-    /// device's person is not a member, or governance cannot be written.
-    pub async fn admit_member_device(
-        &self,
-        workspace: &str,
-        cert: &DeviceCert,
-    ) -> Result<bool, CollaborationError> {
-        let host = &self.inner.host;
-        let state = self.workspace(workspace).await?;
-        let mut governed = state.lock().await;
-        let now = SystemTime::now();
-        let mut candidate = governed.peer().clone();
-        let changed = candidate
-            .governance_mut()
-            .admit_member_device(cert, &host.key, now)
-            .map_err(CollaborationError::new)?;
-        if changed {
-            governed
-                .commit(candidate, &host.key, now, |record, _| {
-                    Ok(record.collaboration.clone())
-                })
-                .map_err(CollaborationError::new)?;
-            self.settle(&mut governed)
-                .await
-                .map_err(CollaborationError::new)?;
-        }
-        drop(governed);
-        Ok(changed)
-    }
-
     /// Take every device row of `workspace` whose certificate has expired out
     /// of its governance: a page's certificate lasts an hour, and this is what
     /// keeps a workspace many people visit from keeping a row per visit.
