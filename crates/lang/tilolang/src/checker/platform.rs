@@ -538,6 +538,43 @@ impl Checker<'_> {
         Ex::host(Imp::Dated, vec![text, at], host_ty("Dated"))
     }
 
+    /// The action and the text of `entry_parts(action, text)`: the action a call left its
+    /// `(entry)` parameter of, and what is typed in the entry.
+    fn entry_args(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<(Ex, Ex)> {
+        let [action, text] = args else {
+            self.err(
+                "E022",
+                span,
+                format!("`{what}` takes the action the entry runs and the text typed in it: `{what}(action, typed)`"),
+            );
+            return None;
+        };
+        if let Some(a) = [action, text].into_iter().find(|a| a.name.is_some()) {
+            self.err(
+                "E022",
+                a.value.span,
+                format!("`{what}` takes its action and text by position: `{what}(action, typed)`"),
+            );
+        }
+        let action = self.expr_as(&action.value, &Ty::Action);
+        let text = self.expr_as(&text.value, &Ty::Text);
+        Some((action, text))
+    }
+
+    /// `entry_parts(action, text)`: what the text typed in an entry will make of the action it
+    /// runs, as the words it takes out of the title and leaves to the action's parameters
+    /// (`crate::entry`): a `host.EntryPart` each, in the order they stand.
+    pub(super) fn builtin_entry_parts(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some((action, text)) = self.entry_args("entry_parts", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::EntryParts,
+            vec![action, text],
+            Ty::List(Box::new(host_ty("EntryPart"))),
+        )
+    }
+
     /// `phrase("tilolang-empty")` or `phrase("tilolang-none-selected", kind: noun)`: one of the
     /// platform's phrases, in the person's language, with its arguments.
     pub(super) fn builtin_phrase(&mut self, args: &[ast::Arg], span: Span) -> Ex {

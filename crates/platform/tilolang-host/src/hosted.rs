@@ -328,6 +328,10 @@ impl Platform for HostPlatform {
         self.phrases.say(id, args)
     }
 
+    fn language(&self) -> String {
+        self.phrases.language()
+    }
+
     fn add_words(&self, catalogues: &[(String, String)]) {
         self.phrases.add_package(catalogues);
     }

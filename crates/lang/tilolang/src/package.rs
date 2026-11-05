@@ -322,6 +322,7 @@ fn params_meta(params: &[ParamInfo], app: &str) -> Vec<ParamMeta> {
                 text: d.text.clone(),
             }),
             place: p.place,
+            entry: p.entry,
         })
         .collect()
 }
@@ -865,6 +866,7 @@ pub fn compile_program_reading(
                 ty,
                 default: None,
                 place: false,
+                entry: false,
             });
         }
     }

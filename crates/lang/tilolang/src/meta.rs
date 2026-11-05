@@ -445,6 +445,11 @@ pub struct ParamMeta {
     /// no such view (a palette over the item alone) supplies `.none`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub place: bool,
+    /// Whether the text of an entry fills it (`title: Text (entry)`): the action carries what
+    /// the words before the entry type say into its other parameters, the rest titles the item
+    /// (`crate::entry`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub entry: bool,
 }
 
 /// How an action parameter's default is computed.

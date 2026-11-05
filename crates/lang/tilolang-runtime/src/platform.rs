@@ -356,6 +356,7 @@ impl Core {
                 self.ret_h(meta)
             }
             Imp::Dated => self.dated(a),
+            Imp::EntryParts => self.entry_import(imp, a),
             Imp::Phrase | Imp::Word => {
                 let id = self.text(a.h(0)?)?;
                 let args = match self.val(a.h(1)?)? {

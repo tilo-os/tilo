@@ -81,7 +81,11 @@ pub fn said(field: &FieldInfo, named: &str, before: &Value, after: &Value) -> Sa
         }
         Some(FieldRole::TimeOf { .. }) => {
             if gone {
-                naming("tilolang-did-cleared-time", "cleared the { $field } time", named)
+                naming(
+                    "tilolang-did-cleared-time",
+                    "cleared the { $field } time",
+                    named,
+                )
             } else {
                 after_naming("tilolang-did-set-time", "set the { $field } time to", named)
             }
@@ -103,11 +107,14 @@ fn by_type(ty: &Ty, named: &str, gone: bool, was_gone: bool) -> Said {
         ty = inner;
     }
     match ty {
-        Ty::Date if gone => naming("tilolang-did-cleared-date", "cleared the { $field } date", named),
+        Ty::Date if gone => naming(
+            "tilolang-did-cleared-date",
+            "cleared the { $field } date",
+            named,
+        ),
         Ty::Date if was_gone => {
             after_naming("tilolang-did-set-date", "set the { $field } date to", named)
         }
-        Ty::Date => plain("tilolang-did-moved", "moved this to", Shows::After),
         Ty::Time if gone => naming(
             "tilolang-did-cleared-time",
             "cleared the { $field } time",
@@ -119,7 +126,7 @@ fn by_type(ty: &Ty, named: &str, gone: bool, was_gone: bool) -> Said {
         Ty::Record(_) | Ty::Union(_) if gone => {
             plain("tilolang-did-taken-out", "moved this out of", Shows::Before)
         }
-        Ty::Record(_) | Ty::Union(_) => {
+        Ty::Date | Ty::Record(_) | Ty::Union(_) => {
             plain("tilolang-did-moved", "moved this to", Shows::After)
         }
         Ty::Bool | Ty::Int | Ty::Float | Ty::Enum(_) if gone => {
@@ -202,11 +209,7 @@ mod tests {
 
     /// A value as its type shows it (`Core::shown`).
     fn shown(kind: &str, held: Value) -> Value {
-        Value::Tuple(vec![
-            Value::Text(kind.to_owned()),
-            held,
-            Value::Opt(None),
-        ])
+        Value::Tuple(vec![Value::Text(kind.to_owned()), held, Value::Opt(None)])
     }
 
     /// The key a change to `field` reads with, which value it speaks of, and whether it names
@@ -234,7 +237,11 @@ mod tests {
     fn a_body_reads_as_an_edit_of_it_and_speaks_of_no_value() {
         let body = field("notes", Ty::RichText, Some(FieldRole::Body));
         assert_eq!(
-            reads(&body, &shown("rich", Value::Unit), &shown("rich", Value::Unit)),
+            reads(
+                &body,
+                &shown("rich", Value::Unit),
+                &shown("rich", Value::Unit)
+            ),
             ("tilolang-did-edited", "", true)
         );
     }
@@ -320,7 +327,11 @@ mod tests {
 
     #[test]
     fn a_resource_reads_as_moved_to_and_out_of_the_one_it_left() {
-        let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))), None);
+        let project = field(
+            "project",
+            Ty::Option(Box::new(Ty::Record(kind("Project")))),
+            None,
+        );
         let inbox = shown("none", Value::Unit);
         let flat = shown("resource", Value::text("Move flat"));
         assert_eq!(
@@ -392,7 +403,11 @@ mod tests {
     #[test]
     fn words_that_speak_of_a_value_that_stood_not_read_of_nothing() {
         // A resource that stood nowhere before cannot be a value "moved this out of".
-        let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))), None);
+        let project = field(
+            "project",
+            Ty::Option(Box::new(Ty::Record(kind("Project")))),
+            None,
+        );
         let none = shown("none", Value::Unit);
         assert_eq!(
             reads(&project, &none, &none),

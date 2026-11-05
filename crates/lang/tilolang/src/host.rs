@@ -340,6 +340,29 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
+        name: "EntryPart",
+        id: "host-entry-part",
+        doc: "One thing the text of an entry will make of the action it runs, as `entry_parts` \
+              read it: a day, a time, a person or a record, taken out of the title.",
+        fields: &[
+            (
+                "label",
+                "Text",
+                "What it says: `Fri 30 Oct`, `10:00`, `@Bo`, `#Move flat`.",
+            ),
+            (
+                "icon",
+                "Option<Text>",
+                "Its icon, a kebab-case name of the platform's icon set.",
+            ),
+            (
+                "without",
+                "Text",
+                "What is typed once it is removed: the text without its words.",
+            ),
+        ],
+    },
+    ValueType {
         name: "Delivery",
         id: "host-delivery",
         doc: "How an outside effect a resource's action queued stands: a mail being sent.",

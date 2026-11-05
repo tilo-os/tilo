@@ -604,6 +604,7 @@ impl Reader<'_> {
                 ty: own.to_owned(),
                 default: None,
                 place: false,
+                entry: false,
             });
         }
         for param in &verb.params {
@@ -635,6 +636,7 @@ impl Reader<'_> {
                 ty,
                 default: (!param.required).then(DefaultMeta::none),
                 place: false,
+                entry: false,
             });
         }
         self.meta.actions.push(ActionMeta {

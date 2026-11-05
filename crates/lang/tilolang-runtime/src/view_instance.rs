@@ -350,6 +350,17 @@ impl ViewInstance {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
+        // What an entry sends with its `submit` fills the `(entry)` parameter of the action it
+        // commits, and the parameters the words say: the text is the one typed at the press.
+        if let Some(Value::Text(text)) = value
+            && let Err(fail) = self.core.entry_fill(&mut aref, text)
+        {
+            let fail = match fail {
+                crate::engine::HostFail::Trap(message) => message,
+                crate::engine::HostFail::Suspend => "the entry is suspended".to_owned(),
+            };
+            return Err(RuntimeError::BadArgs(fail));
+        }
         self.run(&aref)
     }
 

@@ -680,6 +680,48 @@ fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
 }
 
 #[test]
+fn a_parameter_takes_the_text_of_an_entry_last_and_as_text() {
+    let task = "type Task {\n    title: Text (title)\n}\n";
+    let add = |params: &str, body: &str| {
+        crate::common::codes(&format!(
+            "{task}action add(t: Task, {params}) {{\n{body}\n}}\n"
+        ))
+    };
+    assert_eq!(
+        add("title: Text (entry) = \"\"", "    t.title = title"),
+        Vec::<String>::new(),
+        "an action's last parameter takes the text typed in an entry"
+    );
+    assert_eq!(
+        add(
+            "title: Text (entry) = \"\", done: Bool = false",
+            "    t.title = title"
+        ),
+        ["E068"],
+        "what a call gives comes before the text of an entry"
+    );
+    assert_eq!(
+        add("title: Int (entry) = 0", "    t.title = \"x\""),
+        ["E059"]
+    );
+    assert!(
+        add(
+            "a: Text (entry) = \"\", b: Text (entry) = \"\"",
+            "    t.title = \"x\""
+        )
+        .contains(&"E058".to_owned()),
+        "one entry fills one parameter"
+    );
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}view show_task(t: Task (entry)) {{\n    ui.Text(t.title)\n}}\n"
+        )),
+        ["E057"],
+        "an entry fills an action's parameter, not a view's"
+    );
+}
+
+#[test]
 fn e094_made_from_runs_only_in_a_scenario() {
     expect(
         "E094",

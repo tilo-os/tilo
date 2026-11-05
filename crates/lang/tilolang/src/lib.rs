@@ -47,6 +47,7 @@ pub mod describe;
 pub mod diag;
 pub mod duration;
 mod effects;
+pub mod entry;
 mod hash;
 pub mod host;
 pub mod identifier;

@@ -25,7 +25,7 @@ view list<R, T, S>(
     place: Text = "",
     everything: Text = phrase("tilolang-all", kind: meta(T).plural),
     empty: Text = phrase("tilolang-empty"),
-    entry: Option<(Text) -> Action> = .none,
+    entry: Option<Action> = .none,
     entry_placeholder: Text = phrase("tilolang-add"),
     row: (T) -> View,
 ) {
@@ -136,7 +136,7 @@ view rows<T, K>(
     parent_title: Option<(T) -> Option<Text>> = .none,
     progress: Option<(T) -> Option<Text>> = .none,
     all_done: Bool = false,
-    entry: Option<(Text) -> Action> = .none,
+    entry: Option<Action> = .none,
     entry_placeholder: Text = phrase("tilolang-add"),
     row: (T, Option<T>) -> View,
 ) {
@@ -148,7 +148,7 @@ view rows<T, K>(
     // The entry at the list's end is the list's own way to add: the host gives it the window's
     // primary action's key, so the key and the bar's button lead the person there, and what is
     // typed is what the list gains.
-    if let commit = entry {
+    if let create = entry {
         ui.Docked {
             foot: {
                 stack {
@@ -169,7 +169,7 @@ view rows<T, K>(
                             row(x, under)
                         }
                     }
-                    std.add_entry(entry_placeholder, commit)
+                    std.add_entry(entry_placeholder, create)
                 }
             }
             if all_done {
@@ -232,11 +232,27 @@ view rows<T, K>(
 }
 
 /// The entry at a list's end: what is typed and Entered there — or left there with — makes an
-/// item of it, through `commit`; nothing typed makes nothing, and Escape leaves none. The host
-/// gives it the window's primary action's key, so the key and the bar's button come here.
-view add_entry(placeholder: Text, commit: (Text) -> Action) {
-    ui.TextInput(placeholder: placeholder, entry: true) {
-        on submit(title: Text): commit(title)
+/// item of it, through `create`, an action whose `(entry)` parameter takes the words nothing
+/// else does. What the words say of the action's other parameters ("Call the landlord fri 10am
+/// @Bo") fills them: the entry shows each as a chip under what is typed, and removing a chip
+/// takes its words away. Nothing typed makes nothing, and Escape leaves none. The host gives it
+/// the window's primary action's key, so the key and the bar's button come here.
+view add_entry(placeholder: Text, create: Action) {
+    lens typed: Text = ""
+    let parts = entry_parts(create, typed)
+    stack(gap: .tight) {
+        if not parts.is_empty() {
+            row(gap: .tight, wrap: true) {
+                for part in parts {
+                    ui.Chip(part.label, icon: part.icon) {
+                        on remove: set(typed, part.without)
+                    }
+                }
+            }
+        }
+        ui.TextInput(value: typed, placeholder: placeholder, entry: true) {
+            on submit: create.then(set(typed, ""))
+        }
     }
 }
 

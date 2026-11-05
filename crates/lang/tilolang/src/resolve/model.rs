@@ -146,6 +146,9 @@ pub struct ParamInfo {
     /// Whether the view offering the action supplies it (`above: Option<Task> (above)`): the
     /// place the item stands in, as a row of a list gives the row above it.
     pub place: bool,
+    /// Whether the text of an entry fills it (`title: Text (entry)`): what the words left after
+    /// the other parameters take theirs title the item with (`crate::entry`).
+    pub entry: bool,
 }
 
 /// How an action parameter's default is computed: when the action is invoked without the

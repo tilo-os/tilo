@@ -270,18 +270,21 @@ impl Checker<'_> {
             ty: elem.clone(),
             default: None,
             place: false,
+            entry: false,
         }];
         params.extend(captures.iter().map(|(name, _, ty)| ParamInfo {
             name: name.clone(),
             ty: ty.clone(),
             default: None,
             place: false,
+            entry: false,
         }));
         params.push(ParamInfo {
             name: ROW_KEY.to_owned(),
             ty: Ty::Text,
             default: None,
             place: false,
+            entry: false,
         });
         // View state the body uses is passed by value; `set(...)` and `bind:` still name the
         // slot, which is the view's, not the row's.

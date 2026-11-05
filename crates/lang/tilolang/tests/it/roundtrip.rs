@@ -138,6 +138,12 @@ fn precedence_and_parentheses_survive() {
 }
 
 #[test]
+fn an_entry_parameter_prints_as_it_is_written() {
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction add(i: Item, title: Text (entry) = \"\") {\n    i.title = title\n}\n";
+    assert_eq!(print_of(src), src);
+}
+
+#[test]
 fn doc_comments_are_kept() {
     let out = print_of(&fixture("counter.tl"));
     assert!(out.contains("/// Add one to the counter."));

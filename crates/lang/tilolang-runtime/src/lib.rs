@@ -22,6 +22,7 @@ pub mod derived;
 pub mod did;
 mod embed;
 pub mod engine;
+mod entry;
 pub mod error;
 mod exec;
 pub mod flow;

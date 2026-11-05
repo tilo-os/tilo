@@ -216,6 +216,7 @@ imports! {
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     Dated = "dated" ([H, H] -> [H]);
+    EntryParts = "entry_parts" ([H, H] -> [H]);
     RepeatNext = "repeat_next" ([H, H, H] -> [H]);
     RepeatNextAt = "repeat_next_at" ([H, H, H] -> [H]);
     RepeatLabel = "repeat_label" ([H] -> [H]);

@@ -1593,6 +1593,129 @@ mod cases {
         }
     }
 
+    /// What the words before the entry type say fills the create action's parameters: a day
+    /// and a time, who it is for, the project it is of. Each shows as a chip while the person
+    /// types, and a chip's removal takes its words away.
+    #[test]
+    fn what_the_entry_says_of_a_task_fills_it_and_shows_as_chips() {
+        let apps = apps();
+        let w = world(&apps, &AmStore::new());
+        // Thursday, noon in UTC: "fri 10am" is the Friday after it, at ten.
+        w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+        w.rt.set_name_host(Names);
+        w.rt.set_members(
+            vec![
+                tilolang_runtime::members::Member::person("me", "owner"),
+                tilolang_runtime::members::Member::person("bo", "editor"),
+            ],
+            None,
+        );
+        let list = w.create("Tasks");
+        let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
+        w.call(
+            &apps.todo,
+            "rename",
+            vec![res(&project), Value::text("Move flat")],
+        );
+        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+        let entry = of_kind(v.tree(), "ui.TextInput")
+            .into_iter()
+            .find(|field| on(field, "entry"))
+            .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())))
+            .key
+            .clone();
+
+        v.edit(
+            &entry,
+            &Value::text("call landlord fri 10am @bo #Move flat"),
+        )
+        .unwrap();
+        v.poll_patches().unwrap();
+        let chips: Vec<(&str, String)> = of_kind(v.tree(), "ui.Chip")
+            .into_iter()
+            .map(|chip| (chip.key.as_str(), text_prop(chip, "label")))
+            .collect();
+        let labels: Vec<&str> = chips.iter().map(|(_, label)| label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Tomorrow", "10:00", "@Bo", "#Move flat"],
+            "the entry shows what it read while it is typed: {}",
+            dump(v.tree())
+        );
+
+        // A chip's removal takes its words out of the entry and leaves the rest.
+        let bo = chips[2].0.to_owned();
+        v.fire(&bo, "remove").unwrap();
+        v.poll_patches().unwrap();
+        assert_eq!(
+            v.bound_value(&entry),
+            Some(Value::text("call landlord fri 10am #Move flat")),
+            "the chip takes its own words away: {}",
+            dump(v.tree())
+        );
+
+        // Typed whole and committed, it is one task: the words nothing else took title it, and
+        // the rest are its day, its moment, who it is for and the project it is of.
+        v.edit(
+            &entry,
+            &Value::text("call landlord fri 10am @bo #Move flat"),
+        )
+        .unwrap();
+        v.poll_patches().unwrap();
+        v.fire_with(
+            &entry,
+            "submit",
+            Some(&Value::text("call landlord fri 10am @bo #Move flat")),
+        )
+        .unwrap();
+        v.poll_patches().unwrap();
+        let made = items(&w, &list, "items");
+        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+        assert_eq!(text_of(&w, &made[0], "title"), "call landlord");
+        assert_eq!(
+            w.rt.read(&made[0], "due").unwrap(),
+            Value::Opt(Some(Box::new(Value::text("2026-10-30")))),
+            "Friday, the day after the Thursday it was typed"
+        );
+        match w.rt.read(&made[0], "at").unwrap() {
+            Value::Opt(Some(inner)) => assert!(
+                inner
+                    .as_text()
+                    .is_some_and(|at| at.starts_with("2026-10-30T10:00")),
+                "ten that morning: {inner:?}"
+            ),
+            other => panic!("the task is due at a moment: {other:?}"),
+        }
+        match w.rt.read(&made[0], "assignee").unwrap() {
+            Value::Opt(Some(inner)) => {
+                assert_eq!(*inner, Value::Principal(Principal::new("bo")));
+            }
+            other => panic!("the task is Bo's: {other:?}"),
+        }
+        match w.rt.read(&made[0], "project").unwrap() {
+            Value::Opt(Some(inner)) => assert_eq!(*inner, res(&project), "in Move flat"),
+            other => panic!("the task is of its project: {other:?}"),
+        }
+        assert_eq!(
+            v.bound_value(&entry),
+            Some(Value::text("")),
+            "the entry is cleared once the task was made"
+        );
+    }
+
+    /// The names people go by, as the workspace's host gives them.
+    struct Names;
+
+    impl tilolang_runtime::NameHost for Names {
+        fn name(&self, who: &Principal) -> String {
+            match who.0.as_str() {
+                "bo" => "Bo".to_owned(),
+                "me" => "Me".to_owned(),
+                other => other.to_owned(),
+            }
+        }
+    }
+
     /// The row the window's header offers for the action named `label`.
     fn header_row<'a>(tree: &'a UiNode, label: &str) -> &'a UiNode {
         of_kind(tree, "ui.Button")
@@ -1667,6 +1790,8 @@ mod cases {
         );
 
         // What is typed and committed is one task, named, and its row is that record.
+        v.edit(&entry, &Value::text("milk")).unwrap();
+        v.poll_patches().unwrap();
         v.fire_with(&entry, "submit", Some(&Value::text("milk")))
             .unwrap();
         v.poll_patches().unwrap();

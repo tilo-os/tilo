@@ -286,6 +286,9 @@ fn param_text(p: &Param, col: usize, level: usize, ctx: &mut Ctx) -> String {
     if let Some(place) = &p.place {
         head = format!("{head} ({})", place.name);
     }
+    if p.entry {
+        head = format!("{head} (entry)");
+    }
     match &p.default {
         Some(default) => {
             let value = expr_with(default, 0, col + head.len() + 3, level, ctx);

@@ -202,6 +202,7 @@ imports! {
     (Phrase, "phrase", "ii", "i"),
     (Word, "word", "iii", "i"),
     (Dated, "dated", "ii", "i"),
+    (EntryParts, "entry_parts", "ii", "i"),
     (RepeatNext, "repeat_next", "iii", "i"),
     (RepeatNextAt, "repeat_next_at", "iii", "i"),
     (RepeatLabel, "repeat_label", "i", "i"),

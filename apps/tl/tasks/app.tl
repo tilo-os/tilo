@@ -153,23 +153,28 @@ migration action adopt_steps(tasks: Tasks) {
 }
 
 /// Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in
-/// the lane `s` of its board. When it says when ("Call the landlord tomorrow 9am"), that is its
-/// due day and moment and the rest its title; without, a task added on Today is due today. An
+/// the lane `s` of its board. The entry fills `title` with the words nothing else takes, and
+/// what they say of the task's other fields fills those: "Call the landlord fri 10am @Bo" is a
+/// task due Friday at ten, for Bo. Without a day said, a task added on Today is due today. An
 /// entry with nothing in it adds nothing. It is the entry's, not a command: the entry is how a
 /// task is added there, and the task joins the list in place rather than opening.
 internal action quick_add(
     tasks: Tasks,
-    entry: Text,
     p: Option<Project> = .none,
-    today: Bool = false,
     s: Option<Section> = .none,
+    today: Bool = false,
+    due: Option<Date> = .none,
+    at: Option<Time> = .none,
+    assignee: Option<Principal> = .none,
+    title: Text (entry) = "",
 ) {
-    let said = dated(entry, now)
-    let due: Option<Date> = if let day = said.day {
-        .some(day)
+    let due: Option<Date> = if let d = due {
+        .some(d)
     } else if today { dated("today", now).day } else { .none }
-    if said.text != "" {
-        tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p, section: s))
+    if title != "" {
+        tasks.items.insert(
+            Task(title: title, due: due, at: at, assignee: assignee, project: p, section: s),
+        )
     }
 }
 
@@ -623,7 +628,7 @@ view home(t: Tasks) {
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),
                 all_done: all_done,
-                entry: text -> quick_add(t, text, project, place == Task.today),
+                entry: .some(quick_add(t, p: project, today: place == Task.today)),
                 entry_placeholder: entry_placeholder,
             ) { (x, under) ->
                 task_row(x, .day, under)
@@ -648,7 +653,7 @@ view project_list(p: Project) {
                 parent: .parent,
                 parent_title: x -> x.parent?.title,
                 progress: x -> subtask_count(x),
-                entry: text -> quick_add(tasks, text, p),
+                entry: .some(quick_add(tasks, p: p)),
                 entry_placeholder: "New task in {p.name}",
             ) { (x, under) ->
                 task_row(x, .project, under)
@@ -675,7 +680,7 @@ view project_board(p: Project) {
                 ui.BoardLane {
                     on drop(moved: Task, at: Int): place(moved, .none, at)
                     foot: {
-                        std.add_entry("New task", text -> quick_add(tasks, text, .some(p)))
+                        std.add_entry("New task", quick_add(tasks, p: .some(p)))
                     }
                     for t in loose {
                         task_card(t, sections)
@@ -686,10 +691,7 @@ view project_board(p: Project) {
                     ui.BoardLane(s, title: s.name, count: cards.count()) {
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         foot: {
-                            std.add_entry(
-                                "New task",
-                                text -> quick_add(tasks, text, .some(p), false, .some(s)),
-                            )
+                            std.add_entry("New task", quick_add(tasks, p: .some(p), s: .some(s)))
                         }
                         for t in cards {
                             task_card(t, sections)

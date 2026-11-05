@@ -57,6 +57,12 @@ pub trait Platform {
     /// The time now, as `now` reads it: ISO-8601 UTC text.
     fn now(&self) -> String;
 
+    /// The language the person reads and types in (`de`, `en`): what a date or a time typed in
+    /// an entry is said in. Empty when the platform names none, which reads as English.
+    fn language(&self) -> String {
+        String::new()
+    }
+
     /// How many seconds the person's clock is ahead of UTC: the zone `dated` reads "tomorrow
     /// 9am" in. UTC unless the platform knows the person's.
     fn zone(&self) -> i64 {
@@ -94,6 +100,10 @@ impl Words for PlatformWords {
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         let said = self.0.phrase(key, args);
         if said == key { source.to_owned() } else { said }
+    }
+
+    fn language(&self) -> String {
+        self.0.language()
     }
 
     fn revision(&self) -> u64 {

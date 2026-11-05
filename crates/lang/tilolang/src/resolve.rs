@@ -303,6 +303,7 @@ impl Env {
                         text: d.text.clone(),
                     }),
                     place: p.place,
+                    entry: p.entry,
                 })
                 .collect()
         };
@@ -1885,6 +1886,31 @@ impl Resolver<'_> {
         }
     }
 
+    /// Checks the parameter the text of an entry fills (`title: Text (entry)`): one action may
+    /// have one, and it is the item's title, so it is a `Text`.
+    fn entries(&mut self, written: &[ast::Param], params: &[ParamInfo], kind: CKind) {
+        let mut seen = false;
+        for (i, p) in written.iter().enumerate() {
+            if !p.entry {
+                continue;
+            }
+            if kind != CKind::Action {
+                self.err("E057", p.name.span, format!("`{}` is a parameter of the {}; only an action takes the text of an entry (`(entry)`)", p.name.name, kind.word()));
+                continue;
+            }
+            if seen {
+                self.err("E058", p.name.span, format!("`{}` is a second entry parameter: one entry fills one parameter of an action", p.name.name));
+            }
+            seen = true;
+            if !matches!(params.get(i).map(|p| &p.ty), Some(Ty::Text)) {
+                self.err("E059", p.ty.span, format!("`{}` takes the text of an entry, so it is `Text`: the words the other parameters leave title the item", p.name.name));
+            }
+            if i + 1 != written.len() {
+                self.err("E068", p.name.span, format!("`{}` takes the text of an entry, so it is the action's last parameter: what a call gives an action comes before it", p.name.name));
+            }
+        }
+    }
+
     /// The parameters of a callable. A view's may be a collection, a set or a map, as a field
     /// is: a view is handed it live (views are components, and these are their props).
     fn params(&mut self, params: &[ast::Param], view: bool, action: bool) -> Vec<ParamInfo> {
@@ -1904,6 +1930,7 @@ impl Resolver<'_> {
                 ty,
                 default: None,
                 place: action && p.place.is_some(),
+                entry: action && p.entry,
             });
         }
         out
@@ -1977,6 +2004,7 @@ impl Resolver<'_> {
             let ast_params = params;
             let params = self.params(params, kind == CKind::View, kind == CKind::Action);
             self.places(ast_params, &params, kind, name.span);
+            self.entries(ast_params, &params, kind);
             if kind == CKind::Action {
                 let at = self.env.callables.len();
                 defaults.extend(
