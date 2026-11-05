@@ -211,16 +211,6 @@ impl Slides {
         Some(if drawn.y == 0.0 { drawn.x } else { drawn.y })
     }
 
-    /// How far the leaving strip is drawn from where it stood at `now`, and
-    /// whether it still moves: a slide read without dropping it.
-    #[must_use]
-    pub fn progress_at(&self, now: Instant) -> Option<(f64, bool)> {
-        let (_from, _rect, pose) = self.leaving_at(EffectiveMotion::default(), now)?;
-        let drawn = pose.transform.translation();
-        let offset = if drawn.y == 0.0 { drawn.x } else { drawn.y };
-        Some((offset, self.is_moving(now)))
-    }
-
     /// The leaving view to draw this frame: the strip, the place it was laid
     /// out at and its pose. `None` once the change has come to rest, or
     /// while nothing is moving.
@@ -255,28 +245,13 @@ impl Slides {
         motion: EffectiveMotion,
         now: Instant,
     ) -> Option<(StripId, Rect, Pose)> {
-        if let Some(lift) = self.lift {
-            let rect = self.laid.get(&lift.from).copied()?;
-            let pose = Pose {
-                opacity: unit_opacity(1.0),
-                transform: Affine::translate((0.0, lift.travel.clamp(-1.0, 1.0) * rect.height())),
-            };
-            return Some((lift.from, rect, pose));
-        }
-        let running = self.running.as_ref()?;
-        if !running.is_moving(now) {
+        let leaving = self.leaving_at(motion, now);
+        if leaving.is_none() {
+            // A run that has come to rest is gone: the next change starts
+            // from what is on screen.
             self.running = None;
-            return None;
         }
-        let rect = self.laid.get(&running.from).copied()?;
-        let p = running.progress.get(now);
-        Some((
-            running.from,
-            rect,
-            running
-                .started
-                .leaving_pose(p, rect.width(), rect.height(), motion),
-        ))
+        leaving
     }
 }
 
@@ -397,12 +372,6 @@ impl super::DesktopSurface {
     /// (a press, a finger) or landed (a chord, an action).
     pub fn note_source(&mut self, source: ui::tokens::MotionSource) {
         self.navigation_source = Some(source);
-    }
-
-    /// The source noted for the next change, for a test that reads it.
-    #[cfg(test)]
-    pub(crate) fn source_note(&self) -> Option<ui::tokens::MotionSource> {
-        self.navigation_source
     }
 
     /// The strip the surface shows now.

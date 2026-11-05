@@ -135,16 +135,6 @@ impl Desk {
             .leaving_offset(self.now)
     }
 
-    /// Where the leaving strip would have been drawn at `at`: a frame's
-    /// pose read at the instant that frame laid out.
-    fn leaving_offset_at(&self, at: Instant) -> Option<f64> {
-        self.frame
-            .root::<DesktopSurface>()
-            .slides
-            .borrow()
-            .leaving_offset(at)
-    }
-
     /// The surface, for a test that moves the deck as its host does.
     fn surface(&mut self) -> ui::headless::RootMut<'_, DesktopSurface> {
         self.frame.root_mut::<DesktopSurface>()
@@ -160,16 +150,6 @@ impl Desk {
     /// The strip the surface shows.
     fn shown(&self) -> Option<StripId> {
         self.frame.root::<DesktopSurface>().shown
-    }
-
-    /// What the surface's slides say at `at`: how far the leaving strip is
-    /// drawn, and whether it still moves.
-    fn progress_at(&self, at: Instant) -> Option<(f64, bool)> {
-        self.frame
-            .root::<DesktopSurface>()
-            .slides
-            .borrow()
-            .progress_at(at)
     }
 
     /// What the surface says a move from `before` to `after` is.
