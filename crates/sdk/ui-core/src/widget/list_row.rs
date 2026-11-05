@@ -2363,6 +2363,18 @@ impl ListRow {
         })
     }
 
+    /// Where the row's actions stand, in the order it holds them, whether or not it shows them:
+    /// assistive technology reaches one without hovering the row.
+    fn action_slots(&self) -> Vec<Rect> {
+        let (Some(metrics), Some(theme)) = (&self.metrics, &self.theme) else {
+            return Vec::new();
+        };
+        let band = self.text_band();
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.with_face(|face| face.action_slots_with(band, metrics, text, theme))
+        })
+    }
+
     /// Whether a press at `point` is one of the row's own controls': a hover action, its check,
     /// a trailing control or a change. Those keep the press; on any other part of it the list
     /// takes the press, to drag the row and, let go without a drag, to press it.
@@ -3141,7 +3153,7 @@ impl Widget for ListRow {
         // The face numbers the actions it shows; address each by its place
         // among all the row's actions, as its binding is, and say where it
         // shows so a pointer or an agent can reach it.
-        let rects = self.action_rects();
+        let rects = self.action_slots();
         for ((child, index), rect) in node
             .children
             .iter_mut()

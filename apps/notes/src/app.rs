@@ -2853,15 +2853,21 @@ impl Widget for NotesApp {
     /// shell's own widgets, so its rows are mounted where they stand from
     /// here.
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
-        let main = self.main.take_structure_change();
-        let shell = self.shell.take_structure_change();
-        let sidebar = self.sidebar.take_structure_change();
-        let outline = if self.outline.take_structure_dirty() {
-            ui::widget::StructureChange::Rebuild
-        } else {
-            ui::widget::StructureChange::None
-        };
-        main.join(shell).join(sidebar).join(outline)
+        // The shell places the page tree and the note panel under the slots
+        // of the columns it shows: a column it puts away (a closed drawer) is
+        // no part of the tree, so nothing can carry a change of its widgets
+        // out, and its own build lays it out whole when it comes back.
+        let mut change = self
+            .main
+            .take_structure_change()
+            .join(self.shell.take_structure_change());
+        if self.sidebar_shown() {
+            change = change.join(self.sidebar.take_structure_change());
+            if self.outline.take_structure_dirty() {
+                change = change.join(ui::widget::StructureChange::Rebuild);
+            }
+        }
+        change
     }
 
     fn build_layout(

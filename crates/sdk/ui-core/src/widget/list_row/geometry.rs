@@ -568,6 +568,22 @@ impl ListRowFace<'_> {
         if !self.shows_actions() {
             return Vec::new();
         }
+        self.action_slots_with(rect, m, text, theme)
+    }
+
+    /// Where each of the row's actions stands in `rect`, in order, whether
+    /// or not the row shows them: assistive technology reaches an action
+    /// without hovering the row, so its node says where it is.
+    pub(super) fn action_slots_with(
+        &self,
+        rect: Rect,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<Rect> {
+        if self.actions.is_empty() || self.interaction.disabled {
+            return Vec::new();
+        }
         let geo = self.geometry(rect, m, text, theme);
         let mut right = geo.meta_right;
         let cy = if self.card {

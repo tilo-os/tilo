@@ -442,6 +442,7 @@ pub fn input(scenario: Option<&str>, driver: &mut FrameHarness) -> Result<(), St
             press(driver, rect.center(), MouseButton::Right);
         }
         Some("sidebar_hover") => {
+            reveal_sidebar(driver);
             // A page row's "more" control: the second action of a `note-` row.
             let rect = semantic_target_rect(driver, |target| {
                 target.starts_with("note-") && target.ends_with("/action/1")
