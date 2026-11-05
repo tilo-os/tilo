@@ -584,7 +584,7 @@ fn keep_inside(rect: Rect, work: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::floating_layer::{CARD_GAP, card_size};
+    use ui::floating_layer::card_size;
     use ui::live_activity::{ControlKind, Kind};
     use ui::widget::floating_surface::card_radius;
 
@@ -848,8 +848,6 @@ mod tests {
         assert!(rows.controls.first().expect("a control").1.y1 <= rect.y1);
         assert!(rows.close.y1 <= rect.y1);
         assert!(rows.value.expect("a reading").y0 >= rows.title.y1 - 0.5);
-        // The gap the layout reserves between cards is what the painter leaves.
-        assert!(CARD_GAP > 0.0);
         assert!(card_radius(rect, &Theme::dark()) > 0.0);
     }
 }

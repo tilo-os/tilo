@@ -23,7 +23,8 @@
 //! * `typing` — 60 keystrokes into a focused document (the `apps` profile);
 //! * `tick` — frames while a timer's reading moves on: what one changed
 //!   card costs, and that it damages only its own ground (`activities`);
-//! * `drag` — frames while a card follows the pointer (`activities`);
+//! * `drag` — the frames a moved pointer draws while a card follows it
+//!   (`activities`);
 //! * `idle` — frames offered after settling that find no work to do.
 //!
 //! Every phase reports its allocations: a steady frame must not allocate.
@@ -528,12 +529,13 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
     for _ in 0..120 {
         let before = width(&link.shown());
         pointer += Vec2::new(2.0, 1.0);
+        // The frame a moved pointer draws is the event's own: a second frame
+        // offered behind it finds nothing left to change.
+        start_allocations();
         harness.send_host_event(&WindowEvent::CursorMoved {
             device_id,
             position: PhysicalPosition::new(pointer.x, pointer.y),
         });
-        start_allocations();
-        harness.profile_frame();
         let (allocs, bytes) = stop_allocations();
         drag.allocs += allocs;
         drag.bytes += bytes;
@@ -543,6 +545,14 @@ fn run_activities(json_path: Option<String>, device: &str) -> Result<(), String>
             drag_violations += 1;
             continue;
         };
+        if before == Some(after) {
+            // The press took hold and the pointer is still inside its slop:
+            // the card has not moved, so there is nothing to repaint.
+            if !shown.damage.is_zero_area() {
+                drag_violations += 1;
+            }
+            continue;
+        }
         let ground = match before {
             Some(before) => painted_bounds(before, harness.theme())
                 .union(painted_bounds(after, harness.theme())),
