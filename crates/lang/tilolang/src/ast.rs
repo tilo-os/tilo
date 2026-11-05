@@ -715,6 +715,12 @@ pub enum ExprKind {
     },
     /// `{ stmts; expr }`: the value of the last expression.
     Block(Block),
+    /// `made from r { ... }`: in a scenario, the resources the block makes were made from `r`,
+    /// as an action invoked from it makes them; the value of the last expression.
+    MadeFrom {
+        of: Box<Expr>,
+        body: Block,
+    },
     /// `match e { .a => x, .b(p, q) => y }`.
     Match {
         scrutinee: Box<Expr>,

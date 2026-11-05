@@ -775,6 +775,45 @@ impl Checker<'_> {
         self.emit(Stmt::Eval(Ex::host(Imp::InvokerPop, vec![], Ty::Unit)));
     }
 
+    /// `made from r { ... }` in a scenario: the block's changes are recorded as made from `r`, as
+    /// an action invoked from it is (`created(r)?.from`, `std.origin(r)`); the value is the
+    /// block's. Each block is a change of its own, as `as who { ... }` is, so the resources it
+    /// makes record what they were made from.
+    fn made_from(&mut self, of: &ast::Expr, body: &ast::Block, span: Span, exp: Option<&Ty>) -> Ex {
+        if self.st.written != Written::Scenario {
+            self.err("E094", span, "`made from r { ... }` seeds resources made from another, which only a scenario does; a resource a person makes is made by the action its menu offers, and records what it was opened on");
+            let _ = self.expr(of, None);
+            let _ = self.block_value(body, exp);
+            return Ex::error();
+        }
+        let source = self.expr(of, None);
+        match &source.ty {
+            Ty::Record(_) => {}
+            Ty::Error => return Ex::error(),
+            other => {
+                let t = self.show(other);
+                self.err(
+                    "E020",
+                    of.span,
+                    format!("`made from` takes the resource the block makes its resources from, a value of a record type; this is {t}"),
+                );
+                return Ex::error();
+            }
+        }
+        let value = self.block_value(body, exp);
+        let ty = value.ty.clone();
+        let Ek::Seq(inner, last) = value.kind else {
+            return Ex::error();
+        };
+        let made = self.fresh(ty.clone());
+        let mut stmts = Vec::with_capacity(inner.len().saturating_add(3));
+        stmts.push(Stmt::Eval(Ex::host(Imp::FromPush, vec![source], Ty::Unit)));
+        stmts.extend(inner);
+        stmts.push(Stmt::Set(made, *last));
+        stmts.push(Stmt::Eval(Ex::host(Imp::FromPop, vec![], Ty::Unit)));
+        Ex::new(Ek::Seq(stmts, Box::new(Ex::local(made, ty.clone()))), ty)
+    }
+
     /// An expression whose value is not used: an `if`, `match` or block runs its branches as
     /// statements, so they need not agree on a type and an `if` needs no `else`.
     fn expr_stmt(&mut self, e: &ast::Expr) {

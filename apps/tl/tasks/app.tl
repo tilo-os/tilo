@@ -1048,6 +1048,27 @@ scenario "a task naming another" -> Task {
     )
 }
 
+/// A task made from another, which was made from a third: the task's page names the one it was
+/// made from, and draws the task made from it as a card, as picking the one a menu's Make is open
+/// on makes the other.
+scenario "a task made from another" -> Task {
+    let flat = tasks.projects.insert(Project(name: "Move flat"))
+    let van = tasks.items.insert(
+        Task(title: "Book the van", project: flat, due: 2026-07-10, priority: .high),
+    )
+    let pack = made from van {
+        tasks.items.insert(
+            Task(title: "Pack the kitchen", project: flat, due: 2026-07-08, priority: .high),
+        )
+    }
+    made from pack {
+        tasks.items.insert(
+            Task(title: "Load the boxes by the door", project: flat, due: 2026-07-09),
+        )
+    }
+    pack
+}
+
 /// A move a week away, on its project's board: a lane per stage, the tasks in each.
 scenario "a project board" -> Project {
     let flat = tasks.projects.insert(

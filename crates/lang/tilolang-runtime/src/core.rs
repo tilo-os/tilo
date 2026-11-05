@@ -316,10 +316,10 @@ impl Core {
             ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
             CollRemove, CollWhere, CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI,
             EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FilterLit,
-            Filters, FirstUnseen, FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop,
-            InvokerPush, IsError, IsSome, Lenses, Links, ListEnd, ListGetF, ListGetH, ListGetI,
-            ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI,
-            ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
+            Filters, FirstUnseen, FloatToStr, FromPop, FromPush, IdentPart, IntToStr, Invoke,
+            Invoker, InvokerPop, InvokerPush, IsError, IsSome, Lenses, Links, ListEnd, ListGetF,
+            ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
+            ListPushI, ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
             MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside, OutsideAt,
             Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole,
             Query, QueueBlock, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit,
@@ -374,7 +374,9 @@ impl Core {
             | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | CallFn | IsError | Outside | OutsideAt | Withdraw
             | ModelCall | Invoker | PrincipalEq | PrincipalName | QueueBlock | Now | TimeShift
-            | PrincipalNamed | AgentNamed | InvokerPush | InvokerPop => self.effect_import(imp, a),
+            | PrincipalNamed | AgentNamed | InvokerPush | InvokerPop | FromPush | FromPop => {
+                self.effect_import(imp, a)
+            }
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
             | ActThen | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {

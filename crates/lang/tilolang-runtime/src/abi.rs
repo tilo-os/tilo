@@ -109,6 +109,8 @@ imports! {
     (AgentNamed, "agent_named", "i", "i"),
     (InvokerPush, "invoker_push", "ii", ""),
     (InvokerPop, "invoker_pop", "", ""),
+    (FromPush, "from_push", "i", ""),
+    (FromPop, "from_pop", "", ""),
     (PrincipalKind, "principal_kind", "i", "l"),
     (PrincipalRole, "principal_role", "i", "i"),
 

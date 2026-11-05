@@ -496,6 +496,12 @@ search.md, "What a type declares" and "Types, references and paths".
 - **A scenario's `as` block is a change of its own.** `as who at time { ... }` commits what came
   before, then the block, as `who` at `time`; history names the scenario as the action, since
   seed data is the scenario's doing. Rolling back on a failure undoes the last block only.
+- **`made from r { ... }` says what a scenario's seed data was made from.** The block runs as a
+  change made from `r`, the way an invocation on `r` is, so what it creates records it
+  (`created(r)?.from`) and what links to `r` names them, as a person's make from `r` does. It is
+  a change of its own for the same reason `as` is: what the block makes is made from `r`, while
+  what came before is not. Only a scenario writes it, since seed data is what shows a
+  provenance feature in `layout-check`.
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.

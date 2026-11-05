@@ -562,7 +562,9 @@ print(xs, fields: [.title, .due])
 - A scenario names people with `let mia = person("Mia")`. Inside
   `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
   and `now` = that time, and the block is a change of its own, so history and reflection show
-  it as mia's at that time.
+  it as mia's at that time. `made from r { ... }` makes the block's change from `r`, as an
+  action invoked on `r` is, so what it creates shows what it was made from (`created(r)?.from`,
+  `std.origin`, `std.linked`); it is a change of its own too, and only a scenario writes it.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
 - An item block names a template's other slots beside the item's view; they do not see the

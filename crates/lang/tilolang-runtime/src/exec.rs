@@ -511,6 +511,7 @@ impl Core {
                 queued: Vec::new(),
                 scenario: meta.scenario,
                 acting_as: Vec::new(),
+                made_from: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
             }),
@@ -1525,6 +1526,13 @@ impl Core {
             } else {
                 note.at = Some(at);
             }
+            // What the change's resources were made from, when the block it commits is one
+            // (`from r { ... }`).
+            note.from = state
+                .made_from
+                .last()
+                .cloned()
+                .or_else(|| state.note.from.clone());
             note.touched = std::mem::take(&mut state.touched).into_iter().collect();
             (state.txn, note)
         };
@@ -1614,6 +1622,20 @@ impl Core {
                 self.scenario_segment()?;
                 self.scenario_state(|state| {
                     state.acting_as.pop();
+                })?;
+                ret_void()
+            }
+            Imp::FromPush => {
+                let from = self.ref_arg(a.h(0)?)?;
+                let from = ResourceRef::clone(&from.target);
+                self.scenario_segment()?;
+                self.scenario_state(|state| state.made_from.push(from))?;
+                ret_void()
+            }
+            Imp::FromPop => {
+                self.scenario_segment()?;
+                self.scenario_state(|state| {
+                    state.made_from.pop();
                 })?;
                 ret_void()
             }

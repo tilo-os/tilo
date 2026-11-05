@@ -23,7 +23,7 @@ mod cases {
             let app = App::compile(SOURCE, &[]);
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
             app.load(&rt);
-            let board = rt.create("Board").unwrap();
+            let board = rt.create_root("Board").unwrap();
             Self { rt, app, board }
         }
 
@@ -65,6 +65,35 @@ mod cases {
         fn links_of(&self, note: &ResourceRef) -> Vec<String> {
             texts_of(self.call("links_of", vec![Value::resource(note)]))
         }
+
+        /// Runs the scenario `name`, which answers the resource it names as its result.
+        fn scenario(&self, name: &str) -> ResourceRef {
+            let action = self
+                .app
+                .meta()
+                .scenarios
+                .iter()
+                .find(|scenario| scenario.name == name)
+                .unwrap_or_else(|| panic!("no scenario {name}"))
+                .action
+                .clone();
+            returned_ref(
+                self.rt
+                    .invoke_action(&me(), (action.as_str(), vec![]))
+                    .unwrap(),
+            )
+        }
+
+        fn titled(&self, title: &str) -> ResourceRef {
+            let out = self.call("note_titled", vec![self.board_arg(), Value::text(title)]);
+            match out {
+                InvokeOutcome::Done(Value::Opt(Some(inner))) => match *inner {
+                    Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
+                    other => panic!("not a note: {other:?}"),
+                },
+                other => panic!("not a note: {other:?}"),
+            }
+        }
     }
 
     fn text_of(out: InvokeOutcome) -> String {
@@ -101,6 +130,21 @@ mod cases {
         // One made on its own was made from nothing.
         let alone = l.add_note("C");
         assert_eq!(l.made_from(&alone), "");
+    }
+
+    /// A scenario makes a resource from another through the same path an invocation made from it
+    /// takes: the change it makes records what it made from, and what links to the source names
+    /// the resource made from it.
+    #[test]
+    fn a_scenario_makes_a_resource_from_another() {
+        let l = Links::new();
+        let made = l.scenario("a note made from another");
+        assert_eq!(l.made_from(&made), "A");
+        // What links to the source: the note made from it, and nothing it says itself.
+        let source = l.titled("A");
+        assert_eq!(l.made_from(&source), "");
+        assert_eq!(l.links_of(&source), vec!["created_from B".to_owned()]);
+        assert!(l.links_of(&made).is_empty());
     }
 
     #[test]

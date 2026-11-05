@@ -1702,6 +1702,7 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .or_else(|| block(then))
             .or_else(|| els.as_deref().and_then(|x| mentions(x, names))),
         ExprKind::Block(b) => block(b),
+        ExprKind::MadeFrom { of, body } => mentions(of, names).or_else(|| block(body)),
         ExprKind::Match { scrutinee, arms } => mentions(scrutinee, names)
             .or_else(|| arms.iter().find_map(|a| mentions(&a.body, names))),
         ExprKind::Str(parts) => parts.iter().find_map(|p| match p {

@@ -89,6 +89,21 @@ view item_row(i: Item) {
     row(i.title)
 }
 
+/// The note the board holds under `title`, when it holds one.
+action note_titled(b: Board, title: Text) -> Option<Note> {
+    return b.notes.find(n -> n.title == title)
+}
+
+/// A note made from another: the block the scenario opens on the one it was made from makes it,
+/// as the menu's Make does for a person, and answers the note it made.
+scenario "a note made from another" -> Note {
+    let b = root Board
+    let a = add_note(b, "A")
+    made from a {
+        add_note(b, "B")
+    }
+}
+
 /// What links to a note: how it is linked, and the linked resource's title.
 view links(n: Note) {
     stack {

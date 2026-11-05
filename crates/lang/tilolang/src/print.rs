@@ -641,6 +641,11 @@ fn expr_with(e: &Expr, min: u8, col: usize, level: usize, ctx: &mut Ctx) -> Stri
             )
         }
         ExprKind::Block(b) => block_text(b, col, level, ctx, true),
+        ExprKind::MadeFrom { of, body } => {
+            let head = format!("made from {}", expr_with(of, 0, col + 10, level, ctx));
+            let col = col + head.len() + 1;
+            format!("{head} {}", block_text(body, col, level, ctx, true))
+        }
         ExprKind::Match { scrutinee, arms } => {
             let mut out = format!(
                 "match {} {{\n",

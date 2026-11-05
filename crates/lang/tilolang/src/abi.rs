@@ -124,6 +124,8 @@ imports! {
     AgentNamed = "agent_named" ([H] -> [H]);
     InvokerPush = "invoker_push" ([H, H] -> []);
     InvokerPop = "invoker_pop" ([] -> []);
+    FromPush = "from_push" ([H] -> []);
+    FromPop = "from_pop" ([] -> []);
     PrincipalKind = "principal_kind" ([H] -> [I64]);
     PrincipalRole = "principal_role" ([H] -> [H]);
 

@@ -44,6 +44,9 @@ pub struct ActionState {
     /// time it acts at when it names one; `invoker` and `now` read the last one, or `invoker`
     /// and the invocation's time when there is none.
     pub acting_as: Vec<(Principal, Option<String>)>,
+    /// What a scenario makes resources from (`from r { ... }`), innermost last: the change it
+    /// commits records it as what they were made from, as an action invoked from `r` does.
+    pub made_from: Vec<ResourceRef>,
     /// What the change records about its cause; a scenario commits each `as` block under it,
     /// as the person and at the time the block names.
     pub note: Box<crate::store::ChangeNote>,

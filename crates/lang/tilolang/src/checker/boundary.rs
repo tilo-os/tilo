@@ -774,6 +774,10 @@ pub(super) fn names_in(e: &ast::Expr, out: &mut BTreeSet<String>) {
             }
         }
         ExprKind::Block(b) => names_in_block(b, out),
+        ExprKind::MadeFrom { of, body } => {
+            names_in(of, out);
+            names_in_block(body, out);
+        }
         ExprKind::Match { scrutinee, arms } => {
             names_in(scrutinee, out);
             for arm in arms {

@@ -649,6 +649,17 @@ scenario "a team's channels" -> TextChannel {
     design
 }
 
+/// A message made from another: the one it was made from draws the made message as a card, as
+/// picking the message a menu's Make is open on makes it.
+scenario "a message made from another" -> TextChannel {
+    let design = new_channel(channels, "design")
+    let ask = send(design, RichText("Can we move the account step to the end?"))
+    made from ask {
+        send(design, RichText("Then let them in first and ask once they save something."))
+    }
+    design
+}
+
 /// A thread a question started: its window, the replies in it and one replying to another.
 scenario "a thread" -> Thread {
     let mia = person("Mia")

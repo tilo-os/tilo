@@ -2066,6 +2066,25 @@ impl<'a> Parser<'a> {
                 self.bump();
                 ExprKind::Bool(false)
             }
+            // `made from r { ... }`: two words no other expression pairs, so a name `made` or a
+            // field `from` stays an ordinary name.
+            Tok::Ident(name)
+                if name == "made"
+                    && matches!(self.peek_at(1), Tok::Ident(word) if word == "from") =>
+            {
+                self.bump();
+                self.bump();
+                let of = self.expr()?;
+                let body = self.block()?;
+                let span = start.to(body.span);
+                return Ok(Expr {
+                    kind: ExprKind::MadeFrom {
+                        of: Box::new(of),
+                        body,
+                    },
+                    span,
+                });
+            }
             Tok::Ident(name) if name == "root" && matches!(self.peek_at(1), Tok::Ident(_)) => {
                 self.bump();
                 let ty = self.type_expr()?;
