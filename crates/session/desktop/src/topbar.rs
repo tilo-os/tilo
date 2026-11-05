@@ -24,6 +24,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
+use self::controls::is_left_release;
 use crate::chrome::{
     AppTrayIcon, AppTrayItem, AppTrayRequest, AppTrayStatus, Chrome, ChromeIntent, ClockSnapshot,
     TopBarPresence,

@@ -3,9 +3,9 @@
 //! band takes and when its frame is stale.
 
 use super::{
-    Affine, BAR_CONTROL_PX, CENTER_INSET_PX, CacheFingerprint, ChromeIntent, ClockActivity,
-    ClockSnapshot, Duration, Instant, NARROW_MENU_BAR_PX, Point, Rect, Scene, TextRenderer,
-    TextRole, TextStyle, TextWeight, Theme, TopBarChrome, TopBarPresence, Widget, WindowEvent, t,
+    Affine, BAR_CONTROL_PX, CENTER_INSET_PX, ClockSnapshot, Duration, Instant, NARROW_MENU_BAR_PX,
+    Rect, Scene, TextRenderer, TextRole, TextStyle, TextWeight, Theme, TopBarChrome,
+    TopBarPresence,
 };
 
 /// How far apart the dots after an activity's reading stand: one dot per
