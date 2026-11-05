@@ -132,7 +132,6 @@ impl NativeWorkspaceOwner {
                 hint: None,
             }),
             peer: peer.durable()?,
-            old_direct_conversations: crate::owner::OldDirectConversations::default(),
             generation: 1,
             continuity: 0,
             publication: Some(publication::StoredPublication::default()),
