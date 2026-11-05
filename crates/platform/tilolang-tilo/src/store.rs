@@ -992,6 +992,19 @@ impl TiloStore {
         })
     }
 
+    /// The resources `person` made a version of that someone else changed last: what a place
+    /// counts as changed under their hands since they last looked, beside what they looked at.
+    fn built_changed_since(&self, person: &str) -> Vec<String> {
+        self.built_versions();
+        let inner = self.held();
+        inner
+            .versions
+            .as_ref()
+            .and_then(|held| held.changed_since.get(person))
+            .map(|resources| resources.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// The actions the runtime committed since the host last took them, oldest first. They stay
     /// available by ticket ([`Self::committed`]) until the door has answered ([`Self::take_ticket`]).
     #[must_use]
@@ -2391,6 +2404,10 @@ impl Store for TiloStore {
             .get(&at.id_string())
             .cloned()
             .unwrap_or_default())
+    }
+
+    fn changed_since(&self, person: &str) -> Result<Vec<String>, StoreError> {
+        Ok(self.built_changed_since(person))
     }
 
     fn versions_within(&self, doc: &DocId) -> Result<BTreeMap<String, Vec<Version>>, StoreError> {

@@ -213,16 +213,18 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   shared by default, and a reader who is told what a colleague changed can deal with it as they
   deal with an agent's. What the person made themselves is never marked: their own change is
   the newest they have seen of it.
-- **What the person never looked at is not marked**: a resource with neither a mark of theirs
-  nor a version of theirs has nothing unseen for them (`seen::unseen`). It is new to them, not
-  changed under their hands, and "since you last looked" needs a look. So the marks a window
-  shows a person are the same marks a place's count adds up: no item is marked in one place and
-  uncounted in the other.
-- **A place shows how many of what it lists is unseen** (`unseen(items)`): the items of a
-  collection or of a list the person looked at that carry a change after their mark of them,
-  counted from the store's versions index. It is answered from the person's marks, never by
-  checking the place's items one by one: a place's count costs what the person has looked at,
-  not what the place holds, so a workspace of any size counts in the same time.
+- **What the person made or looked at is what can be marked**: a resource they created or
+  changed, or looked at, and someone else changed after (`seen::unseen`). A resource they
+  neither made nor looked at is new to them, not changed under their hands; a row of one says
+  it was made (`kind: created`) and the open count already says it is there. "Since you last
+  looked" needs a look, or a hand.
+- **A place shows how many of what it lists changed under the person's hands**
+  (`unseen(items)`): the items of a collection or of a list that carry a change after their
+  mark, counted from the store's index of the resources each person made that someone else
+  changed last, and from the person's marks. It is never answered by checking the place's items
+  one by one: a place's count costs what the person has made and seen, not what the place
+  holds, so a place of any size counts in the same time, and a reader who made and looked at
+  nothing counts nothing however much it holds.
 
 ## Performance by default
 

@@ -6,6 +6,7 @@
 //! What an answer depends on is read through the view's reads, so the view runs again when it
 //! moves: an action's label that follows its subject, a title, who is at a resource.
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::core::{Args, Core, HResult, trap};
@@ -468,12 +469,27 @@ impl Core {
         for (key, value, generation) in &marks {
             self.note_state_read(key.clone(), *generation, value);
         }
-        let marked: Vec<(String, SeenMark)> = marks
+        // What the count is made of: what the person looked at, and what changed under their
+        // own hands. A resource they neither looked at nor changed is new to them, not
+        // changed, and the count never walks the place's items to find that out: the bench,
+        // who has neither, counts nothing however much the place holds.
+        let mut candidates: BTreeMap<String, Option<SeenMark>> = self
+            .store
+            .borrow()
+            .changed_since(person)
+            .map_err(|e| e.to_string())?
             .into_iter()
-            .filter(|(key, _, _)| key.state != RUNS_STATE)
-            .filter_map(|(key, value, _)| Some((key.state, mark_of(Some(&value))?)))
+            .map(|resource| (resource, None))
             .collect();
-        if marked.is_empty() {
+        for (key, value, _) in marks {
+            if key.state == RUNS_STATE {
+                continue;
+            }
+            if let Some(mark) = mark_of(Some(&value)) {
+                candidates.insert(key.state, Some(mark));
+            }
+        }
+        if candidates.is_empty() {
             return Ok(0);
         }
         let listing = match items {
@@ -482,7 +498,7 @@ impl Core {
         };
         let runs = self.seen_runs(person);
         let mut count: usize = 0;
-        for (resource, mark) in marked {
+        for (resource, mark) in candidates {
             if !holds_item(items, listing.as_deref(), &resource) {
                 continue;
             }
@@ -501,7 +517,7 @@ impl Core {
                 .versions(&at)
                 .map_err(|e| e.to_string())?;
             self.read_versions_of(&at);
-            if crate::seen::unseen(&versions, person, Some(&mark), &runs).is_empty() {
+            if crate::seen::unseen(&versions, person, mark.as_ref(), &runs).is_empty() {
                 continue;
             }
             count = count.saturating_add(1);

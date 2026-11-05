@@ -14,8 +14,8 @@
 //!
 //! Which versions are marked at all: every version someone else made, a person's or an agent's
 //! alike, and none the person made themselves. What the person has not seen is what changed
-//! under their hands, whoever changed it (§4), and only where they looked: a resource they
-//! never looked at is new to them, not changed.
+//! under their hands, whoever changed it (§4): what they made or looked at, and someone else
+//! changed after. A resource they never made nor looked at is new to them, not changed.
 
 use serde::{Deserialize, Serialize};
 
@@ -99,9 +99,6 @@ pub fn unseen(
     runs: &[String],
 ) -> Vec<Version> {
     let own = versions.iter().rposition(|v| v.who == person);
-    if mark.is_none() && own.is_none() {
-        return Vec::new();
-    }
     let mut from = 0;
     if let Some(mark) = mark {
         from = match versions.iter().rposition(|v| v.change == mark.change) {
@@ -173,9 +170,12 @@ mod tests {
         );
         // Ben edited c3 after c2: what he made is his, and what came after is not.
         assert_eq!(changes(unseen(&versions, "ben", None, &[])), ["c4"]);
-        // Cy never looked at it and never changed it: nothing of it is unseen for him, however
-        // much changed.
-        assert!(unseen(&versions, "cy", None, &[]).is_empty());
+        // Cy is not here yet: what everyone else did is new to him, not changed under his
+        // hands, and nothing of it is marked until he looks.
+        assert_eq!(
+            changes(unseen(&versions, "cy", None, &[])),
+            ["c1", "c2", "c3", "c4"]
+        );
         // A mark whose change the log no longer names stands by its time.
         let gone = SeenMark {
             change: "compacted".to_owned(),

@@ -1288,6 +1288,19 @@ pub trait Store {
         Ok(versions_in(&self.history(&at.doc)?, at))
     }
 
+    /// The resources `person` made a version of that someone else changed after, oldest first:
+    /// what a place counts as changed under their hands since they last looked, beside what
+    /// they looked at. A store with an index answers it from the log it keeps per person; this
+    /// one has none.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn changed_since(&self, person: &str) -> Result<Vec<String>, StoreError> {
+        let _ = person;
+        Ok(Vec::new())
+    }
+
     /// The first version of the resource `at` (`created(r)`), or its last (`updated(r)`,
     /// `last`). A store with an index keeps both per resource, so a view showing them, or a
     /// list sorted by them, reads no history.
