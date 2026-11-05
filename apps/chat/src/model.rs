@@ -153,8 +153,12 @@ pub struct Channel {
     /// the document (and reachable via the Ctrl+K command palette to unarchive).
     /// Convergent state — a plain scalar flag toggled by an action.
     pub archived: bool,
-    /// Bare authenticated Agent id for a system-created direct conversation.
-    pub conversation_with: Option<Id>,
+    /// A direct conversation between some of the workspace's people, rather
+    /// than one of its named channels.
+    pub direct: bool,
+    /// Who a direct conversation is with, by participant key
+    /// (`person:<root>`, `agent:<id>`); empty for a channel.
+    pub participants: Vec<String>,
 }
 
 /// One person currently connected to a voice channel, with their live

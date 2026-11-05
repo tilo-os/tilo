@@ -136,7 +136,9 @@ pub const VOICE_CHANNEL: &str = "c_voice";
 /// those fields unread; up to version 5 they are read into the item
 /// ([`restore_flat_items`]). Versions 1 to 6 stored a triage step's update
 /// with its fields flat beside its variant's name; they are stored by their
-/// variant now.
+/// variant now. Up to version 7 a conversation with an agent was a channel
+/// carrying the agent's id (`conversation_with`); it is the participant the
+/// conversation is with now ([`participants_of_old_channels`]).
 ///
 /// # Errors
 /// When `from` is not a version this chat was, or a stored value does not
@@ -146,7 +148,7 @@ fn migrate(
     from: u32,
 ) -> Result<(), ui::tilo_resource::ModelError> {
     use ui::automerge::ROOT;
-    if !(1..=6).contains(&from) {
+    if !(1..=7).contains(&from) {
         return Err(ui::tilo_resource::ModelError::invalid(format!(
             "no Chat migration from {from}"
         )));
@@ -155,6 +157,9 @@ fn migrate(
         keep_read_counts(doc)?;
     }
     restore_flat_items(doc)?;
+    if from <= 7 {
+        participants_of_old_channels(doc)?;
+    }
     for report in collection_items(doc, &ROOT, "feedback")? {
         retype_json::<Option<ui::feedback::Submission>>(doc, &report, "submission")?;
         for step in collection_items(doc, &report, "triage")? {
@@ -278,6 +283,50 @@ fn restore_flat_items(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError
                 Slot::Key(entry, "k").put_scalar(doc, ScalarValue::Str(key.into()))?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Read the conversations versions up to 7 kept as a channel with the agent
+/// it was with (`conversation_with`) into the participant the conversation is
+/// with; the old field is removed. Nothing is lost with it: a conversation
+/// whose participants are only an agent is listed as that agent's
+/// ([`Chat::conversation_name`]), not among the workspace's channels.
+///
+/// # Errors
+/// The document's read or write error.
+fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), ModelError> {
+    use ui::automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
+    use ui::tilo_resource::Slot;
+    for channel in collection_items(doc, &ROOT, "channels")? {
+        let Some(item) = map_at(doc, &channel, "v")? else {
+            continue;
+        };
+        let held = match doc.get(&item, "conversation_with")? {
+            Some((Value::Scalar(scalar), _)) => match scalar.as_ref() {
+                ScalarValue::Str(agent) => Some(agent.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(agent) = held {
+            let participants = Slot::Key(&item, "participants").object(doc, ObjType::List)?;
+            let keys: Vec<String> = (0..doc.length(&participants))
+                .filter_map(|index| match doc.get(&participants, index) {
+                    Ok(Some((Value::Scalar(scalar), _))) => match scalar.as_ref() {
+                        ScalarValue::Str(key) => Some(key.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect();
+            let key = Participant::agent(agent).key();
+            if !keys.contains(&key) {
+                let at = doc.length(&participants);
+                doc.insert(&participants, at, ScalarValue::Str(key.into()))?;
+            }
+        }
+        Slot::Key(&item, "conversation_with").remove(doc)?;
     }
     Ok(())
 }
@@ -414,7 +463,7 @@ fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<
 /// and with the same values, so every device that opens the workspace first
 /// makes the very same two, and their copies are one item each. A workspace
 /// with any channel, even one that does not read, gets nothing.
-fn open_workspace(channels: &mut Collection<Channel>) {
+fn open_workspace(channels: &mut Collection<Conversation>) {
     if !channels.is_empty() || !channels.quarantined().is_empty() {
         return;
     }
@@ -424,10 +473,10 @@ fn open_workspace(channels: &mut Collection<Channel>) {
     ] {
         channels.push(
             Id::from_raw(id),
-            Channel {
+            Conversation {
                 name: name.into(),
                 kind,
-                ..Channel::default()
+                ..Conversation::default()
             },
         );
     }
@@ -442,11 +491,15 @@ pub struct Chat {
     /// anyone who may edit the workspace (a public workspace's visitor) rearrange it.
     #[model(readonly)]
     pub categories: Collection<Category>,
-    /// The workspace's channels, in sidebar order within their category: made,
-    /// ordered and removed only by the record's actions, for the same
-    /// reason as [`Self::categories`].
+    /// The workspace's conversations, in sidebar order within their category:
+    /// made, ordered and removed only by the record's actions, for the same
+    /// reason as [`Self::categories`]. The field keeps the name records have
+    /// always kept them by: a channel is a conversation the whole workspace
+    /// has, named and listed; a direct conversation is one a set of
+    /// participants has, named by them and never stored
+    /// ([`Chat::direct_id`]).
     #[model(readonly)]
-    pub channels: Collection<Channel>,
+    pub channels: Collection<Conversation>,
     /// The people and agents in the workspace, by their participant id.
     pub people: Keyed<Person>,
     /// The name every member shows for an agent task, as the person hosting
@@ -487,9 +540,10 @@ pub struct Category {
     pub name: String,
 }
 
-/// A text or voice channel of the workspace.
+/// One conversation of the workspace: a channel every member has, or a
+/// direct conversation between some of them.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
-pub struct Channel {
+pub struct Conversation {
     /// The category it is listed under; none for uncategorised: changed by
     /// [`Chat::set_channel_category`], which only those who keep the workspace's
     /// layout may.
@@ -512,10 +566,80 @@ pub struct Channel {
     /// keep the workspace's layout may.
     #[model(readonly)]
     pub archived: bool,
-    /// Bare authenticated Agent id for a direct conversation; ordinary
-    /// channels leave it empty and remain in the navigation list.
+    /// Who the conversation is with, by [`Participant::key`]: empty for a
+    /// channel of the whole workspace. Not access control — every member
+    /// reads every conversation; it decides where the conversation is
+    /// listed and whose unread count moves.
     #[model(readonly)]
-    pub conversation_with: Option<Atom>,
+    pub participants: Vec<Atom>,
+}
+
+/// The prefix of a direct conversation's id: what it is with follows it
+/// (`direct:person:<root>|person:<root>`, the keys in order).
+pub const DIRECT_CONVERSATION_PREFIX: &str = "direct:";
+
+/// One of the people or agents a conversation is with.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Participant {
+    /// A person, by the root key of their identity.
+    Person(String),
+    /// An agent, by its participant id.
+    Agent(String),
+}
+
+impl Participant {
+    /// The person whose root key is `root`.
+    #[must_use]
+    pub fn person(root: impl Into<String>) -> Self {
+        Self::Person(root.into())
+    }
+
+    /// The agent whose participant id is `id`.
+    #[must_use]
+    pub fn agent(id: impl Into<String>) -> Self {
+        Self::Agent(id.into())
+    }
+
+    /// How the participant is spelled in a conversation's id and fields:
+    /// `person:<root>` or `agent:<id>`.
+    #[must_use]
+    pub fn key(&self) -> String {
+        match self {
+            Self::Person(root) => format!("person:{root}"),
+            Self::Agent(id) => format!("agent:{id}"),
+        }
+    }
+
+    /// The participant `key` spells, or none when it spells neither kind.
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        if let Some(root) = key.strip_prefix("person:") {
+            return (!root.is_empty()).then(|| Self::Person(root.to_owned()));
+        }
+        let id = key.strip_prefix("agent:")?;
+        (!id.is_empty()).then(|| Self::Agent(id.to_owned()))
+    }
+
+    /// The person's root key or the agent's id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Person(root) => root,
+            Self::Agent(id) => id,
+        }
+    }
+
+    /// Whether this is an agent.
+    #[must_use]
+    pub fn is_agent(&self) -> bool {
+        matches!(self, Self::Agent(_))
+    }
+
+    /// The participant as a conversation's fields keep it.
+    #[must_use]
+    pub fn atom(&self) -> Atom {
+        Atom(self.key())
+    }
 }
 
 /// One message of a channel.
@@ -1159,6 +1283,100 @@ pub(crate) struct Posting {
 }
 
 impl Chat {
+    /// The id of the one conversation with exactly `participants`: derived
+    /// from the set, so two devices that open the same conversation at once
+    /// make one, and neither has to create it first.
+    #[must_use]
+    pub fn direct_id(participants: impl IntoIterator<Item = Participant>) -> Id {
+        let mut keys: Vec<String> = participants.into_iter().map(|one| one.key()).collect();
+        keys.sort();
+        keys.dedup();
+        Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{}", keys.join("|")))
+    }
+
+    /// The participants the direct conversation `id` names, or none when
+    /// `id` names no direct conversation.
+    #[must_use]
+    pub fn direct_participants(id: &Id) -> Option<Vec<Participant>> {
+        let keys = id.as_str().strip_prefix(DIRECT_CONVERSATION_PREFIX)?;
+        let participants: Option<Vec<Participant>> =
+            keys.split('|').map(Participant::parse).collect();
+        participants.filter(|participants| !participants.is_empty())
+    }
+
+    /// Whether `id` names a direct conversation.
+    #[must_use]
+    pub fn is_direct(id: &Id) -> bool {
+        id.as_str().starts_with(DIRECT_CONVERSATION_PREFIX)
+    }
+
+    /// The conversation `id` names: a channel the record keeps, or the
+    /// direct conversation with the participants its id names. `None` for an
+    /// id that names neither.
+    #[must_use]
+    pub fn conversation(&self, id: &Id) -> Option<Conversation> {
+        if let Some(channel) = self.channels.get(id) {
+            return Some(channel.clone());
+        }
+        let participants = Self::direct_participants(id)?;
+        Some(Conversation {
+            participants: participants.into_iter().map(|one| one.atom()).collect(),
+            ..Conversation::default()
+        })
+    }
+
+    /// Who the conversation `id` is with: a channel of the whole workspace
+    /// has no participants.
+    #[must_use]
+    pub fn conversation_participants(&self, id: &Id) -> Vec<Participant> {
+        if let Some(channel) = self.channels.get(id) {
+            return channel
+                .participants
+                .iter()
+                .filter_map(|key| Participant::parse(&key.0))
+                .collect();
+        }
+        Self::direct_participants(id).unwrap_or_default()
+    }
+
+    /// Whether the conversation `id` takes messages now: a text channel of
+    /// the record, or a direct conversation between members it knows.
+    #[must_use]
+    pub fn takes_messages(&self, id: &Id) -> bool {
+        if let Some(channel) = self.channels.get(id) {
+            return channel.kind != ChannelKind::Voice;
+        }
+        let Some(participants) = Self::direct_participants(id) else {
+            return false;
+        };
+        participants.iter().all(|participant| {
+            self.people
+                .iter()
+                .any(|person| person.id.0 == participant.id())
+        })
+    }
+
+    /// The name the workspace gives a conversation: a channel's own name,
+    /// or the names of everyone a direct conversation is with, in order.
+    #[must_use]
+    pub fn conversation_name(&self, id: &Id) -> String {
+        if let Some(channel) = self.channels.get(id) {
+            return channel.name.clone();
+        }
+        Self::direct_participants(id).map_or_else(String::new, |participants| {
+            participants
+                .iter()
+                .map(|participant| {
+                    self.people
+                        .iter()
+                        .find(|person| person.id.0 == participant.id())
+                        .map_or_else(|| participant.id().to_owned(), |person| person.name.clone())
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+    }
+
     /// Everyone who can be mentioned: the workspace's people and agents.
     #[must_use]
     pub fn participants(&self) -> Vec<crate::mention::Participant> {
@@ -1183,7 +1401,7 @@ impl Chat {
     }
 
     /// Add `channel` as `id`.
-    pub(crate) fn open_channel(&mut self, id: Id, channel: Channel) {
+    pub(crate) fn open_channel(&mut self, id: Id, channel: Conversation) {
         self.channels.push(id, channel);
     }
 
@@ -1205,14 +1423,14 @@ impl Chat {
         let name = channel_name(name)?;
         self.open_channel(
             id,
-            Channel {
+            Conversation {
                 category,
                 name: name.to_owned(),
                 topic: topic
                     .map(|topic| topic.trim().to_owned())
                     .unwrap_or_default(),
                 kind: kind.unwrap_or_default(),
-                ..Channel::default()
+                ..Conversation::default()
             },
         );
         Ok(())
@@ -1258,7 +1476,7 @@ impl Chat {
     read_content = Chat::content,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 7,
+    version = 8,
     migrate = migrate,
 )]
 impl Chat {
@@ -1698,7 +1916,7 @@ impl Chat {
         #[param("How many of the channel's top-level messages you saw in that part")] seen: u32,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
-        if !self.channels.contains(channel) {
+        if self.conversation(channel).is_none() {
             return Err(Refusal::new("there is no such channel"));
         }
         let read = crate::parts::ReadMark {

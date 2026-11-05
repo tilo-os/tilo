@@ -45,12 +45,14 @@ impl Chat {
             .collect()
     }
 
-    /// The channels, in sidebar order; unread counts are the reader's own.
+    /// The workspace's channels, in sidebar order; unread counts are the
+    /// reader's own.
     #[must_use]
     pub fn channel_rows(&self) -> Vec<Channel> {
-        self.channels
+        let mut rows: Vec<Channel> = self
+            .channels
             .iter()
-            .filter(|(_, channel)| channel.conversation_with.is_none())
+            .filter(|(_, channel)| channel.participants.is_empty())
             .enumerate()
             .map(|(order, (id, channel))| Channel {
                 id: id.to_string(),
@@ -66,12 +68,129 @@ impl Chat {
                 unread: 0,
                 mentions: 0,
                 archived: channel.archived,
-                conversation_with: channel
-                    .conversation_with
-                    .as_ref()
-                    .map(|agent| agent.0.clone()),
+                direct: false,
+                participants: Vec::new(),
             })
-            .collect()
+            .collect();
+        rows
+    }
+
+    /// Every conversation `me` has, in sidebar order: the workspace's
+    /// channels, and one direct conversation with each of the workspace's
+    /// other people — the same one on every device, because its id names
+    /// the participants ([`Chat::direct_id`]) — with the conversations the
+    /// record keeps for an agent among them.
+    #[must_use]
+    pub fn conversation_rows(&self, me: &str) -> Vec<Channel> {
+        use crate::record::Participant;
+        let mut rows = self.channel_rows();
+        let mut direct: Vec<(String, Channel)> = Vec::new();
+        for (id, channel) in self.channels.iter() {
+            if channel.participants.is_empty() {
+                continue;
+            }
+            let name = self.display_names(id, Some(me));
+            direct.push((
+                name.clone(),
+                Channel {
+                    id: id.to_string(),
+                    category: String::new(),
+                    name,
+                    topic: channel.topic.clone(),
+                    kind: channel.kind,
+                    order: 0,
+                    unread: 0,
+                    mentions: 0,
+                    archived: channel.archived,
+                    direct: true,
+                    participants: channel
+                        .participants
+                        .iter()
+                        .map(|key| key.0.clone())
+                        .collect(),
+                },
+            ));
+        }
+        for person in self.people.iter() {
+            if person.agent || person.id.0 == me {
+                continue;
+            }
+            let id = Chat::direct_id([
+                Participant::person(me.to_owned()),
+                Participant::person(person.id.0.clone()),
+            ]);
+            if self.channels.contains(&id) {
+                continue;
+            }
+            let name = self.display_names(&id, Some(me));
+            direct.push((
+                name.clone(),
+                Channel {
+                    id: id.to_string(),
+                    category: String::new(),
+                    name,
+                    topic: String::new(),
+                    kind: crate::model::ChannelKind::Text,
+                    order: 0,
+                    unread: 0,
+                    mentions: 0,
+                    archived: false,
+                    direct: true,
+                    participants: [me, person.id.0.as_str()]
+                        .into_iter()
+                        .map(|id| Participant::person(id.to_owned()).key())
+                        .collect(),
+                },
+            ));
+        }
+        direct.sort_by(|left, right| {
+            left.0
+                .to_lowercase()
+                .cmp(&right.0.to_lowercase())
+                .then_with(|| left.1.id.cmp(&right.1.id))
+        });
+        let first = rows.len();
+        for (offset, (_, mut row)) in direct.into_iter().enumerate() {
+            row.order = u32::try_from(first.saturating_add(offset)).unwrap_or(u32::MAX);
+            rows.push(row);
+        }
+        rows
+    }
+
+    /// What a conversation is called for `me`: the names of the people it is
+    /// with, this person's own left out of a direct conversation.
+    #[must_use]
+    pub fn label(&self, id: &Id, me: &str) -> String {
+        self.display_names(id, Some(me))
+    }
+
+    /// The names of the people a conversation is with, `me`'s left out when
+    /// they are one of them and someone else is.
+    #[must_use]
+    fn display_names(&self, id: &Id, me: Option<&str>) -> String {
+        let participants = self.conversation_participants(id);
+        let named: Vec<String> = participants
+            .iter()
+            .map(|participant| {
+                self.people
+                    .iter()
+                    .find(|person| person.id.0 == participant.id())
+                    .map_or_else(|| participant.id().to_owned(), |person| person.name.clone())
+            })
+            .collect();
+        let others: Vec<String> = participants
+            .iter()
+            .zip(named.iter())
+            .filter(|(participant, _)| Some(participant.id()) != me)
+            .map(|(_, name)| name.clone())
+            .collect();
+        let shown = if others.is_empty() { named } else { others };
+        shown
+            .iter()
+            .filter(|name| !name.trim().is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     /// The people and agents in the workspace.
@@ -177,11 +296,29 @@ impl Chat {
     }
 
     /// The top-level messages of `channel` held in `messages` that `user`
-    /// has not seen.
+    /// has not seen. In a direct conversation, what they wrote themselves is
+    /// never unread for them.
     #[must_use]
     pub fn unread(&self, messages: &crate::messages::Messages, channel: &str, user: &str) -> u32 {
-        let unread = messages.unread(&Id::from_raw(channel), self.read_mark(channel, user));
+        let mark = self.read_mark(channel, user);
+        let unread = if self.is_direct_conversation(channel) {
+            messages.unread_by_others(&Id::from_raw(channel), mark, user)
+        } else {
+            messages.unread(&Id::from_raw(channel), mark)
+        };
         u32::try_from(unread).unwrap_or(u32::MAX)
+    }
+
+    /// Whether `channel` is a conversation some people have rather than one
+    /// of the workspace's channels.
+    #[must_use]
+    pub fn is_direct_conversation(&self, channel: &str) -> bool {
+        let id = Id::from_raw(channel);
+        Chat::is_direct(&id)
+            || self
+                .channels
+                .get(&id)
+                .is_some_and(|conversation| !conversation.participants.is_empty())
     }
 }
 

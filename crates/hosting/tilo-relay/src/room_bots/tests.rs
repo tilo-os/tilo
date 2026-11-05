@@ -1316,7 +1316,7 @@ async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, V
     let named = |category: Option<&tilo_resource::Id>| {
         chat.channels
             .values()
-            .filter(|channel| channel.conversation_with.is_none())
+            .filter(|channel| channel.participants.is_empty())
             .filter(|channel| channel.category.as_ref() == category)
             .map(|channel| channel.name.clone())
             .collect::<Vec<_>>()

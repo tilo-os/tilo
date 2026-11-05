@@ -364,18 +364,9 @@ pub struct ChatApp {
     pub(crate) workspace_agents: Vec<Id>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
-    pub(crate) direct_person: Option<String>,
-    pub(crate) person_contacts: Vec<ui::person_chat::Contact>,
-    pub(crate) person_messages: Vec<ui::person_chat::Message>,
-    pub(crate) person_error: Option<String>,
-    pub(crate) person_body_views: HashMap<String, (String, crate::composer::MessageEditor)>,
-    /// The direct conversations as their own records, in a live window of a
-    /// workspace that keeps them: what answers [`ui::person_chat`] here, and
-    /// what the import of the old private store writes into.
-    pub(crate) direct: Option<std::rc::Rc<ui::direct::Records>>,
-    /// The workspace's people as the record last read them, in the shape a
-    /// direct conversation keeps them (the people a chat can be had with).
-    pub(crate) direct_people: Vec<ui::direct::Person>,
+    /// The direct conversations that hold messages, by conversation id: the
+    /// ones the sidebar lists beside the one open.
+    pub(crate) direct_held: std::collections::HashSet<String>,
     /// Retained direct conversations currently owned by the shared
     /// floating-surface host, keyed by their deterministic conversation id.
     /// The person's reduced-motion setting, applied to every floating
@@ -764,11 +755,7 @@ impl ChatApp {
             workspace_colors: HashMap::new(),
             workspace_agents: Vec::new(),
             capture_agent_presence: None,
-            direct_person: None,
-            person_contacts: Vec::new(),
-            person_messages: Vec::new(),
-            person_error: None,
-            person_body_views: HashMap::new(),
+            direct_held: std::collections::HashSet::new(),
             motion_reduced: false,
             agent_surfaces: HashMap::new(),
             agent_surface_requests: VecDeque::new(),
@@ -804,8 +791,6 @@ impl ChatApp {
             staged_scenario: None,
             #[cfg(test)]
             last_read: std::rc::Rc::default(),
-            direct: None,
-            direct_people: Vec::new(),
             pending_call: None,
             sharing_context: false,
             following_context: false,
@@ -1074,17 +1059,6 @@ impl ChatApp {
         self.dispatch = Some(dispatcher);
     }
 
-    /// Keep the direct conversations in their own records, in the workspace
-    /// `workspace` whose records `handle` opens: this window's views read and
-    /// write them there from now on.
-    pub(crate) fn attach_direct(
-        &mut self,
-        handle: ui::framework::WorkspaceHandle,
-        workspace: String,
-    ) {
-        self.direct = Some(ui::direct::Records::new(handle, workspace, &self.me.id));
-    }
-
     /// Keep the composers' drafts in the person's own `record`: theirs
     /// alone, on each of their devices, never in the workspace.
     #[must_use]
@@ -1221,14 +1195,16 @@ impl ChatApp {
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {
-        if let Some(peer) = &self.direct_person {
-            return self
-                .person_contacts
-                .iter()
-                .any(|contact| &contact.public_key == peer)
-                && self.person_error.is_none();
-        }
         self.can_participate()
+    }
+
+    /// The person this window is talking to in the open conversation, when it
+    /// is a direct one: its participant that is not this window's person.
+    pub(crate) fn direct_person(&self) -> Option<String> {
+        crate::record::Chat::direct_participants(&Id::from_raw(self.active_channel.clone()))?
+            .into_iter()
+            .find(|participant| !participant.is_agent() && participant.id() != self.me.id)
+            .map(|participant| participant.id().to_owned())
     }
 
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
@@ -1316,9 +1292,8 @@ impl ChatApp {
     /// active channel changed (the caller must reload so the message list
     /// refreshes).
     pub(crate) fn ensure_selection(&mut self) -> bool {
-        let channel_changed = self.direct_person.is_none()
-            && !self.active_channel.is_empty()
-            && self.channel(&self.active_channel).is_none();
+        let channel_changed =
+            !self.active_channel.is_empty() && self.channel(&self.active_channel).is_none();
         if channel_changed {
             self.active_channel.clear();
         }
@@ -1655,7 +1630,6 @@ impl Widget for ChatApp {
         self.settle_device_files();
         self.settle_refused_post();
         self.settle_attachment_import();
-        self.refresh_person_conversation();
         {
             use automerge::transaction::Transactable as _;
             // Reload and repaint only when the document moved: committed heads
@@ -2120,17 +2094,13 @@ impl Widget for ChatApp {
         let conversation = self.conversation_accessibility();
         let mut children: Vec<AccessNode> = controls;
         children.extend(self.right_flap.resize_accessibility());
-        if let Some(peer) = &self.direct_person {
-            children.push(
-                AccessNode::new(Role::Heading { level: 1 })
-                    .with_name(self.person_display_name(peer))
-                    .with_description(crate::i18n::t("chat-person-chat-private"))
-                    .with_hashed_key(("person-conversation-heading", &self.active_channel)),
-            );
-        }
         if let Some(channel) = self.channel(&self.active_channel) {
             let mut heading = AccessNode::new(Role::Heading { level: 1 })
-                .with_name(channel.kind.label(&channel.name))
+                .with_name(if channel.direct {
+                    channel.name.clone()
+                } else {
+                    channel.kind.label(&channel.name)
+                })
                 .with_hashed_key(("conversation-heading", &channel.id));
             if !channel.topic.trim().is_empty() {
                 // The desktop header deliberately elides the topic before the
@@ -2261,9 +2231,6 @@ impl Widget for ChatApp {
             ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck
         ) {
             return false;
-        }
-        if matches!(hit, Hit::Send) && self.direct_person.is_some() {
-            return self.send_person_focused();
         }
         let messages_before = matches!(hit, Hit::Send).then(|| {
             crate::projection::read(state)

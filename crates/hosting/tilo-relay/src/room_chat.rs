@@ -58,7 +58,7 @@ pub(crate) fn settle_chat(
     let has_channels = target
         .channels
         .iter()
-        .any(|(id, channel)| channel.conversation_with.is_none() && !opened_with(id));
+        .any(|(id, channel)| channel.participants.is_empty() && !opened_with(id));
     if !has_channels && !channels.is_empty() {
         let opener = Id::from_raw(CHAT_CHANNEL);
         let read = target
@@ -126,9 +126,7 @@ pub(crate) fn settle_feedback_channel(
     let at = target
         .channels
         .iter()
-        .rposition(|(id, channel)| {
-            channel.conversation_with.is_none() && id.as_str() != VOICE_CHANNEL
-        })
+        .rposition(|(id, channel)| channel.participants.is_empty() && id.as_str() != VOICE_CHANNEL)
         .map_or(0, |index| index.saturating_add(1));
     target.channels.insert(
         at,

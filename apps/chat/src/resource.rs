@@ -38,7 +38,7 @@ impl Chat {
         let channels = self
             .channels
             .iter()
-            .filter(|(_, channel)| channel.conversation_with.is_none())
+            .filter(|(_, channel)| channel.participants.is_empty())
             .map(|(id, channel)| {
                 SearchEntry::new(channel.name.clone(), channel.topic.clone())
                     .anchored(anchor("channels", id))
@@ -72,7 +72,7 @@ impl Chat {
             return Ok(serde_json::json!({
                 "channels": self.channels.iter()
                     .filter(|(_, channel)| {
-                        !channel.archived && channel.conversation_with.is_none()
+                        !channel.archived && channel.participants.is_empty()
                     })
                     .map(|(id, channel)| serde_json::json!({
                         "id": id,
@@ -751,7 +751,7 @@ impl ChatApp {
         let found = chat
             .channels
             .get(&id)
-            .filter(|found| found.conversation_with.is_none())
+            .filter(|found| found.participants.is_empty())
             .ok_or_else(|| format!("there is no channel `{channel}` in this chat"))?;
         let held = self.held_messages();
         let mut messages: Vec<_> = held
