@@ -2514,8 +2514,8 @@ fn paint_window(
     use std::os::fd::AsFd as _;
 
     let qh = queue.handle();
-    let stride = width * 4;
-    let size = stride * height;
+    let stride = width.checked_mul(4).expect("a window's stride");
+    let size = stride.checked_mul(height).expect("a window's size");
     let len = usize::try_from(size).expect("a window's size");
     let fd = rustix::fs::memfd_create("directory-input-test", rustix::fs::MemfdFlags::CLOEXEC)
         .expect("a buffer's memory");
