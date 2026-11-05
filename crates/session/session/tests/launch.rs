@@ -83,34 +83,20 @@ fn host_app(home: &tilo_test_env::TestHome, desktop_id: &str, body: &str) -> Pat
     host_app_claiming(home, desktop_id, body, None)
 }
 
-/// A session whose search finds one of the machine's own apps, and whose
-/// launches start on the display at `socket`.
-fn session(socket: &std::path::Path) -> (Session, Rc<Apps>) {
-    let mut environment = tilo_app_launch::SessionEnvironment::from_process();
-    environment.wayland_socket = Some(socket.to_path_buf());
-    let launch = Rc::new(Apps::new(environment, None));
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(AppLists {
-                    host_apps: vec![HostAppEntry {
-                        desktop_id: "org.example.Probe".into(),
-                        name: "Probe".into(),
-                        ..HostAppEntry::default()
-                    }],
-                    ..AppLists::default()
-                }),
-                ..SearchOptions::default()
-            },
-            apps: Some(Rc::clone(&launch) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&launch)),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
-    (session, launch)
+/// The desk's search as these tests find apps in it: the fixture's own host
+/// app, resolved through the entry the session's scan reads.
+fn host_search() -> SearchOptions {
+    SearchOptions {
+        lists: Lists::fixed(AppLists {
+            host_apps: vec![HostAppEntry {
+                desktop_id: "org.example.Probe".into(),
+                name: "Probe".into(),
+                ..HostAppEntry::default()
+            }],
+            ..AppLists::default()
+        }),
+        ..SearchOptions::default()
+    }
 }
 
 /// Run frames until `done` holds.
@@ -169,29 +155,31 @@ fn choose(session: &mut Session, query: &str, title: &str) {
 }
 
 #[test]
-fn choosing_a_host_app_runs_its_program_with_the_sessions_display() {
+fn choosing_a_host_app_starts_it_through_the_launcher_on_the_sessions_display() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
     let socket = home.runtime().join("wayland-7");
-    let marker = home.home().join("probe-ran");
-    host_app(
-        &home,
-        "org.example.Probe.desktop",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n%s\\n' \"$WAYLAND_DISPLAY\" \"$XDG_RUNTIME_DIR\" > '{marker}'\n",
-            marker = marker.display()
-        ),
-    );
+    let records = home.home().join("records");
+    host_app(&home, "org.example.Probe.desktop", "#!/bin/sh\nexit 0\n");
+    let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, _apps) = session(&socket);
+    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
-    until(&mut session, "the app runs", |_| marker.exists());
+    until(&mut session, "the launcher starts", |_| records.exists());
 
     assert_eq!(
-        fs::read_to_string(&marker).unwrap(),
-        "wayland-7\n".to_owned() + home.runtime().to_str().unwrap() + "\n",
-        "the app starts on this session's display, in its own runtime directory"
+        handed(&records, "--desktop-id"),
+        "org.example.Probe",
+        "the entry the person chose"
+    );
+    // The launcher derives WAYLAND_DISPLAY and XDG_RUNTIME_DIR from the
+    // socket; the session hands it this session's, never the ones its own
+    // process inherited.
+    assert_eq!(
+        handed(&records, "--wayland-socket"),
+        socket.to_str().unwrap(),
+        "the launcher is told this session's display"
     );
 }
 
@@ -199,21 +187,18 @@ fn choosing_a_host_app_runs_its_program_with_the_sessions_display() {
 fn a_document_opens_in_the_app_that_claims_its_type() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
-    let socket = home.runtime().join("wayland-7");
-    let marker = home.home().join("opened");
+    let records = home.home().join("records");
     host_app_claiming(
         &home,
         "org.example.Reader.desktop",
-        &format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$1\" > '{}'\n",
-            marker.display()
-        ),
+        "#!/bin/sh\nexit 0\n",
         Some("text/plain"),
     );
     let document = home.home().join("my notes.txt");
     fs::write(&document, b"notes").unwrap();
+    let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, apps) = session(&socket);
+    let (mut session, apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     // The link a browser or a file manager hands over: the path inside it is
     // percent-encoded, the path the app opens is not.
@@ -222,12 +207,19 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
         ui::uri::encode_component(document.to_str().unwrap())
     );
     apps.open_uri("", &uri).expect("the document opens");
-    until(&mut session, "the app runs", |_| marker.exists());
+    until(&mut session, "the launcher starts", |_| records.exists());
 
     assert_eq!(
-        fs::read_to_string(&marker).unwrap().trim_end(),
-        document.to_str().unwrap(),
-        "the app is told which document to open"
+        handed(&records, "--desktop-id"),
+        "org.example.Reader",
+        "the app that claims the type"
+    );
+    assert!(
+        fs::read_to_string(&records)
+            .unwrap()
+            .contains(&format!("--open {}", document.display())),
+        "the app is told which document to open: {:?}",
+        fs::read_to_string(&records).unwrap()
     );
 }
 
@@ -235,11 +227,11 @@ fn a_document_opens_in_the_app_that_claims_its_type() {
 fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
-    let socket = home.runtime().join("wayland-7");
-    let marker = home.home().join("probe-ran");
     host_app(&home, "org.example.Probe.desktop", "#!/bin/sh\nexit 3\n");
+    // The launcher is the app's process: it ends with it.
+    let launcher = tilo_test_env::stand_in(home.home().join("tilo-launcher"), "exit 3\n").unwrap();
 
-    let (mut session, _apps) = session(&socket);
+    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
     until(&mut session, "the notice is shown", |session| {
@@ -249,7 +241,6 @@ fn an_app_that_stops_on_its_own_leaves_a_notice_in_its_place() {
                 .any(|child| child.kind == WINDOW_KIND && child.label.contains("Probe"))
         })
     });
-    assert!(!marker.exists(), "the app never wrote anything");
 }
 
 /// A window of `app` the compositor mapped.
@@ -266,19 +257,19 @@ fn window(id: u64, app: &str) -> Window {
 fn a_second_launch_raises_the_window_the_app_already_has() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
-    let socket = home.runtime().join("wayland-7");
-    let launches = home.home().join("launches");
+    let records = home.home().join("records");
     host_app_declaring(
         &home,
         "org.example.Probe.desktop",
         "SingleMainWindow=true\n",
-        &format!("#!/bin/sh\nprintf 'ran\\n' >> '{}'\n", launches.display()),
+        "#!/bin/sh\nexit 0\n",
     );
+    let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, _apps) = session(&socket);
+    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     choose(&mut session, "probe", "Probe");
-    until(&mut session, "the app runs", |_| launches.exists());
+    until(&mut session, "the launcher starts", |_| records.exists());
 
     // The app's window is on the desk, showing another app's window in front.
     session.desktop().with_policy(|policy| {
@@ -303,7 +294,7 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
         session.step(Duration::from_millis(1)).unwrap();
     }
     assert_eq!(
-        fs::read_to_string(&launches).unwrap().lines().count(),
+        fs::read_to_string(&records).unwrap().lines().count(),
         1,
         "the app is not started a second time"
     );
@@ -423,6 +414,23 @@ fn recording_launcher(
     .unwrap()
 }
 
+/// A launcher that records what the session handed it, and runs as an app
+/// would until the test is over: the launcher is a host app's process, and it
+/// ends when the app does.
+fn recording_host_launcher(
+    home: &tilo_test_env::TestHome,
+    records: &Path,
+) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{records}'\nhold\n",
+            records = records.display()
+        ),
+    )
+    .unwrap()
+}
+
 /// What the last start the launcher at `records` made was handed for `flag`:
 /// the argument that follows it.
 fn handed(records: &Path, flag: &str) -> String {
@@ -513,6 +521,7 @@ fn session_through(
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
+            search: host_search(),
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&started),
@@ -1425,16 +1434,16 @@ const X11_CLASS: &str = "tilo.test.class";
 fn reopening_a_closed_window_starts_its_app_again() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
-    let socket = home.runtime().join("wayland-7");
-    let launches = home.home().join("launches");
+    let records = home.home().join("records");
     host_app_declaring(
         &home,
         "org.example.Probe.desktop",
         &format!("StartupWMClass={X11_CLASS}\n"),
-        &format!("#!/bin/sh\nprintf 'ran\\n' >> '{}'\n", launches.display()),
+        "#!/bin/sh\nexit 0\n",
     );
+    let launcher = recording_host_launcher(&home, &records);
 
-    let (mut session, _apps) = session(&socket);
+    let (mut session, _apps, _launches) = session_through(&home, &launcher, None);
     session.step(Duration::from_millis(1)).unwrap();
     // The client's window: its class is the app, its title the tab's.
     session
@@ -1454,7 +1463,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
     until(&mut session, "the tab is closed", |session| {
         groups(session).is_empty()
     });
-    assert!(!launches.exists(), "nothing had started the app yet");
+    assert!(!records.exists(), "nothing had started the app yet");
 
     // Reopen puts the tab back and starts the app that opens it again: the
     // class alone names that app through the entry claiming it.
@@ -1462,7 +1471,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
         session.desktop().with_policy(DesktopPolicy::reopen_closed),
         "the reopen is taken"
     );
-    until(&mut session, "the app runs again", |_| launches.exists());
+    until(&mut session, "the app runs again", |_| records.exists());
     assert_eq!(
         groups(&session),
         vec![vec![X11_CLASS.to_owned()]],
@@ -1484,7 +1493,7 @@ fn reopening_a_closed_window_starts_its_app_again() {
         "one tab, not two"
     );
     assert_eq!(
-        fs::read_to_string(&launches).unwrap().lines().count(),
+        fs::read_to_string(&records).unwrap().lines().count(),
         1,
         "the app started once"
     );

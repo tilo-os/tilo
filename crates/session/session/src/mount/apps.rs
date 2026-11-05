@@ -64,8 +64,9 @@ struct State {
     /// The launches running now, by the id the spawner gave each: what a
     /// crash notice's Reopen asks for again.
     running: BTreeMap<u64, String>,
-    /// The `tilo-launcher` packages start through; `None` when none is
-    /// installed, and then only the machine's own apps can start.
+    /// The `tilo-launcher` every app starts through, a package or one of the
+    /// machine's own; `None` when none is installed, and then no app can
+    /// start.
     launcher: Option<PathBuf>,
     /// The identity record this workspace's apps are given, when the session
     /// resolved one.
@@ -118,7 +119,7 @@ impl Apps {
     pub fn new(environment: SessionEnvironment, wake: Option<tilo_service::Wake>) -> Self {
         let launcher = PlanContext::find_launcher();
         if launcher.is_none() {
-            tracing::warn!("no tilo-launcher is installed: Tilo apps cannot start here");
+            tracing::warn!("no tilo-launcher is installed: no app can start here");
         }
         Self::with_launcher(environment, wake, launcher)
     }
@@ -679,7 +680,7 @@ impl Apps {
         let mut planned =
             planned.map_err(|error| DoorError::Failed(format!("{}: {error}", launch.id())))?;
         // The tool this launch opens is told what to show: only a package is
-        // given it, as only a package is spliced through the launcher.
+        // given it.
         if let (Some(context), Kind::Package) =
             (self.state.borrow().tool_context.clone(), planned.kind)
         {

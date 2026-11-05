@@ -29,9 +29,26 @@ use tilo_compositor::OutputConfig;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{Options, Session};
 
-/// A session that starts the person's apps, on the display it binds.
-fn session() -> (Session, Rc<Apps>) {
-    let launch = Rc::new(Apps::new(SessionEnvironment::from_process(), None));
+/// A session that starts the person's apps, on the display it binds, through
+/// a launcher that records what it was asked and runs as an app would until
+/// the test is over.
+fn session(
+    home: &tilo_test_env::TestHome,
+    records: &Path,
+) -> (Session, Rc<Apps>, tilo_test_env::StandIn) {
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$*\" >> '{records}'\nhold\n",
+            records = records.display()
+        ),
+    )
+    .expect("a launcher");
+    let launch = Rc::new(Apps::with_launcher(
+        SessionEnvironment::from_process(),
+        None,
+        Some(launcher.path().to_owned()),
+    ));
     let session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -42,7 +59,7 @@ fn session() -> (Session, Rc<Apps>) {
         &[OutputConfig::new("HEADLESS-1", 1280, 800)],
     )
     .expect("a session");
-    (session, launch)
+    (session, launch, launcher)
 }
 
 /// The installed folder importer on this login: its desktop entry starts the
@@ -151,14 +168,11 @@ fn the_session_answers_add_folders_on_the_socket_named_for_its_display() {
 #[test]
 fn the_review_a_person_left_opens_the_importer_once_after_login() {
     let home = tilo_test_env::TestHome::new().expect("this login's home");
-    let marker = home.home().join("importer-opened");
-    let review = importer(
-        &home,
-        &format!("#!/bin/sh\nprintf 'opened\\n' >> '{}'\n", marker.display()),
-    );
+    let records = home.home().join("launches");
+    let review = importer(&home, "#!/bin/sh\nexit 0\n");
     leave_review(&review, true);
 
-    let (mut session, apps) = session();
+    let (mut session, apps, _launcher) = session(&home, &records);
     let display = session.compositor().listen().expect("a display");
     apps.set_displays(home.runtime().join(&display), None, None);
     session
@@ -166,7 +180,7 @@ fn the_review_a_person_left_opens_the_importer_once_after_login() {
         .expect("the session serves Add folders");
 
     let opens = || {
-        fs::read_to_string(&marker)
+        fs::read_to_string(&records)
             .map(|opened| opened.lines().count())
             .unwrap_or_default()
     };
@@ -175,6 +189,12 @@ fn the_review_a_person_left_opens_the_importer_once_after_login() {
         session.step(Duration::from_millis(1)).expect("step");
     }
     assert_eq!(opens(), 1, "one login opens the saved review once");
+    assert!(
+        fs::read_to_string(&records)
+            .expect("the launch")
+            .contains("--desktop-id tilo-import-folders"),
+        "the importer's own entry is what opens"
+    );
 }
 
 /// A review the person already finished, or put aside, opens nothing: the
@@ -182,14 +202,11 @@ fn the_review_a_person_left_opens_the_importer_once_after_login() {
 #[test]
 fn a_review_that_asks_for_nothing_opens_nothing() {
     let home = tilo_test_env::TestHome::new().expect("this login's home");
-    let marker = home.home().join("importer-opened");
-    let review = importer(
-        &home,
-        &format!("#!/bin/sh\nprintf 'opened\\n' >> '{}'\n", marker.display()),
-    );
+    let records = home.home().join("launches");
+    let review = importer(&home, "#!/bin/sh\nexit 0\n");
     leave_review(&review, false);
 
-    let (mut session, apps) = session();
+    let (mut session, apps, _launcher) = session(&home, &records);
     let display = session.compositor().listen().expect("a display");
     apps.set_displays(home.runtime().join(&display), None, None);
     session
@@ -199,7 +216,7 @@ fn a_review_that_asks_for_nothing_opens_nothing() {
         session.step(Duration::from_millis(1)).expect("step");
     }
     assert!(
-        !marker.exists(),
+        !records.exists(),
         "a review that asks for nothing opens nothing"
     );
 }

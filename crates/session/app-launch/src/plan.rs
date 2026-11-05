@@ -102,8 +102,8 @@ pub enum PlanError {
         #[source]
         source: std::io::Error,
     },
-    /// No Tilo launcher is installed.
-    #[error("no tilo-launcher is installed, so Tilo apps cannot start here")]
+    /// No Tilo launcher is installed, and every app starts through it.
+    #[error("no tilo-launcher is installed, so no app can start here")]
     NoLauncher,
     /// A record launch names something that is not a record id: starting the
     /// app would open nothing, so the app is not started.
