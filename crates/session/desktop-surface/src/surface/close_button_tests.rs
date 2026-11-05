@@ -264,43 +264,39 @@ fn closing_a_window_of_an_app_with_two_windows_leaves_the_other() {
 }
 
 /// The close button's target is the control, not the window's whole chrome:
-/// a press on the bar's leading end and on the tab's own pill leave every
-/// window where it was. The strip reveals a pressed window, so each press
-/// aims at the geometry the frame shows then, as the pointer the person
-/// aims does.
+/// a press at the bar's leading end, where the tab's own pill begins, leaves
+/// every window where it was. The strip reveals a pressed window, so the
+/// press aims at the geometry the frame shows then, as the pointer the
+/// person aims does.
 #[test]
 fn a_press_beside_the_close_button_does_not_close_a_window() {
     let _settled = ui::motion::testing::settled();
     let (mut frame, _handle) = desk_at(3, 2.0);
     let (group, _) = windows(&frame)[1];
-    for place in ["the bar's leading end", "the tab's own pill"] {
-        let bounds = frame
-            .root::<DesktopSurface>()
-            .shown_row_ref()
-            .expect("the desk shows its strip")
-            .groups
-            .iter()
-            .find(|held| held.id == group)
-            .expect("the window is drawn")
-            .presentation_bounds();
-        let close = bounds.close.expect("a window offers its own close");
-        let bar = bounds.tab_bar;
-        let at = match place {
-            "the bar's leading end" => Point::new(bar.x0 + 6.0, bar.center().y),
-            _ => Point::new(bar.x0 + 6.0, bar.center().y),
-        };
-        let maximize = bounds.maximize.expect("a window offers maximize");
-        assert!(
-            !close.contains(at) && !maximize.contains(at),
-            "{place} is not one of the window's controls: {at:?}"
-        );
-        let before = windows(&frame).len();
-        click(&mut frame, at);
-        settle(&mut frame);
-        assert_eq!(
-            windows(&frame).len(),
-            before,
-            "a press on {place} at {at:?} is not the window's close: every window stays"
-        );
-    }
+    let bounds = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .expect("the desk shows its strip")
+        .groups
+        .iter()
+        .find(|held| held.id == group)
+        .expect("the window is drawn")
+        .presentation_bounds();
+    let close = bounds.close.expect("a window offers its own close");
+    let bar = bounds.tab_bar;
+    let at = Point::new(bar.x0 + 6.0, bar.center().y);
+    let maximize = bounds.maximize.expect("a window offers maximize");
+    assert!(
+        !close.contains(at) && !maximize.contains(at),
+        "the bar's leading end is not one of the window's controls: {at:?}"
+    );
+    let before = windows(&frame).len();
+    click(&mut frame, at);
+    settle(&mut frame);
+    assert_eq!(
+        windows(&frame).len(),
+        before,
+        "a press at the bar's leading end, on the tab's own pill, at {at:?} is not the window's \
+         close: every window stays"
+    );
 }
