@@ -588,6 +588,24 @@ impl Runtime {
         self.core.invoke_direct(principal, &action.into())
     }
 
+    /// [`Runtime::invoke_action`] made from the resource `from`: what the resources the action
+    /// creates were made from, recorded in the change it makes (`created(r)?.from`,
+    /// [`crate::Store::linked`]). What a "make from this" menu, or an agent working from
+    /// something it read, sets.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_action_from(
+        &self,
+        principal: &Principal,
+        action: impl Into<ActionRef>,
+        from: &crate::value::ResourceRef,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.core
+            .invoke_direct_from(principal, &action.into(), Some(from))
+    }
+
     /// The arguments of an invocation of `action` with those left out (`None`) given their
     /// defaults: each computed now, on the current state, over the arguments before it. What an
     /// invocation records, so that replay never computes a default again.

@@ -94,6 +94,9 @@ pub struct FieldSchema {
     /// A register holding a structured runtime value (an option, a list, a reference) rather
     /// than an integer, float, flag or text: the runtime reads such a value as JSON.
     pub composite: bool,
+    /// A register naming a resource, of a record type the field declares: what links a resource
+    /// to another (`linked(r)`, [`tilolang_runtime::store::LinkHow::Field`]).
+    pub refers: bool,
     /// What the field is to the platform (`title: Text (title)`): the record's
     /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
     /// field search reads it by; a type declares at most one of each.
@@ -172,6 +175,7 @@ impl FieldSchema {
             record: None,
             default: serde_json::Value::Null,
             composite: false,
+            refers: false,
             role: FieldRole::Plain,
             derived: None,
         }

@@ -41,6 +41,7 @@ impl TiloStore {
                 chain: note.chain.clone(),
                 module: note.module.clone(),
                 at: note.at.clone(),
+                from: note.from.clone(),
             },
             edits: vec![edit],
         });

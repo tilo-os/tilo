@@ -179,6 +179,7 @@ imports! {
     (Speakers, "speakers", "i", "i"),
     (MetaOf, "meta_of", "i", "i"),
     (Versions, "versions", "i", "i"),
+    (Links, "links", "i", "i"),
     (VersionEnd, "version_end", "ii", "i"),
     (RunChanges, "run_changes", "i", "i"),
     (Unseen, "unseen", "i", "i"),

@@ -745,6 +745,7 @@ impl ViewInstance {
             chain: vec![view_module.clone()],
             approved_by: None,
             origin: None,
+            from: None,
         };
         let decision = self.core.decide_with(
             &ctx,
@@ -801,6 +802,7 @@ impl ViewInstance {
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
             group: None,
+            from: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

@@ -338,6 +338,11 @@ pub struct ChangeNote {
     /// The task run it was made in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<TaskRun>,
+    /// The resource the invocation was made from, when it was made from one (`from` in a
+    /// create action's menu, an agent's program): what the resources it created were made from
+    /// ([`Version::from`], [`Store::linked`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<ResourceRef>,
 }
 
 /// The action id of the change that made a resource, when the host made it.
@@ -377,6 +382,10 @@ pub struct Version {
     /// is known without reading the collection (`first_unseen(r)`). Empty for a version that
     /// put none in, and for a store that does not keep them.
     pub placed: Vec<String>,
+    /// The resource this one was made from, for the version that made it: the invocation it
+    /// ran in was made from that resource (a message a task was made from). `None` for a change
+    /// that made none, and for a resource made from nothing.
+    pub from: Option<ResourceRef>,
 }
 
 /// Where a removed item stood ([`Version::left`]).
@@ -442,6 +451,72 @@ impl VersionKind {
     }
 }
 
+/// A resource linked to another ([`Store::linked`]): made from it, mentioning it in its rich
+/// text, or holding a reference to it in one of its fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    /// The linked resource.
+    pub of: ResourceRef,
+    /// How it is linked to the one the query named.
+    pub how: LinkHow,
+}
+
+impl Link {
+    /// Its place in a list of links: by how, then by the resource's id.
+    #[must_use]
+    pub fn order(&self) -> (u8, String) {
+        (self.how.rank(), self.of.id_string())
+    }
+}
+
+/// How a resource is linked to another: what [`Store::linked`] answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LinkHow {
+    /// An action made it from the resource.
+    CreatedFrom,
+    /// A reference field of it names the resource.
+    Field,
+    /// Its rich text mentions the resource.
+    Mention,
+}
+
+impl LinkHow {
+    /// The word code reads it as: `created_from`, `mention` or `field`.
+    #[must_use]
+    pub const fn word(self) -> &'static str {
+        match self {
+            Self::CreatedFrom => "created_from",
+            Self::Mention => "mention",
+            Self::Field => "field",
+        }
+    }
+
+    /// The how `word` names.
+    #[must_use]
+    pub fn of_word(word: &str) -> Option<Self> {
+        match word {
+            "created_from" => Some(Self::CreatedFrom),
+            "mention" => Some(Self::Mention),
+            "field" => Some(Self::Field),
+            _ => None,
+        }
+    }
+
+    /// How it orders against the others: made from, then a field, then a mention.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::CreatedFrom => 0,
+            Self::Field => 1,
+            Self::Mention => 2,
+        }
+    }
+}
+
+/// The pseudo-field of a resource holding its links ([`Store::linked`]): what a view that read
+/// them is told of, and what a store with an index keeps to answer them from.
+pub const LINKS: &str = "$links";
+
 /// The version of a resource an order or a key reads, beside its fields: its first
 /// (`created(r)`) or its last (`updated(r)`), ordered by their time. Named in an [`Order`] by
 /// the pseudo-field ids `$created` and `$updated`, which no declared field has.
@@ -483,6 +558,7 @@ impl Reflected {
 pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
     let id = at.id_string();
     // A change is named by its place in the document's log.
+    let mut making = true;
     notes
         .iter()
         .enumerate()
@@ -491,24 +567,31 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
                 .iter()
                 .any(|touched| *touched == id || crate::value::flat_id(touched) == id)
         })
-        .map(|(n, note)| Version {
-            who: note.invoker.clone(),
-            at: note
-                .at
-                .clone()
-                .unwrap_or_else(|| crate::core::EPOCH.to_owned()),
-            action: note.action.clone(),
-            task: note.group.clone(),
-            kind: if note.action == CREATE_ACTION {
+        .map(|(n, note)| {
+            let kind = if note.action == CREATE_ACTION {
                 VersionKind::Created
             } else {
                 VersionKind::Changed
-            },
-            fields: Vec::new(),
-            resource: id.clone(),
-            change: n.to_string(),
-            left: None,
-            placed: Vec::new(),
+            };
+            // The first change of a resource in the log is the one that made it.
+            let made = std::mem::take(&mut making);
+            Version {
+                who: note.invoker.clone(),
+                at: note
+                    .at
+                    .clone()
+                    .unwrap_or_else(|| crate::core::EPOCH.to_owned()),
+                action: note.action.clone(),
+                task: note.group.clone(),
+                kind,
+                fields: Vec::new(),
+                resource: id.clone(),
+                change: n.to_string(),
+                left: None,
+                placed: Vec::new(),
+                // What it was made from is a fact of the change that made it.
+                from: made.then(|| note.from.clone()).flatten(),
+            }
         })
         .collect()
 }
@@ -1164,13 +1247,29 @@ pub trait Store {
         )))
     }
 
+    /// The resources linked to `at`: those an action made from it, those whose rich text
+    /// mentions it, and those holding a reference to it in a field, each once per way, ordered
+    /// by the way and then by the resource's id. A store with an index answers it from a
+    /// reverse list it keeps per resource, so its cost is what is linked to the resource, not
+    /// what the workspace holds; a view reading it is told when it changes
+    /// ([`LINKS`]).
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
+        let _ = at;
+        Err(StoreError::Invalid(
+            "this store answers no query of what links to a resource".into(),
+        ))
+    }
+
     /// The notes of a document's changes, oldest first.
     ///
     /// # Errors
     ///
     /// `NotFound` for a missing document.
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError>;
-
     /// The versions of the resource `at`, oldest first: each change that changed it, with who
     /// made it, when, and which action (reflection: `created(r)`, `updated(r)`, `history(r)`).
     ///

@@ -36,9 +36,9 @@ use crate::meta::FieldKind;
 use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
 use crate::registry::{FieldInfo, TypeInfo};
 use crate::store::{
-    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, ListingChange, Mutation,
-    NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store, StoreError, SubId, Txn,
-    Version,
+    Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, LinkHow,
+    ListingChange, Mutation, NewRecord, OutboxEntry, OutboxState, Scalar, Settled, Splice, Store,
+    StoreError, SubId, Txn, Version,
 };
 use crate::textdiff;
 use crate::value::ResourceRef;
@@ -258,6 +258,61 @@ impl Inner {
         let obj = self.locate(at).ok()?;
         let ty = str_at(doc, &obj, TYPE_KEY)?;
         self.types.get(&ty).cloned()
+    }
+
+    /// The resources of the document `doc`: the record, and every item placed in it.
+    fn resources(&self, doc: &str) -> Result<Vec<ResourceRef>, StoreError> {
+        let held = self.doc(doc)?;
+        let ty = |obj: &ObjId| str_at(held, obj, TYPE_KEY).unwrap_or_default();
+        let mut out = vec![ResourceRef::root(doc, ty(&ROOT))];
+        for id in self.resolved(doc)?.places.keys() {
+            if let Some(obj) = item_obj(held, id) {
+                let ty = ty(&obj);
+                out.push(ResourceRef::root(doc, ty.clone()).item(id, ty));
+            }
+        }
+        Ok(out)
+    }
+
+    /// How the fields of `of` link to `target`: a reference field naming it (`field`) and rich
+    /// text mentioning it (`mention`), each once.
+    fn names(&self, of: &ResourceRef, target: &str) -> Result<Vec<LinkHow>, StoreError> {
+        let Some(info) = self.types.get(&of.ty).cloned() else {
+            return Ok(Vec::new());
+        };
+        let doc = self.doc(&of.doc)?;
+        let Some(obj) = self.locate(of).ok() else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for field in &info.fields {
+            let spec = spec(field);
+            match field.kind {
+                FieldKind::RichText => {
+                    if let Ok(FieldValue::Rich(rich)) = read_field(doc, &obj, &spec)
+                        && rich
+                            .references()
+                            .iter()
+                            .any(|reference| crate::rich::resource_id(reference) == Some(target))
+                    {
+                        out.push(LinkHow::Mention);
+                    }
+                }
+                FieldKind::Register if names_a_resource(&field.ty) => {
+                    if let Ok(FieldValue::Scalar(Scalar::Json(json))) = read_field(doc, &obj, &spec)
+                        && crate::value::from_json(&json).is_ok_and(|value| {
+                            crate::value::references_in(&value)
+                                .iter()
+                                .any(|named| named == target)
+                        })
+                    {
+                        out.push(LinkHow::Field);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(out)
     }
 
     /// The items of the collection `field` of `at`, with their order keys.
@@ -804,6 +859,16 @@ impl Inner {
     }
 }
 
+/// Whether a value of the type `ty` is a reference to a resource: a record, or one inside an
+/// option.
+fn names_a_resource(ty: &crate::meta::Ty) -> bool {
+    match ty {
+        crate::meta::Ty::Record(_) => true,
+        crate::meta::Ty::Option(inner) => names_a_resource(inner),
+        _ => false,
+    }
+}
+
 fn commit_with_note(doc: &mut AutoCommit, note: &ChangeNote) -> Result<(), StoreError> {
     let message = serde_json::to_string(note).map_err(backend)?;
     let _hash = doc.commit_with(CommitOptions::default().with_message(message));
@@ -1150,6 +1215,42 @@ impl Store for AmStore {
             .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
             .collect();
         Ok(crate::store::recent_authors_in(notes.iter(), at, limit))
+    }
+
+    /// What links to `at`, read from the documents: this store keeps no index of it, so it
+    /// reads every resource's fields ([`Store::linked`]). Tests only.
+    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
+        let target = at.id_string();
+        let inner = self.inner.borrow();
+        let mut out: Vec<Link> = Vec::new();
+        for doc in inner.docs.keys() {
+            let notes = self.history(doc).unwrap_or_default();
+            for of in inner.resources(doc)? {
+                let id = of.id_string();
+                if id == target {
+                    continue;
+                }
+                let made = crate::store::versions_in(&notes, &of)
+                    .first()
+                    .and_then(|version| version.from.as_ref())
+                    .is_some_and(|from| from.id_string() == target);
+                if made {
+                    out.push(Link {
+                        of: of.clone(),
+                        how: LinkHow::CreatedFrom,
+                    });
+                }
+                for how in inner.names(&of, &target)? {
+                    out.push(Link {
+                        of: of.clone(),
+                        how,
+                    });
+                }
+            }
+        }
+        out.sort_by(|a, b| a.order().cmp(&b.order()));
+        out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
+        Ok(out)
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId {

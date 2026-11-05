@@ -123,6 +123,7 @@ impl Checker<'_> {
                 return self.builtin_versions(name, args, span);
             }
             "unseen" => return self.builtin_unseen(args, span),
+            "linked" => return self.builtin_links(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
             "mentions" => return self.builtin_mentions(args, span),
             "undo" => return self.builtin_undo(args, span),

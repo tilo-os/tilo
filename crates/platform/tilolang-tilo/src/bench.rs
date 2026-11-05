@@ -2620,6 +2620,7 @@ mod tests {
                 record: None,
                 default: Json::Null,
                 composite: true,
+                refers: false,
                 role: FieldRole::Plain,
                 derived: None,
             }],

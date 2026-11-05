@@ -47,6 +47,9 @@ pub struct ExecCtx {
     /// The recorded suggestion an approval runs, when there is one: what an outside effect it
     /// queues is keyed by, so that approving the same suggestion on two devices queues it once.
     pub origin: Option<String>,
+    /// The resource the invocation was made from, when it was made from one: what the resources
+    /// it creates were made from, recorded in the change ([`crate::store::Version::from`]).
+    pub from: Option<ResourceRef>,
 }
 
 /// How an action ended.
@@ -465,6 +468,7 @@ impl Core {
             chain: ctx.chain.iter().map(|m| m.0.clone()).collect(),
             module: pkg.hash.0.clone(),
             approved_by: ctx.approved_by.as_ref().map(|p| p.0.clone()),
+            from: ctx.from.clone(),
             ..ChangeNote::default()
         }
     }
@@ -556,6 +560,21 @@ impl Core {
         invoker: &Principal,
         aref: &ActionRef,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_from(invoker, aref, None)
+    }
+
+    /// [`Core::invoke_direct`] of an invocation made from the resource `from`: what the
+    /// resources it creates were made from, recorded in the change it makes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::invoke_direct`].
+    pub fn invoke_direct_from(
+        &self,
+        invoker: &Principal,
+        aref: &ActionRef,
+        from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         // What the invoker left out is computed now, on what they see, and recorded.
         let aref = &self.completed(aref)?;
         // An action of an app this runtime does not run is a child invocation at that app's
@@ -571,6 +590,7 @@ impl Core {
             chain,
             approved_by: None,
             origin: None,
+            from: from.cloned(),
         };
         let flow = self.registry.borrow().flow_package(&aref.action);
         let decision = match &flow {
@@ -579,8 +599,13 @@ impl Core {
         };
         match decision {
             Decision::Allow if flow.is_some() => {
-                let outcome =
-                    self.start_flow(invoker, &aref.action, aref.args.clone(), ctx.chain)?;
+                let outcome = self.start_flow_from(
+                    invoker,
+                    &aref.action,
+                    aref.args.clone(),
+                    ctx.chain,
+                    ctx.from,
+                )?;
                 Ok(match outcome {
                     FlowOutcome::Done(v) => InvokeOutcome::Done(v),
                     FlowOutcome::Suspended(s) => InvokeOutcome::Suggested(s),
@@ -605,6 +630,7 @@ impl Core {
                     args: aref.args.clone(),
                     invoker: ctx.invoker,
                     chain: ctx.chain,
+                    from: ctx.from,
                     entries: Vec::new(),
                     pending: Some(suggestion.clone()),
                     finished: false,
@@ -664,6 +690,23 @@ impl Core {
         args: Vec<Value>,
         chain: Vec<ModuleHash>,
     ) -> Result<FlowOutcome, RuntimeError> {
+        self.start_flow_from(invoker, flow, args, chain, None)
+    }
+
+    /// [`Core::start_flow`] of a flow invoked from the resource `from`: what the resources its
+    /// actions create were made from, recorded in the changes it makes.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::start_flow`].
+    pub fn start_flow_from(
+        &self,
+        invoker: &Principal,
+        flow: &str,
+        args: Vec<Value>,
+        chain: Vec<ModuleHash>,
+        from: Option<ResourceRef>,
+    ) -> Result<FlowOutcome, RuntimeError> {
         if self.registry.borrow().flow_package(flow).is_none() {
             return Err(RuntimeError::NotFound(format!("flow {flow}")));
         }
@@ -673,6 +716,7 @@ impl Core {
             args,
             invoker: invoker.clone(),
             chain,
+            from,
             entries: Vec::new(),
             pending: None,
             finished: false,
@@ -783,11 +827,12 @@ impl Core {
         if resolution == Resolution::Approve && journal.flow.is_none() && applies_flow {
             journal.finished = true;
             self.store.borrow_mut().save_journal(run, &journal)?;
-            return self.start_flow(
+            return self.start_flow_from(
                 &pending.invoker,
                 &pending.action,
                 pending.args.clone(),
                 pending.chain.clone(),
+                journal.from.clone(),
             );
         }
         let entry = match resolution {
@@ -797,6 +842,7 @@ impl Core {
                     chain: pending.chain.clone(),
                     approved_by: Some(approver.clone()),
                     origin: None,
+                    from: journal.from.clone(),
                 };
                 let aref = ActionRef::new(pending.action.clone(), pending.args.clone());
                 match self.run_action(&ctx, &aref)? {
@@ -891,6 +937,7 @@ impl Core {
                     chain,
                     approved_by: None,
                     origin: None,
+                    from: fs.journal.from.clone(),
                 })
             }
         };
@@ -1096,6 +1143,7 @@ impl Core {
                 chain: fs.journal.chain.clone(),
                 approved_by: None,
                 origin: None,
+                from: fs.journal.from.clone(),
             }
         };
         let invocation = Invocation::Edit {

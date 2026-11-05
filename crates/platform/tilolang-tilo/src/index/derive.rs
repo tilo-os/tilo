@@ -10,7 +10,7 @@ use automerge::{ObjId, ReadDoc};
 use tilolang_runtime::derived::parent_in;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::place::{Place, Resolved};
-use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, doc_of};
+use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, LINKS, LinkHow, Scalar, doc_of};
 
 use super::columns::{
     self, reversed, scope_entry, scope_list, scope_prefix, type_entry, type_list,
@@ -29,6 +29,69 @@ type Doc = tilo_resource::Doc;
 #[must_use]
 pub fn member_list(resource: &str, field: &str) -> String {
     format!("m\u{1}{resource}\u{1}{field}")
+}
+
+/// The list of what links to the resource `target`, by how and by the resource linking to it:
+/// where [`Derive`] keeps the answer of [`tilolang_runtime::store::Store::linked`], one list per
+/// target, read as one list rather than by walking the workspace.
+#[must_use]
+pub fn linked_list(target: &str) -> String {
+    format!("l\u{1}{target}")
+}
+
+/// The entry of the resource `source` in the [`linked_list`] of a target it is linked to `how`.
+fn link_entry(how: &str, source: &str) -> Entry {
+    (format!("{how}{}{source}", columns::SEP), source.to_owned())
+}
+
+/// The how a [`linked_list`] entry's key names, and the resource it is of.
+#[must_use]
+pub fn split_link(key: &str) -> Option<(LinkHow, &str)> {
+    let (how, source) = key.split_once(columns::SEP)?;
+    Some((LinkHow::of_word(how)?, source))
+}
+
+/// The links the field value `value` makes to other resources: those its rich text mentions, or
+/// those the value a reference register holds names.
+fn linked_by(value: &FieldValue) -> Vec<String> {
+    match value {
+        FieldValue::Rich(rich) => rich
+            .references()
+            .iter()
+            .filter_map(|reference| {
+                tilolang_runtime::rich::resource_id(reference).map(str::to_owned)
+            })
+            .collect(),
+        FieldValue::Scalar(Scalar::Json(json)) => tilolang_runtime::value::from_json(json)
+            .map_or_else(
+                |_| Vec::new(),
+                |value| tilolang_runtime::value::references_in(&value),
+            ),
+        _ => Vec::new(),
+    }
+}
+
+/// Take the links the resource `resource` makes out of the [`linked_list`]s of their targets,
+/// before what it holds goes.
+///
+/// # Errors
+/// The sink cannot be read or written.
+pub(super) fn unlink(sink: &mut impl Sink, resource: &str) -> Result<(), IndexError> {
+    if let Some(held) = sink.text(resource, LINKS)? {
+        unlink_held(sink, resource, &held)?;
+    }
+    Ok(())
+}
+
+/// [`unlink`] for the `$links` text `held` of `resource`, already read.
+fn unlink_held(sink: &mut impl Sink, resource: &str, held: &str) -> Result<(), IndexError> {
+    for pair in split_values(held).chunks(2) {
+        let [how, target] = pair else {
+            continue;
+        };
+        sink.remove_entry(&linked_list(target), &link_entry(how, resource))?;
+    }
+    Ok(())
 }
 
 /// The pseudo-field holding the values a resource's column `column` holds, as the column's
@@ -259,6 +322,11 @@ impl Sink for Writer<'_> {
         for (held, field, bytes) in &held_fields {
             if field == TYPE {
                 types.insert(held.as_str(), super::codec::get_text(bytes)?);
+            }
+        }
+        for (held, field, bytes) in &held_fields {
+            if field == LINKS {
+                unlink_held(self, held, &super::codec::get_text(bytes)?)?;
             }
         }
         for (held, field, bytes) in &held_fields {
@@ -571,7 +639,14 @@ impl<'d> Derive<'d> {
                 sink.put_field(resource, UPDATED, &last.value())?;
                 moved.push(UPDATED);
             }
-            if moved.is_empty() || !sink.keeps_columns() {
+            if moved.is_empty() {
+                continue;
+            }
+            // A resource made from another links to it from its first version on.
+            if moved.contains(&CREATED) {
+                self.links(sink, resource, schema)?;
+            }
+            if !sink.keeps_columns() {
                 continue;
             }
             let placed = placed_in(sink, resource)?;
@@ -677,6 +752,8 @@ impl<'d> Derive<'d> {
             let value = self.value(obj, field);
             sink.put_field(path, &field.id, &value)?;
         }
+        // What it links to, once its fields are as they are now.
+        self.links(sink, path, schema)?;
         Ok(schema)
     }
 
@@ -1411,6 +1488,91 @@ impl<'d> Derive<'d> {
         self.derive_item_and_up(sink, &above)
     }
 
+    /// Derive the links the resource at `path` (of the type `schema`) makes, into the
+    /// [`linked_list`] of each resource it links to: the resource its first version says it was
+    /// made from, the resources its reference fields name, those its rich text mentions
+    /// ([`tilolang_runtime::store::Store::linked`]). The set it made before is kept under
+    /// [`LINKS`], so a change takes out of the lists exactly what it no longer links to; a target
+    /// whose links moved is told of it, so a view reading them runs again.
+    ///
+    /// # Errors
+    /// The sink cannot be read or written.
+    fn links(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &TypeSchema,
+    ) -> Result<(), IndexError> {
+        let mut now: Vec<(LinkHow, String)> = Vec::new();
+        if let Some(from) = sink
+            .field(path, CREATED)?
+            .as_ref()
+            .and_then(Stamp::of_value)
+            .and_then(|stamp| stamp.version.from)
+        {
+            now.push((LinkHow::CreatedFrom, from.id_string()));
+        }
+        for field in &schema.fields {
+            let how = match field.kind {
+                MergeKind::RichText => LinkHow::Mention,
+                MergeKind::Register if field.refers => LinkHow::Field,
+                _ => continue,
+            };
+            let Some(value) = sink.field(path, &field.id)? else {
+                continue;
+            };
+            for target in linked_by(&value) {
+                now.push((how, target));
+            }
+        }
+        // Nothing links to itself: rich text mentioning what holds it, or a field naming it.
+        now.retain(|(_, target)| !target.is_empty() && target != path);
+        now.sort_by(|a, b| (a.0.rank(), &a.1).cmp(&(b.0.rank(), &b.1)));
+        now.dedup();
+        let now_flat: Vec<String> = now
+            .iter()
+            .flat_map(|(how, target)| [how.word().to_owned(), target.clone()])
+            .collect();
+        let held = sink.text(path, LINKS)?;
+        if held.as_deref().map(split_values).as_deref() == Some(now_flat.as_slice()) {
+            return Ok(());
+        }
+        let pairs = |flat: Vec<String>| -> BTreeSet<(String, String)> {
+            flat.chunks(2)
+                .filter_map(|pair| match pair {
+                    [how, target] => Some((how.clone(), target.clone())),
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = pairs(held.map(|held| split_values(&held)).unwrap_or_default());
+        let after: BTreeSet<(String, String)> = now
+            .iter()
+            .map(|(how, target)| (how.word().to_owned(), target.clone()))
+            .collect();
+        for (how, target) in before.difference(&after) {
+            sink.remove_entry(&linked_list(target), &link_entry(how, path))?;
+        }
+        for (how, target) in after.difference(&before) {
+            sink.insert(&linked_list(target), link_entry(how, path))?;
+        }
+        sink.put_text(path, LINKS, &join_values(&now_flat))?;
+        let mut moved: BTreeSet<&str> = BTreeSet::new();
+        for (_, target) in before.symmetric_difference(&after) {
+            moved.insert(target);
+        }
+        for target in moved {
+            self.derived_keys
+                .entry(doc_of(target).to_owned())
+                .or_default()
+                .push(FieldKey {
+                    resource: target.to_owned(),
+                    field: LINKS.to_owned(),
+                });
+        }
+        Ok(())
+    }
+
     /// The field `field` of the resource at `path` changed.
     fn field(&mut self, sink: &mut impl Sink, path: &str, field: &str) -> Result<(), IndexError> {
         // An item in no collection is in no list: nothing of it is held.
@@ -1437,6 +1599,12 @@ impl<'d> Derive<'d> {
             return Ok(());
         }
         sink.put_field(path, field, &now)?;
+        // What it links to, when the field is one that links.
+        if matches!(spec.kind, MergeKind::RichText)
+            || (spec.kind == MergeKind::Register && spec.refers)
+        {
+            self.links(sink, path, schema)?;
+        }
         // The columns reading the field, in the collection the resource is in and across the
         // workspace.
         if sink.keeps_columns() && schema.columns.iter().any(|c| columns::reads(c, field)) {

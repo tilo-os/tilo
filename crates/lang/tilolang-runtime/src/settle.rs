@@ -508,6 +508,7 @@ impl Core {
             chain: vec![identity.clone()],
             approved_by: Some(approver.clone()),
             origin: Some(format!("invocation:{origin}")),
+            from: None,
         };
         let aref = ActionRef {
             action: rec.action.clone(),

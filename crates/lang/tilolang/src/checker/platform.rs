@@ -130,6 +130,17 @@ impl Checker<'_> {
         }
     }
 
+    /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how:
+    /// made from it (`created_from`), mentioning it in its rich text (`mention`), or holding a
+    /// reference to it in a field (`field`). One definition for views, search and agents; a
+    /// store with an index answers it from a reverse list per resource.
+    pub(super) fn builtin_links(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("linked", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Links, vec![r], Ty::List(Box::new(host_ty("Link"))))
+    }
+
     /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
     /// the same person, or by the same task run, folded into one `host.Step`. Which versions
     /// fold is the platform's rule, the same in every app's history, so no view writes it.

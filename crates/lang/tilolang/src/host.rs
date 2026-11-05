@@ -151,6 +151,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
             ("of", "Resource", "The resource it is a version of."),
             (
+                "from",
+                "Option<Resource>",
+                "The resource it was made from, for the version that made it: the invocation that made it was made from that resource. `.none` for a change that made none.",
+            ),
+            (
                 "mine",
                 "Bool",
                 "Whether the person looking made it, outside any task run: one they may undo on its own.",
@@ -183,6 +188,23 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "changes",
                 "List<Change>",
                 "Each field it changed, with what the field held before and after, read from the change itself; empty for one that made or removed the resource.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Link",
+        id: "host-link",
+        doc: "A resource linked to another, as `linked(r)` answers: what links to it and how.",
+        fields: &[
+            (
+                "of",
+                "Resource",
+                "The linked resource: one made from the resource the query named, one whose text mentions it, or one whose field refers to it.",
+            ),
+            (
+                "how",
+                "Text",
+                "How it is linked: `created_from`, `mention` or `field`.",
             ),
         ],
     },

@@ -193,6 +193,7 @@ imports! {
     Speakers = "speakers" ([H] -> [H]);
     MetaOf = "meta_of" ([H] -> [H]);
     Versions = "versions" ([H] -> [H]);
+    Links = "links" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);

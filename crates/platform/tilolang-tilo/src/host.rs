@@ -708,6 +708,7 @@ impl HostInner {
                 chain: Vec::new(),
                 module: package.id.0.clone(),
                 at: None,
+                from: None,
             },
             edits: Vec::new(),
         };

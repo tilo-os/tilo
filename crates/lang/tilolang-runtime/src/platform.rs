@@ -309,6 +309,10 @@ impl Core {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
+            Imp::Links => {
+                let value = self.links_import(a)?;
+                self.ret_h(value)
+            }
             Imp::Mentions => self.mentions_import(a),
             Imp::FirstUnseen => self.first_unseen_import(a),
             Imp::MetaOf => {
@@ -474,6 +478,7 @@ impl Core {
             Value::Text(v.kind.word().to_owned()),
             Value::List(fields),
             Value::resource(of),
+            Value::Opt(v.from.as_ref().map(|from| Box::new(Value::resource(from)))),
             Value::Bool(mine),
             Value::Text(actor),
             Value::Text(description),
@@ -1246,6 +1251,44 @@ impl Core {
         let mut states = self.view_states.borrow_mut();
         if states.get(&key) != Some(&value) {
             states.set(key, value);
+        }
+    }
+
+    /// `linked(r)`: the resources made from `r`, mentioning it in their rich text or naming it
+    /// in a reference field, as a `host.Link` each: the resource and how it is linked.
+    fn links_import(&self, a: &Args<'_>) -> HResult<Value> {
+        let target = self.ref_arg(a.h(0)?)?;
+        let at = &target.target;
+        self.read_links_of(at);
+        // What links to a resource of an app this runtime does not run is kept where that app
+        // runs: nothing of it is held here.
+        if crate::foreign::is_foreign(at) {
+            return Ok(Value::List(Vec::new()));
+        }
+        let links = self
+            .store
+            .borrow()
+            .linked(at)
+            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        Ok(Value::List(
+            links
+                .into_iter()
+                .map(|link| {
+                    Value::Tuple(vec![
+                        Value::resource(&link.of),
+                        Value::Text(link.how.word().to_owned()),
+                    ])
+                })
+                .collect(),
+        ))
+    }
+
+    /// Record, in a view's frame, that it read what links to `target`: it runs again when
+    /// something is made from it, mentions it or names it in a field.
+    pub(crate) fn read_links_of(&self, target: &ResourceRef) {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
+            vs.reads
+                .push((target.id_string(), crate::store::LINKS.to_owned()));
         }
     }
 

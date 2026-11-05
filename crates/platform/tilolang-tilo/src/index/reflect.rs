@@ -23,7 +23,7 @@ use std::sync::LazyLock;
 
 use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
-use tilolang_runtime::store::{FieldValue, Reflected, Scalar, TaskRun, Version};
+use tilolang_runtime::store::{FieldValue, Reflected, Scalar, TaskRun, Version, VersionKind};
 
 use crate::action::{ACTION_TYPE, DynAction, DynEdit};
 use crate::schema::{FieldSchema, MergeKind};
@@ -97,6 +97,12 @@ impl Stamp {
                 serde_json::to_value(task).unwrap_or(Json::Null),
             );
         }
+        if let (Some(from), Some(map)) = (&self.version.from, held.as_object_mut()) {
+            map.insert(
+                "from".to_owned(),
+                serde_json::to_value(from).unwrap_or(Json::Null),
+            );
+        }
         FieldValue::Scalar(Scalar::Json(held))
     }
 
@@ -118,6 +124,17 @@ impl Stamp {
                 }
             },
         };
+        // An index written before versions named what they were made from holds none.
+        let from = match json.get("from") {
+            None | Some(Json::Null) => None,
+            Some(from) => match serde_json::from_value(from.clone()) {
+                Ok(from) => Some(from),
+                Err(error) => {
+                    tracing::warn!(%error, "the index holds a version made from something that does not decode");
+                    return None;
+                }
+            },
+        };
         let change = text("change").unwrap_or_default();
         Some(Self {
             version: Version {
@@ -126,6 +143,7 @@ impl Stamp {
                 action: text("action")?,
                 task,
                 change: change.clone(),
+                from,
                 ..Version::default()
             },
             change,
@@ -176,6 +194,11 @@ pub fn versions_of(change: &automerge::Change) -> Vec<Version> {
             fields: made.fields,
             placed: items_inserted_into(&inserted, &made.resource),
             resource: made.resource,
+            // What it was made from is the creation's fact: an action made from a resource
+            // changes others too, and those were not made from it.
+            from: (made.kind == VersionKind::Created)
+                .then(|| stamp.version.from.clone())
+                .flatten(),
             ..stamp.version.clone()
         })
         .collect()
@@ -249,6 +272,7 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
             action: action.action_id.clone(),
             task: task.clone(),
             change: hash.clone(),
+            from: action.authorship.from.clone(),
             ..Version::default()
         },
         change: hash,

@@ -133,6 +133,7 @@ mod tests {
             change: change.to_owned(),
             left: None,
             placed: Vec::new(),
+            from: None,
         }
     }
 

@@ -317,7 +317,7 @@ impl Core {
             CollRemove, CollWhere, CollWhereWith, Dated, Delivery, EnumGetF, EnumGetH, EnumGetI,
             EnumIs, EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FilterLit,
             Filters, FirstUnseen, FloatToStr, IdentPart, IntToStr, Invoke, Invoker, InvokerPop,
-            InvokerPush, IsError, IsSome, Lenses, ListEnd, ListGetF, ListGetH, ListGetI,
+            InvokerPush, IsError, IsSome, Lenses, Links, ListEnd, ListGetF, ListGetH, ListGetI,
             ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI,
             ListReverse, ListSortByKey, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd,
             MapSetRemove, Members, Mentions, MetaOf, ModelCall, NoneV, Now, Outside, OutsideAt,
@@ -380,7 +380,7 @@ impl Core {
             | ActThen | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
                 self.ui_import(imp, a)
             }
-            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions
+            EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase | Word
             | Dated | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {

@@ -50,7 +50,7 @@ use tilo_resource::{Model, Segment};
 use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Listing,
+    ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, Listing,
     ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
     SubId, Txn, Version, doc_of,
 };
@@ -60,8 +60,9 @@ use crate::action::{
     Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
 };
 use crate::background::Waker;
-use crate::index::derive::{Derive, DocReads, Reached};
-use crate::index::overlay::{Overlay, OverlaySink};
+use crate::index::derive::{Derive, DocReads, Reached, linked_list, split_link};
+use crate::index::lists::Entry;
+use crate::index::overlay::{ListState, Overlay, OverlaySink};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
@@ -1747,6 +1748,7 @@ impl Inner {
                 at,
                 action: note.action.clone(),
                 task: note.group.clone(),
+                from: note.from.clone(),
                 ..Version::default()
             },
             // No change yet: the action was invoked on top of every change this device
@@ -2078,6 +2080,53 @@ impl Store for TiloStore {
             .unwrap_or_else(|| located.schema.id.clone()))
     }
 
+    /// What links to `at`, read from each package's index: the one list its links are kept in
+    /// ([`linked_list`]), as the store's open writes leave it. A resource gone from its index
+    /// links to nothing.
+    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
+        let inner = self.held();
+        let target = at.id_string();
+        let list = linked_list(&target);
+        let mut out: Vec<Link> = Vec::new();
+        for held in inner.apps.values().filter(|held| held.ready()) {
+            let snapshot = &held.snapshot;
+            let pages = snapshot.pages(&list).map_err(backend)?;
+            let mut entries: Vec<Entry> = (0..pages.len())
+                .filter_map(|at| pages.entry(at))
+                .map(|(key, id)| (key, id.to_string()))
+                .collect();
+            match inner.overlay.list(&target, &list) {
+                None => {}
+                Some(ListState::Whole(written)) => entries = written,
+                Some(ListState::Delta { added, removed }) => {
+                    entries.retain(|entry| !removed.contains(entry));
+                    entries.extend(added);
+                }
+            }
+            for (key, source) in entries {
+                let Some((how, _)) = split_link(&key) else {
+                    continue;
+                };
+                let ty = match inner.overlay.text(&source, idx::TYPE) {
+                    Some(ty) => ty,
+                    None => snapshot.text(&source, idx::TYPE).map_err(backend)?,
+                };
+                // A resource the open writes removed, or that its index no longer holds, links
+                // to nothing.
+                let Some(ty) = ty else {
+                    continue;
+                };
+                let Some(of) = ResourceRef::parse_id(&source, ty) else {
+                    continue;
+                };
+                out.push(Link { of, how });
+            }
+        }
+        out.sort_by(|a, b| a.order().cmp(&b.order()));
+        out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
+        Ok(out)
+    }
+
     fn begin(&mut self) -> Result<Txn, StoreError> {
         self.load_record()?;
         let mut inner = self.mutate();
@@ -2190,6 +2239,7 @@ impl Store for TiloStore {
                 chain: note.chain.clone(),
                 module: note.module.clone(),
                 at: note.at.clone(),
+                from: note.from.clone(),
             },
             edits: state.edits,
         };

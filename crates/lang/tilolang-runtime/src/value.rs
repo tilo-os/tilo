@@ -557,6 +557,44 @@ fn from_json_items(j: &Json) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+/// The resources a value names, as ids ([`ResourceRef::id_string`]): every reference it holds,
+/// through options, lists, tuples and enum payloads, and every resource its rich text mentions.
+/// What links a resource to another through a field (`linked(r)`,
+/// [`crate::store::Store::linked`]).
+#[must_use]
+pub fn references_in(value: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_references(value, &mut out);
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_references(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Ref(r) => out.push(r.target.id_string()),
+        Value::Opt(Some(inner)) => collect_references(inner, out),
+        Value::List(items) | Value::Tuple(items) => {
+            for item in items {
+                collect_references(item, out);
+            }
+        }
+        Value::Enum(e) => {
+            for value in e.fields.values() {
+                collect_references(value, out);
+            }
+        }
+        Value::Rich(rich) => {
+            for reference in rich.references() {
+                if let Some(id) = crate::rich::resource_id(&reference) {
+                    out.push(id.to_owned());
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn author_of(m: &Map<String, Json>) -> Option<ModuleHash> {
     m.get("author")
         .and_then(Json::as_str)

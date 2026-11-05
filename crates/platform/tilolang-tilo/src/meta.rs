@@ -90,6 +90,15 @@ pub trait MetaExt {
     fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta>;
 }
 
+/// Whether a field's declared type names a resource: a record, or one inside an option.
+fn names_a_resource(ty: &Ty) -> bool {
+    match ty {
+        Ty::Record(_) | Ty::Union(_) => true,
+        Ty::Option(inner) => names_a_resource(inner),
+        _ => false,
+    }
+}
+
 fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
     // A loaded package's field types all parse (`unreadable_types`, checked where it is
     // loaded); a hand-built one that does not is kept whole, as a composite register.
@@ -119,7 +128,10 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
             }
         }
         FieldKind::Register => {
-            let schema = FieldSchema::new(&field.id, MergeKind::Register);
+            let mut schema = FieldSchema::new(&field.id, MergeKind::Register);
+            if names_a_resource(&ty_of_field) {
+                schema.refers = true;
+            }
             if matches!(
                 ty_of_field,
                 Ty::Int

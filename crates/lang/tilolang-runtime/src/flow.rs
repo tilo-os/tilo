@@ -47,6 +47,10 @@ pub struct Journal {
     pub args: Vec<Value>,
     pub invoker: Principal,
     pub chain: Vec<ModuleHash>,
+    /// The resource the run was invoked from, when it was made from one: what the resources its
+    /// actions create were made from, kept across a suspension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<crate::value::ResourceRef>,
     pub entries: Vec<JournalEntry>,
     pub pending: Option<Suggestion>,
     pub finished: bool,
