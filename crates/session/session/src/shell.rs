@@ -926,6 +926,37 @@ impl tilo_surface_host::Published for ShellDesk {
                 tilo_actions::ActionOutput::default(),
             ));
         }
+        // The platform search door (a window's search control, its toolbar's
+        // magnifier, Ctrl+K) asks for the desk's search under the shell too:
+        // the shell draws that search, so the request opens the launcher, and
+        // its query runs the desk's search as the desk's own `search` verb
+        // does, its rows published for whoever reads them.
+        if ui::search::is_search_address(address) {
+            let query = ui::search::SearchRequest::from_arguments(arguments)
+                .query
+                .filter(|query| !query.is_empty());
+            let started = match &query {
+                Some(query) => {
+                    let asked =
+                        Map::from_iter([("query".to_owned(), Value::String(query.clone()))]);
+                    self.desk.borrow_mut().invoke(
+                        &ActionAddress::new(tilo_desktop::desk_verbs::DESK_RESOURCE, "search"),
+                        &asked,
+                        look,
+                    )?
+                }
+                None => ui::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            };
+            match &query {
+                Some(query) => self.surfaces.overlays.search(query),
+                None => self
+                    .surfaces
+                    .toggle(crate::overlays::Overlay::Launcher.name()),
+            }
+            return Ok(started);
+        }
         self.desk.borrow_mut().invoke(address, arguments, look)
     }
 
@@ -936,7 +967,9 @@ impl tilo_surface_host::Published for ShellDesk {
         arguments: &Map<String, Value>,
         look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
-        if address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE && address.action == "search"
+        if ui::search::is_search_address(address)
+            || (address.resource == tilo_desktop::desk_verbs::DESK_RESOURCE
+                && address.action == "search")
         {
             return self.invoke(address, arguments, look);
         }

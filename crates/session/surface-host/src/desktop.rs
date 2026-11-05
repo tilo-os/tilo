@@ -459,6 +459,38 @@ impl DesktopHost {
         )))
     }
 
+    /// Answer the platform search door (`tilo.host:search`'s `open`) with the
+    /// desk's own search: a window's search control, its toolbar's magnifier,
+    /// Ctrl+K and an agent all ask the platform to search, and the platform's
+    /// search is the one that knows the person's apps, their files, what apps
+    /// hold and the desk's windows. The desk's palette is drawn over the
+    /// windows by the chrome ([`crate::desktop::DesktopHost`]'s
+    /// `SearchOverlay`), which is the one surface that may cover a window in
+    /// front; opening it here means the same search every way into search
+    /// reaches.
+    ///
+    /// `None` when `address` is not the platform search door.
+    ///
+    /// # Errors
+    /// Never: opening search asks nothing first, and a request its own action
+    /// refuses is one the caller made against the published contract.
+    fn open_platform_search(
+        &mut self,
+        address: &ui::tilo_actions::ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::DoorError>
+    {
+        if !ui::search::is_search_address(address) {
+            return Ok(None);
+        }
+        let request = ui::search::SearchRequest::from_arguments(arguments);
+        let handle = self.desk.borrow().policy.handle().clone();
+        handle.open_search(ui::search::Scope::Workspace, request.query.clone());
+        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+            ui::tilo_actions::ActionOutput::default(),
+        )))
+    }
+
     /// Read touchpad gestures by `config` from the next one on; `None`
     /// leaves them all to the clients.
     pub fn set_gestures(&self, config: Option<GestureConfig>) {
@@ -551,6 +583,9 @@ impl crate::Published for DesktopHost {
         if let Some(answered) = self.read_window(address, look)? {
             return Ok(answered);
         }
+        if let Some(answered) = self.open_platform_search(address, arguments)? {
+            return Ok(answered);
+        }
         crate::Published::invoke(&mut self.desk.borrow_mut().host, address, arguments, look)
     }
 
@@ -562,6 +597,9 @@ impl crate::Published for DesktopHost {
         look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         if let Some(answered) = self.read_window(address, look)? {
+            return Ok(answered);
+        }
+        if let Some(answered) = self.open_platform_search(address, arguments)? {
             return Ok(answered);
         }
         crate::Published::invoke_as(
