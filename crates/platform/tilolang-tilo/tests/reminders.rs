@@ -81,6 +81,10 @@ fn packages() -> Vec<(&'static str, &'static str)> {
 }
 
 /// A day, and a time of day on it, in UTC: the zone these tests read a reminder in.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the signature the scheduler reads a person's zone in"
+)]
 fn utc(day: NaiveDate, time: Option<NaiveTime>) -> Option<DateTime<Utc>> {
     Some(day.and_time(time.unwrap_or(NaiveTime::MIN)).and_utc())
 }
@@ -258,7 +262,7 @@ fn a_reminder_a_person_was_told_reaches_none_of_their_devices_again() {
     // The device that showed it keeps the mark, as the window does after showing.
     let keep = Keep::Reminded {
         person: "bo".to_owned(),
-        reminder: alarm.key.clone(),
+        reminder: alarm.key,
     };
     let encoded = tilo_resource::encode::<Personal>(&keep).expect("the mark encodes");
     let context = ActionContext::for_resource(personal::KIND, personal::KIND, Personal::LABEL)

@@ -212,13 +212,10 @@ impl Ringer {
     /// The notification of `alarm`: what it is about, when it is due, which app it is from, and
     /// what the person can do about it there.
     fn notification(&self, alarm: &Alarm, now: DateTime<Utc>) -> Notification {
-        let mut notification = Notification::new(
-            alarm.tag(),
-            alarm.title.clone(),
-            format!("{} · {}", Self::when(alarm, now), alarm.app_title),
-        )
-        .with_activation(self.activation("open", &alarm.resource(), None))
-        .with_action(tilo_ui_host::i18n::t("tilolang-reminder-open"));
+        let mut notification =
+            Notification::new(alarm.tag(), alarm.title.clone(), Self::body(alarm, now))
+                .with_activation(self.activation("open", &alarm.resource(), None))
+                .with_action(tilo_ui_host::i18n::t("tilolang-reminder-open"));
         for offer in alarm.actions.iter().take(MAX_BUTTONS) {
             notification = notification.with_button(
                 offer.label.clone(),
@@ -228,24 +225,27 @@ impl Ringer {
         notification
     }
 
-    /// When the item is due, as the notification says it: how long from now, or — for a reminder
-    /// that came after its instant, a device that was off past it — that it is late, and when
-    /// the item was due.
-    fn when(alarm: &Alarm, now: DateTime<Utc>) -> String {
+    /// What the notification says under the title, one fact a line: when the item is due or —
+    /// for a reminder that came after its instant, a device that was off past it — that it is
+    /// late and the time it was due, then the app it is from.
+    fn body(alarm: &Alarm, now: DateTime<Utc>) -> String {
         let late = now
             .timestamp()
             .checked_sub(alarm.at.timestamp())
             .is_some_and(|past| past > GRACE_SECS);
-        if late {
-            format!(
-                "{} · {}",
-                tilo_ui_host::i18n::t("tilolang-reminder-late"),
-                ui::clock::time_of_day(&alarm.deadline.with_timezone(&Local)),
-            )
+        let when = if late {
+            ui::clock::time_of_day(&alarm.deadline.with_timezone(&Local))
         } else {
             let ahead = alarm.deadline.timestamp().saturating_sub(now.timestamp());
             ui::format::relative_ahead(ahead)
+        };
+        let mut lines = Vec::new();
+        if late {
+            lines.push(tilo_ui_host::i18n::t("tilolang-reminder-late"));
         }
+        lines.push(when);
+        lines.push(alarm.app_title.clone());
+        lines.join("\n")
     }
 
     /// The activation URI that asks `verb` of `resource`, with `action` where it runs one.
@@ -331,7 +331,18 @@ mod tests {
         assert_eq!(shown.len(), 1, "{shown:#?}");
         assert_eq!(shown[0].tag, reminder.tag());
         assert_eq!(shown[0].title, "Call the landlord");
-        assert!(shown[0].body.ends_with(" · Remind"), "{}", shown[0].body);
+        assert_eq!(
+            shown[0].body.lines().last(),
+            Some("Remind"),
+            "what it is from, on a line of its own: {}",
+            shown[0].body
+        );
+        assert_eq!(
+            shown[0].body.lines().count(),
+            2,
+            "in 30 min, then the app: {}",
+            shown[0].body
+        );
         assert_eq!(
             shown[0].activation.as_deref(),
             Some(

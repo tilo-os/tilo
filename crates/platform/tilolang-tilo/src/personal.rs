@@ -812,7 +812,7 @@ mod tests {
             state.of("ada").told,
             vec![Reminded {
                 person: "ada".to_owned(),
-                reminder: reminder.clone(),
+                reminder,
             }],
             "one mark per reminder, however often it is kept"
         );

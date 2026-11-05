@@ -106,8 +106,9 @@ fn a_reminder_of_the_workspace_comes_as_a_notification_the_person_can_act_on() {
         assert_eq!(shown.len(), 1, "one reminder at its instant: {shown:#?}");
         let shown = &shown[0];
         assert_eq!(shown.title, "Call the landlord");
-        assert!(
-            shown.body.ends_with("· Remind"),
+        assert_eq!(
+            shown.body.lines().last(),
+            Some("Remind"),
             "from the app: {}",
             shown.body
         );
