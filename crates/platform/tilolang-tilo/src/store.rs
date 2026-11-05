@@ -2122,7 +2122,7 @@ impl Store for TiloStore {
                 out.push(Link { of, how });
             }
         }
-        out.sort_by(|a, b| a.order().cmp(&b.order()));
+        out.sort_by_key(Link::order);
         out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
         Ok(out)
     }

@@ -1248,7 +1248,7 @@ impl Store for AmStore {
                 }
             }
         }
-        out.sort_by(|a, b| a.order().cmp(&b.order()));
+        out.sort_by_key(Link::order);
         out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
         Ok(out)
     }
