@@ -567,7 +567,8 @@ fn a_welcome_card_does_what_its_published_action_does() {
         "the card runs the verb it declares"
     );
 
-    // Inviting brings someone into this workspace: its settings are open.
+    // Inviting brings someone into this workspace: the invite sheet is open,
+    // where the link is made.
     invoke(
         &mut session,
         &launchpad_card_id("invite"),
@@ -576,8 +577,8 @@ fn a_welcome_card_does_what_its_published_action_does() {
     );
     until(&mut session, |session| {
         session
-            .workspace_settings()
-            .is_some_and(|settings| settings.presentation().is_open())
+            .invite_sheet()
+            .is_some_and(|seat| seat.presentation().is_open())
     });
 }
 

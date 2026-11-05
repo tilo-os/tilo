@@ -275,8 +275,9 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     ///
-    /// `key` is not the device's, it may not invite, the request is invalid
-    /// or the workspace cannot be published.
+    /// `key` is not the device's, it may not invite, the role it hands out is
+    /// above its own, the request is invalid or the workspace cannot be
+    /// published.
     pub fn issue_invitation(
         &self,
         workspace: WorkspaceId,
@@ -294,6 +295,9 @@ impl NativeWorkspaceOwner {
         let mut nonce = [0; 16];
         getrandom::fill(&mut nonce).map_err(|error| error.to_string())?;
         candidate.peer.require_member_writer(key, now)?;
+        candidate
+            .peer
+            .require_invitation_authority(key, request.role.into(), now)?;
         let mut ledger = candidate.record.join_ledger.clone();
         let issued = {
             let messages = candidate.peer();

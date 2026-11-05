@@ -65,6 +65,11 @@ impl Shared {
                 DesktopAsk::Intent(ChromeIntent::ExpandActivity { activity }) => {
                     self.activities.expand(&activity);
                 }
+                // Inviting people: the link into the workspace in front is
+                // made in the invite sheet, wherever it was asked for — the
+                // bar's invite button, the roster's footer, workspace
+                // settings or the launchpad's own verb.
+                DesktopAsk::Intent(ChromeIntent::Invite) => self.open_invite(),
                 // A click on an application's tray icon is the
                 // application's own to answer.
                 DesktopAsk::Intent(ChromeIntent::AppTray { key, request }) => {

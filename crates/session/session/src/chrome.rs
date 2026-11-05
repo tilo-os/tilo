@@ -10,7 +10,7 @@ use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
     AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent, ClockSnapshot,
-    DesktopChromeSnapshot, DesktopChromeSource, OwnChip, SystemStatus,
+    DesktopChromeSnapshot, DesktopChromeSource, Invite, OwnChip, SystemStatus,
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
@@ -328,6 +328,10 @@ pub(crate) struct BarFeeds {
     /// the name Settings gives it, which the chrome says on that display for
     /// a moment.
     pub(crate) identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
+    /// Whether the person may invite someone into the workspace in front, as
+    /// the session's loop last answered it: the bar offers its invite button
+    /// on it.
+    pub(crate) invitable: Rc<Cell<bool>>,
 }
 
 /// What the chrome hands the session while it runs: the intents and asks its
@@ -341,9 +345,9 @@ pub(crate) struct ChromeWiring {
 /// What the snapshot revision was last bumped for: the tree's revision, who
 /// is here, the minute, the last wave heard, the ask on the person's avatar,
 /// the tray's revision, the displays a fullscreen window owns, who views the
-/// windows this session shares, the notification count and silence the bell
-/// shows, and the Identify request the chrome answers.
-/// What the snapshot revision was last bumped for (see [`SessionChrome::seen`]).
+/// windows this session shares, the notification count, whether the bell is
+/// silenced beside whether the person may invite someone here, and the
+/// Identify request the chrome answers.
 #[derive(PartialEq)]
 struct Seen {
     tree: u64,
@@ -356,6 +360,7 @@ struct Seen {
     exposures: Vec<(u64, u64, bool)>,
     unread: u32,
     quiet: bool,
+    invitable: bool,
     identify: Option<u64>,
     activities: u64,
     words: u64,
@@ -396,6 +401,8 @@ pub(crate) struct SessionChrome {
     shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// Settings' Identify as the session read it.
     identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
+    /// Whether the person may invite someone into the workspace in front.
+    invitable: Rc<Cell<bool>>,
     /// The [`Seen`] the snapshot revision was last bumped for.
     seen: RefCell<Seen>,
     revision: Cell<u64>,
@@ -419,6 +426,7 @@ impl SessionChrome {
             fullscreen,
             shares,
             identify,
+            invitable,
             ..
         } = feeds;
         Self {
@@ -435,6 +443,7 @@ impl SessionChrome {
             fullscreen,
             shares,
             identify,
+            invitable,
             seen: RefCell::new(Seen {
                 tree: u64::MAX,
                 people: u64::MAX,
@@ -446,6 +455,7 @@ impl SessionChrome {
                 exposures: Vec::new(),
                 unread: 0,
                 quiet: false,
+                invitable: false,
                 identify: None,
                 activities: u64::MAX,
                 words: u64::MAX,
@@ -498,6 +508,7 @@ impl DesktopChromeSource for SessionChrome {
                 .collect(),
             unread: self.signals.unread(),
             quiet: self.signals.quiet(),
+            invitable: self.invitable.get(),
             identify: identify.as_ref().map(|ask| ask.id),
             activities: self.activities.board().revision(),
             // The bar says its words in the person's language: another one
@@ -534,6 +545,7 @@ impl DesktopChromeSource for SessionChrome {
             // share is live while anyone does.
             active_exposures: exposures,
             identify,
+            invite: Invite::when(self.invitable.get()),
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -823,8 +835,9 @@ impl crate::Shared {
             return self.invoke_app_action(app_action);
         }
         match action {
-            // Bringing people in happens in this workspace's settings.
-            LaunchpadAction::Invite => self.open_workspace_settings(),
+            // Bringing people in: the link into this workspace is made in
+            // the invite sheet.
+            LaunchpadAction::Invite => self.open_invite(),
             LaunchpadAction::Activity => self
                 .intents
                 .borrow_mut()

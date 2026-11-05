@@ -21321,6 +21321,7 @@ dependencies = [
  "tilo-content",
  "tilo-copy-lint",
  "tilo-crash-records",
+ "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",

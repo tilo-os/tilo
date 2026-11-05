@@ -89,6 +89,22 @@ impl PeerGovernance<'_> {
         })
     }
 
+    /// Whether `key`'s device may issue an invitation into the workspace at
+    /// `now`: a current member whose part there grants inviting. What the
+    /// surfaces that offer inviting show; an invitation's write path asks it
+    /// again, with the part its link hands out.
+    pub fn may_invite(self, key: &SigningKey, now: SystemTime) -> bool {
+        self.peer.require_inviter(key, now).is_ok()
+    }
+
+    /// Whether `key`'s device may hand out `role` in an invitation into the
+    /// workspace at `now`: what the surfaces offering a part to grant list.
+    pub fn may_invite_role(self, key: &SigningKey, role: Role, now: SystemTime) -> bool {
+        self.peer
+            .require_invitation_authority(key, role, now)
+            .is_ok()
+    }
+
     /// The devices that may read `channel`, one of the workspace's record
     /// channels, at `now`: the projection of the workspace's membership a
     /// channel's MLS group follows. `route` is the channel's record when the
@@ -987,18 +1003,47 @@ impl PeerGovernanceMut<'_> {
 }
 
 impl super::StatePeer {
+    /// The current member writing with `key`, as its own device's authority
+    /// holds it: what inviting is decided by.
+    fn inviter(&self, key: &SigningKey, now: SystemTime) -> Result<super::MemberAuthority, String> {
+        let device = key.verifying_key().to_bytes();
+        self.require_member_writer(key, now)?;
+        self.membership(device, now)
+    }
+
     /// A current member's device whose person may invite: what an
     /// admission through an invitation is written by.
     fn require_inviter(&self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
-        let device = key.verifying_key().to_bytes();
-        self.require_member_writer(key, now)?;
-        let member = self.membership(device, now)?;
+        let member = self.inviter(key, now)?;
         let bound = tilo_action_policy::roles::foreign_device_bound();
         member
             .policy
             .check_action(
                 &member.authority(&bound),
                 tilo_action_policy::roles::governance::INVITE,
+                &tilo_action_policy::Context::at_time(now),
+                false,
+            )
+            .map_err(|refusal| format!("the writer may not invite: {refusal}"))
+    }
+
+    /// A current member's device whose person may invite, and may hand out
+    /// `role` with what it makes: checked where an invitation is written, so
+    /// no surface issues a link its person could not redeem itself.
+    pub(crate) fn require_invitation_authority(
+        &self,
+        key: &SigningKey,
+        role: Role,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        let member = self.inviter(key, now)?;
+        let bound = tilo_action_policy::roles::foreign_device_bound();
+        member
+            .policy
+            .check_invite(
+                &member.person,
+                &member.authority(&bound),
+                role,
                 &tilo_action_policy::Context::at_time(now),
                 false,
             )
