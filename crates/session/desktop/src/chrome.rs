@@ -342,6 +342,9 @@ pub enum ChromeIntent {
     RenameWorkspace {
         name: String,
     },
+    /// Take the active workspace off this device's desktop, leaving it to
+    /// the people in it.
+    LeaveWorkspace,
     /// Open or close the menu behind the bar's Tilo mark
     /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].

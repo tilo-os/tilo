@@ -1291,6 +1291,11 @@ impl DesktopChrome {
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
+            ChromeIntent::LeaveWorkspace => {
+                if let Err(refusal) = self.leave_workspace(None) {
+                    self.handle.acknowledge(refusal);
+                }
+            }
             ChromeIntent::ToggleTiloMenu => {
                 self.workspace_menu.close();
                 self.tilo_menu.set_actions(self.tilo_menu_actions());

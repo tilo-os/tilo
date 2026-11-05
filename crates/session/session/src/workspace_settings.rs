@@ -9,9 +9,9 @@
 
 use std::cell::{Cell, RefCell};
 
-use collab_types::caps::Expiry;
+use collab_types::caps::{Effect, Expiry};
 use tilo_action_policy::agent_answers::AnswerScope;
-use tilo_action_policy::{Answer, Refusal, Role};
+use tilo_action_policy::{Answer, Refusal, Role, Subject};
 use tilo_desktop::authority::WorkspaceAuthority as _;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::collaborators::PeopleNames;
@@ -338,6 +338,11 @@ pub(crate) fn follow(
             sheet::WorkspaceSettingsEffect::NextPersonalDefault { resource } => {
                 next_personal_default(handle, person, &fed.lists, &resource);
             }
+            // The workspace leaves this device's desktop; it stays for
+            // everyone in it, on their devices.
+            sheet::WorkspaceSettingsEffect::Delete => {
+                intents.borrow_mut().push(ChromeIntent::LeaveWorkspace);
+            }
             other => tracing::debug!(
                 ?other,
                 "workspace settings asks what the session cannot do yet"
@@ -652,7 +657,7 @@ fn settings(
         close: t("workspace-settings-close"),
         tabs: tabs(),
         tab,
-        general: general(tree, personal),
+        general: general(tree, person, personal),
         people: workspace.map_or_else(sheet::People::default, |ws| people(ws, &names, person)),
         permissions: workspace.map_or_else(sheet::Permissions::default, |ws| {
             permissions(ws, person, &apps)
@@ -672,48 +677,116 @@ fn settings(
     }
 }
 
-/// The General tab: which of the person's devices show the workspace, and
-/// its place among theirs. A workspace that is not the person's own has no
-/// devices to show it on: it is theirs only while they are in it.
-fn general(tree: &DesktopTree, personal: Option<&RefCell<Personal>>) -> sheet::General {
-    let devices = match (tree.active_workspace(), personal) {
+/// The General tab: the workspace's name and what the person may change of
+/// it, inviting people, the workspace at a glance, which of the person's
+/// devices show it and its place among theirs, and leaving it.
+///
+/// A workspace that is not the person's own has no devices to show it on: it
+/// is theirs only while they are in it.
+fn general(
+    tree: &DesktopTree,
+    person: &UserId,
+    personal: Option<&RefCell<Personal>>,
+) -> sheet::General {
+    let workspace = tree.active_workspace();
+    let manage = workspace.is_some_and(|workspace| workspace.may_administer(person));
+    // What the workspace holds, in the three measures a person acts on: who
+    // is in it, what it gives particular people or apps, and which apps it
+    // opens things with.
+    let (members, grants, app_rules) = workspace.map_or((0, 0, 0), |workspace| {
+        let sandbox = workspace
+            .sandbox
+            .iter()
+            .filter(|cap| cap.effect == Effect::Grant);
+        let given = workspace
+            .policy
+            .grants
+            .iter()
+            .filter(|grant| !matches!(grant.subject, Subject::Role(_)));
+        (
+            workspace.roster().len(),
+            sandbox.count().saturating_add(given.count()),
+            workspace.default_apps.policy.len(),
+        )
+    });
+    let stat =
+        |key: &str, count: usize| (t_args(key, &[("count", count.into())]), count.to_string());
+    let devices = match (workspace, personal) {
         (Some(workspace), Some(personal)) => personal.borrow().device_choices(workspace.id()),
         _ => Vec::new(),
     };
-    let at = tree.active_workspace().and_then(|workspace| {
+    let at = workspace.and_then(|workspace| {
         tree.workspaces
             .iter()
             .position(|one| one.slot == workspace.slot)
     });
     let last = tree.workspaces.len().saturating_sub(1);
     sheet::General {
+        identity: sheet::Group {
+            title: t("workspace-settings-identity-title"),
+            description: t("workspace-settings-identity-description"),
+        },
+        name_label: t("workspace-settings-name-label"),
+        can_rename: manage,
+        rename_note: (!manage).then(|| t("workspace-settings-rename-admin-only")),
+        invite: sheet::Group {
+            title: t("workspace-settings-invite-title"),
+            description: t(if manage {
+                "workspace-settings-invite-description"
+            } else {
+                "workspace-settings-invite-admin-only"
+            }),
+        },
+        invite_label: t("workspace-settings-invite-create"),
+        can_invite: manage,
+        glance_title: t("workspace-settings-glance-title"),
+        stats: vec![
+            stat("workspace-settings-stat-members", members),
+            stat("workspace-settings-stat-grants", grants),
+            stat("workspace-settings-stat-app-rules", app_rules),
+        ],
         devices: sheet::Group {
             title: t("workspace-settings-devices-title"),
             description: t("workspace-settings-devices-local"),
         },
-        device_rows: devices.into_iter().map(device_row).collect(),
+        device_rows: devices.iter().map(device_row).collect(),
         move_labels: [
             t("workspace-settings-move-earlier"),
             t("workspace-settings-move-later"),
         ],
         move_enabled: [at.is_some_and(|at| at > 0), at.is_some_and(|at| at < last)],
-        ..sheet::General::default()
+        // No host directory answers from here, and this device archives no
+        // workspace: each group stays away until there is something to say.
+        public: None,
+        archived_title: String::new(),
+        archived: Vec::new(),
+        leave: sheet::Group {
+            title: t("workspace-settings-leave"),
+            description: t("workspace-settings-leave-description"),
+        },
+        leave_label: t("workspace-settings-leave-action"),
+        // The desk keeps the person one workspace, so the last one is not
+        // theirs to leave.
+        leavable: tree.workspaces.len() > 1,
     }
 }
 
 /// One of the person's devices as the General tab lists it: named as its
 /// own label names it, the one this session runs on saying so.
-fn device_row(choice: DeviceChoice) -> sheet::Device {
+fn device_row(choice: &DeviceChoice) -> sheet::Device {
+    let named = choice.label.trim();
+    let label = match (named.is_empty(), choice.here) {
+        (true, true) => t("workspace-settings-device-this"),
+        (true, false) => t("workspace-settings-device-unnamed"),
+        (false, true) => t_args(
+            "workspace-settings-device-here",
+            &[("device", named.into())],
+        ),
+        (false, false) => named.to_owned(),
+    };
     sheet::Device {
         key: hex::encode(choice.device),
-        label: if choice.here {
-            t_args(
-                "workspace-settings-device-here",
-                &[("device", choice.label.into())],
-            )
-        } else {
-            choice.label
-        },
+        label,
         toggle: t(if choice.shown {
             "workspace-settings-device-shown"
         } else {
@@ -805,7 +878,7 @@ fn own_name() -> Option<String> {
 /// The People tab: who shares the workspace, their roles, and where its
 /// ownership stands.
 fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People {
-    let content = domain::overlay::people::content(ws, names, person, ws.is_owner(person));
+    let content = domain::people::content(ws, names, person, ws.is_owner(person));
     sheet::People {
         count: content.count,
         status: content.status,
@@ -824,9 +897,9 @@ fn people(ws: &Workspace, names: &PeopleNames, person: &UserId) -> sheet::People
                 role_key: ws.role_of(&entry.user).map(|role| role_id(role).to_owned()),
                 extra: entry.extra.clone(),
                 offers: match entry.offers {
-                    domain::overlay::people::Offers::Nothing => sheet::Offers::Nothing,
-                    domain::overlay::people::Offers::Role => sheet::Offers::Role,
-                    domain::overlay::people::Offers::RoleAndRemove => sheet::Offers::RoleAndRemove,
+                    domain::people::Offers::Nothing => sheet::Offers::Nothing,
+                    domain::people::Offers::Role => sheet::Offers::Role,
+                    domain::people::Offers::RoleAndRemove => sheet::Offers::RoleAndRemove,
                 },
                 can_manage: entry.can_manage,
             })

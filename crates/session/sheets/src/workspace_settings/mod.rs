@@ -107,7 +107,8 @@ pub enum WorkspaceSettingsEffect {
         #[param("The archived workspace, by its key in the list")]
         workspace: String,
     },
-    /// Delete this workspace
+    /// Take this workspace off your device's desktop, leaving it to the
+    /// people in it
     #[effect(destructive, attended)]
     Delete,
     /// Give a member of the workspace another role

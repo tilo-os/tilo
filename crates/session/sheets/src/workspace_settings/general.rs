@@ -1,7 +1,7 @@
 //! The General tab: the workspace's name, inviting people, the workspace at
 //! a glance, the devices it shows on and its place among the person's
 //! workspaces, whether it is public, the workspaces archived here, and
-//! deleting it, last and apart.
+//! leaving it, last and apart.
 
 use ui::prelude::*;
 use ui::tokens::Rhythm;
@@ -91,9 +91,10 @@ pub struct General {
     pub public: Option<Public>,
     pub archived_title: String,
     pub archived: Vec<Archived>,
-    pub delete: Group,
-    pub delete_label: String,
-    pub deletable: bool,
+    /// The row that takes the workspace off this device.
+    pub leave: Group,
+    pub leave_label: String,
+    pub leavable: bool,
 }
 
 /// The General tab of `settings`.
@@ -137,20 +138,20 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     if !general.archived.is_empty() {
         groups.push(archived(general, parts));
     }
-    // Deleting stands apart, last and under a rule, where nothing else is
+    // Leaving stands apart, last and under a rule, where nothing else is
     // reached for on the way to it.
     groups.push(Box::new(Section::new(vec![
         Box::new(Divider::horizontal()),
         Box::new(
-            ListRow::new("ws-general-delete-row", general.delete.title.clone())
-                .secondary(general.delete.description.clone())
+            ListRow::new("ws-general-leave-row", general.leave.title.clone())
+                .secondary(general.leave.description.clone())
                 .two_line_secondary()
                 .trailing(Box::new(
-                    button(parts, "ws-general-delete", &general.delete_label, || {
+                    button(parts, "ws-general-leave", &general.leave_label, || {
                         WorkspaceSettingsEffect::Delete
                     })
                     .role(ButtonRole::Destructive)
-                    .with_enabled(general.deletable),
+                    .with_enabled(general.leavable),
                 )),
         ),
     ])));
@@ -369,12 +370,14 @@ pub(super) fn sample() -> General {
             restore: "Restore".to_owned(),
             delete: "Delete".to_owned(),
         }],
-        delete: Group::new(
-            "Delete workspace",
-            "Removes it and everything in it from every device.",
+        leave: Group::new(
+            "Leave workspace",
+            "Takes it off this device, along with the windows and groups that \
+             belong to it. The workspace, its history and everyone else's \
+             windows stay.",
         ),
-        delete_label: "Delete…".to_owned(),
-        deletable: true,
+        leave_label: "Leave".to_owned(),
+        leavable: true,
     }
 }
 

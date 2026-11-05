@@ -71,7 +71,7 @@ fn the_general_tab_shows_the_workspace_and_what_the_person_may_change() {
         assert!(says(&mut owner, text), "{text:?} is shown");
     }
     assert!(enabled(&mut owner, "Create invitation"));
-    assert!(enabled(&mut owner, "Delete…"));
+    assert!(enabled(&mut owner, "Leave"));
     assert!(!enabled(&mut owner, "Move earlier"), "it is first already");
 
     let mut viewer = staged("general-viewer");

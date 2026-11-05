@@ -642,3 +642,94 @@ fn held_by_chat(
         session.step(Duration::from_millis(100)).expect("step");
     }
 }
+
+/// Every name the sheet says, with what it says of it, as a screen reader
+/// reads it.
+fn said(app: &mut HeadlessApp<WorkspaceSettingsApp>) -> Vec<(String, String)> {
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| {
+            node.label().map(|label| {
+                (
+                    label.to_owned(),
+                    node.value().unwrap_or_default().to_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
+/// The General tab says what the workspace is: its name under its label,
+/// inviting people, the workspace at a glance, the devices it shows on and
+/// leaving it.
+#[test]
+fn workspace_settings_general_says_what_the_workspace_is() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    own_workspace(&session, &["ada"]);
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    session.step(Duration::from_millis(1)).unwrap();
+    let mut app = sheet(&session);
+    let labels = said(&mut app);
+    for wanted in [
+        "Workspace identity",
+        "Workspace name",
+        "Invite people",
+        "Create invite",
+        "At a glance",
+        "Your devices",
+        "Leave workspace",
+        "Leave",
+    ] {
+        assert!(
+            labels.iter().any(|(label, _)| label == wanted),
+            "the General tab says {wanted:?}: {labels:?}"
+        );
+    }
+    assert!(
+        labels
+            .iter()
+            .any(|(label, value)| label == "members" && value == "2"),
+        "the tab says how many share the workspace: {labels:?}"
+    );
+    assert!(
+        !labels
+            .iter()
+            .any(|(label, _)| label.contains("stay on each device")),
+        "nothing says the arrangement stays on one device: {labels:?}"
+    );
+    assert!(
+        !labels
+            .iter()
+            .any(|(label, _)| label == "Untitled" || label == "Ohne Titel"),
+        "every row is named: {labels:?}"
+    );
+}
+
+/// Leaving from the General tab takes the workspace off this device's desk,
+/// as the same choice in the workspace menu does.
+#[test]
+fn workspace_settings_general_leaves_the_workspace() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    session.step(Duration::from_millis(1)).unwrap();
+    invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
+    assert_eq!(
+        session.handle().read(|tree| tree.workspaces.len()),
+        2,
+        "two workspaces to choose from"
+    );
+    let mut app = sheet(&session);
+    press(&mut app, "ws-general-leave");
+    for _ in 0..3 {
+        session.step(Duration::from_millis(1)).unwrap();
+    }
+    assert_eq!(
+        session.handle().read(|tree| tree.workspaces.len()),
+        1,
+        "the workspace left this device's desk"
+    );
+}

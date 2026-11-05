@@ -48,7 +48,7 @@ pub use default_apps::{
 use default_apps::{default_app_labels, resource_kind_label};
 mod agents_pane;
 pub mod emoji_pane;
-pub mod overlay;
+pub mod people;
 mod people_pane;
 
 use agents_pane::agent_summary_parts;
@@ -57,7 +57,7 @@ pub use agents_pane::{
     agent_preset_label, agent_summaries, agents_add_rect, agents_pane_rows,
 };
 
-pub use people_pane::{member_row_controls, member_row_offers, ownership_button};
+pub use people_pane::{member_row_offers, ownership_button};
 
 /// The host's application catalogue, as workspace settings name apps and
 /// offer them as default openers.
@@ -1407,9 +1407,8 @@ fn tab_focus_id(tab: WsTab) -> u64 {
 // Shared chrome — cards, chips, section headers
 
 const PANE_PAD_X: f64 = 16.0;
-/// The pane's lead-in under the lens body top. The body already starts `s2`
-/// under the tab strip (`WorkspaceSettingsOverlay::body_rect_for`), so this
-/// completes the `s4` section step (HIG §7b) from the strip to the intro card.
+/// The pane's lead-in under the lens body top, completing the `s4` section
+/// step (HIG §7b) from the strip to the intro card.
 const PANE_PAD_TOP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 /// The pane's bottom inset: the row-overflow guard and the footer copy keep
 /// one `s3` clear of the lens body's bottom edge. Only the top lead-in shrank
