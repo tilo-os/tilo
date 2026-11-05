@@ -160,9 +160,7 @@ impl Core {
             }
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
-            let mark_others = self.marks_others(&coll.item);
-            let unseen =
-                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others);
+            let unseen = crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs);
             if unseen.is_empty() {
                 continue;
             }
@@ -381,9 +379,8 @@ impl Core {
             // One per resource: its newest unseen change.
             // Every version within `at` is of one of its resources; a mark asks the type of
             // the first, the same for them all in a window of the item.
-            let mark_others = self.marks_others(&at.ty);
             if let Some(newest) =
-                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs, mark_others).pop()
+                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs).pop()
             {
                 unseen.push(newest);
             }

@@ -36,9 +36,6 @@ pub struct TypeInfo {
     pub id: TypeId,
     pub name: String,
     pub fields: Vec<FieldInfo>,
-    /// `mark others` in its `search` block: another person's change to it is marked unseen
-    /// for a reader, as an agent's is (task-legibility.md §4).
-    pub mark_others: bool,
     /// The field holding the item a record stands under (`(parent)`): the one its derived
     /// keys read the items above and under it through.
     pub parent: Option<String>,
@@ -195,7 +192,6 @@ fn type_info(t: &TypeMeta, app: &str) -> Result<TypeInfo, String> {
         id: t.id.clone(),
         name: t.name.clone(),
         fields,
-        mark_others: t.search.mark_others,
         parent,
     })
 }

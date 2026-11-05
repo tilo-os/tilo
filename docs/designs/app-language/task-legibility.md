@@ -68,8 +68,9 @@ A mark stays until the person deals with it, never on a timer:
   shows as seen.
 - **Undo** removes the marks of what it undid.
 
-Changes by other people use the same marks, off by default per workspace; changes by agents
-are always marked.
+Changes by other people use the same marks, for every type: what anyone else changed is what
+the person looking has not seen yet, an agent's change and a colleague's alike. A type declares
+nothing to be marked.
 
 ## 5. Watching and contained
 
@@ -108,5 +109,5 @@ Steps 1–3 need no shell work.
 
 ## 7. Open
 
-- Whether people's changes are marked by default in shared workspaces, or only agents' (§4
-  says agents only).
+- Nothing here: people's changes and agents' are marked alike (§4), and a place shows how many
+  of what it lists changed since the person last looked.

@@ -205,6 +205,19 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   per-workspace resource of that type (`tilolang_tilo::host::Package::main`), replacing the old
   `view main` convention.
 
+## Seen marks
+
+- **Every change someone else made is marked** (task-legibility.md §4), a person's and an
+  agent's alike, for every type: `seen::is_marked` is `version.who != person`. A type declares
+  nothing for it, so the earlier `mark others` line is gone from the language; a workspace is
+  shared by default, and a reader who is told what a colleague changed can deal with it as they
+  deal with an agent's. What the person made themselves is never marked: their own change is
+  the newest they have seen of it.
+- **A place shows how many of what it lists is unseen** (`unseen(items)`): the items of a
+  collection or a list with a version after the person's mark of each, counted from the store's
+  versions index, so a window's sidebar says what changed without the app counting anything and
+  without reading the workspace record.
+
 ## Performance by default
 
 What a host relies on. A tilolang app that misses a budget is a bug in the runtime.

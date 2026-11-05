@@ -174,10 +174,6 @@ pub enum SearchEntryKind {
     Sort { field: Ident, order: Ident },
     /// `hide to`: a field kept out of filters.
     Hide { field: Ident },
-    /// `mark others`: other people's changes to the type are marked unseen for a reader,
-    /// as an agent's are for every type (task-legibility.md §4, "off by default"). A
-    /// conversation marks what others say in it, so a channel shows what is new.
-    MarkOthers,
 }
 
 /// `enum Name { a, b(x: T, y: U), c }`: a sum type. Values are written `.a`, `.b(x: 1, y: 2)`.

@@ -1062,14 +1062,7 @@ impl Core {
         let versions = self.store.borrow().versions(at)?;
         let mark = self.seen_mark_of_tree(person, at);
         let runs = self.seen_runs(person);
-        let mark_others = self.marks_others(&at.ty);
-        Ok(crate::seen::unseen(
-            &versions,
-            person,
-            mark.as_ref(),
-            &runs,
-            mark_others,
-        ))
+        Ok(crate::seen::unseen(&versions, person, mark.as_ref(), &runs))
     }
 
     /// The first item of `at`'s collection `field` that `person` has not seen, oldest first (a
@@ -1112,7 +1105,6 @@ impl Core {
             return Ok(None);
         }
         let runs = self.seen_runs(person);
-        let mark_others = self.marks_others(item);
         let mark = self.seen_mark(person, &at.id_string());
         // Where the person read to, by the log rather than by a clock: the newest item whose
         // change their mark of the channel names (a store with no channel versions names the
@@ -1155,8 +1147,7 @@ impl Core {
                 continue;
             }
             let seen = self.seen_mark(person, &candidate.id_string());
-            if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs, mark_others).is_empty()
-            {
+            if !crate::seen::unseen(&versions, person, seen.as_ref(), &runs).is_empty() {
                 return Ok(Some(id.to_string()));
             }
         }
@@ -1240,15 +1231,6 @@ impl Core {
             }
         }
         Ok(found)
-    }
-
-    /// Whether the type `ty` declares `mark others`: another person's change to it is marked
-    /// unseen, as an agent's is.
-    pub(crate) fn marks_others(&self, ty: &str) -> bool {
-        self.registry
-            .borrow()
-            .type_info(ty)
-            .is_some_and(|(_, info)| info.mark_others)
     }
 
     /// The task runs `person` reviewed, as the runtime holds them.
