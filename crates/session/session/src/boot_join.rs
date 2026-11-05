@@ -117,7 +117,7 @@ impl BootJoin {
             Some(workspace) if held(workspace) => {
                 tracing::info!(%workspace, "boot join: this computer is already a member");
             }
-            Some(workspace) => match directory.take(&text) {
+            Some(workspace) => match directory::take(directory, &text) {
                 Ok(()) => tracing::info!(%workspace, "boot join: redeeming the invitation"),
                 Err(error) => {
                     tracing::warn!(%workspace, %error, "boot join: the invitation was not redeemed");

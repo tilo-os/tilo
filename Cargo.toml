@@ -456,6 +456,7 @@ members = [
     "crates/session/wayland-ext",
     "crates/session/window-menu",
     "crates/session/window-share",
+    "crates/session/workspace-directory",
 
     # System
     "crates/system/account-custody",

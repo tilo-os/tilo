@@ -21259,7 +21259,6 @@ dependencies = [
  "pollster",
  "postcard",
  "rand_core 0.10.0",
- "reqwest 0.13.4",
  "resvg",
  "runtime-collab",
  "runtime-identity",
@@ -21369,6 +21368,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-wallpapers",
  "tilo-window-share",
+ "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilolang-host",
  "tilolang-tilo",
@@ -22513,6 +22513,31 @@ name = "tilo-winit-x11"
 version = "0.1.0"
 dependencies = [
  "tilo-winit",
+]
+
+[[package]]
+name = "tilo-workspace-directory"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "serde",
+ "serde_json",
+ "test-http",
+ "tilo-clock",
+ "tilo-desktop-model",
+ "tilo-net",
+ "tilo-reference",
+ "tilo-relay-protocol",
+ "tilo-rt",
+ "tilo-sheets",
+ "tilo-startup-metrics",
+ "tilo-user-identity",
+ "tilo-workspace-join",
+ "tokio",
+ "tracing",
+ "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -28188,6 +28213,7 @@ dependencies = [
  "tilo-window-share",
  "tilo-winit",
  "tilo-winit-x11",
+ "tilo-workspace-directory",
  "tilo-workspace-emoji",
  "tilo-workspace-join",
  "tilo-zone-globe",

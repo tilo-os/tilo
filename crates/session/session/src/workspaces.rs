@@ -104,7 +104,7 @@ pub(crate) fn open_directory(
     seat.clear_query();
     seat.show(directory::view(directory, handle));
     seat.presentation().open(false);
-    directory.ask(None);
+    directory::ask(directory, None);
 }
 
 /// Carry out what the directory asked: reading a site's directory again,
@@ -150,10 +150,10 @@ pub(crate) fn follow_directory(
                 }
             }
             Err(error) => {
-                tracing::warn!(%error, workspace = %joined.workspace_id, "a joined workspace was not added");
+                tracing::warn!(%error, workspace = %joined.granted.workspace, "a joined workspace was not added");
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
-                    workspace = %joined.workspace_id,
+                    workspace = %joined.granted.workspace,
                     name = %joined.name,
                     %error,
                     outcome = "slot removed",
@@ -194,7 +194,7 @@ pub(crate) fn follow_directory(
                     // A site the person typed is asked for what it lists,
                     // and the sheet says it is being read until the worker
                     // answers.
-                    directory.ask(Some(site));
+                    directory::ask(directory, Some(site));
                     seat.show(directory::view(directory, handle));
                     continue;
                 }
@@ -223,13 +223,13 @@ pub(crate) fn follow_directory(
             DirectoryEffect::LinkOrCode { text } => {
                 // A link or a code the person pasted joins at once: what it
                 // is decides where, and the sheet says so until it lands.
-                if let Err(error) = directory.take(&text) {
+                if let Err(error) = directory::take(directory, &text) {
                     directory.set_note(Some(error));
                 }
                 seat.show(directory::view(directory, handle));
             }
             DirectoryEffect::Refresh => {
-                directory.ask(None);
+                directory::ask(directory, None);
                 seat.show(directory::view(directory, handle));
             }
             DirectoryEffect::ClearNote => {
@@ -289,7 +289,7 @@ fn join_listed(
         }
         // One join at a time: the first is still on its way.
         Some(_) => return,
-        None => match directory.join(key, &listing) {
+        None => match directory::join(directory, key, &listing) {
             Ok(()) => {
                 // The join is on its way: the sheet is done with it, and the
                 // person is told when it lands (or why it did not).
@@ -1154,7 +1154,7 @@ impl crate::Shared {
     /// leaves the person where they were, with no empty workspace to arrive
     /// in and vanish from.
     pub(crate) fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
-        let Some(workspace) = WorkspaceId::parse(&joined.workspace_id) else {
+        let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
             return Err(tilo_desktop_surface::i18n::t(
                 "desktop-joined-workspace-unknown",
             ));
@@ -1180,16 +1180,16 @@ impl crate::Shared {
     /// host that refuses leaves the person where they were, and no empty
     /// workspace is ever shown to arrive in and vanish from.
     fn redeem_invitation(&self, joined: &directory::Joined) {
-        let Some(workspace) = WorkspaceId::parse(&joined.workspace_id) else {
+        let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
             // A slot for a workspace id that cannot be parsed can never be
             // arrived in: take it back.
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
-                workspace = %joined.workspace_id,
+                workspace = %joined.granted.workspace,
                 outcome = "slot removed",
                 "join: the workspace id does not parse, so no invitation can be presented and its slot is taken away"
             );
-            if let Some(held) = self.slot_of(&joined.workspace_id) {
+            if let Some(held) = self.slot_of(&joined.granted.workspace) {
                 self.release_workspace(held);
             }
             return;
@@ -1197,19 +1197,19 @@ impl crate::Shared {
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
-                workspace = %joined.workspace_id,
+                workspace = %joined.granted.workspace,
                 held_locally = true,
                 "join: this session holds no workspaces or takes no part in the collaboration plane, so the workspace stays as this computer keeps it"
             );
-            self.open_joined_workspace(&joined.workspace_id, &joined.name);
+            self.open_joined_workspace(&joined.granted.workspace, &joined.name);
             return;
         };
         let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
-        let on_desk = self.slot_of(&joined.workspace_id).is_some();
+        let on_desk = self.slot_of(&joined.granted.workspace).is_some();
         engine.bind(slot, workspace);
         tracing::info!(
             target: JOIN_FLOW_TARGET,
-            workspace = %joined.workspace_id,
+            workspace = %joined.granted.workspace,
             slot = slot.0,
             on_desk,
             "join: the workspace slot is made for the workspace"
@@ -1217,23 +1217,24 @@ impl crate::Shared {
         let asked = sync.enroll(crate::sync::Enrolling {
             slot,
             workspace_id: workspace,
-            invitation: joined.invitation.clone(),
+            invitation: joined.granted.invitation.clone(),
         });
         match asked {
             Ok(()) => {
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
-                    workspace = %joined.workspace_id,
+                    workspace = %joined.granted.workspace,
                     slot = slot.0,
                     "join: the invitation is presented to the workspace's host"
                 );
-                self.directory_store.expect_enrollment(&joined.workspace_id);
+                self.directory_store
+                    .expect_enrollment(&joined.granted.workspace);
             }
             Err(error) => {
-                tracing::warn!(%error, workspace = %joined.workspace_id, "the invitation was not redeemed");
+                tracing::warn!(%error, workspace = %joined.granted.workspace, "the invitation was not redeemed");
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
-                    workspace = %joined.workspace_id,
+                    workspace = %joined.granted.workspace,
                     slot = slot.0,
                     %error,
                     outcome = "slot removed",

@@ -124,6 +124,8 @@ tilo-capture-studio = { path = "../capture-studio" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
+# The public workspaces sites list, their doors, and where a join stands.
+tilo-workspace-directory = { path = "../workspace-directory" }
 # The wireless display sheet speaks the projector service's control socket; the
 # sender stacks themselves (Miracast, GStreamer) stay in the service.
 tilo-projector = { path = "../../system/projector", default-features = false }
@@ -145,7 +147,6 @@ tilo-model-client = { path = "../../agent/model-client", features = ["runtime-cl
 tilo-rt = { workspace = true }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
-reqwest = { workspace = true, features = ["blocking", "json"] }
 toml.workspace = true
 url.workspace = true
 # Who is here: the session's own membership of each workspace, on the
