@@ -57,6 +57,33 @@ impl Admissions {
         tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())
     }
 
+    /// How long until the door takes another grant, or `None` when it does
+    /// now: the table has room under `max_grants`, or a spent or expired grant
+    /// to evict ([`Self::record`]). Otherwise the earliest open grant's expiry,
+    /// so the person who asked knows when to come back.
+    pub(super) fn full_for(&self, now_ns: u64, max_grants: usize) -> Option<u64> {
+        let evictable = self.grants.iter().any(|known| known.spent)
+            || self
+                .grants
+                .iter()
+                .any(|known| now_ns >= known.grant.expires_at_ns);
+        if self.grants.len() < max_grants || evictable {
+            return None;
+        }
+        let soonest = self
+            .grants
+            .iter()
+            .map(|known| known.grant.expires_at_ns)
+            .min()
+            .unwrap_or(now_ns);
+        Some(
+            soonest
+                .saturating_sub(now_ns)
+                .div_ceil(1_000_000_000)
+                .max(1),
+        )
+    }
+
     /// Record `grant` for the invitation `invite_id` issued with it. The
     /// same grant again is a retry. A full table evicts a spent grant, or
     /// else one expired by `now_ns`, so visitors who never redeemed their
@@ -248,5 +275,26 @@ mod tests {
         let restored = Admissions::open(&workspace).unwrap();
         assert!(restored.grant_for([7; 32], b"token", 1).is_err());
         assert_eq!(restored.notices(), vec![notice]);
+    }
+
+    #[test]
+    fn a_full_table_says_when_it_has_room_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut admissions = Admissions::open(&dir.path().join("x.room")).unwrap();
+        assert_eq!(admissions.full_for(1, 1), None, "empty");
+        admissions
+            .record([7; 32], grant(b"token", 600_000_000_000), 0, 1)
+            .unwrap();
+        assert_eq!(
+            admissions.full_for(0, 1),
+            Some(600),
+            "the earliest open grant expires in ten minutes"
+        );
+        assert_eq!(
+            admissions.full_for(600_000_000_000, 1),
+            None,
+            "expired grants are evicted for a new one"
+        );
+        assert_eq!(admissions.full_for(0, 2), None, "room under the cap");
     }
 }

@@ -4,11 +4,10 @@
 //! In a workspace whose layout is personal each member's strips and windows stay
 //! on their device: which apps someone has open, and their titles, are the
 //! person's own. Only the workspace's records (Chat, Notes, Canvas documents)
-//! and its people are shared. A workspace admitted through a public door is
-//! personal (the persistent workspace a community site runs, settled at every
-//! start), and so is one with open admission (listed in the public
-//! directory) unless its governor chose otherwise; an invite-only workspace
-//! shares its layout.
+//! and its people are shared. A workspace whose governor chose no scope shares
+//! its layout, whether it is invite-only or listed in the public directory:
+//! open admission is not a layout decision, and a room a site runs keeps one
+//! arrangement for everyone unless its governor says otherwise.
 //!
 //! The governor writes the scope into the workspace's governance
 //! ([`tilo_desktop_model::projection::WORKSPACE_LAYOUT_KEY`]), where every
@@ -157,10 +156,10 @@ impl Workspaces {
         self.inner.layouts.get(workspace)
     }
 
-    /// Whether `workspace` takes in none of its members' layout, as a workspace
-    /// behind a public door does: its layout is personal.
+    /// Whether `workspace` takes in none of its members' layout: its layout is
+    /// personal.
     #[must_use]
-    pub fn is_public(&self, workspace: &str) -> bool {
+    pub fn is_personal(&self, workspace: &str) -> bool {
         self.layout(workspace).is_personal()
     }
 
@@ -174,43 +173,17 @@ impl Workspaces {
         }
     }
 
-    /// Settle every workspace's layout as the relay opens: a workspace listed in the
-    /// directory whose governor chose no scope becomes personal (open
-    /// admission), and each personal workspace loses what was committed of its
-    /// members' windows before it was ([`Self::keep_personal`]). A workspace
-    /// that cannot be settled is reported and left to the next start; it
-    /// does not keep the others, or the relay, from opening.
+    /// Settle every workspace's layout as the relay opens: each personal
+    /// workspace loses what was committed of its members' windows before it
+    /// was ([`Self::keep_personal`]). A workspace that cannot be settled is
+    /// reported and left to the next start; it does not keep the others, or
+    /// the relay, from opening.
     pub(super) async fn settle_layouts(&self) {
-        let workspaces: Vec<String> = self.inner.workspaces.lock().await.keys().cloned().collect();
-        for workspace in workspaces {
-            if self.listing(&workspace).is_some()
-                && let Err(error) = self.default_to_personal(&workspace).await
-            {
-                tracing::warn!(%workspace, %error, "a listed room still shares its layout");
-            }
-        }
         for workspace in self.inner.layouts.personal() {
             if let Err(error) = self.keep_personal(&workspace).await {
                 tracing::warn!(%workspace, %error, "a personal room still holds its members' windows");
             }
         }
-    }
-
-    /// Make `workspace`, which just opened a door (a public listing), personal
-    /// unless its governor already chose its scope.
-    pub(super) async fn default_to_personal(
-        &self,
-        workspace: &str,
-    ) -> Result<(), CollaborationError> {
-        let chosen = {
-            let state = self.workspace(workspace).await?;
-            let governed = state.lock().await;
-            governed.peer().governance().workspace_layout_choice()
-        };
-        if chosen.is_some() {
-            return Ok(());
-        }
-        self.set_layout(workspace, WorkspaceLayout::Personal).await
     }
 
     /// Set `workspace`'s layout scope to `layout`, as its governor: written into
@@ -363,7 +336,7 @@ impl Workspaces {
         let Some(write) = layout_write(workspace, body) else {
             return Ok(());
         };
-        if self.is_public(workspace) {
+        if self.is_personal(workspace) {
             // A member's change to the workspace's people, their roles and the
             // workspace's grants is no layout: it passes, and the workspace's
             // admission decides it as it decides it everywhere.
@@ -412,7 +385,7 @@ impl Workspaces {
         else {
             return true;
         };
-        !is_desktop(app_id, record_id) || !self.is_public(workspace.workspace())
+        !is_desktop(app_id, record_id) || !self.is_personal(workspace.workspace())
     }
 }
 

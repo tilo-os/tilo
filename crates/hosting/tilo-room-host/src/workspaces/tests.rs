@@ -8,7 +8,7 @@ use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
     admit_view_reader, door_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host, test_host_taking_part,
+    test_host, test_host_with_grants,
 };
 
 #[cfg(feature = "agents")]
@@ -2073,7 +2073,7 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
         )
         .await
         .unwrap();
-    assert!(workspaces.is_public(&workspace));
+    assert!(workspaces.is_personal(&workspace));
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let (_b, _) = admitted_member(&workspaces, &workspace, &key, &cert, 4).await;
     let generation = workspaces
@@ -2170,7 +2170,7 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    assert!(!workspaces.is_public(&workspace));
+    assert!(!workspaces.is_personal(&workspace));
     workspaces
         .decide_layout_write(&workspace, a.device_public_key, &body)
         .await
@@ -2375,17 +2375,17 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     }
 }
 
-/// A workspace listed in the directory (open admission) whose governor chose no
-/// layout scope becomes personal when the relay opens it: the windows the
-/// governor committed of a member while it shared them are removed, its
-/// governance says it is personal for every member's device to read, and its
-/// doors refuse members' windows from then on.
+/// A workspace becomes public in the directory: its arrangement stays what it
+/// was. Open admission is not a layout decision: the room keeps sharing its
+/// members' windows and strips across a restart, exactly as before it was
+/// listed. A governor who wants each member's windows on their own device
+/// says so ([`the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it`]).
 #[allow(
     clippy::significant_drop_tightening,
     reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
 )]
 #[tokio::test]
-async fn a_listed_room_refuses_members_windows_after_a_restart() {
+async fn a_listed_room_keeps_sharing_its_layout_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -2419,31 +2419,30 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
 
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
-    assert!(workspaces.is_public(&workspace));
-    assert!(
-        titles_shared(&workspaces, &workspace).await.is_empty(),
-        "what was committed of A's windows is gone"
+    assert!(!workspaces.is_personal(&workspace));
+    assert_eq!(
+        titles_shared(&workspaces, &workspace).await.len(),
+        2,
+        "the room still holds its members' windows"
     );
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
         let governed = state.lock().await;
         assert_eq!(
             governed.peer().governance().workspace_layout(),
-            tilo_desktop_model::projection::WorkspaceLayout::Personal,
-            "every member's device reads that the room is personal"
+            tilo_desktop_model::projection::WorkspaceLayout::Shared,
+            "every member's device reads the same arrangement"
         );
     }
-    assert!(
-        workspaces
-            .decide_layout_write(&workspace, a.device_public_key, &body)
-            .await
-            .is_err()
-    );
+    workspaces
+        .decide_layout_write(&workspace, a.device_public_key, &body)
+        .await
+        .unwrap();
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
         .await
         .unwrap();
-    assert!(titles_shared(&workspaces, &workspace).await.is_empty());
+    assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
     drop(workspaces);
     relay.shutdown().await;
 }
@@ -2488,7 +2487,7 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
         .set_layout(&workspace, WorkspaceLayout::Shared)
         .await
         .unwrap();
-    assert!(!workspaces.is_public(&workspace));
+    assert!(!workspaces.is_personal(&workspace));
     // A's device publishes its windows again, now that the workspace shares them.
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
     workspaces

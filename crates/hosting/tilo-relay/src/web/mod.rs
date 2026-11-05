@@ -528,6 +528,19 @@ async fn directory_door(
             &serde_json::json!({ "error": error.to_string() }),
         )
     };
+    let door_refused = |error: crate::workspaces::DoorRefusal| {
+        let full = match &error {
+            crate::workspaces::DoorRefusal::Full { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            crate::workspaces::DoorRefusal::Refused(_) => StatusCode::FORBIDDEN,
+        };
+        let mut response = json_status(full, &serde_json::json!({ "error": error.to_string() }));
+        if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error
+            && let Ok(seconds) = header::HeaderValue::from_str(&retry_after_secs.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, seconds);
+        }
+        response
+    };
     match step {
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
@@ -535,7 +548,7 @@ async fn directory_door(
             let (issued, token) = governed_workspaces(web)?
                 .admit_listed(workspace, &join)
                 .await
-                .map_err(refused)?;
+                .map_err(door_refused)?;
             Ok(json(&DoorAnswer {
                 invitation: base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -629,6 +642,38 @@ fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
 /// Headers a page may send to the browser routes.
 const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session";
 
+/// Whether `path` is part of the public directory: a listing anyone may read,
+/// and a door anyone may ask, from any site.
+fn public_directory_route(path: &str) -> bool {
+    path.strip_prefix(API_PREFIX).is_some_and(|route| {
+        route == tilo_relay_protocol::directory::DIRECTORY_PATH
+            || tilo_relay_protocol::directory::door_route(route).is_some()
+    })
+}
+
+/// CORS for the public directory: any origin, no credentials, and the
+/// `Retry-After` a full door answers with. A page on any site reads the
+/// listings and joins a workspace without going through its host.
+fn public_cors(response: &mut Response<Body>) {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        header::HeaderValue::from_static("content-type"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        header::HeaderValue::from_static("retry-after"),
+    );
+}
+
 fn cors(
     allowed_origins: &[String],
     allowed_headers: &str,
@@ -673,6 +718,7 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         return fetch::handle(web, request).await;
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
+    let public = public_directory_route(request.uri().path());
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())
     } else if request.method() != Method::POST {
@@ -682,12 +728,16 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .await
             .unwrap_or_else(|response| response)
     };
-    cors(
-        &web.allowed_origins,
-        ALLOWED_HEADERS,
-        origin.as_ref(),
-        &mut response,
-    );
+    if public {
+        public_cors(&mut response);
+    } else {
+        cors(
+            &web.allowed_origins,
+            ALLOWED_HEADERS,
+            origin.as_ref(),
+            &mut response,
+        );
+    }
     response
 }
 

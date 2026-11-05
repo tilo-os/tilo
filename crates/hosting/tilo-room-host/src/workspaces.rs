@@ -38,6 +38,7 @@ mod device_keys;
 mod device_plane;
 #[cfg(test)]
 mod device_plane_tests;
+mod door;
 pub use device_plane::HostJobs;
 #[cfg(test)]
 mod device_rejoin_tests;
@@ -87,6 +88,7 @@ use web_time::SystemTime;
 pub(crate) use actions::{GovernedPlane, HostWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
+pub use listing::DoorRefusal;
 pub use pages::PreAdmitRequest;
 pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListed};
 
@@ -192,6 +194,9 @@ struct GovernedWorkspace {
     admissions: admissions::Admissions,
     /// The requests of people who asked at its door without an invitation.
     wait_list: wait_list::WaitList,
+    /// Whom moderation removed, and when: the public door keeps them out for
+    /// the day.
+    door: door::Door,
     /// Admits the governance each settle retains to the host's order, after
     /// the workspace's lock is released.
     publisher: Arc<publisher::WorkspacePublisher>,
@@ -341,6 +346,7 @@ impl GovernedWorkspace {
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
+            door: door::Door::open(&path)?,
             parts,
             path,
             device: device.cloned(),
@@ -400,6 +406,7 @@ impl GovernedWorkspace {
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
+            door: door::Door::open(&path)?,
             record,
             peer,
             parts,
@@ -1654,7 +1661,7 @@ impl Workspaces {
         // A workspace whose layout is personal shares no member's layout: what
         // members wrote of it before is replayed to nobody.
         runtime.store.replay_member_layout(
-            self.is_public(&workspace)
+            self.is_personal(&workspace)
                 .then_some(host.cert.device_public_key),
         );
         if runtime.governor_tap.is_none() {
@@ -1896,7 +1903,7 @@ impl Workspaces {
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
     ) -> Result<(), String> {
-        let public = self.is_public(workspace);
+        let personal = self.is_personal(workspace);
         let host = &self.inner.host;
         let workspace = self
             .workspace(workspace)
@@ -1907,7 +1914,7 @@ impl Workspaces {
             // A workspace whose layout is personal takes in no member's windows;
             // its doors refuse them before they get here (`layout_scope`).
             // Its membership, which members change themselves, it takes in.
-            if public
+            if personal
                 && !workspace
                     .peer()
                     .admitted_workspace()
@@ -1940,11 +1947,20 @@ impl Workspaces {
             .difference(&member_roots(&candidate, now))
             .copied()
             .collect();
+        // The person `author` writes for, when `author` is one of them: who
+        // left the workspace themselves is not kept out of it.
+        let author_person = workspace
+            .summary()
+            .members
+            .iter()
+            .find(|member| member.active_device_keys.contains(&author))
+            .map(|member| member.user_public_key);
         workspace.commit(candidate, &host.key, now, |record, _| {
             let mut state = record.collaboration.clone();
             state.withdraw_invitations(&removed);
             Ok(state)
         })?;
+        workspace.keep_out_removed(&removed, author_person, tilo_clock::unix_now_ns())?;
         self.settle(&mut workspace).await
     }
 

@@ -28,6 +28,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use tilo_relay::daemon::RelayIdentity;
 use tilo_relay::web::WebHandle;
 use tilo_relay::workspaces::{PreAdmitRequest, WaitListed, Workspaces};
+use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::operator::{self, OperatorCommand, OperatorEvent, hex32};
 use tilo_relay_protocol::workspaces::{
     JoinReply, JoinStep, PreAdmission, WorkspaceRole, join_proof_digest,
@@ -151,6 +152,24 @@ pub struct PersistentArgs {
     /// a viewer reads and writes nothing.
     #[arg(long = "visitor-role", value_enum, default_value_t = VisitorRole::Viewer)]
     pub visitor_role: VisitorRole,
+    /// List the workspace in the public directory with this description, so
+    /// anyone may join it through its door at `--default-role`. Settled at
+    /// every start; without it the workspace is not listed.
+    #[arg(
+        long = "listing-description",
+        value_name = "TEXT",
+        requires = "persistent"
+    )]
+    pub listing_description: Option<String>,
+    /// The role everyone who joins through the directory gets while the
+    /// workspace is listed: `viewer` unless the host says otherwise.
+    #[arg(
+        long = "default-role",
+        value_name = "ROLE",
+        requires = "listing_description",
+        value_parser = parse_role
+    )]
+    pub default_role: Option<WorkspaceRole>,
     /// A person (user public key, hex) made an Owner of the workspace once they
     /// joined; repeatable. A key removed from the list loses the role.
     #[arg(long = "owner", value_name = "HEX")]
@@ -544,6 +563,19 @@ fn token_digest(token: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(token).into()
 }
 
+/// `--default-role`: `viewer`, `commenter` or `editor`. A moderator is chosen,
+/// never handed out at the door.
+fn parse_role(role: &str) -> Result<WorkspaceRole, String> {
+    match role {
+        "viewer" => Ok(WorkspaceRole::Viewer),
+        "commenter" => Ok(WorkspaceRole::Commenter),
+        "editor" => Ok(WorkspaceRole::Editor),
+        other => Err(format!(
+            "{other:?} is not a role people who join on their own may hold: say viewer, commenter or editor"
+        )),
+    }
+}
+
 /// `--layout`: `shared` or `personal`.
 fn parse_layout(scope: &str) -> Result<tilo_desktop_model::projection::WorkspaceLayout, String> {
     tilo_desktop_model::projection::WorkspaceLayout::from_id(scope)
@@ -679,36 +711,29 @@ struct Admitter {
     root: SigningKey,
     workspace: String,
     visitor: [u8; 32],
-    removals: Removals,
     /// The door lets in only the workspace's members (`--members-only`).
     members_only: bool,
 }
 
 impl Admitter {
-    fn of(context: &PersistentRoom, removals: Removals, members_only: bool) -> Self {
+    fn of(context: &PersistentRoom, members_only: bool) -> Self {
         Self {
             workspaces: context.workspaces.clone(),
             host_cert: context.host_cert.clone(),
             root: context.root.clone(),
             workspace: context.workspace.clone(),
             visitor: context.visitor.verifying_key().to_bytes(),
-            removals,
             members_only,
         }
     }
 }
 
-/// How long a person moderation removed is refused pre-admission: the day
-/// the workspace service's door also turns away the address they joined from.
-const REMOVED_FOR_MS: u64 = 24 * 3600 * 1000;
-
-/// Whom the workspace has taken in as removed, and when moderation removed each
-/// person, kept in the workspace's state so a restart lets nobody back early.
-/// Shared by the operator loop, which takes removals in, and every
-/// pre-admission, which may run before the loop has.
+/// Whom the workspace has taken in as removed, so each removal is reported
+/// once. Shared by the operator loop, which takes removals in, and the
+/// pruning, which accounts for the guests it prunes itself. Whom the door
+/// keeps out is the workspace's own ([`Workspaces::removed_within_the_day`]).
 #[derive(Clone)]
 struct Removals {
-    file: PathBuf,
     state: Arc<std::sync::Mutex<RemovalState>>,
 }
 
@@ -716,34 +741,20 @@ struct RemovalState {
     /// Every person accounted for as removed, by moderation or pruned after
     /// an absence, so each removal is reported once.
     seen: BTreeSet<[u8; 32]>,
-    /// When moderation removed each person, in Unix milliseconds.
-    at: BTreeMap<[u8; 32], u64>,
 }
 
 impl Removals {
     /// The removals of a workspace whose members are `members` now: everyone
-    /// listed as removed is accounted for, and the removal times kept in
-    /// `file` that are still within the day hold.
-    fn load(
-        file: PathBuf,
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> anyhow::Result<Self> {
-        let stored: BTreeMap<String, u64> = read_json(&file)?;
-        let at = stored
-            .iter()
-            .filter(|(_, at)| now_ms.saturating_sub(**at) < REMOVED_FOR_MS)
-            .filter_map(|(key, at)| hex32(key).map(|key| (key, *at)))
-            .collect();
+    /// listed as removed is accounted for.
+    fn load(members: &[tilo_peer_state::GovernedMember]) -> Self {
         let seen = members
             .iter()
             .filter(|member| member.removed)
             .map(|member| member.user_public_key)
             .collect();
-        Ok(Self {
-            file,
-            state: Arc::new(std::sync::Mutex::new(RemovalState { seen, at })),
-        })
+        Self {
+            state: Arc::new(std::sync::Mutex::new(RemovalState { seen })),
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RemovalState> {
@@ -766,55 +777,9 @@ impl Removals {
     }
 
     /// The people moderation removed since the last call, noted as removed
-    /// now and written down.
-    fn taken_in(
-        &self,
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> anyhow::Result<Vec<[u8; 32]>> {
-        let mut state = self.lock();
-        let fresh = newly_removed(&mut state.seen, members);
-        if fresh.is_empty() {
-            return Ok(fresh);
-        }
-        state
-            .at
-            .retain(|_, at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS);
-        for person in &fresh {
-            state.at.insert(*person, now_ms);
-        }
-        let stored: BTreeMap<String, u64> = state
-            .at
-            .iter()
-            .map(|(key, at)| (hex::encode(key), *at))
-            .collect();
-        drop(state);
-        write_json(&self.file, &stored)?;
-        Ok(fresh)
-    }
-
-    /// Whether `person` is kept out: moderation removed them within the
-    /// day, or the workspace lists them as removed and the loop has not taken
-    /// that in yet (a removed guest's page asks again the moment the workspace
-    /// drops it, which may be before the loop hears of the change).
-    fn refuses(
-        &self,
-        person: [u8; 32],
-        members: &[tilo_peer_state::GovernedMember],
-        now_ms: u64,
-    ) -> bool {
-        let state = self.lock();
-        if state
-            .at
-            .get(&person)
-            .is_some_and(|at| now_ms.saturating_sub(*at) < REMOVED_FOR_MS)
-        {
-            return true;
-        }
-        !state.seen.contains(&person)
-            && members
-                .iter()
-                .any(|member| member.user_public_key == person && member.removed)
+    /// now.
+    fn taken_in(&self, members: &[tilo_peer_state::GovernedMember]) -> Vec<[u8; 32]> {
+        newly_removed(&mut self.lock().seen, members)
     }
 }
 
@@ -849,8 +814,9 @@ async fn answer_pre_admit(
         Err(error) => return refused(format!("{error}")),
     };
     if context
-        .removals
-        .refuses(user, &members, tilo_clock::unix_now_ms())
+        .workspaces
+        .removed_within_the_day(&context.workspace, user)
+        .await
     {
         return OperatorEvent::PreAdmitRefused {
             token_sha256,
@@ -1516,6 +1482,40 @@ pub(crate) async fn settle_member_invites(
     Ok(())
 }
 
+/// List the workspace in the public directory as the host configured it, or
+/// take it out when the host asks for no listing. Settled at every start: the
+/// listing is the host's word, and a person who joined yesterday stays a
+/// member either way.
+async fn settle_listing(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    persistent: &PersistentArgs,
+) -> anyhow::Result<()> {
+    match &persistent.listing_description {
+        Some(description) => {
+            workspaces
+                .publish(
+                    workspace,
+                    host_cert,
+                    Listing {
+                        description: description.clone(),
+                        default_role: persistent.default_role.unwrap_or(WorkspaceRole::Viewer),
+                    },
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("list the workspace in the directory: {error}"))?;
+        }
+        None => {
+            workspaces
+                .unpublish(workspace, host_cert)
+                .await
+                .map_err(|error| anyhow::anyhow!("unlist the workspace: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_lines,
     clippy::significant_drop_tightening,
@@ -1619,9 +1619,9 @@ pub(crate) async fn run(
         .clone()
         .unwrap_or_else(|| workspace_name(&name));
     let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
-    // Every visitor comes in through the site's door: unless the host says
-    // otherwise, the workspace shares its apps' records, never what anyone has
-    // open. Settled at every start, as the host configured it.
+    settle_listing(&workspaces, &workspace, &host_cert, &persistent).await?;
+    // Whether the workspace shares its members' windows and strips, as the
+    // host configured it. Settled at every start.
     workspaces
         .set_layout(&workspace, persistent.layout)
         .await
@@ -1824,10 +1824,6 @@ struct DeclaredRoles {
 impl Governance {
     fn declared_file(&self) -> PathBuf {
         self.state.join("declared-roles.json")
-    }
-
-    fn removals_file(&self) -> PathBuf {
-        self.state.join("removals.json")
     }
 
     fn last_seen_file(&self) -> PathBuf {
@@ -2070,11 +2066,7 @@ async fn serve_operator(
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
     let visitor = context.visitor.verifying_key().to_bytes();
-    let removals = Removals::load(
-        governance.removals_file(),
-        &summary(context).await?.members,
-        tilo_clock::unix_now_ms(),
-    )?;
+    let removals = Removals::load(&summary(context).await?.members);
     let mut previously_declared = governance.previously_declared()?;
     reconcile_roles(context, governance, &mut previously_declared).await?;
     let mut last_seen = governance.read_last_seen()?;
@@ -2088,7 +2080,7 @@ async fn serve_operator(
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let admitter = Admitter::of(context, removals.clone(), governance.members_only);
+    let admitter = Admitter::of(context, governance.members_only);
     let mut admitting = tokio::task::JoinSet::<OperatorEvent>::new();
     let mut mail_acks = MailAcks::new();
     let mut mail = governance
@@ -2126,7 +2118,7 @@ async fn serve_operator(
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => bail!("the relay stopped governing"),
                 }
                 let members = summary(context).await?.members;
-                for user in removals.taken_in(&members, tilo_clock::unix_now_ms())? {
+                for user in removals.taken_in(&members) {
                     // Bans exist once workspace moderation lands; until then every
                     // removal is a plain removal. The service treats both alike.
                     println!("{}", OperatorEvent::MemberRemoved { user_public_key: hex::encode(user), banned: false }.to_line());
@@ -2319,40 +2311,13 @@ mod tests {
         assert_eq!(newly_removed(&mut seen, &[listed(true)]), vec![[4; 32]]);
     }
 
-    /// A guest pruned after an absence comes back through the door as
-    /// anyone does; only moderation's removals keep a person out.
-    #[test]
-    fn a_pruned_guest_is_not_kept_out_and_a_removal_lapses_after_the_day() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("removals.json");
-        let gone = |key: u8| tilo_peer_state::GovernedMember {
-            removed: true,
-            ..member(key, false)
-        };
-        let removals = Removals::load(file.clone(), &[], 1_000).unwrap();
-        removals.pruning(&BTreeSet::from([[5; 32]]));
-        assert!(!removals.refuses([5; 32], &[gone(5)], 1_000));
-        assert!(removals.taken_in(&[gone(5)], 1_000).unwrap().is_empty());
-        assert!(
-            removals.refuses([6; 32], &[gone(6)], 1_000),
-            "removed, not yet taken in"
-        );
-        assert_eq!(removals.taken_in(&[gone(6)], 1_000).unwrap(), vec![[6; 32]]);
-        let members = [gone(5), gone(6)];
-        // Kept across a restart, for the day and no longer.
-        let reloaded = Removals::load(file, &members, 2_000).unwrap();
-        assert!(reloaded.refuses([6; 32], &members, 2_000));
-        assert!(!reloaded.refuses([6; 32], &members, 1_000 + REMOVED_FOR_MS));
-        assert!(!reloaded.refuses([5; 32], &members, 2_000));
-    }
-
-    /// A relay governing one workspace `Plaza`, and what answers its
-    /// pre-admissions, removals kept in `dir`.
+    /// A relay governing one workspace `Plaza`, what answers its
+    /// pre-admissions, and the removals it reports.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspaces handle moves into what answers pre-admissions"
     )]
-    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter) {
+    async fn plaza(dir: &Path) -> (tilo_relay::daemon::Relay, Admitter, Removals) {
         let root = SigningKey::from_bytes(&[1; 32]);
         let host = SigningKey::from_bytes(&[2; 32]);
         let host_cert = enrol(&root, &host, "host", DeviceCapabilities::host()).unwrap();
@@ -2373,18 +2338,16 @@ mod tests {
         .unwrap();
         let workspaces = relay.workspaces().unwrap().clone();
         let workspace = workspaces.create("Plaza").await.unwrap().workspace;
-        let removals =
-            Removals::load(dir.join("removals.json"), &[], tilo_clock::unix_now_ms()).unwrap();
+        let removals = Removals::load(&[]);
         let admitter = Admitter {
             workspaces,
             host_cert,
             root,
             workspace,
             visitor: [9; 32],
-            removals,
             members_only: false,
         };
-        (relay, admitter)
+        (relay, admitter, removals)
     }
 
     /// Whether the guest `device` joins with the pre-admission `answer`
@@ -2437,7 +2400,7 @@ mod tests {
     #[tokio::test]
     async fn a_removed_guest_is_refused_pre_admission_and_kept_out() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, admitter) = plaza(dir.path()).await;
+        let (relay, admitter, removals) = plaza(dir.path()).await;
         let (workspaces, workspace) = (admitter.workspaces.clone(), admitter.workspace.clone());
         let device = SigningKey::from_bytes(&[4; 32]);
         let guest_root = SigningKey::from_bytes(&[3; 32]);
@@ -2478,8 +2441,7 @@ mod tests {
         let asked = pre_admit(b"second").await;
         assert!(removed(&asked), "{asked:?}");
         // Taken in: reported once, and still refused.
-        let now = tilo_clock::unix_now_ms();
-        let taken = admitter.removals.taken_in(&members, now).unwrap();
+        let taken = removals.taken_in(&members);
         assert_eq!(taken, vec![person]);
         let asked = pre_admit(b"third").await;
         assert!(removed(&asked), "{asked:?}");
@@ -2532,7 +2494,7 @@ mod tests {
     )]
     async fn taking_people_by_invitation_members_invite_whom_the_door_turns_away() {
         let dir = tempfile::tempdir().unwrap();
-        let (relay, open) = plaza(dir.path()).await;
+        let (relay, open, _) = plaza(dir.path()).await;
         let workspaces = open.workspaces.clone();
         let workspace = open.workspace.clone();
         ensure_guest_policy(&workspaces, &workspace, &open.host_cert)

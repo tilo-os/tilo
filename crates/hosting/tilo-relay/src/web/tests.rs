@@ -249,6 +249,159 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
+/// The public directory and its doors answer any site's page without
+/// credentials, and a full door says when to come back: what a page on
+/// another origin reads and does without going through a proxy.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay governs the workspace until it shuts down at the end"
+)]
+async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
+    let root = SigningKey::from_bytes(&[121; 32]);
+    let (host_key, host) = device(
+        &root,
+        122,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            max_workspace_grants: Some(1),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .publish(
+            &workspace,
+            &host,
+            tilo_relay_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let sessions = Sessions::new(relay.web_context().clone());
+    let web = Arc::new(Web {
+        sessions,
+        host_info: HostInfo {
+            host_cert: host.clone(),
+        },
+        allowed_origins: vec![],
+        features: 0,
+        workspaces: relay.workspaces().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+        country: None,
+        fetch: None,
+        live: None,
+    });
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(plain_accept_loop(listener, web));
+
+    // The directory, from a site the host never configured.
+    let head = format!(
+        "POST {API_PREFIX}/directory HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Length: 0\r\n\r\n"
+    );
+    let (status, head, body) = exchange(addr, &head, b"").await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    assert_eq!(
+        header_value(&head, "access-control-allow-credentials"),
+        None,
+        "anyone reads it, nobody is signed in by it"
+    );
+    let page: tilo_relay_protocol::directory::DirectoryPage =
+        serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.workspaces.len(), 1);
+    assert_eq!(page.workspaces[0].description, "Coffee and tea");
+
+    let ask = |person: [u8; 32]| {
+        let body = serde_json::json!({
+            "userPublicKey": hex::encode(person),
+            "displayName": "Cy",
+        })
+        .to_string();
+        let head = format!(
+            "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, body.as_bytes()).await }
+    };
+    let (status, head, body) = ask([31; 32]).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&body).unwrap();
+    assert!(!answer.invitation.is_empty());
+
+    // The door keeps one open grant: the next person is told when to come back,
+    // and the page may read that header cross-origin.
+    let (status, head, body) = ask([32; 32]).await;
+    assert_eq!(status, 503, "{head}");
+    assert!(
+        header_value(&head, "retry-after").is_some(),
+        "no Retry-After: {head}"
+    );
+    assert!(
+        header_value(&head, "access-control-expose-headers")
+            .unwrap_or_default()
+            .contains("retry-after"),
+        "{head}"
+    );
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    eprintln!("full door: {}", String::from_utf8_lossy(&body));
+
+    // The preflight a page on another site sends before asking.
+    let head = format!(
+        "OPTIONS {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &head, b"").await;
+    assert_eq!(status, 204, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    assert!(
+        header_value(&head, "access-control-allow-methods")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("post"),
+        "{head}"
+    );
+
+    serving.abort();
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
 /// A browser handshake the host turns away says why, in a body the device
 /// decodes: a stranger is not admitted, a revoked device is revoked, and a
 /// handshake the host does not know is to be run again.

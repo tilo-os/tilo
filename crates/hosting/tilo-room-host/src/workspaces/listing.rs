@@ -47,6 +47,39 @@ const DOOR_INVITATION_NS: u64 = 10 * 60 * 1_000_000_000;
 /// owner's notices.
 pub(crate) const DOOR_LABEL: &str = "the public directory";
 
+/// Why a public workspace's door turns a person away.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DoorRefusal {
+    /// The person may not join now; `Display` says why.
+    Refused(String),
+    /// The door holds as many open grants as the workspace keeps: the person
+    /// comes back in `retry_after_secs`.
+    Full {
+        /// How long until the earliest open grant expires, at least a second.
+        retry_after_secs: u64,
+    },
+}
+
+impl DoorRefusal {
+    fn refused(reason: impl Into<String>) -> Self {
+        Self::Refused(reason.into())
+    }
+}
+
+impl std::fmt::Display for DoorRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(reason) => f.write_str(reason),
+            Self::Full { retry_after_secs } => write!(
+                f,
+                "the workspace is taking nobody else just now; come back in {retry_after_secs} seconds"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DoorRefusal {}
+
 #[derive(Default, Serialize, Deserialize)]
 struct Stored {
     /// Each public workspace's listing, by workspace UUID.
@@ -190,12 +223,6 @@ impl Workspaces {
             .set(workspace, Some(listing.clone()))
             .map_err(CollaborationError::new)?;
         tracing::info!(%workspace, role = ?listing.default_role, "workspace made public");
-        // Strangers come in through its door from now on: unless its
-        // governor chose otherwise, its members' windows are theirs alone
-        // (`layout_scope`).
-        if let Err(error) = self.default_to_personal(workspace).await {
-            tracing::warn!(%workspace, %error, "a listed room still shares its layout");
-        }
         Ok(listing)
     }
 
@@ -331,11 +358,12 @@ impl Workspaces {
         &self,
         workspace: &str,
         join: &DoorJoin,
-    ) -> Result<(IssuedInvitation, String), CollaborationError> {
+    ) -> Result<(IssuedInvitation, String), DoorRefusal> {
+        let refused = |error: CollaborationError| DoorRefusal::Refused(error.to_string());
         let listing = self
             .listing(workspace)
-            .ok_or_else(|| CollaborationError::new("that workspace is not public"))?;
-        let user = person(&join.user_public_key)?;
+            .ok_or_else(|| DoorRefusal::refused("that workspace is not public"))?;
+        let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
         let token = hex::encode(rand::random::<[u8; 32]>());
         let mut grant = PreAdmission {
@@ -352,36 +380,47 @@ impl Workspaces {
         // ([`Workspaces::pre_admission_signer`]).
         grant
             .sign(&self.inner.host.key)
-            .map_err(|error| CollaborationError::new(error.to_string()))?;
+            .map_err(|error| refused(CollaborationError::new(error.to_string())))?;
         let issued = {
-            let governed = self.workspace(workspace).await?;
+            let governed = self.workspace(workspace).await.map_err(refused)?;
             let mut governed = governed.lock().await;
             let policy = governed
                 .peer()
                 .permissions(self.inner.host.cert.device_public_key, SystemTime::now())
-                .map_err(|error| CollaborationError::new(error.to_string()))?
+                .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
             if policy.is_blocked(&hex::encode(user)) {
-                return Err(CollaborationError::new(
-                    "you were banned from this workspace",
+                return Err(DoorRefusal::refused("you were banned from this workspace"));
+            }
+            if governed.door.refuses(user, now) {
+                return Err(DoorRefusal::refused(
+                    "you were removed from this workspace within the day",
                 ));
             }
+            if let Some(retry_after_secs) = governed
+                .admissions
+                .full_for(now, self.inner.host.max_pre_admissions)
+            {
+                return Err(DoorRefusal::Full { retry_after_secs });
+            }
             let host = self.inner.host.cert.clone();
-            let issued = self.stage_issue(
-                &mut governed,
-                &host,
-                IssueInvitationRequest {
-                    request_id: rand::random(),
-                    role: super::pages::member_role(listing.default_role),
-                    recipient_user_public_key: Some(user),
-                    invitee_name: tilo_user_identity::display_name(&join.display_name)
-                        .ok()
-                        .map(str::to_owned),
-                    expires_at_ns: grant.expires_at_ns,
-                    inviter_name: None,
-                },
-                now,
-            )?;
+            let issued = self
+                .stage_issue(
+                    &mut governed,
+                    &host,
+                    IssueInvitationRequest {
+                        request_id: rand::random(),
+                        role: super::pages::member_role(listing.default_role),
+                        recipient_user_public_key: Some(user),
+                        invitee_name: tilo_user_identity::display_name(&join.display_name)
+                            .ok()
+                            .map(str::to_owned),
+                        expires_at_ns: grant.expires_at_ns,
+                        inviter_name: None,
+                    },
+                    now,
+                )
+                .map_err(refused)?;
             governed
                 .admissions
                 .record(
@@ -390,11 +429,21 @@ impl Workspaces {
                     now,
                     self.inner.host.max_pre_admissions,
                 )
-                .map_err(CollaborationError::new)?;
+                .map_err(|error| refused(CollaborationError::new(error)))?;
             issued
         };
-        self.written(workspace, true).await?;
+        self.written(workspace, true).await.map_err(refused)?;
         Ok((issued, token))
+    }
+
+    /// Whether `workspace`'s door keeps `person` out because moderation removed
+    /// them within the day.
+    pub async fn removed_within_the_day(&self, workspace: &str, person: [u8; 32]) -> bool {
+        let now = tilo_clock::unix_now_ns();
+        match self.workspace(workspace).await {
+            Ok(state) => state.lock().await.door.refuses(person, now),
+            Err(_) => false,
+        }
     }
 
     /// Whether `grant`, recorded for an invitation to `workspace`, was signed by
@@ -528,8 +577,9 @@ mod door_tests {
     use tilo_user_identity::DeviceCert;
 
     use super::super::actions::{HostWorkspaceActions, PUBLISH, UNPUBLISH};
+    use crate::workspaces::DoorRefusal;
     use crate::workspaces::Workspaces;
-    use crate::workspaces::tests::{governor, guest_device, test_host};
+    use crate::workspaces::tests::{governor, guest_device, test_host, test_host_with_grants};
 
     async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -977,6 +1027,126 @@ mod door_tests {
         assert!(member(
             &workspaces.summary(&workspace).await.unwrap().members
         ));
+        relay.shutdown().await;
+    }
+
+    /// Moderation takes a person's membership away and the door keeps them out
+    /// for the day; an idle member the host prunes is let in again at once.
+    #[tokio::test]
+    async fn a_person_moderation_removed_is_refused_at_the_door_for_the_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host(dir.path(), &key, &owner).await;
+        let workspaces = relay.workspaces();
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let (guest_key, guest) = guest_device();
+        let join = DoorJoin {
+            user_public_key: hex::encode(guest.user_public_key),
+            display_name: "Troll".into(),
+        };
+        assert!(matches!(
+            walk_in_as(workspaces, &workspace, &join, &guest_key, &guest).await,
+            Ok(JoinReply::Admitted { .. })
+        ));
+        workspaces
+            .remove_member(
+                &workspace,
+                &owner,
+                RemoveMemberRequest {
+                    request_id: [7; 32],
+                    user_public_key: guest.user_public_key,
+                },
+            )
+            .await
+            .unwrap();
+        let refused = workspaces
+            .admit_listed(&workspace, &join)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused,
+            DoorRefusal::Refused("you were removed from this workspace within the day".into())
+        );
+        assert!(
+            workspaces
+                .removed_within_the_day(&workspace, guest.user_public_key)
+                .await
+        );
+
+        // A moderator lets them in again: the door opens with the ban.
+        workspaces
+            .unban_member(
+                &workspace,
+                &owner,
+                RemoveMemberRequest {
+                    request_id: [8; 32],
+                    user_public_key: guest.user_public_key,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !workspaces
+                .removed_within_the_day(&workspace, guest.user_public_key)
+                .await
+        );
+        assert!(workspaces.admit_listed(&workspace, &join).await.is_ok());
+        relay.shutdown().await;
+    }
+
+    /// A door that holds as many open grants as the workspace keeps says when
+    /// it has room again instead of taking another invitation.
+    #[tokio::test]
+    async fn a_full_door_answers_when_it_has_room_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = governor();
+        let relay = test_host_with_grants(dir.path(), &key, &owner, Some(1)).await;
+        let workspaces = relay.workspaces();
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+        workspaces
+            .publish(
+                &workspace,
+                &owner,
+                Listing {
+                    description: String::new(),
+                    default_role: WorkspaceRole::Editor,
+                },
+            )
+            .await
+            .unwrap();
+        let join = || {
+            let (_, guest) = guest_device();
+            DoorJoin {
+                user_public_key: hex::encode(guest.user_public_key),
+                display_name: "Cy".into(),
+            }
+        };
+        workspaces
+            .admit_listed(&workspace, &join())
+            .await
+            .expect("the door takes the first grant");
+        let refused = workspaces
+            .admit_listed(&workspace, &join())
+            .await
+            .unwrap_err();
+        let DoorRefusal::Full { retry_after_secs } = refused else {
+            panic!("the full door refused another way: {refused:?}");
+        };
+        assert!(
+            (1..=600).contains(&retry_after_secs),
+            "the earliest open grant expires within its ten minutes: {retry_after_secs}"
+        );
         relay.shutdown().await;
     }
 

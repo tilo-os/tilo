@@ -10,9 +10,10 @@
 )]
 
 use super::super::Workspaces;
-use super::super::tests::{governor_with, test_host_taking_part};
+use super::super::tests::governor_with;
 use super::fixtures::{SealingMember, governor_published, member_device};
 use super::*;
+use crate::workspaces::fixtures::test_host_taking_part;
 use automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;

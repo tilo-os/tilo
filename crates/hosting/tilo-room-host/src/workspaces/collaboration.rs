@@ -64,6 +64,24 @@ impl GovernedWorkspace {
     pub(super) fn governed(&self) -> Governed<'_> {
         governed(&self.record, self.peer())
     }
+
+    /// Keep the people `removed` out of the workspace's public door for the
+    /// day: moderation took their membership away. `by` is the person who
+    /// asked, when a person asks: someone who leaves is not kept out of a
+    /// workspace they may join again.
+    pub(super) fn keep_out_removed(
+        &mut self,
+        removed: &std::collections::BTreeSet<[u8; 32]>,
+        by: Option<[u8; 32]>,
+        now_ns: u64,
+    ) -> Result<(), String> {
+        for person in removed {
+            if Some(*person) != by {
+                self.door.remove(*person, now_ns)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `record` and `peer`, a workspace's committed state, as its join ledger reads it.
@@ -522,6 +540,12 @@ impl Workspaces {
         let mut state = workspace.collaboration().clone();
         state.forget(people);
         workspace.commit_state(state)?;
+        for person in people {
+            workspace
+                .door
+                .clear(*person)
+                .map_err(CollaborationError::new)?;
+        }
         tracing::info!(
             workspace = %workspace.workspace(),
             people = people.len(),
@@ -671,6 +695,19 @@ impl Workspaces {
             let mut state = workspace.collaboration().clone();
             state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
             workspace.commit_state(state)?;
+            workspace
+                .keep_out_removed(
+                    &std::collections::BTreeSet::from([target]),
+                    Some(administrator.user_public_key),
+                    now,
+                )
+                .map_err(CollaborationError::new)?;
+        }
+        if matches!(membership, Membership::Unban) {
+            workspace
+                .door
+                .clear(target)
+                .map_err(CollaborationError::new)?;
         }
         tracing::info!(
             workspace = %workspace.workspace(),
@@ -743,6 +780,13 @@ impl Workspaces {
             state.withdraw_invitations(&removed);
             Ok(state)
         })?;
+        workspace
+            .keep_out_removed(
+                &removed,
+                Some(device.user_public_key),
+                tilo_clock::unix_now_ns(),
+            )
+            .map_err(CollaborationError::new)?;
         self.settle(&mut workspace).await?;
         let added = workspace.peer().workspace_changes_since(&before);
         Ok((GovernanceCompletion { generation }, added))

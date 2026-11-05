@@ -151,7 +151,22 @@ impl ChannelKeys for TestChannelKeys {
 ///
 /// The endpoint cannot bind or the host cannot open.
 pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
-    host_on(state_root, key, cert, None).await
+    test_host_with_grants(state_root, key, cert, None).await
+}
+
+/// The same host, keeping `grants` pre-admissions per workspace
+/// ([`crate::host::HostConfig::max_workspace_grants`]).
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn test_host_with_grants(
+    state_root: &Path,
+    key: &SigningKey,
+    cert: &DeviceCert,
+    grants: Option<usize>,
+) -> TestHost {
+    host_on(state_root, key, cert, None, grants).await
 }
 
 /// The same host, run on a device that takes part in its workspaces' channels,
@@ -174,6 +189,7 @@ pub async fn test_host_taking_part(
             keys: Arc::new(TestChannelKeys::default()),
             sink: None,
         }),
+        None,
     )
     .await
 }
@@ -185,6 +201,7 @@ async fn host_on(
     key: &SigningKey,
     cert: &DeviceCert,
     channels: Option<DeviceChannels>,
+    grants: Option<usize>,
 ) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
@@ -192,7 +209,10 @@ async fn host_on(
         .await
         .expect("a loopback endpoint binds");
     let host = WorkspaceHost::open(
-        HostConfig::new(state_root.to_owned(), HostMode::CertifiedHost),
+        HostConfig {
+            max_workspace_grants: grants,
+            ..HostConfig::new(state_root.to_owned(), HostMode::CertifiedHost)
+        },
         HostIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),

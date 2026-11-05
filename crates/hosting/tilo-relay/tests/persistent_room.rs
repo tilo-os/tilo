@@ -580,6 +580,145 @@ async fn chat_route(
     (host_cert, route)
 }
 
+/// A person of their own: a root this test generates, and a device the root
+/// certifies, as a computer that never met the room's owner does.
+fn own_device(
+    seed: u8,
+    label: &str,
+) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    (device, cert)
+}
+
+/// A person asks the room's door, as their computer does.
+async fn ask_door(
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+    name: &str,
+) -> tilo_relay_protocol::directory::DoorAnswer {
+    use tilo_browser_peer::HttpClient as _;
+    let join = tilo_relay_protocol::directory::DoorJoin {
+        user_public_key: hex::encode(cert.user_public_key),
+        display_name: name.into(),
+    };
+    let (status, body) = Plain(plain)
+        .post(
+            &format!("/peer/v1/directory/{workspace}/join"),
+            None,
+            serde_json::to_vec(&join).unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        status,
+        200,
+        "the door refused {name}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// What the room lists in its directory now.
+async fn directory_page(
+    plain: std::net::SocketAddr,
+) -> tilo_relay_protocol::directory::DirectoryPage {
+    use tilo_browser_peer::HttpClient as _;
+    let (status, body) = Plain(plain)
+        .post("/peer/v1/directory", None, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// The room's door, with no operator command: two people of their own roots
+/// join the listed workspace at its default role, each as their own person,
+/// and the directory counts both.
+#[test]
+fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::{JoinReply, WorkspaceRole};
+
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let web_plain = plain.to_string();
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
+    .unwrap();
+    let (workspace, _) = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let before = runtime.block_on(directory_page(plain));
+    assert_eq!(before.workspaces.len(), 1);
+    assert_eq!(before.workspaces[0].description, "Coffee and tea");
+    assert_eq!(
+        before.workspaces[0].default_role,
+        WorkspaceRole::Editor,
+        "the listing the operator asked for"
+    );
+
+    let mut people = Vec::new();
+    for (index, (seed, name)) in [(0x41, "Ana"), (0x51, "Ben")].into_iter().enumerate() {
+        let (device, cert) = own_device(seed, name);
+        let answer = runtime.block_on(ask_door(plain, &workspace, &cert, name));
+        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&answer.invitation)
+            .unwrap();
+        let admitted = runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+            &Plain(plain),
+            &invitation,
+            &cert,
+            &device,
+            [u8::try_from(index).unwrap(); 32],
+            name,
+            answer.admission_token.as_bytes(),
+        ));
+        match admitted {
+            Ok(JoinReply::Admitted { role, .. }) => assert_eq!(role, WorkspaceRole::Editor),
+            other => panic!("{name} was not admitted: {other:?}"),
+        }
+        people.push(cert.user_public_key);
+    }
+    assert_ne!(people[0], people[1], "two people, not one");
+
+    let after = runtime.block_on(directory_page(plain));
+    assert_eq!(
+        after.workspaces[0].members,
+        before.workspaces[0].members + 2,
+        "both joined as members"
+    );
+    room.stop();
+}
+
 /// The homepage embed's path through the real room process: a page whose
 /// device the room certified as its visitor person's subscribes, reads the
 /// room's chat with its starting channel, and has every write refused as the
