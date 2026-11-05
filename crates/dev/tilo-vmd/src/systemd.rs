@@ -1465,6 +1465,11 @@ fn cohort_account_command(
         "--property=NoNewPrivileges=yes",
         "--property=RuntimeMaxSec=300",
         "--",
+        // systemd resolves the unit's executable in the manager's own mount
+        // namespace, before the view is bound over `/usr`, so the candidate
+        // installer cannot be the unit's command: `env` exists on both sides
+        // and execs it inside the view.
+        "/usr/bin/env",
         "/usr/libexec/tilo/tilo-install",
     ]);
     command
@@ -2357,11 +2362,20 @@ mod userspace_tests {
             "--property=BindReadOnlyPaths=/verified/view/usr:/usr /verified/view/opt:/opt",
             "--property=NoNewPrivileges=yes",
             "--preserve-held",
+            "/usr/bin/env",
             "/usr/libexec/tilo/tilo-install",
             "/staged/app.tapp",
         ] {
             assert!(args.iter().any(|arg| arg == required), "{args:?}");
         }
+        // systemd resolves the unit's command in the manager's namespace, so
+        // the candidate installer is reached through an executable the image
+        // has at the same path.
+        let env = args.iter().position(|arg| arg == "/usr/bin/env").unwrap();
+        assert_eq!(
+            args.get(env + 1).map(String::as_str),
+            Some("/usr/libexec/tilo/tilo-install")
+        );
         assert!(
             !args
                 .iter()
