@@ -12,7 +12,7 @@ use std::time::Duration;
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestDevice, TestUser, client_endpoint, spawn_relay};
+use crate::common::{TestDevice, TestUser, client_endpoint, next, spawn_relay};
 
 const WS: u64 = 41;
 
@@ -36,19 +36,6 @@ async fn connect(
         .unwrap();
     next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
     client
-}
-
-async fn next(client: &RelayClient, mut want: impl FnMut(&Envelope) -> bool) -> Envelope {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            let env = client.recv().await.expect("session open");
-            if want(&env) {
-                return env;
-            }
-        }
-    })
-    .await
-    .expect("expected envelope")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
