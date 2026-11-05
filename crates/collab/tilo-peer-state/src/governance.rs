@@ -195,6 +195,7 @@ pub fn admit_invited_member(
         admission,
         admissions,
         delegate,
+        workspace_delegations: Vec::new(),
     };
     candidate
         .put(

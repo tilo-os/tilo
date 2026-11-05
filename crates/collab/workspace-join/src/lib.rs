@@ -18,7 +18,11 @@
 
 pub mod delegation;
 pub mod invitations;
-mod previous;
+/// The invitation and join layouts a build wrote before the grants stopped
+/// naming the workspace's authority: read, never written. A stored record
+/// keeps the bytes its device signed, so a build that reads a record written
+/// then needs the layout that record is in.
+pub mod previous;
 pub mod task_delegation;
 
 use base64::Engine as _;

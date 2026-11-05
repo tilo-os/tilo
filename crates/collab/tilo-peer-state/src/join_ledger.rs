@@ -199,60 +199,60 @@ pub struct Redeeming<'a> {
 /// the format, append only.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinLedger {
-    invitations: Vec<InvitationRecord>,
-    join_challenges: Vec<JoinChallengeRecord>,
-    join_completions: Vec<JoinCompletionRecord>,
-    membership_challenges: Vec<MembershipChallengeRecord>,
-    administration: Vec<AdministrationRecord>,
+    pub invitations: Vec<InvitationRecord>,
+    pub join_challenges: Vec<JoinChallengeRecord>,
+    pub join_completions: Vec<JoinCompletionRecord>,
+    pub membership_challenges: Vec<MembershipChallengeRecord>,
+    pub administration: Vec<AdministrationRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct InvitationRecord {
-    request_id: [u8; 32],
-    request_digest: [u8; 32],
-    issued: IssuedInvitation,
-    grant: InviteGrant,
-    cancellation: Option<CancellationRecord>,
+pub struct InvitationRecord {
+    pub request_id: [u8; 32],
+    pub request_digest: [u8; 32],
+    pub issued: IssuedInvitation,
+    pub grant: InviteGrant,
+    pub cancellation: Option<CancellationRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct CancellationRecord {
-    request_id: [u8; 32],
-    request_digest: [u8; 32],
+pub struct CancellationRecord {
+    pub request_id: [u8; 32],
+    pub request_digest: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct JoinChallengeRecord {
-    remote_endpoint: [u8; 32],
-    request_digest: [u8; 32],
-    device_cert: DeviceCert,
-    challenge: JoinChallenge,
+pub struct JoinChallengeRecord {
+    pub remote_endpoint: [u8; 32],
+    pub request_digest: [u8; 32],
+    pub device_cert: DeviceCert,
+    pub challenge: JoinChallenge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct JoinCompletionRecord {
-    remote_endpoint: [u8; 32],
-    request_id: [u8; 32],
-    proof_digest: [u8; 32],
+pub struct JoinCompletionRecord {
+    pub remote_endpoint: [u8; 32],
+    pub request_id: [u8; 32],
+    pub proof_digest: [u8; 32],
     /// The delivered bootstrap with the workspace's state it carried left out and
     /// its governance messages replaced by one digest entry (see
     /// [`JoinCompletionRecord::receipt`]).
-    bootstrap: JoinBootstrap,
+    pub bootstrap: JoinBootstrap,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct MembershipChallengeRecord {
-    remote_endpoint: [u8; 32],
-    request_digest: [u8; 32],
-    device_cert: DeviceCert,
-    challenge: MembershipChallenge,
+pub struct MembershipChallengeRecord {
+    pub remote_endpoint: [u8; 32],
+    pub request_digest: [u8; 32],
+    pub device_cert: DeviceCert,
+    pub challenge: MembershipChallenge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct AdministrationRecord {
-    request_id: [u8; 32],
-    request_digest: [u8; 32],
-    generation: u64,
+pub struct AdministrationRecord {
+    pub request_id: [u8; 32],
+    pub request_digest: [u8; 32],
+    pub generation: u64,
 }
 
 /// Marks the single governance entry of a completion receipt. An encoded

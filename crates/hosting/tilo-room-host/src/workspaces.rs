@@ -52,6 +52,7 @@ mod pages;
 mod peer_parts;
 pub(crate) use layout_scope::LAYOUT_REFUSAL;
 mod publisher;
+mod record_format;
 mod revocations;
 #[cfg(any(feature = "agents", feature = "web"))]
 pub(crate) mod sealed_records;
@@ -117,7 +118,10 @@ pub use tilo_relay_session::workspaces::{
 use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
-const RECORD_VERSION: u32 = 2;
+/// The record's version this build writes. Version 3 reads a version 2
+/// record's grants in the invitation layout they were written in (see
+/// [`record_format`]).
+const RECORD_VERSION: u32 = 3;
 /// Governance publications kept after the last full checkpoint before the
 /// workspace's publication is compacted into a fresh one.
 const MAX_PUBLICATION_TAIL: usize = 256;
@@ -383,12 +387,29 @@ impl GovernedWorkspace {
         let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
         let (version, _) =
             postcard::take_from_bytes::<u32>(&bytes).map_err(|error| error.to_string())?;
-        if version != RECORD_VERSION {
-            return Err(format!("workspace record version {version} is unknown"));
-        }
+        // An older record comes up before it is read: a version 2 record's
+        // grants are in the invitation layout they were written in, which
+        // [`record_format`] reads by the invitation's own version. A newer
+        // one is left as it is and refused.
+        let bytes = record_format::FORMAT
+            .bring_up(&path, bytes, version)
+            .map_err(|error| error.to_string())?;
         let record: WorkspaceRecord =
             postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
-        if record.authority != *authority {
+        // The record must have been governed by this host's device. What
+        // makes a device that device is its key and what the certificate
+        // lets it do; a certificate's `device_label` is a human-readable
+        // name, which `DeviceCert` itself calls "not authoritative", and a
+        // host that renamed its own certificate — the same key, the same
+        // capabilities, the same validity, a new label — still governs the
+        // workspace it made. Refusing the label alone made a host that
+        // renamed its certificate from "room host" to "workspace host" unable
+        // to start on the workspaces it had been serving.
+        if record.authority.device_public_key != authority.device_public_key
+            || record.authority.user_public_key != authority.user_public_key
+            || record.authority.capabilities != authority.capabilities
+            || record.authority.expires_at_ns != authority.expires_at_ns
+        {
             return Err("workspace is governed by a different device".into());
         }
         if !crate::room_workspace_id_matches(&record.workspace, record.workspace_id)
@@ -1128,7 +1149,8 @@ impl Workspaces {
             }
             let workspace =
                 GovernedWorkspace::open(path.clone(), &this.inner.host.cert, device.as_ref())
-                    .map_err(|error| format!("{}: {error}", path.display()))?;
+                    .map_err(|error| format!("{}: record: {error}", path.display()))?;
+            tracing::info!(path = %path.display(), "the record read");
             workspaces.insert(
                 workspace.workspace().to_owned(),
                 Arc::new(AsyncMutex::new(workspace)),
@@ -1146,10 +1168,22 @@ impl Workspaces {
             .collect::<Vec<_>>();
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
-            this.bind(&workspace).await?;
-            this.settle(&mut workspace).await?;
-            this.recall(&mut workspace).await?;
-            this.prepare_workspace_layout(&mut workspace).await?;
+            this.bind(&workspace)
+                .await
+                .map_err(|e| format!("bind: {e}"))?;
+            tracing::info!("bound");
+            this.settle(&mut workspace)
+                .await
+                .map_err(|e| format!("settle: {e}"))?;
+            tracing::info!("settled");
+            this.recall(&mut workspace)
+                .await
+                .map_err(|e| format!("recall: {e}"))?;
+            tracing::info!("recalled");
+            this.prepare_workspace_layout(&mut workspace)
+                .await
+                .map_err(|e| format!("layout: {e}"))?;
+            tracing::info!("layout ready");
             // What the relay's log revoked while the workspace was closed.
             this.carry_revocations(&mut workspace, &[]).await?;
         }

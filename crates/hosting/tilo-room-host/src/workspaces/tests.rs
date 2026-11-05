@@ -4,6 +4,7 @@
 )]
 
 use super::*;
+use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
@@ -2827,4 +2828,79 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     }
     drop(workspaces);
     relay.shutdown().await;
+}
+
+/// A host that renamed its own governor certificate — the same device key,
+/// the same capabilities, a new label — serves the workspaces that
+/// certificate already governs: a name is not what governs a workspace, and
+/// refusing it made a host renamed by an upgrade unable to start.
+#[tokio::test]
+async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let created = relay.workspaces().create("Demo").await.unwrap();
+    relay.shutdown().await;
+
+    // The same device and capabilities, under another name, signed again by
+    // the workspace's owner root as a relay signs its own certificate.
+    let mut renamed = tilo_user_identity::DeviceCert {
+        device_label: "the same host, renamed".into(),
+        ..cert.clone()
+    };
+    // Signed by the person's root, as the fixture's certificate was.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    tilo_user_identity::sign_device_cert(&mut renamed, &root).unwrap();
+    let reopened = test_host(dir.path(), &key, &renamed).await;
+    let names: Vec<String> = reopened
+        .workspaces()
+        .list()
+        .await
+        .into_iter()
+        .map(|workspace| workspace.name)
+        .collect();
+    assert_eq!(names, vec![created.name]);
+    reopened.shutdown().await;
+
+    // Another device's certificate is still refused: only the label moved,
+    // and a host whose certificate names a different key does not serve the
+    // workspace.
+    let other_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+    let other_key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    let mut other_cert = tilo_user_identity::DeviceCert {
+        user_public_key: other_root.verifying_key().to_bytes(),
+        device_public_key: other_key.verifying_key().to_bytes(),
+        device_label: "another host".into(),
+        capabilities: DeviceCapabilities::host(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
+    let refused = WorkspaceHost::open(
+        HostConfig {
+            max_workspace_grants: None,
+            ..HostConfig::new(dir.path().to_owned(), HostMode::CertifiedHost)
+        },
+        HostIdentity {
+            user_public_key: other_cert.user_public_key,
+            device_signing_key: other_key.clone(),
+            device_cert: other_cert,
+            revocations: RevocationList::new(),
+        },
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&other_key.to_bytes()))
+            .bind()
+            .await
+            .expect("a loopback endpoint binds"),
+        None,
+    )
+    .await
+    .expect_err("a host of another device does not open the workspace");
+    assert!(
+        refused
+            .to_string()
+            .contains("governed by a different device"),
+        "{refused}"
+    );
 }

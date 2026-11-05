@@ -32,6 +32,10 @@ use crate::shared::Shared;
 use backend::{PeerCore, PeerDocument};
 mod bans;
 mod covered_records;
+mod durable_before_owner;
+pub(crate) use durable_before_owner::{
+    DURABLE_BASE_VERSION, Durable, DurableV4, DurableV5, DurableV6, durable_base_is_before_owner,
+};
 mod member_records;
 use member_records::empty_genesis;
 mod facades;
@@ -331,48 +335,6 @@ struct DurableDocumentRef<'a> {
     covered: &'a BTreeMap<String, u64>,
     covered_snapshot: Option<&'a [u8]>,
 }
-/// The durable base layout. Version 4 names the workspace's owner by their root
-/// key; earlier versions pinned a governing device and are refused.
-const DURABLE_BASE_VERSION: u32 = 4;
-
-#[derive(Serialize, Deserialize)]
-struct Durable {
-    version: u32,
-    workspace: String,
-    owner: [u8; 32],
-    workspace_bytes: Option<Vec<u8>>,
-    documents: Vec<DurableDocument>,
-    receipts: BTreeMap<String, Vec<u8>>,
-    certificates: Vec<DeviceCert>,
-    revocations: Vec<tilo_user_identity::RevocationEntry>,
-}
-#[derive(Serialize, Deserialize)]
-struct DurableV4 {
-    version: u32,
-    base: Durable,
-    pending: VecDeque<([u8; 32], NeighbourMsg, bool)>,
-    pending_bytes: usize,
-}
-
-// The v4 shape stays frozen. Exact evidence is an explicitly selected addition.
-#[derive(Serialize, Deserialize)]
-struct DurableV5<'a> {
-    version: u32,
-    base: DurableV4,
-    #[serde(borrow)]
-    exact: &'a [u8],
-}
-
-/// V5 and the sealed history of each encrypted record. Written only while a
-/// record holds sealed writes, so every other state keeps its v5 bytes.
-#[derive(Serialize, Deserialize)]
-struct DurableV6<'a> {
-    version: u32,
-    base: DurableV4,
-    #[serde(borrow)]
-    exact: &'a [u8],
-    sealed: SealedHistory,
-}
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
@@ -440,6 +402,7 @@ fn process_default() -> (collab_types::Surfaces, AppSurfaces) {
 pub const HELD_FOR_SURFACE: &str = "document change held: its app surface is not here yet";
 
 /// The record `message` writes and its sequence, if it is a document write.
+
 fn written_route(message: &NeighbourMsg) -> Option<(Route, u64)> {
     match message {
         NeighbourMsg::AppDocument {
@@ -678,6 +641,7 @@ impl StatePeer {
             admission: None,
             admissions: vec![],
             delegate: None,
+            workspace_delegations: Vec::new(),
         };
         self.put_identity(doc, &identity, key, now)
     }
@@ -3445,46 +3409,65 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
-        let mut exact_admissions = ExactAdmissions::default();
-        let mut sealed = Vec::new();
-        let (durable, pending, pending_bytes) = match version {
-            4 => {
-                let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
-                (value.base, value.pending, value.pending_bytes)
+        let exact_admissions;
+        // Which base layout: the three integers both begin with, read before
+        // anything that differs. Never decode one and retry another.
+        let base_before_owner = durable_base_is_before_owner(bytes)?;
+        let (durable, pending, pending_bytes, exact, sealed) = if base_before_owner {
+            match version {
+                4 => durable_before_owner::v4(bytes)?,
+                5 => durable_before_owner::v5(bytes)?,
+                6 => durable_before_owner::v6(bytes)?,
+                _ => return Err("unsupported durable admission version".into()),
             }
-            5 => {
-                let (value, tail): (DurableV5<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(err)?;
-                if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
-                    return Err("invalid native v5 durable envelope".into());
+        } else {
+            match version {
+                4 => {
+                    let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
+                    (
+                        value.base,
+                        value.pending,
+                        value.pending_bytes,
+                        ExactAdmissions::default(),
+                        Vec::new(),
+                    )
                 }
-                exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
-                (
-                    value.base.base,
-                    value.base.pending,
-                    value.base.pending_bytes,
-                )
-            }
-            6 => {
-                let (value, tail): (DurableV6<'_>, _) =
-                    postcard::take_from_bytes(bytes).map_err(err)?;
-                if !tail.is_empty()
-                    || value.version != 6
-                    || value.base.version != 4
-                    || value.sealed.is_empty()
-                {
-                    return Err("invalid native v6 durable envelope".into());
+                5 => {
+                    let (value, tail): (DurableV5<'_>, _) =
+                        postcard::take_from_bytes(bytes).map_err(err)?;
+                    if !tail.is_empty() || value.version != 5 || value.base.version != 4 {
+                        return Err("invalid native v5 durable envelope".into());
+                    }
+                    (
+                        value.base.base,
+                        value.base.pending,
+                        value.base.pending_bytes,
+                        ExactAdmissions::decode(value.exact).map_err(err)?,
+                        Vec::new(),
+                    )
                 }
-                exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
-                sealed = value.sealed;
-                (
-                    value.base.base,
-                    value.base.pending,
-                    value.base.pending_bytes,
-                )
+                6 => {
+                    let (value, tail): (DurableV6<'_>, _) =
+                        postcard::take_from_bytes(bytes).map_err(err)?;
+                    if !tail.is_empty()
+                        || value.version != 6
+                        || value.base.version != 4
+                        || value.sealed.is_empty()
+                    {
+                        return Err("invalid native v6 durable envelope".into());
+                    }
+                    (
+                        value.base.base,
+                        value.base.pending,
+                        value.base.pending_bytes,
+                        ExactAdmissions::decode(value.exact).map_err(err)?,
+                        value.sealed,
+                    )
+                }
+                _ => return Err("unsupported durable admission version".into()),
             }
-            _ => return Err("unsupported durable admission version".into()),
         };
+        exact_admissions = exact;
         if durable.version != DURABLE_BASE_VERSION
             || durable.workspace != workspace
             || durable.owner != owner_device.user_public_key
@@ -3858,7 +3841,9 @@ impl PeerPublicationMut<'_> {
         Ok(messages)
     }
 }
-pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+pub(crate) use governed_rows::{
+    GovernedIdentity, RedemptionReceipt, WorkspaceDelegation, WorkspaceDelegationPermissions,
+};
 
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {

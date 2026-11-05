@@ -558,6 +558,7 @@ impl PeerGovernanceMut<'_> {
             admission: None,
             admissions: Vec::new(),
             delegate: None,
+            workspace_delegations: Vec::new(),
         };
         let before = doc.get_heads();
         doc.set_actor(self.peer.workspace_actor_of(key));
