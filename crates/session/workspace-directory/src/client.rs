@@ -110,6 +110,11 @@ pub struct Granted {
     /// The invitation itself, which this device enrolls into the workspace's
     /// state with.
     pub invitation: String,
+    /// The one-time token a page redeems the invitation with at the door's
+    /// host; empty when the invitation came without a door (a pasted link).
+    pub admission_token: String,
+    /// Where a page redeems it; the door's own origin when absent.
+    pub origin: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -294,6 +299,8 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
     Ok(Granted {
         workspace,
         invitation: text.trim().to_owned(),
+        admission_token: String::new(),
+        origin: None,
     })
 }
 
@@ -444,6 +451,8 @@ impl<'a> Asking<'a> {
         Ok(Granted {
             workspace,
             invitation: answer.invitation.clone(),
+            admission_token: answer.admission_token.clone(),
+            origin: answer.origin.clone(),
         })
     }
 }
