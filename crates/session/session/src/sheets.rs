@@ -21,23 +21,31 @@ use crate::Session;
 /// A display's rectangle, in logical pixels: the display a sheet covers.
 pub(crate) type Place = (i32, i32, u32, u32);
 
+/// What a sheet is to the session besides a card that is up or down: a sheet
+/// is one of these, never two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// Up while its presentation says so, and serving then.
+    Presented,
+    /// A command surface: it answers its actions and draws while it is down
+    /// too, so its key works with nothing of it shown.
+    ServingWhileDown,
+    /// The sheet asks the person something about what they are typing into
+    /// and leaves the keyboard where it was: it takes Enter and Escape, and
+    /// every other key reaches the field under it.
+    AskingAboutTyping,
+    /// The lock view: drawn and serving over the session's lock, as the lock
+    /// screen's own process would.
+    OverLock,
+}
+
 /// One sheet's app on its layer.
 pub(crate) struct Sheet<S: Seat> {
     host: AppHost,
     seat: S,
     /// The displays as the compositor last said they are.
     outputs: Vec<tilo_compositor::HostedOutput>,
-    /// The app answers its actions and draws while the sheet is down too: a
-    /// command surface, whose key takes a screenshot without the bar up.
-    always_serving: bool,
-    /// The sheet asks the person something about what they are typing into
-    /// and leaves the keyboard where it was: it takes Enter and Escape, and
-    /// every other key reaches the field under it.
-    typing_through: bool,
-    /// The sheet stands over the session's lock: it is drawn and takes the
-    /// keyboard and the pointer while the session is locked, as the lock
-    /// screen's own process would. Only the session's lock view is.
-    over_lock: bool,
+    role: Role,
     /// The card this sheet presents was closed by the shell and is still
     /// being drawn on its way out: the host watches it go rather than say it
     /// is gone at once.
@@ -68,9 +76,7 @@ impl<S: Seat> Sheet<S> {
             host: AppHost::new(app, placement).named(definition.title()),
             seat,
             outputs: Vec::new(),
-            always_serving: false,
-            typing_through: false,
-            over_lock: false,
+            role: Role::Presented,
             modal_left: false,
         })
     }
@@ -78,7 +84,7 @@ impl<S: Seat> Sheet<S> {
     /// The app keeps running while the sheet is down, and its actions stay
     /// offered: what it takes is the whole point of the key that asks it.
     pub(crate) const fn always_serving(mut self) -> Self {
-        self.always_serving = true;
+        self.role = Role::ServingWhileDown;
         self
     }
 
@@ -87,7 +93,7 @@ impl<S: Seat> Sheet<S> {
     /// other key. A prompt that asks whether to listen has to leave the
     /// person's typing where it was.
     pub(crate) const fn typing_through(mut self) -> Self {
-        self.typing_through = true;
+        self.role = Role::AskingAboutTyping;
         self
     }
 
@@ -95,7 +101,7 @@ impl<S: Seat> Sheet<S> {
     /// locked it is the one thing drawn and the one that takes the
     /// keyboard and the pointer. The lock view is.
     pub(crate) const fn standing_over_lock(mut self) -> Self {
-        self.over_lock = true;
+        self.role = Role::OverLock;
         self
     }
 
@@ -224,7 +230,7 @@ impl<S: Seat> Published for Sheet<S> {
     }
 
     fn offered(&self) -> bool {
-        self.always_serving || self.open()
+        self.role == Role::ServingWhileDown || self.open()
     }
 
     fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
@@ -252,7 +258,7 @@ impl<S: Seat> Published for Sheet<S> {
     /// locked, so its actions (and what assistive technology reads of it)
     /// are offered then, as the lock screen's own process offers none.
     fn serves_while_locked(&self) -> bool {
-        self.over_lock && self.drawn()
+        self.role == Role::OverLock && self.drawn()
     }
 }
 
@@ -307,12 +313,12 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         // focus behind it: a presented modal claims input by construction.
         // One that asks about typing leaves all but its own two keys to the
         // field under it ([`Self::typing_through`]).
-        self.drawn() && !self.typing_through
+        self.drawn() && self.role != Role::AskingAboutTyping
     }
 
     /// The lock view shows over the session's lock while it is up.
     fn above_lock(&self) -> bool {
-        self.over_lock && self.drawn()
+        self.role == Role::OverLock && self.drawn()
     }
 
     /// What shows the lock is this view while the lock screen's app cannot.
@@ -323,7 +329,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
     fn claim_key(&mut self, key: &HostKey, _locked: bool, _inhibited: bool) -> KeyClaim {
         // The card's own two keys: the primary answer on Enter, the way out
         // on Escape. Ordinary typing is the field's.
-        let answers = self.typing_through
+        let answers = self.role == Role::AskingAboutTyping
             && self.open()
             && matches!(
                 key.unmodified_keysym,
@@ -362,7 +368,7 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
         }
         // A command surface answers the actions it is offered even with
         // nothing of it drawn.
-        (self.drawn() || self.always_serving) && self.host.prepare_frame()
+        (self.drawn() || self.role == Role::ServingWhileDown) && self.host.prepare_frame()
     }
 
     /// A sheet nobody can see asks for no frames.
