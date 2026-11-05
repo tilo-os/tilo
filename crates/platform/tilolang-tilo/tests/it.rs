@@ -17,6 +17,7 @@ mod chat;
 mod collab;
 mod columns;
 mod composer;
+mod done_days;
 mod engines;
 mod fixtures;
 mod foreign;

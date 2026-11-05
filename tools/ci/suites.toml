@@ -804,6 +804,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
+  "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",

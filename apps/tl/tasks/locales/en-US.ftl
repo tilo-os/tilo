@@ -12,6 +12,9 @@ d-oidkt4g5 = Title
 
 d-fgvmlm5n = Done
 
+d-kvqrynzm = Done at
+    .doc = When it was last checked off: Done stands it under the day it was finished on.
+
 d-g6kykjp2 = Due
     .doc = The day it is due by, if any.
 

@@ -32,6 +32,8 @@ enum RowPlace {
 type Task {
     title: Text (title)
     done: Bool (done) = false
+    /// When it was last checked off: Done stands it under the day it was finished on.
+    done_at: Option<Time> = .none
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
@@ -201,15 +203,21 @@ action check(t: Task, done: Bool = not t.done) (
     on: t.done,
     key: "Ctrl+Enter",
 ) {
+    // The moment it was finished is part of the record, so undo restores it with the box, and
+    // the day Done groups by is read from the task, never from the log per row.
+    let at: Option<Time> = if done { .some(now) } else { .none }
     t.done = done
+    t.done_at = at
     if done {
         for x in tasks.items.descendants(t, .parent) {
             x.done = true
+            x.done_at = at
         }
     } else {
         // Everything above the one opened is open again.
         for a in tasks.items.ancestors(t, .parent) {
             a.done = false
+            a.done_at = .none
         }
     }
 }
@@ -519,6 +527,23 @@ fn own_due(t: Task, under: Option<Task>) -> Option<Date> {
     } else { t.due }
 }
 
+/// When a task was finished: the moment its box was last checked off. A task finished before
+/// the app kept that moment gives the moment of the log's last change of it, which for a task
+/// nobody has touched since is the change that finished it; `updated` is kept per task, so a
+/// list reads one value a row and never the history of a row.
+fn finished_at(t: Task) -> Option<Time> {
+    if let at = t.done_at {
+        .some(at)
+    } else {
+        if let v = updated(t) { .some(v.at) } else { .none }
+    }
+}
+
+/// The day a task was finished on, in the person's zone: the heading Done stands it under.
+fn finished_day(t: Task) -> Option<Date> {
+    if let at = finished_at(t) { .some(day_of(at)) } else { .none }
+}
+
 /// The tasks of a project, in order.
 fn tasks_of(p: Project) -> List<Task> {
     tasks.items.filter(t -> t.project == p)
@@ -554,17 +579,18 @@ view home(t: Tasks) {
     let found = t.items.matching(place)
     // The project whose place is chosen, when one is.
     let project = t.projects.find(p -> place == Task.project(p))
-    // A place of days, and a project's list, stand each task under the day it is due; a place
-    // of what waits to be sorted or is done lists plainly. A project's list folds a finished
-    // branch under its foot, so the open work it holds stands over what is done with.
+    // A place of days, and a project's list, stand each task under the day it is due; Done
+    // stands what was finished under the day it was finished on, a log of the week; a place of
+    // what waits to be sorted lists plainly. A project's list folds a finished branch under its
+    // foot, so the open work it holds stands over what is done with.
     let by_day = place == Task.today or place == Task.upcoming or project != .none
+    let finished = place == Task.done
     let folds = project != .none
-    // What is done reads newest first, by the change that finished it; any other list by the
-    // day it is due. A project's list stands its finished branch last, under the foot that
-    // folds it away.
+    // What is done reads newest first, by when it was finished; any other list by the day it is
+    // due. A project's list stands its finished branch last, under the foot that folds it away.
     let ordered = found.sort_by(.due)
-    let shown = if place == Task.done {
-        found.sort_by(x -> updated(x), desc)
+    let shown = if finished {
+        found.sort_by(x -> finished_at(x), desc)
     } else if folds { ordered.sort_by(.folded) } else { ordered }
     let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
     // Whether nothing waits in the place: what it holds, less what is done in a project's
@@ -619,10 +645,13 @@ view home(t: Tasks) {
                 shown,
                 "No tasks here",
                 .some("list-checks"),
-                group: x -> if by_day { x.due } else { .none },
+                group: x -> if by_day {
+                    x.due
+                } else if finished { finished_day(x) } else { .none },
                 ungrouped: if by_day {
                     .some(phrase("tilolang-no-date"))
                 } else { .none },
+                group_done: finished,
                 tail: x -> folds and x.folded,
                 parent: .parent,
                 parent_title: x -> x.parent?.title,

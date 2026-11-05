@@ -12,7 +12,7 @@ const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
 
-fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
+pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
     let id = meta
         .actions
@@ -33,7 +33,7 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 }
 
 /// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.
-fn workspace() -> (Replica, Value) {
+pub(crate) fn workspace() -> (Replica, Value) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
     ada.host
         .runtime()
@@ -43,7 +43,7 @@ fn workspace() -> (Replica, Value) {
     (ada, root)
 }
 
-fn read(r: &Replica, item: &Value, field: &str) -> Value {
+pub(crate) fn read(r: &Replica, item: &Value, field: &str) -> Value {
     let Value::Ref(item) = item else {
         panic!("a resource: {item:?}")
     };
@@ -1058,7 +1058,7 @@ fn home_list_rows(view: &mut ViewInstance) -> Vec<(usize, String, String, bool)>
 }
 
 /// The titles of the tasks the home list shows, in the order it shows them.
-fn home_list_titles(r: &Replica, view: &mut ViewInstance) -> Vec<String> {
+pub(crate) fn home_list_titles(r: &Replica, view: &mut ViewInstance) -> Vec<String> {
     let titles: std::collections::HashMap<String, String> = items(r)
         .iter()
         .filter_map(|task| {
@@ -1105,7 +1105,7 @@ fn home_row_node(view: &mut ViewInstance, item: &str) -> UiNode {
 }
 
 /// Switch the window's place, as a press on the sidebar's item does.
-fn go_to(view: &mut ViewInstance, place: &str) {
+pub(crate) fn go_to(view: &mut ViewInstance, place: &str) {
     let key = key_of(view, "ui.NavItem", &|node| {
         node.props.get("label") == Some(&Value::text(place))
     });
@@ -1871,7 +1871,7 @@ fn step_rows(view: &mut ViewInstance) -> Vec<(String, Option<String>, Option<Str
 }
 
 /// Every node of this kind in the drawn view.
-fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
+pub(crate) fn all<'a>(node: &'a UiNode, kind: &str) -> Vec<&'a UiNode> {
     fn walk<'a>(node: &'a UiNode, kind: &str, out: &mut Vec<&'a UiNode>) {
         if node.kind == kind {
             out.push(node);
