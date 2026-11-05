@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # The Lounge image, before it is published: what the deployment and the
 # entrypoint rely on — the user it runs as, its entrypoint, the ports the
-# ingress forwards to, the programs and the bot programs it installs, and the
-# product font catalog its app workers lay text out from — plus the revision
-# label, which is what GET /mode reports at run time.
+# ingress forwards to, the programs starting inside the image, the bot
+# programs it installs, and the product font catalog its app workers lay text
+# out from — plus the revision label, which is what GET /mode reports at run
+# time.
 #
 # usage: test-image.sh IMAGE
 # IMAGE is an OCI archive (as tools/ci/publish/oci-build.sh writes it) or a
@@ -42,6 +43,21 @@ inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}' | grep -Fqx 'TIL
 container=$(b from --pull=never --quiet "$image")
 cleanup() { b umount "$container" >/dev/null 2>&1 || true; b rm "$container" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
+# Each program starts in the image itself, before the container is mounted
+# (buildah runs only an unmounted one). A binary that needs a library the image
+# does not carry dies in the loader before its main, with "error while loading
+# shared libraries: …: cannot open shared object file" on stderr and status
+# 127; no file, mode or ELF check sees that, and the deployment found it as a
+# crash loop. Both programs are answered from their main: the relay's
+# `--version`, and the worker's refusal of a setting it cannot take (of which
+# the loader knows nothing).
+version=$(b run "$container" -- /usr/local/bin/tilo-relay --version) \
+  || fail "tilo-relay does not start in the image"
+[[ $version == "tilo-relay "* ]] || fail "tilo-relay --version answered: $version"
+worker=0
+b run "$container" -- bash -c 'DISCORD_GUILD_ID=not-a-discord-id exec /usr/local/bin/discord-worker' \
+  >/dev/null || worker=$?
+[[ $worker == 1 ]] || fail "discord-worker does not start in the image (status $worker)"
 root=$(b mount "$container")
 for program in tilo-relay discord-worker tilo-lounge; do
   [[ -x $root/usr/local/bin/$program ]] || fail "/usr/local/bin/$program is missing or not executable"

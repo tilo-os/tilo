@@ -13,10 +13,12 @@ path = "src/lib.rs"
 name = "tube"
 path = "src/main.rs"
 
-# The page build keeps playback (`media`) and drops rustypipe, which does not
-# build for wasm32, and Grayjay sync, which needs raw TCP.
+# The page build drops rustypipe, which does not build for wasm32, and Grayjay
+# sync, which needs raw TCP. It also drops `media`, which only selects the
+# desktop's GStreamer decode: the page plays through its media element, and an
+# agent's host build mounts this app without a screen.
 [package.metadata.tilo]
-web-features = ["media"]
+web-features = []
 
 [dependencies]
 fnv.workspace = true

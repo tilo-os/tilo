@@ -31,7 +31,7 @@ mod wake;
 pub mod warmth;
 pub mod window;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 pub use surface::peer_view::{
     NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart, PeerSurface,
     PeerSurfaces, PeerTiles, PeerView, PictureWake, Standing, SurfaceId,

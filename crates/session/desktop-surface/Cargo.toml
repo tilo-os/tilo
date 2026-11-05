@@ -13,6 +13,19 @@ homepage.workspace = true
 # present the same model. Hosts supply tab contents through `TileSource`.
 
 [features]
+# Another device's shared window, decoded into its tile on this desktop. On by
+# default for every desktop that draws windows; a screenless host that links
+# this surface (a relay, an agent's participant) turns it off and links neither
+# the media stack nor a decoder.
+default = ["peer-view"]
+peer-view = [
+    "dep:neighbour-wire",
+    "dep:tilo-callstream",
+    "dep:tilo-media",
+    "dep:tilo-color-pipeline",
+    "dep:tilo-window-share",
+    "dep:postcard",
+]
 # Leave the notification centre's code out of what the program starts
 # with: it fetches it the first time the centre opens
 # (`NOTIFICATION_CENTRE`).
@@ -63,16 +76,18 @@ workspace-hack = { version = "0.1" }
 # Another device's shared window: the wire it arrives on, the decoder that
 # turns its units into pictures, the colour that tone-maps an HDR stream to
 # this display, and the share's own rule for the input a viewer sends back.
-# All four run the media stack, which has no wasm32 build.
-neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire" }
-tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"] }
-tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"] }
-tilo-color-pipeline = { version = "0.1.0", path = "../color-pipeline" }
+# All four run the media stack, which has no wasm32 build and which a host
+# without a screen (a relay, an agent's participant) never presents. They are
+# the `peer-view` feature's, so such a host links this surface without them.
+neighbour-wire = { version = "0.1.0", path = "../../collab/neighbour-wire", optional = true }
+tilo-callstream = { version = "0.1.0", path = "../../collab/tilo-callstream", features = ["surface-decoder"], optional = true }
+tilo-media = { version = "0.1.0", path = "../../platform/tilo-media", features = ["realtime"], optional = true }
+tilo-color-pipeline = { version = "0.1.0", path = "../color-pipeline", optional = true }
 # The share's registry and input vocabulary; the owner side's dmabuf staging
 # (the one part that holds a host graphics stack) is not a viewer's.
-tilo-window-share = { version = "0.1.0", path = "../window-share", default-features = false }
+tilo-window-share = { version = "0.1.0", path = "../window-share", default-features = false, optional = true }
 # The input a viewer sends back is the wire's own encoding.
-postcard.workspace = true
+postcard = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Search's palette is drawn and answered by the chrome over the windows: the

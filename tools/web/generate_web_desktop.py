@@ -21,9 +21,12 @@ in its Cargo.toml:
     [package.metadata.tilo]
     web-features = ["..."]
 
-and is then linked with `default-features = false` and exactly those.
-Features that name a platform crate's backend (`media/decode`, `ui/portal`)
-need no entry: platform crates compile them to nothing on the web.
+and is then linked with `default-features = false` and exactly those. An app's
+default features are its desktop set: a feature that only selects a native
+backend (a device stack, a decoder) is left off here too, because the agent's
+host build links this same list and has no screen. A platform crate that
+compiles a backend to nothing on the web is not a reason to leave it on: a
+native host without a screen links it for real.
 
 It also links the same apps into crates/agent/agent-participant (the
 dependency block in its Cargo.toml and src/web_apps.rs), so an agent in a
