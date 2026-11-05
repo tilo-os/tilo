@@ -1195,11 +1195,14 @@ impl NotificationStack {
         // Like a banner's own body, the card is pressable as a whole and
         // shows no hover film: passing over it is not aiming at it.
         ui::widget::toast::paint_card_surface(ctx.scene, ctx.transform, rect, 1.0, ctx.theme);
+        // The label stands across the card's middle, a padding in from
+        // either side.
+        let middle = rect.y0.midpoint(rect.y1);
         let inner = Rect::new(
             rect.x0 + CARD_PADDING_X,
-            rect.y0 + (rect.height() - label_h) / 2.0,
+            middle - label_h / 2.0,
             rect.x1 - CARD_PADDING_X,
-            rect.y0 + (rect.height() + label_h) / 2.0,
+            middle + label_h / 2.0,
         );
         let ink = ctx.theme.tokens.colors.text_primary;
         let mut ui_ctx =

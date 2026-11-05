@@ -2527,8 +2527,7 @@ impl NotificationCenter {
                     &caption_style,
                     shape.body_lines().max(1),
                 );
-                let body_h =
-                    f64::from(caption_line_h) * ui::num::f64_of_usize(shape.body_lines().max(1));
+                let body_h = caption_line_h * ui::num::f64_of_usize(shape.body_lines().max(1));
                 ui::widget::TextBlockFace::new(&body, &caption_style).paint(
                     &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     Rect::new(x, body_y, x + body_width, body_y + body_h),
