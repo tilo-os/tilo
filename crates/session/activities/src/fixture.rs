@@ -53,7 +53,13 @@ pub fn feed(scenario: Option<&str>) -> Feed {
     };
     Feed {
         placement,
-        corner: Corner::BottomRight,
+        // A banner takes the top right, which is where a person who docks
+        // their cards there sees the column step down past it.
+        corner: if scenario == Some("banner") {
+            Corner::TopRight
+        } else {
+            Corner::BottomRight
+        },
         cards,
         expanded: scenario == Some("narrow"),
     }

@@ -67,10 +67,12 @@ fn shot(session: &mut Session) -> (Vec<u8>, u32) {
 
 /// How many pixels differ between two frames, in the rows `from..to`.
 fn changed(before: &[u8], after: &[u8], width: u32, from: u32, to: u32) -> usize {
-    let width = width as usize;
+    let width = usize::try_from(width).expect("a display with columns");
     let stride = width * 4;
     let mut count = 0;
-    for row in from as usize..to as usize {
+    for row in usize::try_from(from).expect("a row of the display")
+        ..usize::try_from(to).expect("a row of the display")
+    {
         let at = row * stride;
         for pixel in 0..width {
             let p = at + pixel * 4;
@@ -126,13 +128,20 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
     settle(&mut session, 8);
     let (empty, width) = shot(&mut session);
 
-    show(&session, CLOCKS, tea(), true);
+    // A timer that keeps to the bar: its reading stands in the pill, and
+    // nothing stands over the desk.
+    show(&session, CLOCKS, tea(), false);
     settle(&mut session, 8);
     let (named, _) = shot(&mut session);
     assert!(
         changed(&empty, &named, width, 0, BAR) > 100,
         "the bar names the timer: {} pixels of it moved",
         changed(&empty, &named, width, 0, BAR)
+    );
+    assert_eq!(
+        changed(&empty, &named, width, BAR, desk_bottom()),
+        0,
+        "nothing stands over the desk yet"
     );
     super::desk::capture_to(&mut session, &dir, "bar-pill");
 
