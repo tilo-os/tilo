@@ -1149,6 +1149,7 @@ impl Live {
                     Patch::Move {
                         parent: parent.clone(),
                         key,
+                        from: *index,
                         to: *to,
                     }
                 }

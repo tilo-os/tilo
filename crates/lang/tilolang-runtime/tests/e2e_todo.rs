@@ -141,6 +141,7 @@ mod cases {
             vec![Patch::Move {
                 parent: vec![view.tree().key.clone()],
                 key: before[2].clone(),
+                from: 3,
                 // The title is the column's first child, so the first row is at 1.
                 to: 1
             }]

@@ -682,9 +682,9 @@ view tinted_row(item: Item, tint: Text) {
                     let at = held.iter().position(|k| k == key).unwrap();
                     held.remove(at);
                 }
-                Patch::Move { parent, key, to }
-                    if parent.last().map(String::as_str) == Some(list) =>
-                {
+                Patch::Move {
+                    parent, key, to, ..
+                } if parent.last().map(String::as_str) == Some(list) => {
                     let at = held.iter().position(|k| k == key).unwrap();
                     let row = held.remove(at);
                     held.insert(*to, row);
