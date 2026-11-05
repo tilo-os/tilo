@@ -1092,7 +1092,7 @@ mod tests {
         );
         let answer = ran(
             &task,
-            "for c in find(chat.Channel) {\n    print(c.name, c.kind, c.archived)\n}",
+            "for c in find(chat.Conversation) {\n    print(c.name, c.kind, c.archived)\n}",
         );
         assert_eq!(answer["state"], "done", "{answer:#}");
         assert_eq!(
@@ -1142,7 +1142,7 @@ mod tests {
         // A field the app does not publish is an error in the program, as in `tilolang check`.
         let wrong = ran(
             &task,
-            "for c in find(chat.Channel) {\n    print(c.colour)\n}",
+            "for c in find(chat.Conversation) {\n    print(c.colour)\n}",
         );
         assert_eq!(wrong["state"], "rejected", "{wrong:#}");
     }
@@ -1247,11 +1247,14 @@ mod tests {
     #[test]
     fn a_task_names_only_the_apps_its_session_hands_it() {
         let (task, _reader, _door) = task_with(&[]);
-        let answer = ran(&task, "for c in find(chat.Channel) {\n    print(c.name)\n}");
+        let answer = ran(
+            &task,
+            "for c in find(chat.Conversation) {\n    print(c.name)\n}",
+        );
         assert_eq!(answer["state"], "rejected", "{answer:#}");
         let why = format!("{:#}", answer["detail"]);
         assert!(
-            why.contains("chat") || why.contains("chat.Channel"),
+            why.contains("chat") || why.contains("chat.Conversation"),
             "{why}"
         );
     }
@@ -1265,10 +1268,11 @@ mod tests {
     #[test]
     fn check_and_a_task_compile_against_the_same_catalogue() {
         let checked = checked();
-        let program = "for c in find(chat.Channel) {\n    print(c.name)\n    print(c.colour)\n}";
+        let program =
+            "for c in find(chat.Conversation) {\n    print(c.name)\n    print(c.colour)\n}";
         let Err(diagnostics) = tilolang::compile_program_reading(program, &checked, &[], &[])
         else {
-            panic!("`colour` is no field of Chat's Channel");
+            panic!("`colour` is no field of a chat conversation");
         };
         let expected: Vec<String> = diagnostics
             .iter()

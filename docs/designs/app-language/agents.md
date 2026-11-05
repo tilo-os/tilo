@@ -100,7 +100,7 @@ opens them. The task host is not an app, so it gets its own admission instead of
   made yet makes the root first, as the invoker's step, and answers the whole record. Undo goes
   the same way, by the app's id and record. An app's own instance is never asked to act for the program.
 - **Native apps.** Their types and views come from the published catalogue the same way, and a
-  program type-checks against them, so `find(chat.Channel)` and its fields read as any type's.
+  program type-checks against them, so `find(chat.Conversation)` and its fields read as any type's.
   None of their record is read here: the host asks the app, through the door, for what its own
   `read` view answers, as the task's caller, and the broker starts the app when it is not
   running (`NativeReads`, `native.rs`). It addresses a resource the way the app's directory
