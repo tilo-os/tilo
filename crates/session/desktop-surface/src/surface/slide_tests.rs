@@ -116,7 +116,7 @@ impl Desk {
         ui::motion::note_source(source);
         self.handle
             .dispatch(navigation::ChromeEffect::ShowStrip {
-                workspace: workspace.clone(),
+                workspace,
                 strip: strip.0.to_string(),
             })
             .expect("the strip is there");
@@ -127,7 +127,7 @@ impl Desk {
 
     /// Where the leaving strip is drawn this frame, in pixels from where it
     /// stood.
-    fn leaving(&mut self) -> Option<f64> {
+    fn leaving(&self) -> Option<f64> {
         self.frame
             .root::<DesktopSurface>()
             .slides
