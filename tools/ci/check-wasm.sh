@@ -11,6 +11,11 @@
 # Run it with the browser crates. A lint, not
 # a build: the link and the web runtime's post-processing need wasm-bindgen
 # and binaryen.
+#
+# Every check runs even after one fails. A red in the first set used to be the
+# only thing a run said about wasm32, so a red in a later check — a crate the
+# browser build links, not one of the browser crates — stayed invisible until
+# the first was fixed. The script still exits non-zero when any check fails.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -23,12 +28,18 @@ for lint in $(python3 -c 'import sys; sys.path.insert(0, "tools/ci"); import pac
   allow+=(-A "$lint")
 done
 
+passed=()
+failed=()
 clippy() {
   local label=$1
   shift
-  bash tools/ci/measure.sh "wasm32 clippy: $label" -- \
+  if bash tools/ci/measure.sh "wasm32 clippy: $label" -- \
     bash scripts/ci-run.sh "cargo clippy (wasm32, $label)" -- \
-    "$cargo" clippy --locked --target "$target" "$@" -- -D warnings "${allow[@]}"
+    "$cargo" clippy --locked --target "$target" "$@" -- -D warnings "${allow[@]}"; then
+    passed+=("$label")
+  else
+    failed+=("$label")
+  fi
 }
 
 if [ "$#" -gt 0 ]; then
@@ -40,3 +51,12 @@ clippy "web desktop" --lib -p tilo-web-desktop
 clippy "page runtime" --lib -p tilo-browser-runtime
 # Private image-only worker kernel.
 clippy "image compute worker" --lib -p tilo-browser-compute
+
+printf 'wasm32 clippy passed: %s\n' "${passed[*]}"
+if ((${#failed[@]})); then
+  for label in "${failed[@]}"; do
+    echo "::error::wasm32 clippy failed: $label"
+  done
+  printf 'wasm32 clippy failed: %s\n' "${failed[*]}" >&2
+  exit 1
+fi
