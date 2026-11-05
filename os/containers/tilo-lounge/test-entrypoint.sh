@@ -167,15 +167,41 @@ grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for t
 grep -Fqx -- shared "$work/args" && fail "the shared layout default was not replaced"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 
-# The image refuses what it does not honor: the deployment must drop it, not
-# keep it beside a host that ignores it.
-fails_with lounge TILO_ROOMS_ADMISSION=invite
+# eu1's own environment, unchanged but for the image: it takes people by
+# invitation, and names no description. The workspace stays listed, its door
+# admits only people invited, and the description is the name people know it
+# by.
+eu1() {
+  env -i PATH="$work/bin:/usr/bin:/bin" \
+    TILO_ROOMS_PERSISTENT=lounge \
+    TILO_ROOMS_NAME=Lounge \
+    TILO_ROOMS_ADMISSION=invite \
+    TILO_ROOMS_ROOT_FILE=/run/secrets/room-root-lounge \
+    TILO_ROOMS_RELAY_ORIGIN=https://eu1.tilo.coffee \
+    TILO_ROOMS_PUBLIC_API=https://eu1.tilo.coffee \
+    TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee \
+    TILO_ROOMS_WEB_ENTRY=https://tilo.coffee/ \
+    TILO_ROOMS_SITE_ORIGINS=https://tilo.coffee,https://tilo.so \
+    TILO_ROOMS_FEEDBACK_CHANNEL=feedback \
+    TILO_ROOMS_STATE="$work/state" \
+    sh "$here/entrypoint.sh"
+}
+eu1 >"$work/args" || fail "eu1's environment does not start"
+grep -Fqx -- --invitation-only "$work/args" || fail "invite admission did not close the door"
+grep -Fqx -- --members-only "$work/args" && fail "invite admission unlisted the workspace"
+pair --listing-description Lounge || fail "the description did not default to the workspace's name"
+pair --persistent lounge || fail "the workspace is not the one eu1 names"
+pair --public-origin https://eu1.tilo.coffee || fail "eu1's origin did not reach the host"
+
+# An admission the image does not honor stops the start, as any other setting
+# it does not read does.
+fails_with lounge TILO_ROOMS_ADMISSION=anyone
 grep -Fq TILO_ROOMS_ADMISSION "$work/err" || fail "the refusal does not name the setting"
 fails_with lounge TILO_ROOMS_MAX_SPECTATORS=2000
 grep -Fq TILO_ROOMS_MAX_SPECTATORS "$work/err" || fail "the refusal does not name the setting"
 
 # Without what it cannot invent, it names the setting and starts nothing.
-for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIGIN TILO_ROOMS_DESCRIPTION TILO_ROOMS_WEB_ENTRY; do
+for required in TILO_ROOMS_PERSISTENT TILO_ROOMS_ROOT_FILE TILO_ROOMS_RELAY_ORIGIN TILO_ROOMS_WEB_ENTRY; do
   unset_env=(TILO_ROOMS_PERSISTENT=lounge TILO_ROOMS_ROOT_FILE=/root TILO_ROOMS_RELAY_ORIGIN=https://eu1.example
     TILO_ROOMS_DESCRIPTION=text TILO_ROOMS_WEB_ENTRY=https://tilo.example/)
   status=0

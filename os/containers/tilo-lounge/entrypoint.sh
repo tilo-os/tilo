@@ -29,7 +29,8 @@ fail() {
   exit 2
 }
 
-known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION
+known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION TILO_ROOMS_ADMISSION
+TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_STATE
@@ -55,10 +56,27 @@ root=${TILO_ROOMS_ROOT_FILE:-}
 origin=${TILO_ROOMS_RELAY_ORIGIN:-}
 [ -n "$origin" ] || fail 'TILO_ROOMS_RELAY_ORIGIN is required: the https:// origin the ingress publishes'
 description=${TILO_ROOMS_DESCRIPTION:-}
-[ -n "$description" ] || fail 'TILO_ROOMS_DESCRIPTION is required: what the public directory says the workspace is'
+# `invite` (the setting eu1 ships) lists the workspace and closes its door:
+# only people invited or pre-admitted join. `open` (the default) lets anyone
+# in as the default role. Anything else stops the start.
+admission=${TILO_ROOMS_ADMISSION:-open}
+case $admission in
+  open|invite) ;;
+  *) fail "TILO_ROOMS_ADMISSION is open (anyone joins as a guest) or invite (only with an invitation), not $admission" ;;
+esac
+# A listed invitation-only workspace says what it is; a deployment that names
+# no description gets the name people know it by, so eu1's environment starts
+# unchanged.
+if [ -z "$description" ]; then
+  description=${TILO_ROOMS_NAME:-$name}
+fi
 entry=${TILO_ROOMS_WEB_ENTRY:-}
 [ -n "$entry" ] || fail 'TILO_ROOMS_WEB_ENTRY is required: the Tilo app web entry the links open'
 origin=${origin%/}
+# eu1 also names the API's public address and the live plane's. The API's is
+# the relay's own origin here (one origin, one ingress), and the live plane
+# rides the plain listener as the HTTPS stream fallback, so neither changes
+# what the host serves; both are read so eu1's environment starts as it is.
 dir=${TILO_ROOMS_STATE:-/run/tilo-rooms}/$name
 
 # comma_flags VALUE FLAG: FLAG and one comma-separated, trimmed entry of VALUE
@@ -106,6 +124,18 @@ if [ -n "${TILO_ROOMS_LIVE_ORIGIN:-}" ]; then
 fi
 if [ -n "${TILO_ROOMS_NAME:-}" ]; then
   set -- "$@" --workspace-name "$TILO_ROOMS_NAME"
+fi
+# The door: listed either way (the site's directory shows it), open to
+# anyone as the default role or only to people invited.
+if [ "$admission" = invite ]; then
+  set -- "$@" --invitation-only
+fi
+wait_list=${TILO_ROOMS_WAIT_LIST_MAX:-}
+if [ -n "$wait_list" ]; then
+  case $wait_list in
+    ''|*[!0-9]*) fail "TILO_ROOMS_WAIT_LIST_MAX is a count, not $wait_list" ;;
+  esac
+  set -- "$@" --wait-list-max "$wait_list"
 fi
 if [ "${TILO_ROOMS_FETCH_PROXY:-1}" != 0 ]; then
   set -- "$@" --fetch-proxy
