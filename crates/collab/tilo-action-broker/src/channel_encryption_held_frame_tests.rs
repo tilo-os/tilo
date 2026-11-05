@@ -4,9 +4,9 @@
 // rather than refused for good.
 
 /// The founder's genesis reaches a device whose policy does not name the
-/// founder yet, and its group is the founder's once the policy does: a
-/// refused frame is kept for the policy that moves, so the two devices end in
-/// one group rather than in two of their own.
+/// founder yet, and is applied once the policy does: a frame the policy does
+/// not back is kept for the policy that moves, so the device is handed the
+/// group that exists rather than founding one of its own.
 #[test]
 fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     let workspace = Arc::new(Workspace::default());
@@ -37,6 +37,21 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
         ChannelAccess::Waiting
     ));
     run(&mut [&mut founder, &mut member, &mut late], &mut now, 1);
+    let held = |device: &Device| {
+        device
+            .service
+            .peers
+            .get(&channel)
+            .is_some_and(|entry| !entry.held.is_empty())
+    };
+    assert!(
+        held(&late),
+        "a policy that does not name the founder keeps its frame, and backs none of its group"
+    );
+    assert!(
+        !late.service.peers[&channel].peer.has_genesis(),
+        "the frame the policy does not back is not applied"
+    );
     assert!(
         late.service.existing_keys(workspace_id, channel).is_none(),
         "a policy that does not name the founder backs no frame of its group"
@@ -46,28 +61,21 @@ fn a_genesis_is_kept_for_the_policy_that_names_its_signer_later() {
     late_policy.allowed.lock().unwrap().insert(public(1));
     run(&mut [&mut founder, &mut member, &mut late], &mut now, 8);
 
-    let artifact = collab_types::document_artifact_id("so.tilo.notes", "workspace", "page");
-    let founder_keys = founder
-        .service
-        .existing_keys(workspace_id, channel)
-        .expect("the founder keeps its channel's keys");
-    let (sealed, ciphertext) = founder_keys
-        .seal_content(
-            artifact,
-            ContentRetention::Checkpoint,
-            b"what the founder wrote",
-        )
-        .expect("the founder seals under its group");
-    let keys = late
-        .service
-        .existing_keys(workspace_id, channel)
-        .expect("the group the policy names admits the late device");
-    let opened = keys
-        .open_content(artifact, &sealed, &ciphertext)
-        .expect("the late device reads the founder's group");
-    assert_eq!(
-        opened.as_slice(),
-        b"what the founder wrote",
-        "the late device holds the founder's group, not one it founded on its own"
+    let entry = &late.service.peers[&channel];
+    assert!(
+        entry.held.is_empty(),
+        "the frame the policy now backs leaves the hold"
+    );
+    assert!(
+        entry.peer.has_genesis(),
+        "the late device takes the founder's genesis"
+    );
+    assert!(
+        matches!(entry.peer.access(), Access::Waiting),
+        "it is handed the group that exists, and asks to join it: it founds no group of its own"
+    );
+    assert!(
+        late.service.existing_keys(workspace_id, channel).is_none(),
+        "no keys of its own: the group it holds is the founder's"
     );
 }
