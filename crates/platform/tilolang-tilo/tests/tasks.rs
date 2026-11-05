@@ -2626,7 +2626,7 @@ fn sections(view: &ViewInstance) -> Vec<ShownSection> {
 /// the filter of a place asks for a count, and the projects the root holds under a heading that
 /// adds one of them.
 #[test]
-fn the_sidebar_is_the_types_places_and_the_projects_the_root_holds() {
+fn the_sidebar_is_the_windows_places_and_the_projects_the_root_holds() {
     let (mut ada, root) = workspace();
     let project = call(&ada, "new_project", vec![root.clone()]);
     call(
