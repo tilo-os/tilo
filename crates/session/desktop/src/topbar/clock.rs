@@ -471,10 +471,10 @@ impl TopBarChrome {
         center_y: f64,
         center_x: f64,
     ) {
+        use ui::widget::TextLineFace;
         let Some(_headline) = self.activity_headline.as_deref() else {
             return;
         };
-        use ui::widget::TextLineFace;
         let style = theme.text(TextRole::Caption);
         // Keep activity in one line. `measure(..., Some(width))` wraps at
         // word boundaries, which made a large-text notification grow to two

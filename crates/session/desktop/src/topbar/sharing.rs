@@ -413,7 +413,7 @@ impl TopBarChrome {
         let chip = ui::widget::BarChipFace::new(&label, &[])
             .icons(SHARE_GLYPH)
             .label(&label)
-            .label_width(f64::from(available))
+            .label_width(available)
             .tone(color)
             .at_height(BAR_CONTROL_PX)
             .hovered(false)

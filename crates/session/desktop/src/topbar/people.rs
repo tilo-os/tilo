@@ -137,11 +137,11 @@ impl TopBarChrome {
         center_y: f64,
         right_x: f64,
     ) -> f64 {
+        use ui::widget::BarChipFace;
         if !self.can_invite() {
             self.invite_rect = Rect::ZERO;
             return right_x;
         }
-        use ui::widget::BarChipFace;
         // The invite is one bar chip: a person-plus glyph in the seat the
         // next person takes, lifting under the pointer like every other bar
         // control. Its words are its accessible name.

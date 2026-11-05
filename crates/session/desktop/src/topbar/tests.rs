@@ -548,10 +548,10 @@ fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
     let mut bar = sample_chrome();
     lay_out_and_draw(&mut bar, 1280.0);
     let desktop = bar.tray_pill_rect;
-    assert_eq!(bar.tray_slot_count(), 1, "the bell, with nothing unread");
+    assert_eq!(bar.tray_slots().len(), 1, "the bell, with nothing unread");
     bar.bell.only = true;
     lay_out_and_draw(&mut bar, 1280.0);
-    assert_eq!(bar.tray_slot_count(), 1, "the same bell");
+    assert_eq!(bar.tray_slots().len(), 1, "the same bell");
     assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
     let node = bar.accessibility().expect("topbar semantics");
     let tray = node
@@ -2435,7 +2435,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
 #[test]
 fn every_reading_the_machine_has_draws_its_own_glyph() {
     let mut bar = sample_chrome();
-    assert_eq!(bar.tray_slot_count(), 1, "the bell alone");
+    assert_eq!(bar.tray_slots().len(), 1, "the bell alone");
     bar.status = crate::chrome::SystemStatus {
         battery_percent: Some(72),
         battery_charging: false,
@@ -2454,7 +2454,7 @@ fn every_reading_the_machine_has_draws_its_own_glyph() {
         summary: String::new(),
     };
     assert_eq!(
-        bar.tray_slot_count(),
+        bar.tray_slots().len(),
         4,
         "the bell, the volume, the link and the battery"
     );
@@ -2466,7 +2466,7 @@ fn every_reading_the_machine_has_draws_its_own_glyph() {
     );
     bar.status = crate::chrome::SystemStatus::default();
     lay_out_and_draw(&mut bar, 1280.0);
-    assert_eq!(bar.tray_slot_count(), 1, "nothing known, nothing drawn");
+    assert_eq!(bar.tray_slots().len(), 1, "nothing known, nothing drawn");
     assert!(bar.tray_pill_rect.width() < known.width());
 }
 

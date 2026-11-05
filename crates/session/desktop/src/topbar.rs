@@ -359,8 +359,8 @@ fn timestamp_bucket(t: i64) -> u64 {
 }
 
 fn pointer_coordinates(point: Point) -> (i32, i32) {
-    let whole = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-    (whole(point.x), whole(point.y))
+    use ui::num::i32_of_f64;
+    (i32_of_f64(point.x.round()), i32_of_f64(point.y.round()))
 }
 
 /// Free function so [`TopBarChrome::needs_redraw`] can key on the

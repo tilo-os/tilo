@@ -35,17 +35,10 @@ impl TopBarChrome {
         self.tray_pill_rect
     }
 
-    /// The tray's status glyph slots: the bell, always (the unread count
-    /// sits on it, and quiet mode silences it), then volume, network link
-    /// and battery when known.
-    pub(super) fn tray_slot_count(&self) -> usize {
-        self.tray_slots().len()
-    }
-
     /// The slots the cluster shows: each a reading the machine has, the
     /// bell always. A reading that never arrived contributes nothing rather
     /// than a plausible default.
-    fn tray_slots(&self) -> Vec<ui::widget::StatusSlot> {
+    pub(super) fn tray_slots(&self) -> Vec<ui::widget::StatusSlot> {
         use crate::chrome::{LinkKind, link_bars};
         use ui::widget::{LinkReading, StatusSlot};
         let mut slots = vec![StatusSlot::Bell {
