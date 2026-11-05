@@ -1413,12 +1413,18 @@ fn the_assignee_is_one_person_field_whose_chip_shows_each_pick() {
     );
 
     // The picks fold into one step of the task's history, the way one person's changes made in
-    // a row do, and the step reads named for the field they changed. The page itself draws the
+    // a row do, and the step reads with what its last change did. The page itself draws the
     // assignee as a chip, with no label beside it.
     let shown = texts(page.tree());
     assert!(
-        shown.iter().any(|text| text == "Edited assignee"),
-        "the history names the field it changed: {shown:?}"
+        shown.iter().any(|text| text == "You unassigned this"),
+        "clearing the assignee last, the step says so: {shown:?}"
+    );
+    pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
+    let shown = texts(page.tree());
+    assert!(
+        shown.iter().any(|text| text == "You assigned this to"),
+        "assigned last, the step says that instead: {shown:?}"
     );
     assert!(
         !shown.iter().any(|text| text == "Assignee"),
