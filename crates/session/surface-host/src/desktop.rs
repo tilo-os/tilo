@@ -526,9 +526,17 @@ impl DesktopHost {
     }
 
     /// The windows whose bar asked for its menu since the last call, oldest
-    /// first: a secondary click on a bar.
-    pub fn take_tab_menus(&self) -> Vec<u64> {
-        self.desk.borrow().policy.handle().take_tab_menus()
+    /// first: a secondary click on a bar, and the place on the desk it was
+    /// pressed.
+    pub fn take_tab_menus(&self) -> Vec<(u64, f64, f64)> {
+        self.desk
+            .borrow()
+            .policy
+            .handle()
+            .take_tab_menus()
+            .into_iter()
+            .map(|(tab, at)| (tab, at.x, at.y))
+            .collect()
     }
 
     /// What the desktop asked to open since the last call, oldest first:

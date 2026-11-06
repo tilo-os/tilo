@@ -40,7 +40,17 @@ const RETRY: Duration = Duration::from_secs(1);
 struct Reading {
     tab: Option<String>,
     anchor: Option<(f64, f64)>,
+    /// The window the menu is on, when the reading names it: what a typed
+    /// sentence would be about.
+    subject: Option<Subject>,
     rows: Vec<Row>,
+}
+
+/// The window a menu is on, named as the person knows it.
+#[derive(Clone, Debug, PartialEq)]
+struct Subject {
+    title: String,
+    app: Option<String>,
 }
 
 /// One row a window offers.
@@ -78,9 +88,19 @@ impl Reading {
                 })
             })
             .collect::<Option<Vec<Row>>>()?;
+        let subject = value.get("subject").and_then(|subject| {
+            Some(Subject {
+                title: subject.get("title")?.as_str()?.to_owned(),
+                app: subject
+                    .get("app")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })
+        });
         Some(Self {
             tab: value.get("tab").and_then(Value::as_str).map(str::to_owned),
             anchor,
+            subject,
             rows,
         })
     }
@@ -246,6 +266,18 @@ impl WindowMenuSurface {
             self.ids.push(row.id.clone());
         }
         self.menu.set_items(items);
+        // The session heard the secondary press that opened the menu and
+        // says what it is on: typing narrows the rows here, and a sentence
+        // is about that window when something can answer it.
+        self.menu.set_takes_typing(true);
+        self.menu
+            .set_about(self.reading.subject.as_ref().map(|subject| {
+                let named = match &subject.app {
+                    Some(app) => format!("{} ({app})", subject.title),
+                    None => subject.title.clone(),
+                };
+                ui::shared_selection::SharedSelection::of_text(&named)
+            }));
         let anchor = self
             .reading
             .anchor
@@ -471,6 +503,52 @@ mod tests {
             chords,
             [Some(expected), None],
             "the chord the session sends stands at the row's end"
+        );
+    }
+
+    /// A menu the length the desk publishes, naming its window.
+    fn menu_of(rows: usize) -> String {
+        let rows: Vec<Value> = (0..rows)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("window-row-{i}"),
+                    "label": format!("Row {i}"),
+                    "enabled": true,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "tab": "20",
+            "anchor": { "x": 40, "y": 50 },
+            "subject": { "title": "Notes", "app": "so.tilo.notes" },
+            "rows": rows,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_menu_of_a_window_takes_typing_and_narrows_to_what_matches() {
+        let mut surface = WindowMenuSurface::showing(&menu_of(14));
+        assert!(surface.menu.takes_typing(), "a long menu can be typed into");
+        surface.menu.set_query("row 13");
+        let shown = surface.menu.shown_rows();
+        let first = shown
+            .first()
+            .and_then(|&index| surface.menu.items().get(index))
+            .and_then(MenuItem::label);
+        assert_eq!(first, Some("Row 13"), "typing ranks the row it names first");
+        assert!(shown.len() < 14, "and drops the rows it does not name");
+    }
+
+    #[test]
+    fn the_reading_names_the_window_the_menu_is_on() {
+        let surface = WindowMenuSurface::showing(&menu_of(2));
+        assert_eq!(
+            surface.reading.subject,
+            Some(Subject {
+                title: "Notes".into(),
+                app: Some("so.tilo.notes".into()),
+            })
         );
     }
 

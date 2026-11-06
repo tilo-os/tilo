@@ -527,6 +527,10 @@ pub struct ContextMenu {
     /// rather than the desktop, and the menu takes typing however it was
     /// opened: the desktop's own menus.
     owner_asks: bool,
+    /// The owner takes typing although the gesture that opened the menu
+    /// happened in another process (the window menu, whose reading says a
+    /// secondary press opened it).
+    owned_typing: bool,
     /// A sentence asked, for an owner that answers it.
     asked: Option<String>,
     /// Where the menu was opened, which a question points at.
@@ -582,6 +586,7 @@ impl ContextMenu {
             query: None,
             shown: Vec::new(),
             owner_asks: false,
+            owned_typing: false,
             asked: None,
             ask_at: Point::ZERO,
             pinned_top: None,
