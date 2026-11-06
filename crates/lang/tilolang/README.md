@@ -407,6 +407,75 @@ never a trap: a host the package did not declare, a host the workspace revoked, 
 seconds) and no network each answer `ok == false` with `status == 0` and a `status_text` that
 says why, and the invocation carries on. A reply's body may be up to 2 MiB; nothing streams.
 
+**JSON.** Text a service sent reads into the type the code names, and a value writes back as
+text, with no effect to declare: the work is in the text and the value, nothing outside them.
+
+```
+action refresh(feed: Feed) uses web {
+    let response = web.get(feed.url)
+    match json.decode<List<Entry>>(response.text()) {
+        .ok(entries) => {
+            for entry in entries {
+                feed.entries.insert(entry)
+            }
+        }
+        .err(why) => { feed.trouble = why }
+    }
+}
+```
+
+`json.decode<T>(text)` reads `Int`, `Float`, `Bool`, `Text` (and what holds text: `Date`, `Time`,
+`std.Identifier`), a `List`, an `Option`, an enum and a record, matching a record's fields by
+name; a record's field may hold a `Map`, a short list of text keys to values. A field the text leaves out is none when it is an `Option`, or the value the type
+declares for it; a required one it leaves out is an error at that field's path. Names the type
+has no field for are ignored, so a service that adds one breaks no reader.
+
+A number reads as an `Int` when it is a whole one that fits (`5` and `5.0`), as a `Float`
+otherwise; a field declared `Float` reads any number. An enum reads from its case's name.
+
+What can go wrong is a value, never a trap: text that is no JSON, and a value whose shape is not
+the type's, answer `.err(why)`, and `why` names the JSON path of the value that did not fit:
+`$.entries[2].title is not a Text, as text: 5`. A whole decode fails at the first value that does
+not fit, so a message names one path, not each.
+
+A record a decode answers is a record value: it has no id, and no store holds it until it is put
+in a collection (`feed.entries.insert(entry)`), which is what a record value is for; its fields
+read as the text gave them. A record field that holds a resource (a record, a collection, a set)
+cannot be made from text, so text carrying one is an error naming that field's path: read the
+list and insert what it holds.
+
+`json.encode(value)` writes the fields a record's type declares, by their names, an enum as its
+case's name, a list as an array, a `Map` as an object, an `Option` as its value or `null`, and a
+`json.Value` as it was read. Writing a stored resource (a reference) traps: its fields are what to
+write, and a resource's JSON is not one document — a `personal` field's value is the looking
+person's, and two resources may point at each other. Read the text into values, or write the
+fields it should carry into a record, and encode those.
+
+A service whose shape the code does not know is read as a `json.Value` and taken apart as the
+code asks, with `json.parse(text)`:
+
+```
+match json.parse(response.text()) {
+    .ok(value) => match value {
+        .object(fields) => { feed.keys = fields.keys().len() }
+        .array(items) => { feed.keys = items.len() }
+        .string(text) => { feed.trouble = text }
+        .number(number) => { feed.trouble = number.to_text() }
+        .bool(flag) => { feed.trouble = if flag { "yes" } else { "no" } }
+        .null => { feed.trouble = "nothing" }
+    }
+    .err(why) => { feed.trouble = why }
+}
+```
+
+`object` binds a `Map<json.Value>` (`fields.keys()`, `fields.get("name")`), `array` a
+`List<json.Value>`, `string` a `Text`, `number` a `Float` (JSON has no integers of its own),
+`bool` a `Bool`, and `null` nothing. A match over one names all six kinds, as a match over an
+enum names all its cases. Like a `Response`, a `json.Value` belongs to the run that read it, so
+it is no field's type (E023): a program keeps what it found by writing it into a record.
+
+The type between `<` and `>` is what makes a decode typed; only `json.decode` takes one.
+
 **Parameter defaults.** An action parameter may have a default written in terms of the
 parameters before it. An invocation that leaves the argument out gets it, computed when it is
 invoked on what the invoker sees, and records it as the argument; an explicit argument wins:

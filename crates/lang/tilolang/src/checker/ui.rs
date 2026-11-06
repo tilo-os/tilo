@@ -349,7 +349,7 @@ impl Checker<'_> {
     pub(super) fn ui_call(&mut self, c: &UiCall, parent: Option<LocalId>) -> LocalId {
         let env = self.env;
         let (callee, args): (&ast::Expr, &[ast::Arg]) = match &c.call.kind {
-            ExprKind::Call { callee, args } => (callee, args),
+            ExprKind::Call { callee, args, .. } => (callee, args),
             _ => (&c.call, &[]),
         };
         let span = c.call.span;

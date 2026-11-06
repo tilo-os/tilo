@@ -472,6 +472,8 @@ enum Seg<'a> {
     Optional(&'a Ident),
     /// The `(args)` that follow the step before it.
     Args(&'a [Arg]),
+    /// The `<types>` a call takes before its arguments.
+    Types(&'a [TypeExpr]),
 }
 
 fn seg_text(seg: &Seg<'_>, col: usize, level: usize, ctx: &mut Ctx) -> String {
@@ -479,6 +481,10 @@ fn seg_text(seg: &Seg<'_>, col: usize, level: usize, ctx: &mut Ctx) -> String {
         Seg::Field(name) => format!(".{}", name.name),
         Seg::Optional(name) => format!("?.{}", name.name),
         Seg::Args(args) => comma_group(args, col, level, ctx, "(", ")", arg_text),
+        Seg::Types(types) => {
+            let written: Vec<String> = types.iter().map(print_type).collect();
+            format!("<{}>", written.join(", "))
+        }
     }
 }
 
@@ -489,8 +495,16 @@ fn chain_of(e: &Expr) -> (&Expr, Vec<Seg<'_>>) {
     let mut cur = e;
     loop {
         match &cur.kind {
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call {
+                callee,
+                types,
+                args,
+                ..
+            } => {
                 segs.push(Seg::Args(args));
+                if !types.is_empty() {
+                    segs.push(Seg::Types(types));
+                }
                 cur = callee;
             }
             ExprKind::OptChain { base, name, args } => {
@@ -552,7 +566,7 @@ fn postfix(e: &Expr, col: usize, level: usize, ctx: &mut Ctx) -> String {
         let line = if broken { inner * 4 } else { col };
         let at = line + out.len() - out.rfind('\n').map_or(0, |i| i + 1);
         match seg {
-            Seg::Args(_) => out.push_str(&seg_text(seg, at, inner, ctx)),
+            Seg::Args(_) | Seg::Types(_) => out.push_str(&seg_text(seg, at, inner, ctx)),
             Seg::Field(_) | Seg::Optional(_) => {
                 let text = seg_text(seg, at, inner, ctx);
                 let call = matches!(segs.get(i + 1), Some(Seg::Args(_)));
@@ -576,7 +590,8 @@ fn seg_text_len(seg: &Seg<'_>) -> usize {
     match seg {
         Seg::Field(name) => name.name.len() + 1,
         Seg::Optional(name) => name.name.len() + 2,
-        Seg::Args(_) => 0,
+        // The types a call takes fit on the line their arguments do.
+        Seg::Args(_) | Seg::Types(_) => 0,
     }
 }
 

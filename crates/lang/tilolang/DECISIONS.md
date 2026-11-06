@@ -857,3 +857,62 @@ holds and what the host reads from it.
 - **A trigger runs for the package's records, as the platform stores them:** the resources of
   the trigger's type at the top of the app's tree (what migrations and publication see), not
   items inside a collection.
+## JSON
+
+Typed decode into records, enums, lists and options, encoding back as text, and a value for a
+document whose shape code asks as it goes; what can go wrong is a value. `json` is pure: what it
+reaches is the text and the value it is given.
+
+- **`json` is a compiler-known namespace, like `random` and `web`, and not a package in `std`.**
+  The interface is typed by the type it is given — `json.decode<T>(text)` — and tilolang has no
+  `fn` with type parameters, no reflection over a name and no way to build a record value outside
+  the runtime's own record path, so a package could not write it; a `std` package wrapping a
+  compiler-known call would add a layer and no rule. The compiler recognises the namespace where
+  one is not imported (`checker/call.rs`), checks the type argument, and leaves the reading and
+  the writing to the runtime (`tilolang-runtime/src/json.rs`); the layout is the same as `web`'s.
+- **`json.Value` is a built-in value type, not a declared enum.** Its cases are JSON's six kinds,
+  and two of them hold further values (`Map<json.Value>`, `List<json.Value>`): a declared enum's
+  case carries no payload here (a case with data is a type of its own, in a union), so an enum
+  cannot be recursive, and no declared type could hold a document of unknown depth. `Ty::Json` is
+  therefore a case of `Ty`, the mirror of `Bytes` and `Response`: a value a run holds, and no
+  field's type (E023). `match` over one is `match`'s existing machinery with a `Shape::Json`: six
+  kinds, all named, `Imp::EnumIs` against the kind's name, and the payload read through
+  `Imp::EnumGet*`.
+- **Decode is by field name, strict about required fields, and silent about the rest.** A record's
+  field is read from the key its type declares it under (`FieldInfo.name`), so a type is free to
+  rename a field's Rust-side id without changing the text it reads. A key the type does not
+  declare is ignored rather than refused: a service growing a field must not break its readers.
+  A field the text leaves out is its declared default, `none` for an `Option`; a required one
+  missing is an error, because a required field with no value would otherwise trap later, at a
+  read whose message says nothing about the text. The type a decode names is one a call answers,
+  so it is no container: a `Map`, a `Set` and a `Collection` are fields' types, and a document's
+  object reads into a record, or into a record's field of a `Map`.
+- **Errors are values, and name the JSON path.** Decode answers `Result<T, Text>`; a text that is
+  no JSON answers the parser's line and column, and a value whose shape is not the type's answers
+  its path from the root (`$`, `$.items[2].title`, `$.by_key.title`), the value it found, and what
+  the type declares. Encoding a value JSON has no form for (a `ui` node) traps: it is a mistake in
+  the code, not in the data it read. A stored resource traps too, and by decision rather than as
+  an omission: a record's JSON is not one document, since a `personal` field writes the looking
+  person's value and two resources may refer to each other, so there is no single text it is;
+  code that posts a resource writes the fields the service is given into a record and encodes it.
+- **Int and Float follow the field, not the digits.** JSON has one number; tilolang has two. A
+  field declared `Int` reads a whole number that fits (`5`, `5.0`) and is an error otherwise; a
+  field declared `Float` reads any number. A `json.Value`'s `.number` is a `Float`, since what the
+  document meant is unknown; `Float.to_int` converts it once code decides. Encode writes an `Int`
+  without a fraction and a `Float` as the number it is, refusing a value no JSON can hold (`NaN`).
+- **A decoded record is a value, not a resource, until it is inserted.** The language's records are
+  resources: created, stored, referenced. `json.decode<List<Item>>` has nowhere to store anything
+  and no ids to give, so it answers record values, which a collection insert turns into items (the
+  one thing a record value is for, `coll_insert`), and whose fields read as the text gave them
+  (`res_get` reads a `Value::Rec`'s field, or the type's default for one the text left out). A
+  field of a record that holds a resource (a record, a collection, a set) is an error at its path:
+  a stored field of that type holds a reference, and text makes no reference.
+- **Encoding writes the type's shape.** A record's fields by their declared names, in declaration
+  order, a field it does not hold as its declared default (so a `none` is `null`, and a reader
+  sees every field); a case of an enum as its name; a `Map` as an object with its text keys (a
+  key that is no text traps); an `Option` as its value or `null`. A `json.Value` written is the
+  document it was read from, unchanged.
+- **No effect, and nothing journalled.** Decoding and encoding reach nothing outside the text and
+  the value they are given, so an action needs no `uses` for them and a replay computes the same
+  answer from the same text. Only the request whose answer the text came from is an effect, and
+  that one is journalled (`## Web requests`).

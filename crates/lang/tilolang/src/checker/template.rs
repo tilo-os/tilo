@@ -1079,7 +1079,7 @@ impl Checker<'_> {
         body: &[UiStmt],
         parent: LocalId,
     ) -> bool {
-        let ExprKind::Call { callee, args } = &iter.kind else {
+        let ExprKind::Call { callee, args, .. } = &iter.kind else {
             return false;
         };
         if !matches!(&callee.kind, ExprKind::Ident(n) if n == "cases" && self.lookup(n).is_none()) {

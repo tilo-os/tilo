@@ -342,8 +342,8 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt,
-            BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
+            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed,
+            ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
             CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse,
             DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
             DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
@@ -351,10 +351,11 @@ impl Core {
             Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
             FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
             Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, InvocationPop,
-            InvocationPush, Invoke, Invoker, IsError, IsSome, Keep, Lenses, Links, ListAvg,
-            ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious,
-            ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI,
-            MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members,
+            InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
+            Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
+            ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
+            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue,
+            MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members,
             Mentions, MetaOf, ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase,
             PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print,
             PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
@@ -406,14 +407,15 @@ impl Core {
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
-            | MapKeys | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
-            | ResourceRef => self.resource_import(imp, a),
+            | MapGetValue | MapKeys | MapKeysValue | RecNew | RecSetI | RecSetF | RecSetH
+            | RefLit | RefEq | RefIs | RefId | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
             | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody
             | WebText | BytesLength => self.web_import(imp, a),
+            JsonParse | JsonDecode | JsonEncode => self.json_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
             | ActThen | ActMadeFrom | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {

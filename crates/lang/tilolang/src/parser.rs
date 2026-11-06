@@ -35,6 +35,16 @@ fn opts_of(args: Vec<Arg>) -> Vec<ActionOpt> {
         .collect()
 }
 
+/// Whether the expression so far can take type arguments: a name (`json.decode`) or a dotted
+/// path to one (`ui.Chart`).
+fn names_a_call(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::Ident(_) => true,
+        ExprKind::Field { base, name } => !name.name.is_empty() && names_a_call(base),
+        _ => false,
+    }
+}
+
 /// A named filter's predicate and the options written after it: `not done (icon: .circle)`
 /// parses as a call of `done`, and `project == .none (icon: .inbox)` as a case with fields,
 /// each told from what it reads like by naming only options.
@@ -49,7 +59,7 @@ fn split_opts(e: Expr) -> (Expr, Vec<ActionOpt>) {
             let kind = ExprKind::Variant { name, args: None };
             (Expr { kind, span }, opts_of(args))
         }
-        ExprKind::Call { callee, args } if only_opts(&args) => (*callee, opts_of(args)),
+        ExprKind::Call { callee, args, .. } if only_opts(&args) => (*callee, opts_of(args)),
         ExprKind::Unary { op, operand } => {
             let (inner, opts) = split_opts(*operand);
             let span = Span::new(span.start, inner.span.end);
@@ -2094,6 +2104,9 @@ impl<'a> Parser<'a> {
 
     fn postfix(&mut self) -> PResult<Expr> {
         let mut e = self.primary()?;
+        // The type arguments a call writes before its arguments (`json.decode<Item>(text)`),
+        // read at the call and kept for it.
+        let mut types: Vec<TypeExpr> = Vec::new();
         loop {
             if self.is(&Tok::Dot) {
                 self.bump();
@@ -2127,6 +2140,18 @@ impl<'a> Parser<'a> {
                     },
                     span,
                 };
+            } else if self.is(&Tok::Lt) && types.is_empty() && names_a_call(&e) {
+                // `<Item>`: the types a call takes, when the call follows them. Otherwise the
+                // `<` is a comparison, and the expression parser reads it as one.
+                let (pos, diags) = (self.pos, self.diags.len());
+                match self.type_args() {
+                    Some(given) if self.is(&Tok::LParen) => types = given,
+                    _ => {
+                        self.pos = pos;
+                        self.diags.truncate(diags);
+                        return Ok(e);
+                    }
+                }
             } else if self.is(&Tok::LParen) {
                 self.bump();
                 let args = self.args()?;
@@ -2135,6 +2160,7 @@ impl<'a> Parser<'a> {
                 e = Expr {
                     kind: ExprKind::Call {
                         callee: Box::new(e),
+                        types: std::mem::take(&mut types),
                         args,
                     },
                     span,
@@ -2142,6 +2168,33 @@ impl<'a> Parser<'a> {
             } else {
                 return Ok(e);
             }
+        }
+    }
+
+    /// `<A, B>` after a callee: the types a call takes. `None` when what follows the `<` is no
+    /// type list, so the caller reads the `<` as a comparison instead.
+    fn type_args(&mut self) -> Option<Vec<TypeExpr>> {
+        if !self.eat(&Tok::Lt) {
+            return None;
+        }
+        let mut out = Vec::new();
+        loop {
+            self.skip_nl();
+            let at = self.pos;
+            let before = self.diags.len();
+            match self.type_expr() {
+                Ok(ty) => out.push(ty),
+                Err(Abort) => {
+                    self.pos = at;
+                    self.diags.truncate(before);
+                    return None;
+                }
+            }
+            self.skip_nl();
+            if self.eat(&Tok::Comma) {
+                continue;
+            }
+            return self.eat(&Tok::Gt).then_some(out);
         }
     }
 

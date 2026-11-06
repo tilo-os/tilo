@@ -209,7 +209,12 @@ impl Checker<'_> {
                 let b = self.expr(base, None);
                 self.field_read(b, name)
             }
-            ExprKind::Call { callee, args } => self.call(callee, args, e.span),
+            ExprKind::Call {
+                callee,
+                types,
+                args,
+                ..
+            } => self.call(callee, types, args, e.span),
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
             ExprKind::Suggest(inner) => self.suggest_expr(inner, e.span),
             ExprKind::Root(t) => self.root_of(t, e.span),
