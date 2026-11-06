@@ -32,10 +32,8 @@ tilo_automerge_isolate::test_worker!();
 struct Admitted(StatePeer);
 
 impl GovernanceMessages for Admitted {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
-        postcard::to_stdvec(&self.0.workspace_message())
-            .map(|bytes| vec![bytes])
-            .unwrap_or_default()
+    fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String> {
+        self.0.governance_messages()
     }
 }
 
