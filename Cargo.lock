@@ -22679,6 +22679,7 @@ dependencies = [
  "tilo-files",
  "tilo-render-protocol",
  "tilo-startup-metrics",
+ "tilo-test-env",
  "tilo-ui-host",
  "tilolang",
  "tilolang-host",

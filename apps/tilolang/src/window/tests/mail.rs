@@ -169,16 +169,14 @@ impl Workspace {
         self.window.current_host().expect("the host started")
     }
 
-    /// Frames until `done` holds of the workspace, as the servers answer.
+    /// Frames until `done` holds of the workspace, as the servers answer. It waits against the
+    /// workspace's hang bound, so a busy runner makes the test slower rather than failing a
+    /// server that answered in time.
     fn until(&mut self, what: &str, done: impl Fn(&mut Self) -> bool) {
-        for _ in 0..400 {
+        tilo_test_env::wait_until(what, || {
             self.settle();
-            if done(self) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(15));
-        }
-        panic!("timed out waiting for {what}");
+            done(self)
+        });
     }
 
     fn read(&self, at: &ResourceRef, field: &str) -> RtValue {

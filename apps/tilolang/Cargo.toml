@@ -104,6 +104,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
+# Waiting for a server's answer without a fixed budget that a busy runner overruns.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # The test IMAP and SMTP servers the mail origin's tests run against.
 mail = { path = "../mail", features = ["fake-servers"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
