@@ -332,7 +332,7 @@ fn a_reply_starts_the_thread_first_then_posts_into_it() {
 #[test]
 fn a_large_file_becomes_a_line() {
     let small = json!({"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5});
-    let big = json!({"$variant": "file", "name": "film.mkv", "blob": "ee", "size": 20971520});
+    let big = json!({"$variant": "file", "name": "film.mkv", "blob": "ee", "size": 20_971_520});
     let chat = chat(&[
         msg("m1", "u_ada", "", &json!({"attachments": [small]})),
         msg("m2", "u_ada", "watch", &json!({"attachments": [big]})),
