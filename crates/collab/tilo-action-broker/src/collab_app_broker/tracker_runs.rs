@@ -349,8 +349,8 @@ impl AppBrokerState {
     /// in.
     ///
     /// # Errors
-    /// The tracker cannot be read, the run was replaced, or the lease claims
-    /// messages it never took in.
+    /// The tracker cannot be read, or the lease claims messages it never
+    /// took in.
     pub(super) fn tracker_status(
         &self,
         run: &PendingTaskRun,
@@ -359,9 +359,27 @@ impl AppBrokerState {
         let binding = &run.native;
         let (_, revision) =
             runtime_collab::native_task_revision(lease).ok_or("invalid native task lease")?;
-        let current = self.tracker_run_of(run)?;
+        let runs = self
+            .tracker_runs(&run.cluster_id)
+            .ok_or("the tracker is unavailable")?
+            .runs(&run.cluster_id)?;
+        let Some(current) = run_of(&runs, binding).cloned() else {
+            // The turn the run answered is over — its reply finished, or
+            // its person ended it — so the run is over too: its agent stops
+            // and the steps it left running stop with it.
+            self.cancel_native_children(run)?;
+            return Ok(runtime_collab::TaskRunStatus {
+                cancelled: true,
+                control: None,
+            });
+        };
         if current.epoch != binding.epoch {
-            return Err("the issue's run was replaced".into());
+            // A later turn of the same conversation replaced this one.
+            self.cancel_native_children(run)?;
+            return Ok(runtime_collab::TaskRunStatus {
+                cancelled: true,
+                control: None,
+            });
         }
         self.tracker_runs(&run.cluster_id)
             .ok_or("the tracker is unavailable")?
@@ -432,7 +450,10 @@ impl AppBrokerState {
         if let Some(service) = self.tracker_runs(&run.cluster_id) {
             service.presented(&run.cluster_id, &run.task_id, run.native.epoch, None);
         }
-        if outcome != "completed" {
+        // A run that ends stops what it left running — except the record
+        // that says how it ended, which is a child still being taken in
+        // when the refusal or failure is reported.
+        if outcome == "cancelled" {
             self.cancel_native_children(run)?;
         }
         let ended = self.tracker_run_of(run).ok();

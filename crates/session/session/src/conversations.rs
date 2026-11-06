@@ -356,7 +356,10 @@ fn turns(
             }
             // The person's newest message the agent has not answered: the
             // reply its id and the agent's derive, which only the agent's
-            // answer to that message carries.
+            // answer to that message carries. An agent's reply that is still
+            // working (its work is not finished) leaves the turn going, so a
+            // runner that records "taken" before it acts is not read as
+            // having answered.
             let summons = messages
                 .iter()
                 .copied()
@@ -369,7 +372,11 @@ fn turns(
                         && part
                             .messages
                             .get(&chat::record::reply_id(message_id, &key))
-                            .is_none()
+                            // A reply without work is a plain answer; one
+                            // that keeps work is going until its work ends.
+                            .is_none_or(|reply| {
+                                reply.work.as_ref().is_some_and(|work| !work.finished())
+                            })
                 })
                 .max_by_key(|(message_id, message)| (message.ts, message_id.as_str()));
             let Some((message_id, message)) = summons else {

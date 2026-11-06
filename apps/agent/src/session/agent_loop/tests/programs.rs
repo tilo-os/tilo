@@ -4,11 +4,10 @@
 //! answer.
 
 use super::*;
-use ui::tilo_reference::{ProgramStep, ResourceAt, StepOutcome};
 
 const BOARD_PEER: u64 = 21;
 const VIEWS_PEER: u64 = 22;
-const TRACKER_PEER: u64 = 23;
+const CHAT_PEER: u64 = 23;
 const DOOR_PEER: u64 = 24;
 const BOARD: &str = "so.tilo.lang.board";
 const VIEWS: &str = "so.tilo.lang.views";
@@ -81,17 +80,18 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
             vec![],
         )
     });
-    let tracker = |action: &'static str, param: &'static str| ExportedAction {
-        resource: "tasks.tracker".into(),
-        resource_kind: "tasks.tracker".into(),
-        resource_label: "Tasks".into(),
+    let chat = ExportedAction {
+        resource: "chat.messages/messages/asked".into(),
+        resource_kind: "chat.messages".into(),
+        resource_label: "The conversation's reply".into(),
         ..descriptor(
-            action,
-            action,
+            "record-work",
+            "Record work",
             tilo_actions::OperationKind::Document,
             vec![
-                ActionParam::required("issue", ParamType::Text, "issue"),
-                ActionParam::required(param, ParamType::Object, param),
+                ActionParam::required("message", ParamType::Text, "message"),
+                ActionParam::required("work", ParamType::Object, "work"),
+                ActionParam::optional("say", ParamType::Text, "say"),
             ],
             Availability::Available,
             vec![],
@@ -120,14 +120,7 @@ pub(super) fn surfaces() -> Vec<BrokerActionSurface> {
         surface(DOOR_PEER, "so.tilo.agent", vec![door]),
         surface(BOARD_PEER, BOARD, host("Board")),
         surface(VIEWS_PEER, VIEWS, views),
-        surface(
-            TRACKER_PEER,
-            "so.tilo.tasks",
-            vec![
-                tracker("record-step", "step"),
-                tracker("record-answer", "view"),
-            ],
-        ),
+        surface(CHAT_PEER, "so.tilo.chat", vec![chat]),
     ]
 }
 
@@ -170,7 +163,7 @@ fn tilo(program: &str) -> (&'static str, Value) {
     )
 }
 
-/// What the tracker was asked to record, by action.
+/// What the conversation was asked to record, by action.
 fn recorded(sent: &[CollabRequest], action: &str) -> Vec<Value> {
     sent.iter()
         .filter_map(|request| match request {
@@ -280,27 +273,25 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
     assert!(third.contains("c1 \"Write the release notes\""), "{third}");
     drop(bodies);
     let sent = f.sent.borrow();
-    let steps: Vec<ProgramStep> = recorded(&sent, "record-step")
-        .into_iter()
-        .map(|arguments| serde_json::from_value(arguments["step"].clone()).unwrap())
-        .collect();
+    // The reply the run ends with lists its three programs, and nothing
+    // else: the view it kept is its answer, not a step.
+    let records = recorded(&sent, "record-work");
+    let last = records
+        .last()
+        .expect("the reply was told how the run ended");
+    let work = &last["work"];
+    assert_eq!(work["state"], "provider_complete");
+    let steps = work["trace"].as_array().expect("the reply's steps");
     assert_eq!(steps.len(), 3, "{steps:?}");
-    assert_eq!(steps[0].outcome, StepOutcome::Rejected);
-    assert_eq!(steps[1].outcome, StepOutcome::Done);
-    assert_eq!(steps[1].refs[0].app, BOARD);
-    assert_eq!(
-        steps[1].refs[0].reference.id,
-        format!("tl:{BOARD}:root/cards:c1")
-    );
-    assert_eq!(steps[1].refs[0].reference.label, "Write the release notes");
-    assert_eq!(steps[1].refs[0].reference.kind, format!("tl.{BOARD}.Card"));
-    // A program that changed something is a row that undoes it.
-    assert_eq!(steps[2].changes.len(), 1, "{:?}", steps[2]);
-    assert_eq!(steps[2].changes[0].action, "move_card");
-    assert_eq!(
-        steps[2].changes[0].resource.reference.id,
-        format!("tl:{BOARD}:root/cards:c1")
-    );
+    assert_eq!(steps[0]["outcome"], "refused", "{steps:?}");
+    assert_eq!(steps[0]["resource"], "tilo.program");
+    // A previewed program names the record it read, and one that changed
+    // something names the action it ran.
+    assert_eq!(steps[1]["outcome"], "applied", "{steps:?}");
+    assert_eq!(steps[1]["resource"], format!("tl:{BOARD}:root/cards:c1"));
+    assert_eq!(steps[2]["outcome"], "applied", "{steps:?}");
+    assert_eq!(steps[2]["label"], "move_card");
+    assert_eq!(steps[2]["resource"], format!("tl:{BOARD}:root/cards:c1"));
     // Every program went to the door as a step of the task's run.
     let world = f.world.borrow();
     let ran: Vec<&serde_json::Map<String, Value>> = world
@@ -332,14 +323,13 @@ fn a_task_works_in_programs_and_answers_with_a_view() {
     assert_eq!(answer["definition"], Value::String(view.to_owned()));
     assert_eq!(answer["shows"], Value::String(String::new()));
     drop(world);
-    let answers: Vec<ResourceAt> = recorded(&sent, "record-answer")
-        .into_iter()
-        .map(|arguments| serde_json::from_value(arguments["view"].clone()).unwrap())
-        .collect();
-    assert_eq!(answers.len(), 1);
-    assert_eq!(answers[0].app, VIEWS);
-    assert_eq!(answers[0].reference.id, format!("tl:{VIEWS}:root/items:v1"));
-    assert_eq!(answers[0].reference.label, "Left for the release");
+    // The view is kept, and the reply that names it is the same one: no step
+    // of the turn is the view itself.
+    assert!(
+        steps
+            .iter()
+            .all(|step| step["resource"] != format!("tl:{VIEWS}:root/items:v1"))
+    );
 }
 
 #[test]
@@ -369,7 +359,6 @@ fn a_view_that_is_not_a_view_is_refused_and_the_task_goes_on() {
     let refused = said_last(&bodies[1]);
     assert!(refused.contains("is not a `view` declaration"), "{refused}");
     drop(bodies);
-    assert!(recorded(&f.sent.borrow(), "record-answer").is_empty());
     assert_eq!(
         terminal(&f.sent.borrow()),
         runtime_collab::TaskRunUpdate::Succeeded {

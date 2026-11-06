@@ -29,10 +29,10 @@
 //! * the catalogue survey is rebuilt only when the broker republishes it.
 //!
 //! Every bound is enforced here, not asked for: the run's budget (model
-//! turns, wall-clock time, one turn's time) as its issue sets it
-//! (`execution_budget`), the runner's default budget without one, and the
-//! spend limits the issue holds each turn against. A long run keeps within
-//! its model's context by compacting what it read long ago ([`compaction`]).
+//! turns, wall-clock time, one turn's time) as the run sets it
+//! (`execution_budget`), and the runner's default budget without one. A long
+//! turn keeps within its model's context by compacting what it read long ago
+//! ([`compaction`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
@@ -48,7 +48,6 @@ use super::{
 };
 use crate::model::{Conversation, FirstTurn, TurnEvent};
 use crate::plan::{self, ConfirmationEvidence, Instruction};
-use crate::session::tracker::StepReceipt;
 use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
 use tilo_actions::task_step::TaskStep;
@@ -275,53 +274,6 @@ impl ActiveTurn {
     }
 }
 
-/// What the provider counted for the turn `body` answers.
-///
-/// The gateway normalises every provider's counters into the same `usage`
-/// object; a body without one, or with counters this reader does not know,
-/// stays zero, and the run's receipt says the provider reported none rather
-/// than showing a run as free.
-fn turn_usage(body: &str) -> agent_provider_config::protocol::Usage {
-    #[derive(serde::Deserialize)]
-    struct Reported {
-        #[serde(default, rename = "input_tokens")]
-        input: u64,
-        #[serde(default, rename = "output_tokens")]
-        output: u64,
-        #[serde(default, rename = "cached_input_tokens")]
-        cached: u64,
-        #[serde(default, rename = "cache_write_tokens")]
-        cache_write: u64,
-        #[serde(default, rename = "reasoning_tokens")]
-        reasoning: u64,
-    }
-    let reported = serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|body| serde_json::from_value::<Reported>(body.get("usage")?.clone()).ok());
-    let Some(reported) = reported else {
-        return agent_provider_config::protocol::Usage::default();
-    };
-    agent_provider_config::protocol::Usage {
-        input_tokens: reported.input,
-        output_tokens: reported.output,
-        cached_input_tokens: reported.cached,
-        cache_write_tokens: reported.cache_write,
-        reasoning_tokens: reported.reasoning,
-        total_tokens: 0,
-    }
-}
-
-/// What a turn is expected to spend before it starts, from the request it
-/// is asked with: four bytes of it to the token, plus the answer it may
-/// write. A hold is an estimate, so the settled receipt replaces it.
-fn estimated_turn_cost(request_bytes: usize) -> (u64, u64) {
-    let asked = u64::try_from(request_bytes).unwrap_or(u64::MAX) / 4;
-    (asked.saturating_add(MAX_ANSWER_TOKENS), 0)
-}
-
-/// The most a turn is asked to write back, as the request sets it.
-const MAX_ANSWER_TOKENS: u64 = 4096;
-
 /// The longest prefix of `text` within `max` bytes, cut on a character
 /// boundary.
 fn head(text: &str, max: usize) -> &str {
@@ -415,9 +367,6 @@ pub(super) struct LoopState {
     pictures: Vec<String>,
     /// The workspace's tilolang apps as this task's programs reach them.
     programs: program_steps::ProgramWorld,
-    /// The resources this run listed on its issue as read, so each is
-    /// listed once however many steps read it.
-    looked_up: Vec<String>,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -607,7 +556,6 @@ impl LoopState {
             steps_told: 0,
             pictures: Vec::new(),
             programs: program_steps::ProgramWorld::default(),
-            looked_up: Vec::new(),
         }
     }
 
@@ -1248,48 +1196,6 @@ impl Session {
             .map_or_else(|| reason.to_owned(), |turn| turn.retained_failure(reason)))
     }
 
-    /// Hold what turn `turn` is expected to cost on the run's issue before
-    /// it starts, answering the issue's refusal where the turn would take
-    /// the task past a budget.
-    fn hold_turn_spend(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        request_bytes: usize,
-        turn: usize,
-    ) -> Result<Option<String>> {
-        let held = estimated_turn_cost(request_bytes);
-        let verdict = self.hold_spend_on_tracker(run, held)?;
-        if verdict.is_none() {
-            self.held_turn = Some(u64::try_from(turn).unwrap_or(u64::MAX));
-        }
-        Ok(verdict)
-    }
-
-    /// Settle the turn held for `run` with the receipt its provider gave.
-    fn settle_turn_spend(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        usage: agent_provider_config::protocol::Usage,
-    ) -> Result<()> {
-        let Some(held) = self.held_turn.take() else {
-            return Ok(());
-        };
-        let receipt = StepReceipt {
-            step: held,
-            model: self.model_name(),
-            device: crate::device_name(),
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            priced_calls: 0,
-            cost_micros: 0,
-            currency: String::new(),
-        };
-        if let Some(reason) = self.settle_spend_on_tracker(run, receipt)? {
-            tracing::warn!(%reason, "the issue refused the turn's receipt");
-        }
-        Ok(())
-    }
-
     /// One model turn: stream it, validate its complete batch, execute and record
     /// the results. `Some` ends the loop. A turn that ends early (cancelled,
     /// out of time, a broken model turn) asks the host to stop every
@@ -1303,19 +1209,6 @@ impl Session {
         timeout: Duration,
     ) -> Result<Option<LoopEnd>> {
         let end = self.run_turn_calls(run, conversation, state, turn, timeout);
-        // A turn whose provider failed settles at nothing: the budget it
-        // held is given back rather than spent on an answer nobody got.
-        if self.held_turn.take().is_some() {
-            let zero = StepReceipt {
-                step: u64::try_from(turn).unwrap_or(u64::MAX),
-                model: self.model_name(),
-                device: crate::device_name(),
-                ..StepReceipt::default()
-            };
-            if let Some(reason) = self.settle_spend_on_tracker(run, zero)? {
-                tracing::warn!(%reason, "the issue refused the failed turn's receipt");
-            }
-        }
         state.in_flight.clear();
         state.settled.clear();
         end
@@ -1342,14 +1235,6 @@ impl Session {
         // the host and is not waited for: its answer is read while the model
         // thinks, and before any step of this turn reaches the host.
         let turn_began = ui::time::now();
-        // What the turn is given before it starts: the budget it may spend
-        // is checked here, so a task past its budget never reaches a model.
-        let request_bytes = body.to_string().len();
-        if let Some(reason) = self.hold_turn_spend(run, request_bytes, turn)? {
-            self.pause_for_budget_on_tracker(run, &reason)?;
-            self.fail_task(run, &reason)?;
-            return Ok(Some(LoopEnd::Failed(reason)));
-        }
         let (rx, stop) = self.chooser.start_turn(body, timeout, turn);
         let mut active = ActiveTurn::new(rx);
         active.stop = Some(stop);
@@ -1411,18 +1296,9 @@ impl Session {
             self.poll_cancellation_every(run, THINKING_CANCELLATION_POLL)?;
             // Streamed calls are presentation only. Dispatch the complete batch,
             // in order, only after validating every call and the terminal status.
-            let answered_usage = self
-                .turn
-                .as_ref()
-                .and_then(|turn| turn.finished.as_ref())
-                .and_then(|finished| finished.as_ref().ok())
-                .map(|body| turn_usage(body));
             if !validated && let Some(active) = &mut self.turn {
                 active.ready.clear();
                 if let Some(Ok(body)) = &active.finished {
-                    // The turn was answered, so its provider counted what it
-                    // spent, whatever the answer turns out to be worth.
-                    self.spend.turn(turn_usage(body));
                     match conversation.calls(body) {
                         Ok((_, calls)) => {
                             active.completed = calls.len();
@@ -1439,9 +1315,6 @@ impl Session {
                         Err(error) => active.finished = Some(Err(active.retained_failure(&error))),
                     }
                 }
-            }
-            if let Some(usage) = answered_usage {
-                self.settle_turn_spend(run, usage)?;
             }
             while let Some(call) = self.turn.as_mut().and_then(|turn| turn.ready.pop_front()) {
                 if self.task_budget_expired() {
@@ -1774,53 +1647,6 @@ impl Session {
         )
     }
 
-    /// List on the run's issue the resource this step reads, when the step
-    /// reads a resource other than the one the request is about.
-    ///
-    /// The subject is where the request pointed; everything else the run
-    /// pulls in it found — by system search, by following a reference, by
-    /// listing what an application holds — and each is a lookup the person
-    /// who asked should see, not a silent widening of the run's context. The
-    /// resource is named the way a link is (`ResourceAt`: its app, kind, id
-    /// and label), so the issue's list opens where the run went.
-    fn record_lookup(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        state: &mut LoopState,
-        call: &StreamedCall,
-    ) -> Result<()> {
-        let Some(alias) = call.input.get("operation").and_then(Value::as_str) else {
-            return Ok(());
-        };
-        let id = state
-            .revealed
-            .resolve(alias)
-            .unwrap_or_else(|_| alias.to_owned());
-        let catalogue = self.task_catalogue();
-        let Some(offer) = surface::find(&catalogue.offers, &id) else {
-            return Ok(());
-        };
-        let descriptor = &offer.descriptor;
-        let reads = descriptor.kind == tilo_actions::OperationKind::View
-            || descriptor.contract.kind == tilo_actions::ActionKind::Read;
-        if !looked_up(run, descriptor, reads, &state.looked_up) {
-            return Ok(());
-        }
-        state.looked_up.push(descriptor.address.resource.clone());
-        self.record_read(
-            run,
-            &ui::tilo_reference::ResourceAt {
-                app: offer.app.clone(),
-                record: None,
-                reference: ui::tilo_reference::ResourceRef::whole(
-                    descriptor.resource_kind.clone(),
-                    descriptor.address.resource.clone(),
-                    descriptor.resource_label.clone(),
-                ),
-            },
-        )
-    }
-
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1832,7 +1658,6 @@ impl Session {
         // is shown once per distinct step, while every resource the step
         // reads is listed, however many steps share a note.
         self.tell_step(run, state, call)?;
-        self.record_lookup(run, state, call)?;
         match call.name.as_str() {
             tools::PLAN => {
                 let mut input = call.input.clone();
@@ -2114,9 +1939,10 @@ impl Session {
         // new window's operations can be told apart.
         let opened = tools::opened_app(&offer).map(|app| (app.to_owned(), self.app_windows(app)));
         let index = state.completed;
-        let result = self.run_task_step(run, index, &action, &arguments);
+        let settled = self.run_task_step(run, index, &action, &arguments)?;
         state.step_index += 1;
-        match result? {
+        self.record_action(run, &action.resource_kind, &action.label, settled.as_ref())?;
+        match settled {
             Ok(outcome) => {
                 let succeeded = Succeeded {
                     offer: &offer,
@@ -2259,14 +2085,22 @@ impl Session {
                 });
                 Ok(Started::Running)
             }
-            Err(TaskActionStop::Failed(message)) => {
+            Err(stop) => {
                 self.step_settled();
-                Ok(Started::Refused(Box::new(refused_report(message))))
-            }
-            Err(TaskActionStop::Cancelled(message)) => {
-                Ok(Started::Cancelled(message.unwrap_or_else(|| {
-                    "Cancelled while an action was running".into()
-                })))
+                self.record_action(
+                    run,
+                    &prepared.offer.descriptor.resource_kind,
+                    &prepared.offer.descriptor.action_label,
+                    Err(&stop),
+                )?;
+                Ok(match stop {
+                    TaskActionStop::Failed(message) => {
+                        Started::Refused(Box::new(refused_report(message)))
+                    }
+                    TaskActionStop::Cancelled(message) => Started::Cancelled(
+                        message.unwrap_or_else(|| "Cancelled while an action was running".into()),
+                    ),
+                })
             }
         }
     }
@@ -2297,7 +2131,14 @@ impl Session {
         let mut cancelled = None;
         for ((call, offer, before, index), following) in started.into_iter().zip(followed) {
             self.step_settled();
-            let report = match following.into_outcome() {
+            let settled = following.into_outcome();
+            self.record_action(
+                run,
+                &offer.descriptor.resource_kind,
+                &offer.descriptor.action_label,
+                settled.as_ref(),
+            )?;
+            let report = match settled {
                 Ok(outcome) => {
                     let succeeded = Succeeded {
                         offer: &offer,
@@ -2525,26 +2366,6 @@ fn opened_records(value: Option<&Value>, app: &str) -> Vec<String> {
         .filter(|record| !record.is_empty())
         .map(str::to_owned)
         .collect()
-}
-
-/// Whether an operation that `reads` a resource lists it on the run's issue
-/// as a lookup: it reads, its resource is not one the request already named,
-/// and the run has not listed it before. The rest — changing something,
-/// reading again what it already listed — are not new context, and the
-/// subject is what the person gave the run rather than something it found.
-fn looked_up(
-    run: &runtime_collab::TaskRunEnvelope,
-    descriptor: &tilo_actions::ActionDescriptor,
-    reads: bool,
-    seen: &[String],
-) -> bool {
-    let resource = &descriptor.address.resource;
-    reads
-        && !run
-            .subject
-            .as_ref()
-            .is_some_and(|subject| subject.is_in(resource))
-        && !seen.iter().any(|listed| listed == resource)
 }
 
 /// Which operations are published and available, by id.
