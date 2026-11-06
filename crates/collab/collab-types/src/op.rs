@@ -78,6 +78,9 @@ pub enum DocumentMutationError {
     /// A segment header is inconsistent with the bytes it carries.
     #[error("document segment is invalid: {0}")]
     InvalidSegment(&'static str),
+    /// The action commit carried inside the payload is not readable.
+    #[error("workspace commit is invalid: {0}")]
+    InvalidCommit(String),
 }
 
 /// Failure to encode a typed document mutation.
@@ -155,6 +158,13 @@ impl DocumentMutation {
     /// mutation, or [`DocumentMutationError::UnknownKind`] /
     /// [`DocumentMutationError::Truncated`] for a corrupt typed body.
     pub fn decode(payload: &[u8]) -> Result<Self, DocumentMutationError> {
+        // A frame that carries its action's commit is read as the frame
+        // inside it: the commit is the envelope's business, not the
+        // mutation's.
+        let payload = match crate::WorkspaceCommit::split(payload) {
+            Ok((inner, _)) => inner,
+            Err(error) => return Err(DocumentMutationError::InvalidCommit(error.to_string())),
+        };
         if payload.len() > MAX_ENCODED_DOCUMENT_MUTATION_BYTES {
             return Err(DocumentMutationError::TooLarge {
                 actual: payload.len(),

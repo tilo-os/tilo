@@ -64,6 +64,13 @@ pub(super) async fn deliver_waiting(
 )]
 async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &InboundBridge) -> bool {
     let op = OpKey::of(&arrived.envelope);
+    let commit = match collab_types::WorkspaceCommit::of_envelope(&arrived.envelope) {
+        Ok(commit) => commit,
+        Err(error) => {
+            tracing::warn!(%error, %op, "collab: refused a held op whose action commit names another device");
+            return true;
+        }
+    };
     let event = match signed_document_event(arrived, &route.encryption) {
         Ok(event) => event,
         Err(UndeliveredDocument::Held) => return true,
@@ -84,7 +91,36 @@ async fn deliver_decided(route: &SdkRoute, arrived: Arrived, inbound_tx: &Inboun
     let Some(complete) = complete_document_event(event, &inbound_tx.reassembly.live) else {
         return true;
     };
-    inbound_tx.send_document(complete).await
+    let claims: Vec<[u8; 32]> = match &complete {
+        CollabEvent::Document { envelope, .. } => {
+            envelope.claims.iter().map(|claim| claim.change).collect()
+        }
+        _ => Vec::new(),
+    };
+    let events = match crate::commits::gate(
+        &inbound_tx.state,
+        commit,
+        &claims,
+        (
+            route.spec.app_id.as_str(),
+            route.spec.record.as_deref().unwrap_or(""),
+        ),
+        complete,
+    ) {
+        crate::commits::Delivery::Now(event) => vec![event],
+        crate::commits::Delivery::Waiting => return true,
+        crate::commits::Delivery::Complete(events) => events,
+        crate::commits::Delivery::Refused(reason) => {
+            tracing::warn!(reason, %op, "collab: refused a held part that is not the action it names");
+            return true;
+        }
+    };
+    for event in events {
+        if !inbound_tx.send_document(event).await {
+            return false;
+        }
+    }
+    true
 }
 
 /// Page history back for the ops a full hold let go of, and deliver each
