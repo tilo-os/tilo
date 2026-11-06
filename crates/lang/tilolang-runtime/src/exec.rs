@@ -53,6 +53,9 @@ pub struct ExecCtx {
     /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
     /// its change, so history says who suggested it.
     pub suggested_by: Option<Principal>,
+    /// The moment the change is recorded at, when the invocation names one: a scenario's
+    /// `invoke(act(args), at: time)`, whose changes history reads at that time.
+    pub at: Option<String>,
 }
 
 /// How an action ended.
@@ -490,6 +493,7 @@ impl Core {
             approved_by: ctx.approved_by.as_ref().map(|p| p.0.clone()),
             suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
             from: ctx.from.clone(),
+            at: ctx.at.clone(),
             ..ChangeNote::default()
         }
     }
@@ -551,7 +555,9 @@ impl Core {
         let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
             Some(FrameKind::Action(a)) => {
                 let mut note = *a.note;
-                note.at = Some(at);
+                // The time it is recorded at: the one the invocation named (`invoke(..
+                // at: time)`), else the clock, which nothing replays.
+                note.at = note.at.or(Some(at));
                 note.touched = a.touched.into_iter().collect();
                 // What the action read on its way, beside the change it made: the moment and
                 // the zone it read, and what later effects fetched or drew (convergence.md,
@@ -816,6 +822,7 @@ impl Core {
             suggested_by: None,
             origin: None,
             from: from.cloned(),
+            at: None,
         };
         let flow = self.registry.borrow().flow_package(&aref.action);
         let decision = match &flow {
@@ -1076,6 +1083,7 @@ impl Core {
                     suggested_by: journal.suggested_by.clone().map(Principal),
                     origin: None,
                     from: journal.from.clone(),
+                    at: None,
                 };
                 let aref = ActionRef::new(pending.action.clone(), pending.args.clone());
                 match self.run_action(&ctx, &aref)? {
@@ -1153,26 +1161,51 @@ impl Core {
         let Value::Action(aref) = self.val(h)? else {
             return trap("expected an action reference");
         };
+        // A scenario's own seed is the host's making, as its own actions are: another app's
+        // action it invokes runs as the person, at the moment and from the resource the
+        // invocation names.
+        let mut seeded = false;
         let step = {
             let mut frames = self.frames.borrow_mut();
-            let FrameKind::Flow(fs) = &mut frames.top_mut()?.kind else {
-                return trap("invoke is only available in flows");
-            };
-            if let Some(entry) = fs.journal.entries.get(fs.cursor) {
-                let v = replay_value(entry, &aref.action)?;
-                fs.cursor = fs.cursor.saturating_add(1);
-                Step::Replay(v)
-            } else {
-                let mut chain = fs.journal.chain.clone();
-                push_chain(&mut chain, aref.author.as_ref());
-                Step::Live(ExecCtx {
-                    invoker: fs.invoker.clone(),
-                    chain,
-                    approved_by: None,
-                    suggested_by: fs.suggested_by.clone(),
-                    origin: None,
-                    from: fs.journal.from.clone(),
-                })
+            match &mut frames.top_mut()?.kind {
+                FrameKind::Flow(fs) => {
+                    if let Some(entry) = fs.journal.entries.get(fs.cursor) {
+                        let v = replay_value(entry, &aref.action)?;
+                        fs.cursor = fs.cursor.saturating_add(1);
+                        Step::Replay(v)
+                    } else {
+                        let mut chain = fs.journal.chain.clone();
+                        push_chain(&mut chain, aref.author.as_ref());
+                        Step::Live(ExecCtx {
+                            invoker: fs.invoker.clone(),
+                            chain,
+                            approved_by: None,
+                            suggested_by: fs.suggested_by.clone(),
+                            origin: None,
+                            from: fs.journal.from.clone(),
+                            at: None,
+                        })
+                    }
+                }
+                FrameKind::Action(state) if state.scenario => {
+                    seeded = true;
+                    let invocation = state.invocations.last();
+                    let mut chain = Vec::new();
+                    push_chain(&mut chain, aref.author.as_ref());
+                    Step::Live(ExecCtx {
+                        invoker: invocation
+                            .map_or_else(|| state.invoker.clone(), |named| named.who.clone()),
+                        chain,
+                        approved_by: None,
+                        suggested_by: state.suggested_by.clone(),
+                        origin: None,
+                        from: invocation
+                            .and_then(|named| named.from.clone())
+                            .or_else(|| state.note.from.clone()),
+                        at: invocation.and_then(|named| named.at.clone()),
+                    })
+                }
+                _ => return trap("invoke is only available in flows and scenarios"),
             }
         };
         let ctx = match step {
@@ -1188,9 +1221,12 @@ impl Core {
                 .map_err(|e| HostFail::Trap(e.to_string()))?;
             return self.delegated(&ctx, &aref.action, &invocation);
         }
-        let decision = self
-            .decide(&ctx, &aref)
-            .map_err(|e| HostFail::Trap(e.to_string()))?;
+        let decision = if seeded {
+            Decision::Allow
+        } else {
+            self.decide(&ctx, &aref)
+                .map_err(|e| HostFail::Trap(e.to_string()))?
+        };
         match decision {
             Decision::Allow => {
                 let outcome = self
@@ -1212,7 +1248,9 @@ impl Core {
                         Value::Error(reason),
                     ),
                 };
-                self.journal_push(entry)?;
+                if !seeded {
+                    self.journal_push(entry)?;
+                }
                 self.ret_h(boxed(value))
             }
             Decision::Deny => {
@@ -1380,6 +1418,7 @@ impl Core {
                 suggested_by: fs.suggested_by.clone(),
                 origin: None,
                 from: fs.journal.from.clone(),
+                at: None,
             }
         };
         let invocation = Invocation::Edit {
@@ -1838,7 +1877,8 @@ impl Core {
                     note.at = Some(inv.at.clone().unwrap_or(at));
                     note.from = inv.from.clone().or_else(|| state.note.from.clone());
                 }
-                None => note.at = Some(at),
+                // At the moment the invocation named, when it named one; else now.
+                None => note.at = note.at.clone().or_else(|| Some(at)),
             }
             note.touched = std::mem::take(&mut state.touched).into_iter().collect();
             (state.txn, note)

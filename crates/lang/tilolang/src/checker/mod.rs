@@ -122,6 +122,10 @@ struct FnState {
     keys: Vec<LocalId>,
     /// Set while checking the operand of `try`: the next `invoke` reports failure.
     try_invoke: bool,
+    /// Set while checking what `invoke` runs in a scenario: another app's action there is
+    /// invoked at its own door, a change of its own, rather than refused as a change spanning
+    /// apps. Seed data is the host's making, as a scenario's own actions are.
+    invoking_foreign: bool,
     /// Set while checking the operand of `suggest`: `Some(true)` when the call is the value an
     /// agent block proposes, `Some(false)` when it is a statement recording a proposal.
     suggest: Option<bool>,
@@ -950,7 +954,9 @@ impl Checker<'_> {
                 }
             }
         }
+        self.st.invoking_foreign = true;
         let value = self.expr(&first.value, None);
+        self.st.invoking_foreign = false;
         let ty = value.ty.clone();
         let (mut stmts, last) = match value.kind {
             Ek::Seq(inner, last) => (inner, last),

@@ -558,6 +558,13 @@ impl Checker<'_> {
                     return self.invoke(c, bound);
                 }
                 if !c.own {
+                    // `invoke(other.act(args), by: mia, ...)` in a scenario: another app's
+                    // action is invoked at its own door, a change of its own, as a flow
+                    // applies one, never called inside this action's change.
+                    if std::mem::take(&mut self.st.invoking_foreign) {
+                        let bound = self.applied_args(c, bound, span);
+                        return self.invoke(c, bound);
+                    }
                     self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
                     return Ex::error();
                 }
