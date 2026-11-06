@@ -336,7 +336,6 @@ impl Shared {
     /// ([`crate::certification::host_action`]); an ask that went — answered
     /// elsewhere, or expired — is taken back from them.
     pub(crate) fn follow_device_asks(&self) {
-        use tilo_desktop_surface::i18n::{t, t_args};
         use tilo_desktop_surface::notifications::{
             Addressed, Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
         };
@@ -359,11 +358,14 @@ impl Shared {
             let found = if asking.via.is_empty() {
                 String::new()
             } else {
-                t_args("pairing-asks-via", &[("device", asking.via.clone().into())])
+                tilo_desktop_surface::i18n::t_args(
+                    "pairing-asks-via",
+                    &[("device", asking.via.clone().into())],
+                )
             };
             let secs_ago = tilo_clock::unix_now_ms().saturating_sub(asking.asked_at_ms) / 1000;
             let when = ui::format::relative(i64::try_from(secs_ago).unwrap_or(i64::MAX));
-            let body = t_args(
+            let body = tilo_desktop_surface::i18n::t_args(
                 "pairing-asks-body",
                 &[
                     ("device", asking.label.clone().into()),
@@ -372,15 +374,22 @@ impl Shared {
                     ("code", asking.code.clone().into()),
                 ],
             );
-            let mut notice = Notification::new(t("pairing-asks-title"), body);
+            let mut notice =
+                Notification::new(tilo_desktop_surface::i18n::t("pairing-asks-title"), body);
             notice.actions = vec![
                 (
                     answer(asking.digest, true),
-                    t_args("pairing-approve", &[("code", asking.code.clone().into())]),
+                    tilo_desktop_surface::i18n::t_args(
+                        "pairing-approve",
+                        &[("code", asking.code.clone().into())],
+                    ),
                 ),
-                (answer(asking.digest, false), t("pairing-decline")),
+                (
+                    answer(asking.digest, false),
+                    tilo_desktop_surface::i18n::t("pairing-decline"),
+                ),
             ];
-            notice.app_name = Some(t("host-action-source-devices"));
+            notice.app_name = Some(tilo_desktop_surface::i18n::t("host-action-source-devices"));
             notice.icon_kind = NotificationIconKind::Permission;
             notice.severity = NotificationSeverity::Info;
             notice.addressed = Some(Addressed::Ask);
