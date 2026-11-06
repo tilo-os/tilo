@@ -926,8 +926,13 @@ impl Session {
         let mut restore = desk_restore::Restore::default();
         match activity.opened_desk() {
             desk_doc::Kept::Desk(kept) => {
+                let mut kept = *kept;
+                // A launch that no window came for is not a window this start
+                // restores, and keeping it would leave one more of them on the
+                // desk with every restart.
+                desk_restore::without_unfilled(&mut kept);
                 restore = desk_restore::Restore::of(&kept);
-                handle.replace_tree(*kept);
+                handle.replace_tree(kept);
             }
             // The person's desk is on disk and this session did not open it:
             // they are looking at a desk that is not theirs, and have to be
