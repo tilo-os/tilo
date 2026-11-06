@@ -44,6 +44,15 @@ fn spawn_time() -> Duration {
 /// not the boundary of a surface.
 const EDGE_STROKE_WIDTH: f64 = 1.0;
 
+/// The focused window's edge: two logical pixels, so which window takes the
+/// keyboard is seen at a glance rather than looked for. The edge sits outside
+/// the card, so the extra pixel is desktop, never the app's own.
+const FOCUSED_EDGE_STROKE_WIDTH: f64 = 2.0;
+
+/// The widest edge any window draws, so one band repaints whichever weight
+/// the window beside it takes.
+const WIDEST_EDGE_STROKE_WIDTH: f64 = FOCUSED_EDGE_STROKE_WIDTH;
+
 /// Rects along `rect`'s outline that hold every pixel of an edge drawn
 /// around it at corner `radius`: a square at each corner, where the edge
 /// curves up to `radius` inside the outline, and between them a thin band
@@ -52,7 +61,7 @@ const EDGE_STROKE_WIDTH: f64 = 1.0;
 /// pixel each way covers antialiasing. A focus change repaints these, so
 /// the sides stay as thin as the stroke rather than as deep as the corners.
 fn edge_bands(rect: Rect, radius: f64) -> Vec<Rect> {
-    let outside = EDGE_STROKE_WIDTH + 1.0;
+    let outside = WIDEST_EDGE_STROKE_WIDTH + 1.0;
     let corner = radius.max(0.0) + outside;
     let outer = rect.inflate(outside, outside);
     let (left, right) = (rect.x0 + corner, rect.x1 - corner);
@@ -2759,15 +2768,19 @@ impl TileHost {
         radius: f64,
         rect: Rect,
     ) {
-        // Focus recolours the edge and never thickens it: the edge is drawn
-        // outside the card (the app's pixels are its own), so a heavier
-        // focus edge stood the focused window's outline above and beside
-        // its neighbours', and the window the pointer was on looked lifted.
-        let edge_width = EDGE_STROKE_WIDTH;
+        // Focus is the window's own edge, recoloured and a pixel heavier: the
+        // band is drawn outside the card, so the extra pixel is desktop, and
+        // the weight is what tells the window taking the keyboard from its
+        // neighbours at a glance.
         let edge_color = if self.focused {
             theme.tokens.colors.window_edge_focused()
         } else {
             theme.window_edge()
+        };
+        let edge_width = if self.focused {
+            FOCUSED_EDGE_STROKE_WIDTH
+        } else {
+            EDGE_STROKE_WIDTH
         };
         // Fill the border's two contours directly. GPU stroking can leave
         // solid tiles outside a rounded corner when its top crosses y=0.
