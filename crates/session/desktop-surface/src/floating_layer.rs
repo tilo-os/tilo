@@ -46,14 +46,17 @@ pub enum Ask {
     Focus(bool),
 }
 
-/// Whether `card` stands on screen exactly as something in `cards` does.
+/// Whether `card` stands on screen exactly as something in `cards` does. An
+/// app's card is its window's to draw, so whatever happens to it, the layer
+/// has nothing of its own to repaint.
 fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
-    cards.iter().any(|other| {
-        other.app == card.app
-            && other.summary.id == card.summary.id
-            && other.summary == card.summary
-            && other.rect == card.rect
-    })
+    card.rich
+        || cards.iter().any(|other| {
+            other.app == card.app
+                && other.summary.id == card.summary.id
+                && other.summary == card.summary
+                && other.rect == card.rect
+        })
 }
 
 /// A drag in flight: which card, and where the pointer took it from.
@@ -750,6 +753,103 @@ mod tests {
                 app: "so.tilo.clocks".into(),
                 activity: "tea".into(),
             }]
+        );
+    }
+
+    /// A card its app draws is a window of its own: the layer keeps the place
+    /// it reserved for it and paints, presses and names nothing there, so the
+    /// app's first frame never lands over the layer's own drawing of the same
+    /// card and the layer's leftover never shows through after it goes.
+    #[test]
+    fn a_card_its_app_draws_is_left_to_its_window() {
+        let theme = Theme::default();
+        let mut text = TextRenderer::new();
+        let mut layer = FloatingLayer::default();
+        let mut drawn = Card::new("so.tilo.chat", timer());
+        drawn.rich = true;
+        drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![drawn, music("Track 1")],
+        );
+        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+        let cards = layer.layout().cards.clone();
+        assert_eq!(
+            cards.len(),
+            2,
+            "the app's card keeps the place it was given"
+        );
+        let app_card = cards.iter().find(|card| card.rich).expect("the app's card");
+        let music_card = cards
+            .iter()
+            .find(|card| !card.rich)
+            .expect("the music card");
+        assert!(
+            !layer.accepts(app_card.rect.center()),
+            "a press inside the app's card reaches its window, not the layer"
+        );
+        assert!(
+            layer
+                .test_rects()
+                .iter()
+                .all(|(id, _)| id != "activity:tea"),
+            "the layer names only the cards it draws"
+        );
+
+        // The app's card updates: the layer paints nothing of it, so there is
+        // nothing to repaint.
+        let mut grown = Card::new(
+            "so.tilo.chat",
+            Summary::new(Kind::Timer, "Tea", "4:31")
+                .with_id("tea")
+                .with_progress(0.5),
+        );
+        grown.rich = true;
+        grown.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![grown, music("Track 1")],
+        );
+        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+        assert_eq!(layer.damage(), Rect::ZERO, "nothing of it is the layer's");
+
+        // The card the layer draws changes: only its ground is repainted.
+        let mut drawn = Card::new(
+            "so.tilo.chat",
+            Summary::new(Kind::Timer, "Tea", "4:31")
+                .with_id("tea")
+                .with_progress(0.5),
+        );
+        drawn.rich = true;
+        drawn.size = Some(ui::vello::kurbo::Size::new(320.0, 240.0));
+        layer.set(
+            placement(),
+            Corner::BottomRight,
+            vec![drawn, music("Track 2")],
+        );
+        layer.paint(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme);
+        let music_card = layer
+            .layout()
+            .cards
+            .iter()
+            .find(|card| !card.rich)
+            .expect("the music card")
+            .rect;
+        assert_eq!(
+            layer.damage(),
+            painted_bounds(music_card, &theme),
+            "the music card's ground, and nothing where the app draws"
+        );
+
+        let mut alone = FloatingLayer::default();
+        let mut drawn = Card::new("so.tilo.chat", timer());
+        drawn.rich = true;
+        alone.set(placement(), Corner::BottomRight, vec![drawn]);
+        assert!(
+            alone.accessibility().is_none(),
+            "nothing of the app's card is the layer's to read out"
         );
     }
 
