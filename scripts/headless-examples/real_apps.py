@@ -158,10 +158,14 @@ class Session:
 
     def start(self, *, apps: str = APPS, fresh: bool = True, out: Path | None = None,
               tag: str = "session", tapps: list[Path] | None = None,
-              env: dict | None = None) -> "Session":
+              env: dict | None = None,
+              session_args: list[str] | None = None) -> "Session":
         """Start the session on its state. `fresh` forgets the saved desktop, so
         the session opens the way a first login does; without it the
-        workspaces, windows and their layout come back as they were left."""
+        workspaces, windows and their layout come back as they were left.
+        `session_args` go to `tilo-session` itself, after the script's `--`:
+        the further displays of a multi-display desk (`--output`), or another
+        backend's options."""
         if self.proc is not None:
             raise Failed("the session is running already")
         out = Path(out).resolve() if out else self.state
@@ -175,6 +179,9 @@ class Session:
             argv.append("--fresh-desktop")
         for tapp in tapps or []:
             argv += ["--install-tapp", str(tapp)]
+        if session_args:
+            # Last: everything after the script's `--` is the session's own.
+            argv += ["--", *session_args]
         print(f"==> starting the headless session ({tag}, lavapipe only)", file=sys.stderr)
         log = open(out / f"session-{tag}.log", "w")
         # The session script makes its own private runtime directory inside
