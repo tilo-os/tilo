@@ -167,6 +167,8 @@ pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
 #[cfg(feature = "broker-transport")]
+pub mod commit_log;
+#[cfg(feature = "broker-transport")]
 pub mod commits;
 #[cfg(feature = "broker-transport")]
 pub mod external_moderation;

@@ -12,44 +12,33 @@
 //! action it was held for, so one action stays one action however its parts
 //! were retried.
 //!
-//! The log is also the action log history reads: [`Commits::history`] names
-//! one action with its author, its time, the action it ran and every unit
-//! change it made, in one query.
+//! The log is also the action log history reads, and it outlives the
+//! process: [`crate::commit_log::CommitLog`] keeps every complete action as a
+//! record of the workspace, with an index of which actions wrote which
+//! resource, so a resource's history is one index entry and the actions it
+//! names. [`Commits::history`] names one action with its author, its time,
+//! the action it ran and every unit change it made; [`Commits::history_of`]
+//! answers for one resource; [`Commits::action_of`] gives the whole action a
+//! change belongs to, which is what an undo of one change takes back.
 
 use std::collections::BTreeMap;
 
-use collab_types::{CommitAction, CommitPart, WorkspaceCommit};
+use collab_types::{CommitPart, WorkspaceCommit};
 
 use crate::CollabEvent;
 use crate::broker::BridgeState;
+
+pub use crate::commit_log::{CommitHistory, CommitLog};
 
 /// Commits whose every part has arrived, and commits this endpoint received
 /// only parts of.
 #[derive(Default)]
 pub(crate) struct Commits {
-    /// Complete actions, in arrival order of their last part.
-    log: Vec<CommitHistory>,
+    /// Every action this endpoint kept, as the workspace record history and
+    /// undo read it.
+    log: CommitLog,
     /// Actions some of whose parts have not arrived, oldest first.
     held: Vec<HeldCommit>,
-}
-
-/// One complete action, as history reads it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CommitHistory {
-    /// The commit's content address.
-    pub commit: [u8; 32],
-    /// The workspace whose units the action wrote.
-    pub workspace: String,
-    /// The principal that invoked it, when one did.
-    pub principal: Option<String>,
-    /// The device that signed it.
-    pub device: [u8; 32],
-    /// When it was made, in milliseconds since the Unix epoch.
-    pub at_ms: u64,
-    /// The action's name, item and invocation.
-    pub action: CommitAction,
-    /// Every unit it wrote, with the hashes of the changes it made there.
-    pub parts: Vec<CommitPart>,
 }
 
 struct HeldCommit {
@@ -140,7 +129,7 @@ impl Commits {
         event: CollabEvent,
     ) -> Delivery {
         let id = commit.id();
-        if self.log.iter().any(|entry| entry.commit == id) {
+        if self.log.kept(&commit) {
             return Delivery::Now(event);
         }
         if !commit.covers(unit.0, unit.1) {
@@ -187,51 +176,68 @@ impl Commits {
             .iter()
             .filter_map(|part| parts.remove(&key(part)))
             .collect();
-        self.log.push(CommitHistory::of(&held.commit));
+        self.log.record(&held.commit);
         Delivery::Complete(events)
     }
 
     /// Note an action this endpoint itself made: every part of it is here.
     pub(crate) fn record(&mut self, commit: WorkspaceCommit) {
-        let id = commit.id();
-        if self.log.iter().any(|entry| entry.commit == id) {
-            return;
-        }
-        self.log.push(CommitHistory::of(&commit));
+        self.log.record(&commit);
     }
 
     /// Every action this endpoint has seen in `workspace`, oldest first: one
     /// action with its author, its time and every unit change it made.
+    pub fn history(&mut self, workspace: &str) -> Vec<CommitHistory> {
+        self.log.history(workspace)
+    }
+
+    /// Every action that wrote `resource` of `app`'s `record` in
+    /// `workspace`, newest first, at most `limit` of them.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the log's readers answer a resource's history and an action's changes with it"
+        )
+    )]
+    pub fn history_of(
+        &mut self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        resource: &str,
+        limit: usize,
+    ) -> Vec<CommitHistory> {
+        self.log.history_of(workspace, app, record, resource, limit)
+    }
+
+    /// The whole action the change `hash` of `workspace` is part of: every
+    /// unit and every change of it, so an undo of one change takes its action
+    /// back whole.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "undo takes a whole action back through this query"
+        )
+    )]
+    pub fn action_of(&mut self, workspace: &str, hash: &[u8; 32]) -> Option<CommitHistory> {
+        self.log.action_of(workspace, hash)
+    }
+
+    /// The log a restarted device reads back: kept as a record in `store`.
     #[must_use]
-    pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
-        let mut actions: Vec<CommitHistory> = self
-            .log
-            .iter()
-            .filter(|entry| entry.workspace == workspace)
-            .cloned()
-            .collect();
-        actions.sort_by_key(|entry| (entry.at_ms, entry.commit));
-        actions
+    pub fn stored(store: std::sync::Arc<dyn durable_store::DurableStore + Send + Sync>) -> Self {
+        Self {
+            log: CommitLog::stored(store),
+            held: Vec::new(),
+        }
     }
 
     /// How many parts of actions are held back waiting for the rest.
     #[cfg(test)]
     pub(crate) fn held_parts(&self) -> usize {
         self.held.iter().map(|held| held.parts.len()).sum()
-    }
-}
-
-impl CommitHistory {
-    fn of(commit: &WorkspaceCommit) -> Self {
-        Self {
-            commit: commit.id(),
-            workspace: commit.workspace.clone(),
-            principal: commit.author.principal.clone(),
-            device: commit.author.device,
-            at_ms: commit.at_ms,
-            action: commit.action.clone(),
-            parts: commit.parts.clone(),
-        }
     }
 }
 
@@ -392,6 +398,34 @@ mod tests {
         (commit, first, second)
     }
 
+    /// Write `field` = `value` on `doc` as the action `field`, invoked by
+    /// alice under `invocation`: one more change on top of what `doc` holds.
+    fn rewrite(
+        doc: &mut AutoCommit,
+        field: &str,
+        value: &str,
+        invocation: InvocationId,
+    ) -> [u8; 32] {
+        doc.put(automerge::ROOT, field, value).unwrap();
+        let context = ActionContext {
+            what: Some(Did::Edit(FieldEdit {
+                ty: "tasks".to_owned(),
+                field: field.to_owned(),
+                path: vec![PathStep::Field(field.to_owned())],
+                op: EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })),
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            source_invocation: Some(invocation),
+            ..ActionContext::for_resource("tasks", "tasks", field)
+        };
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_001);
+        options.set_message(context.change_message().unwrap());
+        doc.commit_with(options).unwrap().0
+    }
+
     /// Who publishes from this device.
     fn publisher() -> collab_types::CommitAuthor {
         collab_types::CommitAuthor {
@@ -536,7 +570,130 @@ mod tests {
         assert_eq!(action.parts, commit.parts);
         assert_eq!(action.parts.len(), 2);
         assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
+        // Each resource the action wrote reads it in its own history, once.
+        let resources: Vec<(String, String, String)> = action
+            .parts
+            .iter()
+            .flat_map(|part| {
+                part.resources.iter().map(|touched| {
+                    (
+                        part.app.clone(),
+                        part.record.clone(),
+                        touched.resource.clone(),
+                    )
+                })
+            })
+            .collect();
+        assert_eq!(
+            resources.len(),
+            2,
+            "the action wrote a resource in each unit"
+        );
+        for (app, record, resource) in &resources {
+            let of_resource = state
+                .commits()
+                .history_of(WORKSPACE, app, record, resource, 10);
+            assert_eq!(
+                of_resource.len(),
+                1,
+                "{app}/{record}/{resource}: {of_resource:?}"
+            );
+            assert_eq!(of_resource[0].commit, commit.id());
+        }
+        // Undo of any change takes the whole action back, both units with it.
+        let undo = state
+            .commits()
+            .action_of(WORKSPACE, &commit.parts[1].changes[0])
+            .unwrap();
+        assert_eq!(undo.commit, commit.id());
+        assert_eq!(undo.parts.len(), 2);
         assert!(state.commits().history("elsewhere").is_empty());
+    }
+
+    #[test]
+    fn a_peer_receiving_an_undo_reverts_both_units_together() {
+        let (commit, first, second) = two_unit_action();
+        let state = BridgeState::new();
+        let mut peer = AutoCommit::new();
+        for (app, record, doc, seq) in [
+            ("tasks", "a", &first, 1),
+            ("discussion", "thread", &second, 2),
+        ] {
+            deliver(
+                &state,
+                &publication(&commit, app, record, doc, seq),
+                app,
+                record,
+                &mut peer,
+            );
+        }
+
+        // The undo of that action: a change on top of each unit, taking the
+        // value the action wrote back to what it was.
+        let undo_invocation = InvocationId(uuid::Uuid::from_u128(12));
+        let mut reverted_first = first.clone();
+        let mut reverted_second = second.clone();
+        let before_first = reverted_first.get_heads();
+        let before_second = reverted_second.get_heads();
+        rewrite(&mut reverted_first, "title", "undone", undo_invocation);
+        rewrite(&mut reverted_second, "body", "undone", undo_invocation);
+        let undo_first =
+            collab_types::DocumentMutation::Incremental(reverted_first.save_after(&before_first));
+        let undo_second =
+            collab_types::DocumentMutation::Incremental(reverted_second.save_after(&before_second));
+        let undo_commit = WorkspaceCommit::of_units(
+            WORKSPACE,
+            &publisher(),
+            &[
+                collab_types::UnitMutation {
+                    app: "tasks",
+                    record: "a",
+                    mutation: &undo_first,
+                },
+                collab_types::UnitMutation {
+                    app: "discussion",
+                    record: "thread",
+                    mutation: &undo_second,
+                },
+            ],
+        )
+        .unwrap()
+        .remove(0)
+        .unwrap();
+
+        let undo_b = publication(&undo_commit, "discussion", "thread", &reverted_second, 3);
+        assert!(
+            !deliver(&state, &undo_b, "discussion", "thread", &mut peer),
+            "the undo's second part alone reverts nothing"
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
+            automerge::Value::from("child"),
+            "the first unit keeps what the action wrote"
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
+            automerge::Value::from("text")
+        );
+
+        let undo_a = publication(&undo_commit, "tasks", "a", &reverted_first, 4);
+        assert!(
+            deliver(&state, &undo_a, "tasks", "a", &mut peer),
+            "the undo completes and reverts the action"
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "title").unwrap().unwrap().0,
+            automerge::Value::from("undone")
+        );
+        assert_eq!(
+            peer.get(automerge::ROOT, "body").unwrap().unwrap().0,
+            automerge::Value::from("undone")
+        );
+        assert_eq!(
+            state.commits().history(WORKSPACE).len(),
+            2,
+            "the action and its undo, one entry each"
+        );
     }
 
     #[test]
@@ -608,17 +765,22 @@ mod tests {
                     name: "title".to_owned(),
                     item: None,
                     invocation: None,
+                    id: "tasks/title/title".to_owned(),
+                    ty: "tl.action".to_owned(),
+                    group: None,
                 },
                 vec![
                     CommitPart {
                         app: "tasks".to_owned(),
                         record: "a".to_owned(),
                         changes: vec![first_change],
+                        resources: Vec::new(),
                     },
                     CommitPart {
                         app: "tasks".to_owned(),
                         record: "b".to_owned(),
                         changes: vec![[u8::try_from(index).unwrap(); 32]],
+                        resources: Vec::new(),
                     },
                 ],
             );

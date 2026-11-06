@@ -1320,6 +1320,16 @@ struct QueuedCollabEvent {
 }
 
 impl BridgeState {
+    /// The state of a real session: the action log it keeps is the
+    /// workspace record a restarted device reads.
+    pub(crate) fn stored() -> Self {
+        let mut state = Self::new();
+        state.commits = Arc::new(std::sync::Mutex::new(crate::commits::Commits::stored(
+            app_state::DocStore::native_store_shared(),
+        )));
+        state
+    }
+
     pub(crate) fn new() -> Self {
         let owner_wake = crate::wake::WakeHandle::new();
         // Both outbound budgets share one latch: a refused document send is
@@ -3303,7 +3313,7 @@ impl CollaborationManager {
         let (outbound_tx, outbound_rx) =
             tokio_mpsc::channel::<QueuedSdkCommand>(SDK_COMMAND_QUEUE + 1);
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
-        let state = BridgeState::new();
+        let state = BridgeState::stored();
         let inbound = InboundBridge::new(inbound_tx, state.clone());
         let (media_tx, media_rx) = native_media::channel(inbound.clone());
         let (action_directory_tx, action_directory_rx) =
@@ -11811,11 +11821,15 @@ mod tests {
                     name: "send".into(),
                     item: None,
                     invocation: None,
+                    id: String::new(),
+                    ty: String::new(),
+                    group: None,
                 },
                 vec![collab_types::CommitPart {
                     app: "chat".into(),
                     record: "main".into(),
                     changes: vec![[1; 32]],
+                    resources: Vec::new(),
                 }],
             );
             let sealed_plaintext = commit.frame(&plaintext).unwrap();
