@@ -39,6 +39,7 @@ use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::crashed_app::Closed;
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
+use crate::mount::connectors::ConnectorHost;
 use crate::search::AppActions;
 
 /// The apps this session starts, and everything that asks it for one.
@@ -261,6 +262,80 @@ impl Apps {
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
         state.doors = Some(doors);
+    }
+
+    /// Start the connector `origin` of `app` in `workspace`, as the app's own launch with the
+    /// origin named and no window: the sandbox the app's manifest declares for that origin,
+    /// which a window and the tilolang host its instances run in never have
+    /// (`docs/architecture/apps.md` §1, §8). The connector is left running when every window of
+    /// the app closes, so what the service says meanwhile waits in it.
+    ///
+    /// Every reader of the app's records attaches over a connection of its own, made by
+    /// [`ConnectorHost::connection`], which starts this when none runs.
+    ///
+    /// # Errors
+    /// The app is not installed here, its manifest does not declare the origin, it names no
+    /// tilolang runtime, or the connector's process could not be started.
+    pub fn start_connector(
+        &self,
+        app: &str,
+        origin: &str,
+        workspace: &Workspace,
+        host: &ConnectorHost,
+    ) -> Result<(), DoorError> {
+        let connection = host
+            .connection(app, origin, &workspace.id, &|origin| {
+                self.plan_connector(app, origin, workspace)
+            })
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
+        // The connection is the caller's to read: here nothing does, since the reader that
+        // needed it attached through its own call. Dropped, it is the connector's alone.
+        drop(connection);
+        Ok(())
+    }
+
+    /// The connector of `app` for `origin` in `workspace`, planned as the app's own launch with
+    /// the origin named and no window: the sandbox the app's manifest declares for that origin.
+    ///
+    /// # Errors
+    /// The package is not installed here, its manifest does not declare `origin`, or no
+    /// launcher can start it.
+    pub(crate) fn plan_connector(
+        &self,
+        app: &str,
+        origin: &str,
+        workspace: &Workspace,
+    ) -> Result<Planned, String> {
+        let state = self.state.borrow();
+        let Some(launcher) = state.launcher.clone() else {
+            return Err("no tilo-launcher is installed, so no connector can start".to_owned());
+        };
+        let installed = tilo_installed_apps::read_one_from_env(app)
+            .ok()
+            .flatten()
+            .ok_or_else(|| format!("{app} is not installed here"))?;
+        let mut environment = state.environment.clone();
+        environment.x11_display = None;
+        let context = PlanContext {
+            environment: &environment,
+            workspace,
+            launcher: Some(launcher),
+            identity: state.identity.clone(),
+            authority: Some(&state.authority),
+            render_node: None,
+            new_window: false,
+            continuity_instance: None,
+            connector: Some(origin),
+        };
+        let planned = Planned::of(
+            &Launch::Package {
+                app: installed.package_id.clone(),
+                open: None,
+            },
+            &context,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(planned)
     }
 
     /// What lets a package author its own records in the workspace it opens
@@ -674,6 +749,7 @@ impl Apps {
                 render_node: state.render_node.clone(),
                 new_window,
                 continuity_instance: instance,
+                connector: None,
             };
             Planned::of(launch, &context)
         };

@@ -14,8 +14,8 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
@@ -79,6 +79,10 @@ pub struct YouTubeOrigin {
     service: Arc<dyn Service>,
     /// Set when the service has an answer, from the thread it answers on.
     woken: Arc<AtomicBool>,
+    /// What the service answered, written where a poll takes it in: a service over a socket
+    /// (a connector, [`crate::remote::RemoteService`]) asks on a thread of its own, so the
+    /// frame that hands it an effect never waits for the network.
+    answered: Arc<Mutex<VecDeque<Result<Answered, ServiceError>>>>,
     types: Option<Types>,
     /// Each request the service has not answered yet, oldest first.
     waiting: VecDeque<Waiting>,
@@ -96,6 +100,7 @@ impl YouTubeOrigin {
         Self {
             service,
             woken,
+            answered: Arc::default(),
             types: None,
             waiting: VecDeque::new(),
             changed: Rc::default(),
@@ -104,8 +109,10 @@ impl YouTubeOrigin {
     }
 
     /// The origin with `wake` called whenever an answer is ready: the instance's frame loop,
-    /// woken so the next frame polls it and writes what YouTube said. The service answers on
-    /// the thread the effect was delivered on, so the wake runs there.
+    /// woken so the next frame polls it and writes what YouTube said. With `wake` set, each
+    /// question is asked on a thread of its own and `wake` runs there, so the frame that
+    /// handed the effect over never waits for the network; a service that answers at once
+    /// (a test's, a session's scripted one) answers on that thread too.
     #[must_use]
     pub fn waking(
         origin: Rc<RefCell<Self>>,
@@ -162,33 +169,74 @@ impl YouTubeOrigin {
         Value::text(s)
     }
 
+    /// A copy of `pending`, for the thread that asks it.
+    fn clone_pending(pending: &Pending) -> Pending {
+        match pending {
+            Pending::Search { query } => Pending::Search {
+                query: query.clone(),
+            },
+            Pending::Channel { key } => Pending::Channel { key: key.clone() },
+            Pending::Subscriptions { keys } => Pending::Subscriptions { keys: keys.clone() },
+            Pending::Trending => Pending::Trending,
+            Pending::Stream { key } => Pending::Stream { key: key.clone() },
+        }
+    }
+
     /// Hand `pending` to the service, and wake the instance once it has answered.
     fn ask(&mut self, pending: Pending) {
-        let asked = match &pending {
-            Pending::Search { query } => self.service.search(query).map(Answered::Search),
-            Pending::Channel { key } => self.service.channel(key).map(Answered::Channel),
-            Pending::Trending => self.service.trending().map(Answered::Trending),
-            Pending::Stream { key } => self.service.stream(key).map(Answered::Stream),
-            Pending::Subscriptions { keys } => {
-                let mut pages = Vec::new();
-                let mut failed = None;
-                for key in keys {
-                    match self.service.channel(key) {
-                        Ok(page) => pages.push(page),
-                        Err(error) => {
-                            failed = Some(error);
-                            break;
-                        }
-                    }
-                }
-                failed.map_or_else(|| Ok(Answered::Subscriptions(pages)), Err)
+        // Over a socket (a connector, the session's own service) the question is asked on a
+        // thread of its own: the frame that queued the effect never waits for the network.
+        if let Some(on_answer) = self.on_answer.clone() {
+            let service = Arc::clone(&self.service);
+            let answered = Arc::clone(&self.answered);
+            let woken = Arc::clone(&self.woken);
+            // The question is cloned for the thread, so the frame keeps its own to wait on.
+            let asked_pending = Self::clone_pending(&pending);
+            let asked = std::thread::Builder::new()
+                .name("youtube-ask".into())
+                .spawn(move || {
+                    let answer = answer(&*service, &asked_pending);
+                    answered
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push_back(answer);
+                    woken.store(true, Ordering::Release);
+                    on_answer();
+                });
+            if asked.is_ok() {
+                self.waiting.push_back(Waiting {
+                    pending,
+                    answered: None,
+                });
+                return;
             }
-        };
+        }
+        let answer = answer(&*self.service, &pending);
         self.waiting.push_back(Waiting {
             pending,
-            answered: Some(asked),
+            answered: Some(answer),
         });
         self.woken.store(true, Ordering::Release);
+    }
+}
+
+/// What the service answered to `pending`.
+fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceError> {
+    match pending {
+        Pending::Search { query } => service.search(query).map(Answered::Search),
+        Pending::Channel { key } => service.channel(key).map(Answered::Channel),
+        Pending::Trending => service.trending().map(Answered::Trending),
+        Pending::Stream { key } => service.stream(key).map(Answered::Stream),
+        Pending::Subscriptions { keys } => {
+            let mut pages = Vec::new();
+            for key in keys {
+                match service.channel(key) {
+                    Ok(page) => pages.push(page),
+                    Err(error) => return Err(error),
+                }
+            }
+            Ok(Answered::Subscriptions(pages))
+        }
     }
 }
 
@@ -331,6 +379,21 @@ impl YouTubeOrigin {
             return false;
         };
         let mut wrote = false;
+        // What the service answered on its own thread, oldest first.
+        let took: Vec<Result<Answered, ServiceError>> = self
+            .answered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        for answer in took {
+            if let Some(waiting) = self.waiting.pop_front() {
+                self.waiting.push_front(Waiting {
+                    pending: waiting.pending,
+                    answered: Some(answer),
+                });
+            }
+        }
         while let Some(waiting) = self.waiting.pop_front() {
             let Some(answered) = waiting.answered else {
                 self.waiting.push_front(waiting);

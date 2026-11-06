@@ -21435,8 +21435,10 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilolang-host",
+ "tilolang-mail",
  "tilolang-runtime",
  "tilolang-tilo",
+ "tilolang-youtube",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
@@ -22892,8 +22894,11 @@ dependencies = [
 name = "tilolang-youtube"
 version = "0.1.0"
 dependencies = [
+ "runtime-portal",
  "rustypipe",
+ "serde",
  "serde_json",
+ "tempfile",
  "tilo-app",
  "tilo-innertube",
  "tilo-net",

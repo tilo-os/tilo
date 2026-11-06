@@ -9,6 +9,7 @@ pub mod audio;
 pub(crate) mod clipboard;
 pub(crate) mod clipboard_files;
 pub mod comforts;
+pub mod connectors;
 pub(crate) mod devices;
 pub(crate) mod doors;
 pub mod drives;

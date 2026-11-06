@@ -368,6 +368,9 @@ struct Shared {
     handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
+    /// What wakes this session's loop when work off the frame is ready: an outside origin's
+    /// answer, which the next pass polls and writes.
+    wake_handle: tilo_service::Wake,
     /// What plays, as the desk's music widget shows it: written from the
     /// machine's reading every pass, the same one the bar and the lock screen
     /// show.
@@ -910,6 +913,8 @@ pub struct Session {
     /// The controllers in the room, and how they drive the desktop; `None`
     /// when this session reads none.
     controllers: Option<controllers::Controllers>,
+    /// The outside origins' connectors the session runs (apps.md §1, §8).
+    connectors: mount::connectors::ConnectorHost,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::ReadableWatch>,
@@ -1917,6 +1922,7 @@ impl Session {
             bluetooth: bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: mount::wake::Wake::new(&options.wake_seams),
+            wake_handle: options.wake.handle(),
             music,
             power,
             workspace_settings,
@@ -2176,9 +2182,11 @@ impl Session {
                 .take()
                 .map(controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
+            connectors: mount::connectors::ConnectorHost::new(),
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
+        mount::connectors::start_all(&mut session);
         if starts_locked {
             session.compositor.lock_now()?;
         }
