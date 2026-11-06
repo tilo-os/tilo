@@ -328,13 +328,9 @@ pub(crate) fn note_menu_commands() -> Vec<ToolbarAction> {
     note_commands()
         .into_iter()
         .map(|command| {
-            let action =
-                ToolbarAction::new(command.id, command.icon, ui::i18n!(command.message)).in_menu();
-            if command.destructive {
-                action.destructive()
-            } else {
-                action
-            }
+            ToolbarAction::new(command.id, command.icon, ui::i18n!(command.message))
+                .in_menu()
+                .destructive_if(command.destructive)
         })
         .collect()
 }
