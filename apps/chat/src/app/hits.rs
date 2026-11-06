@@ -633,8 +633,10 @@ impl ChatApp {
                     Hit::CallMute => (
                         copy(if self.microphone_missing() {
                             "chat-call-no-microphone"
+                        } else if self.call.muted || self.call.deafened {
+                            "chat-call-unmute"
                         } else {
-                            "chat-call-mute-action"
+                            "chat-call-mute"
                         }),
                         Role::ToggleButton,
                         self.call.muted,
@@ -740,6 +742,11 @@ impl ChatApp {
                         | Hit::TogglePins
                         | Hit::CallMute
                         | Hit::CallDeafen
+                        | Hit::CallCamera
+                        | Hit::CallLeave
+                        | Hit::CallScreen
+                        | Hit::CallExpand
+                        | Hit::CallParticipantsToggle
                         | Hit::Attach
                         | Hit::Send
                         | Hit::AddReaction { .. }

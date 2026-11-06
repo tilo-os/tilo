@@ -1515,3 +1515,39 @@ fn the_pointer_leaving_the_card_leaves_no_control_hovered() {
         "a control the pointer left is no longer hovered"
     );
 }
+
+#[test]
+fn the_card_names_each_control_on_hover_and_the_microphone_says_its_state() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    // The card's row of controls, as the footer pushes it: a pointer over any
+    // of them reads its name, and the microphone's name is its state.
+    let face = |x: f64| Rect::new(x, 0.0, x + 86.0, 28.0);
+    let (mute, camera, leave) = (face(0.0), face(92.0), face(184.0));
+    app.hits = vec![
+        (mute, Hit::CallMute),
+        (camera, Hit::CallCamera),
+        (leave, Hit::CallLeave),
+    ];
+    let tip = |app: &ChatApp, rect: Rect| {
+        app.hover_tooltip_target(rect.center())
+            .map(|(_, label)| label)
+            .expect("a control the card draws names itself on hover")
+    };
+    app.call.muted = false;
+    let resting = tip(&app, mute);
+    app.call.muted = true;
+    let muted = tip(&app, mute);
+    if app.microphone_missing() {
+        assert_eq!(resting, crate::i18n::t("chat-call-no-microphone"));
+    } else {
+        assert_eq!(resting, crate::i18n::t("chat-call-mute"));
+        assert_eq!(muted, crate::i18n::t("chat-call-unmute"));
+        assert_ne!(
+            resting, muted,
+            "the microphone's hover names the state it is in"
+        );
+    }
+    assert_eq!(tip(&app, camera), crate::i18n::t("chat-call-camera-on"));
+    assert_eq!(tip(&app, leave), crate::i18n::t("chat-call-leave-action"));
+}

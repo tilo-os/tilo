@@ -47,8 +47,6 @@ mod tests {
         "chat-call-open",
         "chat-call-join",
         "chat-call-leave-action",
-        "chat-call-mute-action",
-        "chat-call-unmute-action",
         "chat-call-status",
         "chat-call-people-two",
         "chat-call-people-many",
