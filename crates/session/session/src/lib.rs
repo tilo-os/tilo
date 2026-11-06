@@ -49,6 +49,7 @@ mod capture_grants;
 mod capture_io;
 mod capture_send;
 mod capture_studio;
+mod cards;
 mod certification;
 mod channels;
 mod chrome;
@@ -1353,9 +1354,15 @@ impl Session {
         // A timer starting in the background must reach the bar on the next
         // frame, not the next minute.
         live_activities.set_host_wake(options.wake.handle());
-        let activities = Rc::new(chrome::Activities::new(std::sync::Arc::clone(
-            &live_activities,
-        )));
+        // The cards apps draw themselves, over the desk: the session
+        // authorises what each presents, and the floating layer's place is
+        // where the desk stands its window.
+        let cards = crate::cards::Cards::new();
+        desktop.with_policy(|policy| policy.use_cards(cards.placements()));
+        let activities = Rc::new(chrome::Activities::new(
+            std::sync::Arc::clone(&live_activities),
+            cards.clone(),
+        ));
         // An application's tray item registering, changing or going away is
         // read off the loop: it must reach the bar on the next frame.
         let tray = options
@@ -1501,6 +1508,7 @@ impl Session {
             &mut compositor,
             &mut doors,
             &activities,
+            &cards,
             banner_stack.clone(),
             readout_band.clone(),
             &options,
@@ -1770,6 +1778,7 @@ impl Session {
         let tabs = mount::app_tabs::AppTabs::start(
             std::sync::Arc::clone(&options.launches),
             options.wake.handle(),
+            cards,
         )
         .map_err(|error| tracing::warn!(%error, "the shell-ui service does not run"))
         .ok();

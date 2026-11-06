@@ -168,9 +168,7 @@ impl FloatingLayer {
     pub fn shown(&self) -> Shown {
         Shown {
             cards: self
-                .layout
-                .cards
-                .iter()
+                .drawn()
                 .map(|card| {
                     (
                         card.app.clone(),
@@ -195,10 +193,14 @@ impl FloatingLayer {
     /// shadows, so a press beside a card reaches the window under it.
     #[must_use]
     pub fn accepts(&self, point: Point) -> bool {
-        self.layout
-            .cards
-            .iter()
-            .any(|card| card.rect.contains(point))
+        self.drawn().any(|card| card.rect.contains(point))
+    }
+
+    /// The cards the layer draws: an app's own card is a window of its own,
+    /// so the layer keeps its place and paints, presses and names nothing of
+    /// it.
+    fn drawn(&self) -> impl DoubleEndedIterator<Item = &Placed> {
+        self.layout.cards.iter().filter(|card| !card.rich)
     }
 
     /// Draw the cards. Everything else on the surface stays clear.
@@ -209,7 +211,7 @@ impl FloatingLayer {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        for card in &self.layout.cards {
+        for card in self.layout.cards.iter().filter(|card| !card.rich) {
             let rect = self.dragged(card);
             paint_card_shadow(scene, transform, rect, 1.0, theme);
             paint_card_body(scene, transform, rect, theme);
@@ -321,9 +323,7 @@ impl FloatingLayer {
 
     fn press_at(&mut self, point: Point) -> Vec<Ask> {
         let Some(card) = self
-            .layout
-            .cards
-            .iter()
+            .drawn()
             .rev()
             .find(|card| card.rect.contains(point))
             .cloned()
@@ -471,13 +471,11 @@ impl FloatingLayer {
     /// by the activity's title, with its reading and its controls.
     #[must_use]
     pub fn accessibility(&self) -> Option<AccessNode> {
-        if self.layout.cards.is_empty() {
+        if self.drawn().next().is_none() {
             return None;
         }
         let groups = self
-            .layout
-            .cards
-            .iter()
+            .drawn()
             .map(|card| {
                 let summary = &card.summary;
                 let mut children = vec![
@@ -540,9 +538,7 @@ impl FloatingLayer {
     /// What the layer shows, for a test that reads it without a screen.
     #[must_use]
     pub fn test_rects(&self) -> Vec<(String, Rect)> {
-        self.layout
-            .cards
-            .iter()
+        self.drawn()
             .map(|card| (format!("activity:{}", card.summary.id), self.dragged(card)))
             .collect()
     }

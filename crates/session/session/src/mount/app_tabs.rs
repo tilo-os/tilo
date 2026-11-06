@@ -171,6 +171,8 @@ pub struct AppTabs {
     /// The open connections, by the app each vouches for and what it was
     /// last told of its window's appearance.
     links: BTreeMap<u64, Link>,
+    /// The cards the apps draw themselves, and where the layer gives them.
+    cards: crate::cards::Cards,
     /// The questions the person is answering for Terminal's own shell.
     host_shell: HostShellAsks,
     /// The listener the apps connect to, taken off on the session's own pass,
@@ -234,7 +236,11 @@ impl AppTabs {
     /// # Errors
     /// The service's directory cannot be made, or its socket cannot be bound
     /// or served.
-    pub fn start(launches: Arc<Launches>, wake: tilo_service::Wake) -> Result<Self, String> {
+    pub(crate) fn start(
+        launches: Arc<Launches>,
+        wake: tilo_service::Wake,
+        cards: crate::cards::Cards,
+    ) -> Result<Self, String> {
         let root = launcher::services::ensure_services_root()
             .map_err(|error| format!("create the shell-ui service directory: {error}"))?;
         let path = root.join(format!("{SHELL_UI_SERVICE}.sock"));
@@ -250,6 +256,7 @@ impl AppTabs {
             requests: answers,
             withheld: BTreeMap::new(),
             links: BTreeMap::new(),
+            cards,
             host_shell: HostShellAsks::default(),
             socket,
         })
@@ -287,6 +294,7 @@ impl AppTabs {
             studio,
             withheld: &mut self.withheld,
             links: &mut self.links,
+            cards: &self.cards,
         };
         for request in self.requests.try_iter() {
             answered.answer(&mut self.host_shell, request);
@@ -297,9 +305,113 @@ impl AppTabs {
         // A control of a window's own content, pressed where the desk lists
         // it, goes to the app drawing that window.
         answered.deliver_target_presses();
+        drop(answered);
+        // Where each app's own card stands this pass: the floating layer's
+        // place, which the desk lays the app's window out by.
+        self.follow_cards(desktop, compositor);
         // The person may have answered a question about the device's own
         // shell since the last pass.
         self.host_shell.settle(services);
+    }
+
+    /// Stand each app's own card where the floating layer put it this pass,
+    /// and stand it down while the app's own window is on the desk: there the
+    /// app draws the activity itself, and its card waits out of sight.
+    ///
+    /// The layer decides the place; the app's own geometry is a request it
+    /// made when presenting, and its window is laid out by what this says.
+    fn follow_cards(&mut self, desktop: &DesktopHost, compositor: &mut Compositor) {
+        let placements = self.cards.placements();
+        let mut moved = false;
+        for card in self.cards.presented() {
+            let in_view = desktop.with_policy(|policy| policy.shows(&card.app));
+            self.cards.see(&card.app, &card.activity, in_view);
+            let wanted = if in_view || card.stood_down {
+                None
+            } else {
+                self.cards
+                    .slot(&card.app, &card.activity)
+                    .map(|window| (window, card.body(window)))
+            };
+            let Some(link) = self.links.get(&card.connection) else {
+                continue;
+            };
+            match (wanted, card.told) {
+                (Some((_, body)), Some(told)) if body == told => {}
+                (Some((window, body)), _) => {
+                    self.cards.told(&card.app, &card.activity, Some(body));
+                    tell(
+                        &link.writer,
+                        &FloatingSurfaceHostMessage::PrepareSurface {
+                            id: card.activity.clone(),
+                            token: card.token.clone(),
+                            rect: ui::floating_surface::protocol_rect_array(window),
+                            content_rect: ui::floating_surface::protocol_rect_array(body),
+                            transfer_covered: false,
+                            coordinate_offset: [body.x0 - card.local.x, body.y0 - card.local.y],
+                        },
+                        &card.app,
+                    );
+                    placements.place(
+                        &card.token,
+                        (whole(window.width()), whole(window.height())),
+                        Some(window),
+                    );
+                    moved = true;
+                }
+                (None, None) => {}
+                (None, Some(_)) => {
+                    self.cards.told(&card.app, &card.activity, None);
+                    placements.suspend(&card.token);
+                    tell(
+                        &link.writer,
+                        &FloatingSurfaceHostMessage::Suspended {
+                            id: card.activity.clone(),
+                        },
+                        &card.app,
+                    );
+                    moved = true;
+                }
+            }
+            // The card's window is up: the app stops painting the copy it
+            // kept for the handoff, and the card alone draws the activity.
+            if let Some((_, body)) = wanted
+                && placements.drawn(&card.token)
+                && self.cards.adopt(&card.app, &card.activity)
+            {
+                tell(
+                    &link.writer,
+                    &FloatingSurfaceHostMessage::Adopted {
+                        id: card.activity.clone(),
+                        rect: ui::floating_surface::protocol_rect_array(body),
+                    },
+                    &card.app,
+                );
+            }
+        }
+        // A card's window that went away leaves the app drawing it on the
+        // desk with nothing to draw it in: send it home, and it presents the
+        // card again.
+        for token in self.cards.lost() {
+            let Some(card) = self.cards.by_token(&token) else {
+                continue;
+            };
+            placements.suspend(&token);
+            self.cards.told(&card.app, &card.activity, None);
+            if let Some(link) = self.links.get(&card.connection) {
+                tell(
+                    &link.writer,
+                    &FloatingSurfaceHostMessage::Reattach {
+                        id: card.activity.clone(),
+                    },
+                    &card.app,
+                );
+            }
+            moved = true;
+        }
+        if moved {
+            compositor.rearrange();
+        }
     }
 
     /// Give every open window the appearance of the desk it stands on: the
@@ -368,9 +480,25 @@ struct Answers<'a> {
     studio: Option<&'a CaptureStudio>,
     withheld: &'a mut BTreeMap<u64, String>,
     links: &'a mut BTreeMap<u64, Link>,
+    cards: &'a crate::cards::Cards,
 }
 
 impl Answers<'_> {
+    /// The app draws its activity in its own window again: the desk hides
+    /// the card's window, and the app is told it stands down.
+    fn stand_down(&mut self, card: &crate::cards::Presented, reply: &Arc<Mutex<UnixStream>>) {
+        self.cards.told(&card.app, &card.activity, None);
+        self.cards.placements().suspend(&card.token);
+        self.compositor.rearrange();
+        tell(
+            reply,
+            &FloatingSurfaceHostMessage::Suspended {
+                id: card.activity.clone(),
+            },
+            &card.app,
+        );
+    }
+
     /// Answer one ask of the app it came from: an ask never changes another
     /// app's tab, and an app whose ask this session cannot answer is told so
     /// rather than left waiting.
@@ -397,6 +525,16 @@ impl Answers<'_> {
                     false,
                 );
                 self.links.remove(&connection);
+                // The cards it presented, and the windows the desk stood
+                // them in, go with it.
+                let mut gone = false;
+                for card in self.cards.connection_closed(connection) {
+                    self.cards.placements().withdraw(&card.token);
+                    gone = true;
+                }
+                if gone {
+                    self.compositor.rearrange();
+                }
                 // What this connection declared for its window's bar goes
                 // with it, as does the question it waits on.
                 self.desktop
@@ -503,18 +641,39 @@ impl Answers<'_> {
             // names none of them to assistive technology or opens what one
             // points at, so the inventory is read and adds nothing.
             FloatingSurfaceClientMessage::ActionMarkers { .. } => {}
-            // A picture in a picture and an app's second surface of its own
-            // belong to a shell that floats surfaces over the desktop. This
-            // session places every window of an app in a tab, and has no layer
-            // to float one in.
-            FloatingSurfaceClientMessage::Present { .. }
-            | FloatingSurfaceClientMessage::UpdateRegion { .. }
-            | FloatingSurfaceClientMessage::SurfaceGeometry { .. }
+            // An app's own card — a call, a route — is a window of its own:
+            // the app presents it, the floating layer decides where it
+            // stands, and the app draws the activity inline whenever its own
+            // window is on the desk.
+            FloatingSurfaceClientMessage::Present { request } => {
+                if let Err(reason) = self.cards.present(&app, connection, &request) {
+                    refuse(&reply, &app, &name, &reason);
+                }
+            }
+            // The app's own geometry is a request: the layer's place stands.
+            FloatingSurfaceClientMessage::SurfaceGeometry { .. }
             | FloatingSurfaceClientMessage::SourceCleared { .. }
-            | FloatingSurfaceClientMessage::DestinationPresented { .. }
-            | FloatingSurfaceClientMessage::Suspend { .. }
-            | FloatingSurfaceClientMessage::Dismiss { .. } => {
-                refuse(&reply, &app, &name, NO_FLOATING);
+            | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
+            // The app draws the activity in its own window again: its card
+            // stands down until it presents one again.
+            FloatingSurfaceClientMessage::Suspend { id, .. } => {
+                if let Some(card) = self.cards.stood_down(&app, connection, &id) {
+                    self.stand_down(&card, &reply);
+                }
+            }
+            // The app ended the activity: its card goes, and the window the
+            // desk stood there goes with it.
+            FloatingSurfaceClientMessage::Dismiss { id } => {
+                if let Some(card) = self.cards.dismissed(connection, &id) {
+                    self.cards.placements().withdraw(&card.token);
+                    self.compositor.rearrange();
+                }
+                tell(&reply, &FloatingSurfaceHostMessage::Closed { id }, &app);
+            }
+            // A mirror of a window's pixels has no native card here: what
+            // floats is drawn by the app that owns it.
+            FloatingSurfaceClientMessage::UpdateRegion { .. } => {
+                refuse(&reply, &app, &name, NO_REGION);
             }
             // What a window shares live, the embeds it draws of other apps'
             // resources, and the selection an agent works from: the session
@@ -690,7 +849,7 @@ const NO_CAPTURE: &str = "this session has no capture studio";
 
 /// An app asked to float a surface over the desktop, which this session has
 /// no layer for.
-const NO_FLOATING: &str = "this session floats no surface over its windows";
+const NO_REGION: &str = "this session mirrors no floating surface's region";
 
 /// An app asked to share a window live or embed another's resource.
 const NO_WINDOW_SHARE: &str = "this session shares no window live";
@@ -711,6 +870,12 @@ const NO_HISTORY: &str = "this session describes no history";
 
 /// A second greeting on a connection whose version was read when it opened.
 const SAID: &str = "this connection said its version when it opened";
+
+/// `value` as a whole logical pixel.
+#[allow(clippy::cast_possible_truncation, reason = "a card's size on a screen")]
+fn whole(value: f64) -> i32 {
+    value.round() as i32
+}
 
 /// The name `message` is sent under, as an app reads it in
 /// [`FloatingSurfaceHostMessage::Unanswered`].

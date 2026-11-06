@@ -712,21 +712,27 @@ impl State {
             .unwrap_or_default()
     }
 
-    /// How `window` is framed: its own frame, or the desktop's; a window
-    /// that fills a display is drawn as its buffer is, so the display can
-    /// show that buffer itself instead of a composed picture of it.
+    /// How `window` is framed: its own frame, or the desktop's. A card an app
+    /// draws is square, and so is a window that fills a display, so the
+    /// display can show that buffer itself instead of a composed picture of
+    /// it.
     pub(crate) fn framing(&self, window: &Window) -> crate::effects::Framing<'_> {
         crate::effects::Framing {
-            frame: describe(self, window)
-                .and_then(|info| self.window_frames.get(&info.id))
-                .copied()
-                .unwrap_or_else(|| {
-                    if self.filled_display(window).is_some() {
-                        crate::window_frame::WindowFrame::square()
-                    } else {
-                        self.frame
-                    }
-                }),
+            frame: describe(self, window).map_or(self.frame, |info| {
+                if self.policy.overlay(&info) {
+                    return crate::window_frame::WindowFrame::square();
+                }
+                self.window_frames
+                    .get(&info.id)
+                    .copied()
+                    .unwrap_or_else(|| {
+                        if self.filled_display(window).is_some() {
+                            crate::window_frame::WindowFrame::square()
+                        } else {
+                            self.frame
+                        }
+                    })
+            }),
             images: &self.frame_images,
             snapshots: &self.snapshots,
             hdr: &self.hdr,
@@ -1437,7 +1443,9 @@ impl State {
             // X11 windows know their place in the root window.
             let _ = x11.configure(Rectangle::new(location, size));
         }
-        if self.policy.focus_on_map(&info) {
+        if self.policy.overlay(&info) {
+            self.space.raise_element(window, true);
+        } else if self.policy.focus_on_map(&info) {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
         }
         self.rearrange();
@@ -1487,6 +1495,12 @@ impl State {
             // Re-mapping in stacking order keeps the order.
             self.space
                 .map_element(window.clone(), arrangement.location, activated);
+        }
+        // A card an app draws stays in front of the windows it floats over.
+        for window in self.space.elements().cloned().collect::<Vec<_>>() {
+            if describe(self, &window).is_some_and(|info| self.policy.overlay(&info)) {
+                self.space.raise_element(&window, true);
+            }
         }
         self.apply_policy_focus_and_closes();
     }

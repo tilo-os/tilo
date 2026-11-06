@@ -924,7 +924,7 @@ impl ChatApp {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
             }
-            Hit::CallLeave => self.leave_voice(doc),
+            Hit::CallLeave => self.leave_voice(),
             Hit::ToggleRightFlap => {
                 if self.pins_open && self.right_flap_open() && self.thread_open.is_none() {
                     self.pins_open = false;
@@ -1265,7 +1265,7 @@ impl ChatApp {
         }
     }
 
-    fn leave_voice(&mut self, _doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn leave_voice(&mut self) {
         let channel = self
             .native_voice
             .channel

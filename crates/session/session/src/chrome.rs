@@ -44,6 +44,8 @@ pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 /// left a card loose, and which card they touched last.
 pub(crate) struct Activities {
     board: Arc<runtime_collab::LiveActivities>,
+    /// The cards the apps draw themselves, and where the layer gives them.
+    cards: crate::cards::Cards,
     /// Per activity, the identity (its id and title) the person put away:
     /// it stays away until the app shows something with another identity.
     hidden: RefCell<std::collections::BTreeMap<String, (String, String)>>,
@@ -60,9 +62,13 @@ pub(crate) struct Activities {
 }
 
 impl Activities {
-    pub(crate) fn new(board: Arc<runtime_collab::LiveActivities>) -> Self {
+    pub(crate) fn new(
+        board: Arc<runtime_collab::LiveActivities>,
+        cards: crate::cards::Cards,
+    ) -> Self {
         Self {
             board,
+            cards,
             hidden: RefCell::default(),
             collapsed: RefCell::default(),
             pulled: RefCell::default(),
@@ -115,10 +121,18 @@ impl Activities {
                 if collapsed || !(published.overlay || pulled) {
                     return None;
                 }
-                Some((
-                    self.recently_touched(&key).unwrap_or(usize::MAX),
-                    Card::new(app, summary),
-                ))
+                let mut card = Card::new(app, summary);
+                // A call or a route is drawn by its app: the layer keeps its
+                // place, and its body comes from the app's own window while
+                // that app has no window of its own on the desk.
+                if let Some(size) = self.cards.size(&card.app, &card.summary.id) {
+                    if self.cards.in_view(&card.app, &card.summary.id) {
+                        return None;
+                    }
+                    card.size = Some(size);
+                    card.rich = self.cards.live(&card.app, &card.summary.id);
+                }
+                Some((self.recently_touched(&key).unwrap_or(usize::MAX), card))
             })
             .collect();
         cards.sort_by_key(|(order, _)| *order);
@@ -887,7 +901,7 @@ mod tests {
     #[test]
     fn a_floating_timer_is_the_bars_pill_and_its_card() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let mut published = Published::of(timer("timer-1", "Tea", 90));
         published.overlay = true;
         publish(&board, CLOCKS_APP, published);
@@ -909,13 +923,77 @@ mod tests {
         assert!(activities.cards().is_empty());
     }
 
+    /// A call's card stands where its app's presentation put it, and the
+    /// layer paints the summary there until the app's own window is up: a
+    /// card appears, and the screen never shows a blank card or two of them.
+    #[test]
+    fn a_call_card_is_the_layers_until_the_apps_own_window_is_up() {
+        const CHAT_APP: &str = "so.tilo.chat";
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let cards = crate::cards::Cards::new();
+        let activities = Activities::new(Arc::clone(&board), cards.clone());
+        let mut published = Published::of(
+            Summary::new(Kind::Call, "Ada", "0:12")
+                .with_id("chat-call:voice")
+                .with_icon("phone"),
+        );
+        published.overlay = true;
+        publish(&board, CHAT_APP, published);
+
+        // The call is the layer's own card until its app presents one.
+        let layer_drawn = activities.cards();
+        assert_eq!(layer_drawn.len(), 1);
+        assert!(layer_drawn[0].size.is_none() && !layer_drawn[0].rich);
+
+        let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
+            id: "chat-call:voice".into(),
+            title: "Ada".into(),
+            role: ui::floating_surface::FloatingSurfaceProtocolRole::ActiveCall,
+            source: ui::floating_surface::FloatingSurfaceProtocolSource::AppRegion {
+                app_id: CHAT_APP.into(),
+                region: [0.0, 0.0, 360.0, 240.0],
+            },
+            preferred_size: [360.0, 240.0],
+            aspect_ratio: None,
+            initial_rect: Some([40.0, 60.0, 400.0, 300.0]),
+            presentation_rect: Some([32.0, 52.0, 408.0, 308.0]),
+        };
+        cards.present(CHAT_APP, 1, &request).expect("a card");
+        let card = cards.presented().remove(0);
+
+        // Its place is held for the app's body, and the summary stands in
+        // until that body's window is up.
+        let waiting = activities.cards();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(
+            waiting[0].size,
+            Some(ui::vello::kurbo::Size::new(376.0, 256.0))
+        );
+        assert!(!waiting[0].rich, "the summary is the card until then");
+
+        cards.placements().place(
+            &card.token,
+            (376, 256),
+            Some(Rect::new(100.0, 100.0, 476.0, 356.0)),
+        );
+        cards.placements().mapped(&card.token, 3);
+        assert!(activities.cards()[0].rich, "the app draws it now");
+
+        // Chat's own window comes on screen: the call is drawn there, and no
+        // card stands on the desk at all.
+        cards.see(CHAT_APP, "chat-call:voice", true);
+        assert!(activities.cards().is_empty());
+        cards.see(CHAT_APP, "chat-call:voice", false);
+        assert_eq!(activities.cards().len(), 1, "and it comes back");
+    }
+
     /// Ending an activity that offers a close asks its app to end it; one
     /// that cannot be stopped from outside is put away until the app shows
     /// another one, and comes back the moment it does.
     #[tokio::test]
     async fn an_activity_is_ended_by_its_app_or_put_away() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let clocks = runtime_collab::live_activity::LiveActivityServer::new(
             CLOCKS_APP,
             Arc::clone(&board),
@@ -964,7 +1042,7 @@ mod tests {
     #[tokio::test]
     async fn a_pressed_control_reaches_its_app() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let clocks = runtime_collab::live_activity::LiveActivityServer::new(
             CLOCKS_APP,
             Arc::clone(&board),
@@ -984,7 +1062,7 @@ mod tests {
     #[test]
     fn at_most_three_cards_keep_the_most_recently_touched() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         for (app, id) in [
             ("so.tilo.maps", "route-1"),
             ("so.tilo.music", "track-1"),
@@ -1018,7 +1096,7 @@ mod tests {
     #[test]
     fn collapse_and_expand_move_an_activity_between_the_bar_and_a_card() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let mut published = Published::of(timer("timer-1", "Tea", 90));
         published.overlay = true;
         publish(&board, CLOCKS_APP, published);
@@ -1037,7 +1115,7 @@ mod tests {
     #[test]
     fn a_due_event_is_announced_once() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let notices = DesktopNotifications::default();
         let announced = || {
             notices

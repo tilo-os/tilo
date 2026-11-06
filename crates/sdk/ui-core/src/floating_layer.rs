@@ -101,6 +101,13 @@ pub struct Card {
     /// The rect the person dragged it to: `None` docks it in the corner
     /// column.
     pub loose: Option<Rect>,
+    /// The app draws this card itself, in a window of its own
+    /// ([`crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX`]): the
+    /// layer reserves the card's place and draws nothing of it.
+    pub rich: bool,
+    /// The size a rich card asked for; `None` is the size the summary's
+    /// rows take.
+    pub size: Option<Size>,
 }
 
 impl Card {
@@ -110,6 +117,20 @@ impl Card {
             app: app.into(),
             summary,
             loose: None,
+            rich: false,
+            size: None,
+        }
+    }
+
+    /// A card `app` draws itself, `size` big.
+    #[must_use]
+    pub fn rich(app: impl Into<String>, summary: Summary, size: Size) -> Self {
+        Self {
+            app: app.into(),
+            summary,
+            loose: None,
+            rich: true,
+            size: Some(size),
         }
     }
 
@@ -128,6 +149,8 @@ pub struct Placed {
     pub rect: Rect,
     /// The person dragged it loose: it stays where they left it.
     pub loose: bool,
+    /// The app draws it: the layer keeps its place and paints nothing.
+    pub rich: bool,
 }
 
 impl Placed {
@@ -180,6 +203,17 @@ pub fn card_size(work: Rect, summary: &Summary) -> Size {
         height += CARD_ROW_GAP + CARD_CONTROLS;
     }
     Size::new(width, height)
+}
+
+/// How big `card` stands on `work`: a card its app draws keeps the size its
+/// app asked for, and every other card the size its summary's rows take.
+#[must_use]
+pub fn card_extent(work: Rect, card: &Card) -> Size {
+    let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
+    match card.size {
+        Some(size) => Size::new(size.width.min(widest).max(1.0), size.height.max(1.0)),
+        None => card_size(work, &card.summary),
+    }
 }
 
 /// Whether `work` is a phone-width display.
@@ -312,38 +346,47 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
     let mut layer = Layer::default();
     let mut docked: Vec<&Card> = Vec::new();
     for card in order {
-        match card.loose {
+        match card.loose.filter(|_| !card.rich) {
             Some(left) => layer.cards.push(Placed {
                 app: card.app.clone(),
                 summary: card.summary.clone(),
-                rect: clamp_into(card_size(work, &card.summary), left, work),
+                rect: clamp_into(card_extent(work, card), left, work),
                 loose: true,
+                rich: false,
             }),
             None => docked.push(card),
         }
     }
     if narrow(work) {
-        // The pill is the only resting form on a phone; expanding drops the
-        // first card full-width from the bar.
-        match docked.split_first() {
-            Some((first, rest)) if expanded => {
-                layer.cards.push(Placed {
-                    app: first.app.clone(),
-                    summary: first.summary.clone(),
-                    rect: drop_from_the_bar(placement, first),
-                    loose: false,
-                });
-                layer.folded.extend(rest.iter().map(|card| Folded {
-                    app: card.app.clone(),
-                    activity: card.summary.id.clone(),
-                    reason: FoldReason::NoRoom,
-                }));
-            }
-            _ => layer.folded.extend(docked.iter().map(|card| Folded {
+        // The pill is the only resting form on a phone, but a rich card is
+        // the activity's own surface: it stands, full width, whether or not
+        // the person pulled anything out of the bar. Anything else drops
+        // only when they expand it.
+        let dropped = docked
+            .iter()
+            .position(|card| card.rich)
+            .or_else(|| expanded.then_some(0));
+        let mut rest = docked.clone();
+        if let Some(at) = dropped {
+            let first = rest.remove(at);
+            layer.cards.push(Placed {
+                app: first.app.clone(),
+                summary: first.summary.clone(),
+                rect: drop_from_the_bar(placement, first),
+                loose: false,
+                rich: first.rich,
+            });
+            layer.folded.extend(rest.iter().map(|card| Folded {
+                app: card.app.clone(),
+                activity: card.summary.id.clone(),
+                reason: FoldReason::NoRoom,
+            }));
+        } else {
+            layer.folded.extend(docked.iter().map(|card| Folded {
                 app: card.app.clone(),
                 activity: card.summary.id.clone(),
                 reason: FoldReason::Phone,
-            })),
+            }));
         }
         return layer;
     }
@@ -354,7 +397,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
         column.bottom
     };
     for card in docked {
-        let size = card_size(work, &card.summary);
+        let size = card_extent(work, card);
         let rect = if corner.from_top() {
             Rect::from_origin_size((column.x, cursor), size)
         } else {
@@ -371,6 +414,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
                 summary: card.summary.clone(),
                 rect,
                 loose: false,
+                rich: card.rich,
             });
             cursor = if corner.from_top() {
                 rect.y1 + CARD_GAP
@@ -401,7 +445,7 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     let work = placement.work;
     let width = docked
         .iter()
-        .map(|card| card_size(work, &card.summary).width)
+        .map(|card| card_extent(work, card).width)
         .fold(0.0_f64, f64::max);
     let x = if corner.from_left() {
         work.x0 + EDGE_INSET
@@ -441,7 +485,7 @@ fn overlaps_lane(lane: &Rect, band: Rect) -> bool {
 fn drop_from_the_bar(placement: &Placement, card: &Card) -> Rect {
     let work = placement.work;
     let width = (work.width() - 2.0 * EDGE_INSET).max(0.0);
-    let height = card_size(work, &card.summary).height;
+    let height = card_extent(work, card).height;
     let mut top = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
     if let Some(banners) = placement.banners
         && banners.y1 + CARD_GAP > top

@@ -233,6 +233,15 @@ impl Desk {
     /// is hidden with its parent.
     fn floating(&self, window: u64, size: (i32, i32)) -> Option<LayoutPoint> {
         let (ox, oy) = self.host.placement().origin;
+        // A card stands exactly where the floating layer put it, and nowhere
+        // while it is suspended.
+        if self.policy.draws_card(window) {
+            let at = self.policy.card_place(window)?;
+            return Some(LayoutPoint::from((
+                ox.saturating_add(round(at.x0)),
+                oy.saturating_add(round(at.y0)),
+            )));
+        }
         let (_, area) = self
             .policy
             .layout()
@@ -932,12 +941,26 @@ impl WindowPolicy for StripPolicy {
         desk.primary = primary.map(str::to_owned);
     }
 
+    fn overlay(&self, window: &WindowInfo) -> bool {
+        self.desk.borrow().policy.draws_card(window.id)
+    }
+
+    /// A card's window takes no focus: the person works in the workspace it
+    /// floats over, and the card is a view of the activity, not a place to
+    /// type.
+    fn focus_on_map(&mut self, window: &WindowInfo) -> bool {
+        !self.desk.borrow().policy.draws_card(window.id)
+    }
+
     fn initial_size(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) -> Option<(i32, i32)> {
         self.map(window, outputs);
         if !self.pending.contains(&window.id) {
             self.pending.push(window.id);
         }
-        // A dialog picks its own size.
+        // A dialog picks its own size, and a card the size its app asked for.
+        if let Some(size) = self.desk.borrow().policy.card_size(window.id) {
+            return Some(size);
+        }
         let rect = self.desk.borrow().shown(window.id)?;
         Some((rect.size.w, rect.size.h))
     }
