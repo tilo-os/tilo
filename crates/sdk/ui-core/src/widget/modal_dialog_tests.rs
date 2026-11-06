@@ -1150,6 +1150,82 @@ fn a_tall_body_scrolls_inside_a_sheet_that_takes_the_window() {
     assert!(d.scroll_offset().abs() < 1e-9);
 }
 
+/// A sheet whose body is too short for what it holds ends above the row
+/// the window's edge falls in, and the rows below are reached by scrolling:
+/// a person never sees half a row under the footer.
+#[test]
+fn an_overflowing_body_ends_above_the_row_it_cuts() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let block = |height: f32| {
+        Box::new(
+            crate::widget::Container::new()
+                .with_no_padding()
+                .with_size(200.0, height),
+        ) as Box<dyn Widget>
+    };
+    let pane = crate::widget::Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(block(300.0))
+        .push(block(300.0))
+        .push(block(300.0));
+    let content = crate::widget::Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(block(60.0))
+        .push(Box::new(pane));
+    let mut d = ModalDialog::new("Settings", content).open(true);
+    lay_out(&mut d, WINDOW, &theme);
+    let body = d.body_rect();
+    let rows = d.content().children();
+    let pane_rows: Vec<Rect> = rows[1]
+        .children()
+        .iter()
+        .map(|row| row.get_rect())
+        .collect();
+    assert_eq!(pane_rows.len(), 3);
+    assert!(
+        body.y1 < d.content().get_rect().y1 - 0.5,
+        "the body is shorter than its content: {:?}",
+        body
+    );
+    assert!(
+        body.y1 >= rows[0].get_rect().y1 - 0.5,
+        "the header row stays whole"
+    );
+    assert!(
+        body.y1 <= pane_rows[1].y0 + 0.5,
+        "the body ends above the row it would cut: body {:?}, row {:?}",
+        body,
+        pane_rows[1]
+    );
+    for row in &pane_rows {
+        assert!(
+            body.y1 <= row.y0 + 0.5 || body.y1 >= row.y1 - 0.5,
+            "no row is cut through: body {:?}, row {row:?}",
+            body
+        );
+    }
+    // Everything below the body is reached by scrolling, and the content
+    // ends flush with the body once it has.
+    dispatch(&mut d, &cursor_at(body.center()));
+    for _ in 0..400 {
+        dispatch(&mut d, &wheel(-3.0));
+    }
+    lay_out(&mut d, WINDOW, &theme);
+    assert!(
+        d.scroll_offset() > 0.0,
+        "the rows the body holds back are scrolled to"
+    );
+    assert!(
+        (d.content().get_rect().y1 - d.body_rect().y1).abs() < 0.5,
+        "the last row stands whole at the body's edge: {:?}",
+        d.body_rect()
+    );
+}
+
 #[test]
 fn a_three_way_question_stands_in_the_platform_order() {
     use crate::platform::{Platform, PlatformConventions};
