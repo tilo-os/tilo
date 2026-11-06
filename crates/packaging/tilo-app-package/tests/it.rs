@@ -10,6 +10,8 @@ mod fixtures;
 
 #[path = "app_manifests.rs"]
 mod app_manifests;
+#[path = "format_1_app.rs"]
+mod format_1_app;
 #[path = "image.rs"]
 mod image;
 #[path = "manifest.rs"]
