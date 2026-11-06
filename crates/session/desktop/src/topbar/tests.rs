@@ -1376,6 +1376,49 @@ fn the_clock_pill_hugs_the_time_and_holds_its_width() {
     assert!(x1 - x0 >= f64::from(time), "the time fits its content lane");
 }
 
+/// A phone-wide bar grows its centre lane around a live activity's reading
+/// rather than pinning it to the clock's width: the highlight stands centred
+/// behind the text it belongs to, and the workspace name beside it yields
+/// instead of drawing underneath.
+#[test]
+fn a_narrow_bar_centres_its_pill_on_the_reading_it_shows() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: Vec::new(),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    lay_out_and_draw(&mut bar, 520.0);
+    let clock = (bar.center_rect, bar.center_lane);
+    chrome.borrow_mut().activities = vec![
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Call, "Ada and Milo", "0:42")
+            .with_id("chat-call:c_huddle"),
+    ];
+    bar.refresh_status_and_media_state();
+    lay_out_and_draw(&mut bar, 520.0);
+    let (pill, lane) = (bar.center_rect, bar.center_lane);
+    assert!(
+        pill.width() > clock.0.width(),
+        "the pill stands on its reading, not the clock's width: {pill:?} beside {clock:?}"
+    );
+    assert!(
+        (pill.center().x - bar.rect.center().x).abs() <= 1.0,
+        "the highlight is centred behind the text it belongs to: {pill:?} in {:?}",
+        bar.rect
+    );
+    let band_left = bar.rect.center().x - lane.width() / 2.0;
+    assert!(
+        bar.ws_pill_rect.x1 <= band_left + 1.0,
+        "the workspace name yields to the pill: {:?} beside a lane from {band_left}",
+        bar.ws_pill_rect
+    );
+}
+
 #[test]
 fn new_activity_temporarily_shows_over_the_time() {
     let mut tree = DesktopTree {
