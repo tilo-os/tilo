@@ -96,7 +96,7 @@ view conversation_row(c: Conversation) {
 /// A conversation's window: its messages, the latest at the foot, above the composer. What is
 /// typed there is the person's own until they send it.
 view thread(c: Conversation) {
-    lens draft: Text
+    state draft: Text
     std.transcript(c, c.messages, row: message) {
         composer: {
             row {

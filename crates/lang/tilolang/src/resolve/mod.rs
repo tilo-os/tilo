@@ -2006,7 +2006,7 @@ impl Resolver<'_> {
     }
 
     /// A view of the module expanded where it is called: its name taken, its body checked at
-    /// each call, its `window` and `lens` declarations made the view's own state.
+    /// each call, its `state` declarations made the view's own state.
     fn template(&mut self, v: &ast::ViewDecl) {
         if self.env.own_callable(&v.name.name).is_some()
             || self.env.template(None, &v.name.name).is_some()
@@ -2285,7 +2285,7 @@ impl Resolver<'_> {
         })
     }
 
-    /// The `window` and `lens` declarations at the top of a view body.
+    /// The `state` declarations at the top of a view body.
     fn states(&mut self, v: &ast::ViewDecl, lock: &IdsLock) {
         for s in &v.body {
             let ast::UiKind::State(d) = &s.kind else {
@@ -2312,7 +2312,6 @@ impl Resolver<'_> {
                 view: v.name.name.clone(),
                 name: d.name.name.clone(),
                 id: id_of(lock, &format!("{}.{}", v.name.name, d.name.name)),
-                layer: d.layer,
                 ty,
             });
         }

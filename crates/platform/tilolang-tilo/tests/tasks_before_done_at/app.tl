@@ -266,8 +266,8 @@ fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
 /// window's, so everyone looking sees the same list; what is typed in the entry at its foot is
 /// each person's own until Enter adds it.
 view home(t: Tasks) {
-    window place: Text = "is:inbox"
-    lens draft: Text
+    state place: Text = "is:inbox"
+    state draft: Text
     // The named filters are the places; a priority is picked in search.
     let places = filters(Task).filter(f -> f.toggle and f.key != "priority")
     let shown = t.items.matching(place)
@@ -330,7 +330,7 @@ view home(t: Tasks) {
 /// A project's window: its tasks, in order, with the entry that adds to it at their foot; or,
 /// shown as a board (its Board toggle), the same tasks as a lane per section.
 view project_page(p: Project) {
-    lens draft: Text
+    state draft: Text
     if p.board {
         project_board(p)
     } else {

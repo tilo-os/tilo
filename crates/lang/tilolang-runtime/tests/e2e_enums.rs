@@ -1,5 +1,5 @@
 //! Enums, unions and view state end to end: enum values and union references in fields, through sync
-//! and in views, and `window`/`lens` state bound to controls.
+//! and in views, and view state bound to controls.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -60,8 +60,8 @@ fn describe(s: Shape) -> Text {
 }
 
 view drawing(c: Canvas) {
-    lens query: Text
-    window zoom: Float = 1.0
+    state query: Text
+    state zoom: Float = 1.0
     page {
         if let s = c.shape {
             text(describe(s))
@@ -175,7 +175,7 @@ view drawing(c: Canvas) {
     }
 
     #[test]
-    fn a_bound_window_value_is_the_persons_own_like_a_lens() {
+    fn a_bound_state_value_is_each_persons_own() {
         let store = AmStore::new();
         let (rt, app, canvas) = setup(&store);
         let (ada, bo) = (Principal::new("person:ada"), Principal::new("person:bo"));
@@ -222,7 +222,7 @@ view drawing(c: Canvas) {
         assert_eq!(
             texts(&vb).last().unwrap(),
             " at 1",
-            "Bo's window shows his own zoom, and his own lens"
+            "Bo's window shows his own zoom, and his own view state"
         );
         assert_eq!(vb.bound_value(&inputs(&vb)[0]), Some(Value::text("")));
         assert_eq!(
@@ -252,9 +252,9 @@ action say(t: Talk, s: Text) {
 }
 
 view talk(t: Talk) {
-    lens open: Bool = false
-    lens draft: Text
-    window n: Int = 0
+    state open: Bool = false
+    state draft: Text
+    state n: Int = 0
     page {
         text(if open { "open" } else { "shut" })
         text("{n} more")

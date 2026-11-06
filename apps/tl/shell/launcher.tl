@@ -9,7 +9,7 @@
 /// keeps can go stale.
 /// The launcher, with the person's last query in the field.
 view launcher(d: Desk) {
-    lens query: Text = d.spotlight
+    state query: Text = d.spotlight
     let typed = query != ""
     let windows = if typed {
         d.windows.matching(query).sort_by(w -> w.recency).take(10)

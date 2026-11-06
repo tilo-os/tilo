@@ -1,7 +1,7 @@
 //! A live view: its tree, the fields and view state it depends on, and the events it can take.
 //!
-//! A view runs in a window (workspace-model.md, "Windows") for one person. Its `window` state
-//! is how that person's window shows the resource, `lens` state where they are in it; both are
+//! A view runs in a window (workspace-model.md, "Windows") for one person. The state it
+//! declares is how that person's window shows the resource and where they are in it; it is
 //! kept per person and window, so nobody else's view of the same window moves with them.
 
 use std::cell::RefCell;
@@ -25,7 +25,7 @@ use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 use crate::view::{BindTarget, Patch, UiNode};
-use crate::view_state::{StateKey, StateLayer};
+use crate::view_state::StateKey;
 
 /// Something a view asks of the host that the runtime does not do itself.
 #[derive(Clone, Debug, PartialEq)]
@@ -416,26 +416,26 @@ impl ViewInstance {
         self.run(aref)
     }
 
-    /// The lens state `state` of this view's person in its window, when it was ever set.
+    /// The view state `state` of this view's person in its window, when it was ever set.
     #[must_use]
-    pub fn lens(&self, state: &str) -> Option<Value> {
+    pub fn view_state(&self, state: &str) -> Option<Value> {
         self.core
             .view_states
             .borrow()
-            .get(&self.lens_key(state))
+            .get(&self.state_key(state))
             .cloned()
     }
 
-    /// Set the lens state `state` of this view's person in its window.
-    pub fn set_lens(&self, state: &str, value: Value) {
+    /// Set the view state `state` of this view's person in its window.
+    pub fn set_view_state(&self, state: &str, value: Value) {
         self.core
             .view_states
             .borrow_mut()
-            .set(self.lens_key(state), value);
+            .set(self.state_key(state), value);
     }
 
-    fn lens_key(&self, state: &str) -> StateKey {
-        StateKey::lens(
+    fn state_key(&self, state: &str) -> StateKey {
+        StateKey::view(
             self.live.window.clone(),
             self.live.viewer.0.clone(),
             state.to_owned(),
@@ -576,23 +576,16 @@ impl ViewInstance {
     /// person's window. A slot belongs to the person it was rendered for; nobody presses
     /// another's controls.
     fn platform_set(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let [window, principal, layer, state, value] = aref.args.as_slice() else {
+        let [window, principal, state, value] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
         let text = |v: &Value| v.as_text().map(str::to_owned);
-        let (Some(window), Some(principal), Some(layer), Some(state)) =
-            (text(window), text(principal), layer.as_int(), text(state))
+        let (Some(window), Some(principal), Some(state)) =
+            (text(window), text(principal), text(state))
         else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
-        let layer = i32::try_from(layer)
-            .ok()
-            .and_then(StateLayer::from_code)
-            .ok_or_else(|| RuntimeError::BadArgs(format!("unknown view state layer {layer}")))?;
-        let key = match layer {
-            StateLayer::Window => StateKey::window(window, principal, state),
-            StateLayer::Lens => StateKey::lens(window, principal, state),
-        };
+        let key = StateKey::view(window, principal, state);
         self.core.view_states.borrow_mut().write(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }
@@ -607,7 +600,11 @@ impl ViewInstance {
         let Some(state) = state.as_text() else {
             return Err(RuntimeError::BadArgs("a malformed `keep`".into()));
         };
-        let key = self.lens_key(state);
+        let key = StateKey::runtime(
+            self.live.window.clone(),
+            Some(self.live.viewer.0.clone()),
+            state.to_owned(),
+        );
         self.core.view_states.borrow_mut().set(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }

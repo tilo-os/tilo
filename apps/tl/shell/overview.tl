@@ -12,7 +12,7 @@
 /// sidebar of its own. The page keeps its gutter, so the overview stands inside the desk the way
 /// every other page does.
 view overview(d: Desk) {
-    lens query: Text = d.spotlight
+    state query: Text = d.spotlight
     let windows = d.windows.sort_by(w -> w.place)
     let here = windows.filter(w -> w.workspace_key == front_workspace(d))
     page(full) {

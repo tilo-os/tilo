@@ -23,7 +23,7 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
 3. **Scenarios set recorded inputs.** `invoke(post(...), by: mia, at: 2026-06-29T07:02Z)` runs
    the call as mia at that time, so `now` and `invoker` are what the data was made with. Seed
    data stops overwriting fields after the fact.
-4. **Typing is personal.** Text being composed is lens state in the view (`lens draft: Text`),
+4. **Typing is personal.** Text being composed is view state in the view (`state draft: Text`),
    passed to the action as an argument. A shared `draft` field on a conversation or list is a
    bug: two people typing overwrite each other.
 5. **Positions are recorded by neighbour.** A move names a neighbour (`after:`, `before:`) or a

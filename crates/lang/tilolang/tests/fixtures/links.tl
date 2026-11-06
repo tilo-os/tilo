@@ -121,7 +121,7 @@ action write_under(n: Note, title: Text = "under") -> Note (label: "Write") {
 /// A note's page: what is written under it is written from it, so the button that writes says
 /// `.made_from(n)` and the change it makes records the note as what it was made from.
 view note_page(n: Note) {
-    lens draft: Text
+    state draft: Text
     stack {
         input(bind: draft, placeholder: "Write")
         button(write_under(n).made_from(n))

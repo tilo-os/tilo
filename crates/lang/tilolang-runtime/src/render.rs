@@ -1023,7 +1023,7 @@ impl Core {
         if views.len() < 2 {
             return (None, None);
         }
-        let key = StateKey::window(
+        let key = StateKey::view(
             offer.window,
             offer.viewer.0.clone(),
             format!("{VIEW_STATE}{}", resource.target.id_string()),
@@ -1046,12 +1046,12 @@ impl Core {
     }
 
     /// The view a `show` node draws its resource through: the one a person chose in the bar's
-    /// view switch (the tab of [`surfaces`](Core::surfaces), kept in the window state slot
+    /// view switch (the tab of [`surfaces`](Core::surfaces), kept in the view state slot
     /// [`VIEW_STATE`] names for the resource, read here so the window runs again when it
     /// changes). `None` while nobody chose, or the choice names a view the resource's type does
     /// not offer any more.
     fn chosen_view(&self, resource: &RefValue, offer: Offer<'_>, acc: &mut Acc) -> Option<ViewId> {
-        let key = StateKey::window(
+        let key = StateKey::view(
             offer.window,
             offer.viewer.0.clone(),
             format!("{VIEW_STATE}{}", resource.target.id_string()),

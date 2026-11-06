@@ -794,9 +794,9 @@ impl Runtime {
         )
     }
 
-    /// Open a view for `principal` in the window `window`: its `window` state is how their
-    /// window shows the resource and its `lens` state where they are in it, both that person's
-    /// own, so another person looking at the same window is not moved by either.
+    /// Open a view for `principal` in the window `window`: the state it declares is how their
+    /// window shows the resource and where they are in it, that person's own, so another person
+    /// looking at the same window is not moved by it.
     ///
     /// # Errors
     ///
@@ -1127,19 +1127,19 @@ impl Runtime {
         std::mem::take(&mut *self.core.seen_writes.borrow_mut())
     }
 
-    /// The window and lens state the person set in views since last asked, for the host to
+    /// The view state the person set in views since last asked, for the host to
     /// keep in their own record: one entry per slot, as it is now.
     pub fn take_view_writes(&self) -> Vec<(crate::view_state::StateKey, Value)> {
         self.core.view_states.borrow_mut().take_writes()
     }
 
-    /// Put back a slot of window or lens state the person's record keeps: what they picked
+    /// Put back a slot of view state the person's record keeps: what they picked
     /// here before, or on another device of theirs. A slot already holding it is left alone.
     pub fn set_view_state(&self, key: crate::view_state::StateKey, value: Value) -> bool {
         self.core.view_states.borrow_mut().restore(key, value)
     }
 
-    /// Stage the value the window state `state` of the app `app` starts from, before anyone
+    /// Stage the value the view state `state` of the app `app` starts from, before anyone
     /// picks there: `text` names the value as the app's own code writes it (`Task.today`,
     /// `Side.right`), read against the state's declared type. A window that reads the state
     /// shows it until its person picks there, and it is no one's change to keep.
@@ -1148,7 +1148,7 @@ impl Runtime {
     ///
     /// A message when the app declares no such state, or the state takes no such value.
     pub fn stage_view_state(&self, app: &str, state: &str, text: &str) -> Result<(), String> {
-        let (id, layer, value) = {
+        let (id, value) = {
             let reg = self.core.registry.borrow();
             let pkg = reg
                 .packages()
@@ -1156,19 +1156,10 @@ impl Runtime {
                 .find(|pkg| pkg.meta.app == app)
                 .ok_or_else(|| format!("no loaded package is the app `{app}`"))?;
             let declared = crate::staging::declared_state(&pkg.meta, app, state)?;
-            let layer = match declared.layer.as_str() {
-                "window" => crate::view_state::StateLayer::Window,
-                "lens" => crate::view_state::StateLayer::Lens,
-                other => {
-                    return Err(format!(
-                        "`{other}` is no layer of view state: a state is a `window` or a `lens`"
-                    ));
-                }
-            };
             let value = crate::staging::state_value(&reg, app, &pkg.meta, &declared.ty, text)?;
-            (declared.id, layer, value)
+            (declared.id, value)
         };
-        self.core.view_states.borrow_mut().seed(layer, &id, value);
+        self.core.view_states.borrow_mut().seed(&id, value);
         Ok(())
     }
 

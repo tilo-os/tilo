@@ -810,7 +810,7 @@ fn a_window_is_what_its_view_builds_and_std_frames_check_their_parts() {
         "{head}view v(x: T) {{\n    stack {{\n        text(x.t)\n    }}\n}}"
     ));
     ok(&format!(
-        "{head}view v(x: T) {{\n    window n: Int = 0\n    let s = x.t\n    std.page(x, canvas: true) {{\n        text(s)\n    }}\n}}"
+        "{head}view v(x: T) {{\n    state n: Int = 0\n    let s = x.t\n    std.page(x, canvas: true) {{\n        text(s)\n    }}\n}}"
     ));
     ok(&format!(
         "{head}view v(x: T) {{\n    std.list(x, x.items) {{ i ->\n        row(i.t)\n    }}\n}}"
@@ -867,7 +867,7 @@ fn e097_lists_and_rows() {
     expect(
         "E096",
         &with_t(
-            "view v(x: T) {\n    window s: Int = 0\n    list(x.items, sort: s) { i ->\n        row(i.t)\n    }\n}",
+            "view v(x: T) {\n    state s: Int = 0\n    list(x.items, sort: s) { i ->\n        row(i.t)\n    }\n}",
         ),
     );
     expect(
@@ -907,7 +907,7 @@ fn e098_controls_and_facts_misused() {
         ),
     );
     ok(&with_t(
-        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    lens k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
+        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    state k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
     ));
 }
 
@@ -917,7 +917,7 @@ fn e098_controls_and_facts_misused() {
 fn a_date_field_binds_a_date() {
     let head = "type Task {\n    due: Option<Date> = .none\n    on: Date = Date(\"2026-10-24\")\n    t: Text\n}\n";
     ok(&format!(
-        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        ui.DateField(bind: x.due, optional: true)\n        ui.DateField(bind: x.on)\n        ui.DateField(bind: d)\n        ui.DateField(bind: o, optional: true)\n    }}\n}}"
+        "{head}view v(x: Task) {{\n    state d: Date = Date(\"2026-01-01\")\n    state o: Option<Date> = .none\n    stack {{\n        ui.DateField(bind: x.due, optional: true)\n        ui.DateField(bind: x.on)\n        ui.DateField(bind: d)\n        ui.DateField(bind: o, optional: true)\n    }}\n}}"
     ));
     expect(
         "E062",

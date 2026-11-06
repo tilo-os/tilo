@@ -664,10 +664,6 @@ impl Live {
         }
         self.state_clock = clock;
         let mut hit = Vec::new();
-        // The window state a view shows is what the rows stand in: moving it leaves that view,
-        // and the rows the person kept for looking at it settle. A lens is the person's own
-        // input (a draft they are typing), not where the view is ([`crate::live::virtual_rows`]).
-        let mut left = Vec::new();
         for (key, ids) in &self.index.states {
             let now = states.generation(key);
             for id in ids {
@@ -678,14 +674,14 @@ impl Live {
                 });
                 if moved {
                     hit.push(*id);
-                    if key.is_window() {
-                        left.push(*id);
-                    }
                 }
             }
         }
         drop(states);
-        self.settle_kept(&left);
+        // The state a view declares is what its rows stand in: moving it leaves that view, and
+        // the rows the person kept for looking at it settle
+        // ([`crate::live::virtual_rows`]).
+        self.settle_kept(&hit);
         self.dirty.extend(hit);
     }
 

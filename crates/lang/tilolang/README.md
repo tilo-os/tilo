@@ -478,8 +478,8 @@ their units and flags stay bare words. An anchor follows the call as `as name`:
 
 ```
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created     // how my window shows the notes
-    lens expanded: Option<Note> = .none    // one per person per window
+    state order: NoteOrder = .created      // how my window shows the notes
+    state expanded: Option<Note> = .none   // one per person per window
     page {
         stack(gap: .section) {
             row(distribute: .between) {
@@ -519,10 +519,10 @@ ladder of how far a view may go — options, composing `ui.*`, drawing, native w
 [components.md](../../../docs/designs/app-language/components.md#4-customizing-a-component-a-ladder).
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
-`window name: T = default` is how each person looking at the window shows its resource, and
-`lens name: T = default` is where each person is in it; both are each person's own, so one
-person's window setting or draft never moves another's view. The view reads them like
-variables; they change only through a control bound to them (`input(bind: query)`,
+`state name: T = default` is what each person looking at the window keeps in it — how their
+window shows the resource, and where they are in it; it is each person's own, so one person's
+window setting or draft never moves another's view. The view reads a slot like a
+variable; it changes only through a control bound to it (`input(bind: query)`,
 `checkbox("Open", bind: open)`) or the platform action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on
 what the invoker sees, as its parameter defaults are: an action a view applies reads the view
@@ -745,7 +745,7 @@ measures it in, read as one with `Duration(n)`.
   writes `invoke`, and the seed data it makes is what shows a feature in a capture.
 - Which place a window stands on is a run's option, not code:
   `layout-check --state place=Task.done` stages the state a view declares
-  (`window place: Filter<Task> = ...`) at a value the app's own code names, such as one of its
+  (`state place: Filter<Task> = ...`) at a value the app's own code names, such as one of its
   filters (`Task.today`) or a case of its enum (`Side.right`). A person's own choice stands
   over it, and what a run stages is never saved as anyone's change.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may

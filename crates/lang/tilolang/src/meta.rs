@@ -91,7 +91,7 @@ fn write_leb(out: &mut Vec<u8>, mut value: usize) {
     }
 }
 
-/// The record kind of each person's own state of an app's workspace: the window and lens state
+/// The record kind of each person's own state of an app's workspace: the view state
 /// they set in views and what they have seen, kept in the workspace's record of the kind
 /// (`tilo.host`'s, `$personal/<person>`), on every device of theirs and readable by every
 /// member.
@@ -316,13 +316,11 @@ pub struct VariantMeta {
     pub fields: Vec<FieldMeta>,
 }
 
-/// A `window` or `lens` declaration of a view.
+/// A `state` declaration of a view: what its person picks there, kept as theirs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateMeta {
     pub id: String,
     pub name: String,
-    /// `window` (how the person looking shows the window) or `lens` (where they are in it).
-    pub layer: String,
     #[serde(rename = "type")]
     pub ty: String,
 }

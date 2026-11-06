@@ -488,7 +488,7 @@ impl Checker<'_> {
                         "E022",
                         span,
                         format!(
-                            "`{}` needs `{}`: a `window` or `lens` declaration of this view",
+                            "`{}` needs `{}`: a `state` declaration of this view",
                             view.name.name, p.name.name
                         ),
                     ),
@@ -631,7 +631,7 @@ impl Checker<'_> {
         node
     }
 
-    /// Lowers the `window` and `lens` declarations at the top of a template's body: state of
+    /// Lowers the `state` declarations at the top of a template's body: state of
     /// the view it expands in, kept under that view's id and the template's name
     /// (`<view id>:list.query`), as the view's own is under its name. Returns the rest of the
     /// body.
@@ -656,8 +656,7 @@ impl Checker<'_> {
                 Some(e) => self.expr_as(e, &ty),
                 None => self.zero_of(&ty, d.name.span),
             };
-            let layer = Ex::new(Ek::I32(d.layer.code()), Ty::Bool);
-            let args = vec![layer, Ex::str(&id), Self::handle_of(fallback)];
+            let args = vec![Ex::str(&id), Self::handle_of(fallback)];
             let value = if ty.is_scalar() {
                 let boxed = Ty::Option(Box::new(ty.clone()));
                 Self::unwrap_opt(Ex::host(Imp::StateGet, args, boxed), &ty)
@@ -669,7 +668,6 @@ impl Checker<'_> {
             self.st.states.insert(
                 d.name.name.clone(),
                 StateRef {
-                    layer: d.layer,
                     id: id.clone(),
                     ty: ty.clone(),
                     local,
@@ -681,7 +679,6 @@ impl Checker<'_> {
                     view: self.st.view_id.clone(),
                     name: d.name.name.clone(),
                     id,
-                    layer: d.layer,
                     ty,
                 },
             ));
@@ -706,7 +703,7 @@ impl Checker<'_> {
                 "E066",
                 value.span,
                 format!(
-                    "`{}` of `{}` takes view state by its name, a `window` or `lens` declaration of this view; this view declares: {known}",
+                    "`{}` of `{}` takes view state by its name, a `state` declaration of this view; this view declares: {known}",
                     p.name.name, view.name.name
                 ),
             );

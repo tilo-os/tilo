@@ -370,7 +370,7 @@ pub enum Value {
     /// One part of what an event carries when it also says where its value lands (a drop
     /// carries `[card, at]`): 0 the value, 1 the place.
     EventPart(usize),
-    /// A `window` or `lens` slot an action reference takes as an argument (`send(c, draft)`):
+    /// A view state slot an action reference takes as an argument (`send(c, draft)`):
     /// read when the event fires, so the action gets what the person typed up to the press,
     /// whatever the view last drew. `scalar` slots hold their value boxed.
     State {

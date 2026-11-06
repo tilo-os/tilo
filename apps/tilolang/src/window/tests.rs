@@ -84,7 +84,7 @@ impl Workspace {
     }
 
     /// The window of `app` over an empty workspace as `person`, keeping `record` as their own
-    /// state of it: the window and lens state they pick, and what they have seen.
+    /// state of it: the view state they pick, and what they have seen.
     fn personal(app: &str, person: &str, record: WorkspaceRecord<Personal>) -> Self {
         crate::app::builtin::choose(app);
         let meta = crate::app::builtin::package_named(app).expect("a built-in package");

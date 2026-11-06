@@ -180,9 +180,9 @@ impl Effects<'_> {
 pub struct ViewState {
     /// The space this run of the view was offered.
     pub space: Space,
-    /// The window the view runs in: what its `window` and `lens` state is kept under.
+    /// The window the view runs in: what its `state` is kept under.
     pub window: String,
-    /// The person looking: whose `window` and `lens` state the view reads.
+    /// The person looking: whose `state` the view reads.
     pub viewer: Principal,
     /// Every view state slot read, with its generation at the time.
     pub state_reads: Vec<(StateKey, u64)>,
