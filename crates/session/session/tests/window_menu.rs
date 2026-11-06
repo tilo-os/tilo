@@ -333,6 +333,35 @@ fn a_menu_of_a_window_that_left_closes_and_offers_nothing() {
 }
 
 #[test]
+fn the_menu_names_the_window_it_is_on_and_forgets_it_when_closed() {
+    let mut session = session_with(desk_tree());
+    assert!(
+        menu(&session)["subject"].is_null(),
+        "a closed menu is about nothing"
+    );
+
+    press_tab_menu(&mut session);
+
+    let reading = menu(&session);
+    assert_eq!(
+        reading["subject"]["title"].as_str(),
+        Some("Notes"),
+        "the window as the person knows it: {reading}"
+    );
+    assert_eq!(
+        reading["subject"]["app"].as_str(),
+        Some("so.tilo.notes"),
+        "and the app that paints it"
+    );
+
+    tap(&mut session, KEY_ESCAPE);
+    assert!(
+        menu(&session)["subject"].is_null(),
+        "and closing the menu forgets the window"
+    );
+}
+
+#[test]
 fn a_row_the_window_cannot_choose_reads_with_its_reason() {
     let mut session = session_with(desk_tree());
     // A place with nowhere to go keeps its row, disabled with the reason,

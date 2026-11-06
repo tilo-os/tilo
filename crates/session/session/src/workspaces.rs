@@ -1339,20 +1339,6 @@ impl crate::Shared {
                         // belongs.
                         joined_notice(&self.notices, &listed);
                     }
-                    // A community whose home the host admitted is the
-                    // person's: from here on, no device of theirs asks its
-                    // door again — not to join it, and not to rejoin it once
-                    // they left. Only now, with the workspace held: a
-                    // community marked decided when its host refused the
-                    // enrollment was never joined, and nothing asked again.
-                    if let Some(site) = self.directory_store.community_of(&key) {
-                        if let Some(personal) = &self.personal {
-                            personal
-                                .borrow_mut()
-                                .decide_community(&site, CommunityState::Decided);
-                        }
-                        self.directory_store.forget_community(&key);
-                    }
                 }
                 Err(error) => {
                     tracing::info!(
@@ -1650,6 +1636,20 @@ impl crate::Shared {
                 "join: the host admitted this device but the desk would not make the workspace's slot"
             );
             self.directory_store.set_note(Some(error));
+            return;
+        }
+        // A community whose home this workspace is is the person's from here
+        // on: no device of theirs asks its door again — not to join it, and
+        // not to rejoin it once they left. Only now, with the workspace on the
+        // desk: a community marked decided when its host refused the
+        // enrollment was never joined, and nothing asked again.
+        if let Some(site) = self.directory_store.community_of(workspace_id) {
+            if let Some(personal) = &self.personal {
+                personal
+                    .borrow_mut()
+                    .decide_community(&site, CommunityState::Decided);
+            }
+            self.directory_store.forget_community(workspace_id);
         }
     }
 }

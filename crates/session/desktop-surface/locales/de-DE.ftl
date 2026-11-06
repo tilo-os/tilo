@@ -1178,6 +1178,14 @@ answer-reopen = Wieder öffnen
 answer-why-unknown-app = Es gibt keine App, die das öffnet.
 answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
 answer-why-cannot-start = Apps können gerade nicht gestartet werden.
+# Ein Kürzel des Desktops, für das eine Browserseite keine Oberfläche hat: sie
+# sagt das, statt nichts zu tun.
+answer-capture-not-in-browser = Bildschirmfotos und Aufnahmen gibt es in Tilo auf einem Computer
+answer-why-capture-not-in-browser = Dafür braucht es den ganzen Bildschirm, den eine Browserseite nicht hat.
+answer-guide-not-in-browser = Die Tastenkürzel-Übersicht gibt es in Tilo auf einem Computer
+answer-why-guide-not-in-browser = Sie öffnet sich über dem ganzen System, das eine Browserseite nicht ist.
+answer-remote-not-in-browser = Fernsteuerung gibt es in Tilo auf einem Computer
+answer-why-remote-not-in-browser = Hier steht nichts unter der Kontrolle von jemand anderem.
 
 # Das Menü hinter dem Tilo-Zeichen der oberen Leiste und das Info-Blatt, das es öffnet
 tilo-menu-about = Über diesen Computer
@@ -1444,13 +1452,13 @@ window-menu-maximize = Den Streifen füllen
 window-menu-restore = Den Streifen zurückgeben
 window-menu-move-to-strip = In eine Leiste verschieben
 window-menu-move-to-strip-named = In die Leiste { $place } verschieben
-window-menu-no-other-strip = Dieser Arbeitsbereich hat keine andere Leiste
+window-menu-no-other-strip = Keine andere Leiste
 window-menu-move-to-workspace = In einen Arbeitsbereich verschieben
 window-menu-move-to-workspace-named = In den Arbeitsbereich { $place } verschieben
-window-menu-no-other-workspace = Es gibt keinen anderen Arbeitsbereich
+window-menu-no-other-workspace = Kein anderer Arbeitsbereich
 window-menu-move-to-display = Auf einen Bildschirm verschieben
 window-menu-move-to-display-named = Auf { $place } verschieben
-window-menu-no-other-display = Dieses Fenster ist auf dem einzigen Bildschirm
+window-menu-no-other-display = Nur ein Bildschirm
 window-menu-width-half = Halb so breit wie die Leiste
 window-menu-width-narrow = Schmal
 window-menu-width-normal = Normal
@@ -1458,17 +1466,17 @@ window-menu-width-wide = Breit
 window-menu-width-equal = Alle Fenster gleich
 window-menu-wider = Breiter
 window-menu-narrower = Schmaler
-window-menu-widest = So breit wie der Streifen
-window-menu-narrowest = So schmal wie ein Fenster sein kann
+window-menu-widest = Breitest
+window-menu-narrowest = Schmalst
 window-menu-new-tab = Neuer Tab dieser App
-window-menu-not-yours-to-open = Du siehst hier nur zu
-window-menu-no-app = Dieses Fenster führt hier keine App aus
+window-menu-not-yours-to-open = Nur zusehen
+window-menu-no-app = Keine App hier
 window-menu-split-right = Nach rechts teilen
 window-menu-new-group = In ein neues Fenster verschieben
 window-menu-close = Schließen
 window-menu-close-window = Dieses Fenster schließen
 window-menu-stop-desktop-control = Die Steuerung des Desktops beenden
-window-menu-someone-elses = { $name } hat dieses Fenster geöffnet
+window-menu-someone-elses = { $name }s Fenster
 # The desk's widgets: what each is called, and what its controls do.
 desk-widget-music = Musik
 desk-widget-team = Menschen hier

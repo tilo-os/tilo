@@ -79,6 +79,9 @@ struct Inner {
     subs: Vec<Subscription>,
     next_sub: u64,
     journals: BTreeMap<RunId, String>,
+    /// The runs that have not finished: each document a run wrote, as it was before the run's
+    /// first change, so that a run that fails anywhere takes everything it wrote back out.
+    runs: BTreeMap<String, BTreeMap<DocId, Vec<u8>>>,
     /// Each document's items resolved into their collections, as the document is now.
     resolved: RefCell<HashMap<DocId, Rc<Resolved>>>,
     /// The types the runtime loaded, by id: what a derived key and its parent field are found
@@ -111,6 +114,7 @@ impl AmStore {
                 subs: Vec::new(),
                 next_sub: 1,
                 journals: BTreeMap::new(),
+                runs: BTreeMap::new(),
                 resolved: RefCell::new(HashMap::new()),
                 types: BTreeMap::new(),
             })),
@@ -1029,11 +1033,39 @@ impl Store for AmStore {
             .txns
             .remove(&txn.0)
             .ok_or_else(|| StoreError::Invalid("the transaction is closed".into()))?;
+        // A run that is still open keeps each document it writes as it was before its first
+        // change, so that a failure anywhere in it takes all of it back out.
+        if let Some(run) = note.invocation.clone() {
+            let missing: Vec<DocId> = {
+                let known = inner.runs.get(&run);
+                state
+                    .touched
+                    .keys()
+                    .filter(|id| known.is_none_or(|known| !known.contains_key(*id)))
+                    .cloned()
+                    .collect()
+            };
+            let before: Vec<(DocId, Vec<u8>)> = missing
+                .into_iter()
+                .filter_map(|id| {
+                    inner
+                        .docs
+                        .get(&id)
+                        .map(|doc| (id, doc.committed_document().save()))
+                })
+                .collect();
+            inner.runs.entry(run).or_default().extend(before);
+        }
         let mut listings = state.listings;
         for (id, fields) in state.touched {
             if let Some(doc) = inner.docs.get_mut(&id) {
                 commit_with_note(doc, note)?;
             }
+            let collections: Vec<FieldKey> = fields
+                .iter()
+                .filter(|key| listings.contains_key(*key))
+                .cloned()
+                .collect();
             let listings = fields
                 .iter()
                 .filter_map(|key| {
@@ -1046,6 +1078,7 @@ impl Store for AmStore {
             inner.notify(&ChangeSummary {
                 doc: id,
                 fields: fields.into_iter().collect(),
+                collections,
                 listings,
                 by: Some(note.invoker.clone()),
             });
@@ -1063,6 +1096,36 @@ impl Store for AmStore {
                 doc.rollback();
             }
             inner.forget(id);
+        }
+    }
+
+    fn begin_run(&mut self, run: &str) {
+        self.inner
+            .borrow_mut()
+            .runs
+            .entry(run.to_owned())
+            .or_default();
+    }
+
+    fn end_run(&mut self, run: &str) {
+        self.inner.borrow_mut().runs.remove(run);
+    }
+
+    fn abort_run(&mut self, run: &str) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(before) = inner.runs.remove(run) else {
+            return;
+        };
+        for (id, bytes) in before {
+            match AutoCommit::load(&bytes) {
+                Ok(doc) => {
+                    inner.docs.insert(id.clone(), doc);
+                    inner.forget(&id);
+                }
+                Err(error) => {
+                    tracing::error!(%error, doc = %id, "a failed run's document did not go back");
+                }
+            }
         }
     }
 

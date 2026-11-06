@@ -1159,6 +1159,14 @@ answer-reopen = Reopen
 answer-why-unknown-app = No app here opens it.
 answer-why-not-opened = It was stopped before a window appeared.
 answer-why-cannot-start = Apps cannot be started right now.
+# A chord of the desktop's a browser page has no surface for: it says so,
+# rather than doing nothing.
+answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer
+answer-why-capture-not-in-browser = It needs the whole screen, which a browser page does not have.
+answer-guide-not-in-browser = The shortcut guide runs in Tilo on a computer
+answer-why-guide-not-in-browser = It opens over the whole system, which a browser page is not.
+answer-remote-not-in-browser = Remote control runs in Tilo on a computer
+answer-why-remote-not-in-browser = Nothing here is under someone else's control.
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer
@@ -1428,13 +1436,13 @@ window-menu-maximize = Fill the strip
 window-menu-restore = Give the strip back
 window-menu-move-to-strip = Move to strip
 window-menu-move-to-strip-named = Move to strip { $place }
-window-menu-no-other-strip = This workspace has no other strip
+window-menu-no-other-strip = No other strip
 window-menu-move-to-workspace = Move to workspace
 window-menu-move-to-workspace-named = Move to workspace { $place }
-window-menu-no-other-workspace = There is no other workspace
+window-menu-no-other-workspace = No other workspace
 window-menu-move-to-display = Move to display
 window-menu-move-to-display-named = Move to display { $place }
-window-menu-no-other-display = This window is on the only display
+window-menu-no-other-display = Only display
 window-menu-width-half = Half the strip
 window-menu-width-narrow = Narrow
 window-menu-width-normal = Normal
@@ -1442,17 +1450,17 @@ window-menu-width-wide = Wide
 window-menu-width-equal = Every window the same
 window-menu-wider = Wider
 window-menu-narrower = Narrower
-window-menu-widest = As wide as the strip
-window-menu-narrowest = As narrow as a window goes
+window-menu-widest = Widest
+window-menu-narrowest = Narrowest
 window-menu-new-tab = New tab of this app
-window-menu-not-yours-to-open = You are only watching this desktop
-window-menu-no-app = This window runs no app here
+window-menu-not-yours-to-open = Watching only
+window-menu-no-app = No app here
 window-menu-split-right = Split right
 window-menu-new-group = Move to a new window
 window-menu-close = Close
 window-menu-close-window = Close this window
 window-menu-stop-desktop-control = Stop controlling the desktop
-window-menu-someone-elses = { $name } opened this window
+window-menu-someone-elses = { $name }'s window
 
 # The desk's widgets: what each is called, and what its controls do.
 desk-widget-music = Music

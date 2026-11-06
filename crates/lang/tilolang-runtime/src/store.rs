@@ -359,6 +359,11 @@ pub struct ChangeNote {
     /// for one action applied to many items at once (`many`), as many as the items.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub count: u32,
+    /// The run this change was made in, with every action it called
+    /// ([`crate::run::Journal::invocation`]): what makes one run's changes one action of the
+    /// workspace, and takes them all back when the run fails anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
 }
 
 fn one() -> u32 {
@@ -959,12 +964,16 @@ pub struct ListingChange {
 /// Which fields of which document changed. An empty field list means "unknown: every field of
 /// every resource of the document may have changed".
 ///
-/// A collection whose items changed is named in `fields` like any field; when the store could
-/// say how, `listings` holds the steps.
+/// A collection whose items changed is named in `fields` like any field and in `collections`;
+/// when the store could say how, `listings` holds the steps.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChangeSummary {
     pub doc: DocId,
     pub fields: Vec<FieldKey>,
+    /// The fields of `fields` whose items changed: items joined the collection, left it, or
+    /// moved in it. When the store cannot say which ([`Self::unsaid`]), a reader that keeps
+    /// something per item reads every resource's again, as one it does not know of may have.
+    pub collections: Vec<FieldKey>,
     pub listings: Vec<ListingChange>,
     /// Who made the change, when the store knows: the person whose action it was, as the
     /// change's invoker. `None` for a change read from the record, whose author is not told
@@ -979,6 +988,7 @@ impl ChangeSummary {
         Self {
             doc: doc.into(),
             fields: Vec::new(),
+            collections: Vec::new(),
             listings: Vec::new(),
             by: None,
         }
@@ -990,6 +1000,13 @@ impl ChangeSummary {
             .iter()
             .find(|change| change.key == *key)
             .map(|change| change.splices.as_slice())
+    }
+
+    /// Whether a collection's items changed and the store cannot say how: which items joined,
+    /// left or moved is unknown, so a reader that keeps something per item reads every
+    /// resource's again.
+    pub fn unsaid(&self, key: &FieldKey) -> bool {
+        self.collections.contains(key) && self.listing(key).is_none()
     }
 }
 
@@ -1188,6 +1205,25 @@ pub trait Store {
 
     /// Discard everything the transaction did.
     fn rollback(&mut self, txn: Txn);
+
+    /// A run began: from its first change to its end, everything it writes belongs to `run`,
+    /// and a run that fails anywhere takes all of it back out ([`Store::abort_run`]). The
+    /// changes of one run are kept apart from what is published, so a store that hands what it
+    /// commits straight on keeps them until the run ends.
+    fn begin_run(&mut self, run: &str) {
+        let _ = run;
+    }
+
+    /// The run `run` ended: what it wrote stays, and is published as the one action it is.
+    fn end_run(&mut self, run: &str) {
+        let _ = run;
+    }
+
+    /// The run `run` failed somewhere: take everything it wrote back out, in every document it
+    /// touched, so nothing of it is published and nothing of it stays.
+    fn abort_run(&mut self, run: &str) {
+        let _ = run;
+    }
 
     /// Read a field. Sees the transaction's own uncommitted changes.
     ///

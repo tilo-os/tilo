@@ -218,7 +218,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
     assert_eq!(text(after), Some("Shopping"));
     // What it did, in the words of the field it wrote: it renamed the note.
     assert!(
-        says(&section).contains(&"bo renamed this to".to_owned()),
+        reads_as(&section).contains("bo renamed this to"),
         "the entry says what was done: {section:#?}"
     );
 
@@ -278,7 +278,7 @@ fn undo_on_an_older_step_takes_back_that_step_alone() {
                 && n.children.first().is_some_and(|row| {
                     nodes(row)
                         .into_iter()
-                        .any(|t| text(t) == Some("You renamed this to"))
+                        .any(|t| text(t) == Some("renamed this to"))
                 })
         })
         .cloned()
@@ -451,7 +451,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&set)));
     assert!(
-        said.contains(&"bo set the due date to".to_owned()),
+        said.join(" ").contains("bo set the due date to"),
         "a day a task did not have is set: {said:?}"
     );
     assert!(said.contains(&"2026-11-02".to_owned()), "{said:?}");
@@ -469,7 +469,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.contains(&"bo moved this to".to_owned()),
+        said.join(" ").contains("bo moved this to"),
         "a day a task had is moved to another: {said:?}"
     );
     assert!(said.contains(&"2026-10-31".to_owned()), "{said:?}");
@@ -477,7 +477,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.contains(&"bo cleared the due date".to_owned()),
+        said.join(" ").contains("bo cleared the due date"),
         "a day taken away is said so: {said:?}"
     );
 }
@@ -496,7 +496,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     );
     ada.commit();
     let said = says(&history_of(&ada, &target(&urgent)));
-    assert!(said.contains(&"bo set priority to".to_owned()), "{said:?}");
+    assert!(said.join(" ").contains("bo set priority to"), "{said:?}");
     assert!(said.contains(&"High".to_owned()), "{said:?}");
 
     let filed = a_task_of(&mut ada, &tasks, "Book the van");
@@ -510,7 +510,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&filed)));
     assert!(
-        said.contains(&"bo moved this to".to_owned()),
+        said.join(" ").contains("bo moved this to"),
         "a task put in a project is moved to it: {said:?}"
     );
     assert!(said.contains(&"New project".to_owned()), "{said:?}");
@@ -528,7 +528,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&unfiled)));
     assert!(
-        said.contains(&"bo moved this out of".to_owned()),
+        said.join(" ").contains("bo moved this out of"),
         "a task taken out of a project says the one it left: {said:?}"
     );
 
@@ -546,7 +546,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&assigned)));
     assert!(
-        said.contains(&"bo assigned this to".to_owned()),
+        said.join(" ").contains("bo assigned this to"),
         "a task given to someone says who: {said:?}"
     );
     assert!(said.contains(&"Ada Lovelace".to_owned()), "{said:?}");
@@ -569,14 +569,14 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&done)));
     assert!(
-        said.contains(&"bo completed this".to_owned()),
+        said.join(" ").contains("bo completed this"),
         "checking a task off says it was completed: {said:?}"
     );
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
     let said = says(&history_of(&ada, &target(&done)));
     assert!(
-        said.contains(&"bo reopened this".to_owned()),
+        said.join(" ").contains("bo reopened this"),
         "opening it again says so: {said:?}"
     );
 
@@ -605,7 +605,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.contains(&"bo moved this under".to_owned()),
+        said.join(" ").contains("bo moved this under"),
         "a task put under another is moved under it: {said:?}"
     );
     assert!(said.contains(&"Plan the week".to_owned()), "{said:?}");
@@ -613,7 +613,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.contains(&"bo moved this to the top level".to_owned()),
+        said.join(" ").contains("bo moved this to the top level"),
         "a task taken out from under another says so: {said:?}"
     );
 }
@@ -700,7 +700,7 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     let section = history_of(&ada, &at);
     let said = says(&section);
     assert!(
-        said.contains(&"bo set the due date to".to_owned()),
+        said.join(" ").contains("bo set the due date to"),
         "the day the change sets: {said:?}"
     );
     let day = nodes(&section)
@@ -729,7 +729,7 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
     ada.commit();
     let said = says(&history_of(&ada, &at));
     assert!(
-        said.contains(&"bo renamed this to".to_owned()),
+        said.join(" ").contains("bo renamed this to"),
         "the first field the change wrote: {said:?}"
     );
     assert!(
@@ -971,6 +971,18 @@ fn says(section: &UiNode) -> Vec<String> {
         .collect()
 }
 
+/// What a section of history reads as: its texts in the order the rows show them, so an entry
+/// reads as who made it and, beside the words of what it did, what was done. A row's buttons
+/// (`Undo`, a flag's yes and no) stand in the row but are not part of what the entry says.
+fn reads_as(section: &UiNode) -> String {
+    nodes(section)
+        .into_iter()
+        .filter(|node| node.kind == "ui.Text")
+        .filter_map(text)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The history section of a window on `at`.
 fn history_of(ada: &Replica, at: &ResourceRef) -> UiNode {
     let mut page = ada.host.open_resource(at, None).unwrap();
@@ -1014,10 +1026,10 @@ fn a_history_row_names_the_person_as_the_avatar_does_and_an_agent_as_its_name_an
     let mut editor = ada.host.open_resource(&target(&note), None).unwrap();
     let section = history(&mut editor);
     // The run's rename, newest, then Ada's own: the agent reads as its name plus that it is
-    // software, and the step the person looking made reads as the platform's word for them.
+    // software, the person looking as the platform's word for them, each over what it did.
     assert_eq!(
         labels(&section),
-        ["Helper (agent)", "You renamed this to"],
+        ["Helper (agent)", "You", "renamed this to"],
         "the rows name people as the avatars do, never their ids"
     );
     assert!(
@@ -1069,7 +1081,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
     let section = history(&mut page);
     let said = says(&section);
     assert!(
-        said.contains(&"You renamed this to".to_owned()),
+        said.join(" ").contains("You renamed this to"),
         "the entry says what was done: {said:?}"
     );
     assert!(
@@ -1123,7 +1135,7 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         "newest first: the check, then Bo's step, then the making"
     );
     assert!(
-        nodes(&section).iter().any(|n| text(n) == Some(SAYS)),
+        reads_as(&section).contains(SAYS),
         "the check's entry says who checked it and what it did: {section:#?}"
     );
     let (label, ..) = changes(&section)

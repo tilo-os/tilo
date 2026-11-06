@@ -96,6 +96,8 @@ struct TxnState {
     /// How many of the store's writes the mirror held when the transaction began.
     start: usize,
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The collections whose items joined, left or moved, by the document that holds them.
+    collections: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// How the collections it changed changed, in order.
     listings: Vec<ListingChange>,
     /// The resources it wrote that are saved to the record, and those their origin derives
@@ -310,6 +312,7 @@ mod index_build;
 use index_build::AppIndex;
 mod outbox;
 mod plan;
+mod run;
 pub(crate) use plan::rich_edit;
 mod unsaved;
 mod upgrade_fields;
@@ -368,6 +371,10 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
+    /// The runs that have not finished, as they began: where a run's first write stands in the
+    /// record's local changes and in what it queued, so that a run that fails anywhere takes all
+    /// it wrote back out ([`Store::abort_run`]).
+    runs: HashMap<String, run::RunBegin>,
     /// Handed to the host and not yet answered by the door.
     handed: BTreeMap<u64, DynAction>,
     next_ticket: u64,
@@ -533,7 +540,7 @@ impl Changes {
             record_splices(&mut self.listings, &change.key, change.splices.clone());
         }
         for key in &summary.fields {
-            if summary.listing(key).is_none() {
+            if summary.unsaid(key) {
                 self.unsaid.insert(key.clone());
             }
         }
@@ -726,6 +733,22 @@ fn note_derived(docs: &mut BTreeMap<DocId, Vec<FieldKey>>, doc: &str, keys: Vec<
     }
 }
 
+/// The collections whose items joined, left or moved, by the document that holds them: what a
+/// reader of item text reads the steps of, or everything when there are none
+/// ([`tilolang_runtime::store::ChangeSummary::unsaid`]).
+fn collections_by_doc<'a>(
+    keys: impl IntoIterator<Item = &'a FieldKey>,
+) -> BTreeMap<DocId, Vec<FieldKey>> {
+    let mut collections: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+    for key in keys {
+        collections
+            .entry(key.doc().to_owned())
+            .or_default()
+            .push(key.clone());
+    }
+    collections
+}
+
 /// Every record of `app` in `docs`, reached as a whole, with those of `before` that are gone:
 /// what derives a package's index anew where it stands.
 fn everything(
@@ -823,6 +846,7 @@ impl TiloStore {
                 trials: 0,
                 held: Vec::new(),
                 committed: VecDeque::new(),
+                runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
                 journals: BTreeMap::new(),
@@ -967,14 +991,17 @@ impl TiloStore {
             inner.changed_within(&docs);
         }
         let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
+        let mut collections = collections_by_doc(items.keys());
         if changed.unplaced {
             inner.notify_all();
         } else {
             for (doc, fields) in docs {
                 let listings = listings.remove(&doc).unwrap_or_default();
+                let collections = collections.remove(&doc).unwrap_or_default();
                 inner.notify(&ChangeSummary {
                     doc,
                     fields,
+                    collections,
                     listings,
                     // The record's change: who made it is read per resource, not here.
                     by: None,
@@ -2418,6 +2445,7 @@ impl Store for TiloStore {
         } = inner.plan(at, m)?;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let summary = touched.clone();
+        let collections = collections_by_doc(items.iter().map(|(key, _)| key));
         let listings = inner.write(&app, dyn_edit.clone(), seed, touched, (items, placed))?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
@@ -2443,6 +2471,9 @@ impl Store for TiloStore {
         }
         let touched = state.touched.entry(at.doc.clone()).or_default();
         touched.extend(summary);
+        for (doc, keys) in collections {
+            state.collections.entry(doc).or_default().extend(keys);
+        }
         Ok(item.map_or(Applied::Done, Applied::Item))
     }
 
@@ -2521,6 +2552,7 @@ impl Store for TiloStore {
                 from: note.from.clone(),
                 suggested_by: note.suggested_by.clone(),
                 count: note.count.max(1),
+                invocation: note.invocation.clone(),
             },
             edits: state.edits,
         };
@@ -2531,6 +2563,7 @@ impl Store for TiloStore {
             touched.entry(doc).or_default().extend(keys);
         }
         let mut listings = state.listings;
+        let mut collections = state.collections;
         for (doc, fields) in touched {
             inner
                 .notes
@@ -2545,9 +2578,11 @@ impl Store for TiloStore {
                 .into_iter()
                 .partition(|change| change.key.doc() == doc);
             listings = rest;
+            let collections = collections.remove(&doc).unwrap_or_default();
             inner.notify(&ChangeSummary {
                 doc,
                 fields: fields.into_iter().collect(),
+                collections: collections.into_iter().collect(),
                 listings: own,
                 by: Some(note.invoker.clone()),
             });
@@ -2563,6 +2598,20 @@ impl Store for TiloStore {
             inner.rebuild_overlay();
             inner.changed();
         }
+    }
+
+    fn begin_run(&mut self, run: &str) {
+        if self.load_record().is_ok() {
+            self.mutate().begin_run(run);
+        }
+    }
+
+    fn end_run(&mut self, run: &str) {
+        self.mutate().end_run(run);
+    }
+
+    fn abort_run(&mut self, run: &str) {
+        self.mutate().abort_run(run);
     }
 
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {

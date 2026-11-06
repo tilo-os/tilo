@@ -405,28 +405,53 @@ mod tests {
     }
 
     #[test]
-    fn shell_swap_selects_only_the_installed_binary() {
+    fn a_dev_swap_builds_the_component_that_installs_the_session() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../os/components.toml");
         let manifest = Manifest::load(&path).unwrap().unwrap();
-        let shell = manifest
-            .get("shell")
+        let session = manifest
+            .get("tilo-session")
             .unwrap()
             .clone()
             .with_profile(Some("dev"));
-        assert_eq!(shell.bins, ["shell"]);
         assert_eq!(
-            shell.cargo_args(&[]),
+            session.bins,
+            [
+                "tilo-session",
+                "tilo-window-menu",
+                "tilo-lock-screen",
+                "tilo-quick-settings",
+                "osk"
+            ]
+        );
+        assert_eq!(
+            session.cargo_args(&[]),
             [
                 "build",
                 "--locked",
                 "--profile",
                 "dev",
                 "-p",
-                "shell",
+                "tilo-session",
+                "-p",
+                "tilo-window-menu",
+                "-p",
+                "tilo-lock-screen",
+                "-p",
+                "tilo-quick-settings",
+                "-p",
+                "osk",
                 "--bin",
-                "shell",
+                "tilo-session",
+                "--bin",
+                "tilo-window-menu",
+                "--bin",
+                "tilo-lock-screen",
+                "--bin",
+                "tilo-quick-settings",
+                "--bin",
+                "osk",
                 "--features",
-                "shell/dev-overrides"
+                "tilo-session/dev-overrides"
             ]
         );
         let manifest = Manifest::parse(
@@ -607,7 +632,7 @@ mod tests {
             let m = Manifest::load(&path)
                 .unwrap()
                 .expect("os/components.toml exists");
-            assert_eq!(m.get("shell").unwrap().info.scope, Scope::Session);
+            assert_eq!(m.get("tilo-session").unwrap().info.scope, Scope::Session);
             assert_eq!(m.get("fs").unwrap().info.scope, Scope::Vm);
             assert!(!m.get("fs").unwrap().info.outside_sessions);
             assert!(m.get("vmd").unwrap().info.outside_sessions);

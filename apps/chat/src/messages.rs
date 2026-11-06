@@ -895,6 +895,14 @@ impl ChatPart {
 /// The parts of the chat's messages a device holds, read as one timeline:
 /// every message oldest first, whichever part holds it, after the messages
 /// the chat record kept from before its messages moved to parts.
+///
+/// The order is the records', not a clock's ([`Self::iter`]): the parts by
+/// number, each part's messages in the order the part holds them, which every
+/// device reads the same from the same records. Two devices that wrote
+/// offline and took each other's posts in the opposite order read the same
+/// conversation in the same order, and so does a device that receives a
+/// message late. A post's whole-second time (`ts`) is only what the window
+/// shows beside a message, never what orders them.
 #[derive(Clone, Debug, Default)]
 pub struct Messages {
     parts: Vec<(u64, Rc<ChatPart>)>,
@@ -941,7 +949,10 @@ impl Messages {
     }
 
     /// Every message held, oldest first: the kept ones a part does not
-    /// hold too, then the parts'.
+    /// hold too, then the parts', each in the order its record holds it
+    /// (its order key, ties by id). Every device reads the same records as
+    /// that order, so this is one total order, whatever order the changes
+    /// arrived in.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = (&Id, &Message)> + '_ {
         self.kept
             .iter()
@@ -1112,7 +1123,8 @@ impl Messages {
     /// The top-level messages of `channel` after `mark` that `author` did not
     /// write: what a direct conversation counts as unread for them. Counted in
     /// the parts this reader holds, as a direct conversation is short and its
-    /// reader holds it.
+    /// reader holds it, in the same order as [`Self::first_unread`]: the
+    /// part's own.
     #[must_use]
     pub fn unread_by_others(&self, channel: &Id, mark: parts::ReadMark, author: &str) -> usize {
         let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
@@ -1122,15 +1134,11 @@ impl Messages {
             if *index < from {
                 continue;
             }
-            let mut of_channel: Vec<&Message> = part
+            let skip = if *index == from { seen } else { 0 };
+            unread += part
                 .messages
                 .values()
                 .filter(|message| message.channel == *channel && message.parent.is_none())
-                .collect();
-            of_channel.sort_by_key(|message| message.ts);
-            let skip = if *index == from { seen } else { 0 };
-            unread += of_channel
-                .into_iter()
                 .skip(skip)
                 .filter(|message| message.author.0 != author)
                 .count();

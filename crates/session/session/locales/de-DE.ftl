@@ -188,6 +188,7 @@ session-displays-set = Bildschirme anordnen
 session-displays-open-sheet = Wählen, wo der Schreibtisch erscheint
 session-displays-close-sheet = Das Bildschirmfenster schließen
 session-display-builtin = Eingebauter Bildschirm
+session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
 session-devices = Geräte
 session-devices-press = Eines der Geräte der Person drücken

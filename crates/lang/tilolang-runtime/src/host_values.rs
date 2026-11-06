@@ -269,16 +269,19 @@ impl Core {
                 let at = match self.place_of(&coll, &want) {
                     Some(at) => Some(at),
                     None => match Self::item_id(&want) {
-                        Some(id) => self
-                            .coll_listing(&coll)?
-                            .iter()
-                            .position(|other| *other == *id),
+                        Some(id) => match self.coll_listing(&coll)?.position(id) {
+                            Some(at) => at,
+                            None => self
+                                .coll_listing(&coll)?
+                                .iter()
+                                .position(|other| *other == *id),
+                        },
                         None => None,
                     },
                 };
-                match at.and_then(|at| at.checked_sub(1)) {
-                    Some(before) => Value::some(self.coll_get(&coll, before)?),
-                    None => Value::none(),
+                match (at, Self::item_id(&want)) {
+                    (Some(at), Some(item)) => self.coll_before(&coll, at, item)?,
+                    _ => Value::none(),
                 }
             }
         };

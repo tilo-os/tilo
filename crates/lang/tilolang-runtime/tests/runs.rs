@@ -36,15 +36,95 @@ mod cases {
             .unwrap()
     }
 
+    /// The run every call of `inc` in `c`'s document was made in.
+    fn invocations(w: &World, c: &tilolang_runtime::ResourceRef) -> Vec<Option<String>> {
+        w.rt.history(&c.doc)
+            .unwrap()
+            .into_iter()
+            .filter(|n| n.action == "inc")
+            .map(|n| n.invocation)
+            .collect()
+    }
+
     #[test]
-    fn an_action_calling_its_own_modules_actions_runs_them_as_changes_of_their_own() {
+    fn an_action_calling_its_own_modules_actions_is_one_action_of_the_workspace() {
         let w = World::new();
         let c = w.counter();
         assert_eq!(
             run(&w, "twice", vec![Value::resource(&c)]),
             InvokeOutcome::Done(Value::Int(2))
         );
-        assert_eq!(incs(&w, &c), 2);
+        let calls = invocations(&w, &c);
+        assert_eq!(calls.len(), 2, "each call is a change of its own");
+        assert_eq!(
+            calls[0], calls[1],
+            "every call ran under the one invocation of the action that called it"
+        );
+        assert!(calls[0].is_some(), "a run names its invocation");
+    }
+
+    #[test]
+    fn an_action_calling_another_apps_actions_is_one_action_of_the_workspace() {
+        let (w, c) = world();
+        w.auth.trust(&Runtime::module_hash(&stranger_wasm()));
+        assert_eq!(
+            run(&w, "ask", vec![Value::resource(&c)]),
+            InvokeOutcome::Done(Value::Int(2))
+        );
+        let calls = invocations(&w, &c);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0], calls[1],
+            "the other app's actions are steps of the one action that called them"
+        );
+        assert!(
+            w.rt.history(&c.doc)
+                .unwrap()
+                .iter()
+                .all(|n| n.action != "ask"),
+            "the callee's change stays the callee's, inside the caller's action"
+        );
+    }
+
+    #[test]
+    fn an_action_that_calls_two_actions_and_then_fails_leaves_nothing() {
+        let (w, c) = world();
+        w.auth.trust(&Runtime::module_hash(&stranger_wasm()));
+        let boom =
+            w.rt.invoke_action(&w.me, ("boom".to_owned(), vec![Value::resource(&c)]));
+        assert!(boom.is_err(), "the action trapped after both calls");
+        assert!(
+            invocations(&w, &c).is_empty(),
+            "nothing of a run that failed anywhere is left"
+        );
+        // The calls it made did run, and did not stay: the next run's are the only changes.
+        assert_eq!(
+            run(&w, "ask", vec![Value::resource(&c)]),
+            InvokeOutcome::Done(Value::Int(2))
+        );
+        assert_eq!(invocations(&w, &c).len(), 2);
+    }
+
+    #[test]
+    fn a_run_that_waits_for_an_answer_goes_on_under_an_invocation_of_its_own() {
+        let (w, c) = world();
+        let InvokeOutcome::Suggested(first) = run(&w, "ask", vec![Value::resource(&c)]) else {
+            panic!("the stranger's call asks first");
+        };
+        let RunOutcome::Suspended(second) =
+            w.rt.resolve(&first.run, &w.me, Resolution::Approve)
+                .unwrap()
+        else {
+            panic!("the second call asks too");
+        };
+        w.rt.resolve(&second.run, &w.me, Resolution::Approve)
+            .unwrap();
+        let calls = invocations(&w, &c);
+        assert_eq!(calls.len(), 2);
+        assert_ne!(
+            calls[0], calls[1],
+            "the wait split the run: what it does on from the answer is an action of its own"
+        );
     }
 
     #[test]
@@ -72,7 +152,9 @@ mod cases {
             "the replay answered the first invoke from the journal instead of running it again"
         );
 
-        let out = w.rt.resolve(&second.run, &w.me, Resolution::Approve).unwrap();
+        let out =
+            w.rt.resolve(&second.run, &w.me, Resolution::Approve)
+                .unwrap();
         assert_eq!(out, RunOutcome::Done(Value::Int(2)));
         assert_eq!(incs(&w, &c), 2);
     }
@@ -89,7 +171,9 @@ mod cases {
         else {
             panic!("the run continues to its second invoke");
         };
-        let out = w.rt.resolve(&second.run, &w.me, Resolution::Approve).unwrap();
+        let out =
+            w.rt.resolve(&second.run, &w.me, Resolution::Approve)
+                .unwrap();
         assert_eq!(out, RunOutcome::Done(Value::Int(1)));
         assert_eq!(incs(&w, &c), 1);
     }
@@ -153,10 +237,7 @@ mod cases {
         };
         assert_eq!(calls.get(), 1);
         let out = w.rt.resolve(&s.run, &w.me, Resolution::Approve).unwrap();
-        assert_eq!(
-            out,
-            RunOutcome::Done(Value::text("classify:hello"))
-        );
+        assert_eq!(out, RunOutcome::Done(Value::text("classify:hello")));
         assert_eq!(calls.get(), 1, "the replay used the journaled answer");
     }
 

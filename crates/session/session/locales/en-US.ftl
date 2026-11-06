@@ -184,6 +184,7 @@ session-displays-set = Arrange the displays
 session-displays-open-sheet = Choose where the desktop appears
 session-displays-close-sheet = Put the display sheet away
 session-display-builtin = Built-in display
+session-display-external = External display
 session-clipboard = Clipboard
 session-devices = Devices
 session-devices-press = Press one of the person's devices

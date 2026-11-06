@@ -52,7 +52,7 @@ fn hits(app: &mut TestApp<ChatShell>) -> Vec<String> {
 }
 
 #[test]
-fn a_shared_window_is_a_live_message_only_its_sharer_ends() {
+fn a_shared_window_is_a_live_message_only_its_sharer_changes_it() {
     let mut app = TestApp::<ChatShell>::new().unwrap();
     let shared = share(&mut app, None);
     let live = shared.share.clone().unwrap();
@@ -127,7 +127,14 @@ fn a_shared_window_is_a_live_message_only_its_sharer_ends() {
         .unwrap();
     assert_eq!(switched.access, ShareAccess::Edit);
     assert!(!switched.ended, "switching keeps the share live");
+}
 
+/// Ending is one way: an ended share is not switched, and asking for its
+/// window to open again shares nothing.
+#[test]
+fn an_ended_share_is_not_switched_and_reopening_shares_nothing() {
+    let mut app = TestApp::<ChatShell>::new().unwrap();
+    let shared = share(&mut app, None);
     app.call_on(&message_item(&shared.id), "stop-sharing", json!({}))
         .unwrap();
     assert!(

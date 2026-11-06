@@ -8591,7 +8591,12 @@ impl BlockEditor {
         });
         // 400 is the width a measured line assumes without a definite one.
         let width = match (definite, self.stack.width) {
-            (Some(width), _) => width,
+            (Some(width), _) if width > 0.0 => width,
+            // A width nothing fits in is a min-content contribution, not a
+            // layout: answer it, but leave the blocks stacked at the width
+            // they are laid out at, or the host's apply without a text
+            // renderer has no heights left to paint them with.
+            (Some(width), _) => return self.probe_stack(width, text_renderer),
             (None, Some(_)) if self.stack.tops.len() == self.blocks.len() => {
                 return Size {
                     width: if self.stack.measured { 400.0 } else { 0.0 },
@@ -8607,12 +8612,26 @@ impl BlockEditor {
         }
     }
 
+    /// The size the blocks take at `width`, measured and then dropped, so a
+    /// query that reaches no layout of its own leaves the recorded stack be.
+    fn probe_stack(&mut self, width: f32, text_renderer: &mut TextRenderer) -> Size<f32> {
+        let recorded = std::mem::take(&mut self.stack);
+        self.stack_blocks(width, Some(text_renderer));
+        let size = Size {
+            width: if self.stack.measured { width } else { 0.0 },
+            height: self.stack.total,
+        };
+        self.stack = recorded;
+        size
+    }
+
     /// Stack every block at `width`, the way a flex column would: each
     /// block's top is the running total plus its margin, and the total grows
     /// by margin plus height. A line whose content and layout inputs are
     /// unchanged reuses its cached height, so the cost of an edit does not
     /// grow with the document. Without a text renderer (a host that solved
-    /// the tree without measuring), unmeasured content counts as empty.
+    /// the tree without measuring), a line keeps the height it last measured,
+    /// and one never measured counts as empty.
     fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
         let stack = &mut self.stack;
         if let Some(text_renderer) = text_renderer.as_deref() {
@@ -8656,7 +8675,11 @@ impl BlockEditor {
                     }
                     block.line.measure_stacked(width, text_renderer)
                 }
-                (None, None) => 0.0,
+                // No renderer to measure with: the line keeps the height it last measured, at
+                // this width or the one before it, so a restack the host solves without
+                // measuring cannot clip a line it cannot measure here. A line never measured
+                // counts as empty.
+                (None, None) => block.line.last_height().unwrap_or(0.0),
             };
             stack.measured |= stack_box.fixed.is_none();
             let height = stack_box.fixed.unwrap_or(content).max(stack_box.min);

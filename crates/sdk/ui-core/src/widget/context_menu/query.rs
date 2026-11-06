@@ -49,6 +49,17 @@ impl ContextMenu {
         }
     }
 
+    /// The owner takes typing although the gesture that opened the menu
+    /// happened in another process: the window menu, whose reading carries a
+    /// press's place. Typing then narrows the rows, as it does in a menu the
+    /// pointer opened here.
+    pub fn set_takes_typing(&mut self, typing: bool) {
+        if self.owned_typing != typing {
+            self.owned_typing = typing;
+            self.dirty = true;
+        }
+    }
+
     /// The sentence the person asked, exactly once, for an owner that
     /// answers it ([`Self::set_owner_asks`]). The menu has closed.
     pub fn take_ask(&mut self) -> Option<String> {
@@ -97,8 +108,9 @@ impl ContextMenu {
         self.asked = None;
         self.ask_at = at;
         let long = self.items.len() > QUERY_MIN_ROWS;
-        let takes_typing =
-            self.owner_asks || (CONTEXT_GESTURE.with(Cell::get) && (long || self.can_ask()));
+        let takes_typing = self.owner_asks
+            || self.owned_typing
+            || (CONTEXT_GESTURE.with(Cell::get) && (long || self.can_ask()));
         self.query = takes_typing.then(Box::<MenuQuery>::default);
         if self.query.is_some() && self.can_ask() {
             self.own_rows = Some(self.items.len());

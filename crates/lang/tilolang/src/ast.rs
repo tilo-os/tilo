@@ -401,13 +401,13 @@ pub struct Proposal {
     pub args: Option<Vec<Ident>>,
 }
 
-/// `primary`, `destructive`, `migration` or `internal` before `action`: how the action is, not
-/// where a surface shows it.
+/// `primary`, `destructive` or `migration` before `action`: how the action is, not where a
+/// surface shows it.
 ///
 /// A surface decides placement from what the action offers a person: `frequent: true` earns a
 /// button in the header, every other offered action goes in an item's menu, the header's menu or
-/// the palette. A role never moves an action between those lists — the two hiding roles take it
-/// out of all of them.
+/// the palette. A role never moves an action between those lists — only a migration, which the
+/// platform runs itself, is left out of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionRole {
     /// The one main action on its subject: the header's Primary button and the empty state's
@@ -419,12 +419,6 @@ pub enum ActionRole {
     /// subject's type that a version before it wrote, as an ordinary action, to bring what that
     /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
     Migration,
-    /// `internal action`: never offered. Only the app's own gestures run it — a drag, an entry,
-    /// a lane's button — and no surface that lists a subject's actions shows it: not the header,
-    /// not an item's menu, not the palette, not an agent's choices. An action a person chooses
-    /// from a list is offered, and `frequent` alone decides whether the header draws it as a
-    /// button or leaves it in the header's menu.
-    Internal,
 }
 
 impl ActionRole {
@@ -433,7 +427,6 @@ impl ActionRole {
             Self::Primary => "primary",
             Self::Destructive => "destructive",
             Self::Migration => "migration",
-            Self::Internal => "internal",
         }
     }
 }

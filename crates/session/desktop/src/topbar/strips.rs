@@ -70,10 +70,13 @@ impl TopBarChrome {
                     .collect()
             })
             .unwrap_or_default();
-        self.strips.active = tree
-            .active_strip
-            .get(&tree.active)
-            .copied()
+        // A bar on a display names the strip that display shows; the full
+        // bar stands on the display the person works on, which shows the
+        // workspace's active strip.
+        self.strips.active = self
+            .display
+            .and_then(|display| tree.strip_shown_on(display))
+            .or_else(|| tree.active_strip_id())
             .filter(|id| self.strips.strips.iter().any(|(strip, _)| strip == id))
             .or_else(|| self.strips.strips.first().map(|(id, _)| *id));
     }
@@ -527,6 +530,52 @@ mod tests {
         );
         let audit = Framed::harness(&frame).native_app_audit();
         assert!(audit.is_certified(), "{audit:?}");
+    }
+
+    /// A bar names the strip its own display shows: on two displays, the one
+    /// the person works on shows the active strip, the other the strip it was
+    /// left showing.
+    #[test]
+    fn a_bar_names_the_strip_its_own_display_shows() {
+        let mut tree = tree();
+        let displays = vec![
+            tilo_desktop_model::partition::Display {
+                id: 0,
+                monitor: "panel".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 800.0,
+                primary: false,
+            },
+            tilo_desktop_model::partition::Display {
+                id: 1,
+                monitor: "monitor".into(),
+                x: 1280.0,
+                y: 0.0,
+                width: 1280.0,
+                height: 800.0,
+                primary: false,
+            },
+        ];
+        tree.outputs.reconcile(&tree.workspaces, &displays);
+        tree.outputs.set_focused(1);
+        assert_eq!(
+            tree.outputs.focused_display(),
+            Some(1),
+            "the monitor is in use"
+        );
+        assert!(tree.outputs.set_shown(0, WorkspaceSlot(1), StripId(11)));
+        tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
+
+        let full = TopBarChrome::from_tree_with_local_user(&tree, "me".into());
+        assert_eq!(full.strip_name(), Some("Main"), "the display in use");
+
+        let mut other = TopBarChrome::from_tree_with_local_user(&tree, "me".into())
+            .compact()
+            .on_display(0);
+        other.sync_from_tree(&tree);
+        assert_eq!(other.strip_name(), Some("Games"), "its own display's strip");
     }
 
     /// Renaming the workspace types over the workspace's name, not over the

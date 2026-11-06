@@ -18,7 +18,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use tilo_sort::CompactSort as _;
 
 use shown::ShownTabs;
 
@@ -47,7 +46,7 @@ use crate::navigation::{
 use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use paging::{Sideways, can_pan, pan_row, panned_to, sideways, vertical};
-use strip::{strip_row, strip_style};
+use strip::{build_row, build_row_lazily, strip_style};
 
 mod arrivals;
 mod artwork;
@@ -201,8 +200,9 @@ struct Shared {
     /// The windows waiting for the person ([`DesktopHandle::ask_attention`]),
     /// until each has their focus.
     asking: std::collections::BTreeSet<TabId>,
-    /// The bars the person asked a menu of (a secondary press), waiting for the host.
-    menus: Vec<TabId>,
+    /// The bars the person asked a menu of (a secondary press), and where
+    /// they pressed, waiting for the host.
+    menus: Vec<(TabId, Point)>,
     /// Its person opens windows and tabs here ([`DesktopHandle::set_opens`]):
     /// the windows offer a new tab.
     opens: bool,
@@ -787,6 +787,9 @@ pub struct DesktopSurface {
     /// The slots the apps put in their windows' bars ([`window_bars`]).
     window_slots: ui::window_slots::WindowSlots,
     shown: Option<StripId>,
+    /// The strips the other displays show, laid out behind the shown one:
+    /// each display keeps a strip of its own.
+    behind: Vec<StripId>,
     rect: Rect,
     structure_dirty: bool,
     /// The shown strip moved (a pan, a window brought into view): the next
@@ -919,12 +922,26 @@ impl DesktopSurface {
             tiles,
             Rc::clone(&shared.borrow().peers),
         )) as Box<dyn TileSource>;
-        let mut surface = Self {
-            shared: Rc::clone(&shared),
+        let mut surface = Self::standing(Rc::clone(&shared), tiles, &search, acknowledger);
+        surface.show_active_strip();
+        (surface, DesktopHandle { shared })
+    }
+
+    /// The surface's own state, standing on the `shared` desk `new` made and
+    /// drawing with `tiles`, after its search `search`.
+    fn standing(
+        shared: Rc<RefCell<Shared>>,
+        tiles: Box<dyn TileSource>,
+        search: &Rc<RefCell<tilo_desktop_search::LazyDesktopSearch>>,
+        acknowledger: ui::widget::acknowledgement::Acknowledger,
+    ) -> Self {
+        Self {
+            shared,
             tiles,
             rows: HashMap::new(),
             window_slots: ui::window_slots::WindowSlots::default(),
             shown: None,
+            behind: Vec::new(),
             rect: Rect::ZERO,
             structure_dirty: true,
             relayout: false,
@@ -934,7 +951,7 @@ impl DesktopSurface {
             swipe: None,
             pan_follow: None,
             settle: None,
-            search: Rc::clone(&search),
+            search: Rc::clone(search),
             seen_search: 0,
             new_tab_into: None,
             search_window: None,
@@ -958,9 +975,7 @@ impl DesktopSurface {
             slides: std::cell::RefCell::new(slide::Slides::default()),
             motion: ui::tokens::EffectiveMotion::default(),
             navigation_source: None,
-        };
-        surface.show_active_strip();
-        (surface, DesktopHandle { shared })
+        }
     }
 
     /// Give every live window the holders the host named
@@ -1241,6 +1256,7 @@ impl DesktopSurface {
         if let Some(tree) = tree {
             self.show_strip_changed(shown_before, strip_id, &tree);
         }
+        self.show_display_strips();
     }
 
     /// Build deferred tabs of the shown strip until the frame's budget is
@@ -1946,10 +1962,15 @@ impl DesktopSurface {
                 *host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), workspace, tab);
             }
             row.insert_group(built, index);
-            // Placed whole on screen beside the window it opened next to,
+            // The window opens on the display the person works on, so it
+            // owns that display's lane before anything is shared: it is
+            // placed whole on screen beside the window it opened next to,
             // sharing the display with it if need be, as on the native
-            // desktop: revealing it alone pans the window in use half off
+            // desktop — revealing it alone pans the window in use half off
             // screen, taking its name with it.
+            if let Some(display) = shared.tree.outputs.focused_display() {
+                row.set_group_display(group, display);
+            }
             row.share_with_neighbour(group);
         }
         self.reveal = Some((strip, group));
@@ -2252,51 +2273,6 @@ fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
     }
 }
 
-/// A strip's row with only the focused window's active tab built; the
-/// other tabs are placeholders, returned in the order to build them: each
-/// group's active tab by distance from the focused window, then the
-/// inactive tabs.
-fn build_row_lazily(
-    tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
-    workspace: &Workspace,
-    strip: &tilo_desktop_model::Strip,
-    focused: Option<GroupId>,
-) -> (GroupRow, Vec<TabId>) {
-    let focus = focused
-        .and_then(|id| strip.window_groups.iter().position(|g| g.id == id))
-        .unwrap_or(0);
-    let mut deferred: Vec<(bool, usize, TabId)> = Vec::new();
-    let groups = strip
-        .window_groups
-        .iter()
-        .enumerate()
-        .map(|(index, group)| {
-            let tabs = group
-                .tabs
-                .iter()
-                .map(|tab| (descriptor(tab), placeholder()))
-                .collect();
-            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
-                .with_maximized(group.maximized);
-            for tab in &group.tabs {
-                let active = tab.id == group.active_tab;
-                if active && index == focus {
-                    if let Some(host) = built.host_for_tab_mut(tab.id) {
-                        *host = build_tile(tiles, controls, workspace, tab);
-                    }
-                } else {
-                    deferred.push((!active, index.abs_diff(focus), tab.id));
-                }
-            }
-            built
-        })
-        .collect();
-    deferred.compact_sort_by_key(|&(inactive, distance, _)| (inactive, distance));
-    let order = deferred.into_iter().map(|(_, _, tab)| tab).collect();
-    (strip_row(groups), order)
-}
-
 fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspace, &Tab)> {
     tree.workspaces.iter().find_map(|workspace| {
         let strip = workspace.strips.iter().find(|s| s.id == strip)?;
@@ -2307,39 +2283,6 @@ fn find_tab(tree: &DesktopTree, strip: StripId, tab: TabId) -> Option<(&Workspac
             .find(|t| t.id == tab)
             .map(|tab| (workspace, tab))
     })
-}
-
-/// A strip's row as the tree describes it. Each tab takes its content from
-/// `live` when present there, else from `tiles`.
-fn build_row(
-    tiles: &mut dyn TileSource,
-    controls: Option<&ui::ControlDomain>,
-    workspace: &Workspace,
-    strip: &tilo_desktop_model::Strip,
-    live: &mut HashMap<TabId, TileHost>,
-) -> GroupRow {
-    let groups = strip
-        .window_groups
-        .iter()
-        .map(|group| {
-            let tabs = group
-                .tabs
-                .iter()
-                .map(|tab| (descriptor(tab), placeholder()))
-                .collect();
-            let mut built = WindowGroup::new(group.id, tabs, group.active_tab, group.width)
-                .with_maximized(group.maximized);
-            for tab in &group.tabs {
-                if let Some(host) = built.host_for_tab_mut(tab.id) {
-                    *host = live
-                        .remove(&tab.id)
-                        .unwrap_or_else(|| build_tile(tiles, controls, workspace, tab));
-                }
-            }
-            built
-        })
-        .collect();
-    strip_row(groups)
 }
 
 fn find_group(
@@ -2454,12 +2397,17 @@ impl Widget for DesktopSurface {
     ) -> NodeId {
         self.present();
         self.motion = ui::tokens::EffectiveMotion::new(theme.tokens.motion, theme.reduce_motion);
-        let row: Option<NodeId> = self.shown_row().map(|row| {
-            let node = row.build_layout(taffy, theme, node_map);
-            let style = strip_style(row, taffy.style(node).cloned().unwrap_or_default());
-            let _ = taffy.set_style(node, style);
-            node
-        });
+        let rows: Vec<NodeId> = self
+            .drawn_strips()
+            .into_iter()
+            .filter_map(|strip| {
+                let row = self.rows.get_mut(&strip)?;
+                let node = row.build_layout(taffy, theme, node_map);
+                let style = strip_style(row, taffy.style(node).cloned().unwrap_or_default());
+                let _ = taffy.set_style(node, style);
+                Some(node)
+            })
+            .collect();
         let notices = self
             .notices
             .as_mut()
@@ -2467,12 +2415,12 @@ impl Widget for DesktopSurface {
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
-        // The row, when shown, is always the first child, then the
-        // notifications, when present, the arrival hints and the cards of
-        // apps that stopped answering, and the acknowledgement last. Search
-        // is drawn over the windows, by the host above them, not in this
-        // tree.
-        let children: Vec<NodeId> = row
+        // The rows, each over the whole surface and drawing only in its
+        // displays' lanes, come first, then the notifications, when present,
+        // the arrival hints and the cards of apps that stopped answering,
+        // and the acknowledgement last. Search is drawn over the windows, by
+        // the host above them, not in this tree.
+        let children: Vec<NodeId> = rows
             .into_iter()
             .chain(notices)
             .chain([arrivals, hung, acknowledgement])
@@ -2493,13 +2441,8 @@ impl Widget for DesktopSurface {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
-        let has_row = self.shown_row().is_some();
-        let child = if has_row {
-            nodes.first().copied()
-        } else {
-            None
-        };
-        let next = usize::from(has_row);
+        let strips = self.drawn_strips();
+        let next = strips.len();
         if let Some(layer) = self.notices.as_mut()
             && let Some(&notices) = nodes.get(next)
         {
@@ -2514,12 +2457,21 @@ impl Widget for DesktopSurface {
         let reveal = self.reveal.take();
         let shown = self.shown;
         let mut pending = None;
-        if let (Some(row), Some(child)) = (self.shown_row(), child) {
+        for (i, strip) in strips.iter().enumerate() {
+            let Some(&child) = nodes.get(i) else {
+                continue;
+            };
+            let Some(row) = self.rows.get_mut(strip) else {
+                continue;
+            };
             row.apply_layout(taffy, child, inner);
             // The launch frame itself shows the new window: move the strip
             // to it, then place the groups again where the move has them.
-            if let Some((strip, group)) = reveal
-                && shown == Some(strip)
+            if Some(*strip) != shown {
+                continue;
+            }
+            if let Some((reveal_strip, group)) = reveal
+                && reveal_strip == *strip
             {
                 if !row.group_is_laid_out(group) {
                     pending = reveal;
@@ -2552,9 +2504,7 @@ impl Widget for DesktopSurface {
                 shared.search_revision = shared.search_revision.wrapping_add(1);
             }
         }
-        let shown_tabs = self
-            .shown_row()
-            .map_or_else(ShownTabs::default, |row| ShownTabs::of_row(row));
+        let shown_tabs = ShownTabs::of_drawn(self);
         let shown_strip = self
             .shown
             .zip(self.shown_row_ref())
@@ -2596,6 +2546,7 @@ impl Widget for DesktopSurface {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.draw_leaving_strip(scene, transform, text, theme, presence);
+        self.draw_display_strips(scene, transform, text, theme, presence);
         let hint_places = self.shown_row().map(|row| {
             ui::widget::draw_child(row, scene, transform, text, theme, presence);
             row.hint_places()
@@ -2646,29 +2597,20 @@ impl Widget for DesktopSurface {
                 return;
             }
         }
-        let child = children.first().copied();
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
         {
-            if self
-                .shown_row_ref()
-                .is_none_or(|row| row.group_under_cursor().is_none())
-            {
-                self.focus_display_at(self.pointer);
-            }
+            self.focus_pressed_display();
             self.focus_clicked_group();
             self.reveal_on_release = self.shown.and_then(|strip| {
                 let group = self.rows.get(&strip)?.group_under_cursor()?;
                 Some((strip, group))
             });
         }
-        if let (Some(row), Some(child)) = (self.shown_row(), child) {
-            let path = ctx.path.clone();
-            row.handle_event(event, &mut ctx.reborrow(&path, child));
-        }
+        self.route_pointer(event, ctx, &children);
         if let WindowEvent::MouseInput {
             state: ElementState::Released,
             button: MouseButton::Left,
@@ -2738,10 +2680,11 @@ impl Widget for DesktopSurface {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let notices = self.notices.as_ref().map(|l| l as &dyn Widget);
-        self.shown
-            .and_then(|strip| self.rows.get(&strip))
-            .map(|row| row as &dyn Widget)
+        let rows: Vec<&dyn Widget> = displays::drawn_rows(&self.rows, &self.drawn_strips())
             .into_iter()
+            .map(|row| row as &dyn Widget)
+            .collect();
+        rows.into_iter()
             .chain(notices)
             .chain([
                 &self.arrival_hints as &dyn Widget,
@@ -2765,15 +2708,16 @@ impl Widget for DesktopSurface {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let row = self
-            .shown
-            .and_then(|strip| self.rows.get_mut(&strip))
-            .map(|row| row as &mut (dyn Widget + '_));
+        let strips = self.drawn_strips();
+        let rows: Vec<&mut (dyn Widget + '_)> = displays::drawn_rows_mut(&mut self.rows, &strips)
+            .into_iter()
+            .map(|row| row as &mut (dyn Widget + '_))
+            .collect();
         let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let hung = &mut self.hung_apps as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
-        row.into_iter()
+        rows.into_iter()
             .chain(notices)
             .chain([arrivals, hung, acknowledgement])
             .collect()

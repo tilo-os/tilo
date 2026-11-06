@@ -1129,6 +1129,12 @@ impl BrowserShell {
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }
+                // A fixed chord the desk carries out on its own windows and
+                // strips never reaches here. The capture studio, the shortcut
+                // guide and cutting remote input are surfaces over a system's
+                // screen, which a page has none of: it says so rather than
+                // doing nothing.
+                DesktopAsk::FixedShortcut(action) => self.answer_fixed_shortcut(action),
                 // The page's own keys reach the browser's shortcuts.
                 // Leaving a workspace is a session's to carry out and say.
                 // It places no desk widget, so no music control of one is
@@ -1147,6 +1153,16 @@ impl BrowserShell {
             }
         }
         changed
+    }
+
+    /// Tell the person why a fixed chord the desk left to the page did not
+    /// run here.
+    fn answer_fixed_shortcut(&mut self, action: ui::shortcut_table::FixedAction) {
+        let Some(outcome) = crate::fixed_chords::unserved(action) else {
+            return;
+        };
+        self.chrome.notifications.post(outcome.notice());
+        (self.chrome.wake)();
     }
 
     /// Close every popover the bar opens but `keep`: one at a time.

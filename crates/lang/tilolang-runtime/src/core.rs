@@ -139,6 +139,9 @@ pub struct Core {
     pub reader: RefCell<Option<Box<crate::program::ReadThrough>>>,
     /// Whether the invocation being made is a `try`'s, whose failure the program handles.
     pub trying: std::cell::Cell<bool>,
+    /// Whether a run is being driven: its first change opens it and its last closes it, and the
+    /// calls it makes are steps of it rather than runs of their own.
+    pub running: std::cell::Cell<bool>,
     /// The resources of apps this runtime does not run: how they print, and their readings, as
     /// the host gives them.
     pub foreign: RefCell<crate::foreign::Foreign>,
@@ -269,6 +272,7 @@ impl Core {
             invoker: RefCell::new(None),
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
+            running: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),

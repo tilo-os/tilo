@@ -676,6 +676,55 @@ fn open_pages(session: &mut Session, costs: &mut Costs) {
     }
 }
 
+/// The host's turns that changed something, until the window and the app have nothing left to
+/// do: what a step spent in round trips between the two.
+fn turns_until_rest(session: &mut Session) -> u32 {
+    let mut changed = 0;
+    let mut quiet = 0;
+    while quiet < 3 {
+        if session.host.turn() {
+            changed += 1;
+            quiet = 0;
+        } else {
+            quiet = 1_u32.saturating_add(quiet);
+        }
+        session.window.frame();
+    }
+    changed
+}
+
+/// Scrolling a list of ten thousand tasks: the app is asked for the rows a scroll is about to
+/// reach before it reaches them, so a step costs the window's frames and one ask, or none. What
+/// a scroll step asks of the app is what makes the person wait for it, so it is counted, not
+/// timed: a step that asked once per row would pass any budget on a fast enough machine.
+#[test]
+fn scrolling_asks_the_app_for_rows_ahead_not_once_a_row() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    session.settle();
+    let first = top_title(&mut session);
+    let at = shown_at(&mut session, &first);
+    session.window.move_to(at.0, at.1);
+    session.settle();
+
+    let notches = 8;
+    let before = top_title(&mut session);
+    let mut turns = 0;
+    for _ in 0..notches {
+        session.window.scroll(0.0, -3.0);
+        turns += turns_until_rest(&mut session);
+        session.settle();
+    }
+    assert_ne!(top_title(&mut session), before, "the list scrolled");
+    eprintln!("scroll: {notches} notches asked the app {turns} times");
+    assert!(
+        turns <= notches,
+        "{notches} scroll steps asked the app {turns} times: a step costs one ask or none"
+    );
+}
+
 /// Scrolling the list: a wheel notch down and back up, the top row changing each time.
 fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
     let first = top_title(session);
@@ -692,5 +741,87 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
         let now = top_title(session);
         assert_ne!(now, top, "the list scrolled");
         top = now;
+    }
+}
+
+/// What a change to one task re-indexes: the entries of the resources it touched, whatever the
+/// workspace holds. The session's search index keeps an entry per resource; adding one task of
+/// ten thousand adds that task's entry, and the whole set is published again only when the
+/// publication cannot say what moved.
+#[test]
+fn a_change_reindexes_the_resources_it_touched() {
+    use ui::winit::keyboard::NamedKey;
+
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    session.settle();
+    // Opening published every entry; what the change publishes is counted from here.
+    session.forget_sent();
+
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Buy milk");
+    session.forget_sent();
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert!(
+        record_has_task(&session, "Buy milk"),
+        "the task the entry added is in the workspace"
+    );
+
+    let (upserted, dropped, whole) = session.index_published();
+    assert!(
+        !whole,
+        "a change publishes the entries it moved, not every entry again"
+    );
+    assert_eq!(
+        (upserted, dropped),
+        (1, 0),
+        "adding one task of {SEEDED} indexes one entry, not the workspace's"
+    );
+}
+
+/// Checking tasks off one after another: every row the person checked stays where it stands,
+/// reading checked, the list goes on rendering, and checking one task runs a handful of
+/// boundaries rather than every row the window shows.
+#[test]
+fn checking_tasks_one_after_another_keeps_the_list_rendering() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(100);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    let mut checked = Vec::new();
+    let renders = |session: &Session| -> u64 {
+        let instance = session
+            .host
+            .instances()
+            .next()
+            .expect("the window's instance");
+        let view = instance
+            .instance()
+            .view(tilo_render_protocol::patch::Lane::Root)
+            .expect("the root view");
+        view.borrow().stats().renders
+    };
+    for _ in 0..4 {
+        let (title, x, y) = first_check(&mut session);
+        let before = renders(&session);
+        session.window.click_at(x, y);
+        session.settle();
+        let ran = renders(&session) - before;
+        assert!(
+            ran <= 10,
+            "checking {title} runs {ran} boundaries: the rows that read it and the window, \
+             not every row it shows"
+        );
+        checked.push(title);
+    }
+    for title in checked {
+        assert!(
+            checked_off(&mut session, &title),
+            "the row a person checked reads checked: {title}"
+        );
     }
 }

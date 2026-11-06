@@ -250,20 +250,19 @@ fn ports() -> Ports {
 /// that build ran.
 fn entrypoint() -> std::path::PathBuf {
     let built = std::env::current_exe().expect("the test binary's own path");
-    // <root>/target/<profile>/deps/<test>
-    let root = built
-        .parent()
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-        .expect("the checkout the run built from");
-    let entrypoint = root.join("os/containers/tilo-lounge/entrypoint.sh");
-    assert!(
-        entrypoint.is_file(),
-        "the image's entrypoint at {}",
-        entrypoint.display()
-    );
-    entrypoint
+    // The checkout is the nearest ancestor of the binary holding the image's
+    // entrypoint: the binary sits under `target/`, however deep the profile
+    // and the builder's artifact directory put it.
+    built
+        .ancestors()
+        .map(|dir| dir.join("os/containers/tilo-lounge/entrypoint.sh"))
+        .find(|entrypoint| entrypoint.is_file())
+        .unwrap_or_else(|| {
+            panic!(
+                "no Lounge image entrypoint in any directory above {}",
+                built.display()
+            )
+        })
 }
 
 /// A PATH holding the relay the run built, so the image's `exec tilo-relay`

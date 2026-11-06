@@ -6,11 +6,17 @@
 //! window is raised: starting it again would give the person a second copy of
 //! it, holding the records the first already holds. One that opens another
 //! window each time it is opened gets one, asked through the entry's own New
-//! Window action where it declares one. A document or a link is always
-//! handed to a launch of the app: its own command line carries it (`%f`/`%u`)
-//! and the app's toolkit gives it to the process it already runs.
+//! Window action where it declares one. A document or a link opens in a
+//! machine app's own process: its command line carries it (`%f`/`%u`) and the
+//! app's toolkit gives it to the process it already runs.
 //!
-//! The desk is what knows which windows exist, so it hands them in
+//! A Tilo package is never started twice: one process serves its records for
+//! a workspace, so a launch that names a record, content or a file of an app
+//! that already has a window — showing, or on its way — goes to that window.
+//! A second process would hold the app's records against the first, and one
+//! of them would read nothing.
+//!
+//! The desk is what knows which windows and places exist, so it hands them in
 //! ([`Shown`]) and this module decides ([`Instance::answer`]). Nothing here
 //! reads a screen or starts anything.
 
@@ -31,39 +37,39 @@ pub enum Windows {
     Many,
 }
 
-/// The windows the desk shows, each with the id its app announces itself by.
+/// The tabs the desk has for apps, each with the id its app announces itself
+/// by: a window that mapped, and a place held for one on its way.
 ///
-/// Only the windows of the workspace in front belong here: a launch belongs
-/// to the workspace the person is looking at, and an app in another one is
-/// not what they asked for.
+/// Only the tabs of the workspace in front belong here: a launch belongs to
+/// the workspace the person is looking at, and an app in another one is not
+/// what they asked for.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Shown {
-    windows: Vec<(u64, String)>,
+    tabs: Vec<(u64, String)>,
 }
 
 impl Shown {
-    /// The windows `windows` names, each with the id its app announces
-    /// itself by.
+    /// The tabs `tabs` names, each with the id its app announces itself by.
     #[must_use]
-    pub fn new(windows: impl IntoIterator<Item = (u64, String)>) -> Self {
+    pub fn new(tabs: impl IntoIterator<Item = (u64, String)>) -> Self {
         Self {
-            windows: windows.into_iter().collect(),
+            tabs: tabs.into_iter().collect(),
         }
     }
 
-    /// Whether the desk shows no window at all.
+    /// Whether the desk holds no tab of an app at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.windows.is_empty()
+        self.tabs.is_empty()
     }
 
-    /// The first window of `app` the desk holds.
+    /// The first tab of `app` the desk holds.
     #[must_use]
     pub fn of(&self, app: &Instance) -> Option<u64> {
-        self.windows
+        self.tabs
             .iter()
             .find(|(_, announced)| app.announces(announced))
-            .map(|(window, _)| *window)
+            .map(|(tab, _)| *tab)
     }
 }
 
@@ -120,20 +126,23 @@ impl Instance {
             .any(|identity| identity == announced)
     }
 
-    /// What a launch of this app does, given the windows the desk shows.
+    /// What a launch of this app does, given the tabs the desk has for it.
     #[must_use]
     pub fn answer(&self, launch: &Launch, shown: &Shown) -> Answer {
-        let Some(window) = shown.of(self) else {
+        let Some(tab) = shown.of(self) else {
             return Answer::Start { new_window: false };
         };
-        // A document or a link starts the app's own command line with it,
-        // and the app's toolkit hands it to the process already running —
-        // which is how an app the shell had started opened one too.
-        if opens(launch) {
+        // A machine app's document or a link starts its own command line with
+        // it, and the app's toolkit hands it to the process it already runs —
+        // which is how an app the shell had started opened one too. A Tilo
+        // package is not started again for what a launch names it: one
+        // process serves its records for a workspace, so a record, content or
+        // file goes to the window it has and no second process takes them.
+        if matches!(launch, Launch::Host { .. }) && opens(launch) {
             return Answer::Start { new_window: false };
         }
         match self.windows {
-            Windows::One => Answer::Raise { window },
+            Windows::One => Answer::Raise { tab },
             Windows::Many => Answer::Start { new_window: true },
         }
     }
@@ -146,8 +155,9 @@ pub enum Answer {
     /// already showing and it opens another on request: the plan asks for it
     /// through the entry's declared New Window action where there is one.
     Start { new_window: bool },
-    /// Raise `window`, the one the app already shows; nothing starts.
-    Raise { window: u64 },
+    /// Raise `tab`, the one the app's window is in or on its way to; nothing
+    /// starts.
+    Raise { tab: u64 },
 }
 
 /// Whether the launch names a document, a link, a record or some content for
@@ -221,7 +231,7 @@ mod tests {
             let shown = Shown::new([(4, "so.tilo.chat".to_owned()), (12, announced.to_owned())]);
             assert_eq!(
                 notes.answer(&launch, &shown),
-                Answer::Raise { window: 12 },
+                Answer::Raise { tab: 12 },
                 "the window announcing itself as {announced}"
             );
         }
@@ -243,7 +253,7 @@ mod tests {
         let (launch, editor) = editor("SingleMainWindow=true\n");
         assert_eq!(editor.windows, Windows::One);
         let shown = Shown::new([(7, "org.example.Editor".to_owned())]);
-        assert_eq!(editor.answer(&launch, &shown), Answer::Raise { window: 7 });
+        assert_eq!(editor.answer(&launch, &shown), Answer::Raise { tab: 7 });
     }
 
     /// An app that opens another window each time is started again when it is
@@ -265,20 +275,12 @@ mod tests {
         );
     }
 
-    /// A document or a link always starts the app's own command line: the app
+    /// A machine app's document or link starts its own command line: the app
     /// hands it to the process it already runs, as an app the shell had
-    /// started received one.
+    /// started received one. A Tilo package is never started twice: what a
+    /// launch names it opens in the window it has, showing or on its way.
     #[test]
     fn a_launch_with_a_document_or_a_link_goes_to_the_running_app() {
-        let notes = notes();
-        let shown = Shown::new([(12, "so.tilo.notes".to_owned())]);
-        let document = Launch::parse("so.tilo.notes")
-            .expect("a launch")
-            .opening(Some(Open::File("/home/you/notes.tilo-note".into())));
-        assert_eq!(
-            notes.answer(&document, &shown),
-            Answer::Start { new_window: false }
-        );
         let (launch, editor) = editor("");
         let shown = Shown::new([(7, "org.example.Editor".to_owned())]);
         assert_eq!(
@@ -289,11 +291,51 @@ mod tests {
             Answer::Start { new_window: false },
             "a link reaches the running app through the entry's %u"
         );
+
+        let notes = notes();
+        let shown = Shown::new([(12, "so.tilo.notes".to_owned())]);
+        let document = Launch::parse("so.tilo.notes")
+            .expect("a launch")
+            .opening(Some(Open::File("/home/you/notes.tilo-note".into())));
+        assert_eq!(
+            notes.answer(&document, &shown),
+            Answer::Raise { tab: 12 },
+            "a package opens the file in the one process it runs"
+        );
         let record = Launch::parse("record:so.tilo.notes:ideas").expect("a record launch");
         assert_eq!(
             notes.answer(&record, &shown),
-            Answer::Start { new_window: false },
-            "a record the app opens in the process it has"
+            Answer::Raise { tab: 12 },
+            "a record the app already has is not a second process"
+        );
+    }
+
+    /// A launch of an app whose window is on its way goes to the place the
+    /// desk holds for it: the tab a saved window waits in, or the one a
+    /// launch already holds — the record the launch names is open in that
+    /// very process, and a second one could not read it.
+    #[test]
+    fn a_launch_of_an_app_that_is_starting_goes_to_the_place_it_holds() {
+        let notes = notes();
+        let record = Launch::parse("record:so.tilo.notes:ideas").expect("a record launch");
+        let on_its_way = Shown::new([(9, "so.tilo.notes".to_owned())]);
+        assert_eq!(
+            notes.answer(&record, &on_its_way),
+            Answer::Raise { tab: 9 },
+            "the launch in flight is the app's window on its way"
+        );
+        assert_eq!(
+            notes.answer(
+                &Launch::parse("so.tilo.notes").expect("a launch"),
+                &on_its_way
+            ),
+            Answer::Raise { tab: 9 },
+            "opening the app brings the window that is coming"
+        );
+        let content = Launch::parse("content:so.tilo.notes:aa11").expect("a content launch");
+        assert_eq!(
+            notes.answer(&content, &on_its_way),
+            Answer::Raise { tab: 9 }
         );
     }
 

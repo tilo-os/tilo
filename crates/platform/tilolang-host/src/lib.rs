@@ -719,6 +719,19 @@ impl TilolangHost {
         for running in &mut self.running {
             changed |= running.hosted.turn();
         }
+        // An undo of an action that wrote several units takes every unit back through its own
+        // instance, and the reverts go out as one action.
+        let asks: Vec<(u64, tilo_actions::InvocationId)> = self
+            .running
+            .iter_mut()
+            .filter_map(|running| {
+                let invocation = running.hosted.take_undo_ask()?;
+                Some((running.hosted.spec().instance, invocation))
+            })
+            .collect();
+        for (asked_in, invocation) in asks {
+            changed |= self.undo(asked_in, invocation);
+        }
         let before = self.running.len();
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
@@ -758,6 +771,113 @@ impl TilolangHost {
             !gone
         });
         changed || self.running.len() != before || self.appliers.len() != applying
+    }
+
+    /// Take the step the person asked to undo in `asked_in` back: in that unit alone when no
+    /// other unit of the workspace this host runs holds a change of its action, and otherwise in
+    /// every unit that does, each through its own instance, the reverts published as one action.
+    ///
+    /// The units and their changes come from the records themselves, lazily, unit by unit: an
+    /// undo works after a restart that lost every log the transport kept, because the action's
+    /// invocation names its changes in every document it wrote. Whether anything was taken back.
+    fn undo(&mut self, asked_in: u64, invocation: tilo_actions::InvocationId) -> bool {
+        let mut parts: Vec<(String, String, Vec<[u8; 32]>)> = Vec::new();
+        let mut workspace = None;
+        for running in &self.running {
+            let route = running.hosted.record().route();
+            let changes = running.hosted.changes_of(invocation);
+            if changes.is_empty() {
+                continue;
+            }
+            if running.hosted.spec().instance == asked_in {
+                workspace = Some(route.cluster_id.to_string());
+            }
+            parts.push((
+                route.app_id.clone(),
+                route.record.clone().unwrap_or_default(),
+                changes,
+            ));
+        }
+        let Some(workspace) = workspace else {
+            return false;
+        };
+        if parts.len() <= 1 {
+            // The step is this unit's alone: its own instance takes it back.
+            return self
+                .running
+                .iter_mut()
+                .find(|running| running.hosted.spec().instance == asked_in)
+                .is_some_and(|running| running.hosted.undo_here());
+        }
+        // The reverts are one new action of the person's: one fresh invocation names it in every
+        // unit's change, which is what makes the parts one commit.
+        let ambient = tilo_actions::ActionContext {
+            source_invocation: Some(tilo_actions::InvocationId::new()),
+            ..tilo_actions::ActionContext::default()
+        };
+        let mut units: Vec<(String, String, collaboration::DocumentMutation)> = Vec::new();
+        for running in &mut self.running {
+            let route = running.hosted.record().route();
+            let (app, record) = (
+                route.app_id.clone(),
+                route.record.clone().unwrap_or_default(),
+            );
+            let Some((_, _, changes)) = parts
+                .iter()
+                .find(|(unit_app, unit_record, _)| unit_app == &app && unit_record == &record)
+            else {
+                continue;
+            };
+            for change in changes {
+                if !running.hosted.can_revert(change) {
+                    continue;
+                }
+                if let Err(error) = running.hosted.revert_step(change, &ambient) {
+                    tracing::warn!(
+                        app, record, %error,
+                        "a unit of an action did not take its step back"
+                    );
+                }
+            }
+            if let Some(change) = running.hosted.unsent_change() {
+                units.push((app, record, change));
+            }
+        }
+        if units.is_empty() {
+            return false;
+        }
+        let undo = collaboration::WorkspaceCommit::of_units(
+            &workspace,
+            &collaboration::CommitAuthor {
+                principal: None,
+                device: [0; 32],
+            },
+            &units
+                .iter()
+                .map(|(app, record, mutation)| collaboration::UnitMutation {
+                    app,
+                    record,
+                    mutation,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .ok()
+        .and_then(|commits| commits.into_iter().flatten().next());
+        for running in &mut self.running {
+            let route = running.hosted.record().route();
+            let (app, record) = (route.app_id.as_str(), route.record.as_deref().unwrap_or(""));
+            let sent = units
+                .iter()
+                .any(|(unit_app, unit_record, _)| app == unit_app && record == unit_record);
+            if !sent {
+                continue;
+            }
+            match &undo {
+                Some(commit) => running.hosted.share_under(commit),
+                None => running.hosted.share(),
+            }
+        }
+        true
     }
 
     /// How long until the time a view of some instance read (`today` in a query) next reads

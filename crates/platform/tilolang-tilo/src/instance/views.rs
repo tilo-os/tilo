@@ -215,7 +215,10 @@ impl Instance {
             let patches = match view.view.borrow_mut().poll_patches() {
                 Ok(patches) => patches,
                 Err(error) => {
+                    // A window keeps the frame it has and runs its view again on what comes
+                    // next; a test sees the error instead, so none passes over one.
                     tracing::warn!(%error, "a view failed to run");
+                    debug_assert!(false, "a view failed to run: {error}");
                     continue;
                 }
             };

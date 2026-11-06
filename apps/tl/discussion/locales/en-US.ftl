@@ -21,6 +21,7 @@ d-3g3duquj = Items
 
 d-l7s2czjp = Comment
     .doc = Says something about the resource the comment is made from: the thread under a task, a note or a mail says it with `.made_from(r)`, so the comment records what it is about.
+    .did = commented
 
 d-iae4o5k3 = Edit
     .doc = Changes what a comment says.
@@ -42,7 +43,6 @@ d-nsv2jvpu = Written
     .w-edited = edited
 
 d-vp5uwkal = Recently
-    .w-nothing-said-yet = Nothing said yet
 
 d-3666szuv = Comment page
 

@@ -9,13 +9,17 @@ app tilo.std "Standard library"
 /// A window that lists resources composes it: `std.list` puts the items down a column of rows
 /// with what the platform does on a row, `std.places` the places the app names in the sidebar,
 /// `std.header` the sort menu, `std.add_entry` the entry at the list's end, and the app writes
-/// the shell around them and says where each stands. The bar's actions are the ones the owner's
-/// type declares, which the host places there — the primary one as the Primary button, the rest
-/// behind the bar's one menu; the primary's key is the entry's at the list's end, so the key and
-/// the button lead the person there to type the item; each item is a row whose actions the host
-/// puts on its context menu and its swipe, a destructive one undone rather than confirmed; a
-/// command the app marked `frequent` a button of its own, never folded into a run. Items whose
-/// type has a window of their own open in the next column; the list follows which one is open.
+/// the shell around them and says where each stands. A window that is only that is `std.browse`,
+/// which takes the resource its window is of, the items, the places and the sort, and writes that
+/// shell the standard way.
+///
+/// The bar's actions are the ones the owner's type declares, which the host places there — the
+/// primary one as the Primary button, the rest behind the bar's one menu; the primary's key is
+/// the entry's at the list's end, so the key and the button lead the person there to type the
+/// item; each item is a row whose actions the host puts on its context menu and its swipe, a
+/// destructive one undone rather than confirmed; a command the app marked `frequent` a button of
+/// its own, never folded into a run. Items whose type has a window of their own open in the next
+/// column; the list follows which one is open.
 ///
 /// The items of a list down a column of rows, each built as it shows: choosing a row opens its
 /// item beside the list and activating it opens it in front, as every list of the platform does,
@@ -96,6 +100,128 @@ template view add_entry(placeholder: Text, create: Action) {
         }
         ui.TextInput(value: typed, placeholder: placeholder, entry: true) {
             on submit: create.then(set(typed, ""))
+        }
+    }
+}
+
+/// The window of `of` that lists `items`: the places the app names (`places`) in the sidebar,
+/// with all of them called `everything`; the sort menu when it gives `sort`; the entry at the
+/// list's end when it gives `entry`; and nothing to list when the place chosen finds nothing,
+/// where it says `empty`. The window owns the query: the place a person chose is its state,
+/// kept for them alone, and the list is what that place finds (`items.matching(query)`), the
+/// title over it and its count naming that place.
+///
+/// The rows open beside the list when their type has a window of its own (`opens`, the type's
+/// own fact); then choosing one opens it in the column beside the list, and the window says
+/// beside them that nothing is chosen. A window whose rows open in front of it instead gives
+/// `opens: false`: then the list is the window's content, under its own title, with no column
+/// to open beside it.
+///
+/// `row` draws one item's row and the window puts it down the list, with who else is at the
+/// item as every list of the platform shows it. An app whose window needs more than this — a
+/// list that groups or nests its rows, a sidebar of its own — composes `std.list`,
+/// `std.places` and `std.header` itself.
+template view browse<R, T, S>(
+    of: R,
+    items: List<T>,
+    places: List<Filter<T>> = [],
+    sort: Option<State<S>> = .none,
+    everything: Text = phrase("tilolang-all", kind: meta(T).plural),
+    empty: Text = phrase("tilolang-empty-kind", kind: meta(T).plural),
+    entry: Option<Action> = .none,
+    entry_placeholder: Text = phrase("tilolang-add"),
+    opens: Bool = meta(T).opens,
+    row: (T) -> View,
+) {
+    state query: Text = ""
+    let kind = meta(T)
+    let shown = items.matching(query)
+    let title = places.find(p -> p.query == query)?.label ?? everything
+    let sidebar_title: Option<Text> = if places.is_empty() { .none } else { .some(meta(of).title) }
+    if opens {
+        ui.NavShell(
+            content_kind: .document,
+            sidebar_title: sidebar_title,
+            overview_title: .some(title),
+            overview_count: .some(shown.len()),
+        ) {
+            sidebar: {
+                if not places.is_empty() {
+                    std.places(query, places, everything, icon: kind.icon)
+                }
+            }
+            overview_actions: {
+                std.header(sort: sort)
+            }
+            overview: {
+                browse_rows(shown, empty, kind.icon, entry, entry_placeholder) { x ->
+                    row(x)
+                }
+            }
+            content: {
+                ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
+            }
+        }
+    } else {
+        ui.NavShell(
+            content_kind: .list,
+            title: .some(title),
+            count: .some(shown.len()),
+            sidebar_title: sidebar_title,
+        ) {
+            sidebar: {
+                if not places.is_empty() {
+                    std.places(query, places, everything, icon: kind.icon)
+                }
+            }
+            actions: {
+                std.header(sort: sort)
+            }
+            content: {
+                browse_rows(shown, empty, kind.icon, entry, entry_placeholder) { x ->
+                    row(x)
+                }
+            }
+        }
+    }
+}
+
+/// What a window that lists resources shows of them: their rows down the list, or `empty` when
+/// the list holds nothing; with `entry`, the list's end holds the field that adds an item, and
+/// the empty state stands over it rather than in its place, so the next one is typed as easily
+/// as the first.
+template view browse_rows<T>(
+    items: List<T>,
+    empty: Text,
+    icon: Option<Text>,
+    entry: Option<Action>,
+    entry_placeholder: Text,
+    row: (T) -> View,
+) {
+    if let create = entry {
+        ui.Docked {
+            foot: {
+                stack {
+                    std.add_entry(entry_placeholder, create)
+                }
+            }
+            if items.is_empty() {
+                ui.EmptyState(empty, icon: icon, inline: true)
+            } else {
+                std.list(items) { (x, at) ->
+                    ui.ListItem(item: x, presence: at) {
+                        row(x)
+                    }
+                }
+            }
+        }
+    } else if items.is_empty() {
+        ui.EmptyState(empty, icon: icon)
+    } else {
+        std.list(items) { (x, at) ->
+            ui.ListItem(item: x, presence: at) {
+                row(x)
+            }
         }
     }
 }
@@ -300,10 +426,11 @@ view reply_banner<T>(to: T, cancel: Action) {
 }
 
 /// The foot of a conversation: the field a reply is typed into, and the button that sends it.
-/// Enter or the button runs `send`, then clears the field. What a view says over it (the message
-/// being answered, who is typing, what is being edited) is its own to place.
+/// Enter or the button runs `send`, then clears the field. The field takes everything the button
+/// leaves and ends at its edge, so the two read as one control at any width. What a view says
+/// over it (the message being answered, who is typing, what is being edited) is its own to place.
 view composer(draft: State<RichText>, placeholder: Text, send: Action) {
-    row {
+    row(gap: .none) {
         rich_input(bind: draft, placeholder: placeholder, fill) {
             on submit: send.then(set(draft, RichText("")))
         }
@@ -381,12 +508,12 @@ view suggestions<R>(of: R) {
 
 /// What happened to `of`, newest first, as the platform folds its history (`steps`): each step,
 /// consecutive changes by one person or by one task run, is an entry saying who made it, what
-/// they did and how long ago. What they did is the sentence its last change says
-/// (`version_sentence`), worked out from the fields the change wrote, the person looking as
-/// "You". A step of one change shows each field it changed, what it held before beside what it
-/// holds now, each as the field's type shows it; a step of several opens to each of them. A step
-/// the person looking made offers Undo for it, and a run's step Undo for the whole run; each
-/// change of theirs in a longer step is undone on its own. One change made over many items at
+/// they did and how long ago. What they did is what its last change says (`version_said`),
+/// worked out from the fields the change wrote, the person looking as "You". A step of one
+/// change shows each field it changed, what it held before beside what it holds now, each as
+/// the field's type shows it; a step of several opens to each of them. A step the person
+/// looking made offers Undo for it, and a run's step Undo for the whole run; each change of
+/// theirs in a longer step is undone on its own. One change made over many items at
 /// once — a command run on a choice of them — is one step: it says how many items it changed,
 /// and its Undo takes them all back together.
 view history<R>(of: R) {
@@ -397,21 +524,35 @@ view history<R>(of: R) {
             for s in steps {
                 let key = "{s.at}/{s.who}"
                 // What was done: the sentence its last change says, or, for a step of a run,
-                // who ran it and what it ran.
+                // who ran it and what it ran. The face stands beside the name and the time,
+                // as a comment does, and what was done stands under the name, in the room the
+                // face leaves: the entry reads as a row of the conversation it records.
                 stack(gap: .related) {
-                    // The sentence takes the room the avatar leaves and the time and the button
-                    // stand at its end; a window too narrow for all three wraps them onto a line
-                    // of their own rather than squeezing the avatar under what follows it.
-                    row(gap: .related, align: .center, wrap: true) {
+                    row(gap: .tight, align: .start) {
                         avatar(s.who)
                         stack(gap: .tight, fill: 1.0) {
-                            if let run = s.task {
+                            row(gap: .tight, align: .center) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
                                 }
+                                ui.Time(s.at, role: .caption, secondary: true)
+                                spacer()
+                                if let run = s.task {
+                                    ui.Button(phrase("tilolang-history-undo-run")) {
+                                        on press: undo(run)
+                                    }
+                                } else if s.changes == 1 and s.mine {
+                                    if let v = s.versions.last() {
+                                        ui.Button(phrase("tilolang-undo")) {
+                                            on press: undo(v)
+                                        }
+                                    }
+                                }
+                            }
+                            if let run = s.task {
                                 ui.Text(run.title, role: .caption, secondary: true)
                             } else if let v = s.versions.last() {
-                                std.version_sentence(v)
+                                std.version_said(v)
                             }
                             if s.changes > 1 {
                                 ui.Text(
@@ -419,18 +560,6 @@ view history<R>(of: R) {
                                     role: .caption,
                                     secondary: true,
                                 )
-                            }
-                        }
-                        ui.Time(s.at, role: .caption, secondary: true)
-                        if let run = s.task {
-                            ui.Button(phrase("tilolang-history-undo-run")) {
-                                on press: undo(run)
-                            }
-                        } else if s.changes == 1 and s.mine {
-                            if let v = s.versions.last() {
-                                ui.Button(phrase("tilolang-undo")) {
-                                    on press: undo(v)
-                                }
                             }
                         }
                     }
@@ -470,23 +599,29 @@ view history<R>(of: R) {
     }
 }
 
-/// A version in one sentence: who made it, then what it did, joined by what the platform keeps
-/// beside each change (`said`, `shows`). The words come from the fields the change wrote and
-/// what they held before and after ("moved this to", then the day as a day), or from what the
-/// action declares (`did:`); a version that says neither says what its action does.
-///
-/// A change made over many items at once says how many it changed instead of what one item
-/// read: what the action did to each is the fields of that one's own version, and the words of
-/// the action are written for one item.
+/// A version in one sentence: who made it, then what it did (`version_said`).
 template view version_sentence(v: host.Version) {
+    row(gap: .tight, wrap: true) {
+        ui.Text(v.actor, role: .label)
+        std.version_said(v)
+    }
+}
+
+/// What a version did, in the words a person reads after who did it: the words the app writes
+/// for the action (`did:`), the fields the change wrote and what they held ("set the due date
+/// to", then the day as a day), or, for one that declares nothing and changed no field, the
+/// action's label, which the platform reads by the action's own name when it declares none.
+/// Never what the action's declaration explains to the person writing the app: history says what
+/// happened, and a doc comment is not part of what happened.
+template view version_said(v: host.Version) {
     stack(gap: .tight) {
         if v.count > 1 {
             ui.Text(
-                "{v.actor} {phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural)}",
+                phrase("tilolang-did-many", count: v.count, kind: meta(v.of).plural),
                 role: .label,
             )
         } else if v.did != "" {
-            ui.Text("{v.actor} {v.did}", role: .label)
+            ui.Text(v.did, role: .label)
         } else if not v.changes.is_empty() {
             row(gap: .tight, wrap: true) {
                 for c in v.changes {
@@ -501,12 +636,7 @@ template view version_sentence(v: host.Version) {
                 }
             }
         } else {
-            ui.Text(v.actor, role: .label)
-            ui.Text(
-                if v.description == "" { v.what } else { v.description },
-                role: .caption,
-                secondary: true,
-            )
+            ui.Text(v.what, role: .label)
         }
         if v.suggested != "" {
             ui.Text(

@@ -23,6 +23,9 @@ class Doors:
     def __init__(self, side):
         self.side = side
         self.new = side.name == "new"
+        # Where the last door pressed the secondary button, when it did: the
+        # point a menu it opened stands at, which the frame is checked against.
+        self.pressed = None
         self.table = {
             "desk.search": self.search,
             "desk.search.close": self.search_close,
@@ -154,6 +157,13 @@ class Doors:
         time.sleep(0.15)
         self.side.click(x, y)
         return row
+
+    def right_press(self, point: tuple[float, float]) -> str:
+        """The secondary button on `point`, remembered as where a menu it
+        opens belongs."""
+        self.pressed = (float(point[0]), float(point[1]))
+        self.side.right_click(*self.pressed)
+        return f"right click at ({self.pressed[0]:.0f}, {self.pressed[1]:.0f})"
 
     def press_at(self, row: dict):
         rect = row["rect"]
@@ -768,8 +778,7 @@ class Doors:
                 self.click_window_body()
             except DoorMissing:
                 pass
-            self.side.right_click(*self.tab_point())
-            return "right click on the window's tab"
+            return self.right_press(self.tab_point())
         return self.tail("tab.menu")
 
     def tab_point(self):
@@ -790,8 +799,7 @@ class Doors:
 
     def tab_menu(self):
         if self.new:
-            self.side.right_click(*self.tab_point())
-            return "right click on the tab"
+            return self.right_press(self.tab_point())
         return self.tail("tab.menu")
 
     def window_step(self, steps: int):

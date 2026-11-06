@@ -847,6 +847,7 @@ impl ViewInstance {
             from: None,
             suggested_by: None,
             effects: Vec::new(),
+            invocation: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

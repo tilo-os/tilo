@@ -118,6 +118,7 @@ qs-rotation-lock = Drehsperre
 qs-rotation-locked = Gesperrt
 qs-rotation-unlocked = Dreht sich mit dem Gerät
 qs-sound-output = Tonausgabe
+qs-sound-session-output = Sitzungsausgabe
 qs-sound-settings = Ton-Einstellungen
 qs-stream-level = Lautstärke von { $app }
 qs-stream-mute = { $app } stummschalten

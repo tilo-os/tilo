@@ -749,12 +749,11 @@ impl ChatApp {
             .filter(|found| found.is_channel())
             .ok_or_else(|| format!("there is no channel `{channel}` in this chat"))?;
         let held = self.held_messages();
-        let mut messages: Vec<_> = held
+        // Oldest first, in the order the window shows the channel.
+        let messages: Vec<_> = held
             .iter()
             .filter(|(_, message)| message.channel == id)
             .collect();
-        // Oldest first; posts of one second keep the chain's order.
-        messages.sort_by_key(|(_, message)| message.ts);
         let transcript = crate::transcript::Channel {
             id: channel,
             name: &found.name,

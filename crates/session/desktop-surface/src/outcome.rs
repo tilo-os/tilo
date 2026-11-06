@@ -73,6 +73,14 @@ impl Outcome {
         said.push_str(why);
         said
     }
+
+    /// The same outcome as a notice, for what the person asked for that has
+    /// nothing of it left on the desk to be drawn on: it says what did not
+    /// happen and why in the notification centre, where it waits to be read.
+    #[must_use]
+    pub fn notice(&self) -> crate::notifications::Notification {
+        crate::notifications::Notification::new(self.what.clone(), self.why.clone())
+    }
 }
 
 /// Why an app a window showed is not running any more.
@@ -240,5 +248,17 @@ mod tests {
             "Notes could not open: it is not installed here"
         );
         assert_eq!(Outcome::new("No permission.").detail(), "No permission");
+    }
+
+    /// What has nothing of it left on the desk is told as a notice: its
+    /// sentence leads and its why follows, waiting in the notification
+    /// centre.
+    #[test]
+    fn an_outcome_with_nothing_to_be_drawn_on_is_a_notice() {
+        let notice = Outcome::new("Screenshots run in Tilo on a computer")
+            .saying("A browser page has no screen of its own.")
+            .notice();
+        assert_eq!(notice.title, "Screenshots run in Tilo on a computer");
+        assert_eq!(notice.body, "A browser page has no screen of its own.");
     }
 }

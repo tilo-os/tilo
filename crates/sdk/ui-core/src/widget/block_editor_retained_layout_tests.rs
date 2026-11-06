@@ -1509,3 +1509,48 @@ fn undrawn_drag_handles_stop_asking_for_frames_once_their_fade_is_over() {
         assert!(Widget::next_wake_deadline(&*fixture.editor).is_none());
     });
 }
+
+/// A host that solves the layout without measuring the stack (the tree was already solved,
+/// and only the blocks moved) keeps every line's height: a restacked paragraph is not clipped
+/// to the empty row a measure it cannot run would give it.
+#[test]
+fn a_probe_at_no_width_leaves_the_stack_the_host_applies() {
+    let mut fixture = RetainedEditor::with_compact_blocks(
+        234.0,
+        1.0,
+        vec![Block::paragraph(
+            "The supplier quotes six weeks. Do we order before the summer?",
+        )],
+    );
+    let measured = fixture.editor.blocks[0].line.get_rect().height();
+    assert!(
+        measured > 20.0,
+        "the sentence wraps over more than one row: {measured}"
+    );
+    // A parent measuring min-content asks the stack what it takes at no width.
+    let probe = fixture.editor.measure_stack(
+        Size {
+            width: Some(0.0),
+            height: None,
+        },
+        Size {
+            width: taffy::AvailableSpace::Definite(0.0),
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        &mut fixture.text,
+    );
+    assert!(
+        f64::from(probe.height) > measured,
+        "one word per row is taller than the wrapped paragraph: {probe:?} against {measured}"
+    );
+    // The host then applies the layout it solved without measuring.
+    fixture
+        .editor
+        .apply_layout(&fixture.tree, fixture.root, Point::ZERO);
+    assert_eq!(
+        fixture.editor.blocks[0].line.get_rect().height(),
+        measured,
+        "a probe must not replace the stack the blocks are painted from"
+    );
+    fixture.assert_focused_content_fits();
+}

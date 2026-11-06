@@ -236,7 +236,12 @@ impl Chat {
         let filed = self.feedback_rows(channel);
         if !filed.is_empty() {
             for report in filed {
-                let at = rows.partition_point(|row| row.ts <= report.ts);
+                // Where it was filed: before the first message written after
+                // it, in the timeline's own order.
+                let at = rows
+                    .iter()
+                    .position(|row| row.ts > report.ts)
+                    .unwrap_or(rows.len());
                 rows.insert(at, report);
             }
         }

@@ -844,6 +844,44 @@ view tinted_row(item: Item, tint: Text) {
         assert!(!settled.contains(&before[2]));
     }
 
+    /// Rows a person checks one after another stand where they are: each kept row keeps its
+    /// own place, and the list goes on rendering.
+    #[test]
+    fn rows_checked_one_after_another_keep_their_places() {
+        let rows = Rows::new(6);
+        let mut view = rows.view("chosen");
+        choose(&view, "is:open");
+        view.poll_patches().unwrap();
+        let list = list_key(&view);
+        let before = row_keys(&view, &list);
+        for i in 0..3 {
+            rows.call("check", vec![Value::resource(&rows.items[i])]);
+            let patches = view.poll_patches().unwrap();
+            assert!(
+                !patches.iter().any(|p| matches!(
+                    p,
+                    Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
+                )),
+                "no row moves: {patches:?}"
+            );
+            assert_eq!(
+                row_keys(&view, &list),
+                before,
+                "the rows the person checked stay: {patches:?}"
+            );
+            for at in 0..=i {
+                assert_eq!(
+                    titles(view.row(&list, at).unwrap().unwrap()).concat(),
+                    format!("item {at}"),
+                    "the row checked at {at} stays where it stood"
+                );
+            }
+        }
+        let keys = row_keys(&view, &list);
+        let unique: std::collections::HashSet<&String> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "each row is one row: {keys:?}");
+    }
+
     #[test]
     fn a_view_that_reads_every_item_follows_every_change() {
         let rows = Rows::new(300);
