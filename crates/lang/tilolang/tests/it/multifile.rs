@@ -479,6 +479,22 @@ fn a_missing_import_names_the_app_and_where_it_looked() {
 }
 
 #[test]
+fn the_agent_library_is_provided_like_the_host() {
+    let scratch = Scratch::new("agent");
+    let dir = scratch.package(
+        "a",
+        &[(
+            "app.tl",
+            "app t.a \"A\"\n\nuse tilo.agent as agent\n\ntype Tag {\n    title: Text\n}\n\naction who() -> Principal {\n    return agent.me\n}\n\naction what() -> Text {\n    return agent.describe(Tag)\n}\n",
+        )],
+    );
+    let order = dependency_order(&dir, &[]).unwrap();
+    assert_eq!(order, vec![dir]);
+    let built = compile_dirs(&order, &[], &mut SeededEntropy(1)).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(built[0].compiled.meta.uses, ["tilo.agent", "tilo.std"]);
+}
+
+#[test]
 fn a_path_names_a_package_outside_the_siblings() {
     let scratch = Scratch::new("path");
     let lib = scratch.package(

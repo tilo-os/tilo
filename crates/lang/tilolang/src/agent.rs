@@ -111,11 +111,6 @@ pub fn function(name: &str) -> Option<&'static Function> {
     FUNCTIONS.iter().find(|f| f.name == name)
 }
 
-/// Every word of the library, for what a session has in scope.
-pub fn names() -> impl Iterator<Item = &'static str> {
-    FUNCTIONS.iter().map(|f| f.name)
-}
-
 /// The library as a package: what `use tilo.agent` imports, `agent.grep` calls and `describe`
 /// reads. Its words are lowered to host imports, so it carries no module of its own.
 #[must_use]
@@ -171,7 +166,6 @@ mod tests {
             }
             assert!(tilolang_ty(f.result), "`{}`'s result is a type", f.name);
         }
-        assert_eq!(super::names().count(), FUNCTIONS.len());
         assert_eq!(super::meta().fns.len(), FUNCTIONS.len());
     }
 
