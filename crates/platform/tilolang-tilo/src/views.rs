@@ -89,6 +89,13 @@ impl RustViews for DeclaredViews {
     }
 }
 
+/// The apps whose views this process links as Rust apps: a resource of one of their types is
+/// drawn by the app's own view, not by a package's.
+#[must_use]
+pub fn declared_apps() -> Vec<&'static str> {
+    tilo_view::ViewRegistry::apps()
+}
+
 /// A view's tree as the runtime's, and what its events do, by key and event name.
 #[must_use]
 pub fn convert(tree: Node, effects: &BTreeMap<(String, String), Effect>) -> RustRendered {
@@ -175,6 +182,7 @@ fn effect_to_runtime(effect: &Effect) -> Option<RustEvent> {
             ty: target.ty.clone(),
             view: view.clone(),
         },
+        Effect::OpenEvent { view } => RustEvent::OpenEvent { view: view.clone() },
         Effect::State { name } => RustEvent::State { name: name.clone() },
         Effect::None => return None,
     })

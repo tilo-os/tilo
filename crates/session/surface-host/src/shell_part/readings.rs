@@ -126,7 +126,7 @@ pub fn placed_records(
         .filter(|place| !place.record.is_empty())
         .filter_map(|place| {
             let ty = find_resource(resources, &place.record)
-                .and_then(|spec| tilolang_tilo::records_service::reading_type(&spec.kind))?;
+                .and_then(tilolang_tilo::records_service::reading_type_of)?;
             Some((place.record.clone(), ty))
         })
         .collect()
@@ -136,6 +136,17 @@ pub fn placed_records(
 #[must_use]
 pub fn app_of(ty: &str) -> Option<&str> {
     ty.split_once('#').map(|(app, _)| app)
+}
+
+/// The apps whose views this process links as Rust apps (one-app-model.md §2): a resource of one
+/// of their types is drawn by the app's own view, not by a package's, and its reading is followed
+/// though the app publishes no module.
+#[must_use]
+pub fn rust_view_apps() -> Vec<String> {
+    tilolang_tilo::views::declared_apps()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The resource `id` in `resources` or among their children.

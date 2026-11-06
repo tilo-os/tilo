@@ -261,6 +261,12 @@ pub struct Instance {
     in_flight: VecDeque<u64>,
     door_work: Rc<Cell<bool>>,
     open_requests: Rc<RefCell<Vec<crate::effects::OpenEffect>>>,
+    /// Whether the view of a shell places what it opens on the canvas, rather than opening a
+    /// detail lane of the shell's own window ([`Instance::place_opens`]).
+    place_opens: bool,
+    /// The resources a view of a shell opened since the last turn: the places the session
+    /// arranges on the canvas.
+    opens_to_place: Vec<(ResourceRef, Option<String>, bool)>,
     /// What a person's press of a primary action made, to open as they asked for it.
     pressed_opens: Vec<String>,
     ask: Option<Suggestion>,
@@ -349,6 +355,8 @@ impl Instance {
             in_flight: VecDeque::new(),
             door_work: Rc::default(),
             open_requests: Rc::default(),
+            place_opens: false,
+            opens_to_place: Vec::new(),
             pressed_opens: Vec::new(),
             ask: None,
             settle_due: false,
@@ -1207,6 +1215,14 @@ impl Instance {
                     view,
                     front,
                 } => {
+                    // A shell's places show resources on the canvas, never as a detail lane of
+                    // the shell's own window: what a view opened is a place the session arranges
+                    // (one-app-model.md §2, shell.md §8). Anywhere else, it opens the window's
+                    // detail lane.
+                    if self.place_opens {
+                        self.opens_to_place.push((target, view, front));
+                        continue;
+                    }
                     // A selection the keyboard moves shows the item beside the list without
                     // bringing it to the front of a narrow window; an activation does.
                     let front = front.then_some(ui::Front::Input);
@@ -1223,6 +1239,18 @@ impl Instance {
                 }
             }
         }
+    }
+
+    /// The view of a shell places what it opens on the canvas, rather than opening a detail lane
+    /// of the shell's own window: what a `show`'s view opens is a place the session arranges.
+    pub fn place_opens(&mut self, place: bool) {
+        self.place_opens = place;
+    }
+
+    /// What a view of a shell opened since the last call, each a resource and the view it named:
+    /// the places the session arranges on the canvas.
+    pub fn take_opens_to_place(&mut self) -> Vec<(ResourceRef, Option<String>, bool)> {
+        std::mem::take(&mut self.opens_to_place)
     }
 
     /// Send the window what each bound control of the view of `lane` (and of the rows it
