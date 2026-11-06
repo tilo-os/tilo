@@ -12,8 +12,10 @@
 //! marks here is queued for the host to keep
 //! ([`crate::Runtime::take_seen`]).
 //!
-//! Which versions are marked at all: every version made in a task run or by an agent, and none
-//! the person made themselves. People's changes are not marked (§4, the default).
+//! Which versions are marked at all: every version made in a task run or by an agent, and
+//! another person's that made a record from the resource (a comment about it changed it as an
+//! edit does), and none the person made themselves. People's changes are not marked otherwise
+//! (§4, the default).
 
 use serde::{Deserialize, Serialize};
 

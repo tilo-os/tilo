@@ -285,8 +285,9 @@ keeps its versions) and which `.fields` it changed. A resource can be made from 
 an invocation carries the resource it is made from when the host or the invoker names one, the
 change records it, and the resource it created says so, `created(r)?.from` — an
 `Option<host.Resource>`. `changes(of: run)` is every version a run
-made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
-person looking has not seen yet. The UI host marks those where views show them, with no code
+made, of every resource, and `unseen(r)` the versions of `r` the person looking has not seen
+yet: an agent's, or another person's that made a record from `r` (a comment about it counts as
+a change to it). The UI host marks those where views show them, with no code
 of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 (task-legibility.md).
 
@@ -295,6 +296,11 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 `.created_from` for one made from `r`, `.field` for one whose reference field points at it, and
 `.mention` for one whose rich text names it. It is read from the index, at the cost of what links to `r` and not of the
 workspace's size, and a view that reads it runs again when what links to `r` changes.
+
+A type declared `(attached)` says what its records are to the rest of the workspace: about
+what they were made from, not work made from it, as a comment is about the task it discusses.
+`linked` leaves them out, since the view that draws what they are about draws them all, and a
+record made from `r` is a change to `r` for whoever made or read it, as any edit is.
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`

@@ -1,6 +1,6 @@
 //! A discussion under a task and under a note: a comment made from what it is about, the thread
 //! that draws under it, what the comment changes for whoever made or read what it is about
-//! (their row, their place's count, the line in the thread), an agent's comment, and what
+//! (their row, the window's count, the line in the thread), an agent's comment, and what
 //! `linked` leaves out because the comment is about the task rather than made from it.
 
 use automerge::AutoCommit;
@@ -99,6 +99,18 @@ fn ref_of(node: &UiNode, prop: &str) -> Option<ResourceRef> {
     }
 }
 
+/// The rich text the comments of `tree` draw, in the order the thread reads them: a comment is
+/// shown as the value it holds, not bound to a field like the page's own body.
+fn comments_drawn(tree: &UiNode) -> Vec<RichValue> {
+    of_kind(tree, "ui.BlockEditor")
+        .into_iter()
+        .filter_map(|editor| match editor.props.get("value") {
+            Some(Value::Rich(rich)) => Some(rich.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The change mark the host puts on the window's header: how many changes of what it shows the
 /// person has not seen, and who made the newest.
 fn window_mark(view: &mut ViewInstance) -> Option<UiNode> {
@@ -159,7 +171,7 @@ fn workspace() -> Replica {
     replica
 }
 
-/// The task `title` of Ada's workspace, and the note `title` of it.
+/// The task `title` of Ada's workspace.
 fn page(r: &Replica, app: &str, action_name: &str, title: &str) -> ResourceRef {
     let root = Value::resource(&r.host.root_of(app).unwrap());
     target(&call(
@@ -172,6 +184,21 @@ fn page(r: &Replica, app: &str, action_name: &str, title: &str) -> ResourceRef {
     ))
 }
 
+/// The note `title` of Ada's workspace: notes start untitled, so it is named after it is made.
+fn note_named(r: &Replica, title: &str) -> ResourceRef {
+    let root = Value::resource(&r.host.root_of(NOTES_APP).unwrap());
+    let note = target(&call(r, "ada", NOTES_APP, "new_note", None, vec![root]));
+    call(
+        r,
+        "ada",
+        NOTES_APP,
+        "retitle",
+        None,
+        vec![Value::resource(&note), Value::text(title)],
+    );
+    note
+}
+
 #[test]
 fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
     let mut ada = workspace();
@@ -182,6 +209,7 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
     // Bo asks Ada something about the task, naming her in it.
     let mut asked = RichValue::from_text("Is this the one that pays the whole quarter? ");
     asked.push_reference("Ada", &Reference::Person("ada".to_owned()));
+    let asked_text = asked.written_text();
     let all = Value::resource(&bo.host.root_of(DISCUSSION_APP).unwrap());
     let said = target(&call(
         &bo,
@@ -228,23 +256,30 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
     );
     assert_eq!(mark.props.get("kind"), Some(&Value::text("changed")));
     let counted = window_mark(&mut view).expect("the window counts what she has not seen");
-    assert_eq!(counted.props.get("count"), Some(&Value::Int(1)), "{counted:#?}");
+    assert_eq!(
+        counted.props.get("count"),
+        Some(&Value::Int(1)),
+        "{counted:#?}"
+    );
 
     // The task's page draws the comment under it, with the line saying she has not read it.
-    let mut page = ada.host.open_resource(&task, None).unwrap();
+    let page = ada.host.open_resource(&task, None).unwrap();
     let dividers = of_kind(page.tree(), "ui.UnreadDivider").len();
     assert_eq!(dividers, 1, "the thread says what she has not read");
-    let said_row = of_kind(page.tree(), "ui.BlockEditor")
-        .into_iter()
-        .filter(|editor| {
-            editor
-                .binding
-                .as_ref()
-                .and_then(|b| b.field())
-                .is_some_and(|(at, _)| at.id_string() == said.id_string())
-        })
-        .count();
-    assert_eq!(said_row, 1, "the comment draws what was said");
+    let drawn = comments_drawn(page.tree());
+    assert_eq!(
+        drawn
+            .iter()
+            .map(RichValue::written_text)
+            .collect::<Vec<_>>(),
+        [asked_text.clone()],
+        "the thread draws what was said, @Ada as a reference in it, not prose"
+    );
+    assert!(
+        drawn[0].mentions("ada"),
+        "@Ada refers to her: {:#?}",
+        drawn[0]
+    );
 
     // Read (as opening it in a window of its own marks it), neither the row, nor the place, nor
     // the thread says anything: reading a task reads what was said about it.
@@ -267,6 +302,39 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
         ada.host.runtime().unseen("ada", &said).unwrap().is_empty(),
         "the comment is read with the task it is about"
     );
+
+    // She answers him in the same thread: her comment is made from the same task, stands after
+    // his, and is what Bo has not read.
+    let reply = comment(&ada, "ada", &task, "Yes, the whole quarter.");
+    ada.commit();
+    assert_eq!(
+        ada.host
+            .store()
+            .version_end(&reply, false)
+            .unwrap()
+            .unwrap()
+            .from
+            .map(|r| r.id_string()),
+        Some(task.id_string()),
+        "a reply is made from the task the thread is about"
+    );
+    bo.sync_with(&mut ada);
+    bo.commit();
+    let page = bo.host.open_resource(&task, None).unwrap();
+    assert_eq!(
+        comments_drawn(page.tree())
+            .iter()
+            .map(RichValue::written_text)
+            .collect::<Vec<_>>(),
+        [asked_text, "Yes, the whole quarter.".to_owned()],
+        "the thread reads oldest first, his comment then her answer: {} {reply:?}",
+        said.id_string()
+    );
+    assert_eq!(
+        of_kind(page.tree(), "ui.UnreadDivider").len(),
+        1,
+        "Bo's thread says he has not read her answer"
+    );
 }
 
 #[test]
@@ -284,11 +352,13 @@ fn an_agent_comments_through_the_same_action() {
         "The van place is held until Friday noon.",
     );
     ada.commit();
+    let said_value = ada.host.runtime().read(&said, "text").unwrap();
+    let Value::Rich(said_value) = &said_value else {
+        panic!("a comment's text is rich text: {said_value:?}");
+    };
     assert_eq!(
-        ada.host.runtime().read(&said, "text").unwrap(),
-        Value::Rich(RichValue::from_text(
-            "The van place is held until Friday noon."
-        ))
+        said_value.written_text(),
+        "The van place is held until Friday noon."
     );
     let made = ada.host.store().version_end(&said, false).unwrap().unwrap();
     assert_eq!(made.who, "agent:scout");
@@ -310,7 +380,7 @@ fn an_agent_comments_through_the_same_action() {
 #[test]
 fn a_comment_under_a_note_draws_in_the_notes_view() {
     let mut ada = workspace();
-    let plan = page(&ada, NOTES_APP, "new_note", "Q3 plan");
+    let plan = note_named(&ada, "Q3 plan");
     ada.commit();
     let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (NOTES, NOTES_IDS)]);
 
@@ -323,16 +393,12 @@ fn a_comment_under_a_note_draws_in_the_notes_view() {
     bo.commit();
     ada.sync_with(&mut bo);
 
-    let mut view = ada.host.open_resource(&plan, None).unwrap();
+    let view = ada.host.open_resource(&plan, None).unwrap();
     assert!(
-        of_kind(view.tree(), "ui.BlockEditor")
+        comments_drawn(view.tree())
             .iter()
-            .any(|editor| editor
-                .binding
-                .as_ref()
-                .and_then(|b| b.field())
-                .is_some_and(|(at, _)| at.id_string() == said.id_string())),
-        "the note's view draws what was said about it"
+            .any(|rich| rich.written_text() == "Add the offline editor to the first paragraph."),
+        "the note's view draws what was said about it: {said:?}"
     );
     assert_eq!(
         of_kind(view.tree(), "ui.UnreadDivider").len(),
@@ -373,14 +439,10 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
     );
     // The comment is drawn by the thread instead, as what was said about it.
     assert!(
-        of_kind(page.tree(), "ui.BlockEditor")
+        comments_drawn(page.tree())
             .iter()
-            .any(|editor| editor
-                .binding
-                .as_ref()
-                .and_then(|b| b.field())
-                .is_some_and(|(at, _)| at.id_string() == said.id_string())),
-        "the thread draws it"
+            .any(|rich| rich.written_text() == "Ask Bo about the receipt."),
+        "the thread draws it: {said:?}"
     );
 }
 
@@ -419,7 +481,7 @@ fn only_its_author_edits_or_deletes_a_comment() {
         vec![
             Value::resource(&said),
             Value::Rich(RichValue::from_text(
-                "Is this the one that pays the quarter?",
+                "Is this the one that pays all four quarters?",
             )),
         ],
     );
@@ -439,26 +501,23 @@ fn only_its_author_edits_or_deletes_a_comment() {
     );
 
     // Its author removes it, and it leaves the thread with the task.
+    let all = Value::resource(&bo.host.root_of(DISCUSSION_APP).unwrap());
     call(
         &bo,
         "bo",
         DISCUSSION_APP,
         "delete",
         None,
-        vec![Value::resource(&said)],
+        vec![all, Value::resource(&said)],
     );
     bo.commit();
     ada.sync_with(&mut bo);
     let mut view = ada.host.open_resource(&task, None).unwrap();
     view.poll_patches().unwrap();
     assert!(
-        !of_kind(view.tree(), "ui.BlockEditor").iter().any(|editor| {
-            editor
-                .binding
-                .as_ref()
-                .and_then(|b| b.field())
-                .is_some_and(|(at, _)| at.id_string() == said.id_string())
-        }),
-        "a removed comment draws nowhere"
+        !comments_drawn(view.tree())
+            .iter()
+            .any(|rich| rich.written_text() == "Is this the one that pays all four quarters?"),
+        "a removed comment draws nowhere: {said:?}"
     );
 }
