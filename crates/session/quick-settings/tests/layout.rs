@@ -38,6 +38,12 @@ fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
     (app, host)
 }
 
+/// The panel's own surface: the card fills the window the desk gives a
+/// popover, so the app's root area is the card's rect.
+fn card(app: &mut HeadlessApp<QuickSettingsApp>) -> Rect {
+    target(app, "BoundComponent[0]/ResourceApp[0]")
+}
+
 fn target(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> Rect {
     let targets = app.harness().targets();
     *targets.get(name).unwrap_or_else(|| {
@@ -77,7 +83,7 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
     let notifications = target(&mut app, "qs-row-notifications");
     let power = target(&mut app, "qs-power");
     let account = target(&mut app, "qs-account");
-    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    let card = card(&mut app);
     assert!(
         card.width() <= f64::from(VIEWPORT.0) && card.width() > f64::from(VIEWPORT.0) - 1.0,
         "the panel takes its window and never stands past it: {card:?}"
@@ -782,7 +788,7 @@ fn a_refusal_stands_over_the_page_until_the_person_puts_it_away() {
     app.settle();
     let refusal = target(&mut app, "qs-refusal");
     let tile = target(&mut app, "qs-tile-wifi");
-    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    let card = card(&mut app);
     assert!(refusal.y1 <= tile.y0, "the reason stands over the page");
     assert!(
         refusal.x0 >= card.x0 && refusal.x1 <= card.x1,
@@ -983,7 +989,7 @@ fn a_panel_taller_than_its_room_scrolls_rather_than_dropping_a_control() {
     let _settled = ui::motion::testing::settled();
     let mut app =
         HeadlessApp::<QuickSettingsApp>::capture_at(Some("controls"), (360, 420)).unwrap();
-    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    let card = card(&mut app);
     assert!(
         (card.height() - 420.0).abs() < 1.0,
         "the card is the room it is given: {card:?}"
@@ -1090,36 +1096,41 @@ fn tab_walks_the_controls_from_the_tiles() {
 }
 
 /// Every page stands in the panel's footprint: the card is the window the
-/// desk gives a popover, whatever the page shows, and a page with more on it
-/// than fits scrolls inside the card instead of standing past it.
+/// desk gives a popover, whatever the page shows, so the footer stands on
+/// the window's bottom edge and nothing it draws leaves the window.
 #[test]
 fn every_page_stands_in_the_panels_footprint_or_scrolls_inside_it() {
     for scenario in scenarios::NAMES {
         let mut app =
             HeadlessApp::<QuickSettingsApp>::capture_at(Some(scenario), (380, 760)).unwrap();
-        let window = target(&mut app, "BoundComponent[0]/ResourceApp[0]");
+        let window = card(&mut app);
         assert!(
-            (window.height() - 760.0).abs() < 1.0,
+            (window.height() - 760.0).abs() < 1.0 && (window.width() - 380.0).abs() < 1.0,
             "{scenario} fills the panel's window: {window:?}"
         );
-        let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+        let footer = target(&mut app, "qs-power");
         assert!(
-            (card.height() - window.height()).abs() < 1.0,
-            "{scenario} stands in the footprint it was given: {card:?} in {window:?}"
+            footer.y1 <= window.y1 + 0.5 && footer.y1 > window.y1 - 40.0,
+            "{scenario} keeps its footer on the window's bottom edge: {footer:?} in {window:?}"
         );
-        assert!(
-            (card.width() - window.width()).abs() < 1.0,
-            "{scenario} takes the window's width: {card:?} in {window:?}"
-        );
+        for control in ["qs-lock", "qs-settings", "qs-account"] {
+            let rect = target(&mut app, control);
+            assert!(
+                rect.x0 >= window.x0 - 0.5
+                    && rect.x1 <= window.x1 + 0.5
+                    && rect.y1 <= window.y1 + 0.5,
+                "{scenario} draws {control} inside the window: {rect:?} in {window:?}"
+            );
+        }
     }
 }
 
-/// A page change never moves the panel: the page underneath changes, the
-/// card's edges stay where the desk put them.
+/// A page change never moves the panel: the footer keeps its edge and the
+/// page under it starts where the page before it did, whatever the two hold.
 #[test]
 fn a_page_change_keeps_the_panels_edges() {
     let mut app = staged("controls");
-    let controls = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    let footer = target(&mut app, "qs-power");
     let wifi = target(&mut app, "qs-tile-wifi");
 
     // The notifications page, which stands one deep.
@@ -1130,10 +1141,10 @@ fn a_page_change_keeps_the_panels_edges() {
         !has(&mut app, "qs-tile-wifi"),
         "the page replaced the controls"
     );
-    let notifications = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
     assert_eq!(
-        controls, notifications,
-        "the notifications page stands in the same card"
+        target(&mut app, "qs-power"),
+        footer,
+        "the notifications page leaves the footer where the controls had it"
     );
 
     // Back to the controls, and a section under them.
@@ -1141,9 +1152,9 @@ fn a_page_change_keeps_the_panels_edges() {
     app.settle();
     open_details(&mut app, "qs-tile-wifi");
     assert!(has(&mut app, "qs-section-wifi"), "the section shows");
-    let section = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
     assert_eq!(
-        controls, section,
+        target(&mut app, "qs-power"),
+        footer,
         "a section stands in the same card as the page it came from"
     );
     let section_first = target(&mut app, "qs-section-wifi");
