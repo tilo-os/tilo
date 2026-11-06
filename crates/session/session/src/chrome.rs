@@ -570,6 +570,7 @@ impl DesktopChromeSource for SessionChrome {
             clock,
             activities,
             waved,
+            arrived: self.sync.as_ref().and_then(|sync| sync.arrival_notice()),
             own: Some(OwnChip {
                 // The name they go by, and the root key the picture they
                 // chose hangs on: the id is never shown as their name.

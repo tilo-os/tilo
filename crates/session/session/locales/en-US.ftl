@@ -104,6 +104,33 @@ agent-bindings-unreadable-body = This computer could not read which agents you l
 refused-write-app = Changes
 refused-write-title = { $device } will not take your change
 refused-write-body = Your change stays on the devices that took it: { $reason }.
+
+# What a person changed on a workspace's shared desk did not reach the
+# workspace: the desk stays as the workspace holds it, and what the person
+# changed stays on this device.
+desk-not-shared-app = Workspace desk
+desk-not-shared-title = { $workspace } did not take your change
+desk-not-shared-body = Its desk is as the workspace holds it; what you changed stays on this device: { $reason }.
+
+# A collaborator's device speaks another Tilo protocol version: the two work
+# together again once one of them updates.
+version-mismatch-updating-title = Updating Tilo to keep working with { $device }
+version-mismatch-updating-body = { $device } runs a newer Tilo. This device fetches the newest system and restarts into it when nobody is working.
+version-mismatch-needs-update-title = { $device } needs to update to keep working together
+version-mismatch-needs-update-body = { $device } runs an older Tilo than this device. Update Tilo there and the two work together again.
+
+# What a person chose in search, on a card or on a notification did not
+# happen, and the row they chose it on is gone: the notice says what they
+# asked for and why it did not happen.
+action-failed-app = Tilo
+action-failed-title = { $what } could not be done
+action-failed-body = { $reason }
+action-failed-that-row = That search row
+action-failed-that-notification = What that notification opens
+action-failed-that-app = That app
+action-failed-no-workspace = This session has no workspace open
+action-failed-that-settings = Settings
+action-failed-that-change = That change
 downloaded-apps-app-name = Downloaded apps
 downloaded-apps-unreadable-title = Your downloaded apps could not be read
 downloaded-apps-unreadable-body = This computer could not read the list of programs you added to your apps, so they are not listed now. Nothing was removed: they are still on this computer.

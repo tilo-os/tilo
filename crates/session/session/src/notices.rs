@@ -623,6 +623,48 @@ pub(crate) fn update_state_notice() -> Notice {
     }
 }
 
+/// The notice that a collaborator's device speaks another peer protocol
+/// version, so the two cannot work together until one of them updates: this
+/// device fetches the newest system when theirs is the newer one, and
+/// otherwise theirs is the one to update. Raised once per device and version
+/// by the clock that finishes the update ([`crate::update_finish`]).
+pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch) -> Notice {
+    let device = mismatch.device.as_str();
+    let (title, body) = if mismatch.theirs_is_newer() {
+        (
+            t_args(
+                "version-mismatch-updating-title",
+                &[("device", device.into())],
+            ),
+            t_args(
+                "version-mismatch-updating-body",
+                &[("device", device.into())],
+            ),
+        )
+    } else {
+        (
+            t_args(
+                "version-mismatch-needs-update-title",
+                &[("device", device.into())],
+            ),
+            t_args(
+                "version-mismatch-needs-update-body",
+                &[("device", device.into())],
+            ),
+        )
+    };
+    Notice {
+        app: t("system-update-app-name"),
+        urgency: 1,
+        title,
+        body,
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
 /// The notice of a deployment this machine went back from: what did not
 /// start, how many tries it spent, what runs instead, and where the failed
 /// tries left what they found. Raised once per fallback by the update's own
@@ -736,6 +778,21 @@ pub(crate) fn refused_write_notice(device: &str, reason: &str) -> Notice {
         urgency: 2,
         title: t_args("refused-write-title", &[("device", device.into())]),
         body: t_args("refused-write-body", &[("reason", reason.into())]),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The workspace did not take what the person changed on its shared desk: the
+/// desk is as the workspace holds it, and what they changed stays here.
+pub(crate) fn desk_not_shared_notice(workspace: &str, reason: &str) -> Notice {
+    Notice {
+        app: t("desk-not-shared-app"),
+        urgency: 2,
+        title: t_args("desk-not-shared-title", &[("workspace", workspace.into())]),
+        body: t_args("desk-not-shared-body", &[("reason", reason.into())]),
         actions: Vec::new(),
         expires_after: None,
         machine_wide: true,

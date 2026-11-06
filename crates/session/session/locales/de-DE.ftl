@@ -107,6 +107,33 @@ agent-bindings-unreadable-body = Dieser Rechner konnte nicht lesen, welchen Agen
 refused-write-app = Änderungen
 refused-write-title = { $device } nimmt deine Änderung nicht an
 refused-write-body = Deine Änderung bleibt auf den Geräten, die sie angenommen haben: { $reason }.
+
+# Was eine Person am geteilten Schreibtisch eines Workspace geändert hat, ist
+# nicht beim Workspace angekommen: der Schreibtisch bleibt, wie der Workspace
+# ihn hält, und die Änderung bleibt auf diesem Gerät.
+desk-not-shared-app = Workspace-Schreibtisch
+desk-not-shared-title = { $workspace } nimmt deine Änderung nicht an
+desk-not-shared-body = Der Schreibtisch bleibt, wie der Workspace ihn hält; deine Änderung bleibt auf diesem Gerät: { $reason }.
+
+# Das Gerät einer mitarbeitenden Person spricht eine andere Tilo-Protokollversion:
+# die beiden arbeiten wieder zusammen, sobald eines von ihnen aktualisiert.
+version-mismatch-updating-title = Tilo wird aktualisiert, um mit { $device } weiterzuarbeiten
+version-mismatch-updating-body = { $device } hat ein neueres Tilo. Dieser Rechner holt das neueste System und startet darauf neu, wenn niemand arbeitet.
+version-mismatch-needs-update-title = { $device } muss aktualisieren, um weiter zusammenzuarbeiten
+version-mismatch-needs-update-body = { $device } hat ein älteres Tilo als dieser Rechner. Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
+
+# Was jemand in der Suche, auf einer Karte oder in einer Mitteilung gewählt
+# hat, ist nicht geschehen, und die Zeile ist fort: die Mitteilung sagt, was
+# gefragt war und warum es nicht geschah.
+action-failed-app = Tilo
+action-failed-title = { $what } konnte nicht ausgeführt werden
+action-failed-body = { $reason }
+action-failed-that-row = Diese Suchzeile
+action-failed-that-notification = Was diese Mitteilung öffnet
+action-failed-that-app = Diese App
+action-failed-no-workspace = Diese Sitzung hat keinen Workspace geöffnet
+action-failed-that-settings = Einstellungen
+action-failed-that-change = Diese Änderung
 downloaded-apps-app-name = Heruntergeladene Apps
 downloaded-apps-unreadable-title = Deine heruntergeladenen Apps ließen sich nicht lesen
 downloaded-apps-unreadable-body = Dieser Rechner konnte die Liste der Programme, die du zu deinen Apps hinzugefügt hast, nicht lesen, deshalb werden sie jetzt nicht aufgelistet. Nichts wurde entfernt: sie sind weiterhin auf diesem Computer.

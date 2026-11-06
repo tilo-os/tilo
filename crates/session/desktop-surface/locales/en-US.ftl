@@ -1146,10 +1146,17 @@ overview-strip-move-down = Move down
 browser-new-workspace-name = Workspace { $number }
 workspace-notice-joined = { $name } joined
 workspace-notice-renamed = { $name } renamed the workspace to { $workspace }
-browser-app-crashed = { $app } stopped working, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again.
-browser-app-closed-for-memory = { $app } was closed to free memory. Close this window, or open { $app } again when you need it.
-browser-app-closed-for-runaway = { $app } was using too much memory, so it was closed to keep the rest of the desktop running. Close this window, or open { $app } again when you need it.
-browser-app-crashed-reopen = Reopen
+# What the desk says when something a person asked for did not happen: what
+# they asked for, why, and the button that tries it again.
+answer-app-not-opened = { $app } could not open
+answer-app-stopped = { $app } stopped working
+answer-why-stopped = it was closed to keep the rest of the desktop running
+answer-app-closed-for-memory = { $app } was closed to free memory
+answer-app-closed-for-runaway = { $app } was using too much memory
+answer-why-runaway = it was closed to keep the rest of the desktop running
+answer-try-again = Try again
+answer-reopen = Reopen
+answer-why-unknown-app = this desktop does not know how to open it
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer

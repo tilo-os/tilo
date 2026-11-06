@@ -16,6 +16,7 @@ use tilo_desktop::overlays::{Anchor, Slot};
 use tilo_sheets::power::PowerEffect;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
+use crate::i18n::{t, t_args};
 use crate::keys::Invocation;
 use crate::{
     AppLists, Magnify, SessionAction, SessionCommand, Shared, identity, mount, people,
@@ -146,11 +147,20 @@ impl Shared {
                 .unwrap_or_default()
         });
         for choice in choices {
-            self.search.perform(&workspace, choice, &mut |own| {
+            let carried = self.search.perform(&workspace, choice.clone(), &mut |own| {
                 self.doors
                     .invoke(&own.address, &own.arguments, look)
                     .map(drop)
             });
+            if let Err(error) = carried {
+                // The row the person chose did not happen: search opens
+                // again where it stood, saying why on that row. A row whose
+                // search is gone has nothing to answer on, and says it as a
+                // notice.
+                if !self.handle.answer_search(&choice, error.to_string()) {
+                    self.answer_failed(&t("action-failed-that-row"), &error);
+                }
+            }
         }
         // What the session's own actions asked of it.
         self.follow_asks(look);
@@ -215,7 +225,9 @@ impl Shared {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
         }) else {
-            tracing::warn!(app = %action.display_name, "an app action reached no workspace");
+            // There is no workspace for the app to act in: the person hears it
+            // from the card they pressed, which has nothing else to say it on.
+            self.answer_failed(&action.display_name, &t("action-failed-no-workspace"));
             return;
         };
         let target = tilo_desktop_search::Target::Invoke(Box::new(
@@ -226,7 +238,7 @@ impl Shared {
                 action.action,
             ),
         ));
-        self.search.perform(&workspace, target, &mut |own| {
+        let carried = self.search.perform(&workspace, target, &mut |own| {
             self.doors
                 .invoke(
                     &own.address,
@@ -235,6 +247,26 @@ impl Shared {
                 )
                 .map(drop)
         });
+        if let Err(error) = carried {
+            self.answer_failed(&action.display_name, &error);
+        }
+    }
+
+    /// Something a person chose that the session could not carry out, and the
+    /// card or link it came from is gone: the person hears it as a notice,
+    /// naming what they asked for and why it did not happen.
+    pub(crate) fn answer_failed(&self, asked: &str, why: &impl std::fmt::Display) {
+        let notice = crate::notices::Notice {
+            app: t("action-failed-app"),
+            urgency: 1,
+            title: t_args("action-failed-title", &[("what", asked.into())]),
+            body: t_args("action-failed-body", &[("reason", why.to_string().into())]),
+            actions: Vec::new(),
+            expires_after: None,
+            machine_wide: true,
+            sound: None,
+        };
+        self.notifications.borrow().tell(notice);
     }
 
     /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,
