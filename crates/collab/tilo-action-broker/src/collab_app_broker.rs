@@ -292,6 +292,10 @@ pub struct BrokerActor {
     /// carries the delegation a device gives its agents (read and undoable
     /// actions, outside ones asking first, no governance).
     session_delegated: bool,
+    /// The turn the agent acts for: the person's message whose conversation it
+    /// takes part in. Every op an agent makes names it, so presence and history
+    /// say what caused it, and no agent acts outside one.
+    turn: Option<tilo_action_policy::turn::Turn>,
     /// The issue whose run the agent works in, by its address: grants
     /// naming the issue decide for the run as the agent's own do.
     issue: Option<String>,
@@ -310,6 +314,7 @@ impl BrokerActor {
             capped: false,
             for_person: None,
             session_delegated: false,
+            turn: None,
             issue: None,
             ceiling: None,
         }
@@ -323,6 +328,7 @@ impl BrokerActor {
             capped: false,
             for_person: None,
             session_delegated: false,
+            turn: None,
             issue: None,
             ceiling: None,
         }
@@ -339,6 +345,7 @@ impl BrokerActor {
             capped: false,
             for_person: None,
             session_delegated: false,
+            turn: None,
             issue: None,
             ceiling: None,
         }
@@ -354,6 +361,7 @@ impl BrokerActor {
             capped: false,
             for_person: Some(installer.into()),
             session_delegated: false,
+            turn: None,
             issue: None,
             ceiling: None,
         }
@@ -380,6 +388,19 @@ impl BrokerActor {
     pub fn session_delegated(mut self) -> Self {
         self.session_delegated = true;
         self
+    }
+
+    /// The same agent, acting inside `turn`: the person's message it answers.
+    #[must_use]
+    pub fn on_turn(mut self, turn: Option<tilo_action_policy::turn::Turn>) -> Self {
+        self.turn = turn;
+        self
+    }
+
+    /// The turn this actor acts for, when it is an agent's.
+    #[must_use]
+    pub fn turn(&self) -> Option<&tilo_action_policy::turn::Turn> {
+        self.turn.as_ref()
     }
 
     /// The same actor, asking as part of an invocation admitted to reach
@@ -432,7 +453,8 @@ impl BrokerActor {
 
     /// What this actor may do in `workspace`: a person's own authority (held
     /// to `foreign_bound` from a device not theirs); an agent's bounded by
-    /// the person it acts for; an application, or an agent nobody delegated,
+    /// the person it acts for, and by its own grant
+    /// ([`roles::agent_turn`]); an application, or an agent nobody acts for,
     /// only what the workspace grants it.
     pub(crate) fn with_authority_in<T>(
         &self,
@@ -471,14 +493,18 @@ impl BrokerActor {
         }
     }
 
-    /// The delegation a session-delegated agent carries in `workspace`, given by
-    /// `person`; nothing for any other actor.
+    /// The authority an agent this connection acts as carries in `workspace`,
+    /// given by `person`: the turn's, from its record's bound and the cap
+    /// [`roles::agent_policy::ROLE_CAP`]. Nothing for any other actor, and
+    /// nothing for an agent no person's turn carries.
     fn session_grants(&self, workspace: &str, person: &str) -> Vec<Grant> {
-        if !self.session_delegated {
+        // Only a session a person's device handed to its agent carries the
+        // turn's grants; an agent never acts on its own.
+        if !self.is_agent || !self.session_delegated || self.for_person.is_none() {
             return Vec::new();
         }
         let agent = self.id.strip_prefix("agent:").unwrap_or(&self.id);
-        roles::AgentPreset::Operator.grants(workspace, agent, &Subject::Person(person.to_owned()))
+        roles::agent_turn(workspace, agent, person, &[]).grants
     }
 
     /// Whether this actor is a person acting from their own device: the one
@@ -786,7 +812,11 @@ impl AdmittedJoinIdentity {
             .as_ref()
             .is_some_and(|cert| cert.capabilities.foreign);
         match &self.agent_id {
-            Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
+            // The agent acts for the person whose device this session is
+            // ([`tilo_actions::remote::Caller::acting_for_person`]): every op it
+            // makes and everything presence says about it names that person.
+            Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone())
+                .acting_for(self.principal_id.clone()),
             None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
         }
         .in_workspace(workspace)
@@ -993,13 +1023,11 @@ fn admit_agent_delegation_at(
     {
         return Err("only a workspace administrator may launch a delegated agent session".into());
     }
-    // The agent takes part with the role its workspace admission (its preset)
-    // grants, never more than its person's: revoking either ends it here,
-    // and every revalidation of the session asks again.
-    let granted = workspace
-        .agent_role_at(agent_id, now)
-        .ok_or("the requested agent is not an active workspace member")?;
-    admitted.role = roles::agent_policy::role(admitted.role, granted);
+    // The agent takes part with its person's authority, capped
+    // ([`roles::agent_policy::ROLE_CAP`]): it is not a member and holds nothing
+    // of its own, so what ends it here is the person's session, which every
+    // revalidation of it asks again.
+    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
     admitted.agent_id = Some(agent_id.to_string());
     admitted.display_handle = Some(agent_id.to_string());
     Ok(())
@@ -13656,16 +13684,30 @@ pub mod tests {
     }
 
     #[test]
-    fn agent_delegation_uses_agent_caps_and_is_revoked_live() {
+    fn a_delegated_agent_acts_with_its_persons_authority_and_ends_with_them() {
         let root = SigningKey::from_bytes(&[44; 32]);
         let principal = principal_id_for_root(root.verifying_key().to_bytes());
         let mut workspace = crate::test_support::Workspace::new(
             crate::test_support::WorkspaceSlot(44),
             "Agent workspace",
         );
-        workspace.set_owner(principal);
+        let owner =
+            principal_id_for_root(SigningKey::from_bytes(&[43; 32]).verifying_key().to_bytes());
+        workspace.set_owner(owner.clone());
+        workspace.admit(principal.clone(), Role::Moderator);
+        workspace.grant(tilo_action_policy::Grant::new(
+            "fixture:launches-agents",
+            crate::test_support::Subject::Person(principal.clone()),
+            tilo_action_policy::roles::governance_action(
+                &workspace.id().to_string(),
+                tilo_action_policy::roles::governance::GRANT,
+            ),
+            crate::test_support::KindSet::OUTSIDE,
+            Answer::Allow,
+            crate::test_support::Subject::Person(owner),
+        ));
         let route = CrdtRoute::cluster(workspace.id().to_string());
-        let agent_membership = workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
+        workspace.admit_agent("scribe", crate::test_support::KindSet::READ);
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
 
@@ -13692,31 +13734,35 @@ pub mod tests {
         assert_eq!(
             answer(ActionKind::Undoable),
             Answer::Deny,
-            "and does only what its own grant allows, whoever launched it"
+            "and does only what its own bound allows, whoever launched it"
         );
 
         let membership = tree.shared();
-        assert!(membership.write().workspaces[0].revoke_grant(&agent_membership));
         let fanout = Arc::new(FanoutState::new());
         let (state, _bridge_rx) = AppBrokerState::new(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             PeerPublisher::disabled(),
-            Some(membership),
+            Some(membership.clone()),
             None,
         );
         assert!(
+            state.revalidate_admission(&route, &admitted).is_ok(),
+            "a going agent session is admitted while its person is"
+        );
+        assert!(membership.write().workspaces[0].dismiss(&principal));
+        assert!(
             state.revalidate_admission(&route, &admitted).is_err(),
-            "revoking agent membership invalidates an already-open agent channel"
+            "removing the person invalidates an already-open agent channel"
         );
     }
 
     /// In a workspace this desktop hosts itself, a delegated agent takes part
-    /// with exactly its preset, capped by its person's role, and revoking
-    /// either the person or the agent cuts an open session off.
+    /// with its person's role, capped at the editor preset, and removing the
+    /// person cuts an open session off.
     #[test]
-    fn a_hosted_agent_takes_its_preset_capped_by_its_person_and_ends_with_either() {
-        use tilo_action_policy::roles::{AgentPreset, governance};
+    fn a_hosted_agent_takes_its_persons_role_capped_and_ends_with_them() {
+        use tilo_action_policy::roles::governance;
         let owner_root = SigningKey::from_bytes(&[45; 32]);
         let owner = principal_id_for_root(owner_root.verifying_key().to_bytes());
         let bob_root = SigningKey::from_bytes(&[46; 32]);
@@ -13733,11 +13779,17 @@ pub mod tests {
             roles::governance_action(&workspace_id, governance::GRANT),
             crate::test_support::KindSet::OUTSIDE,
             Answer::Allow,
-            crate::test_support::Subject::Person(owner.clone()),
+            crate::test_support::Subject::Person(owner),
         ));
-        let granted_by = crate::test_support::Subject::Person(owner);
-        let operator = workspace.admit_agent_preset("scribe", AgentPreset::Operator, &granted_by);
-        workspace.admit_agent_preset("reader", AgentPreset::Observer, &granted_by);
+        // The bounds the agents' own records keep: scribe may change what is
+        // there, reader may only read.
+        use crate::test_support::{Grants as _, KindSet, TreePath};
+        workspace.allow(
+            Subject::agent("scribe"),
+            &TreePath::root(),
+            KindSet::READ_UNDOABLE,
+        );
+        workspace.allow(Subject::agent("reader"), &TreePath::root(), KindSet::READ);
         let route = CrdtRoute::cluster(workspace.id().to_string());
         let notes = workspace.node().app("so.tilo.notes");
         let set_role = roles::governance_action(&workspace_id, governance::SET_ROLE);
@@ -13761,9 +13813,10 @@ pub mod tests {
                 .unwrap()
         };
 
-        // The owner's Operator agent edits as an Editor and never governs.
+        // The owner's agent edits as their owner may, held to an Editor, and
+        // never governs.
         let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
-        assert_eq!(scribe.role, Role::Editor, "Operator, below its owner");
+        assert_eq!(scribe.role, Role::Editor, "its owner's role, capped");
         assert!(workspace_control_role_allowed(scribe.role));
         assert_eq!(
             answer(&scribe, &tree, &notes, ActionKind::Undoable),
@@ -13774,9 +13827,9 @@ pub mod tests {
             Answer::Deny,
             "the owner's agent does not govern the workspace"
         );
-        // The owner's Observer agent reads, and is no Editor anywhere.
-        let reader = delegate(&owner_root, "reader", &tree).unwrap();
-        assert_eq!(reader.role, Role::Viewer, "exactly its preset");
+        // Bob's session holds Bob's role, whatever it is called.
+        let reader = delegate(&bob_root, "reader", &tree).unwrap();
+        assert_eq!(reader.role, Role::Commenter, "its person's role, capped");
         assert!(!workspace_control_role_allowed(reader.role));
         assert_eq!(
             answer(&reader, &tree, &notes, ActionKind::Read),
@@ -13784,9 +13837,9 @@ pub mod tests {
         );
         assert_eq!(
             answer(&reader, &tree, &notes, ActionKind::Undoable),
-            Answer::Deny
+            Answer::Deny,
+            "a commenter's agent changes nothing"
         );
-        // Bob's session with the same Operator agent holds Bob's role.
         let bobs = delegate(&bob_root, "scribe", &tree).unwrap();
         assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
         assert!(!workspace_control_role_allowed(bobs.role));
@@ -13818,17 +13871,11 @@ pub mod tests {
             state.revalidate_admission(&route, &bobs).is_err(),
             "revoking the person cuts their agent off"
         );
-        assert!(state.revalidate_admission(&route, &scribe).is_ok());
-
-        // Revoking the agent's admission ends every session it runs.
-        for id in &operator {
-            assert!(membership.write().workspaces[0].revoke_grant(id));
-        }
         assert!(
-            state.revalidate_admission(&route, &scribe).is_err(),
-            "revoking the agent cuts it off"
+            state.revalidate_admission(&route, &reader).is_err(),
+            "removing the person ends every agent of theirs at once"
         );
-        assert!(state.revalidate_admission(&route, &reader).is_ok());
+        assert!(state.revalidate_admission(&route, &scribe).is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]

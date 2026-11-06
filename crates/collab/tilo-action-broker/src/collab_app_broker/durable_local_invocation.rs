@@ -173,6 +173,7 @@ impl LocalCaller {
                         epoch: *epoch,
                         revision: 0,
                         starter: None,
+                        turn: None,
                     }
                 }
                 _ => return Err("the retained invocation is not a run's".into()),

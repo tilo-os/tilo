@@ -1576,7 +1576,6 @@ impl Session {
             &options,
             questions.clone(),
             std::sync::Arc::clone(&session_doors),
-            engine.as_ref().map(std::sync::Arc::clone),
             control.door(),
             std::sync::Arc::clone(&seats),
         );

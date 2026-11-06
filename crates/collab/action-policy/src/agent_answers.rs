@@ -5,9 +5,9 @@
 //! These are ordinary grants on the workspace, named so that setting an answer
 //! again replaces it instead of adding a second one. Without one, a run a
 //! person started takes the agent delegation's answer
-//! ([`crate::roles::agent_delegation`]), which is [`default_answer`], the
-//! default a person sees before choosing; what the agent does on its own is
-//! decided by its admission ([`crate::roles::AgentPreset`]).
+//! ([`crate::roles::agent_turn`]), which is [`default_answer`], the
+//! default a person sees before choosing; an agent acting inside a turn is
+//! decided the same way, bounded by the cap its record narrows.
 //!
 //! An action whose contract asks for confirmation (it sends, publishes or
 //! deletes for good) keeps asking an agent's person even where an
