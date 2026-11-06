@@ -935,6 +935,14 @@ impl TileHost {
         self.history.is_none()
     }
 
+    /// Whether the tile's History composes the live app this pass. While it
+    /// shows a version in the app's place, nothing builds the app.
+    fn composes_live_app(&self) -> bool {
+        self.history
+            .as_ref()
+            .is_none_or(|history| history.live_visible())
+    }
+
     /// Stand where this tile stands from now on: `next`, built for the same
     /// window (an app whose code or record arrived where a placeholder held
     /// its place), goes on with the arrival ([`Self::continue_arrival`])
@@ -2349,12 +2357,19 @@ impl Widget for TileHost {
     fn take_structure_change(&mut self) -> crate::widget::StructureChange {
         use crate::widget::StructureChange;
         let swapped = std::mem::take(&mut self.structure_dirty);
+        let composes_live = self.composes_live_app();
         let inner = match &mut self.content {
             // Built whole when it is laid out in place.
             TileContent::App(w) if self.remount => {
                 let _ = w.take_structure_dirty();
                 StructureChange::None
             }
+            // A History showing a version in the app's place builds the
+            // app's nodes from it, not from the app: a change the app reports
+            // stays with it, and is asked for again once the History returns
+            // to it. Taken here, it would ask for a composition this host
+            // never builds the app into, pass after pass.
+            TileContent::App(_) if !composes_live => StructureChange::None,
             TileContent::App(w) => w.take_structure_change(),
             _ => StructureChange::None,
         };
