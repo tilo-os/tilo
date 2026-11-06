@@ -218,6 +218,7 @@ d-h6g3amy7 = Search~present
 
 d-mufcicuu = Feed
     .w-youtube = YouTube
+    .w-search-youtube = Search YouTube
     .w-subscriptions = Subscriptions
     .w-trending = Trending
     .w-you = You
@@ -236,6 +237,9 @@ d-mufcicuu = Feed
 d-dfz6u5sa = Video grid
 
 d-nxne4q6s = Search results
+    .w-search-youtube = Search YouTube
+
+d-tbcsx2lp = Search found
     .w-searching-youtube = Searching YouTube
     .w-the-search-failed = The search failed
     .w-search-youtube = Search YouTube

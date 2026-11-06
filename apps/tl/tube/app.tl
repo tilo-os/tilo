@@ -374,6 +374,9 @@ view feed(yt: YouTube) {
     ui.NavShell(content_kind: .grid, sidebar_title: .some("YouTube")) {
         sidebar: {
             ui.NavList(selected: here) {
+                ui.NavItem("search", "Search YouTube", icon: .search) {
+                    on select: set(place, "search").then(set(query, ""))
+                }
                 ui.NavItem("subscriptions", "Subscriptions", icon: .rss, count: .some(subs.len())) {
                     on select: set(place, "subscriptions").then(set(query, ""))
                 }
@@ -424,7 +427,7 @@ view feed(yt: YouTube) {
             scroll {
                 page(full) {
                     if here == "search" {
-                        search_results(yt, query)
+                        search_results(yt)
                     } else if here == "history" {
                         history_list(yt)
                     } else if here == "later" {
@@ -507,8 +510,22 @@ fn item_clock(v: Video) -> Text {
     if v.live { "Live" } else { clock(v.duration) }
 }
 
-/// What the last search found: the channels, the playlists, then the videos.
-view search_results(yt: YouTube, query: Text) {
+/// What the last search found: the channels, the playlists, then the videos. The field at the
+/// top asks YouTube for what is typed; a query typed into the system's search reaches the same
+/// place (`search_text` and `search`), so an agent or the palette finds the catalogue too.
+view search_results(yt: YouTube) {
+    lens typed: Text = ""
+    stack(gap: .section) {
+        ui.TextInput(value: typed, placeholder: "Search YouTube", fill) {
+            on submit: search(yt, typed)
+        }
+        search_found(yt)
+    }
+}
+
+/// What the search asked for, found: the state it stands in, then the channels, the playlists and
+/// the videos.
+view search_found(yt: YouTube) {
     if yt.search_state == "searching" {
         ui.ProgressBar(label: "Searching YouTube")
     } else if yt.search_trouble != "" {
