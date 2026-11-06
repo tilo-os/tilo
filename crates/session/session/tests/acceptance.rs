@@ -483,8 +483,19 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
                 .unwrap(),
         )
         .expect("the note is placed");
-    until(&mut session, "the focused window's actions", |session| {
-        on_screen(session, "Pin").is_some()
+    // The bar itself carries the window's own commands: the menu it opens lists them, and the
+    // menu stands on the bar's row, not on the window's. A note whose body also says "Pin" (its
+    // own header) would satisfy a search for the word anywhere; what this step proves is that
+    // the bar holds it, so it presses the bar's menu and reads the row it opens.
+    let name = common::window_name_of(&session, &note);
+    let bar = on_screen(&session, &name).expect("the bar names the window in front");
+    assert!(
+        bar.1 < 40.0,
+        "the focused window's menu stands on the top bar: {name:?} at {bar:?}"
+    );
+    press(&mut session, &name);
+    until(&mut session, "the note's actions on the bar", |session| {
+        on_screen(session, "Pin").is_some_and(|pin| pin.1 < 40.0 || pin.1 > bar.3)
     });
 }
 
