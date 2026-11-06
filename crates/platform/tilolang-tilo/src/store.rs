@@ -388,7 +388,7 @@ struct Inner {
     /// The runs of the actions this store committed itself, with how many of their changes the
     /// record has not brought back yet: a change of the record naming one is the store's own,
     /// heard of by everyone who reads the mirror when the action committed
-    /// ([`Inner::enqueue`], [`Self::sync_from`]).
+    /// ([`Inner::enqueue`], [`TiloStore::sync_from`]).
     own: HashMap<tilo_actions::InvocationId, usize>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
