@@ -751,6 +751,7 @@ impl HostInner {
                 from: request.from.cloned(),
                 suggested_by: None,
                 count: 1,
+                invocation: None,
             },
             edits: Vec::new(),
         };

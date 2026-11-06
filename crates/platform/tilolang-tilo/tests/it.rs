@@ -11,6 +11,7 @@
 )]
 
 mod agent_queries;
+mod atomic;
 mod bundle;
 mod capture;
 mod chained;

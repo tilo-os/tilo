@@ -753,6 +753,12 @@ impl InstanceRecord {
             &action.kind,
         );
         context.gesture = gesture;
+        // A change of a run names the run's invocation, so the workspace commits the caller's
+        // change and its callees' as one action.
+        if let Some(invocation) = &action.authorship.invocation {
+            context =
+                context.with_source_invocation(Some(crate::action::invocation_id(invocation)));
+        }
         self.apply_with(action, encoded, context, invoker, ambient)
     }
 
