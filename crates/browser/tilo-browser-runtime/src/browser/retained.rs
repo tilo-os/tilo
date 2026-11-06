@@ -13,6 +13,9 @@ pub(super) struct Retained {
     /// Debug builds compare a frame repainted in part with a full render.
     #[cfg(debug_assertions)]
     check: Option<ui::retained_raster::RasterCheck>,
+    /// Debug builds: what the frame the target shows was repainted with.
+    #[cfg(debug_assertions)]
+    pub(super) repainted: Option<String>,
 }
 
 impl Retained {
@@ -25,6 +28,8 @@ impl Retained {
             generation: 0,
             #[cfg(debug_assertions)]
             check: None,
+            #[cfg(debug_assertions)]
+            repainted: None,
         }
     }
 
@@ -48,6 +53,7 @@ impl Retained {
         #[cfg(debug_assertions)]
         {
             self.check = None;
+            self.repainted = None;
         }
     }
 }
@@ -88,8 +94,8 @@ pub(super) fn check_retained(
                         format!(", at {x0},{y0} to {x1},{y1}")
                     });
                 web_sys::console::error_1(&JsValue::from_str(&format!(
-                    "retained frame differs from a full render in {} pixels{where_}",
-                    differences.count
+                    "retained frame differs from a full render in {} pixels{where_}, after repainting {:?}: at {:?} it shows the repainted frame's colour, then the full render's",
+                    differences.count, retained.repainted, differences.first
                 )));
             }
             // A check that could not read the frames back proves nothing:

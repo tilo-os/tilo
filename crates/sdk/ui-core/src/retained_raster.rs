@@ -913,15 +913,43 @@ impl RasterCheck {
             pixels
         };
         let width = usize::try_from(self.width).unwrap_or(0);
-        let (count, bounds) = crate::offscreen::OffscreenRenderer::differing_beyond_aa(
-            &tight(&self.retained),
-            &tight(&self.full),
-            width,
+        let (kept, rendered) = (tight(&self.retained), tight(&self.full));
+        let blank = (
+            kept.iter().all(|byte| *byte == 0),
+            rendered.iter().all(|byte| *byte == 0),
         );
+        // A full render that read back empty was not drawn: the check has
+        // nothing to compare with and says so rather than blaming the frame.
+        if blank.1 {
+            self.retained.unmap();
+            self.full.unmap();
+            return Some(Readback::Unreadable(
+                "the full render read back empty".to_owned(),
+            ));
+        }
+        let (count, bounds) =
+            crate::offscreen::OffscreenRenderer::differing_beyond_aa(&kept, &rendered, width);
+        let first = kept
+            .chunks_exact(4)
+            .zip(rendered.chunks_exact(4))
+            .enumerate()
+            .find(|(_, (kept, rendered))| {
+                kept.iter().zip(*rendered).any(|(p, q)| p.abs_diff(*q) > 1)
+            })
+            .and_then(|(index, (kept, rendered))| {
+                let at = u32::try_from(index).ok()?;
+                Some((
+                    at % self.width.max(1),
+                    at / self.width.max(1),
+                    [kept[0], kept[1], kept[2], kept[3]],
+                    [rendered[0], rendered[1], rendered[2], rendered[3]],
+                ))
+            });
         self.retained.unmap();
         self.full.unmap();
         Some(Readback::Differing(Differences {
             count,
+            first,
             bounds: bounds.map(|(x0, y0, x1, y1)| {
                 (
                     u32::try_from(x0).unwrap_or(u32::MAX),
@@ -949,6 +977,10 @@ pub enum Readback {
 pub struct Differences {
     /// How many pixels differ.
     pub count: usize,
+    /// The first pixel that differs beyond the ±1 two renders of one frame
+    /// may differ by: where it is, then its colour in the frame repainted in
+    /// part and in the full render.
+    pub first: Option<(u32, u32, [u8; 4], [u8; 4])>,
     /// The left, top, right and bottom of the pixels that differ, the far
     /// edges exclusive, or `None` where none do.
     pub bounds: Option<(u32, u32, u32, u32)>,
