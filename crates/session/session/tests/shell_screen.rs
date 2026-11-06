@@ -745,3 +745,42 @@ fn a_found_resource_opens_as_a_tab_of_the_strip_in_front() {
     });
     keep(&mut session, "tabs-found-opens-as-a-tab");
 }
+
+/// A place arriving on the desk is drawn over the frames between rather than switching in one
+/// frame: the shell's windows are components that come in themselves (`motion::Placed` over
+/// `WindowMotion::OPEN`), so what the person sees is the window arriving. The frame-by-frame
+/// proof that it reaches its place and then asks for no frames is the component's own
+/// (`widget::window_frame`), where "no frames requested" is exact; here the shell screen shows
+/// the window changing from one frame to the next as it comes in.
+#[test]
+fn a_place_arrives_over_the_frames_between() {
+    let (mut session, notes) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    // A note arrives on the desk.
+    let note = notes.first().expect("a note").clone();
+    place(&mut session, &note);
+    let shown = shown_as(&session, NOTE_TITLE);
+    let arriving = common::wait_for(&mut session, "the note on the desk", |session| {
+        on_screen(session, &shown)
+            .is_some()
+            .then(|| common::shot(session, "motion-arriving"))
+    });
+    // The frames right after it appears change: the window is on its way in.
+    let mut changes = 0;
+    let mut before = arriving;
+    for _ in 0..3 {
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("a frame");
+        let after = common::shot(&mut session, "motion-arriving-next");
+        changes += common::changed(&before, &after);
+        before = after;
+    }
+    assert!(
+        changes > 0,
+        "the window comes in over the frames between, so the screen changes as it arrives"
+    );
+    keep(&mut session, "motion-place-arrived");
+}

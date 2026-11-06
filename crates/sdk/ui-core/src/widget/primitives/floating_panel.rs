@@ -237,6 +237,10 @@ pub struct FloatingPanel {
     rect: Rect,
     header_rect: Rect,
     body_rect: Rect,
+    /// The panel arriving where it stands (`motion::Placed`): a panel a view places because the
+    /// person asked for it comes in, and one the window's first paint shows rests. Its motion is
+    /// the library's (`WindowMotion::OPEN`), and a still theme or reduced motion lands it at once.
+    placed: crate::motion::Placed,
 }
 
 /// Make a field placed in a header slot embedded: no fill, no outline.
@@ -254,6 +258,13 @@ impl FloatingPanel {
     /// A panel around `body`.
     #[must_use]
     pub fn new(body: Box<dyn Widget>) -> Self {
+        // A panel a view places after the window has shown is one the person asked for (a
+        // surface opening): it comes in. One the window's first frame shows rests.
+        let placed = if crate::motion::window_has_shown() {
+            crate::motion::Placed::closed()
+        } else {
+            crate::motion::Placed::opened()
+        };
         Self {
             header: None,
             body,
@@ -263,6 +274,7 @@ impl FloatingPanel {
             rect: Rect::ZERO,
             header_rect: Rect::ZERO,
             body_rect: Rect::ZERO,
+            placed,
         }
     }
 
@@ -334,6 +346,57 @@ impl FloatingPanel {
             .iter_mut()
             .chain(std::iter::once(&mut self.body))
             .chain(self.footer.iter_mut())
+    }
+
+    /// Whether a slot of the panel asks for a frame of its own.
+    fn slots_frame(&self) -> bool {
+        self.header
+            .iter()
+            .chain(std::iter::once(&self.body))
+            .chain(self.footer.iter())
+            .any(|slot| slot.needs_animation_frame())
+    }
+
+    /// Whether a slot of the panel asks to be drawn again.
+    fn slots_redraw(&self) -> bool {
+        self.header
+            .iter()
+            .chain(std::iter::once(&self.body))
+            .chain(self.footer.iter())
+            .any(|slot| slot.needs_redraw())
+    }
+
+    /// The panel itself, drawn where `rect` says: what [`Widget::draw`] draws once the panel is
+    /// posed where its arrival has reached.
+    fn paint_panel(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let header = if self.header.is_some() {
+            self.header_rect.height()
+        } else {
+            0.0
+        };
+        let footer = self.footer.as_ref().map_or(0.0, |f| f.get_rect().height());
+        let face = FloatingPanelFace::new()
+            .header(header)
+            .footer(footer)
+            .body_empty(self.body_is_empty());
+        let (_, inner) = face.paint(scene, transform, self.rect, 1.0, theme);
+        for slot in self.slots_mut() {
+            crate::widget::draw_child(
+                slot.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                &inner,
+                presence,
+            );
+        }
     }
 }
 
@@ -417,27 +480,29 @@ impl Widget for FloatingPanel {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let header = if self.header.is_some() {
-            self.header_rect.height()
-        } else {
-            0.0
-        };
-        let footer = self.footer.as_ref().map_or(0.0, |f| f.get_rect().height());
-        let face = FloatingPanelFace::new()
-            .header(header)
-            .footer(footer)
-            .body_empty(self.body_is_empty());
-        let (_, inner) = face.paint(scene, transform, self.rect, 1.0, theme);
-        for slot in self.slots_mut() {
-            crate::widget::draw_child(
-                slot.as_mut(),
-                scene,
-                transform,
-                text_renderer,
-                &inner,
-                presence,
-            );
-        }
+        let now = crate::motion::frame_now();
+        self.placed.follow(
+            self.rect,
+            true,
+            theme.motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        let pose = self.placed.pose(self.rect, now);
+        let bounds = self.rect.union(pose.drawn_rect(self.rect));
+        pose.paint(scene, transform, bounds, |scene, transform| {
+            self.paint_panel(scene, transform, text_renderer, theme, presence);
+        });
+    }
+
+    /// Whether the panel is arriving: what asks for frames while it does, and what its slots
+    /// ask for. Nothing at rest.
+    fn needs_animation_frame(&self) -> bool {
+        self.placed.is_moving(crate::motion::frame_now()) || self.slots_frame()
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.placed.is_moving(crate::motion::frame_now()) || self.slots_redraw()
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -554,5 +619,42 @@ mod tests {
             .and_then(|a| a.downcast_ref::<crate::widget::TextInput>())
             .is_some_and(crate::widget::TextInput::is_plain);
         assert!(plain, "no fill and no outline of its own");
+    }
+
+    /// A panel a view places after the window has shown comes in over the frames between, and
+    /// rests asking for no frames; a still theme lands it at once.
+    #[test]
+    fn a_panel_comes_in_where_it_stands_and_rests() {
+        let _frame = crate::motion::pin_frame();
+        let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new()));
+        let now = crate::motion::frame_now();
+        let rect = Rect::new(0.0, 0.0, 360.0, 300.0);
+        // Its first placement, at rest.
+        panel.placed.follow(
+            rect,
+            true,
+            Theme::dark().motion(),
+            crate::motion::input_source(),
+            now,
+        );
+        assert!(!panel.placed.is_moving(now));
+
+        // Shown from closed, it comes in: at the frame it is asked for, it is on its way.
+        panel.placed.snap(rect, false);
+        panel.placed.follow(
+            rect,
+            true,
+            Theme::dark().motion(),
+            crate::tokens::MotionSource::Pointer,
+            now,
+        );
+        assert!(
+            panel.placed.is_moving(now),
+            "it comes in over the frames between"
+        );
+        assert!(
+            panel.placed.settles_at().is_some(),
+            "and it will arrive at a time of the motion's own"
+        );
     }
 }

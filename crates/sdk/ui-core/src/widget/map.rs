@@ -15,6 +15,7 @@
 //! person moves a place.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -201,6 +202,13 @@ pub struct Map {
     /// How far one arrow-key press pans, in screen pixels: one line, as an arrow key scrolls
     /// any scrolling region.
     key_pan: f64,
+    /// Each pin's motion, by its key: it arrives where its view is laid out, leaves from there,
+    /// and glides when the person moves it (`motion::Placed`). A pin that is not in `pins` any
+    /// more leaves on its own before it is forgotten.
+    placed: HashMap<String, crate::motion::Placed>,
+    /// Where the region laid each pin out last, by key, written by its own solve: the rectangle a
+    /// pin's pose is taken about.
+    laid: Rc<std::cell::RefCell<HashMap<String, Rect>>>,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
@@ -230,6 +238,8 @@ impl Map {
             rect: Rect::ZERO,
             slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
+            placed: HashMap::new(),
+            laid: Rc::default(),
         }
     }
 
@@ -323,9 +333,14 @@ impl Map {
         }
         views.truncate(self.pins.len());
         let places: Vec<PinPlace> = self.pins.iter().map(|(_, place, _)| *place).collect();
+        let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
         let camera = self.camera;
+        // Where the region lays each pin out, by its key: what `Map` poses the pin about this
+        // frame, written by the region's own solve.
+        let laid: Rc<std::cell::RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
+            let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
                     continue;
@@ -348,8 +363,12 @@ impl Map {
                     (height * camera.zoom).max(1.0)
                 });
                 let rect = Rect::from_origin_size((left, top), (width, height));
+                if let Some(key) = keys.get(index) {
+                    out.insert(key.clone(), rect);
+                }
                 cx.place(index, rect)?;
             }
+            *laid.borrow_mut() = out;
             // The region is its viewport: a canvas does not grow with what it holds.
             Ok(Size {
                 width: available.width.max(0.0),
@@ -472,6 +491,98 @@ impl SlotViews for Map {
 }
 
 impl Map {
+    /// Draw the region's pins, each posed by its own [`crate::motion::Placed`]: a pin that just
+    /// arrived fades and scales in, one the person moved glides from where it stood, and one the
+    /// map no longer holds leaves before it is forgotten. Every pin not drawn this frame is
+    /// forgotten once its departure ends, so a map of many places only carries motion for the
+    /// ones it shows.
+    fn draw_pins(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let now = crate::motion::frame_now();
+        let source = crate::motion::input_source();
+        let motion = theme.motion();
+        // What the region laid out this frame, by key, and the keys the map holds now.
+        let laid = self.laid.borrow().clone();
+        let live: std::collections::HashSet<String> = self
+            .pins
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .filter(|key| laid.contains_key(key))
+            .collect();
+        let keys: Vec<String> = self
+            .pins
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .filter(|key| laid.contains_key(key))
+            .collect();
+        // Bring every pin's motion up to this frame.
+        for key in &keys {
+            let Some(rect) = laid.get(key).copied() else {
+                continue;
+            };
+            let placed = self
+                .placed
+                .entry(key.clone())
+                .or_insert_with(crate::motion::Placed::closed);
+            placed.follow(rect, true, motion, source, now);
+        }
+        // A pin that left the map leaves from where it last stood, then is forgotten.
+        let leaving: Vec<String> = self
+            .placed
+            .iter()
+            .filter(|(key, placed)| !live.contains(*key) && placed.is_visible(now))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in leaving {
+            let Some(rect) = self.placed.get(&key).map(|placed| placed.rect(now)) else {
+                continue;
+            };
+            let placed = self
+                .placed
+                .entry(key.clone())
+                .or_insert_with(crate::motion::Placed::closed);
+            placed.follow(rect, false, motion, source, now);
+        }
+        self.placed
+            .retain(|key, placed| live.contains(key) || placed.is_visible(now));
+        // Draw each pin the region holds, under its own pose.
+        let drawn: Vec<(String, Rect)> = keys
+            .iter()
+            .filter_map(|key| {
+                let placed = self.placed.get(key)?;
+                let rect = laid.get(key).copied()?;
+                placed.is_visible(now).then_some((key.clone(), rect))
+            })
+            .collect();
+        for (key, rect) in drawn {
+            let Some(placed) = self.placed.get(&key) else {
+                continue;
+            };
+            let pose = placed.pose(rect, now);
+            let bounds = rect.union(pose.drawn_rect(rect));
+            let Some(index) = self.pins.iter().position(|(held, _, _)| *held == key) else {
+                continue;
+            };
+            let Some(child) = self.region_mut().and_then(|region| region.child_mut(index)) else {
+                continue;
+            };
+            pose.paint(scene, transform, bounds, |scene, transform| {
+                child.draw(scene, transform, text, theme, presence);
+            });
+        }
+    }
+
+    /// Whether any pin's motion is still moving at `now`: what asks for frames while it does.
+    fn pins_moving(&self, now: crate::time::Instant) -> bool {
+        self.placed.values().any(|placed| placed.is_moving(now))
+    }
+
     /// The camera's own gestures: a wheel with Ctrl zooms about the pointer, a middle drag pans,
     /// the arrow keys pan, a finger pans and two fingers pinch. It moves the lens and nothing in
     /// the arrangement; the views' own presses fall through to the pins.
@@ -591,6 +702,14 @@ impl Widget for Map {
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
     }
+
+    /// Whether a pin is arriving, leaving or gliding: what asks for frames while it does,
+    /// and what its own pins ask for. Nothing once every pin rests at its place.
+    fn needs_animation_frame(&self) -> bool {
+        self.pins_moving(crate::motion::frame_now())
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
     fn name(&self) -> &'static str {
         "Map"
     }
@@ -664,7 +783,7 @@ impl Widget for Map {
                 &viewport,
             );
         }
-        self.parts.draw(scene, transform, text, theme, presence);
+        self.draw_pins(scene, transform, text, theme, presence);
         if clips {
             scene.pop_layer();
         }
@@ -791,3 +910,7 @@ impl Widget for Map {
 fn f32_of(v: f64) -> f32 {
     v as f32
 }
+
+#[cfg(test)]
+#[path = "map_motion_tests.rs"]
+mod motion_tests;
