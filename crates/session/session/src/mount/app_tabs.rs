@@ -374,8 +374,8 @@ impl AppTabs {
                     moved = true;
                 }
             }
-            // The card's window is up: the app stops painting the copy it
-            // kept for the handoff, and the card alone draws the activity.
+            // The card's window is up and draws the activity: the app records
+            // the card as adopted, so it knows the desk shows it.
             if let Some((_, body)) = wanted
                 && placements.drawn(&card.token)
                 && self.cards.adopt(&card.app, &card.activity)
