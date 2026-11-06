@@ -120,7 +120,10 @@ prepare_volume() {
   # throwaway one.
   [[ -f $state_root/secrets/room-root ]] \
     || printf 'a%.0s' $(seq 64) > "$state_root/secrets/room-root"
-  chmod -R a+rwX "$state_root"
+  # The image's user owns the volume and writes all of it; nothing else is
+  # granted, so a secret the state carries stays as owner-only as it was
+  # written, which is what the store requires of its key.
+  chmod -R u+rwX "$state_root"
   if [[ $EUID == 0 ]]; then chown -R 10001:0 "$state_root"; fi
 }
 
