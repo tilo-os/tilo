@@ -356,13 +356,13 @@ impl Shell {
         }
         let mut fresh: Vec<(String, String)> = Vec::new();
         if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-            let mut placed = std::collections::BTreeMap::new();
-            if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-                placed = tilo_surface_host::shell_part::readings::placed_records(
-                    arrangement,
-                    &services.resources(),
-                );
-            }
+            // Every app a place shows is published with this pass, however this pass was
+            // asked for: a package a view asked for arrives beside them, and none of them
+            // goes with it.
+            let placed = tilo_surface_host::shell_part::readings::placed_records(
+                arrangement,
+                &services.resources(),
+            );
             let mut packages = std::collections::BTreeMap::new();
             let app_of = tilo_surface_host::shell_part::readings::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
