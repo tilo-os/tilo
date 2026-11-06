@@ -389,7 +389,8 @@ pub fn check_scope(
 /// The units a change restarts besides the session itself.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Restarts {
-    /// System units of changed VM-wide components.
+    /// System units of changed components: every long-running service whose
+    /// binary a new layer set or VM `/usr` replaces.
     pub units: Vec<String>,
     /// User units of changed VM or session components, which a login that keeps
     /// its user manager restarts one by one.
@@ -417,11 +418,9 @@ impl Restarts {
         if info.scope == Scope::App {
             return;
         }
-        if info.scope == Scope::Vm {
-            for unit in &info.units {
-                if !self.units.contains(unit) {
-                    self.units.push(unit.clone());
-                }
+        for unit in &info.units {
+            if !self.units.contains(unit) {
+                self.units.push(unit.clone());
             }
         }
         for unit in &info.user_units {
@@ -565,29 +564,7 @@ pub fn activate(
         apply.link_sysext(layers)?;
         apply.sysext_refresh()?;
         actions.push(Action::SysextRefresh);
-        for unit in &restarts.units {
-            // The greeter component is VM-wide, but its manager also owns
-            // the active login. Re-query the host's verified session rather
-            // than using a saved slot record or caller-supplied identity.
-            if unit == GREETER_UNIT
-                && apply.device_session().is_some_and(|device| {
-                    device.login.is_some_and(|login| {
-                        login.session.is_some_and(|id| !id.is_empty())
-                            && login.wrapper.is_some_and(|pid| pid > 0)
-                    })
-                })
-            {
-                apply.validate_unit(unit)?;
-                actions.push(Action::Deferred {
-                    reason: format!(
-                        "{unit}: active owner login preserved; updated greeter runs at the next greeter launch"
-                    ),
-                });
-            } else {
-                apply.try_restart_unit(unit)?;
-                actions.push(Action::RestartUnit { unit: unit.clone() });
-            }
-        }
+        restart_units(apply, restarts, &mut actions)?;
         return Ok(actions);
     };
     let change = match (change, policy) {
@@ -602,7 +579,7 @@ pub fn activate(
         return activate_login(apply, &session, uid, layers, restarts, change);
     }
     if record.kind == SlotKind::Device {
-        return activate_board(apply, &session, uid, layers, change);
+        return activate_board(apply, &session, uid, layers, restarts, change);
     }
     if session.stand_in {
         actions.push(Action::EnsureUser {
@@ -661,7 +638,10 @@ pub fn activate(
             apply.start_unit(&session.unit)?;
             actions.push(Action::StartUnit { unit: session.unit });
         }
-        SessionChange::Restart => actions.extend(restart_session(apply, &session, uid)?),
+        SessionChange::Restart => {
+            restart_units(apply, restarts, &mut actions)?;
+            actions.extend(restart_session(apply, &session, uid)?);
+        }
         SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at next session restart"
@@ -683,6 +663,7 @@ fn activate_board(
     session: &Session,
     uid: u32,
     layers: &[PathBuf],
+    restarts: &Restarts,
     change: SessionChange,
 ) -> Result<Vec<Action>, DaemonError> {
     apply.link_sysext(layers)?;
@@ -699,7 +680,10 @@ fn activate_board(
                 unit: session.unit.clone(),
             });
         }
-        SessionChange::Restart => actions.extend(restart_session(apply, session, uid)?),
+        SessionChange::Restart => {
+            restart_units(apply, restarts, &mut actions)?;
+            actions.extend(restart_session(apply, session, uid)?)
+        }
         SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at next session restart"
@@ -735,19 +719,71 @@ fn activate_login(
         }),
         SessionChange::Restart if session.logged_out() => {}
         SessionChange::Restart => {
-            for unit in &restarts.user_units {
-                apply.restart_user_unit(&session.user, unit)?;
-                actions.push(Action::RestartUserUnit {
-                    user: session.user.clone(),
-                    unit: unit.clone(),
-                });
-            }
+            restart_units(apply, restarts, &mut actions)?;
+            restart_user_units(apply, session, restarts, &mut actions)?;
         }
     }
     if change == SessionChange::Restart {
         actions.extend(restart_session(apply, session, uid)?);
     }
     Ok(actions)
+}
+
+/// Restart the changed system units that outlive a session. A unit's mount
+/// namespace freezes `/usr` when it starts, so a merged layer set or a
+/// refreshed VM `/usr` reaches a long-running service only through a restart.
+///
+/// # Errors
+/// Any failing unit operation.
+pub fn restart_units(
+    apply: &mut dyn Apply,
+    restarts: &Restarts,
+    actions: &mut Vec<Action>,
+) -> Result<(), DaemonError> {
+    for unit in &restarts.units {
+        // The greeter component is VM-wide, but its manager also owns the
+        // active login. Re-query the host's verified session rather than using
+        // a saved slot record or caller-supplied identity.
+        if unit == GREETER_UNIT
+            && apply.device_session().is_some_and(|device| {
+                device.login.is_some_and(|login| {
+                    login.session.is_some_and(|id| !id.is_empty())
+                        && login.wrapper.is_some_and(|pid| pid > 0)
+                })
+            })
+        {
+            apply.validate_unit(unit)?;
+            actions.push(Action::Deferred {
+                reason: format!(
+                    "{unit}: active owner login preserved; updated greeter runs at the next greeter launch"
+                ),
+            });
+        } else {
+            apply.try_restart_unit(unit)?;
+            actions.push(Action::RestartUnit { unit: unit.clone() });
+        }
+    }
+    Ok(())
+}
+
+/// Restart the changed user units of a login that keeps its user manager.
+///
+/// # Errors
+/// Any failing unit operation.
+pub fn restart_user_units(
+    apply: &mut dyn Apply,
+    session: &Session,
+    restarts: &Restarts,
+    actions: &mut Vec<Action>,
+) -> Result<(), DaemonError> {
+    for unit in &restarts.user_units {
+        apply.restart_user_unit(&session.user, unit)?;
+        actions.push(Action::RestartUserUnit {
+            user: session.user.clone(),
+            unit: unit.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// A normal session restart: log out, then a fresh login. Each unit's mount
@@ -1971,6 +2007,53 @@ mod tests {
                     .1
                     .user_units
                     .is_empty()
+            );
+            // Which system units a swap restarts: the changed session
+            // components' services, not only a VM-wide component's.
+            let launcher = |layer: &str| {
+                generation(
+                    1,
+                    &[(
+                        "launcher",
+                        layer,
+                        Scope::Session,
+                        &["tilo-runtime-resident.service"],
+                    )],
+                )
+            };
+            let (p, restarts) = policy(&device, &launcher("l1"), &launcher("l2")).unwrap();
+            assert_eq!(p, Policy::SessionRestart);
+            assert_eq!(restarts.units, ["tilo-runtime-resident.service"]);
+            let mut apply = RecordingApply::with_device("tester");
+            let mut device = record("device", SlotKind::Device);
+            device.device = apply.device.clone();
+            let layers = [PathBuf::from("/var/lib/tilo-vm/layers/l2")];
+            let actions = activate(
+                &mut apply,
+                &mut device,
+                &launcher("l2"),
+                &layers,
+                p,
+                &restarts,
+                SessionChange::Keep,
+            )
+            .unwrap();
+            assert!(
+                apply
+                    .calls
+                    .contains(&"try-restart tilo-runtime-resident.service".to_string()),
+                "the swapped service restarts: {:?}",
+                apply.calls
+            );
+            assert!(actions.contains(&Action::RestartUnit {
+                unit: "tilo-runtime-resident.service".into()
+            }));
+            assert!(
+                apply
+                    .calls
+                    .contains(&"restart user@1000.service".to_string()),
+                "the session still restarts after it: {:?}",
+                apply.calls
             );
         }
         {

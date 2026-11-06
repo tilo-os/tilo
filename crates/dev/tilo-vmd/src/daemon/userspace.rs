@@ -437,15 +437,10 @@ impl Daemon {
             return Err(DaemonError::InvalidParams("userspace cohort: session changed before final refresh; staged generation remains pending".into()));
         }
         if session.login.is_some() {
-            for unit in &restarts.user_units {
-                self.apply.restart_user_unit(&session.user, unit)?;
-                actions.push(Action::RestartUserUnit {
-                    user: session.user.clone(),
-                    unit: unit.clone(),
-                });
-            }
+            apply::restart_user_units(self.apply.as_mut(), &session, &restarts, &mut actions)?;
         }
         actions.retain(|action| !matches!(action, Action::Deferred { .. }));
+        apply::restart_units(self.apply.as_mut(), &restarts, &mut actions)?;
         let uid = apply::session_uid(self.apply.as_mut(), &session)?;
         actions.extend(apply::restart_session(self.apply.as_mut(), &session, uid)?);
         self.verify_parity(Some(session))?;
