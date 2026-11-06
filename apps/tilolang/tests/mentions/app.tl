@@ -2,13 +2,13 @@ app so.tilo.lang.mentions "Mentions" (icon: .message_circle, category: .network)
 
 /// Something to do, which posts refer to.
 type Task {
-    title: Text (title)
+    title: Text
     done: Bool = false
 }
 
 /// A post: rich text that refers to people and tasks, and says when.
 type Post {
-    body: RichText (body)
+    body: RichText
 }
 
 /// The board: its tasks and the posts about them.

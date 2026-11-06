@@ -1468,27 +1468,25 @@ fn agent_answered(
     (answered, app.try_recv().is_ok())
 }
 
-/// The agents a person's answers bind: an enrolled agent acting on its own,
-/// one the desktop's agent door admitted as a member acting for the person
-/// who admitted it, and one the person's own device handed its session.
-fn agent_doors() -> [fn(&str) -> Caller; 3] {
+/// The agents a person's answers bind: one the person's own device handed its
+/// session, and one inside a turn their message caused. An agent that no
+/// person's turn carries holds nothing.
+fn agent_doors() -> [fn(&str) -> Caller; 2] {
     [
-        |workspace| {
-            Caller::local_agent("scribe")
-                .in_workspace(workspace.to_owned())
-                .in_new_execution()
-        },
-        |workspace| {
-            Caller::local_agent("scribe")
-                .acting_for("a1".repeat(32))
-                .in_workspace(workspace.to_owned())
-                .in_new_execution()
-        },
         |workspace| {
             Caller::local_person("a1".repeat(32))
                 .in_workspace(workspace.to_owned())
                 .in_new_execution()
                 .delegated_to("scribe")
+        },
+        |workspace| {
+            Caller::agent_turn(
+                "scribe",
+                "a1".repeat(32),
+                tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
+            )
+            .in_workspace(workspace.to_owned())
+            .in_new_execution()
         },
     ]
 }
@@ -1590,6 +1588,23 @@ fn an_admitted_agent_acting_for_its_person_holds_only_its_own_grants() {
         ),
         "the device-handed session carries the device's delegation: {answered:?}"
     );
+}
+
+/// An agent inside a turn carries the message that caused it to every op it
+/// makes, so the receiving device decides it against that message and
+/// presence can show what the agent would click. An agent no turn carries
+/// holds no authority of its own: agents are not members.
+#[test]
+fn an_agent_carries_the_turn_that_caused_its_ops() {
+    let turn = tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1");
+    let handed = Caller::agent_turn("scribe", "ada", turn.clone()).in_workspace("w");
+    assert_eq!(handed.turn(), Some(&turn));
+    assert!(handed.is_session_delegated());
+    let actor = super::BrokerActor::for_caller(&handed);
+    assert_eq!(actor.turn(), Some(&turn), "the broker keeps the cause");
+
+    let alone = super::BrokerActor::for_caller(&Caller::local_agent("scribe").in_workspace("w"));
+    assert!(alone.turn().is_none(), "no turn carries it");
 }
 
 /// A Store disclosure whose `operation` does not decode is refused with

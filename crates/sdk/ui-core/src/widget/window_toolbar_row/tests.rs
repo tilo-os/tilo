@@ -1050,6 +1050,35 @@ fn a_menu_button_lists_its_items_and_the_overflow_menu_carries_them() {
     );
 }
 
+/// The desktop's own items are a section of the window's More menu, after
+/// the app's declared commands: the bar shows one "…", and its menu says
+/// where the app's rows end and the desktop's begin.
+#[test]
+fn the_desktops_items_follow_the_apps_commands_in_one_menu() {
+    let toolbar = WindowToolbar {
+        actions: vec![
+            ToolbarAction::new("notes-menu-rename", "pencil", "Rename").in_menu(),
+            ToolbarAction::new("tilo.desktop.share", "copy", "Share to channel…").in_menu(),
+        ],
+        ..WindowToolbar::default()
+    }
+    .bounded();
+    let mut row = ToolbarRow::new();
+    row.show(
+        5,
+        Some(&toolbar),
+        Theme::dark().motion(),
+        crate::motion::frame_now(),
+    );
+    row.lay_out(Rect::new(0.0, 0.0, 800.0, 40.0));
+    assert!(row.open_overflow(), "the window's More menu holds both");
+    assert_eq!(
+        row.menu_entries,
+        vec![Some(MenuEntry::Action(0)), None, Some(MenuEntry::Action(1))],
+        "the desktop's item stands in a section after the app's commands"
+    );
+}
+
 #[test]
 fn a_destructive_action_folded_into_the_menu_keeps_its_danger_row() {
     let toolbar = WindowToolbar {

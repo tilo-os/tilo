@@ -458,6 +458,41 @@ fn a_comment_is_about_its_task_so_the_page_does_not_list_it_as_made_from_it() {
     );
 }
 
+/// A step that wrote no field of its own says what its action is called: the app's words for the
+/// action, never the comment its declaration explains to whoever writes the app.
+#[test]
+fn a_history_entry_says_what_was_done_in_the_apps_words_not_in_its_declaration() {
+    let (ada, _bo, task, _said, _asked) = ada_and_bo_after_a_comment();
+    let page = ada.host.open_resource(&task, None).unwrap();
+    let section = of_kind(page.tree(), "ui.Section")
+        .into_iter()
+        .find(|node| node.props.get("title") == Some(&Value::text("tilolang-history")))
+        .cloned()
+        .expect("the task's page shows its history");
+    let words: Vec<String> = of_kind(&section, "ui.Text")
+        .into_iter()
+        .filter_map(|node| match node.props.get("value") {
+            Some(Value::Text(text)) => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        words.iter().any(|word| word == "commented"),
+        "the entry says what Bo did, in the words the app declares: {words:?}"
+    );
+    assert!(
+        words.iter().any(|word| word == "bo"),
+        "the entry names who did it: {words:?}"
+    );
+    assert!(
+        !words
+            .iter()
+            .any(|word| word.contains("Says something about the resource")
+                || word.contains("made_from")),
+        "an entry never reads what the action documents: {words:?}"
+    );
+}
+
 /// Ada's workspace with Tasks' discussion scenario run in it: the task it answers with, and what
 /// the two people it names said about it.
 fn a_task_discussed_by_a_scenario() -> (Replica, ResourceRef) {

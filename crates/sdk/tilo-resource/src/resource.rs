@@ -2596,6 +2596,30 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
     publish_parts::<R>(id, label, Some(state))
 }
 
+/// A record's state from the reading a document host publishes for it
+/// ([`Resource::state_json`](Resource::state_json), [`crate::Model::to_json`]):
+/// what an app's process reads when the record lives in the session's
+/// document host and it holds no document of its own (`docs/architecture/apps.md`
+/// §2–§3).
+///
+/// The host answers the reading, and the app's own view reads its fields
+/// through its own model types: the state a reading names is the state the
+/// host read from its document, so what the view shows is what the host
+/// holds.
+///
+/// # Errors
+/// Returns [`ModelError`] when the type keeps no JSON form
+/// ([`Resource::RECORD_TABLE`](Resource::RECORD_TABLE) is `None`) or
+/// `reading` is not one of it.
+pub fn state_from_reading<R: Resource>(
+    reading: &serde_json::Value,
+) -> Result<R::State, ModelError> {
+    let table = R::RECORD_TABLE.ok_or_else(|| {
+        ModelError::invalid(format!("{} keeps no reading a host answers", R::LABEL))
+    })?;
+    crate::table::Run(table).from_json(reading)
+}
+
 /// [`publish`], or without a state only what does not depend on one: the
 /// declared actions, [`APPLY`], [`GROUP`](crate::GROUP) and the local
 /// operations.

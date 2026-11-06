@@ -7,6 +7,7 @@
 //! video places it. Nothing here knows about windows, places or themes: the page is drawn by the
 //! same host, in the person's own theme, as Mail's inbox or a Notes notebook.
 
+use crate::i18n::{arg, t_args};
 #[cfg(test)]
 use tilo_view::Effect;
 use tilo_view::ui::{self, Gap};
@@ -220,9 +221,20 @@ fn videos(c: &Channel, cx: &ViewCx) -> Node {
         .iter()
         .map(|video| {
             let key = cx.key(format!("video-{}", video.id));
+            let reach = if video.published.trim().is_empty() {
+                video.views.clone()
+            } else {
+                t_args(
+                    "tube-views-and-age",
+                    &[
+                        arg("views", video.views.as_str()),
+                        arg("age", video.published.trim()),
+                    ],
+                )
+            };
             let row = ui::ListRowBuilder::new(&key)
                 .title(&video.title)
-                .secondary(format!("{} · {}", video.views, video.published))
+                .secondary(reach)
                 .item(ResourceRef {
                     id: format!("tube.video:{}", video.id),
                     ty: "tube.video".to_owned(),

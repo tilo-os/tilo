@@ -792,24 +792,30 @@ pub(crate) fn read_messages(
             ))
         })
         .transpose()?;
-    // Oldest first by when written; posts of the same second keep the
-    // order the chain holds them in (the stable sort), which is the order
-    // they were posted in. Their ids are random, so ordering ties by id
-    // would shuffle a burst of posts.
+    // The timeline's order, as the window shows it ([`crate::messages::Messages::iter`]):
+    // the chain's, which every device reads the same. A message written on a
+    // device whose clock was behind another's keeps its place in the
+    // conversation rather than jumping back in time.
     let mut messages: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
         .iter()
         .filter(|(_, found)| found.channel.as_str() == channel)
         .collect();
-    messages.sort_by_key(|(_, found)| found.ts);
     if let Some((ts, last)) = &after {
-        // After the cursor's message where it is still held; past its
-        // second when it has gone since.
+        // On from the cursor's message where it is still held. When it has
+        // gone since (deleted), on from the first message in the timeline
+        // written after the second it was in: messages written in that same
+        // second are read again rather than skipped.
         let start = messages
             .iter()
             .position(|(id, _)| id.as_str() == last)
             .map_or_else(
-                || messages.partition_point(|(_, found)| found.ts <= *ts),
-                |at| at + 1,
+                || {
+                    messages
+                        .iter()
+                        .position(|(_, found)| found.ts > *ts)
+                        .unwrap_or(messages.len())
+                },
+                |at| at.saturating_add(1),
             );
         messages.drain(..start);
     }
@@ -863,14 +869,15 @@ pub(crate) fn read_workspace(
         .into_iter()
         .collect();
     if let Some(channel) = channel {
-        let mut latest: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
-            .iter()
-            .chain(&reports)
-            .filter(|(_, found)| found.channel.as_str() == channel)
-            .collect();
-        latest.sort_by_key(|(_, found)| found.ts);
+        // The tail of the channel as the window shows it.
+        let latest = chat.message_rows(held, channel);
         let skip = latest.len().saturating_sub(READ_LATEST);
-        wanted.extend(latest.into_iter().skip(skip).map(|(id, _)| id.clone()));
+        wanted.extend(
+            latest
+                .into_iter()
+                .skip(skip)
+                .map(|message| tilo_resource::Id::from_raw(message.id)),
+        );
     }
     // Each with the message it answers, once.
     let answered: Vec<tilo_resource::Id> = wanted

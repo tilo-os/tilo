@@ -200,7 +200,7 @@ mod cases {
         const PLACES: &str = r#"
 app so.tilo.test.places "Places"
 type Note {
-    title: Text (title)
+    title: Text
 }
 type Notes {
     items: Collection<Note>

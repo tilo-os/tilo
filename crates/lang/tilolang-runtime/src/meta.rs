@@ -7,7 +7,7 @@ pub use tilolang::meta::{
     NamedRootMeta, PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TriggerArgMeta,
     TriggerMeta, TriggerWhenMeta, TypeMeta, VariantMeta, ViewMeta,
 };
-pub use tilolang::types::{EffectClass, FieldRole, MergeKind, Ty, TypeKey};
+pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
 
 /// Packages are described by the compiler's metadata.
 pub type Meta = PackageMeta;

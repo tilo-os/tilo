@@ -39,7 +39,7 @@ use tilolang_runtime::value::split_id;
 
 use crate::bundle::Bundle;
 use crate::reads::{default_value, element_key, field_of_json, scalar_of_json};
-use crate::schema::{FieldRole, FieldSchema, MergeKind, TypeSchema, lookup};
+use crate::schema::{FieldSchema, MergeKind, TypeSchema, lookup};
 use crate::task::{Answered, field_json};
 
 /// The native apps a task reaches: each app whose code the task does not run
@@ -531,8 +531,8 @@ impl<'a> NativeReads<'a> {
         }
     }
 
-    /// The app's own name for the resource of the type `schema` it answered as `content`: the
-    /// field it roles as a title, else its `title`, `name` or `label`, else its type's name.
+    /// The app's own name for the resource of the type `schema` it answered as `content`: its
+    /// first text field, else its `title`, `name` or `label`, else its type's name.
     fn title(&self, app: &str, schema: &TypeSchema, content: &Json) -> Option<String> {
         let named = |field: &FieldSchema| {
             content
@@ -543,7 +543,7 @@ impl<'a> NativeReads<'a> {
         schema
             .fields
             .iter()
-            .find(|field| matches!(field.role, FieldRole::Title))
+            .find(|field| field.kind.holds_text())
             .and_then(named)
             .or_else(|| {
                 ["title", "name", "label"]

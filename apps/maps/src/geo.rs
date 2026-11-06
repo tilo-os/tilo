@@ -248,18 +248,22 @@ pub fn fmt_distance(m: f64) -> String {
     }
 }
 
-/// Human-readable duration from seconds.
+/// Human-readable duration from seconds, in the person's language: a card or
+/// a sheet reads the units the way the person does.
 pub fn fmt_duration(secs: f64) -> String {
     let total_min = (secs / 60.0).round() as i64;
     if total_min < 60 {
-        format!("{total_min} min")
+        crate::failure::t_args("maps-duration-minutes", &[("minutes", total_min.into())])
     } else {
         let h = total_min / 60;
         let m = total_min % 60;
         if m == 0 {
-            format!("{h} h")
+            crate::failure::t_args("maps-duration-hours", &[("hours", h.into())])
         } else {
-            format!("{h} h {m} min")
+            crate::failure::t_args(
+                "maps-duration-hours-minutes",
+                &[("hours", h.into()), ("minutes", m.into())],
+            )
         }
     }
 }

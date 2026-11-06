@@ -387,8 +387,6 @@ fn field_meta(f: &crate::resolve::FieldInfo, app: &str) -> FieldMeta {
         merge: f.merge,
         doc: f.doc.clone(),
         default: f.default.clone(),
-        role: f.role.clone(),
-        derived: f.derived.clone(),
     }
 }
 

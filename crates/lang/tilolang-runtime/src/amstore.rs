@@ -29,7 +29,6 @@ use automerge::{
 use serde_json::Value as Json;
 use tilo_automerge::ApplyIncoming;
 
-use crate::derived::{Computed, Facts};
 use crate::ids::{DocId, FieldId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::place::{self, AT_KEY, ITEMS_KEY, Place, Placement, Resolved};
@@ -66,6 +65,9 @@ struct Subscription {
 #[derive(Default)]
 struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// Each document it touched, as it was before the transaction's first operation on it: what
+    /// an open run keeps of a document it writes, to take it back if the run fails.
+    before: BTreeMap<DocId, AutoCommit>,
     /// How the listings of the collections it changed moved, step by step.
     listings: BTreeMap<FieldKey, Vec<Splice>>,
 }
@@ -79,10 +81,13 @@ struct Inner {
     subs: Vec<Subscription>,
     next_sub: u64,
     journals: BTreeMap<RunId, String>,
+    /// The runs that have not finished: each document a run wrote, as it was before the run's
+    /// first change, so that a run that fails anywhere takes everything it wrote back out.
+    runs: BTreeMap<String, BTreeMap<DocId, AutoCommit>>,
     /// Each document's items resolved into their collections, as the document is now.
     resolved: RefCell<HashMap<DocId, Rc<Resolved>>>,
-    /// The types the runtime loaded, by id: what a derived key and its parent field are found
-    /// by ([`crate::derived`]).
+    /// The types the runtime loaded, by id: what a record's fields are found by, as a link
+    /// reads them.
     types: BTreeMap<TypeId, Rc<TypeInfo>>,
 }
 
@@ -111,6 +116,7 @@ impl AmStore {
                 subs: Vec::new(),
                 next_sub: 1,
                 journals: BTreeMap::new(),
+                runs: BTreeMap::new(),
                 resolved: RefCell::new(HashMap::new()),
                 types: BTreeMap::new(),
             })),
@@ -250,14 +256,6 @@ impl Inner {
             return Err(not_found(format!("item `{item}`")));
         }
         item_obj(doc, item).ok_or_else(|| not_found(format!("item `{item}`")))
-    }
-
-    /// The type of the resource at `at`, when the runtime loaded the package declaring it.
-    fn type_at(&self, at: &ResourceRef) -> Option<Rc<TypeInfo>> {
-        let doc = self.doc(&at.doc).ok()?;
-        let obj = self.locate(at).ok()?;
-        let ty = str_at(doc, &obj, TYPE_KEY)?;
-        self.types.get(&ty).cloned()
     }
 
     /// The resources of the document `doc`: the record, and every item placed in it.
@@ -460,115 +458,6 @@ fn spec(field: &FieldInfo) -> FieldSpec {
     FieldSpec {
         id: field.id.clone(),
         kind: field.kind,
-    }
-}
-
-/// What a derived key among the type's fields reads, worked out over the documents: `None` for
-/// a field the record holds itself ([`crate::derived`]).
-fn derived_value(
-    inner: &Inner,
-    at: &ResourceRef,
-    field: &FieldSpec,
-) -> Result<Option<FieldValue>, StoreError> {
-    let Some(ty) = inner.type_at(at) else {
-        return Ok(None);
-    };
-    let Some(info) = ty.field(&field.id) else {
-        return Ok(None);
-    };
-    let Some(expr) = &info.derived else {
-        return Ok(None);
-    };
-    let now = crate::derived::eval(&mut FactsOf { inner }, &at.id_string(), expr)?;
-    Ok(Some(now.value()))
-}
-
-/// The resource a derived key's expression names: a document, then `/item` for an item.
-fn facts_at(path: &str) -> Result<ResourceRef, StoreError> {
-    ResourceRef::parse_id(path, String::new())
-        .ok_or_else(|| not_found(format!("resource `{path}`")))
-}
-
-/// The documents as the one evaluator of derived keys reads them: an item's fields, the items
-/// standing under it through the type's parent field, and the item it stands under.
-struct FactsOf<'a> {
-    inner: &'a Inner,
-}
-
-impl Facts for FactsOf<'_> {
-    type Error = StoreError;
-
-    fn field(&mut self, path: &str, field: &str) -> Result<Computed, StoreError> {
-        let at = facts_at(path)?;
-        let Some(ty) = self.inner.type_at(&at) else {
-            return Ok(Computed::Bool(false));
-        };
-        let Some(info) = ty.field(field) else {
-            return Ok(Computed::Bool(false));
-        };
-        if let Some(expr) = &info.derived {
-            return crate::derived::eval(self, path, expr);
-        }
-        let doc = self.inner.doc(&at.doc)?;
-        let obj = self.inner.locate(&at)?;
-        let none = Json::Null;
-        let default = info.default.as_ref().unwrap_or(&none);
-        let now = read_field(doc, &obj, &spec(info))?;
-        Ok(Computed::held(Some(&now), default))
-    }
-
-    fn children(&mut self, path: &str) -> Result<Vec<String>, StoreError> {
-        let at = facts_at(path)?;
-        let Some(ty) = self.inner.type_at(&at) else {
-            return Ok(Vec::new());
-        };
-        let Some(parent) = ty.parent.as_deref() else {
-            return Ok(Vec::new());
-        };
-        let doc = self.inner.doc(&at.doc)?;
-        let resolved = self.inner.resolved(&at.doc)?;
-        let mut out = Vec::new();
-        for id in resolved.places.keys() {
-            let Some(obj) = item_obj(doc, id) else {
-                continue;
-            };
-            let Some(child) =
-                str_at(doc, &obj, TYPE_KEY).and_then(|ty| self.inner.types.get(&ty).cloned())
-            else {
-                continue;
-            };
-            if child.parent.as_deref() != Some(parent) {
-                continue;
-            }
-            let Some(info) = child.field(parent) else {
-                continue;
-            };
-            let now = read_field(doc, &obj, &spec(info))?;
-            if crate::derived::parent_in(&now).as_deref() == Some(path) {
-                out.push(id.clone());
-            }
-        }
-        Ok(out)
-    }
-
-    fn above(&mut self, path: &str) -> Result<Option<String>, StoreError> {
-        let at = facts_at(path)?;
-        let Some(ty) = self.inner.type_at(&at) else {
-            return Ok(None);
-        };
-        let Some(parent) = ty.parent.as_deref() else {
-            return Ok(None);
-        };
-        let Some(info) = ty.field(parent) else {
-            return Ok(None);
-        };
-        let doc = self.inner.doc(&at.doc)?;
-        let obj = self.inner.locate(&at)?;
-        Ok(crate::derived::parent_in(&read_field(
-            doc,
-            &obj,
-            &spec(info),
-        )?))
     }
 }
 
@@ -968,7 +857,20 @@ impl Store for AmStore {
             return Err(StoreError::Invalid("the transaction is closed".into()));
         }
         // The document joins the transaction before its first operation, so a failure half
-        // way through is rolled back with the rest.
+        // way through is rolled back with the rest. While a run is open, the document as it
+        // stands before that first operation is kept beside it: a run that fails takes back
+        // what it wrote from before its own first change.
+        let keep_before = !inner.runs.is_empty()
+            && inner
+                .txns
+                .get(&txn.0)
+                .is_some_and(|state| !state.before.contains_key(&at.doc));
+        if keep_before && let Some(doc) = inner.docs.get(&at.doc) {
+            let before = doc.clone();
+            if let Some(state) = inner.txns.get_mut(&txn.0) {
+                state.before.insert(at.doc.clone(), before);
+            }
+        }
         let fields = inner
             .txns
             .get_mut(&txn.0)
@@ -1025,10 +927,18 @@ impl Store for AmStore {
 
     fn commit(&mut self, txn: Txn, note: &ChangeNote) -> Result<(), StoreError> {
         let mut inner = self.inner.borrow_mut();
-        let state = inner
+        let mut state = inner
             .txns
             .remove(&txn.0)
             .ok_or_else(|| StoreError::Invalid("the transaction is closed".into()))?;
+        // A run that is still open keeps each document it writes as it was before its first
+        // change, so that a failure anywhere in it takes all of it back out.
+        if let Some(run) = note.invocation.clone() {
+            let kept = inner.runs.entry(run).or_default();
+            for (id, doc) in std::mem::take(&mut state.before) {
+                kept.entry(id).or_insert(doc);
+            }
+        }
         let mut listings = state.listings;
         for (id, fields) in state.touched {
             if let Some(doc) = inner.docs.get_mut(&id) {
@@ -1072,10 +982,33 @@ impl Store for AmStore {
         }
     }
 
+    fn begin_run(&mut self, run: &str) {
+        self.inner
+            .borrow_mut()
+            .runs
+            .entry(run.to_owned())
+            .or_default();
+    }
+
+    fn end_run(&mut self, run: &str) {
+        self.inner.borrow_mut().runs.remove(run);
+    }
+
+    fn abort_run(&mut self, run: &str) {
+        let mut inner = self.inner.borrow_mut();
+        let Some(before) = inner.runs.remove(run) else {
+            return;
+        };
+        for (id, doc) in before {
+            inner.docs.insert(id.clone(), doc);
+            inner.forget(&id);
+        }
+    }
+
     fn loaded_types(&mut self, types: &[Rc<TypeInfo>]) {
         let mut inner = self.inner.borrow_mut();
-        // Every loaded package's types, as they are now: a reload that changes a key replaces
-        // the one it was.
+        // Every loaded package's types, as they are now: a reload that changes a type replaces
+        // the fields a link reads.
         inner.types.clear();
         for ty in types {
             inner.types.insert(ty.id.clone(), Rc::clone(ty));
@@ -1084,9 +1017,6 @@ impl Store for AmStore {
 
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
         let inner = self.inner.borrow();
-        if let Some(now) = derived_value(&inner, at, field)? {
-            return Ok(now);
-        }
         let obj = inner.locate(at)?;
         if field.kind == FieldKind::Collection {
             return Ok(FieldValue::Items(

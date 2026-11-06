@@ -279,7 +279,7 @@ impl TopBarChrome {
         } else if self.ws_strip_rect.contains(p) {
             ChromeIntent::ShowStrips
         } else if self.ws_pill_rect.contains(p) {
-            ChromeIntent::ToggleWorkspaceMenu
+            ChromeIntent::ToggleWorkspaceMenu { at: None }
         } else if self.own_avatar_rect.contains(p) {
             self.avatar_intent()
         } else if self.tray_hit_rect.contains(p) {
@@ -295,6 +295,30 @@ impl TopBarChrome {
             return;
         };
         *handled = chrome.intent(intent);
+    }
+
+    /// A secondary press on the bar that no control of its own took: the
+    /// workspace menu, standing where the person pressed — the same menu the
+    /// workspace name opens, offering the desk's own commands there.
+    pub(super) fn handle_secondary_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Right,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(point) = self.last_cursor.filter(|at| self.rect.contains(*at)) else {
+            return false;
+        };
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        *handled = chrome.intent(ChromeIntent::ToggleWorkspaceMenu {
+            at: Some(crate::desktop_host::place(point)),
+        });
+        *handled
     }
 
     /// Keyboard focus is shown; focus a click gave the bar is not.
@@ -358,7 +382,7 @@ impl TopBarChrome {
         }
         let intent = match target {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
-            Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu,
+            Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu { at: None },
             Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
             Self::CONTROL_PROFILE => self.avatar_intent(),
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,

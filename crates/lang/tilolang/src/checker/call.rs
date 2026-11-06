@@ -752,33 +752,6 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
-            if f.role
-                .as_ref()
-                .is_some_and(crate::types::FieldRole::is_previously)
-            {
-                self.err(
-                    "E115",
-                    a.value.span,
-                    format!(
-                        "`{}` is what `{}` held previously: nothing writes it any more; give the value where the type keeps it now",
-                        f.name, key.name
-                    ),
-                );
-                let _ = self.expr(&a.value, None);
-                continue;
-            }
-            if f.derived.is_some() {
-                self.err(
-                    "E119",
-                    a.value.span,
-                    format!(
-                        "`{}.{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what a `{}` is made with",
-                        key.name, f.name, key.name
-                    ),
-                );
-                let _ = self.expr(&a.value, None);
-                continue;
-            }
             if f.ty.is_container() {
                 self.err(
                     "E033",
@@ -2274,6 +2247,16 @@ impl Checker<'_> {
                     Ty::Option(Box::new(Ty::Int)),
                 )
             }
+            (Ty::List(t) | Ty::Collection(t), "at") => {
+                let elem = (**t).clone();
+                if !self.arity(name, args, 1, span) {
+                    return Ex::error();
+                }
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                self.item_at(r, &elem, a)
+            }
             // `items.previous(x)`: the item just before `x` in the list as a view shows it —
             // the row over the one a list is rendering — or none for the first. A row's place
             // is the host's, so a row tells what stands over it without walking the list.
@@ -2575,6 +2558,63 @@ impl Checker<'_> {
         let out = Ty::Option(Box::new(elem.clone()));
         let which = Ex::new(Ek::I32(i32::from(last)), Ty::Bool);
         Ex::host(Imp::ListEnd, vec![list, which], out)
+    }
+
+    /// `xs.at(i)`: the item at the place `i` counts from the start, the place `index_of` answers
+    /// for it, and none where the list ends before that place — so a copy can be read where the
+    /// item it copies stands. It is the first `i + 1` items' last, asked only where the list is
+    /// that long.
+    fn item_at(&mut self, list: Ex, elem: &Ty, place: &ast::Arg) -> Ex {
+        let list_ty = list.ty.clone();
+        let held = self.fresh(list_ty.clone());
+        let at = self.fresh(Ty::Int);
+        let up_to = Ex::new(
+            Ek::Bin(
+                ir::BinOp::Add,
+                Box::new(Ex::local(at, Ty::Int)),
+                Box::new(Ex::int(1)),
+            ),
+            Ty::Int,
+        );
+        let items_ty = Ty::List(Box::new(elem.clone()));
+        let taken = self.fresh(items_ty.clone());
+        let out = Ty::Option(Box::new(elem.clone()));
+        let found = self.fresh(out.clone());
+        let enough = Ex::new(
+            Ek::Bin(
+                ir::BinOp::Eq,
+                Box::new(Ex::host(
+                    Imp::ListLen,
+                    vec![Ex::local(taken, items_ty.clone())],
+                    Ty::Int,
+                )),
+                Box::new(up_to.clone()),
+            ),
+            Ty::Bool,
+        );
+        let place = self.expr_as(&place.value, &Ty::Int);
+        let stmts = vec![
+            Stmt::Set(held, list),
+            Stmt::Set(at, place),
+            Stmt::Set(
+                taken,
+                Ex::host(
+                    Imp::Take,
+                    vec![Ex::local(held, list_ty), up_to],
+                    items_ty.clone(),
+                ),
+            ),
+            Stmt::Set(found, Ex::host(Imp::NoneV, Vec::new(), out.clone())),
+            Stmt::If(
+                enough,
+                vec![Stmt::Set(
+                    found,
+                    Self::end_item(Ex::local(taken, items_ty), elem, true),
+                )],
+                Vec::new(),
+            ),
+        ];
+        Ex::new(Ek::Seq(stmts, Box::new(Ex::local(found, out.clone()))), out)
     }
 
     /// `sort_by(x -> key)`: collects the keys in a parallel list, then asks the host for the

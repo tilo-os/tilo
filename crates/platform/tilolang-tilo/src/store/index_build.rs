@@ -7,11 +7,12 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use automerge::ChangeHash;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 
-use super::{Doc, Inner, TiloStore, build, everything, holds_heads, mirror_of, scan};
+use super::reading::{build, everything, mirror_of};
+use super::{Doc, Inner, TiloStore};
 use crate::background::{Pending, Poll};
+use crate::chunk::{self, ChunkNo, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached};
 use crate::index::view::View;
 use crate::index::{self as idx, Index, IndexError, Opened};
@@ -22,7 +23,7 @@ pub(super) enum IndexState {
     /// Read from: it reflects `heads`, with what the store wrote over it in the overlay.
     Ready,
     /// Being built from the record off the frame: reflecting the heads given, once done.
-    Building(Pending<Result<(Vec<ChangeHash>, DocReads), IndexError>>),
+    Building(Pending<Result<(Stamps, DocReads), IndexError>>),
     /// Nothing to read, and no record yet to build it from.
     Missing,
 }
@@ -32,8 +33,8 @@ pub(super) struct AppIndex {
     pub(super) index: Arc<Index>,
     /// The index as its last commit left it.
     pub(super) snapshot: Arc<idx::Snapshot>,
-    /// The record heads that commit reflects.
-    pub(super) heads: Vec<ChangeHash>,
+    /// The heads that commit reflects of each chunk it was built from.
+    pub(super) heads: Stamps,
     schema: String,
     state: IndexState,
 }
@@ -86,10 +87,10 @@ impl TiloStore {
             },
         };
         inner.apps.insert(app.to_owned(), held);
-        if let Some(mirror) = inner.mirror.clone() {
+        if inner.chunks.has_record() {
             // The records under ids the app had before are its own from now on.
             if !crate::schema::previously(app).is_empty() {
-                inner.index = scan(&mirror);
+                inner.rescan();
             }
             inner.bring_up(app);
         } else {
@@ -174,7 +175,7 @@ impl TiloStore {
                         AppIndex {
                             index: Arc::new(index),
                             snapshot,
-                            heads: Vec::new(),
+                            heads: Stamps::new(),
                             schema,
                             state: IndexState::Missing,
                         },
@@ -228,21 +229,26 @@ impl Inner {
     fn index_docs(&mut self) {
         let mut index = BTreeMap::new();
         for (app, held) in self.apps.iter().filter(|(_, held)| held.ready()) {
-            for (doc, ty) in held.snapshot.docs().unwrap_or_default() {
+            for (doc, ty, _chunk) in held.snapshot.docs().unwrap_or_default() {
                 index.insert(doc, (app.clone(), ty));
             }
         }
         self.index = index;
     }
 
-    /// Take the workspace record: the mirror is a copy of it, and each index catches up with it.
-    pub(super) fn attach(&mut self, record: &Doc) {
+    /// Take the document `doc` as chunk `chunk`: the store's mirror of it is a copy of it, the
+    /// resources it holds are read again, and each index catches up with it.
+    pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
         self.versions = None;
         self.nested.clear();
-        let mirror = mirror_of(record);
-        self.seen = record.committed_document().get_heads();
-        self.index = scan(&mirror);
-        self.mirror = Some(Arc::new(mirror));
+        let mirror = mirror_of(doc);
+        self.chunks
+            .set_seen(chunk, mirror.committed_document().get_heads());
+        self.chunks.insert(chunk, mirror);
+        if chunk == chunk::FIRST {
+            self.chunks.reread_placement();
+        }
+        self.rescan();
         let apps: Vec<AppId> = self.apps.keys().cloned().collect();
         for app in apps {
             self.bring_up(&app);
@@ -318,25 +324,25 @@ impl Inner {
             AppIndex {
                 index: Arc::new(index),
                 snapshot,
-                heads: Vec::new(),
+                heads: Stamps::new(),
                 schema,
                 state: IndexState::Missing,
             },
         );
         self.rebuild(app);
-        if self.mirror.is_none() {
+        if !self.chunks.has_record() {
             self.index_docs();
         }
     }
 
-    /// Build the index of `app` anew from the mirror.
+    /// Build the index of `app` anew from the documents the store holds.
     pub(super) fn rebuild(&mut self, app: &str) {
-        let Some(mirror) = self.mirror.clone() else {
+        if !self.chunks.has_record() {
             if let Some(held) = self.apps.get_mut(app) {
                 held.state = IndexState::Missing;
             }
             return;
-        };
+        }
         let Some(held) = self.apps.get(app) else {
             return;
         };
@@ -350,12 +356,13 @@ impl Inner {
         }
         let index = Arc::clone(&held.index);
         let docs = self.index.clone();
-        let heads = mirror.committed_document().get_heads();
+        let chunks = self.chunks.clone();
+        let heads = chunks.heads();
         let app_id = app.to_owned();
         let schemas = Arc::clone(&self.schemas);
         let pending = Pending::start(
             move || {
-                let reads = build(&index, &mirror, &docs, &app_id, &heads, &schemas)?;
+                let reads = build(&index, &chunks, &docs, &app_id, &heads, &schemas)?;
                 Ok((heads, reads))
             },
             self.wake.clone(),
@@ -365,19 +372,19 @@ impl Inner {
         }
     }
 
-    /// Build the index of `app` from the mirror, here: one kept in memory.
+    /// Build the index of `app` from the documents the store holds, here: one kept in memory.
     fn build_now(&mut self, app: &str) {
-        let Some(mirror) = self.mirror.clone() else {
+        if !self.chunks.has_record() {
             return;
-        };
-        let heads = mirror.committed_document().get_heads();
+        }
+        let heads = self.chunks.heads();
         let Some(index) = self.apps.get(app).map(|held| Arc::clone(&held.index)) else {
             return;
         };
         let schemas = Arc::clone(&self.schemas);
         let built = index
             .clear_for_build()
-            .and_then(|()| build(&index, &mirror, &self.index, app, &heads, &schemas));
+            .and_then(|()| build(&index, &self.chunks, &self.index, app, &heads, &schemas));
         if let Ok(reads) = built {
             self.count(reads);
             self.stats.builds = self.stats.builds.saturating_add(1);
@@ -396,30 +403,40 @@ impl Inner {
         }
     }
 
-    /// Apply to the index of `app` what the record gained since the heads it reflects.
+    /// Apply to the index of `app` what the store's documents gained since the heads it
+    /// reflects.
     fn catch_up(&mut self, app: &str) {
-        let Some(mirror) = self.mirror.clone() else {
+        if !self.chunks.has_record() {
             return;
-        };
+        }
         let Some(held) = self.apps.get(app) else {
             return;
         };
-        let now = mirror.committed_document().get_heads();
+        let now = self.chunks.heads();
         if held.heads == now {
             return;
         }
-        if !holds_heads(&mirror, &held.heads) {
+        // A chunk the index was not built from holds records it never derived: it is built anew.
+        if !held.heads.keys().eq(now.keys()) || !self.chunks.holds(&held.heads) {
             self.rebuild(app);
             return;
         }
         // Named against the records the index held: a record made since is derived whole.
         let mut before: BTreeMap<DocId, (AppId, TypeId)> = BTreeMap::new();
-        for (doc, ty) in held.snapshot.docs().unwrap_or_default() {
+        for (doc, ty, _chunk) in held.snapshot.docs().unwrap_or_default() {
             before.insert(doc, (app.to_owned(), ty));
         }
-        let since = mirror.committed_document().get_changes(&held.heads);
-        let ends = idx::reflect::ends_of(&since, &mirror, &self.index);
-        let changed = changed_by(&since, &mirror, &before);
+        let mut ends: BTreeMap<String, idx::reflect::Ends> = BTreeMap::new();
+        let mut changed = crate::reads::Changed::default();
+        for (chunk, heads) in &held.heads {
+            let Some(doc) = self.chunks.mirror(*chunk) else {
+                self.rebuild(app);
+                return;
+            };
+            let since = doc.committed_document().get_changes(heads);
+            ends.extend(idx::reflect::ends_of(&since, doc, &self.index));
+            changed.take_in(changed_by(&since, doc, &before));
+        }
         for doc in &changed.nested {
             self.nested.forget(doc);
         }
@@ -435,7 +452,7 @@ impl Inner {
         let docs = self.index.clone();
         let nested = &self.nested;
         let written = index.write(|writer| {
-            let mut derive = Derive::new(&mirror, &docs, nested);
+            let mut derive = Derive::new(&self.chunks, &docs, nested);
             derive.changes(writer, app, &reached)?;
             derive.versions(writer, app, &ends)?;
             writer.set_heads(&now)?;

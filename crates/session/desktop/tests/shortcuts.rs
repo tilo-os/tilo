@@ -26,8 +26,8 @@ use ui::headless::FrameHarness;
 use ui::shortcut_table::{FixedAction, KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome};
 use ui::synthetic_input::key_press;
 use ui::widget::TileHost;
-use winit::event::{Modifiers, WindowEvent};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
+use winit::keyboard::{Key, KeyCode, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
 /// The windows of the test desk, with their content as plain notices.
 struct Notices;
@@ -195,6 +195,30 @@ fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
 
 fn press(frame: &mut FrameHarness, key: Key) {
     frame.send_host_event(&key_press(key, None));
+}
+
+/// A key press as a browser page reports it: the letter is the one the
+/// held Shift and Alt type, while the physical place it stands on is what
+/// the page's stand-in for Super reads.
+fn press_here(frame: &mut FrameHarness, code: KeyCode, logical: Key, mods: ModifiersState) {
+    hold(frame, mods);
+    frame.send_host_event(&WindowEvent::KeyboardInput {
+        device_id: DeviceId::dummy(),
+        event: KeyEvent::synthetic(
+            RawKeyEvent {
+                physical_key: PhysicalKey::Code(code),
+                state: ElementState::Pressed,
+            },
+            logical.clone(),
+            None,
+            KeyLocation::Standard,
+            false,
+            None,
+            logical,
+        ),
+        is_synthetic: true,
+    });
+    hold(frame, ModifiersState::empty());
 }
 
 /// The winit key a chord names.
@@ -445,6 +469,43 @@ fn the_fixed_chords_close_duplicate_and_ask_the_session() {
             "{action:?} reaches the session once"
         );
     }
+}
+
+/// A browser page runs the fixed chords the desk shares with the native
+/// session, through the page's stand-in for the Super a browser may keep,
+/// and asks for the ones over the system rather than dropping them.
+#[test]
+fn a_page_closes_a_window_and_asks_for_what_it_has_no_surface_for() {
+    let (mut desk, mut frame, handle) = desk_and_chrome(&two_windows());
+    assert_eq!(in_front(&handle), Some(20));
+
+    // Alt+Shift is Super where the browser keeps it: the window in front
+    // closes, as the native desktop's Super+W does.
+    press_here(
+        &mut frame,
+        KeyCode::KeyW,
+        Key::Character("W".into()),
+        ModifiersState::ALT | ModifiersState::SHIFT,
+    );
+    for _ in 0..4 {
+        desk.relayout();
+    }
+    assert_eq!(in_front(&handle), Some(21), "the window in front closed");
+
+    // Super+Shift+S is a capture, taken by the session over the whole
+    // screen: the page has none, so its chrome hands the chord on.
+    press_here(
+        &mut frame,
+        KeyCode::KeyS,
+        Key::Character("S".into()),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
+    assert_eq!(
+        chrome.take_asks(),
+        [DesktopAsk::FixedShortcut(FixedAction::CaptureScreenshot)],
+        "the page is told what it cannot do here"
+    );
 }
 
 /// The window in front takes the strip below it, and the person goes with it.

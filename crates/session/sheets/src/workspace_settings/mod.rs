@@ -104,9 +104,12 @@ pub enum WorkspaceSettingsEffect {
     /// Look at what was done in the workspace
     #[effect(own_device, kind = "read")]
     ReviewActivity,
-    /// Admit an agent to the workspace
+    /// Make an agent called what the person named
     #[effect(own_device, kind = "read")]
-    AddAgent,
+    AddAgent {
+        #[param("The new agent's name, as people read it")]
+        name: String,
+    },
     /// Show what an agent may do in the workspace, app by app
     #[effect(own_device, kind = "read")]
     ReviewAgent {
@@ -288,13 +291,10 @@ pub enum Confirm {
 }
 
 /// What the sheet keeps to itself while it is up: the question it is
-/// asking, and what of an agent's review is open.
+/// asking and what the permission composer has chosen.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Local {
     confirming: Option<Confirm>,
-    /// The app whose answers are open in an agent's review.
-    open_app: Option<String>,
-    models_open: bool,
     /// What the permission composer has chosen.
     draft: permissions::Draft,
 }
@@ -431,6 +431,7 @@ impl ResourceApp for WorkspaceSettingsApp {
                 .unwrap_or_default(),
         };
         let name = cx.local(initial.name.clone());
+        let new_agent = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -451,6 +452,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             dispatch: cx.dispatcher(),
             shown: shown.clone(),
             name,
+            new_agent,
             local: local.clone(),
             seat,
         };
@@ -488,13 +490,6 @@ impl ResourceApp for WorkspaceSettingsApp {
 
     fn fixture(fixture: &mut ui::framework::Fixture<WorkspaceSettings>) {
         let settings = scenario(fixture.scenario());
-        if fixture.scenario() == Some("agent-review") {
-            fixture.provide(Local {
-                open_app: Some("so.tilo.notes".to_owned()),
-                models_open: true,
-                ..Local::default()
-            });
-        }
         if fixture.scenario() == Some("permissions-revoking") {
             fixture.provide(Local {
                 confirming: Some(Confirm::Revoke {
@@ -636,6 +631,8 @@ struct Parts {
     shown: LocalState<Settings>,
     /// The name as typed.
     name: LocalState<String>,
+    /// The name a new agent is given as typed.
+    new_agent: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     seat: Option<WorkspaceSettingsSeat>,
@@ -646,15 +643,13 @@ impl Parts {
     /// decision, as a key is; anyone acting for them goes through the
     /// door, which asks first where the effect says so.
     fn ask(&self, effect: WorkspaceSettingsEffect) {
-        if matches!(
-            effect,
-            WorkspaceSettingsEffect::ReviewAgent { .. } | WorkspaceSettingsEffect::EndReview
-        ) {
-            // Each review opens with everything closed.
-            self.local.update(|local| {
-                local.open_app = None;
-                local.models_open = false;
-            });
+        // A new agent is named by what the field held: the press takes it,
+        // and a press with no name asks nothing.
+        if let WorkspaceSettingsEffect::AddAgent { name } = &effect {
+            self.new_agent.set(String::new());
+            if name.trim().is_empty() {
+                return;
+            }
         }
         match &self.seat {
             Some(seat) if self.dispatch.is_own_gesture(&effect) => seat.ask(effect),
@@ -684,6 +679,13 @@ impl Parts {
         });
     }
 
+    /// Ask for an agent called what the name field says.
+    fn add_agent(&self) {
+        self.ask(WorkspaceSettingsEffect::AddAgent {
+            name: self.new_agent.get(),
+        });
+    }
+
     fn close(&self) {
         self.commit_name();
         self.ask(WorkspaceSettingsEffect::Close);
@@ -692,24 +694,6 @@ impl Parts {
     /// Ask whether to make `change` before asking the shell for it.
     fn confirm(&self, change: Confirm) {
         self.local.update(|local| local.confirming = Some(change));
-    }
-
-    /// Open the answers of the app `scope` in an agent's review, or close
-    /// them when they are open.
-    fn toggle_app(&self, scope: &str) {
-        self.local.update(|local| {
-            local.open_app = if local.open_app.as_deref() == Some(scope) {
-                None
-            } else {
-                Some(scope.to_owned())
-            };
-        });
-    }
-
-    /// Show or hide the models an agent may plan with.
-    fn toggle_models(&self) {
-        self.local
-            .update(|local| local.models_open = !local.models_open);
     }
 
     /// Whether an agent's review is shown.

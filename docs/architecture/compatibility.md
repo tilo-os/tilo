@@ -75,9 +75,17 @@ mounted image.
 | Device ↔ device (handshake, relay frames, peer-sync messages) | `neighbour_wire::PEER_PROTOCOL_VERSION` | `crates/collab/neighbour-wire/interface.toml` | the first field of the certified handshake's `Hello` and `HelloAck` (relay sessions, compute, environments, the HTTPS carrier), and of the `IdentityHello` a device announces on a workspace, whose index never moves |
 | Store package format (`.tapp`, its manifest, and the registry's snapshots, version indexes and channel authorizations) | `registry_types::PACKAGE_FORMAT_VERSION` (`tilo_app_package::TAPP_FORMAT_VERSION` is it) | `crates/packaging/tilo-app-package/interface.toml` | the archive header, when a package is read; a snapshot's `protocol`, when the catalogue is verified |
 
-- There is no negotiation and no code for an older number. A side at another
-  number says so and stops.
-- One exception: environment images (`env-runtime`, `tool`). An environment
+- A reader keeps every format it understands: `tilo_app_package::tapp::READABLE_FORMATS`
+  for the archive and `registry_types::READABLE_CATALOGUE_FORMATS` for the
+  registry's catalogue. A format that changes a layout adds its reader there
+  before anything ships at it, so a newer format never stops a reader from
+  reading the ones it already knew. There is no negotiation and no code for a
+  number no reader has: a side at a newer format than the reader says so and
+  stops, naming the update that reads it ("update Tilo to read this
+  catalogue"); a reader that no longer understands an older format says the
+  writer has to publish at the newest one.
+- Environment images (`env-runtime`, `tool`) are why the archive reader keeps
+  older formats. An environment
   names its images by package id, the hash of a signed root that includes the
   package format, so an image cannot be rewritten at a new format without
   becoming another image. A device reads images of every package format that

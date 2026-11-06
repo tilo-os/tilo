@@ -697,7 +697,7 @@ async fn assert_signed_canonical(
     reporter: &tilo_user_identity::DeviceCert,
 ) {
     use tilo_actions::remote::Caller;
-    use tilo_desktop::feedback::transport::{Enrollment, SignedReceipt};
+    use tilo_feedback_transport::{Enrollment, SignedReceipt};
     let admission = owner_feedback(browser, submission, false).await.unwrap();
     assert!(
         admission.receipt.is_none(),

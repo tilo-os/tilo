@@ -21,8 +21,8 @@ use collaboration::action_directory::{
 };
 use collaboration::commit_log::CommitHistory;
 use collaboration::{
-    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, CommitAuthor,
-    CommitPart, PeerTransport, RouteSpec, WorkspaceCommit,
+    ActionDirectoryRequest, CollabEvent, CollabRequest, CollaborationManager, PeerTransport,
+    RouteSpec, WorkspaceCommit,
 };
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
@@ -567,24 +567,6 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
 }
 
 /// The last change a window's press sent the workspace.
-fn pressed(sent: &Sent) -> [u8; 32] {
-    sent.borrow()
-        .iter()
-        .rev()
-        .find_map(|request| {
-            let CollabRequest::Document {
-                mutation: collaboration::DocumentMutation::Incremental(bytes),
-                ..
-            } = request
-            else {
-                return None;
-            };
-            let changes = collab_types::parse_changes(bytes).ok()?;
-            changes.last().map(|change| change.hash().0)
-        })
-        .expect("the connection sent the step")
-}
-
 /// The last commit the connection sent a change under.
 fn sent_under(sent: &Sent) -> Option<WorkspaceCommit> {
     sent.borrow()
@@ -599,26 +581,66 @@ fn sent_under(sent: &Sent) -> Option<WorkspaceCommit> {
         })
 }
 
-/// The one action two units of the counter made, as the workspace's commit names it.
-fn two_unit_action(cluster: uuid::Uuid, steps: [(&str, [u8; 32]); 2]) -> WorkspaceCommit {
-    WorkspaceCommit::new(
-        cluster.to_string(),
-        CommitAuthor {
-            principal: Some("ada".to_owned()),
-            device: [1; 32],
-        },
-        1,
-        Some(uuid::Uuid::new_v4()),
-        None,
-        steps
-            .into_iter()
-            .map(|(record, change)| CommitPart {
-                app: APP.to_owned(),
-                record: record.to_owned(),
-                changes: vec![change],
-            })
-            .collect(),
+/// A counter record holding one change of the action `invocation` names, as an action that wrote
+/// the unit left it: the endpoints restarted since, so nothing but the record remembers it.
+fn seeded(person: &str, invocation: tilo_actions::InvocationId) -> automerge::AutoCommit {
+    let mut doc = automerge::AutoCommit::new();
+    let principal = tilolang_tilo::runtime::Principal::new(person);
+    let host = tilolang_tilo::host::Host::new(&doc, principal.clone(), || None).unwrap();
+    let package = host
+        .load_builtin(
+            include_str!("../../../../apps/tl/counter/app.tl"),
+            include_str!("../../../../apps/tl/counter/app.ids"),
+        )
+        .unwrap();
+    let root = host.root_of(APP).unwrap();
+    for committed in host.take_committed() {
+        applied(&mut doc, &committed.action, person, None);
+    }
+    let increment = package
+        .meta
+        .actions
+        .iter()
+        .find(|action| action.name == "increment")
+        .unwrap()
+        .id
+        .clone();
+    host.runtime()
+        .invoke_action(
+            &principal,
+            (increment.as_str(), vec![Value::resource(&root)]),
+        )
+        .unwrap();
+    for committed in host.take_committed() {
+        applied(&mut doc, &committed.action, person, Some(invocation));
+    }
+    doc
+}
+
+/// Apply `action` to `doc` as the record does: for `person`, in the invocation `invocation` when
+/// the change is part of an action's.
+fn applied(
+    doc: &mut automerge::AutoCommit,
+    action: &tilolang_tilo::action::DynAction,
+    person: &str,
+    invocation: Option<tilo_actions::InvocationId>,
+) {
+    let context = tilo_actions::ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("workspace"),
+        &action.kind,
+        &action.kind,
     )
+    .with_source_invocation(invocation)
+    .with_invoker(tilo_actions::ActionInvoker::actor(person));
+    tilo_actions::apply_local_with_context(
+        doc,
+        action,
+        action.encode().unwrap(),
+        Some(person.as_bytes()),
+        context,
+    )
+    .unwrap();
+    doc.commit();
 }
 
 fn values(host: &TilolangHost) -> Vec<i64> {
@@ -631,6 +653,9 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
     let cluster = uuid::Uuid::new_v4();
     let mut host = TilolangHost::new(None, wake());
     let actions: Actions = Rc::default();
+    // The person's one action wrote both units, as a run does: each record holds the change
+    // the action's invocation names. The endpoint restarted since, so no log remembers it.
+    let invocation = tilo_actions::InvocationId::new();
     let first_route = RouteSpec::record(APP, cluster, "a");
     let (mut first, first_sent, _) = instance_on(
         &mut host,
@@ -639,7 +664,7 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
         &first_route,
         Rc::default(),
         Rc::clone(&actions),
-        automerge::AutoCommit::new(),
+        seeded("ada", invocation),
     );
     let second_route = RouteSpec::record(APP, cluster, "b");
     let (mut second, second_sent, _) = instance_on(
@@ -649,33 +674,15 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
         &second_route,
         Rc::default(),
         Rc::default(),
-        automerge::AutoCommit::new(),
+        seeded("ada", invocation),
     );
     settle(&mut host, &mut first);
     second.take();
-    assert_eq!(values(&host), vec![0, 0]);
-
-    // The person's one action wrote both units: a press in each, the two steps composing the
-    // comment a task takes in its discussion and its tasks.
-    for window in [&mut first, &mut second] {
-        let (key, event) = window.increment();
-        window.send(&[ToApp::Fire {
-            lane: Lane::Root,
-            key,
-            event,
-            value: None,
-        }]);
-    }
-    settle(&mut host, &mut first);
-    second.take();
-    assert_eq!(values(&host), vec![1, 1], "both units took the action");
-
-    // The workspace's log knows the action wrote both units, as a commit names them.
-    let action = two_unit_action(
-        cluster,
-        [("a", pressed(&first_sent)), ("b", pressed(&second_sent))],
+    assert_eq!(
+        values(&host),
+        vec![1, 1],
+        "both units hold the action's change"
     );
-    actions.borrow_mut().push(CommitHistory::of(&action));
 
     // One undo, asked at one window: every unit the action wrote takes its step back, and the
     // reverts go out as one action of their own.
@@ -702,13 +709,9 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
         "the undo names both units it reverted"
     );
     assert_eq!(undo_a.parts, undo_b.parts);
-    assert_ne!(undo_a.id(), action.id(), "the undo is an action of its own");
-    assert!(
-        undo_a.invocation.is_some(),
-        "every change of the undo ran under one invocation"
-    );
     assert_ne!(
-        undo_a.invocation, action.invocation,
+        undo_a.invocation,
+        Some(invocation.0),
         "the undo ran under an invocation of its own"
     );
     // The two units reverted through their own live instances: each record holds the undo as its
@@ -719,18 +722,15 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
         .collect();
     assert_eq!(redoable, vec![true, true], "each unit can redo its revert");
 
-    // History reads the action and its undo once each, both naming the two units.
+    // The workspace was handed the undo as one action naming both units it reverted.
     let history = actions.borrow();
-    let of_workspace: Vec<&CommitHistory> = history
-        .iter()
-        .filter(|action| action.workspace == cluster.to_string())
-        .collect();
-    assert_eq!(
-        of_workspace.len(),
-        2,
-        "the action and its undo: {of_workspace:?}"
-    );
-    assert!(of_workspace.iter().all(|action| action.parts.len() == 2));
+    assert!(!history.is_empty(), "the undo reached the workspace");
+    for action in history.iter() {
+        assert_eq!(action.workspace, cluster.to_string());
+        assert_eq!(action.commit, undo_a.id());
+        assert_eq!(action.parts.len(), 2, "the undo names both units");
+    }
+    drop(history);
     let undo = host
         .instances()
         .next()

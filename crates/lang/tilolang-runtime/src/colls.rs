@@ -20,9 +20,9 @@ use crate::meta::FieldKind;
 use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
 use crate::value::{CollRef, Value};
 
-/// What a view saw of one collection: its length, its first and last item, and the item at
-/// each index it read (an item by its id). It still holds after a change when each is still
-/// what it was.
+/// What a view saw of one collection: its length, its first and last item, the item at each
+/// index it read (an item by its id), and the item right before each item it asked for. It
+/// still holds after a change when each is still what it was.
 #[derive(Clone, Debug)]
 pub(crate) struct CollSeen {
     pub coll: Rc<CollRef>,
@@ -36,6 +36,10 @@ pub(crate) struct CollSeen {
     pub first: End,
     pub last: End,
     pub at: Vec<(usize, Rc<str>)>,
+    /// The item read as the one right before each item a view asked for
+    /// ([`crate::host_values::Imp::ListPrevious`]): a row's neighbour, which stays the one it
+    /// saw while the rows ahead of them come and go.
+    before: Vec<(Rc<str>, Option<Rc<str>>)>,
     /// How many items were read one after the other from the first: a loop over the
     /// collection. Once it read them all, the view depends on the whole collection (a read of
     /// its field) and what it reads of it item by item is no longer kept.
@@ -53,6 +57,7 @@ impl CollSeen {
             first: End::Unread,
             last: End::Unread,
             at: Vec::new(),
+            before: Vec::new(),
             sweep: 0,
             whole: false,
         }
@@ -106,6 +111,9 @@ impl CollSeen {
                 .at
                 .iter()
                 .all(|(i, id)| listing.get(*i).as_ref() == Some(id))
+            && self.before.iter().all(|(item, seen)| {
+                matches!(before_in(listing, item), Neighbour::At(now) if now == *seen)
+            })
     }
 
     /// Whether everything seen is still so in the store.
@@ -118,6 +126,7 @@ impl CollSeen {
         if self.whole || other.whole {
             self.whole = true;
             self.at = Vec::new();
+            self.before = Vec::new();
             return;
         }
         self.len = self.len.or(other.len);
@@ -129,6 +138,7 @@ impl CollSeen {
             self.last = other.last;
         }
         self.at.extend(other.at);
+        self.before.extend(other.before);
     }
 }
 
@@ -213,6 +223,25 @@ fn lit_of_value(v: &Value) -> Option<tilolang::pred::Lit> {
     })
 }
 
+/// The item right before `item` in `listing`: a row's neighbour holds while the item before
+/// it is still the one it saw, wherever the rows ahead of them come and go.
+fn before_in(listing: &Listing, item: &str) -> Neighbour {
+    match listing.position(item) {
+        Some(at) => Neighbour::At(
+            at.and_then(|at| at.checked_sub(1))
+                .and_then(|at| listing.get(at)),
+        ),
+        None => Neighbour::Unknown,
+    }
+}
+
+/// What a listing says stands right before an item: the item there, or none where it is the
+/// first or not in the listing. A listing that cannot say where the item stands says nothing.
+enum Neighbour {
+    At(Option<Rc<str>>),
+    Unknown,
+}
+
 /// One read of a collection, recorded as what it saw.
 enum Read {
     Len(usize),
@@ -220,6 +249,7 @@ enum Read {
     First(Option<Rc<str>>),
     Last(Option<Rc<str>>),
     At(usize, Rc<str>),
+    Before(Rc<str>, Option<Rc<str>>),
 }
 
 impl Core {
@@ -287,6 +317,7 @@ impl Core {
                 }
                 seen.at.push((i, id));
             }
+            Read::Before(item, before) => seen.before.push((item, before)),
         }
         // A filtered or ordered collection read whole still depends on what it saw item by
         // item: an item changing whether it is in, or where, is no change to the collection's
@@ -482,6 +513,22 @@ impl Core {
         };
         self.saw(coll, Read::At(index, Rc::clone(&id)), listing.len());
         Ok(self.item_ref(coll, &id))
+    }
+
+    /// The item right before the item at `at` in `coll`, as a row asks for its neighbour: the
+    /// read is what the item before it is, not the place either stood at, so rows after one
+    /// that left keep theirs.
+    pub(crate) fn coll_before(&self, coll: &Rc<CollRef>, at: usize, item: &str) -> HResult<Value> {
+        let listing = self.coll_listing(coll)?;
+        let before = at.checked_sub(1).and_then(|before| listing.get(before));
+        self.saw(
+            coll,
+            Read::Before(Rc::from(item), before.clone()),
+            listing.len(),
+        );
+        Ok(before
+            .as_deref()
+            .map_or_else(Value::none, |id| Value::some(self.item_ref(coll, id))))
     }
 
     /// The first or last item of `coll`, as an option.

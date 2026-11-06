@@ -54,6 +54,10 @@ const MARGIN: f64 = 8.0;
 /// The width of a popover under the bar.
 const POPOVER_WIDTH: f64 = 380.0;
 
+/// The height of a popover under the bar: its footprint, which no page it
+/// shows moves.
+const POPOVER_HEIGHT: f64 = 640.0;
+
 /// A coordinate the stack published stands where this test expects it, to the
 /// pixel the surface is drawn at.
 #[track_caller]
@@ -304,8 +308,8 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
     );
     assert_eq!(focus(&session), "overlay:window-menu");
 
-    // And quick settings under the bar's trailing end: the stack holds both,
-    // the menu over the panel.
+    // And quick settings under the bar's trailing end: one anchored surface
+    // at a time, so the menu goes down for the panel.
     session
         .invoke(
             OVERLAYS,
@@ -314,27 +318,17 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
         )
         .expect("the panel opens");
     session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(slots(&session), ["window-menu", "quick-settings"]);
+    assert_eq!(slots(&session), ["quick-settings"]);
     assert_eq!(
         surface(&session, "quick-settings")["anchor"],
         json!("top-trailing:8")
     );
     assert_eq!(
         focus(&session),
-        "overlay:window-menu",
-        "the top of the stack, not the last one opened"
+        "overlay:quick-settings",
+        "the surface the person just opened holds the keys"
     );
 
-    session
-        .invoke(OVERLAYS, "close", &args(&json!({ "slot": "window-menu" })))
-        .expect("the menu closes");
-    session.step(REFRESH).expect("a turn of the session");
-    assert_eq!(slots(&session), ["quick-settings"]);
-    assert_eq!(
-        focus(&session),
-        "overlay:quick-settings",
-        "the surface it covered takes the keyboard back"
-    );
     session
         .invoke(
             OVERLAYS,
@@ -358,18 +352,37 @@ fn escape_closes_the_topmost_surface_that_answers_it() {
         )
         .expect("the menu opens");
     open(&mut session, "quick-settings", None);
-    assert_eq!(slots(&session), ["window-menu", "quick-settings"]);
+    assert_eq!(
+        slots(&session),
+        ["quick-settings"],
+        "the panel takes the place of the menu"
+    );
 
-    // Escape takes the top one, and only it: a menu closes, the panel under
-    // it stays.
-    tap(&mut session, KEY_ESCAPE);
-    assert_eq!(slots(&session), ["quick-settings"]);
-    assert_eq!(focus(&session), "overlay:quick-settings");
+    // Escape in the panel is the panel's: it goes back a page inside it
+    // before it closes (the shell proves that with the real app). Here the
+    // stack says the menu below went down for it.
+    session
+        .invoke(
+            OVERLAYS,
+            "close",
+            &args(&json!({ "slot": "quick-settings" })),
+        )
+        .expect("the panel closes");
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(slots(&session).is_empty());
+    assert_eq!(focus(&session), "window", "and the window again");
 
-    // Escape again takes the panel: a popup answers Escape, and a press
-    // outside it is not needed.
+    // A menu stands alone, and Escape closes it.
+    session
+        .invoke(
+            WINDOW_MENU,
+            "open",
+            &args(&json!({ "tab": "20", "anchor": "40,50" })),
+        )
+        .expect("the menu opens again");
+    assert_eq!(slots(&session), ["window-menu"]);
     tap(&mut session, KEY_ESCAPE);
-    assert!(slots(&session).is_empty(), "the panel closed");
+    assert!(slots(&session).is_empty(), "the menu closed");
     assert_eq!(focus(&session), "window");
 }
 
@@ -410,13 +423,17 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     near(w, POPOVER_WIDTH, "the stack's width");
     near(
         h,
-        f64::from(HEIGHT) - MARGIN - bar,
-        "down to the margin above the display's edge",
+        POPOVER_HEIGHT,
+        "its footprint, not the rest of the display",
+    );
+    assert!(
+        y + h < f64::from(HEIGHT) - MARGIN,
+        "with the desk it does not cover left below it"
     );
     assert_eq!(
         surface(&session, "quick-settings")["size"],
-        json!({ "width": POPOVER_WIDTH }),
-        "the width is the stack's, the height its room"
+        json!({ "width": POPOVER_WIDTH, "height": POPOVER_HEIGHT }),
+        "the footprint the surface asks for"
     );
 
     // Beside a caret, clear of it.
@@ -427,7 +444,10 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     );
     let (x, y, w, _) = place(&session, "quick-settings");
     near(x, 606.0, "the gap clear of the caret");
-    near(y, 300.0, "level with it");
+    assert!(
+        y <= 300.0,
+        "level with the caret, or raised only as far as its footprint needs: {y}"
+    );
     near(w, POPOVER_WIDTH, "the stack's width");
 
     // With no room on the right of the caret, it opens on the left of it.

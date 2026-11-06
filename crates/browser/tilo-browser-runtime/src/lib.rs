@@ -49,7 +49,7 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 pub fn register_feedback_startup(
     peer: u32,
-    startup: tilo_desktop::feedback::transport::Startup,
+    startup: tilo_feedback_transport::Startup,
 ) -> Result<(), String> {
     feedback_code::register_feedback_startup(peer, startup)
 }
@@ -137,6 +137,17 @@ pub use pinned_roster::{MakePinnedRoster, PinnedRoster, builtin_pinned_roster};
 pub use pinned_roster::{defer_people_overlay, install_people_overlay, people_overlay_load_failed};
 #[cfg(target_arch = "wasm32")]
 mod files;
+// What the page says about a fixed chord it cannot serve: its tests run on
+// the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page answers its chords; the host runs its tests"
+    )
+)]
+mod fixed_chords;
 #[cfg(target_arch = "wasm32")]
 mod frame_metrics;
 #[cfg(target_arch = "wasm32")]

@@ -1846,8 +1846,12 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
     let workspace = workspace_with_members(&[(BOB, Role::Viewer)]);
     let records = TreePath::workspace("r").app("notes").action("append");
     let set_role = roles::governance_action("r", governance::SET_ROLE);
-    let owner_agent = Standing::person(workspace.clone(), ALICE)
-        .with_bound(roles::agent_delegation("r", "scribe", ALICE));
+    let owner_agent = Standing::person(workspace.clone(), ALICE).with_bound(roles::agent_turn(
+        "r",
+        "scribe",
+        ALICE,
+        &[],
+    ));
     assert_eq!(
         owner_agent.answer(&records, ActionKind::Undoable, &cx()),
         Answer::Allow
@@ -1862,7 +1866,7 @@ fn an_agent_delegation_bounds_its_person_by_the_editor_preset() {
         "the owner governs"
     );
     let viewer_agent =
-        Standing::person(workspace, BOB).with_bound(roles::agent_delegation("r", "scribe", BOB));
+        Standing::person(workspace, BOB).with_bound(roles::agent_turn("r", "scribe", BOB, &[]));
     assert_eq!(
         viewer_agent.answer(&records, ActionKind::Undoable, &cx()),
         Answer::Deny

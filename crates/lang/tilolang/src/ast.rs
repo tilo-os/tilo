@@ -121,25 +121,8 @@ pub struct TypeDecl {
     /// (convergence.md, "Outside services"), as the dotted name of one of its kinds.
     pub origin: Option<Ident>,
     pub fields: Vec<FieldDecl>,
-    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives
-    /// from the collection, which no record keeps ([`crate::derived`]).
-    pub derives: Vec<DerivedDecl>,
     /// `search { ... }`: what search, a list's filters and agents offer of the type.
     pub search: Option<SearchBlock>,
-    pub span: Span,
-}
-
-/// `derive folded: Bool = finished and parent.all(folded)` in a type: a key the store derives
-/// from the collection rather than the record keeping it. Code reads it as a field; nothing writes
-/// it, as the store keeps it in step with every change ([`crate::derived`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct DerivedDecl {
-    pub node: NodeId,
-    pub doc: Vec<String>,
-    pub name: Ident,
-    /// The type of the value: `Bool` or `Int`.
-    pub ty: TypeExpr,
-    pub expr: Expr,
     pub span: Span,
 }
 
@@ -307,58 +290,8 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: TypeExpr,
     pub merge: Option<MergeSpec>,
-    /// What the field is to the platform (`(title)`, `(repeats: due)`); see
-    /// [`crate::types::FieldRole`].
-    pub marker: Option<FieldMarker>,
     pub default: Option<Expr>,
     pub span: Span,
-}
-
-/// A field's marker: `(title)`, `(body)`, `(previously)`, `(repeats: due)`,
-/// `(reminds: due, at, who: assignee)` or `(time of: due)`. Its arguments name the type's own
-/// fields.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FieldMarker {
-    pub name: Ident,
-    /// The fields it names, in the order written.
-    pub args: Vec<MarkerArg>,
-    pub span: Span,
-}
-
-impl FieldMarker {
-    /// The marker as the declaration writes it, `repeats: due`, `reminds: due, at, who:
-    /// assignee` or `time of: due`.
-    #[must_use]
-    pub fn text(&self) -> String {
-        if self.args.is_empty() {
-            return self.name.name.clone();
-        }
-        let args: Vec<String> = self.args.iter().map(MarkerArg::text).collect();
-        let named = self.args.iter().all(|a| a.name.is_some());
-        if named {
-            return format!("{} {}", self.name.name, args.join(", "));
-        }
-        format!("{}: {}", self.name.name, args.join(", "))
-    }
-}
-
-/// One field a marker names: `due`, or `who: assignee` where it says what the field is to it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MarkerArg {
-    /// `who` for `who: assignee`; none for a field written bare.
-    pub name: Option<Ident>,
-    pub field: Ident,
-}
-
-impl MarkerArg {
-    /// The argument as the declaration writes it.
-    #[must_use]
-    pub fn text(&self) -> String {
-        match &self.name {
-            Some(name) => format!("{}: {}", name.name, self.field.name),
-            None => self.field.name.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -417,7 +350,7 @@ pub enum ActionRole {
     Destructive,
     /// `migration action`: never offered; the platform runs it once on each resource of its
     /// subject's type that a version before it wrote, as an ordinary action, to bring what that
-    /// version stored to where this one keeps it. Only a migration reads `(previously)` fields.
+    /// version stored to where this one keeps it.
     Migration,
 }
 

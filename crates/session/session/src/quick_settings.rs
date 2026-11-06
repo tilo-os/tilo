@@ -108,6 +108,7 @@ impl crate::Session {
             // the stack's, and nothing here runs to fill it.
             return;
         }
+        self.follow_panel_back();
         let open = self.shared.overlays.is_open(Slot::QuickSettings);
         if !open {
             self.hide_quick_settings();
@@ -115,6 +116,7 @@ impl crate::Session {
             // stay up is tried afresh.
             self.quick_settings_starts = 0;
             self.shared.panel_asks.borrow_mut().clear();
+            self.shared.panel_back.set(None);
             return;
         }
         let Some(place) = self.shared.overlays.place(Slot::QuickSettings) else {
@@ -194,18 +196,58 @@ impl crate::Session {
         // while it runs.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
         for action in asked {
-            if self
-                .ask_surface(
-                    SURFACE,
-                    crate::keys::QUICK_SETTINGS,
-                    action,
-                    tilo_actions::remote::InvokeArgument::None,
-                )
-                .is_none()
-            {
-                tracing::debug!(action, "quick settings was not asked: it does not run");
+            let id = self.ask_surface(
+                SURFACE,
+                crate::keys::QUICK_SETTINGS,
+                action,
+                tilo_actions::remote::InvokeArgument::None,
+            );
+            match (action, id) {
+                ("back", Some(id)) => self.shared.panel_back.set(Some(id)),
+                // A panel that does not run cannot go back: Escape closes
+                // what is open.
+                ("back", None) => self.shared.overlays.close(Slot::QuickSettings),
+                (_, None) => {
+                    tracing::debug!(action, "quick settings was not asked: it does not run");
+                }
+                (_, Some(_)) => {}
             }
         }
+    }
+
+    /// Take what the panel answered when Escape asked it to go back: the
+    /// panel closes from its main page, and says so by having nothing left to
+    /// go back to (`{"handled": false}`).
+    fn follow_panel_back(&self) {
+        let Some(id) = self.shared.panel_back.get() else {
+            return;
+        };
+        let Some(state) = self.surfaces.outcome(id) else {
+            return;
+        };
+        match &state.update {
+            tilo_actions::InvocationUpdate::Accepted { .. }
+            | tilo_actions::InvocationUpdate::Progress { .. }
+            | tilo_actions::InvocationUpdate::Item { .. } => return,
+            tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
+                let handled = output
+                    .value
+                    .as_ref()
+                    .and_then(|value| value.get("handled"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if !handled {
+                    self.shared.overlays.close(Slot::QuickSettings);
+                }
+            }
+            // A panel that could not go back still hears the person's Escape:
+            // it closes.
+            tilo_actions::InvocationUpdate::Failed { .. }
+            | tilo_actions::InvocationUpdate::Cancelled { .. } => {
+                self.shared.overlays.close(Slot::QuickSettings);
+            }
+        }
+        self.shared.panel_back.set(None);
     }
 
     /// Hide the panel: its app keeps running, and opening it again shows the

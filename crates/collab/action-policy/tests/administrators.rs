@@ -136,7 +136,7 @@ fn an_administrator_governs_nothing_from_a_foreign_device_or_through_an_agent() 
     let workspace = workspace(&[(CAROL, Role::Editor)], CAROL);
     let bound = roles::foreign_device_bound();
     let foreign = workspace.person_on_device(CAROL, true, &bound);
-    let delegation = roles::agent_delegation("r", "scribe", CAROL);
+    let delegation = roles::agent_turn("r", "scribe", CAROL, &[]);
     let agent =
         Authority::person(workspace.party(CAROL)).bounded_by(delegation.party(&workspace.grants));
     for action in governance::ALL {

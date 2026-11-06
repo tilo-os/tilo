@@ -89,6 +89,19 @@ fn internal(outputs: &[OutputInfo]) -> Option<&str> {
         .map(|output| output.name.as_str())
 }
 
+/// What a person calls `output`: the panel by its role, a monitor by the
+/// model its EDID names, and a monitor that names none by its role too —
+/// its connector is how the machine knows it, not what a person calls it.
+fn display_name(output: &OutputInfo) -> String {
+    if built_in(&output.name) {
+        t("session-display-builtin")
+    } else if output.label.is_empty() || output.label == output.name {
+        t("session-display-external")
+    } else {
+        output.label.clone()
+    }
+}
+
 /// A display the compositor's outputs put somewhere: its connector, whether it
 /// is on, where it stands in logical `(x, y, w, h)` and the scale it draws at.
 /// What the shell's parts and the panel's readout both read.
@@ -548,11 +561,7 @@ impl Displays {
             .map(|output| Shown {
                 connector: output.name.clone(),
                 monitor: output.monitor.clone(),
-                name: if built_in(&output.name) {
-                    t("session-display-builtin")
-                } else {
-                    output.label.clone()
-                },
+                name: display_name(output),
                 colour: output.colour,
             })
             .collect();
@@ -1032,6 +1041,40 @@ mod tests {
             reading(&displays).displays[1].colour,
             DisplayCapabilities::hdr10_baseline(),
             "the published reading carries it"
+        );
+    }
+
+    #[test]
+    fn a_display_is_named_by_its_model_never_by_its_connector() {
+        let placed = |name: &str, label: &str| OutputInfo {
+            name: name.to_owned(),
+            monitor: name.to_owned(),
+            label: label.to_owned(),
+            enabled: true,
+            rect: Some((0, 0, 1280, 800)),
+            scale: 1.0,
+            description: None,
+            colour: DisplayCapabilities::sdr_default(),
+        };
+        assert_eq!(
+            display_name(&placed("eDP-1", "eDP-1")),
+            t("session-display-builtin"),
+            "the built-in panel is the built-in panel"
+        );
+        assert_eq!(
+            display_name(&placed("HDMI-A-1", "LG ULTRAGEAR+")),
+            "LG ULTRAGEAR+",
+            "a monitor is named by the model it reports"
+        );
+        assert_eq!(
+            display_name(&placed("HDMI-A-1", "HDMI-A-1")),
+            t("session-display-external"),
+            "a monitor that names no model is not named by its connector"
+        );
+        assert_eq!(
+            display_name(&placed("HDMI-A-1", "")),
+            t("session-display-external"),
+            "nor is one that names nothing"
         );
     }
 

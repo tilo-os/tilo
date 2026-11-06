@@ -1,7 +1,7 @@
 app so.tilo.lang.layoutbounded "Bounded" (icon: .layout_grid, category: .utility)
 
 type Sample {
-    name: Text (title)
+    name: Text
 }
 
 root Sample

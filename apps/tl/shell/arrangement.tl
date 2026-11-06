@@ -25,14 +25,14 @@ type Arrangement (origin: session.arrangement) {
 /// A workspace the person's desk shows.
 type ArrangementWorkspace (origin: session.arrangement_workspace) {
     key: Text merge register
-    name: Text merge register (title)
+    name: Text merge register
 }
 
 /// A row of the desk: a strip across a workspace's width, holding columns.
 type ArrangementRow (origin: session.arrangement_row) {
     key: Text merge register
     workspace: Text merge register
-    name: Text merge register (title)
+    name: Text merge register
     /// The shell that made it; empty reads as this shell's.
     shell: Text merge register
 }
@@ -69,7 +69,7 @@ type ArrangementPlace (origin: session.arrangement_place) {
     /// The record it shows, when it shows one.
     record: Text merge register
     /// The title it is shown under.
-    title: Text merge register (title)
+    title: Text merge register
     /// What this place is called, on every surface: its window's title and its app's own name
     /// (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the
     /// window has no title. The session resolves it, so the bar, the chips, the switcher, the

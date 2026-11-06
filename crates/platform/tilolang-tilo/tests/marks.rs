@@ -217,7 +217,7 @@ fn a_field_the_run_changed_takes_its_colour_and_says_what_it_held() {
 const PLACED: &str = r#"app so.tilo.lang.placed "Placed"
 
 type Book {
-    title: Text (title)
+    title: Text
 }
 
 type Shelf {

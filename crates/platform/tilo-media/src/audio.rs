@@ -51,6 +51,11 @@ const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
 /// played, never an output of its own: Sound lists the set instead.
 pub const SPEAKER_GROUP_SINK: &str = "tilo-speaker-group";
 
+/// `node.name` of the software sink a session without sound hardware plays
+/// through. It carries no device's name, so the surfaces that list outputs
+/// name it themselves.
+pub const SESSION_SINK: &str = "tilo-sink";
+
 /// A sink (output) or source (input) device in the audio graph.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioDevice {
@@ -63,7 +68,8 @@ pub struct AudioDevice {
     /// `node.name` — the machine identifier the default-device metadata stores
     /// (e.g. `alsa_output.pci-0000_66_00.6.analog-stereo`).
     pub name: String,
-    /// Human-readable label (`node.description`, falling back to `node.name`).
+    /// Human-readable label (`node.nick`, else `node.description`, else
+    /// `node.name`).
     pub description: String,
     /// Whether this device is the current system default for its class.
     pub is_default: bool,
@@ -496,9 +502,15 @@ fn push_node(
 
     match media_class {
         "Audio/Sink" | "Audio/Source" => {
-            let description = getp("node.description")
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
+            // The short name a device gives itself, else its fuller
+            // description, else its machine name.
+            let description = ["node.nick", "node.description"]
+                .iter()
+                .find_map(|key| {
+                    getp(key)
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                })
                 .unwrap_or(&name)
                 .to_string();
             let default_name = if media_class == "Audio/Sink" {

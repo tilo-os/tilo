@@ -53,6 +53,8 @@ pub(crate) struct KeyContext {
     /// When each display's bar shows over the window covering it, which
     /// Super asks for.
     pub(crate) reveals: Rc<RefCell<tilo_desktop::topbar::Reveals>>,
+    /// What the keys ask the panel's own app, when this device draws it.
+    pub(crate) panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
 
 /// The hardware keys' readout above the apps, and the session's own
@@ -90,6 +92,7 @@ pub(crate) fn mount_controls(
         overlays,
         desk,
         reveals,
+        panel,
     }: KeyContext,
     scale: f64,
     band: Reserved,
@@ -120,7 +123,9 @@ pub(crate) fn mount_controls(
             },
             portal,
             guide,
-            DeskKeys::new(fold, overlays).with_switcher(desk),
+            DeskKeys::new(fold, overlays)
+                .with_switcher(desk)
+                .with_panel(panel),
             displays,
             ControllerKeys {
                 last: controller,

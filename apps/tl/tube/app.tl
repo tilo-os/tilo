@@ -5,7 +5,7 @@ app so.tilo.lang.tube "YouTube" (icon: .film, category: .multimedia)
 /// what the service last answered.
 type Channel (origin: youtube.channel) {
     key: Text merge register
-    name: Text (title)
+    name: Text
     handle: Text
     subscribers: Int
     avatar: Text
@@ -28,7 +28,7 @@ type Channel (origin: youtube.channel) {
 /// and where they left off (the history entry says that).
 type Video (origin: youtube.video) {
     key: Text merge register
-    title: Text (title)
+    title: Text
     channel_key: Text merge register
     channel_name: Text
     channel_avatar: Text
@@ -36,7 +36,7 @@ type Video (origin: youtube.video) {
     published: Time
     /// How long it runs, in seconds.
     duration: Int
-    description: Text (body)
+    description: Text
     likes: Int
     thumbnail: Text
     /// The address its bytes play from, as the service answered: empty until it is asked.
@@ -67,7 +67,7 @@ type Video (origin: youtube.video) {
 /// A playlist: videos in an order its maker chose.
 type Playlist (origin: youtube.playlist) {
     key: Text merge register
-    title: Text (title)
+    title: Text
     channel_key: Text merge register
     channel_name: Text
     video_count: Int
@@ -87,7 +87,7 @@ type Playlist (origin: youtube.playlist) {
 type Subscription {
     /// The channel's key, as the service names it.
     key: Text merge register
-    name: Text (title)
+    name: Text
 
     search {
         sort name a_z
@@ -99,7 +99,7 @@ type Subscription {
 type WatchEntry {
     /// The video's key, as the service names it.
     key: Text merge register
-    title: Text (title)
+    title: Text
     channel_name: Text
     watched: Time
     /// How far in they were, as a share of its length; zero when they watched it to the end.
@@ -117,7 +117,7 @@ type YouTube {
     /// What the client is called. A root with no text of its own is named by the first text it
     /// holds, so without this the client would be called after the first channel it holds: the
     /// fetch actions and the scenarios write it once, and it names the client from then on.
-    title: Text (title) = "YouTube"
+    title: Text = "YouTube"
     channels: Collection<Channel>
     videos: Collection<Video>
     playlists: Collection<Playlist>

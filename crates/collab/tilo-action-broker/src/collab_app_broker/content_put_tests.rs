@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::services::HostServices;
-use crate::test_support::{Grants as _, KindSet, Subject, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Grants as _, KindSet, Role, Subject, WorkspaceSlot, WorkspaceTree};
 
 fn owner_id() -> String {
     "a1".repeat(32)
@@ -111,6 +111,8 @@ fn fixture() -> Fixture {
     workspace.allow_app(Subject::agent("scribe"), "so.tilo.notes", KindSet::ALL);
     workspace.admit_agent("porter", KindSet::READ);
     workspace.allow_app(Subject::agent("porter"), CONTENT_PUT_SCOPE, KindSet::ALL);
+    // A member who edits what is there but adds nothing to the workspace.
+    workspace.admit("ada", Role::Commenter);
     let mut tree = WorkspaceTree::default();
     tree.desktop.workspaces.push(workspace);
     tree.persist_path = Some(home.path().join("state.json"));
@@ -139,10 +141,15 @@ fn owner(workspace: &str) -> Caller {
         .in_new_execution()
 }
 
-fn agent(id: &str, workspace: &str) -> Caller {
-    Caller::local_agent(id)
-        .in_workspace(workspace)
-        .in_new_execution()
+/// An agent inside a turn caused by `person`'s message in `workspace`.
+fn agent(id: &str, person: &str, workspace: &str) -> Caller {
+    Caller::agent_turn(
+        id,
+        person,
+        tilo_action_policy::turn::Turn::new("chat/workspace/channels/1", "m1"),
+    )
+    .in_workspace(workspace)
+    .in_new_execution()
 }
 
 fn reason(error: &ActionHostError) -> &str {
@@ -188,7 +195,7 @@ fn an_agent_allowed_content_uploads_puts_content() {
     let fixture = fixture();
     let mut upload = fixture
         .puts
-        .begin(&agent("porter", &fixture.workspace), 3)
+        .begin(&agent("porter", &owner_id(), &fixture.workspace), 3)
         .unwrap();
     upload.append(0, b"abc").unwrap();
     upload.finish().unwrap();
@@ -252,15 +259,15 @@ fn sizes_the_store_does_not_take_are_refused_before_anything_opens() {
     assert!(fixture.shelf.lock().unwrap().begun.is_empty());
 }
 
-/// An agent that may author only in Notes may not add content to the workspace:
-/// authoring in an app is no authority over the workspace's content store. It is
-/// told the one rule that would let it, and nothing is opened or stored.
+/// An agent inside a turn acts with its person's grants: a member who may not
+/// change what is there hands on no upload either.
+/// It is told the one rule that would let it, and nothing is opened or stored.
 #[test]
-fn an_agent_authoring_only_in_notes_is_refused_a_put_with_the_rule_that_would_allow_it() {
+fn an_agent_in_a_turn_by_a_member_who_may_not_upload_is_refused_with_the_rule() {
     let fixture = fixture();
     let refused = fixture
         .puts
-        .begin(&agent("scribe", &fixture.workspace), 3)
+        .begin(&agent("scribe", "ada", &fixture.workspace), 3)
         .err()
         .unwrap();
     assert_eq!(
@@ -273,13 +280,14 @@ fn an_agent_authoring_only_in_notes_is_refused_a_put_with_the_rule_that_would_al
     assert!(shelf.begun.is_empty() && shelf.stored.is_empty());
 }
 
-/// A caller who is not in the workspace at all stores nothing there.
+/// An agent whose turn was caused by someone who is not in the workspace at
+/// all stores nothing there.
 #[test]
-fn a_caller_outside_the_workspace_is_refused_and_nothing_is_stored() {
+fn an_agent_caused_by_someone_outside_the_workspace_stores_nothing() {
     let fixture = fixture();
     let refused = fixture
         .puts
-        .begin(&agent("stranger", &fixture.workspace), 3)
+        .begin(&agent("stranger", "outsider", &fixture.workspace), 3)
         .err()
         .unwrap();
     assert_eq!(refused, ActionHostError::NotPermitted);
@@ -292,7 +300,7 @@ fn a_caller_outside_the_workspace_is_refused_and_nothing_is_stored() {
 #[test]
 fn a_put_whose_session_ended_before_finish_stores_nothing() {
     let fixture = fixture();
-    let caller = agent("porter", &fixture.workspace);
+    let caller = agent("porter", &owner_id(), &fixture.workspace);
     let mut upload = fixture.puts.begin(&caller, 3).unwrap();
     upload.append(0, b"abc").unwrap();
     caller.retire_execution();

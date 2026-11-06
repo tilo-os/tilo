@@ -129,6 +129,21 @@ fn index_of_is_where_an_item_stands() {
 }
 
 #[test]
+fn at_reads_the_item_at_a_place() {
+    ok("fn f(c: C) -> Option<C> {\n    c.items.at(0)\n}");
+    ok("fn f(c: C) -> Option<C> {\n    c.items.filter(.b).at(2)\n}");
+    ok(
+        "fn f(c: C) -> Bool {\n    if let x = c.items.at(0) {\n        x.t == \"\"\n    } else {\n        false\n    }\n}",
+    );
+    // The place is a whole number, and the item at it may be nothing.
+    expect("E020", "fn f(c: C) -> C {\n    c.items.at(0)\n}");
+    expect(
+        "E020",
+        "fn f(c: C) -> Option<C> {\n    c.items.at(\"0\")\n}",
+    );
+}
+
+#[test]
 fn remove_where_removes_and_counts() {
     ok("action clear(c: C) -> Int {\n    c.items.remove_where(.b)\n}");
     ok("action clear(c: C) -> Int {\n    c.items.remove_where(x -> x.t == \"\")\n}");
@@ -422,7 +437,7 @@ fn an_action_label_reads_its_arguments_where_it_is_applied() {
 
 #[test]
 fn a_slot_of_a_component_takes_a_view_that_is_that_component() {
-    let base = "type Card {\n    title: Text (title)\n}\ntype B {\n    cards: Collection<Card>\n}\nview line(c: Card) {\n    row(c.title)\n}\n";
+    let base = "type Card {\n    title: Text\n}\ntype B {\n    cards: Collection<Card>\n}\nview line(c: Card) {\n    row(c.title)\n}\n";
     let good = format!(
         "{base}view tile(c: Card) {{\n    ui.BoardCard(c) {{\n        line(c)\n    }}\n}}\nview board(b: B) {{\n    ui.Board {{\n        ui.BoardLane(b, title: \"All\") {{\n            for c in b.cards {{\n                tile(c)\n            }}\n        }}\n    }}\n}}"
     );

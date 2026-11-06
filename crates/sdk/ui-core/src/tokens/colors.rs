@@ -120,8 +120,6 @@ pub const SELECTED_LIFT_T: f32 = 1.2;
 /// and this hairline together, and a brighter line read as a frame drawn
 /// around the panel.
 pub const FLOATING_EDGE_MIN_DELTA: f64 = 0.01;
-/// Weight of the focused window's neutral edge over the desktop ground.
-const FOCUSED_WINDOW_EDGE_ALPHA: u8 = 168;
 
 /// Smallest OKLCH lightness step that separates a window region (sidebar,
 /// inspector) from the content ground by tone alone. A region tier closer
@@ -1355,13 +1353,14 @@ impl Colors {
         }
     }
 
-    /// The edge of the window that has keyboard input: the same neutral
-    /// hairline as [`Self::window_edge`], heavier and opaque. Neutral because
-    /// which window has input is state, not you: in your colour it put the
-    /// accent around every focused window all day (HIG 9.4).
+    /// The edge of the window that has keyboard input: [`Self::border_focus`],
+    /// the accent, on the window's own silhouette, a pixel heavier than the
+    /// resting [`Self::window_edge`]. One colour for "the keyboard is here"
+    /// wherever it is shown — a field, a list row, a window — and a weight
+    /// the resting edge does not use, so which window has input reads at a
+    /// glance without a second ring inside it.
     pub fn window_edge_focused(&self) -> Color {
-        let ground = self.surfaces.base;
-        composite(Self::hairline_on(ground, FOCUSED_WINDOW_EDGE_ALPHA), ground)
+        self.border_focus
     }
 
     /// Pick a foreground colour that stays legible on `bg`.

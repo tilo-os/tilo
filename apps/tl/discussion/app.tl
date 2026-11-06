@@ -10,7 +10,7 @@ app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .offi
 /// the thread under a resource draws what is about it there, and leaves it out of `std.linked`
 /// (`said_about`).
 type Comment {
-    text: RichText (body)
+    text: RichText
 }
 
 /// Every comment of the workspace, in the order they were made.
@@ -29,7 +29,11 @@ row view remark for Comment
 /// Says something about the resource the comment is made from: the thread under a task, a note
 /// or a mail says it with `.made_from(r)`, so the comment records what it is about. An agent
 /// says something the same way, its comment its own as any person's is.
-action comment(all: Comments, text: RichText) -> Comment (icon: .message_square, label: "Comment") {
+action comment(all: Comments, text: RichText) -> Comment (
+    icon: .message_square,
+    label: "Comment",
+    did: "commented",
+) {
     require not text.is_empty() "Write a comment first"
     all.items.insert(Comment(text: text))
 }

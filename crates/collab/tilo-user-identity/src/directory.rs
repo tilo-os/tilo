@@ -501,23 +501,6 @@ impl WorkspaceDirectory {
         Ok(())
     }
 
-    /// Replace a workspace's member-device set. Passing an empty
-    /// vec means "no device carries this workspace" — legal but
-    /// unusual.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DirectoryError::Automerge`] if the underlying
-    /// Automerge document operation fails.
-    pub fn set_member_devices(
-        &mut self,
-        id: WorkspaceId,
-        devices: &[[u8; 32]],
-    ) -> Result<(), DirectoryError> {
-        let obj = self.ensure_workspace_obj(id)?;
-        self.replace_pubkey_list(&obj, "members", devices)
-    }
-
     /// Keep workspace `id` off `device`'s desktop, or show it there again.
     /// Each choice is its own key on the workspace entry (no shared
     /// container two devices could create at once), so choices for
@@ -915,7 +898,7 @@ mod tests {
             assert_eq!(ws[1].name, "Work");
         }
 
-        // Phase: set_member_hosts_pin_unpin.
+        // Phase: hosts_pin_unpin.
         {
             let f = fresh_user();
             let (_a_sk, a_pk, _) = enrol_device(
@@ -924,21 +907,17 @@ mod tests {
                 "laptop",
                 DeviceCapabilities::primary(),
             );
-            let (_b_sk, b_pk, _) =
-                enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
             let (_h_sk, h_pk, _) =
                 enrol_device(&f.user_sk, f.user_pk, "server", DeviceCapabilities::host());
 
             let mut dir = WorkspaceDirectory::new(f.user_pk, a_pk);
             dir.add_workspace(9, "Notes").unwrap();
-            dir.set_member_devices(9, &[a_pk, b_pk]).unwrap();
             dir.assign_host(9, h_pk).unwrap();
             dir.pin(9, a_pk).unwrap();
             dir.pin(9, a_pk).unwrap(); // idempotent
 
             let ws = dir.list_workspaces();
             assert_eq!(ws.len(), 1);
-            assert_eq!(ws[0].member_devices, vec![a_pk, b_pk]);
             assert_eq!(ws[0].host_devices, vec![h_pk]);
             assert_eq!(ws[0].pinned_devices, vec![a_pk]);
 

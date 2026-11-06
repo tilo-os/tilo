@@ -1124,6 +1124,13 @@ impl RichTextLine {
         self.stack_measure = None;
     }
 
+    /// The height the line last measured, at whatever width it measured at: what a host that
+    /// stacks lines without a text renderer keeps, where measuring again is not possible, so a
+    /// restack cannot clip content whose height is already known.
+    pub(super) fn last_height(&self) -> Option<f32> {
+        self.stack_measure.map(|measure| measure.height)
+    }
+
     /// Measure the line's content at `width` for a host that stacks lines
     /// itself, remembering the result for [`Self::stacked_height`].
     pub(super) fn measure_stacked(&mut self, width: f32, text_renderer: &mut TextRenderer) -> f32 {

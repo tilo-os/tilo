@@ -105,7 +105,7 @@ fn a_scenario_reads_every_effect_and_declares_none() {
 fn a_filter_searches_by_the_day_it_is() {
     // The day is the query's input, read where the view is drawn: nothing is replayed, so no
     // action declares it.
-    let search = "type Message {\n    subject: Text (title)\n    received: Time\n    due: Date\n    search {\n        filter \"Today\" = due <= today\n    }\n}\n\
+    let search = "type Message {\n    subject: Text\n    received: Time\n    due: Date\n    search {\n        filter \"Today\" = due <= today\n    }\n}\n\
                   action touch(m: Message) {\n    m.received = now\n}\n";
     assert_eq!(codes(search), ["E121"], "the action's own `now` is its");
     let declared = search.replacen(

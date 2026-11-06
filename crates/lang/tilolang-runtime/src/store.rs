@@ -359,6 +359,11 @@ pub struct ChangeNote {
     /// for one action applied to many items at once (`many`), as many as the items.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub count: u32,
+    /// The run this change was made in, with every action it called
+    /// ([`crate::run::Journal::invocation`]): what makes one run's changes one action of the
+    /// workspace, and takes them all back when the run fails anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
 }
 
 fn one() -> u32 {
@@ -1201,6 +1206,25 @@ pub trait Store {
     /// Discard everything the transaction did.
     fn rollback(&mut self, txn: Txn);
 
+    /// A run began: from its first change to its end, everything it writes belongs to `run`,
+    /// and a run that fails anywhere takes all of it back out ([`Store::abort_run`]). The
+    /// changes of one run are kept apart from what is published, so a store that hands what it
+    /// commits straight on keeps them until the run ends.
+    fn begin_run(&mut self, run: &str) {
+        let _ = run;
+    }
+
+    /// The run `run` ended: what it wrote stays, and is published as the one action it is.
+    fn end_run(&mut self, run: &str) {
+        let _ = run;
+    }
+
+    /// The run `run` failed somewhere: take everything it wrote back out, in every document it
+    /// touched, so nothing of it is published and nothing of it stays.
+    fn abort_run(&mut self, run: &str) {
+        let _ = run;
+    }
+
     /// Read a field. Sees the transaction's own uncommitted changes.
     ///
     /// # Errors
@@ -1208,10 +1232,9 @@ pub trait Store {
     /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
 
-    /// The types every loaded package declares, as the runtime loads and reloads them. A store
-    /// that works a derived key out as it reads it ([`crate::derived`]) finds what a key reads
-    /// — the type's fields and the field an item stands under — in them; a store that keeps an
-    /// index is told them when its schema is registered.
+    /// The types every loaded package declares, as the runtime loads and reloads them: the
+    /// fields a record has, which a store that reads a record's links by its type finds in
+    /// them. A store that keeps an index is told them when its schema is registered.
     fn loaded_types(&mut self, types: &[Rc<TypeInfo>]) {
         let _ = types;
     }

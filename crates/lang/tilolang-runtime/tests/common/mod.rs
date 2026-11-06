@@ -532,6 +532,16 @@ pub fn stranger_wasm() -> Vec<u8> {
         .func(&counter_view("v_vs"))
         .func(&twice_action("a_ask"))
         .func(
+            r#"(func (export "a_boom") (param $c i32) (result i64)
+  (local $args i32) (local $a i32)
+  (local.set $args (call $tl_list_new))
+  (call $tl_list_push_h (local.get $args) (local.get $c))
+  (local.set $a (call $tl_act_ref (call $L_inc) (local.get $args)))
+  (drop (call $tl_invoke (local.get $a)))
+  (drop (call $tl_invoke (local.get $a)))
+  unreachable)"#,
+        )
+        .func(
             r#"(func (export "a_m") (param $c i32) (result i32)
   (local $m i32) (local $args i32)
   (local.set $m (call $tl_model_call (call $L_kind) (call $L_input)))
@@ -550,6 +560,7 @@ pub fn stranger_meta() -> Meta {
         "views": [{"id": "vs", "name": "strange", "params": c}],
         "actions": [
             {"id": "ask", "name": "ask", "doc": "", "class": "undoable", "params": c, "result": "Int"},
+            {"id": "boom", "name": "boom", "doc": "", "class": "undoable", "params": c, "result": "Int"},
             {"id": "m", "name": "m", "doc": "", "class": "undoable", "params": c, "result": "Text"},
         ],
     }))

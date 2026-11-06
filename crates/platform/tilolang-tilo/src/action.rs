@@ -78,6 +78,21 @@ pub struct Authorship {
     /// ([`tilolang_runtime::store::ChangeNote::count`]).
     #[serde(default = "one", skip_serializing_if = "crate::action::is_one")]
     pub count: u32,
+    /// The run the change was made in, with every action it called: one name for the whole run,
+    /// which the workspace commits as one action ([`invocation_id`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation: Option<String>,
+}
+
+/// The invocation a run's changes name ([`Authorship::invocation`]) as the workspace writes it:
+/// one id for every change of the run, the caller's and its callees', on whichever device made
+/// it.
+#[must_use]
+pub fn invocation_id(run: &str) -> tilo_actions::InvocationId {
+    tilo_actions::InvocationId(uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        run.as_bytes(),
+    ))
 }
 
 /// The count of a change made over its one subject.

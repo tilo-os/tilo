@@ -3453,14 +3453,6 @@ impl Widget for WindowGroup {
         (!self.is_closing()).then(|| self.active_tab_id())
     }
 
-    /// The window's bar, as a reader hears it: each tab's pill by its title,
-    /// where it is drawn, the window's own controls, and the active tab's
-    /// slots. They hang from the window, which is what the row and the desk
-    /// around it leave room for.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Widget::accessibility(&self.bar)
-    }
-
     /// A node of the bar's, activated: a tab's pill switches to that tab, a
     /// window control does what it shows.
     fn perform_semantic_action(

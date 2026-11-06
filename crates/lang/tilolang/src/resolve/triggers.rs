@@ -126,17 +126,6 @@ impl Resolver<'_> {
                         );
                         continue;
                     }
-                    if field.derived.is_some() {
-                        self.err(
-                            "E133",
-                            named.span,
-                            format!(
-                                "`{}.{}` is derived: `at` reads a field the record holds",
-                                info.key.name, named.name
-                            ),
-                        );
-                        continue;
-                    }
                     TriggerWhen::At(field.id.clone())
                 }
             };

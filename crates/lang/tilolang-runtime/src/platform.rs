@@ -36,22 +36,6 @@ pub(crate) struct Says {
     pub(crate) value: Option<Value>,
 }
 
-/// A shown day with the time of day it holds beside it (`value:time`): the two read as one
-/// fact ("Tomorrow 9:00 AM").
-fn with_time(shown: &Value, at: &str) -> Value {
-    let Value::Tuple(parts) = shown else {
-        return shown.clone();
-    };
-    let [kind, held, _] = parts.as_slice() else {
-        return shown.clone();
-    };
-    Value::Tuple(vec![
-        kind.clone(),
-        held.clone(),
-        Value::Opt(Some(Box::new(Value::Text(at.to_owned())))),
-    ])
-}
-
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -473,9 +457,6 @@ impl Core {
             .borrow()
             .action_package(&v.action)
             .and_then(|pkg| pkg.action(&v.action).cloned());
-        let description = declared
-            .as_ref()
-            .map_or_else(String::new, |a| a.doc.clone());
         // What it did, in the words a sentence goes on with after who did it: the app's own
         // words for the action (`did:`) where it declares them, else what the change itself
         // says (`self.changes_value`), and for one that made or removed the resource, that.
@@ -527,7 +508,6 @@ impl Core {
             Value::Opt(v.from.as_ref().map(|from| Box::new(Value::resource(from)))),
             Value::Bool(mine),
             Value::Text(actor),
-            Value::Text(description),
             Value::Text(did),
             Value::Opt(icon),
             Value::List(changes),
@@ -575,9 +555,7 @@ impl Core {
                 name: param.name.clone(),
                 ty: ty.clone(),
                 kind: crate::meta::FieldKind::Register,
-                role: None,
                 default: None,
-                derived: None,
             };
             let named = field_of_sentence(&param.name);
             // A proposal is read against nothing: as a change that sets the value.
@@ -705,30 +683,10 @@ impl Core {
             };
             held.push((field, side(before)?, side(after)?));
         }
-        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
-        let actor = self.actor(&v.who, mine);
         let mut out = Vec::with_capacity(held.len());
         let mut first = true;
         for (field, before, after) in &held {
-            // A time of day that moved with its day reads with it.
-            if let Some(tilolang::types::FieldRole::TimeOf { date }) = &field.role
-                && held.iter().any(|(other, ..)| &other.name == date)
-            {
-                continue;
-            }
-            // The name the words use: a time of day names its day ("set the due time to").
-            let named = match &field.role {
-                Some(tilolang::types::FieldRole::TimeOf { date }) => field_of_sentence(date),
-                _ => field_of_sentence(&field.name),
-            };
-            let said = crate::did::said(field, &named, before, after);
-            // A day reads with the time of day it holds ("Tomorrow 9:00 AM").
-            let after = match said.shows {
-                crate::did::Shows::After => self
-                    .time_of(of, info, v, &held, field)
-                    .map_or_else(|| after.clone(), |at| with_time(after, &at)),
-                _ => after.clone(),
-            };
+            let said = crate::did::said(field, &field_of_sentence(&field.name), before, after);
             let args: Vec<(String, String)> = said
                 .field
                 .iter()
@@ -739,57 +697,24 @@ impl Core {
                 None => said.source.to_owned(),
             };
             let voices = self.words.borrow().word(said.key, &args, &source);
-            // One sentence for the whole version: who made it opens it, "and" goes on with it.
-            let leading = if first {
-                actor.clone()
+            // One sentence for the whole version: who made it stands once, in the version's own
+            // row, and "and" goes on with what a later change of the same version did.
+            let words = if first {
+                voices
             } else {
-                self.word("tilolang-did-and", "and")
+                format!("{} {voices}", self.word("tilolang-did-and", "and"))
             };
             first = false;
             out.push(Value::Tuple(vec![
                 Value::Text(field.name.clone()),
                 Value::Text(sentence(&field.name)),
                 before.clone(),
-                after,
-                Value::Text(format!("{leading} {voices}")),
+                after.clone(),
+                Value::Text(words),
                 Value::Text(said.shows.word().to_owned()),
             ]));
         }
         Ok(out)
-    }
-
-    /// The time of day the day `field` holds, as the instant it stands at, for a change that
-    /// shows the day: what the change of the time field that is a time of it left, or, where
-    /// the change left that alone, the time it stood at, which is the time it still stands at.
-    fn time_of(
-        &self,
-        of: &ResourceRef,
-        info: &crate::registry::TypeInfo,
-        v: &crate::store::Version,
-        held: &[(&crate::registry::FieldInfo, Value, Value)],
-        field: &crate::registry::FieldInfo,
-    ) -> Option<String> {
-        let time = info.fields.iter().find(|f| {
-            matches!(&f.role, Some(tilolang::types::FieldRole::TimeOf { date }) if *date == field.name)
-        })?;
-        let shown = if let Some((_, _, after)) = held.iter().find(|(other, ..)| other.id == time.id)
-        {
-            after.clone()
-        } else {
-            let spec = crate::store::FieldSpec {
-                id: time.id.clone(),
-                kind: time.kind,
-            };
-            let stood = self.store.borrow().read_before(of, &spec, &v.change).ok()?;
-            let value = self.field_value(of, time, stood, None).ok()?;
-            self.change_shown(&time.ty, &value).ok()?
-        };
-        match shown {
-            Value::Tuple(parts) if parts.first().and_then(Value::as_text) == Some("time") => {
-                parts.get(1).and_then(Value::as_text).map(str::to_owned)
-            }
-            _ => None,
-        }
     }
 
     /// The platform's words for `key`, in the reader's language; `source` where no catalogue
@@ -1642,33 +1567,26 @@ impl Core {
             .word(&key, &[("count".to_owned(), count.to_string())], source)
     }
 
-    /// The title of `target`: its field marked `title`, when it holds more than spaces; else,
-    /// for a type without one, the first line of its field marked `body` (a message is called
-    /// by what it says, rich text as its reader reads it); else, for a root of its package, the
-    /// package's title; else its type's name.
+    /// The title of `target`: the first line its first text field holds, when it holds more
+    /// than spaces (a record is named by what it says, rich text as its reader reads it); else,
+    /// for a root of its package, the package's title; else its type's name.
     pub(crate) fn title_of(
         &self,
         target: &ResourceRef,
         meta: &Meta,
         ty: &TypeMeta,
     ) -> HResult<String> {
-        let role = |name: &str| {
-            ty.fields
-                .iter()
-                .find(|field| field.role.as_ref().is_some_and(|role| role.word() == name))
-        };
-        let titled = role("title").map(|field| (field, false));
-        if let Some((field, body)) = titled.or_else(|| role("body").map(|field| (field, true))) {
-            let (_, info) = self.lookup_field(target, &field.id)?;
+        let (_, info) = self.type_of_ref(&target.ty)?;
+        if let Some(name) = info.name_field() {
+            let field = name.clone();
             self.note_reads([(target.id_string(), field.id.clone())]);
-            let value = self.read_value(target, &info, None)?;
+            let value = self.read_value(target, &field, None)?;
             let text = match value {
-                Value::Text(text) if body => text
+                Value::Text(text) => text
                     .lines()
                     .find(|line| !line.trim().is_empty())
                     .unwrap_or_default()
                     .to_owned(),
-                Value::Text(text) => text,
                 Value::Rich(rich) => self.read_rich(&rich, true),
                 _ => String::new(),
             };
@@ -1867,12 +1785,10 @@ impl Core {
             .iter()
             .enumerate()
             .find(|(_, ty)| ty.name == made.name)?;
-        let title = ty.fields.iter().find(|field| {
-            field
-                .role
-                .as_ref()
-                .is_some_and(|role| role.word() == "title")
-        })?;
+        let title = ty
+            .fields
+            .iter()
+            .find(|field| matches!(field.ty.trim(), "Text" | "RichText" | "std.RichText"))?;
         let root = action.params.first().and_then(|param| {
             meta.roots
                 .iter()

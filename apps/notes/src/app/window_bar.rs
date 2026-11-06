@@ -17,7 +17,6 @@ use super::NotesApp;
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum BarCommand {
     NewNote,
-    NoteActions,
 }
 
 impl NotesApp {
@@ -50,15 +49,10 @@ impl NotesApp {
                 BarCommand::NewNote,
             )
         });
-        // The note's actions are offered only for a note: a menu that acts on
-        // nothing is a second "…" beside the bar's own that does nothing.
-        let note_actions = title.map(|_| {
-            bar.entry(
-                "more-horizontal",
-                ui::i18n!("notes-affordance-note-actions"),
-                BarCommand::NoteActions,
-            )
-        });
+        // The note's actions are declared for a note only: a menu that acts
+        // on nothing has no place in the bar's own. They are rows of the
+        // window's one "More" menu, so a note shows one "…" and not two.
+        let note_actions = title.map(|_| crate::sidebar::note_menu_commands());
         WindowToolbar {
             sidebar: Some(sidebar_open),
             navigation: None,
@@ -70,7 +64,10 @@ impl NotesApp {
                 // record's save.
                 ..ToolbarLocation::default()
             }),
-            actions: new_note.into_iter().chain(note_actions).collect(),
+            actions: new_note
+                .into_iter()
+                .chain(note_actions.into_iter().flatten())
+                .collect(),
             ..WindowToolbar::default()
         }
     }
@@ -130,8 +127,15 @@ impl NotesApp {
             match (&event, self.bar.pressed(&event)) {
                 (ToolbarEvent::ToggleSidebar, _) => self.shell.toggle_sidebar(),
                 (_, Some(BarCommand::NewNote)) if adds => header.new_note.set(true),
-                (_, Some(BarCommand::NoteActions)) => header.note_menu.set(true),
-                (ToolbarEvent::Action { .. }, _) => {}
+                // The bar holds the note's commands too, as rows of the
+                // window's "More" menu: a row chosen there runs the command
+                // the page menu's row runs, on the note that is open.
+                (ToolbarEvent::Action { id, .. }, _) => {
+                    let Some(row) = crate::sidebar::note_command_row(id) else {
+                        continue;
+                    };
+                    self.apply_note_action(row);
+                }
                 _ => continue,
             }
             changed = true;
@@ -209,36 +213,50 @@ mod tests {
         ui::widget::find_test_id(&*app.shell, crate::app::NEW_NOTE_BUTTON_ID).is_some()
     }
 
-    /// The actions the bar holds, by name.
-    fn bar_actions(app: &mut TestApp<crate::NotesShell>) -> Vec<String> {
+    /// The actions the bar declares, by name and whether they are rows of the
+    /// bar's own "More" menu.
+    fn bar_actions(app: &mut TestApp<crate::NotesShell>) -> Vec<(String, bool)> {
         app.settle();
         ui::window_toolbar::declared()
             .expect("the note's slots are declared")
             .actions
             .iter()
-            .map(|action| action.name.clone())
+            .map(|action| (action.name.clone(), action.menu))
             .collect()
     }
 
-    /// The note's actions stand in the bar only for a note: with none open the
-    /// bar's own "…" is the window's, alone, not one dead "…" beside it.
+    /// The note's commands are rows of the window's one "More" menu, and are
+    /// declared only while a note is open: a note never gets a second "…" of
+    /// its own beside the window's.
     #[test]
     fn the_bar_offers_the_notes_actions_only_for_a_note() {
         ui::i18n::I18nManager::init("en-US");
         let mut empty = notes_at("first_note", (1280, 800));
         assert_eq!(
             bar_actions(&mut empty),
-            vec![ui::i18n!("notes-affordance-new-note")],
+            vec![(ui::i18n!("notes-affordance-new-note"), false)],
             "an empty notebook offers New note and no note actions"
         );
         let mut open = notes_at("table", (1280, 800));
+        let actions = bar_actions(&mut open);
         assert_eq!(
-            bar_actions(&mut open),
+            actions.first().cloned(),
+            Some((ui::i18n!("notes-affordance-new-note"), false)),
+            "New note stands in the row, before the menu's rows"
+        );
+        let rows: Vec<(String, bool)> = actions[1..].to_vec();
+        assert_eq!(
+            rows,
             vec![
-                ui::i18n!("notes-affordance-new-note"),
-                ui::i18n!("notes-affordance-note-actions")
+                (ui::i18n!("notes-menu-new-child"), true),
+                (ui::i18n!("notes-menu-rename"), true),
+                (ui::i18n!("notes-menu-duplicate"), true),
+                (ui::i18n!("notes-menu-copy-link"), true),
+                (ui::i18n!("notes-menu-export"), true),
+                (ui::i18n!("notes-menu-insert-image"), true),
+                (ui::i18n!("notes-menu-delete"), true),
             ],
-            "an open note offers its actions beside New note"
+            "an open note's commands are the rows of the window's More menu"
         );
     }
 

@@ -68,16 +68,28 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
 - **Blocks.** `Runtime::run_block(principal, &CompiledBlock)` registers the block's module and
   returns a rendered view, an invocation (so a block's action asks unless its module is trusted) or
   a value.
-- **Every call is a change of its own.** An action that calls another action, its own package's
-  or another one's, calls it at its door: the callee's change is committed and attributed before
-  the caller commits, and a call that Asks suspends the caller too. Storage cannot commit across
-  apps — the callee may be another app's, whose change another origin holds — so one commit
-  cannot cover the calls. `many` applies one action to many items as one change, so it refuses
-  an action that calls another: that action makes a change per call.
-- **The caller's writes before a call are committed first.** When a run stops to make a call,
-  what it wrote until then is committed as a change of its own, so a call on a record the caller
-  made in the same action reads it, and the call's change stands on it. Its writes after the
-  call are its next change. A run that has written nothing commits nothing.
+- **One run is one action of the workspace.** An action and every action it calls are one commit.
+  The run at the top of the calls names the invocation, and every change the run makes — the
+  caller's and each callee's — carries that one name ([`Journal::invocation`],
+  [`ChangeNote::invocation`]), so the workspace commits them as one action: a peer applies all of
+  it or none. A callee is still entered at its own door, under its own authority and with the
+  caller's chain, and its change stays attributed to it inside the one commit. When a run stops
+  to make a call, what it wrote until then is committed as a change of its own, so a call on a
+  record the caller made in the same action reads it, and the call's change stands on it — but
+  the run's changes stay out of the workspace until it ends ([`Store::begin_run`],
+  [`Store::end_run`]).
+- **A failure anywhere in the run takes all of it back.** The run's changes are held, not
+  published, until it ends; a failure anywhere in it — the root's or a call's — hands them back
+  to the store, which puts every document it wrote back as it was before the run's first change
+  and drops what it queued ([`Store::abort_run`]). Nothing of a failed run is published, and
+  nothing of it stays: an action that called two others and then trapped leaves nothing behind.
+  A run that has written nothing commits nothing.
+- **A call that waits for someone's approval splits the run there.** The writes before the wait
+  end the run and are published as its action; the answer starts a new invocation, and what the
+  action does after the approval is a second action. What the person approved is what they were
+  asked about, and a decline leaves the run's first part standing.
+- **`many`** applies one action to many items as one change, so it refuses an action that calls
+  another: that action makes a change per call.
 - **Journaled reads and writes.** A run journals every read of a resource and map, every write,
   and the ids it gives the items it inserts; a replay returns the journaled values and applies
   no write again. This closes the earlier v1 deviation: a replayed run takes the branches it

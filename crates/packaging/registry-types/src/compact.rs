@@ -15,9 +15,9 @@
 //! its rollback or fork checks.
 //!
 //! Both forms, the version indexes and the channel authorizations are part
-//! of the Store package format and carry its one version,
+//! of the Store package format and carry its version,
 //! [`crate::PACKAGE_FORMAT_VERSION`], in their `protocol` field; a reader
-//! accepts that number only.
+//! accepts every format in [`crate::READABLE_CATALOGUE_FORMATS`].
 
 use std::collections::HashSet;
 
@@ -105,8 +105,8 @@ pub enum VersionIndexError {
     Hash,
     #[error("version index is not JSON of the expected shape: {0}")]
     Decode(String),
-    #[error("unsupported version index protocol")]
-    Protocol,
+    #[error("version index: {}", crate::unreadable_catalogue_format(*.served))]
+    Protocol { served: u32 },
     #[error("version index belongs to {found}, not {expected}")]
     WrongEntry { expected: String, found: String },
     #[error("version index entry has an invalid publisher signature")]
@@ -269,7 +269,7 @@ pub fn verify_compact_snapshot(
     pinned_owner_pubkey_hex: &str,
     now_unix: u64,
 ) -> Result<(), SnapshotError> {
-    if snapshot.protocol != PACKAGE_FORMAT_VERSION {
+    if !crate::READABLE_CATALOGUE_FORMATS.contains(&snapshot.protocol) {
         return Err(SnapshotError::Protocol {
             served: snapshot.protocol,
         });
@@ -327,8 +327,10 @@ pub fn verify_version_index(
     }
     let index: RegistryVersionIndex = serde_json::from_slice(bytes)
         .map_err(|error| VersionIndexError::Decode(error.to_string()))?;
-    if index.protocol != PACKAGE_FORMAT_VERSION {
-        return Err(VersionIndexError::Protocol);
+    if !crate::READABLE_CATALOGUE_FORMATS.contains(&index.protocol) {
+        return Err(VersionIndexError::Protocol {
+            served: index.protocol,
+        });
     }
     let full = index.entry;
     if full.package_id != compact.entry.package_id {

@@ -24,7 +24,8 @@ use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
-use tilo_desktop::desk_verbs::{DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
+use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
+use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use wayland_client::protocol::{
@@ -39,6 +40,11 @@ use wayland_protocols::xdg::shell::client::{
 
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
+
+/// The colour the compositor paints the test windows' pixels, read back as
+/// RGBA, and the same colour as the bytes of an `ARGB8888` buffer hold them.
+const WINDOW: [u8; 3] = [40, 40, 200];
+const WINDOW_BYTES: [u8; 4] = [200, 40, 40, 255];
 
 /// What one toplevel was told.
 #[derive(Default)]
@@ -125,7 +131,7 @@ impl TestClient {
         let fd =
             rustix::fs::memfd_create("tilo-session-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
         let mut file = std::fs::File::from(fd);
-        file.write_all(&[40, 40, 200, 255].repeat(len / 4)).unwrap();
+        file.write_all(&WINDOW_BYTES.repeat(len / 4)).unwrap();
         let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
             file.as_fd(),
             stride * height,
@@ -306,11 +312,180 @@ fn focus_display(session: &mut Session, client: &mut TestClient, index: usize) {
     );
 }
 
+/// The strip each display shows, by display id.
+fn shown_strips(session: &Session) -> Vec<(u32, String)> {
+    session.desktop().with_policy(|policy| {
+        policy.handle().read(|tree| {
+            tree.outputs
+                .displays
+                .iter()
+                .map(|display| {
+                    let strip = tree.strip_shown_on(display.id);
+                    (display.id, format!("{strip:?}"))
+                })
+                .collect()
+        })
+    })
+}
+
+/// Each strip group's width as the model holds it, with the display it lives
+/// on and the window it shows: a display's windows keep their width whatever
+/// opens on another.
+fn widths(session: &Session) -> Vec<(u32, WindowWidth, Option<String>)> {
+    session.desktop().with_policy(|policy| {
+        policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .map(|group| {
+                    (
+                        tree.outputs.display_of(group.id).unwrap_or(u32::MAX),
+                        group.width,
+                        group.tabs.first().map(|tab| tab.title.clone()),
+                    )
+                })
+                .collect()
+        })
+    })
+}
+
 fn focused(session: &mut Session) -> Option<String> {
     session
         .compositor()
         .focused_window()
         .and_then(|info| info.app_id)
+}
+
+/// How many pixels of `output` show the test windows' colour: what a person
+/// sees of the windows on that display.
+fn painted(session: &mut Session, output: &str) -> usize {
+    session
+        .compositor()
+        .screenshot(output)
+        .expect("a frame")
+        .rgba
+        .chunks_exact(4)
+        .filter(|pixel| pixel[..3] == WINDOW)
+        .count()
+}
+
+/// Each display keeps the strip it shows: making another strip and stepping
+/// strips moves the focused display's own strip, and the other display keeps
+/// its strip and its windows throughout.
+#[test]
+fn each_display_keeps_the_strip_it_shows() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Left");
+    focus_display(&mut session, &mut client, 1);
+    tab(&mut session, &mut client, "org.example.Right");
+    pump(&mut session, &mut client, |session, _| {
+        painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
+    });
+
+    // The person works on the left display: the new strip shows there, and
+    // the right display keeps the strip it shows, window and all.
+    focus_display(&mut session, &mut client, 0);
+    invoke(
+        &mut session,
+        &mut client,
+        CHROME_RESOURCE,
+        "new-strip",
+        serde_json::json!({}),
+    );
+    for _ in 0..60 {
+        client.exchange();
+        session.step(Duration::from_millis(16)).unwrap();
+    }
+    let shown = shown_strips(&session);
+    assert_ne!(
+        shown[0].1, shown[1].1,
+        "the left display took the new strip and the right kept its own: {shown:?}"
+    );
+    pump(&mut session, &mut client, |session, _| {
+        painted(session, "HEADLESS-1") == 0 && painted(session, "HEADLESS-2") > 0
+    });
+
+    // Back to the strip the left display showed, its window is there again.
+    invoke(
+        &mut session,
+        &mut client,
+        CHROME_RESOURCE,
+        "step-strip",
+        serde_json::json!({"steps": -1}),
+    );
+    pump(&mut session, &mut client, |session, _| {
+        painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
+    });
+
+    // The person goes on to the right display and steps on there: that
+    // display moves to the other strip, the left one stays where it is.
+    focus_display(&mut session, &mut client, 1);
+    invoke(
+        &mut session,
+        &mut client,
+        CHROME_RESOURCE,
+        "step-strip",
+        serde_json::json!({"steps": 1}),
+    );
+    pump(&mut session, &mut client, |session, _| {
+        painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") == 0
+    });
+
+    // And back, each display with its window.
+    invoke(
+        &mut session,
+        &mut client,
+        CHROME_RESOURCE,
+        "step-strip",
+        serde_json::json!({"steps": -1}),
+    );
+    pump(&mut session, &mut client, |session, _| {
+        painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
+    });
+    assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
+}
+
+/// A window opening on one display leaves the windows of the other display
+/// the size they are: two displays are two strips' worth of room, so nothing
+/// is shared across the seam.
+#[test]
+fn a_window_opening_beside_one_display_leaves_the_other_alone() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Left");
+    pump(&mut session, &mut client, |session, _| {
+        display_of(session, "org.example.Left") == Some(0)
+    });
+    let alone = rect(&mut session, "org.example.Left");
+    let width = widths(&session);
+    assert!(
+        painted(&mut session, "HEADLESS-1") > 0,
+        "the left display shows its window"
+    );
+
+    focus_display(&mut session, &mut client, 1);
+    tab(&mut session, &mut client, "org.example.Right");
+    pump(&mut session, &mut client, |session, _| {
+        display_of(session, "org.example.Right") == Some(1)
+    });
+    assert_eq!(
+        widths(&session).first(),
+        width.first(),
+        "the left display's window keeps the width it is given"
+    );
+    assert_eq!(
+        rect(&mut session, "org.example.Left"),
+        alone,
+        "and the place and size a person sees it at"
+    );
+    assert!(
+        painted(&mut session, "HEADLESS-2") > 0,
+        "the window that opened shows on its own display"
+    );
 }
 
 #[test]
@@ -339,6 +514,37 @@ fn new_windows_open_on_the_display_with_focus() {
         "the first window stays on its display"
     );
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
+}
+
+/// The displays' own arrangement action moves the pictures: mirrored, the
+/// display beside the one with the window shows that window too.
+#[test]
+fn an_arrangement_action_mirrors_the_other_display() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = docked();
+    let mut client = client(&mut session);
+    tab(&mut session, &mut client, "org.example.Left");
+    assert_eq!(
+        painted(&mut session, "HEADLESS-2"),
+        0,
+        "the display beside the window shows nothing yet"
+    );
+
+    invoke(
+        &mut session,
+        &mut client,
+        tilo_session::displays::RESOURCE,
+        "set-mode",
+        serde_json::json!({"mode": "mirror"}),
+    );
+    pump(&mut session, &mut client, |session, _| {
+        painted(session, "HEADLESS-2") > 0
+    });
+    assert_eq!(
+        painted(&mut session, "HEADLESS-2"),
+        painted(&mut session, "HEADLESS-1"),
+        "a mirror shows both displays the same picture"
+    );
 }
 
 #[test]

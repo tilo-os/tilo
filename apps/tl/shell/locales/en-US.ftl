@@ -955,6 +955,7 @@ d-dpqvjh2f = Launcher
     .w-recent-windows = Recent windows
     .w-nothing-here-matches = Nothing here matches
     .w-search-everywhere-for-it = Search everywhere for it
+    .w-open-as-a-tab = Open as a tab
     .w-search-everywhere-for = Search everywhere for { $query }
 
 d-tst43bqy = Window row

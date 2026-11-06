@@ -2447,6 +2447,10 @@ impl Mount {
             key,
             full_redraw,
         );
+        #[cfg(debug_assertions)]
+        {
+            gpu.retained.repainted = Some(format!("{repaint:?}"));
+        }
         ui::gpu::submit_target_to_surface(
             &handle.device,
             &handle.queue,
