@@ -1019,9 +1019,6 @@ impl Printer<'_> {
                             t.name.name, origin.name
                         ));
                     }
-                    None if t.attached => {
-                        self.line(&format!("type {} (attached) {{", t.name.name));
-                    }
                     None => self.line(&format!("type {} {{", t.name.name)),
                 }
                 self.level += 1;

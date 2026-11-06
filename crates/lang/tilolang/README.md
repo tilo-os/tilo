@@ -279,10 +279,9 @@ of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 `.mention` for one whose rich text names it. It is read from the index, at the cost of what links to `r` and not of the
 workspace's size, and a view that reads it runs again when what links to `r` changes.
 
-A type declared `(attached)` says what its records are to the rest of the workspace: about
-what they were made from, not work made from it, as a comment is about the task it discusses.
-`linked` leaves them out, since the view that draws what they are about draws them all, and a
-record made from `r` is a change to `r` for whoever made or read it, as any edit is.
+What a type's records are to a resource is the page's to show: a comment is about what it
+was made from, and the thread under that resource draws every comment about it, so a page that
+draws a thread says what it draws itself (`std.linked(t, without: discussion.said_about(t))`).
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`

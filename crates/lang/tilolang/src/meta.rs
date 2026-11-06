@@ -341,10 +341,6 @@ pub struct TypeMeta {
     /// which the system keeps in step with the service (`crate::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
-    /// `(attached)`: its records are about the resource they were made from, a comment on a
-    /// task, so `linked` tells them apart from work made from it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub attached: bool,
 }
 
 /// What search, a list's filters and agents offer of a type (search.md, "What a type declares"):

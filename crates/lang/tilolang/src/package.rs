@@ -663,7 +663,6 @@ fn build_meta(
                     fields,
                     search: info.search.clone(),
                     origin: info.origin.clone(),
-                    attached: t.attached,
                 });
             }
             Item::Action(a) => {

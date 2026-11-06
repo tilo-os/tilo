@@ -555,7 +555,6 @@ impl Reader<'_> {
                     fields,
                     search: SearchMeta::default(),
                     origin: None,
-                    attached: false,
                 });
             }
         }
@@ -589,7 +588,6 @@ impl Reader<'_> {
             fields,
             search: SearchMeta::default(),
             origin: None,
-            attached: false,
         });
     }
 

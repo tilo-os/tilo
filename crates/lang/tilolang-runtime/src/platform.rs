@@ -1648,7 +1648,6 @@ impl Core {
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Bool(meta.default_view(ty).is_some()),
             Value::Bool(meta.row_view(ty).is_some()),
-            Value::Bool(declared.attached),
         ]))
     }
 
