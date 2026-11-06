@@ -106,8 +106,8 @@ pub use claim::{
     claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
 };
 pub use commit::{
-    COMMIT_RECORD_KIND, COMMIT_VERSION, CommitAction, CommitAuthor, CommitError, CommitField,
-    CommitGroup, CommitPart, CommitResource, MAX_COMMIT_BYTES, UnitMutation, WorkspaceCommit,
+    COMMIT_RECORD_KIND, COMMIT_VERSION, COMMIT_VERSION_NAMED_ACTION, CommitAuthor, CommitError,
+    CommitGroup, CommitPart, MAX_COMMIT_BYTES, UnitMutation, WorkspaceCommit,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,

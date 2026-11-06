@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(action.parts.len(), 2, "the commit names both of its units");
         assert!(action.covers("so.tilo.test-tasks", ""));
         assert!(action.covers("so.tilo.test-discussion", "thread"));
-        assert_eq!(action.action.invocation, Some(invocation));
+        assert_eq!(action.invocation, Some(invocation));
         assert_eq!(action.author.principal.as_deref(), Some("alice"));
         assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
         assert_eq!(

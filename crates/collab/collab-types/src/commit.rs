@@ -6,43 +6,40 @@
 //! parent's reference to it), and publishing each unit on its own lets a peer
 //! see half an action and leaves history without a name for the whole of it.
 //!
-//! A [`WorkspaceCommit`] is that name. It lists every part of the action —
-//! the unit it wrote (app and record), and the hash of each change it made in
-//! that unit — under one author, one time and one action name with its
-//! invocation id. A part's document frame carries the commit inside its
-//! signed payload ([`WorkspaceCommit::frame`]), so the device signature over
-//! that payload signs the commit, and a receiver reads it off the envelope
-//! that delivered the part ([`WorkspaceCommit::of_envelope`]).
+//! A [`WorkspaceCommit`] is that name. It lists every unit the action wrote —
+//! the app and record, and the hash of each change it made there — under one
+//! author, one time, and the invocation and run it was made in. A part's
+//! document frame carries the commit inside its signed payload
+//! ([`WorkspaceCommit::frame`]), so the device signature over that payload
+//! signs the commit, and a receiver reads it off the envelope that delivered
+//! the part ([`WorkspaceCommit::of_envelope`]).
+//!
+//! The commit groups; it does not describe. Every change it names carries the
+//! action that made it in its own history entry ([`tilo_actions::ActionContext`]):
+//! that entry is what a grant is checked against, what replay verifies, and
+//! what undo re-runs. The commit duplicates none of it — where the changes are,
+//! so are the action's name, its resources, and the fields it wrote.
 //!
 //! The commit is a record kind of its own ([`COMMIT_RECORD_KIND`], version
 //! [`COMMIT_VERSION`]), so a host can store it beside the units it names. The
 //! units, their channels and their seals keep their names: only the frame
 //! around a document frame is new, and a frame without one is read exactly as
-//! before.
-//!
-//! Version 2 carries what history and undo read of an action: the action id
-//! and type it was invoked as, the run it belongs to, and, for every unit it
-//! wrote, each resource and field it touched with the value before and after
-//! when the change's own entry records them ([`CommitField`]). Where an entry
-//! carries no value (an action that wrote a resource as a whole, a
-//! continuation keystroke), the part's change hashes are the exact reference
-//! the values read from: the change is in the unit and in the document the
-//! log points at. Version 1 commits still decode (they carry the action's
-//! name, item and invocation only), so a log written before this version
-//! reads as it did.
+//! before. Version 1 commits still decode (they carried the action's name, item
+//! and invocation); version 2 dropped the name and item for the invocation and
+//! run alone.
 
 use serde::{Deserialize, Serialize};
 
 use crate::SignedOp;
-use crate::claim::{self, ChangeClaim};
+use crate::claim;
 use crate::op::DocumentMutation;
 
 /// The record kind of a workspace commit.
 pub const COMMIT_RECORD_KIND: &str = "tilo.workspace.commit";
 /// Version of the commit object; a receiver refuses one it does not know.
 pub const COMMIT_VERSION: u16 = 2;
-/// The commit version before a commit named the action it was invoked as:
-/// read, never written.
+/// The commit version before a commit was grouping alone: it named the
+/// action's name and item. Read, never written.
 pub const COMMIT_VERSION_NAMED_ACTION: u16 = 1;
 /// Prefix of a document frame that carries an action's commit: the commit's
 /// byte length, the commit, then the document frame it belongs to.
@@ -66,32 +63,6 @@ pub struct CommitAuthor {
     pub device: [u8; 32],
 }
 
-/// What an action did, as history names it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommitAction {
-    /// The action's name in the app that made it, as its history entry
-    /// names it (one name, or a group's names joined by `, `). Empty for a
-    /// change the framework made.
-    pub name: String,
-    /// The item inside its resource the action addressed, when it named one.
-    pub item: Option<String>,
-    /// The invocation the action ran under, when an admitted door ran it.
-    pub invocation: Option<uuid::Uuid>,
-    /// The action id in the app that made it, as its entry keys it
-    /// (`app/kind/action`): what history labels an entry with and draws its
-    /// icon from. Empty when the entry names no action (a framework change)
-    /// or the entry cannot be keyed.
-    pub id: String,
-    /// The registry type the invoked action was encoded under (`tl.action`),
-    /// empty when the change carries no encoded action.
-    pub ty: String,
-    /// The run the action was invoked in, when it was invoked in one: an
-    /// agent run, a task, a command line. Undo takes a run's steps back as
-    /// one.
-    pub group: Option<CommitGroup>,
-}
-
 /// A run a group of actions belongs to: what every change of one agent run,
 /// one task or one command line shares.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,41 +76,8 @@ pub struct CommitGroup {
     pub kind: String,
 }
 
-/// One resource a change touched, and the fields of it the change wrote.
-///
-/// A resource an action wrote as a whole — created, removed, moved, an item
-/// inserted — names no field: the value it became is the change, which this
-/// entry's part names by hash. [`CommitField::before`] and
-/// [`CommitField::after`] hold the value of a field edit whose entry records
-/// it; a field edit an entry records without values (a continuation
-/// keystroke's splice) names the field alone, and the part's change has the
-/// values.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommitResource {
-    /// The resource's id in its record.
-    pub resource: String,
-    /// The item of the resource the change addressed, when it named one.
-    pub item: Option<String>,
-    /// The fields it wrote, with the values the entry recorded.
-    pub fields: Vec<CommitField>,
-}
-
-/// One field a change wrote, with its value before and after as JSON text
-/// when the change's entry records them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommitField {
-    /// The field's storage key (`title`, `done`).
-    pub field: String,
-    /// Its value before, as JSON text, when the entry records one.
-    pub before: Option<String>,
-    /// Its value after, as JSON text, when the entry records one.
-    pub after: Option<String>,
-}
-
-/// One unit an action wrote: which app's record, the hashes of the changes
-/// it made there, and the resources those changes touched.
+/// One unit an action wrote: which app's record, and the hashes of the
+/// changes it made there.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CommitPart {
@@ -151,9 +89,6 @@ pub struct CommitPart {
     /// The hash of every change the action made in this unit, in the order it
     /// made them.
     pub changes: Vec<[u8; 32]>,
-    /// Every resource the changes touched, each once, in the order they name
-    /// them: what a resource's history is looked up by.
-    pub resources: Vec<CommitResource>,
 }
 
 impl CommitPart {
@@ -161,14 +96,6 @@ impl CommitPart {
     #[must_use]
     pub fn is(&self, app: &str, record: &str) -> bool {
         self.app == app && self.record == record
-    }
-
-    /// What the action did to `resource` in this unit, when it wrote it.
-    #[must_use]
-    pub fn resource(&self, resource: &str) -> Option<&CommitResource> {
-        self.resources
-            .iter()
-            .find(|touched| touched.resource == resource)
     }
 }
 
@@ -198,8 +125,12 @@ pub struct WorkspaceCommit {
     /// When the action was made, in milliseconds since the Unix epoch, as the
     /// author's device read the clock.
     pub at_ms: u64,
-    /// What it did.
-    pub action: CommitAction,
+    /// The invocation the action ran under, when an admitted door ran it.
+    pub invocation: Option<uuid::Uuid>,
+    /// The run the action was invoked in, when it was invoked in one: an
+    /// agent run, a task, a command line. Undo takes a run's steps back as
+    /// one.
+    pub run: Option<CommitGroup>,
     /// Every unit it wrote. A receiver applies all of them or none.
     pub parts: Vec<CommitPart>,
 }
@@ -244,14 +175,15 @@ pub enum CommitError {
 }
 
 impl WorkspaceCommit {
-    /// A commit of `parts`, made by `author` at `at_ms`, for the action
-    /// `action` in `workspace`.
+    /// A commit of `parts`, made by `author` at `at_ms`, for the action that
+    /// ran under `invocation` in `run`, in `workspace`.
     #[must_use]
     pub fn new(
         workspace: impl Into<String>,
         author: CommitAuthor,
         at_ms: u64,
-        action: CommitAction,
+        invocation: Option<uuid::Uuid>,
+        run: Option<CommitGroup>,
         parts: Vec<CommitPart>,
     ) -> Self {
         Self {
@@ -260,16 +192,17 @@ impl WorkspaceCommit {
             workspace: workspace.into(),
             author,
             at_ms,
-            action,
+            invocation,
+            run,
             parts,
         }
     }
 
     /// The commit for one action that published `mutation` as the unit of
     /// `app`'s `record`: the hash of every change it carries, the time the
-    /// latest of them was made, and the author, name and invocation its
-    /// history entries agree on. `None` for a mutation that carries no change
-    /// (a snapshot, or an empty set).
+    /// latest of them was made, and the invocation and run they agree on.
+    /// `None` for a mutation that carries no change (a snapshot, or an empty
+    /// set).
     ///
     /// # Errors
     /// [`CommitError::Unnamed`] for a change that names no action.
@@ -336,19 +269,15 @@ impl WorkspaceCommit {
             }
         }
         let mut commits: Vec<Option<Self>> = vec![None; read.len()];
-        for (_, group) in groups {
-            let action = group
-                .first()
-                .and_then(|index| read.get(*index))
-                .and_then(Option::as_ref);
-            let Some(action) = action else {
-                continue;
-            };
+        for (invocation, group) in groups {
             let parts: Vec<&Read> = group
                 .iter()
                 .filter_map(|index| read.get(*index).and_then(Option::as_ref))
                 .collect();
-            let commit = Self::of_parts(workspace, author, action, &parts);
+            let Some(first) = parts.first() else {
+                continue;
+            };
+            let commit = Self::of_parts(workspace, author, invocation, first, &parts);
             for index in group {
                 if let Some(slot) = commits.get_mut(index) {
                     *slot = Some(commit.clone());
@@ -358,22 +287,15 @@ impl WorkspaceCommit {
         Ok(commits)
     }
 
-    /// The commit that names `parts` as the action the first of them names.
-    fn of_parts(workspace: &str, author: &CommitAuthor, first: &Read, parts: &[&Read]) -> Self {
-        let action = CommitAction {
-            name: first.names.join(", "),
-            item: parts.iter().find_map(|part| part.item.clone()),
-            invocation: first.invocation,
-            id: parts
-                .iter()
-                .find_map(|part| part.action.clone())
-                .unwrap_or_default(),
-            ty: parts
-                .iter()
-                .find_map(|part| part.ty.clone())
-                .unwrap_or_default(),
-            group: parts.iter().find_map(|part| part.group.clone()),
-        };
+    /// The commit that names `parts` as the action that ran under
+    /// `invocation`.
+    fn of_parts(
+        workspace: &str,
+        author: &CommitAuthor,
+        invocation: Option<uuid::Uuid>,
+        first: &Read,
+        parts: &[&Read],
+    ) -> Self {
         let principal = parts
             .iter()
             .find_map(|part| part.principal.clone())
@@ -388,7 +310,8 @@ impl WorkspaceCommit {
                 device: author.device,
             },
             at_ms,
-            action,
+            invocation,
+            first.run.clone(),
             parts.iter().map(|part| part.part.clone()).collect(),
         )
     }
@@ -411,9 +334,9 @@ impl WorkspaceCommit {
     /// [`CommitError`] for bytes that are not such a commit.
     pub fn decode(bytes: &[u8]) -> Result<Self, CommitError> {
         // The version is the second field of every commit, so it is read
-        // before the rest: version 1 has no action id, type, run or
-        // resources, and postcard cannot tell a missing field from a short
-        // one.
+        // before the rest: version 1 carried the action's name and item where
+        // this version carries the invocation and run, and postcard cannot
+        // tell a missing field from a short one.
         let (head, _) = postcard::take_from_bytes::<Head>(bytes)
             .map_err(|error| CommitError::Decode(error.to_string()))?;
         let commit = match head.version {
@@ -430,9 +353,9 @@ impl WorkspaceCommit {
         Ok(commit)
     }
 
-    /// The commit `old` names, as this version reads it: the action's name,
-    /// item and invocation, no resource, action id, type or run (version 1
-    /// carried none).
+    /// The commit `old` names, as this version reads it: the invocation it
+    /// ran under, and no run (version 1 carried none). Its action's name and
+    /// item are dropped: the changes carry them.
     fn of_v1(old: V1) -> Self {
         Self {
             kind: old.kind,
@@ -440,14 +363,8 @@ impl WorkspaceCommit {
             workspace: old.workspace,
             author: old.author,
             at_ms: old.at_ms,
-            action: CommitAction {
-                name: old.action.name,
-                item: old.action.item,
-                invocation: old.action.invocation,
-                id: String::new(),
-                ty: String::new(),
-                group: None,
-            },
+            invocation: old.action.invocation,
+            run: None,
             parts: old
                 .parts
                 .into_iter()
@@ -455,7 +372,6 @@ impl WorkspaceCommit {
                     app: part.app,
                     record: part.record,
                     changes: part.changes,
-                    resources: Vec::new(),
                 })
                 .collect(),
         }
@@ -517,6 +433,13 @@ impl WorkspaceCommit {
     #[must_use]
     pub fn covers(&self, app: &str, record: &str) -> bool {
         self.part(app, record).is_some()
+    }
+
+    /// The change `hash` is, as this commit names it: the unit and the position
+    /// in it, when the action made that change.
+    #[must_use]
+    pub fn change(&self, hash: &[u8; 32]) -> Option<&CommitPart> {
+        self.parts.iter().find(|part| part.changes.contains(hash))
     }
 
     /// Frame the document payload `inner` under this commit: what one unit's
@@ -624,7 +547,7 @@ struct Head {
 }
 
 /// A commit as version 1 wrote it: the action's name, item and invocation,
-/// and the changes of each part, with no resource, action id, type or run.
+/// and the changes of each part.
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct V1 {
@@ -656,25 +579,13 @@ struct CommitPartV1 {
 
 /// One unit's changes, read for the commit that names them.
 struct Read {
-    /// The unit as the commit names it: which app's record, which changes,
-    /// which resources.
+    /// The unit as the commit names it: which app's record, which changes.
     part: CommitPart,
     /// The one invocation every change of the unit ran under, when they all
     /// ran under the same one: the action they are all part of.
     signature: Option<uuid::Uuid>,
-    /// The names the unit's changes gave the action.
-    names: Vec<String>,
-    /// The item inside its resource the action addressed, when it named one.
-    item: Option<String>,
-    /// The invocation the unit's changes ran under, when one admitted them.
-    invocation: Option<uuid::Uuid>,
-    /// The action id the unit's changes ran as (`app/kind/action`), when they
-    /// name one.
-    action: Option<String>,
-    /// The registry type the invoked action was encoded under.
-    ty: Option<String>,
     /// The run the unit's changes were invoked in.
-    group: Option<CommitGroup>,
+    run: Option<CommitGroup>,
     /// Who invoked the action.
     principal: Option<String>,
     /// When its latest change was made, in milliseconds since the Unix epoch.
@@ -696,36 +607,16 @@ impl Read {
                 app: unit.app.to_owned(),
                 record: unit.record.to_owned(),
                 changes: Vec::with_capacity(changes.len()),
-                resources: Vec::new(),
             },
             signature: None,
-            names: Vec::new(),
-            item: None,
-            invocation: None,
-            action: None,
-            ty: None,
-            group: None,
+            run: None,
             principal: None,
             at_ms: 0,
         };
         let mut one_action = true;
         let mut first = None;
         for (position, change) in changes.iter().enumerate() {
-            let claim = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
-                .map_err(|error| CommitError::Unnamed(error.to_string()))?;
             read.part.changes.push(change.hash().0);
-            let claimed = claim.action.named();
-            let names: Vec<String> = claimed
-                .iter()
-                .map(|(name, _)| name.clone())
-                .filter(|name| !name.is_empty())
-                .collect();
-            if read.names.is_empty() {
-                read.names.clone_from(&names);
-            }
-            if read.item.is_none() {
-                read.item = claimed.into_iter().find_map(|(_, item)| item);
-            }
             read.at_ms = read.at_ms.max(
                 u64::try_from(change.timestamp())
                     .unwrap_or(0)
@@ -735,12 +626,10 @@ impl Read {
                 .message()
                 .and_then(tilo_actions::ActionContext::from_change_message);
             let Some(context) = context else {
-                // A change no door admitted names no action: the unit says
-                // nothing of which action it is part of.
-                one_action = false;
-                continue;
+                // A change that names no action is no part of one, and a
+                // commit is the one record of an action.
+                return Err(CommitError::Unnamed(change.hash().to_string()));
             };
-            read.take_entry(&context);
             // The first change that says who invoked it speaks for the
             // action: every change of one action shares that context.
             if read.principal.is_none() {
@@ -749,8 +638,12 @@ impl Read {
                     .as_ref()
                     .map(|invoker| invoker.actor.clone());
             }
-            if read.invocation.is_none() {
-                read.invocation = context.source_invocation.map(|id| id.0);
+            if read.run.is_none() {
+                read.run = context.group.as_ref().map(|group| CommitGroup {
+                    id: group.id.clone(),
+                    label: group.label.clone(),
+                    kind: group.kind.clone(),
+                });
             }
             let ran_under = context.source_invocation.map(|id| id.0);
             if position == 0 {
@@ -762,132 +655,6 @@ impl Read {
         read.signature = one_action.then_some(first).flatten();
         Ok(Some(read))
     }
-
-    /// Take in what one change's own history entry says the action was, and
-    /// which resources of this unit it touched.
-    fn take_entry(&mut self, context: &tilo_actions::ActionContext) {
-        if self.ty.is_none() {
-            self.ty = context.action.as_ref().map(|action| action.type_id.clone());
-        }
-        if self.group.is_none() {
-            self.group = context.group.as_ref().map(|group| CommitGroup {
-                id: group.id.clone(),
-                label: group.label.clone(),
-                kind: group.kind.clone(),
-            });
-        }
-        let Some(what) = &context.what else {
-            return;
-        };
-        let resource = context
-            .resource
-            .as_ref()
-            .map(|resource| resource.id.clone());
-        let item = context.item.as_ref().map(|item| item.id.clone());
-        self.take_did(what, resource.as_deref(), item);
-    }
-
-    /// What one `Did` did to `resource`, a group's members too, added to the
-    /// part's resources.
-    fn take_did(&mut self, what: &tilo_actions::Did, resource: Option<&str>, item: Option<String>) {
-        match what {
-            tilo_actions::Did::Group(group) => {
-                for member in &group.members {
-                    self.take_did(member, resource, item.clone());
-                }
-            }
-            tilo_actions::Did::Edit(edit) => {
-                if self.action.is_none() {
-                    // A field edit's action id is where its entry keys it:
-                    // its path's fields, or the field itself.
-                    let path: Vec<String> = edit
-                        .path
-                        .iter()
-                        .map(|step| match step {
-                            tilo_actions::PathStep::Field(field) => field.clone(),
-                            tilo_actions::PathStep::Item(id)
-                            | tilo_actions::PathStep::Key(id)
-                            | tilo_actions::PathStep::Cell(id, _) => id.clone(),
-                        })
-                        .collect();
-                    self.action = Some(if path.is_empty() {
-                        edit.field.clone()
-                    } else {
-                        path.join(".")
-                    });
-                }
-                let field = match edit.path.iter().rev().find_map(|step| match step {
-                    tilo_actions::PathStep::Field(field) => Some(field.clone()),
-                    _ => None,
-                }) {
-                    Some(field) => field,
-                    None if !edit.field.is_empty() => edit.field.clone(),
-                    None => return,
-                };
-                let written = CommitField {
-                    field,
-                    before: edit.old.as_ref().and_then(scalar_text),
-                    after: edit.new.as_ref().and_then(scalar_text),
-                };
-                self.take_resource(resource, item, Some(written));
-            }
-            tilo_actions::Did::Verb(verb) => {
-                if self.action.is_none() {
-                    self.action = Some(verb.action.to_string());
-                }
-                self.take_resource(resource, item, None);
-            }
-            tilo_actions::Did::History(_) => {}
-        }
-    }
-
-    /// Name `resource` among the part's resources, with `field` when the
-    /// change wrote one.
-    fn take_resource(
-        &mut self,
-        resource: Option<&str>,
-        item: Option<String>,
-        field: Option<CommitField>,
-    ) {
-        let Some(resource) = resource.filter(|resource| !resource.is_empty()) else {
-            return;
-        };
-        let at = if let Some(at) = self
-            .part
-            .resources
-            .iter()
-            .position(|touched| touched.resource == resource)
-        {
-            at
-        } else {
-            self.part.resources.push(CommitResource {
-                resource: resource.to_owned(),
-                item: None,
-                fields: Vec::new(),
-            });
-            self.part.resources.len().saturating_sub(1)
-        };
-        let Some(touched) = self.part.resources.get_mut(at) else {
-            return;
-        };
-        if touched.item.is_none() {
-            touched.item = item;
-        }
-        if let Some(field) = field
-            && !touched
-                .fields
-                .iter()
-                .any(|known| known.field == field.field)
-        {
-            touched.fields.push(field);
-        }
-    }
-}
-
-/// A scalar's value as JSON text: what history shows before a change and
-/// after it.
-fn scalar_text(scalar: &tilo_actions::Scalar) -> Option<String> {
-    serde_json::to_string(scalar).ok()
 }
 
 #[cfg(test)]
@@ -908,7 +675,6 @@ mod tests {
             app: app.to_owned(),
             record: record.to_owned(),
             changes: vec![[change; 32]],
-            resources: Vec::new(),
         }
     }
 
@@ -917,18 +683,12 @@ mod tests {
             "workspace",
             author([7; 32]),
             1_700_000_000_000,
-            CommitAction {
-                name: "create".to_owned(),
-                item: Some("child".to_owned()),
-                invocation: Some(uuid::Uuid::from_u128(9)),
-                id: "tasks/note/create".to_owned(),
-                ty: "tl.action".to_owned(),
-                group: Some(CommitGroup {
-                    id: "run-1".to_owned(),
-                    label: "Alex".to_owned(),
-                    kind: "agent-run".to_owned(),
-                }),
-            },
+            Some(uuid::Uuid::from_u128(9)),
+            Some(CommitGroup {
+                id: "run-1".to_owned(),
+                label: "Alex".to_owned(),
+                kind: "agent-run".to_owned(),
+            }),
             vec![part("tasks", "a", 1), part("tasks", "b", 2)],
         )
     }
@@ -957,7 +717,17 @@ mod tests {
         assert!(commit.covers("tasks", "b"));
         assert!(!commit.covers("tasks", "c"));
         assert_eq!(commit.part("tasks", "b"), Some(&part("tasks", "b", 2)));
+        assert_eq!(
+            commit.change(&[2; 32]).map(|part| part.record.as_str()),
+            Some("b")
+        );
+        assert_eq!(commit.change(&[3; 32]), None);
         assert_eq!(commit.author, author([7; 32]));
+        assert_eq!(commit.invocation, Some(uuid::Uuid::from_u128(9)));
+        assert_eq!(
+            commit.run.as_ref().map(|run| run.kind.as_str()),
+            Some("agent-run")
+        );
     }
 
     /// Write one change of `field` = `value` into `doc`, as the action
@@ -967,7 +737,7 @@ mod tests {
         field: &str,
         value: &str,
         invocation: InvocationId,
-    ) {
+    ) -> automerge::ChangeHash {
         use automerge::transaction::Transactable as _;
         doc.put(automerge::ROOT, field, value).unwrap();
         let context = ActionContext {
@@ -986,7 +756,7 @@ mod tests {
         };
         let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
         options.set_message(context.change_message().unwrap());
-        doc.commit_with(options).unwrap();
+        doc.commit_with(options).unwrap()
     }
 
     /// The mutation one action made in a unit holding `field` = `value`.
@@ -1049,8 +819,7 @@ mod tests {
         assert_eq!(action.parts.len(), 2);
         assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
         assert_eq!(action.parts[0].changes, vec![change_of(&title)]);
-        assert_eq!(action.action.invocation, Some(invocation.0));
-        assert_eq!(action.action.name, "title");
+        assert_eq!(action.invocation, Some(invocation.0));
         assert_eq!(action.author.principal.as_deref(), Some("alice"));
         assert_eq!(
             action.author.device, [0; 32],
@@ -1073,6 +842,7 @@ mod tests {
             .as_ref()
             .expect("a unit of several actions keeps a commit of its own");
         assert_eq!(mixed.parts.len(), 1, "it joins neither of its actions");
+        assert_eq!(mixed.invocation, None, "several invocations name none");
         assert_ne!(mixed.id(), action.id());
         assert_eq!(commits[4], None, "a unit that carries no change has none");
     }
@@ -1265,19 +1035,9 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(commit.action.name, "title");
-        assert_eq!(commit.action.invocation, Some(invocation.0));
+        assert_eq!(commit.invocation, Some(invocation.0));
         assert_eq!(commit.author.principal.as_deref(), Some("alice"));
         assert_eq!(commit.parts[0].changes, vec![hash.0]);
-        assert_eq!(
-            commit.parts[0]
-                .resources
-                .iter()
-                .map(|resource| resource.resource.as_str())
-                .collect::<Vec<_>>(),
-            vec!["tasks"],
-            "the field edit's entry names the resource it wrote"
-        );
         assert_eq!(
             commit.at_ms, 1_700_000_000_000,
             "the action keeps the time its changes carry"
@@ -1318,8 +1078,6 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(commit.parts[0].changes, vec![claims[0].change]);
-        assert_eq!(commit.action.name, "title");
-        assert_eq!(commit.action.item, None);
     }
 
     #[test]
@@ -1339,7 +1097,7 @@ mod tests {
             action: CommitActionV1 {
                 name: "create".to_owned(),
                 item: Some("child".to_owned()),
-                invocation: None,
+                invocation: Some(uuid::Uuid::from_u128(5)),
             },
             parts: vec![CommitPartV1 {
                 app: "tasks".to_owned(),
@@ -1350,20 +1108,21 @@ mod tests {
         let bytes = crate::canonical::canonical_bytes(&old).unwrap();
         let read = WorkspaceCommit::decode(&bytes).expect("a version 1 commit reads");
         assert_eq!(read.version, COMMIT_VERSION);
-        assert_eq!(read.action.name, "create");
-        assert_eq!(read.action.item.as_deref(), Some("child"));
-        assert_eq!(read.action.id, "", "version 1 named no action id");
-        assert_eq!(read.action.ty, "");
-        assert_eq!(read.action.group, None);
+        assert_eq!(
+            read.invocation,
+            Some(uuid::Uuid::from_u128(5)),
+            "the invocation it ran under carries over"
+        );
+        assert_eq!(read.run, None, "version 1 named no run");
         assert_eq!(read.parts[0].changes, vec![[5; 32]]);
-        assert!(read.parts[0].resources.is_empty());
         assert_eq!(
             read.encode(),
             WorkspaceCommit::new(
                 "workspace",
                 author([7; 32]),
                 1_700_000_000_000,
-                read.action.clone(),
+                read.invocation,
+                read.run.clone(),
                 read.parts,
             )
             .encode(),
@@ -1371,23 +1130,15 @@ mod tests {
         );
     }
 
-    /// One change writing `field` of the resource `resource` of `app`, as the
-    /// action `action` made it: the entry names the resource, its item and
-    /// the run it was invoked in.
-    fn resource_change(
-        doc: &mut automerge::AutoCommit,
-        app: &str,
-        resource: &str,
-        field: &str,
-        action: &str,
-        invocation: InvocationId,
-    ) {
+    #[test]
+    fn an_action_names_the_run_it_ran_in_across_its_units() {
         use automerge::transaction::Transactable as _;
-        doc.put(automerge::ROOT, format!("{resource}/{field}"), "value")
-            .unwrap();
+        let invocation = InvocationId::new();
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "title", "value").unwrap();
         let context = ActionContext {
             what: Some(Did::verb(
-                tilo_actions::ActionKey::new(app, "note", action),
+                tilo_actions::ActionKey::new("tasks", "note", "complete"),
                 std::collections::BTreeMap::new(),
             )),
             group: Some(tilo_actions::WorkGroup {
@@ -1395,99 +1146,27 @@ mod tests {
                 label: "Alex".to_owned(),
                 kind: "agent-run".to_owned(),
             }),
-            item: Some(tilo_actions::ActionItem {
-                id: format!("{resource}/i1"),
-                label: "First".to_owned(),
-            }),
             invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
             source_invocation: Some(invocation),
-            action: Some(tilo_actions::EncodedAction::written(
-                "tl.action".to_owned(),
-                b"{}".to_vec(),
-            )),
-            ..ActionContext::for_resource(resource, "tl.note", field)
-        };
-        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
-        options.set_message(context.change_message().unwrap());
-        doc.commit_with(options).expect("a change per resource");
-    }
-
-    #[test]
-    fn an_action_names_the_run_and_every_resource_one_unit_wrote() {
-        let invocation = InvocationId::new();
-        let mut doc = automerge::AutoCommit::new();
-        resource_change(&mut doc, "tasks", "note:1", "title", "complete", invocation);
-        resource_change(&mut doc, "tasks", "note:2", "title", "complete", invocation);
-        let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
-        let commit =
-            WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([7; 32]), &mutation)
-                .unwrap()
-                .unwrap();
-
-        assert_eq!(commit.action.name, "complete");
-        assert_eq!(commit.action.id, "tasks/note/complete");
-        assert_eq!(commit.action.ty, "tl.action");
-        let group = commit.action.group.as_ref().expect("the run it ran in");
-        assert_eq!(group.id, "run-1");
-        assert_eq!(group.kind, "agent-run");
-        assert_eq!(group.label, "Alex");
-        let part = &commit.parts[0];
-        let named: Vec<&str> = part
-            .resources
-            .iter()
-            .map(|resource| resource.resource.as_str())
-            .collect();
-        assert_eq!(
-            named,
-            vec!["note:1", "note:2"],
-            "every resource the unit wrote is named once"
-        );
-        assert_eq!(
-            part.resource("note:2")
-                .and_then(|resource| resource.item.as_deref()),
-            Some("note:2/i1"),
-            "the item the entry addressed"
-        );
-        assert_eq!(
-            WorkspaceCommit::decode(&commit.encode()).as_ref(),
-            Ok(&commit),
-            "the resources and the run travel with the commit"
-        );
-    }
-
-    #[test]
-    fn a_field_edit_commit_holds_the_value_before_and_after() {
-        use automerge::transaction::Transactable as _;
-        let mut doc = automerge::AutoCommit::new();
-        doc.put(automerge::ROOT, "done", true).unwrap();
-        let context = ActionContext {
-            what: Some(Did::Edit(FieldEdit {
-                ty: "tasks".to_owned(),
-                field: "done".to_owned(),
-                path: vec![tilo_actions::PathStep::Field("done".to_owned())],
-                op: tilo_actions::EditOp::Set,
-                old: Some(tilo_actions::Scalar::from(false)),
-                new: Some(tilo_actions::Scalar::from(true)),
-                args: std::collections::BTreeMap::new(),
-            })),
-            ..ActionContext::for_resource("note:1", "tl.note", "First")
+            ..ActionContext::for_resource("tasks", "tasks", "note:1")
         };
         let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
         options.set_message(context.change_message().unwrap());
         doc.commit_with(options).unwrap();
         let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
         let commit =
-            WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([3; 32]), &mutation)
+            WorkspaceCommit::of_mutation("workspace", "tasks", "", &author([7; 32]), &mutation)
                 .unwrap()
                 .unwrap();
-        let resource = commit.parts[0]
-            .resource("note:1")
-            .expect("the field edit names the resource it wrote");
-        assert_eq!(resource.fields.len(), 1);
-        let field = &resource.fields[0];
-        assert_eq!(field.field, "done");
-        assert_eq!(field.before.as_deref(), Some("false"));
-        assert_eq!(field.after.as_deref(), Some("true"));
-        assert_eq!(commit.action.id, "done", "a field edit keys by its field");
+
+        let run = commit.run.as_ref().expect("the run it ran in");
+        assert_eq!(run.id, "run-1");
+        assert_eq!(run.kind, "agent-run");
+        assert_eq!(run.label, "Alex");
+        assert_eq!(
+            WorkspaceCommit::decode(&commit.encode()).as_ref(),
+            Ok(&commit),
+            "the run travels with the commit"
+        );
     }
 }

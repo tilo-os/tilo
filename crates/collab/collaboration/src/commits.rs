@@ -12,14 +12,15 @@
 //! action it was held for, so one action stays one action however its parts
 //! were retried.
 //!
-//! The log is also the action log history reads, and it outlives the
-//! process: [`crate::commit_log::CommitLog`] keeps every complete action as a
-//! record of the workspace, with an index of which actions wrote which
-//! resource, so a resource's history is one index entry and the actions it
-//! names. [`Commits::history`] names one action with its author, its time,
-//! the action it ran and every unit change it made; [`Commits::history_of`]
+//! The log is also the action log history reads: [`crate::commit_log::CommitLog`]
+//! indexes the complete actions and the changes that made them, so a
+//! resource's history is one index entry and the actions it names.
+//! [`Commits::history`] names one action with its author, its time, its
+//! invocation and run and every unit change it made; [`Commits::history_of`]
 //! answers for one resource; [`Commits::action_of`] gives the whole action a
-//! change belongs to, which is what an undo of one change takes back.
+//! change belongs to, which is what an undo of one change takes back. The log
+//! is derived from the changes and commits, never persisted: a restarted
+//! endpoint rebuilds it as they arrive again.
 
 use std::collections::BTreeMap;
 
@@ -28,7 +29,7 @@ use collab_types::{CommitPart, WorkspaceCommit};
 use crate::CollabEvent;
 use crate::broker::BridgeState;
 
-pub use crate::commit_log::{CommitHistory, CommitLog};
+pub use crate::commit_log::{ChangeFact, CommitHistory, CommitLog};
 
 /// Commits whose every part has arrived, and commits this endpoint received
 /// only parts of.
@@ -170,24 +171,31 @@ impl Commits {
         };
         let mut held = self.held.remove(index);
         let mut parts = std::mem::take(&mut held.parts);
-        let events = held
+        let released: Vec<(&CommitPart, CollabEvent)> = held
             .commit
             .parts
             .iter()
-            .filter_map(|part| parts.remove(&key(part)))
+            .filter_map(|part| parts.remove(&key(part)).map(|event| (part, event)))
             .collect();
-        self.log.record(&held.commit);
-        Delivery::Complete(events)
+        let facts: Vec<ChangeFact> = released
+            .iter()
+            .flat_map(|(part, event)| {
+                ChangeFact::of_payload(&part.app, &part.record, payload(event))
+            })
+            .collect();
+        self.log.record(&held.commit, &facts);
+        Delivery::Complete(released.into_iter().map(|(_, event)| event).collect())
     }
 
-    /// Note an action this endpoint itself made: every part of it is here.
-    pub(crate) fn record(&mut self, commit: WorkspaceCommit) {
-        self.log.record(&commit);
+    /// Note an action this endpoint itself made: every part of it is here,
+    /// and `facts` are the changes its parts carry.
+    pub(crate) fn record(&mut self, commit: WorkspaceCommit, facts: &[ChangeFact]) {
+        self.log.record(&commit, facts);
     }
 
     /// Every action this endpoint has seen in `workspace`, oldest first: one
     /// action with its author, its time and every unit change it made.
-    pub fn history(&mut self, workspace: &str) -> Vec<CommitHistory> {
+    pub fn history(&self, workspace: &str) -> Vec<CommitHistory> {
         self.log.history(workspace)
     }
 
@@ -225,15 +233,6 @@ impl Commits {
         self.log.action_of(workspace, hash)
     }
 
-    /// The log a restarted device reads back: kept as a record in `store`.
-    #[must_use]
-    pub fn stored(store: std::sync::Arc<dyn durable_store::DurableStore + Send + Sync>) -> Self {
-        Self {
-            log: CommitLog::stored(store),
-            held: Vec::new(),
-        }
-    }
-
     /// How many parts of actions are held back waiting for the rest.
     #[cfg(test)]
     pub(crate) fn held_parts(&self) -> usize {
@@ -243,6 +242,22 @@ impl Commits {
 
 fn key(part: &CommitPart) -> (String, String) {
     (part.app.clone(), part.record.clone())
+}
+
+/// The signed payload a document event carries: the plaintext a sealed route
+/// opens, or what the envelope holds otherwise.
+fn payload(event: &CollabEvent) -> &[u8] {
+    let CollabEvent::Document {
+        envelope,
+        decrypted_payload,
+        ..
+    } = event
+    else {
+        return &[];
+    };
+    decrypted_payload
+        .as_deref()
+        .unwrap_or(envelope.payload.as_slice())
 }
 
 /// Actions this endpoint holds parts of, waiting for the rest. Bounded so a
@@ -281,7 +296,7 @@ mod tests {
             })),
             invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
             source_invocation: Some(invocation),
-            ..ActionContext::for_resource("tasks", "tasks", field)
+            ..ActionContext::for_resource(field, "tasks", field)
         };
         let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
         options.set_message(context.change_message().unwrap());
@@ -419,7 +434,7 @@ mod tests {
             })),
             invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
             source_invocation: Some(invocation),
-            ..ActionContext::for_resource("tasks", "tasks", field)
+            ..ActionContext::for_resource(field, "tasks", field)
         };
         let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_001);
         options.set_message(context.change_message().unwrap());
@@ -556,8 +571,6 @@ mod tests {
             "thread",
             &mut peer,
         );
-        state.commits().record(commit.clone());
-
         let history = state.commits().history(WORKSPACE);
         assert_eq!(history.len(), 1, "one action, one entry: {history:?}");
         let action = &history[0];
@@ -565,31 +578,17 @@ mod tests {
         assert_eq!(action.principal.as_deref(), Some("alice"));
         assert_eq!(action.device, DEVICE);
         assert_eq!(action.at_ms, commit.at_ms);
-        assert_eq!(action.action.name, "title");
-        assert_eq!(action.action.invocation, Some(uuid::Uuid::from_u128(11)));
+        assert_eq!(
+            action.invocation,
+            Some(uuid::Uuid::from_u128(11)),
+            "the invocation every change of the action ran under"
+        );
         assert_eq!(action.parts, commit.parts);
         assert_eq!(action.parts.len(), 2);
         assert_eq!(action.parts[0].changes, vec![commit.parts[0].changes[0]]);
         // Each resource the action wrote reads it in its own history, once.
-        let resources: Vec<(String, String, String)> = action
-            .parts
-            .iter()
-            .flat_map(|part| {
-                part.resources.iter().map(|touched| {
-                    (
-                        part.app.clone(),
-                        part.record.clone(),
-                        touched.resource.clone(),
-                    )
-                })
-            })
-            .collect();
-        assert_eq!(
-            resources.len(),
-            2,
-            "the action wrote a resource in each unit"
-        );
-        for (app, record, resource) in &resources {
+        let resources = [("tasks", "a", "title"), ("discussion", "thread", "body")];
+        for (app, record, resource) in resources {
             let of_resource = state
                 .commits()
                 .history_of(WORKSPACE, app, record, resource, 10);
@@ -761,26 +760,18 @@ mod tests {
                     device: DEVICE,
                 },
                 u64::try_from(index).unwrap(),
-                collab_types::CommitAction {
-                    name: "title".to_owned(),
-                    item: None,
-                    invocation: None,
-                    id: "tasks/title/title".to_owned(),
-                    ty: "tl.action".to_owned(),
-                    group: None,
-                },
+                None,
+                None,
                 vec![
                     CommitPart {
                         app: "tasks".to_owned(),
                         record: "a".to_owned(),
                         changes: vec![first_change],
-                        resources: Vec::new(),
                     },
                     CommitPart {
                         app: "tasks".to_owned(),
                         record: "b".to_owned(),
                         changes: vec![[u8::try_from(index).unwrap(); 32]],
-                        resources: Vec::new(),
                     },
                 ],
             );
