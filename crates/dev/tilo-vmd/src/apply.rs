@@ -682,7 +682,7 @@ fn activate_board(
         }
         SessionChange::Restart => {
             restart_units(apply, restarts, &mut actions)?;
-            actions.extend(restart_session(apply, session, uid)?)
+            actions.extend(restart_session(apply, session, uid)?);
         }
         SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
