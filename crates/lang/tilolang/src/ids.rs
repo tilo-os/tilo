@@ -1,6 +1,6 @@
 //! The ids lock file `app.ids`.
 //!
-//! Every declaration (type, field, enum variant, action, flow, view, fn, anchor) has a stable
+//! Every declaration (type, field, enum variant, action, view, fn, anchor) has a stable
 //! id: 8 base32 characters, drawn when the compiler first sees it. Storage keys, action
 //! addresses and grants use ids; names appear only in source, errors and display. The lock is a
 //! sorted text file of `qualified.name = id` lines. Declarations that disappear move to a
@@ -282,7 +282,7 @@ pub fn present_key(action: &str) -> String {
 pub const PRESENT_SUFFIX: &str = "~present";
 
 /// The qualified name of every declaration that gets an id: types (`Album`), fields
-/// (`Album.title`), actions, flows, views and fns (`play`), anchors (`album_page#play`),
+/// (`Album.title`), actions, views and fns (`play`), anchors (`album_page#play`),
 /// scenarios (`scenario "a week of notes"`), and the presentation view of an action whose label,
 /// icon or state follow its subject (`pin~present`).
 pub fn declared_names(m: &Module) -> Vec<String> {
@@ -322,7 +322,6 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                     out.push(present_key(&a.name.name));
                 }
             }
-            Item::Flow(f) => out.push(f.name.name.clone()),
             Item::Fn(f) => out.push(f.name.name.clone()),
             Item::View(v) => {
                 out.push(v.name.name.clone());

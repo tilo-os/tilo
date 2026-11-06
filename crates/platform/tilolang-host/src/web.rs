@@ -4,7 +4,7 @@
 //! A timeout, no network and a refused connection answer with status 0 and say why: the app
 //! sees a value, never a trap.
 
-use tilolang_tilo::runtime::flow::WebRequest;
+use tilolang_tilo::runtime::run::WebRequest;
 use tilolang_tilo::runtime::web::{TIMEOUT, WebReply};
 
 /// Fetch `request` over this device's network.

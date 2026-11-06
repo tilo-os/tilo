@@ -23,6 +23,7 @@ pub mod history_log;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;
+pub mod now_playing;
 pub mod outcome;
 pub mod person_cursor;
 pub mod session;

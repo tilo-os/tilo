@@ -1,5 +1,5 @@
 //! What an agent does on the door beyond the published actions of the packages: run a block,
-//! run a flow, read the catalogue.
+//! read the catalogue.
 //!
 //! They are an [`Effect`] vocabulary published on the `tl:host` resource, so the desktop agent,
 //! the runtime door, shortcuts and grants reach them as they reach every other operation. The
@@ -11,9 +11,9 @@ use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
 use tilolang_runtime::program::ReadRequest;
 use tilolang_runtime::value::{ResourceRef, to_json};
-use tilolang_runtime::{AgentBlock, FlowOutcome, Principal, Resolution, UiNode};
+use tilolang_runtime::{AgentBlock, Principal, Resolution, RunOutcome, UiNode};
 
-use crate::host::{Host, value_of};
+use crate::host::Host;
 use crate::publish::Caller;
 
 /// The operations the host offers an agent.
@@ -56,27 +56,17 @@ pub enum HostEffect {
         )]
         request: String,
     },
-    /// Run a flow.
-    ///
-    /// Run a declared flow to its end, or until an action in it needs a person's approval.
-    #[effect(returns)]
-    RunFlow {
-        #[param("The flow, as `app.name` or its id")]
-        flow: String,
-        #[param("The flow's arguments by parameter name, as a JSON object; resources by id")]
-        args: String,
-    },
     /// List the catalogue.
     ///
-    /// The signatures of every type, action, view and flow of the workspace's apps, doc comments
+    /// The signatures of every type, action, view and fn of the workspace's apps, doc comments
     /// included.
     #[effect(kind = "read", returns)]
     Catalogue,
     /// Decide a suggestion.
     ///
     /// Approve or decline what an agent suggested and is waiting on: a suggested invocation
-    /// (the id `run-block` or a verb answered with), or a run waiting for approval (the id
-    /// `run-flow` answered with). Approving runs the action once, whoever asks and however
+    /// (the id `run-block` or a verb answered with), or a run waiting for approval (the run id
+    /// answered with). Approving runs the action once, whoever asks and however
     /// many devices answer. Only a person decides: an agent cannot approve what it suggested.
     #[effect(returns, destructive)]
     Resolve {
@@ -209,7 +199,7 @@ impl Host {
     /// another app or outside asks a person first.
     ///
     /// # Errors
-    /// Why the block, the flow or its arguments were refused, or what the runtime failed with.
+    /// Why the block or its arguments were refused, or what the runtime failed with.
     pub fn answer(
         &self,
         effect: HostEffect,
@@ -260,7 +250,6 @@ impl Host {
                     .map_err(|error| format!("the request is not one a program makes: {error}"))?;
                 self.runtime().answer_read(&request).map(output)
             }
-            HostEffect::RunFlow { flow, args } => self.run_flow_source(agent, &flow, &args),
             HostEffect::Resolve { target, decision } => {
                 if caller.is_some_and(|caller| caller.agent) {
                     return Err("only a person decides what an agent suggested".to_owned());
@@ -281,60 +270,6 @@ impl Host {
                     })
                     .collect(),
             ))),
-        }
-    }
-
-    fn run_flow_source(
-        &self,
-        agent: &Principal,
-        flow: &str,
-        args: &str,
-    ) -> Result<ActionOutput, String> {
-        let (package, declared) = self
-            .packages()
-            .into_iter()
-            .find_map(|package| {
-                let found = package
-                    .meta
-                    .flows
-                    .iter()
-                    .find(|declared| {
-                        declared.id == flow
-                            || declared.name == flow
-                            || format!("{}.{}", package.meta.app, declared.name) == flow
-                    })
-                    .cloned();
-                found.map(|declared| (package, declared))
-            })
-            .ok_or_else(|| format!("no flow `{flow}`"))?;
-        let given: serde_json::Map<String, Json> = if args.trim().is_empty() {
-            serde_json::Map::new()
-        } else {
-            serde_json::from_str(args)
-                .map_err(|error| format!("the arguments are not a JSON object: {error}"))?
-        };
-        let mut values = Vec::new();
-        for param in &declared.params {
-            let json = given.get(&param.name).cloned().unwrap_or(Json::Null);
-            values.push(value_of(&self.inner, &package.meta, &json, &param.ty)?);
-        }
-        match self
-            .runtime()
-            .run_flow(agent, &declared.id, values)
-            .map_err(|error| error.to_string())?
-        {
-            FlowOutcome::Done(value) => Ok(output(
-                json!({"state": "done", "result": self.runtime().project(&value)}),
-            )),
-            FlowOutcome::Suspended(suggestion) => {
-                let shown = json!({
-                    "state": "suspended",
-                    "run": suggestion.run,
-                    "waiting_on": suggestion.action,
-                });
-                self.inner.suspended.borrow_mut().push_back(suggestion);
-                Ok(output(shown))
-            }
         }
     }
 
@@ -521,10 +456,10 @@ impl Host {
             .resolve(&target.to_owned(), approver, resolution)
             .map_err(|error| error.to_string())?
         {
-            FlowOutcome::Done(value) => Ok(output(
+            RunOutcome::Done(value) => Ok(output(
                 json!({"kind": "run", "state": "done", "result": self.runtime().project(&value)}),
             )),
-            FlowOutcome::Suspended(suggestion) => {
+            RunOutcome::Suspended(suggestion) => {
                 let shown = json!({
                     "kind": "run",
                     "state": "suspended",

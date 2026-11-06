@@ -67,9 +67,20 @@ action open_titles(bag: Bag) -> List<Text> {
 }
 
 view chosen(bag: Bag) {
-    std.list(bag, bag.items) { item ->
-        row(item.title, checkbox: item.done)
+    state place: Text = ""
+    let shown = bag.items.matching(place)
+    section("Items") {
+        std.places(place, of: filters(Item).filter(f -> f.toggle), everything: "All", icon: .none)
+        std.list(shown) { (item, at) ->
+            ui.ListItem(item: item, presence: at) {
+                item_line(item)
+            }
+        }
     }
+}
+
+view item_line(item: Item) {
+    row(item.title, checkbox: item.done)
 }
 
 view item_row(item: Item) {

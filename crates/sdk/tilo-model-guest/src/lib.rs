@@ -216,24 +216,22 @@ fn param_type(ty: ParamType) -> &'static str {
 /// The reading of the record, or of the item `request.item` names: the record is never handed
 /// over.
 fn reading(kind: &ResourceKind, request: &Request, doc: &Doc) -> Result<Json, Refusal> {
-    match &request.item {
-        Some(item) => kind.content(doc, Some(item)).map_err(|error| Refusal {
+    if let Some(item) = &request.item {
+        return kind.content(doc, Some(item)).map_err(|error| Refusal {
             kind: RefusalKind::Model,
             message: error.to_string(),
-        }),
-        None => {
-            let state = kind.read(doc).map_err(refused_model)?;
-            let mut reading = kind.to_json(state.as_ref()).map_err(refused_model)?;
-            let spec = kind.publish(&request.address, doc).map_err(refused_model)?;
-            if let Some(object) = reading.as_object_mut() {
-                let parts = parts_of(&spec);
-                if !parts.is_empty() {
-                    object.insert("parts".to_owned(), Json::Array(parts));
-                }
-            }
-            Ok(reading)
+        });
+    }
+    let state = kind.read(doc).map_err(refused_model)?;
+    let mut reading = kind.to_json(state.as_ref()).map_err(refused_model)?;
+    let spec = kind.publish(&request.address, doc).map_err(refused_model)?;
+    if let Some(object) = reading.as_object_mut() {
+        let parts = parts_of(&spec);
+        if !parts.is_empty() {
+            object.insert("parts".to_owned(), Json::Array(parts));
         }
     }
+    Ok(reading)
 }
 
 /// Run `asked`'s action against `doc`, committed as the request's invoker.
@@ -266,7 +264,7 @@ fn invoke(
         doc,
         action.as_ref(),
         encoded,
-        writer(&invoker),
+        Some(writer(&invoker)),
         context,
     )
     .map_err(refused_door)?;
@@ -289,14 +287,12 @@ fn request_invoker(request: &Request) -> ActionInvoker {
 
 /// Who the change is committed under, as Automerge names the actor: the person the invoker
 /// acts for, else the invoker itself.
-fn writer(invoker: &ActionInvoker) -> Option<&[u8]> {
-    Some(
-        invoker
-            .on_behalf_of
-            .as_deref()
-            .unwrap_or(&invoker.actor)
-            .as_bytes(),
-    )
+fn writer(invoker: &ActionInvoker) -> &[u8] {
+    invoker
+        .on_behalf_of
+        .as_deref()
+        .unwrap_or(&invoker.actor)
+        .as_bytes()
 }
 
 /// The addresses of the items `spec` publishes.
@@ -383,6 +379,17 @@ pub fn fail(message: &str) -> ! {
     #[cfg(target_arch = "wasm32")]
     core::arch::wasm32::unreachable();
     #[cfg(not(target_arch = "wasm32"))]
+    native_fail(message)
+}
+
+/// A failed call in a host that links the model rather than running it as a module: it cannot
+/// return, and the host reads the refusal recorded before this.
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::panic,
+    reason = "a failed call never returns; the host reads the refusal recorded before this"
+)]
+fn native_fail(message: &str) -> ! {
     panic!("{message}");
 }
 

@@ -68,7 +68,7 @@ pub const IMPORTS: &[(&str, &str, &str, &str)] = &[
 /// `answer` import.
 #[must_use]
 pub fn export(kind: &str) -> String {
-    let mut name = String::with_capacity("record_".len() + kind.len());
+    let mut name = String::with_capacity("record_".len().saturating_add(kind.len()));
     name.push_str("record_");
     for character in kind.chars() {
         if character.is_ascii_alphanumeric() || character == '_' {

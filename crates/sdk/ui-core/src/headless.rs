@@ -50,6 +50,10 @@ use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 /// default `--shots` viewport so a driven frame and a screenshot agree.
 pub const DEFAULT_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// A small `data:` picture, for a capture or a test that shows one: a
+/// 64-by-64 image in two colours, small enough to travel in its own address.
+pub const FIXTURE_PICTURE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABAAQMAAACQp+OdAAAABlBMVEXyyHpLP7ovf/CwAAAAf0lEQVR42j3RsRHAMAhDUcj+QzEKI1BScJAi+nHjdyp0NvjZdx7dBxYMaFAgQbh6XMlRuGBAgwIJwtTjSo6HLRjQoECCMPW4kuODCwY0KJAgTD2u5BjUggENCiQIU48rOQa+YECDAglCgz329WPBgAYFEgR7Zu8/FgxoUCABNS8YGz171qSmDgAAAABJRU5ErkJggg==";
+
 pub use tilo_headless_schema::{
     Action, Capture, Invocation, SemanticAction, SemanticExpectation, Spec,
 };
@@ -701,10 +705,6 @@ fn full_relayout_forced() -> bool {
     *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
 }
 
-/// How many replaced compositions may be re-admitted inside one another
-/// before a view counts as never settling.
-const MAX_READMISSIONS: u8 = 8;
-
 /// The modifiers a key spec holds down and the key it presses: `Shift+F10` is
 /// Shift held for `F10`, `+` types a plus. A leading name that is no modifier
 /// is the key itself. Only the names are trimmed: the key is the character
@@ -727,20 +727,9 @@ fn chord(spec: &str) -> (&str, Vec<String>) {
 }
 
 thread_local! {
-    /// Re-admissions in progress on this thread, nested inside each other.
-    static READMISSIONS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
-}
-
-/// The innermost widget under `widget` whose control invocation is pending.
-fn pending_control_owner(widget: &dyn Widget) -> Option<String> {
-    if !crate::widget::controls::has_pending_control_invocation(widget) {
-        return None;
-    }
-    widget
-        .children()
-        .into_iter()
-        .find_map(pending_control_owner)
-        .or_else(|| Some(widget.name().to_owned()))
+    /// Whether the frame running on this thread is one a readmission started
+    /// ([`FrameHarness::readmit_replaced_composition`]).
+    static READMITTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// What the root reported for one [`FrameHarness::dispatch_to_root_outcome`].
@@ -2332,7 +2321,12 @@ impl FrameHarness {
         );
         let settled = crate::doc::settle_mark(&self.state.doc) != before;
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
-        if settled || submitted {
+        // A readmission frame lays out the composition its caller's sync
+        // replaced, so that the tick which asked for it dispatches through
+        // admitted maps once it returns. Ticking here would ask for another
+        // readmission — a list re-reading its rows reports a structure change
+        // every time — and the frames would nest instead of settling.
+        if (settled || submitted) && !READMITTING.get() {
             self.idle_control_tick();
             self.update_root();
             self.root.sync(&self.state.doc, &self.state.root);
@@ -6673,45 +6667,24 @@ impl FrameHarness {
     /// When the composition was replaced since it was admitted, retire its
     /// raw nodes and admit the new one, keeping a surviving live focus.
     ///
-    /// A view that replaces its composition again on every pass while a
-    /// change of its own is still pending never settles: after
-    /// [`MAX_READMISSIONS`] nested passes the harness stops and says which
-    /// view it is (a test fails on it) instead of recursing until the stack
-    /// overflows.
+    /// The frame this runs lays the new composition out and admits it, and
+    /// syncs nothing of its own (see [`FrameHarness::sync_frame`]), so a
+    /// model that reports a structure change from every frame is laid out by
+    /// it once instead of asking for readmission after readmission.
     fn readmit_replaced_composition(&mut self) {
         if !self.take_composition_dirty() {
             return;
         }
-        let depth = READMISSIONS.get();
-        if depth >= MAX_READMISSIONS {
-            let pending = pending_control_owner(self.root.as_ref());
-            let message = format!(
-                "headless: `{}` never settles: it replaces its composition on every pass while \
-                 a change is pending{}",
-                self.root.name(),
-                pending.map_or_else(String::new, |owner| format!(
-                    " (a control invocation of `{owner}` stays pending)"
-                )),
-            );
-            tracing::error!("{message}");
-            self.discard_layout_tree();
-            // What stays pending is answered, as failed: no action waits
-            // forever on a view that never settles, nor does closing it.
-            self.fail_pending_controls(&message);
-            // A test fails on it; a release host skips the frame.
-            debug_assert!(false, "{message}");
-            return;
-        }
-        READMISSIONS.set(depth.saturating_add(1));
-        struct Leave;
-        impl Drop for Leave {
-            fn drop(&mut self) {
-                READMISSIONS.set(READMISSIONS.get().saturating_sub(1));
-            }
-        }
-        let _leave = Leave;
         let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
         self.discard_layout_tree();
+        struct Unreadmitting;
+        impl Drop for Unreadmitting {
+            fn drop(&mut self) {
+                READMITTING.set(false);
+            }
+        }
+        let _unreadmitting = Unreadmitting;
+        READMITTING.set(true);
         self.relayout();
         if self.focused.is_none()
             && let Some(focus) = focus
@@ -6722,30 +6695,6 @@ impl FrameHarness {
             self.focused =
                 unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
         }
-    }
-
-    /// Answer every control invocation still queued in the tree as failed
-    /// with `reason`, without running it: its caller, an effect waiting on
-    /// its edit, learns it did not happen.
-    fn fail_pending_controls(&mut self, reason: &str) {
-        let drained = crate::bound_dispatch::drain_control_invocations(self.root.as_mut());
-        for (target, intent, on_behalf_of, _) in drained.pending {
-            let result = Err(tilo_actions::DoorError::Failed(reason.to_owned()));
-            self.note_continuation(on_behalf_of, &result);
-            if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
-                self.root.as_mut(),
-                &target,
-                &result,
-                on_behalf_of,
-            ) {
-                tracing::warn!(?error, "headless: a failed control could not be told");
-            }
-            self.control_failures
-                .push(format!("{}: {reason}", intent.address.action));
-        }
-        while crate::widget::controls::take_attributed_control_invocation(self.root.as_mut())
-            .is_some()
-        {}
     }
 
     fn host_tick(&mut self) {
@@ -10564,9 +10513,12 @@ mod tests {
         }
     }
 
+    /// A view that replaces its composition on every sync while a control
+    /// invocation is pending: a frame that answered its own sync with another
+    /// frame nested them until the harness gave up. Each frame now lays out
+    /// and admits the composition its sync replaced, so one frame settles it.
     #[test]
-    #[should_panic(expected = "`NeverSettles` never settles")]
-    fn a_view_that_never_settles_fails_instead_of_overflowing_the_stack() {
+    fn a_view_that_replaces_its_composition_on_every_sync_settles_in_its_frame() {
         let restless = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut driver = FrameHarness::new(
             State::new(),
@@ -10580,6 +10532,12 @@ mod tests {
         );
         restless.set(true);
         driver.relayout();
+        restless.set(false);
+        driver.relayout();
+        assert!(
+            !driver.layout_node_ids().is_empty(),
+            "the frame after the one that kept replacing its composition is laid out"
+        );
     }
 
     #[test]

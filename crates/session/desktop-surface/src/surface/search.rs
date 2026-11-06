@@ -1081,6 +1081,12 @@ impl DesktopSurface {
     /// Take a host's search request, follow the palette, and perform what
     /// was chosen. Runs every update pass, before queued commands apply.
     pub(super) fn step_search(&mut self, doc: &AutoCommit) {
+        // Search's code may have arrived since the last pass (the browser
+        // fetches it on first use): what asked for it meanwhile opens now,
+        // rather than the person having to ask again.
+        if self.search.borrow_mut().adopt() {
+            self.structure_dirty = true;
+        }
         let opened = self.search.borrow().is_open();
         let request = self.shared.borrow_mut().search_request.take();
         match request {

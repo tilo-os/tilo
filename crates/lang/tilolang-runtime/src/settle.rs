@@ -14,11 +14,11 @@ use crate::core::Core;
 use crate::embed::EmbedBlock;
 use crate::error::RuntimeError;
 use crate::exec::{ActionOutcome, ExecCtx, InvokeOutcome};
-use crate::flow::{FlowOutcome, Resolution};
 use crate::handles::QueuedBlock;
 use crate::host_res::to_scalar;
 use crate::ids::{ModuleHash, Principal};
 use crate::project::{ProjectOptions, project};
+use crate::run::{Resolution, RunOutcome};
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, from_json, to_json};
 
@@ -48,7 +48,7 @@ pub enum AgentBlock {
 /// What the host records of an invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvocationRecord {
-    /// The id of the action or flow.
+    /// The id of the action.
     pub action: String,
     pub name: String,
     pub app: String,
@@ -139,7 +139,7 @@ impl Core {
         &self,
         invoker: &Principal,
         aref: &ActionRef,
-        suggestion: &crate::flow::Suggestion,
+        suggestion: &crate::run::Suggestion,
     ) -> Result<ResourceRef, RuntimeError> {
         let identity = ModuleHash::principal(&invoker.0);
         let record = self.record_of(invoker, Some(aref), "suggested", "", &suggestion.run);
@@ -486,21 +486,11 @@ impl Core {
             .collect()
     }
 
-    /// What the authority needs to decide about an action or flow by id.
+    /// What the authority needs to decide about an action by id.
     pub(crate) fn info_of(&self, action: &str) -> Option<ActionInfo> {
         let reg = self.registry.borrow();
-        if let Some(pkg) = reg.action_package(action) {
-            let class = pkg.action(action)?.class;
-            return Some(ActionInfo {
-                action: action.to_owned(),
-                app: pkg.meta.app.clone(),
-                class,
-                own: true,
-                module: pkg.hash.clone(),
-            });
-        }
-        let pkg = reg.flow_package(action)?;
-        let class = pkg.flow(action)?.class;
+        let pkg = reg.action_package(action)?;
+        let class = pkg.action(action)?.class;
         Some(ActionInfo {
             action: action.to_owned(),
             app: pkg.meta.app.clone(),
@@ -575,6 +565,22 @@ impl Core {
         identity: &ModuleHash,
         approver: &Principal,
     ) -> Result<(String, String, String), RuntimeError> {
+        // The record names the run that waits on the person: approving it goes on from its
+        // journal, so the calls it already made are not made again. A call recorded before it
+        // started has no run, and a run its record reached another replica from is not this
+        // one's to go on from: those run their action now.
+        if !rec.run.is_empty() {
+            match self.resolve(&rec.run, approver, Resolution::Approve) {
+                Ok(RunOutcome::Done(value)) => {
+                    return Ok(("done".to_owned(), self.result_text(&value), String::new()));
+                }
+                Ok(RunOutcome::Suspended(suggestion)) => {
+                    return Ok(("suggested".to_owned(), String::new(), suggestion.run));
+                }
+                Err(RuntimeError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
         let parsed: serde_json::Value = serde_json::from_str(&rec.args)
             .map_err(|e| RuntimeError::BadArgs(format!("the invocation's arguments: {e}")))?;
         let Value::List(args) = from_json(&parsed).map_err(RuntimeError::BadArgs)? else {
@@ -587,23 +593,6 @@ impl Core {
         } else {
             (rec.author.clone(), None)
         };
-        if self.registry.borrow().flow_package(&rec.action).is_some() {
-            return Ok(
-                match self.start_flow_from(
-                    &invoker,
-                    &rec.action,
-                    args,
-                    vec![identity.clone()],
-                    None,
-                    suggested_by,
-                )? {
-                    FlowOutcome::Done(v) => {
-                        ("done".to_owned(), self.result_text(&v), String::new())
-                    }
-                    FlowOutcome::Suspended(s) => ("suggested".to_owned(), String::new(), s.run),
-                },
-            );
-        }
         let ctx = ExecCtx {
             invoker,
             chain: vec![identity.clone()],
@@ -621,6 +610,7 @@ impl Core {
         };
         Ok(match self.run_action(&ctx, &aref)? {
             ActionOutcome::Done(v) => ("done".to_owned(), self.result_text(&v), String::new()),
+            ActionOutcome::Suspended(s) => ("suggested".to_owned(), String::new(), s.run),
             ActionOutcome::Failed(why) => ("failed".to_owned(), why, String::new()),
         })
     }

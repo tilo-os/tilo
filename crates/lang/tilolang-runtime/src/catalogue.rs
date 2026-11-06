@@ -7,8 +7,7 @@
 //! ```
 
 use crate::meta::{
-    ActionMeta, FieldMeta, FlowMeta, FnMeta, MergeKind, NamedRootMeta, PackageMeta, ParamMeta,
-    VariantMeta,
+    ActionMeta, FieldMeta, FnMeta, MergeKind, NamedRootMeta, PackageMeta, ParamMeta, VariantMeta,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +18,6 @@ pub enum SignatureKind {
     /// The root a program reaches an app's own record by.
     Root,
     View,
-    Flow,
     Fn,
 }
 
@@ -140,16 +138,6 @@ fn action_text(app: &str, a: &ActionMeta) -> String {
     )
 }
 
-/// A flow's declaration line.
-fn flow_text(app: &str, f: &FlowMeta) -> String {
-    format!(
-        "flow {app}.{}({}){}",
-        f.name,
-        params(&f.params),
-        result(f.result.as_ref())
-    )
-}
-
 /// A function's declaration line.
 fn fn_text(app: &str, f: &FnMeta) -> String {
     format!(
@@ -208,10 +196,6 @@ fn of(m: &PackageMeta) -> Vec<Signature> {
     for v in m.offered_views() {
         let text = format!("view {app}.{}({})", v.name, params(&v.params));
         out.push(sig(SignatureKind::View, &app, &v.name, &v.id, &v.doc, text));
-    }
-    for f in &m.flows {
-        let text = flow_text(&app, f);
-        out.push(sig(SignatureKind::Flow, &app, &f.name, &f.id, &f.doc, text));
     }
     for f in &m.fns {
         let text = fn_text(&app, f);

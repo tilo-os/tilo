@@ -1,4 +1,4 @@
-//! Calls: functions, actions, flows, record construction, built-ins and methods.
+//! Calls: functions, actions, record construction, built-ins and methods.
 
 use super::expr::dotted;
 use super::{Checker, Ctx, Ex, Invoked, Written, conv, store_op};
@@ -534,7 +534,7 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         // An action a view applies runs when its event fires: the view state it takes is read
         // then, not when the view drew.
-        let at_press = matches!(c.kind, CKind::Action | CKind::Flow) && self.st.ctx == Ctx::View;
+        let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
         let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         let ctx = self.st.ctx;
         match (c.kind, ctx) {
@@ -546,51 +546,20 @@ impl Checker<'_> {
                 self.call_fn(c, bound, span)
             }
             (CKind::Action, Ctx::Fn) => {
-                self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action or a flow", c.name));
+                self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action", c.name));
                 Ex::error()
             }
-            (CKind::Action, Ctx::Action) => {
-                // `suggest act(args)` records the action as a proposal, so it is not applied
-                // here: nothing of it runs inside this action's own change.
-                if self.st.suggest.is_some() {
-                    let bound = self.applied_args(c, bound, span);
-                    return self.invoke(c, bound);
-                }
-                if !c.own {
-                    // `invoke(other.act(args), by: mia, ...)` in a scenario: another app's
-                    // action is invoked at its own door, a change of its own, as a flow
-                    // applies one, never called inside this action's change.
-                    if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Foreign {
-                        let bound = self.applied_args(c, bound, span);
-                        return self.invoke(c, bound);
-                    }
-                    self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
-                    return Ex::error();
-                }
-                if let Some(f) = c.func {
-                    self.st.facts.inline_actions.insert(f);
-                }
-                let (stmts, bound) = self.inline_args(c, bound);
-                let call = self.call_own(c, bound, span, "action");
-                if stmts.is_empty() {
-                    call
-                } else {
-                    let ty = call.ty.clone();
-                    Ex::new(Ek::Seq(stmts, Box::new(call)), ty)
-                }
-            }
-            (CKind::Action, Ctx::Flow) => {
+            (CKind::Action, Ctx::Action | Ctx::Program) => {
+                // A call runs the action at its own door, as a change of its own: the
+                // authority decides it, and the caller suspends around it and goes on from
+                // its journaled result. `suggest act(args)` is the same call, recorded as a
+                // proposal instead of applied.
                 let bound = self.applied_args(c, bound, span);
                 self.invoke(c, bound)
             }
-            (CKind::Action | CKind::Flow, Ctx::View | Ctx::Block) => {
+            (CKind::Action, Ctx::View | Ctx::Block) => {
                 let bound = self.applied_args(c, bound, span);
                 self.action_value(c, bound)
-            }
-            (CKind::Flow, other) => {
-                let who = other.word();
-                self.err("E046", span, format!("{who} cannot call the flow `{}`; flows run on their own and are applied from a view or a block as an action", c.name));
-                Ex::error()
             }
             (CKind::View, _) => {
                 self.err(
@@ -601,19 +570,6 @@ impl Checker<'_> {
                         c.name
                     ),
                 );
-                Ex::error()
-            }
-        }
-    }
-
-    fn call_own(&mut self, c: &Callable, bound: Vec<Ex>, span: Span, what: &str) -> Ex {
-        match c.func {
-            Some(f) if c.own => {
-                self.st.facts.calls.insert(f);
-                Ex::new(Ek::Call(f, bound), c.result.clone())
-            }
-            _ => {
-                self.err("E081", span, format!("calling the {what} `{}` of another package is not supported in v1: the host ABI has no cross-module call. Only actions of other packages can be applied", c.name));
                 Ex::error()
             }
         }
@@ -1280,11 +1236,11 @@ impl Checker<'_> {
     }
 
     fn builtin_model(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        if self.st.ctx != Ctx::Flow {
+        if !matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             self.err(
                 "E047",
                 span,
-                "`model_call(kind, input)` is nondeterministic and only a flow may use it",
+                "`model_call(kind, input)` is nondeterministic and only an action may use it",
             );
             return Ex::error();
         }
@@ -1706,7 +1662,7 @@ impl Checker<'_> {
     const DRAWS: &'static str = "`random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and `random.id()`";
 
     /// `random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and
-    /// `random.id()`: a draw. Only an action or a flow makes one, declaring `uses random`, and
+    /// `random.id()`: a draw. Only an action makes one, declaring `uses random`, and
     /// its invocation keeps each value drawn, so a replay reads the same values (effects.md).
     fn builtin_random(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
         let word = name.name.as_str();
@@ -2282,11 +2238,10 @@ impl Checker<'_> {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "is_empty") if args.is_empty() => {
-                let len = Ex::host(Imp::ListLen, vec![r], Ty::Int);
-                Ex::new(
-                    Ek::Bin(ir::BinOp::Eq, Box::new(len), Box::new(Ex::int(0))),
-                    Ty::Bool,
-                )
+                // Whether it holds nothing reads whether it shows a first item: a filtered
+                // collection's length is only the most it can hold, so measuring it said an
+                // empty one held something ([`Imp::CollEmpty`]), and counting it read the run.
+                Ex::host(Imp::CollEmpty, vec![r], Ty::Bool)
             }
             (
                 Ty::List(t) | Ty::Set(t) | Ty::Collection(t),

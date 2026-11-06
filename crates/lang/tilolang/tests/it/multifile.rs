@@ -666,7 +666,7 @@ view board(m: Marks) {
 "#;
 
 /// The package that uses it: its own root and its own view, the library's action applied from a
-/// flow and its function called from the view.
+/// action and its function called from the view.
 const LIBRARY_USER: &str = r#"app test.notes "Notes"
 
 use test.marks as marks
@@ -686,7 +686,7 @@ root notebook: Notebook
 default view main for Notebook
 
 /// Adds a high mark to the board through the library's action.
-flow add_high() {
+action add_high() {
     marks.add(marks.marks, "High", .high)
 }
 
@@ -748,8 +748,9 @@ fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
     // The package that uses it reaches the same declarations, owned by the library.
     assert_eq!(user.meta.app, "test.notes");
     assert_eq!(user.meta.uses, ["test.marks", "tilo.std"]);
-    assert!(
-        user.meta.actions.is_empty(),
+    assert_eq!(
+        names(user.meta.actions.iter().map(|a| a.name.as_str())),
+        ["add_high"],
         "the library's action is not copied"
     );
     assert!(
@@ -759,13 +760,9 @@ fn a_library_package_declares_types_fns_and_a_resource_of_its_own() {
     for name in ["Mark", "Importance", "add", "count"] {
         assert!(user.ids.get(name).is_none(), "`{name}` stays the library's");
     }
-    // Its own view and flow compile against the library's names.
+    // Its own view and action compile against the library's names.
     assert_eq!(
         names(user.meta.offered_views().map(|v| v.name.as_str())),
         ["main"]
-    );
-    assert_eq!(
-        names(user.meta.flows.iter().map(|f| f.name.as_str())),
-        ["add_high"]
     );
 }

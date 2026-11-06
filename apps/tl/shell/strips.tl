@@ -238,7 +238,7 @@ fn place_in_front(s: ArrangementStrip) -> Option<session.Place> {
 /// Shows the place `place` and brings its strip forward with it: what choosing a tab does, and
 /// the same arranging action a script or an agent runs. The strip's own reading moves first, the
 /// desk then brings the place in front of its strip.
-flow show_place(v: Viewing, strip: Text, place: session.Place) {
+action show_place(v: Viewing, strip: Text, place: session.Place) {
     focus_strip(v, strip)
     session.activate(place: place)
 }

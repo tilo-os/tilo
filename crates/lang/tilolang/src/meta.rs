@@ -1,5 +1,5 @@
 //! Package metadata, the JSON in the module's `tilolang.meta` section: the package's types,
-//! enums, actions (with their effect class and what they reach), views, flows and fns, by id
+//! enums, actions (with their effect class and what they reach), views and fns, by id
 //! and name, with their doc comments. Tools, the runtime, the platform and agents read it;
 //! compiled packages are imported through it. The platform derives the agent's catalogue, the
 //! published actions and the app's surface from it.
@@ -131,7 +131,6 @@ pub struct PackageMeta {
     pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
-    pub flows: Vec<FlowMeta>,
     pub fns: Vec<FnMeta>,
     /// Ids of the root types (`root T`): one resource each per workspace, which the launcher
     /// lists and opens.
@@ -356,19 +355,11 @@ pub struct SearchMeta {
     /// Whether the type declares these (a `search` block) rather than having the defaults.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub declared: bool,
-    /// `mark others`: other people's changes to the type are marked unseen for a reader, as
-    /// an agent's are (task-legibility.md §4).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub mark_others: bool,
 }
 
 impl SearchMeta {
     pub fn is_empty(&self) -> bool {
-        self.filters.is_empty()
-            && self.sort.is_none()
-            && self.hidden.is_empty()
-            && !self.declared
-            && !self.mark_others
+        self.filters.is_empty() && self.sort.is_none() && self.hidden.is_empty() && !self.declared
     }
 
     /// The filter a query names `key`.
@@ -563,7 +554,7 @@ impl DefaultMeta {
     }
 }
 
-/// An action or flow that code can reach, with its effect class. `own` is relative to the
+/// An action that code can reach, with its effect class. `own` is relative to the
 /// package whose metadata lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reach {
@@ -656,6 +647,11 @@ pub struct ActionMeta {
     /// disabled with the reason.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub applies: bool,
+    /// Whether the action's body invokes another action, itself included. A run that does is
+    /// run again from its start whenever a call waits for a person, so it journals its reads and
+    /// its writes; one that does not is one change and is never replayed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invokes: bool,
 }
 
 impl ActionMeta {
@@ -722,20 +718,6 @@ pub struct ViewMeta {
     /// item, never offered or listed as a view of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_of: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FlowMeta {
-    pub id: String,
-    pub name: String,
-    pub doc: String,
-    pub params: Vec<ParamMeta>,
-    pub result: Option<String>,
-    pub class: EffectClass,
-    pub reaches: Vec<Reach>,
-    /// `uses web, time`: the effects the flow's body reads ([`crate::effects::Effect`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub uses: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

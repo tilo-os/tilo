@@ -102,9 +102,9 @@ pages, forms. It relies on general language features any author can use:
 
 An app that needs something `std` doesn't do composes `ui.*` directly and loses nothing native.
 
-A list groups without a second widget: `std.rows` takes `group:`, naming each item's key, and the
-list draws a section band for each run of items that names the same key and holds it at the top
-while its items scroll past. The heading is the key itself, presented as a value of its kind is
+A list groups without a second widget: the row a list draws takes `group:`, naming the item's
+key, and the list draws a section band for each run of items that names the same key and holds
+it at the top while its items scroll past. The heading is the key itself, presented as a value of its kind is
 (a day as Today, Tomorrow, a weekday; a word as it is written), never a string an app formats.
 Items that name no key stand under `ungrouped:`, in the order the caller gave them; a place that
 groups nothing says so per item (`group: x -> if by_day { x.due } else { .none }`), from what the
@@ -112,11 +112,15 @@ place says and never a walk over the list. Only the rows in view are built and a
 group, so a heading costs nothing on a long list. `tail:` names the items done with: they stand
 last under `tail_title`, folded away until the person presses the band, and a list that folds
 nothing away answers `tail: x -> false`, giving no heading and no clause. The block names the
-item and the item it stands under, so a row leaves out what its parent already says:
+item and who else is at it; the row names the item it stands under (`parent:`) and the one just
+over it (`above:`), so a child leaves out what its parent already says:
 
 ```
-std.rows(shown, "No tasks here", .none, .some("list-checks"),
-         group: .due, tail: .folded) { (t, under) -> task_row(t, under) }
+std.list(shown, tree: true, ungrouped: .some("No day")) { (t, at) ->
+    ui.ListItem(item: t, presence: at, group: t.due, tail: t.folded, parent: t.parent) {
+        task_row(t, t.parent)
+    }
+}
 ```
 
 A key the platform has no words for — a case of an enum, a record reference — is grouped by the
@@ -125,7 +129,8 @@ platform draws, so the runs are the runs of that text.
 
 The same bands serve mail and chat grouped by day. `ui.VirtualList` and `ui.ListItem` carry it
 (`group:` and `tail:` on a row, `tail_title:` on the list), so a view composed from `ui.*`
-groups as `std.rows` does.
+groups as `std.list` does: the app names its own grouping, nesting and fold, and `std` adds no
+parameters of its own for them.
 
 ## 4. Customizing a component: a ladder
 
@@ -159,7 +164,15 @@ view task_row(t: Task) {
 default view home for Tasks
 
 view home(tasks: Tasks) {
-    std.list(tasks, tasks.items)
+    ui.NavShell(content_kind: .document) {
+        overview: {
+            std.list(tasks.items) { (t, at) ->
+                ui.ListItem(item: t, presence: at) {
+                    task_row(t)
+                }
+            }
+        }
+    }
 }
 ```
 

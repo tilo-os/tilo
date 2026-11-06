@@ -278,7 +278,7 @@ fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
         "{:?}",
         codes(&acting)
     );
-    // A flow or an action reads its own arguments as they are.
+    // An action reads its own arguments as they are.
     ok(
         "action a(c: C, t: Text) {\n    c.t = t\n}\naction b(c: C) {\n    let t = c.t\n    a(c, t)\n}",
     );
@@ -349,7 +349,7 @@ fn descendants_and_ancestors_follow_the_parent_an_item_names() {
 
 #[test]
 fn a_ui_let_writes_the_type_its_value_is_read_as() {
-    // What `std.rows` writes: a heading of the key the caller groups by, absent when the item
+    // What a row writes: a heading of the key the app groups by, absent when the item
     // names none.
     ok(
         "view w(c: C) {\n    ui.VirtualList {\n        let heading: Option<Date> = if let d = c.due { d } else { .none }\n        ui.ListItem(item: c, group: heading) {\n        }\n    }\n}",

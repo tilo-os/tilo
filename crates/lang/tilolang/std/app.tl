@@ -6,228 +6,69 @@ app tilo.std "Standard library"
 /// their value), so an app that wants something else composes `ui.*` itself and loses nothing
 /// native.
 ///
-/// A window that lists resources: its bar's actions are the ones its owner's type declares,
-/// which the host places there — the primary one as the Primary button, the rest behind the
-/// bar's one menu; the primary's key is the entry's at the list's end, so the key and the
-/// button lead the person there to type the item; each item is a row whose actions the host
+/// A window that lists resources composes it: `std.list` puts the items down a column of rows
+/// with what the platform does on a row, `std.places` the places the app names in the sidebar,
+/// `std.header` the sort menu, `std.add_entry` the entry at the list's end, and the app writes
+/// the shell around them and says where each stands. The bar's actions are the ones the owner's
+/// type declares, which the host places there — the primary one as the Primary button, the rest
+/// behind the bar's one menu; the primary's key is the entry's at the list's end, so the key and
+/// the button lead the person there to type the item; each item is a row whose actions the host
 /// puts on its context menu and its swipe, a destructive one undone rather than confirmed; a
-/// command the app marked `frequent` a button of its own, never folded into a run; with no
-/// items it says `empty` and the bar keeps the type's actions. The places in the sidebar are
-/// the item type's filters that are on or off (`filters(T)`), after all of the items; the one
-/// chosen is the window's query, as people type it in search (`is:done`), and a window's state
-/// is the person's own, not the workspace's; a window starts on `place` (all of the items when
-/// empty). The place of all of the items is called `everything`, "All" and the item type's
-/// plural noun unless the app says. A `sort` view state is the bar's sort menu. Items whose
+/// command the app marked `frequent` a button of its own, never folded into a run. Items whose
 /// type has a window of their own open in the next column; the list follows which one is open.
-view list<R, T, S>(
-    of: R,
+///
+/// The items of a list down a column of rows, each built as it shows: choosing a row opens its
+/// item beside the list and activating it opens it in front, as every list of the platform does,
+/// and the row says who else is at the item.
+///
+/// `row` draws an item, handed the item and who else is at it, and writes the `ui.ListItem` the
+/// list shows: its `group:`, its `parent:` and its `tail:` say the list's grouping, nesting and
+/// fold, which are the app's to say, and what it puts inside is the item's row. A list that
+/// nests its rows gives `tree`; one that groups says the name of the items that group under
+/// nothing (`ungrouped`) and of the run it folds under its tail (`tail_title`); one that does
+/// neither gives neither.
+template view list<T>(
     items: List<T>,
-    sort: Option<State<S>> = .none,
-    place: Text = "",
-    everything: Text = phrase("tilolang-all", kind: meta(T).plural),
-    empty: Text = phrase("tilolang-empty"),
-    entry: Option<Action> = .none,
-    entry_placeholder: Text = phrase("tilolang-add"),
-    row: (T) -> View,
+    tree: Bool = false,
+    ungrouped: Option<Text> = .none,
+    tail_title: Option<Text> = .none,
+    row: (T, Option<Principal>) -> View,
 ) {
-    state query: Text = place
-    let kind = meta(T)
-    let places = filters(T).filter(f -> f.toggle)
-    let shown = items.matching(query)
-    let chosen = places.find(p -> p.query == query)
-    let title = chosen?.label ?? if places.is_empty() { meta(of).title } else { everything }
-    ui.NavShell(
-        content_kind: if kind.opens { .document } else { .list },
-        sidebar_title: if places.is_empty() { .none } else { .some(meta(of).title) },
-        overview_title: if kind.opens { .some(title) } else { .none },
-        overview_count: if kind.opens { .some(shown.len()) } else { .none },
-        title: if kind.opens { .none } else { .some(title) },
-        count: if kind.opens { .none } else { .some(shown.len()) },
+    ui.VirtualList(
+        selection_follows_focus: true,
+        multi_select: true,
+        in_column: true,
+        tree: tree,
+        ungrouped_title: ungrouped,
+        tail_title: tail_title,
     ) {
-        sidebar: {
-            if not places.is_empty() {
-                ui.NavList(selected: if query == "" { "all" } else { query }) {
-                    ui.NavItem("all", everything, icon: kind.icon) {
-                        on select: set(query, "")
-                    }
-                    for p in places {
-                        ui.NavItem(p.query, p.label, icon: p.icon) {
-                            on select: set(query, p.query)
-                        }
-                    }
-                }
-            }
-        }
-        overview_actions: {
-            if kind.opens {
-                std.header(sort: sort)
-            }
-        }
-        actions: {
-            if not kind.opens {
-                std.header(sort: sort)
-            }
-        }
-        overview: {
-            if kind.opens {
-                std.rows(
-                    shown,
-                    empty,
-                    kind.icon,
-                    entry: entry,
-                    entry_placeholder: entry_placeholder,
-                ) { (x, under) ->
-                    row(x)
-                }
-            }
-        }
-        content: {
-            if kind.opens {
-                ui.EmptyState(phrase("tilolang-none-selected", kind: kind.noun), icon: kind.icon)
-            } else {
-                std.rows(
-                    shown,
-                    empty,
-                    kind.icon,
-                    entry: entry,
-                    entry_placeholder: entry_placeholder,
-                ) { (x, under) ->
-                    row(x)
-                }
-            }
+        on select(x: T): open(x, front: false)
+        on activate(x: T): open(x)
+        for x in items {
+            row(x, lenses(x).find(l -> not l.mine)?.who)
         }
     }
 }
 
-/// The items of a list as the rows of a column, or what it says while it has none.
-///
-/// Give `group` and the list stands under a heading for each run of items that names the same
-/// key, the heading held at the top while the person scrolls its run: the key as the platform
-/// presents a value of its kind — a day as the day it is, read against today; a text as it is
-/// written. A list grouped by the day something happened (`group_done`) says those days as the
-/// days they were: `Today`, `Yesterday`, `Sunday`, `Jun 21`, never as days gone by. The items
-/// that name no key stand under `ungrouped` when the caller gives it, in the order the caller
-/// gave, never under the last group that names one.
-///
-/// Give `tail` and the rows it is true of stand under `tail_title`, folded away until the
-/// person opens them: they come last because the caller gave them last, so a place that
-/// decides so itself reads the same from three items to three thousand.
-///
-/// Give `parent` and the items stand as a tree: each indented under the item it is a subtask
-/// of, with a disclosure that folds its subtasks away.
-///
-/// A list that groups nothing, or folds nothing away, gives neither.
-///
-/// `row` draws an item with the item it stands under (`.none` at the top), so a child leaves
-/// out what its parent already says — the day they are both due, the project they both are of.
-view rows<T, K>(
-    items: List<T>,
-    empty: Text,
+/// The places a window offers in its sidebar: all of the items (`everything`, with `icon`), then
+/// each of the filters the app names as one, the place chosen naming the window's `chosen` query
+/// as people type it in search (`is:done`), and every one of them naming itself the same way.
+/// What a window offers is what its app declares, never every filter its item type could be
+/// found by.
+template view places<T>(
+    chosen: State<Text>,
+    of: List<Filter<T>>,
+    everything: Text,
     icon: Option<Text>,
-    group: Option<(T) -> Option<K>> = .none,
-    ungrouped: Option<Text> = .none,
-    group_done: Bool = false,
-    tail: Option<(T) -> Bool> = .none,
-    tail_title: Text = phrase("tilolang-done"),
-    parent: Option<(T) -> Option<T>> = .none,
-    parent_title: Option<(T) -> Option<Text>> = .none,
-    progress: Option<(T) -> Option<Text>> = .none,
-    all_done: Bool = false,
-    entry: Option<Action> = .none,
-    entry_placeholder: Text = phrase("tilolang-add"),
-    row: (T, Option<T>) -> View,
 ) {
-    // Nothing of a list that holds something is left open: its rows fold under the entry.
-    let all_done = all_done and not items.is_empty()
-    // The heading over the rows done with, when the caller marks any: a list that folds
-    // nothing away says no such heading at all.
-    let folded_title: Option<Text> = if let t = tail { .some(tail_title) } else { .none }
-    // The entry at the list's end is the list's own way to add: the host gives it the window's
-    // primary action's key, so the key and the bar's button lead the person there, and what is
-    // typed is what the list gains.
-    if let create = entry {
-        ui.Docked {
-            foot: {
-                stack {
-                    // Everything here is done with: the rows fold under the entry that adds
-                    // the next one.
-                    if all_done {
-                        rows_list(
-                            items,
-                            icon,
-                            group,
-                            ungrouped,
-                            group_done,
-                            tail,
-                            folded_title,
-                            parent,
-                            parent_title,
-                            progress,
-                        ) { (x, under) ->
-                            row(x, under)
-                        }
-                    }
-                    std.add_entry(entry_placeholder, create)
-                }
-            }
-            if all_done {
-                ui.EmptyState(phrase("tilolang-all-done"), icon: icon, inline: true)
-            } else if items.is_empty() {
-                ui.EmptyState(empty, icon: icon)
-            } else {
-                rows_list(
-                    items,
-                    icon,
-                    group,
-                    ungrouped,
-                    group_done,
-                    tail,
-                    folded_title,
-                    parent,
-                    parent_title,
-                    progress,
-                ) { (x, under) ->
-                    row(x, under)
-                }
-            }
+    ui.NavList(selected: if chosen == "" { "all" } else { chosen }) {
+        ui.NavItem("all", everything, icon: icon) {
+            on select: set(chosen, "")
         }
-    } else if items.is_empty() {
-        ui.EmptyState(empty, icon: icon)
-    } else if all_done {
-        // Everything here is done with: say so calmly, over the foot that folds it away.
-        ui.Docked {
-            foot: {
-                rows_list(
-                    items,
-                    icon,
-                    group,
-                    ungrouped,
-                    group_done,
-                    tail,
-                    folded_title,
-                    parent,
-                    parent_title,
-                    progress,
-                ) { (x, under) ->
-                    row(x, under)
-                }
+        for p in of {
+            ui.NavItem(p.query, p.label, icon: p.icon) {
+                on select: set(chosen, p.query)
             }
-            ui.EmptyState(phrase("tilolang-all-done"), icon: icon, inline: true)
-        }
-    } else {
-        rows_list(
-            items,
-            icon,
-            group,
-            ungrouped,
-            group_done,
-            tail,
-            folded_title,
-            parent,
-            parent_title,
-            progress,
-        ) { (x, under) ->
-            row(x, under)
         }
     }
 }
@@ -255,70 +96,6 @@ template view add_entry(placeholder: Text, create: Action) {
         }
         ui.TextInput(value: typed, placeholder: placeholder, entry: true) {
             on submit: create.then(set(typed, ""))
-        }
-    }
-}
-
-/// The items of a list as the rows of a column, with `rows`' grouping, nesting and folded tail.
-///
-/// `row` draws an item with the item it stands under, as `rows` does.
-view rows_list<T, K>(
-    items: List<T>,
-    icon: Option<Text>,
-    group: Option<(T) -> Option<K>>,
-    ungrouped: Option<Text>,
-    group_done: Bool,
-    tail: Option<(T) -> Bool>,
-    tail_title: Option<Text>,
-    parent: Option<(T) -> Option<T>>,
-    parent_title: Option<(T) -> Option<Text>>,
-    progress: Option<(T) -> Option<Text>>,
-    row: (T, Option<T>) -> View,
-) {
-    let nested = if let p = parent { true } else { false }
-    ui.VirtualList(
-        selection_follows_focus: true,
-        multi_select: true,
-        in_column: true,
-        tail_title: tail_title,
-        tree: nested,
-        ungrouped_title: ungrouped,
-    ) {
-        on select(x: T): open(x, front: false)
-        on activate(x: T): open(x)
-        for x in items {
-            // The heading over the rows of the key this item names, drawn as the platform
-            // presents a value of its kind; `.none` among the items of a list that groups
-            // nothing heads none of them.
-            let heading: Option<K> = if let g = group { g(x) } else { .none }
-            let folded = if let t = tail { t(x) } else { false }
-            // The row just over this one in its group, as the list shows them: the item before
-            // it when that one has the same heading (the items naming none stand together
-            // under the list's own) and is on this side of the fold. That is the place the
-            // actions offered on the row get, and none for the first of a group. The list's
-            // rows are the host's, so a row reaching one back costs one step, however far
-            // along the list it stands.
-            let above: Option<T> = if let p = items.previous(x) {
-                let same_heading = if let g = group { g(p) == heading } else { true }
-                let same_side = if let t = tail { t(p) == folded } else { true }
-                if same_heading and same_side { .some(p) } else { .none }
-            } else { .none }
-            let under: Option<T> = if let p = parent { p(x) } else { .none }
-            let belongs: Option<Text> = if let t = parent_title { t(x) } else { .none }
-            let count: Option<Text> = if let c = progress { c(x) } else { .none }
-            ui.ListItem(
-                item: x,
-                presence: lenses(x).find(l -> not l.mine)?.who,
-                group: heading,
-                group_done: group_done,
-                tail: folded,
-                above: above,
-                parent: under,
-                parent_title: belongs,
-                progress: count,
-            ) {
-                row(x, under)
-            }
         }
     }
 }
@@ -622,9 +399,12 @@ view history<R>(of: R) {
                 // What was done: the sentence its last change says, or, for a step of a run,
                 // who ran it and what it ran.
                 stack(gap: .related) {
-                    row(gap: .related, align: .center) {
+                    // The sentence takes the room the avatar leaves and the time and the button
+                    // stand at its end; a window too narrow for all three wraps them onto a line
+                    // of their own rather than squeezing the avatar under what follows it.
+                    row(gap: .related, align: .center, wrap: true) {
                         avatar(s.who)
-                        stack(gap: .tight) {
+                        stack(gap: .tight, fill: 1.0) {
                             if let run = s.task {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
@@ -641,7 +421,6 @@ view history<R>(of: R) {
                                 )
                             }
                         }
-                        spacer()
                         ui.Time(s.at, role: .caption, secondary: true)
                         if let run = s.task {
                             ui.Button(phrase("tilolang-history-undo-run")) {

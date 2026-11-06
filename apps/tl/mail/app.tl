@@ -657,19 +657,7 @@ view unified(m: Mail) {
                 }
             }
             overview: {
-                if shown.is_empty() {
-                    ui.EmptyState("Nothing here", icon: .inbox)
-                } else {
-                    ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                        on select(x: Thread): open(x, front: false).then(mark_read(x, false))
-                        on activate(x: Thread): open(x).then(mark_read(x, false))
-                        for x in shown {
-                            ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                                thread_row(x)
-                            }
-                        }
-                    }
-                }
+                thread_list(shown, fill)
             }
             content: {
                 ui.EmptyState("No conversation selected", icon: .mail)

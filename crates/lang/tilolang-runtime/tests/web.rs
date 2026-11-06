@@ -14,10 +14,10 @@ mod cases {
     use serde_json::json;
 
     use super::common::*;
-    use tilolang_runtime::flow::{JournalEntry, WebRequest, WebResponse};
+    use tilolang_runtime::run::{JournalEntry, RunOutcome, WebRequest, WebResponse};
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{
-        AmStore, FlowOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
+        AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
     };
 
     const DEMO: &str = r#"app so.tilo.feeddemo "Feed demo"
@@ -56,7 +56,7 @@ action ask_elsewhere(f: Feed) uses web {
     f.text = "{r.status} {r.status_text}"
 }
 
-flow start(f: Feed, b: demo.Board) -> Text uses web {
+action start(f: Feed, b: demo.Board) -> Text uses web {
     let r = web.get("https://example.com/feed")
     demo.mark(b)
     return r.text()
@@ -183,18 +183,20 @@ flow start(f: Feed, b: demo.Board) -> Text uses web {
     }
 
     #[test]
-    fn a_flow_resumed_answers_from_its_journal() {
+    fn a_run_resumed_answers_from_its_journal() {
         let web = FakeWeb::answering(hello());
         let mut world = world(&web);
         let out = world
             .rt
-            .run_flow(
+            .invoke_action(
                 &me(),
-                &world.reader.flow("start"),
-                vec![Value::resource(&world.feed), Value::resource(&world.board)],
+                (
+                    world.reader.action("start").as_str(),
+                    vec![Value::resource(&world.feed), Value::resource(&world.board)],
+                ),
             )
             .unwrap();
-        let FlowOutcome::Suspended(first) = out else {
+        let InvokeOutcome::Suggested(first) = out else {
             panic!("the other package's action must ask: {out:?}");
         };
         assert_eq!(
@@ -217,7 +219,7 @@ flow start(f: Feed, b: demo.Board) -> Text uses web {
             .rt
             .resolve(&first.run, &me(), Resolution::Approve)
             .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::text("hello")));
+        assert_eq!(out, RunOutcome::Done(Value::text("hello")));
         assert_eq!(
             web.requests().len(),
             1,

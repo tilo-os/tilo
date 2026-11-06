@@ -788,19 +788,12 @@ fn triggered_children(
         parts[LIKE] = Box::new(Follow::new(
             event_button("transport.like", Icon::Heart, "Like", Some(event)),
             shared,
-            |b, state| {
-                b.set_accessible_name(if state.liked == Some(true) {
-                    "Unlike"
-                } else {
-                    "Like"
-                });
-                toggle(b, state.liked, false)
-            },
+            like_face,
         ));
     }
     if let Some(event) = &triggers.lyrics {
         parts[LYRICS] = Box::new(Follow::new(
-            event_button("transport.lyrics", Icon::Mic, "Lyrics", Some(event)),
+            event_button("transport.lyrics", Icon::Captions, "Lyrics", Some(event)),
             shared,
             |b, state| toggle(b, state.lyrics, false),
         ));
@@ -1247,6 +1240,21 @@ fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
 }
 
 /// A toggle that is on while `on` holds, rests while idle.
+/// The heart says whether the song is liked by its own fill, never by a
+/// ground behind it: a filled heart is a liked song, an outline one is not.
+fn like_face(button: &mut Button, state: &TransportState) -> bool {
+    let liked = state.liked == Some(true) && !state.idle;
+    button.set_accessible_name(if liked { "Unlike" } else { "Like" });
+    button.set_icon(if liked {
+        Icon::HeartFilled
+    } else {
+        Icon::Heart
+    });
+    button.set_toggled(false);
+    button.set_enabled(!state.idle);
+    false
+}
+
 fn toggle(button: &mut Button, on: Option<bool>, idle: bool) -> bool {
     button.set_toggled(on == Some(true) && !idle);
     button.set_enabled(!idle);
@@ -1348,19 +1356,12 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
         Box::new(Follow::new(
             button("transport.like", Icon::Heart, "Like", actions.like.as_ref()),
             shared,
-            |b, state| {
-                b.set_accessible_name(if state.liked == Some(true) {
-                    "Unlike"
-                } else {
-                    "Like"
-                });
-                toggle(b, state.liked, false)
-            },
+            like_face,
         )),
         Box::new(Follow::new(
             view_button(
                 "transport.lyrics",
-                Icon::Mic,
+                Icon::Captions,
                 "Lyrics",
                 shared,
                 TransportEvent::Lyrics,

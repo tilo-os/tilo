@@ -1,8 +1,8 @@
 //! The host core: the state every import and every invocation shares.
 //!
 //! `Core` implements [`Host`], so the engine calls straight into it. Everything is behind
-//! `RefCell`s and no borrow is held across a call into guest code, so a flow's `invoke` can
-//! run an action (which pushes a frame, runs the guest and pops it) while the flow's own
+//! `RefCell`s and no borrow is held across a call into guest code, so a run's `invoke` can
+//! run an action (which pushes a frame, runs the guest and pops it) while the run's own
 //! frame is live.
 
 use std::cell::RefCell;
@@ -348,9 +348,9 @@ impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
             Abort, ActMadeFrom, ActMany, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions,
-            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove,
-            CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy,
-            DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe,
+            AgentNamed, ArgAt, BytesLength, CallFn, ChangeView, CollCount, CollEmpty, CollInsert,
+            CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith,
+            CountBy, DayParse, DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe,
             DescribeRef, DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs,
             EnumNew, EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilterLit,
             Filters, Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
@@ -387,11 +387,11 @@ impl Core {
             IntMin | IntMax | IntClamp | IntAbs | FloatMin | FloatMax | FloatClamp | FloatAbs
             | FloatRound | FloatRoundTo | FloatFloor | FloatFloorTo | FloatCeil | FloatCeilTo
             | ListSumI | ListSumF | ListAvg => self.num_import(imp, a),
-            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | ListGetI
-            | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd | ListIndexOf
-            | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH | TupleGetI
-            | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome | UnwrapI
-            | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
+            ListNew | ListPushI | ListPushF | ListPushH | ListLen | CollCount | CollEmpty
+            | ListGetI | ListGetF | ListSortByKey | ListReverse | ListGetH | ListEnd
+            | ListIndexOf | ListPrevious | TupleNew | TupleSetI | TupleSetF | TupleSetH
+            | TupleGetI | TupleGetF | TupleGetH | SomeH | SomeI | SomeF | NoneV | IsSome
+            | UnwrapI | UnwrapF | UnwrapH => self.aggregate_import(imp, a),
             CollWhere => self.ret_h(self.coll_where(a.h(0)?, a.h(1)?)?),
             CollWhereWith => self.ret_h(self.coll_where_with(a.h(0)?, a.h(1)?, a.h(2)?)?),
             CollOrdered => self.ret_h(self.coll_ordered(a.h(0)?, a.h(1)?)?),
@@ -426,12 +426,12 @@ impl Core {
             | ActThen | ActMadeFrom | ActMany | ActOpen | ActUndo | ChangeView | UiActions
             | UiAction => self.ui_import(imp, a),
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd
-            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
+            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | FieldChanged
+            | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
-            EditField => self.flow_edit(a),
+            EditField => self.edit_field(a),
             Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
             | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup
             | Abort => self.program_import(imp, a),

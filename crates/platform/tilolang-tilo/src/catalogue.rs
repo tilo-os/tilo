@@ -659,6 +659,7 @@ impl Reader<'_> {
             guard: false,
             applies: false,
             uses: Vec::new(),
+            invokes: false,
         });
     }
 

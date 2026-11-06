@@ -1225,11 +1225,22 @@ impl Shared {
                     .is_some_and(|network| network.airplane_mode),
                 _ => true,
             };
+            // A transport readout names the song it is about, read from the one
+            // now-playing reading every surface shows. Going to the next or the
+            // previous song names no song: which one plays is not read yet.
+            let name = matches!(kind, OsdKind::Play | OsdKind::Pause)
+                .then(|| {
+                    self.readings
+                        .borrow()
+                        .playing()
+                        .map(|playing| playing.title)
+                })
+                .flatten();
             return Osd::Hint(Hint {
                 kind,
                 on,
                 chord: None,
-                name: None,
+                name,
             });
         }
         let (level, on, device) = match kind {

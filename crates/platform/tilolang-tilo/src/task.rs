@@ -35,11 +35,11 @@ use std::sync::Arc;
 use serde_json::{Value as Json, json};
 use tilolang_runtime::catalogue::SignatureKind;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-use tilolang_runtime::flow::Journal;
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
 use tilolang_runtime::meta::{Meta, PackageMeta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::rich::RichValue;
+use tilolang_runtime::run::Journal;
 use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
     Scalar, Store, StoreError, SubId, Txn,
@@ -279,7 +279,6 @@ impl TaskSession {
                 SignatureKind::Type => ("type", Some(format!("{alias}.{}", signature.name))),
                 SignatureKind::Enum => ("enum", Some(format!("{alias}.{}", signature.name))),
                 SignatureKind::View => ("view", None),
-                SignatureKind::Flow => ("flow", None),
                 SignatureKind::Fn => ("fn", None),
                 SignatureKind::Root => ("root", Some(format!("{alias}.{}", signature.name))),
             };

@@ -1,7 +1,7 @@
 //! What a package's units cost to run, in the language's own terms.
 //!
 //! A unit is one function the compiler exports for a declaration: a view, a row view, an
-//! action, the requirement or the place an action keeps, a fn, a flow, the default of an
+//! action, the requirement or the place an action keeps, a fn, the default of an
 //! action's parameter, the argument a control computes from view state, a block. Every call
 //! into a module is one unit running, and what it costs is counted where it is known: fuel by
 //! the engine that meters it, the reads it made of the store by the store, and the offers it
@@ -72,7 +72,6 @@ pub enum UnitKind {
     /// A row a view renders per item.
     RowView,
     Fn,
-    Flow,
     /// The default of an action's parameter.
     Default,
     /// An argument a control computes from view state when its event fires.
@@ -92,7 +91,6 @@ impl UnitKind {
             Self::View => "view",
             Self::RowView => "row",
             Self::Fn => "fn",
-            Self::Flow => "flow",
             Self::Default => "default",
             Self::AtEvent => "at the event",
             Self::Block => "block",
@@ -426,18 +424,6 @@ pub fn units_of(meta: &Meta, lines: &[Line]) -> BTreeMap<String, Rc<Unit>> {
             kind,
             subject.as_deref(),
             &view.name,
-        );
-    }
-    for flow in &meta.flows {
-        let subject = flow.params.first().map(|p| short_ty(&p.ty));
-        add_unit(
-            &mut units,
-            meta,
-            lines,
-            format!("f_{}", flow.id),
-            UnitKind::Flow,
-            subject.as_deref(),
-            &flow.name,
         );
     }
     for function in &meta.fns {

@@ -8,6 +8,7 @@
 //! and its arguments arrive together and neither side buffers a stream.
 
 use std::io;
+#[cfg(unix)]
 use std::os::fd::{BorrowedFd, OwnedFd};
 
 /// The largest message either side sends: a verb, its fields and an answer.
@@ -15,6 +16,7 @@ pub const MAX_MESSAGE: usize = 1024;
 
 /// The most descriptors one message carries: a tilolang instance's five
 /// (`crate::tilolang_host::InstanceFds`).
+#[cfg(unix)]
 const MAX_FDS: usize = 5;
 
 /// `fields` as one message: NUL-separated, so no field may contain a NUL.
@@ -44,6 +46,7 @@ pub fn decode(message: &[u8]) -> Vec<&[u8]> {
 ///
 /// A field with a NUL, more descriptors than one message carries, or the
 /// socket's refusal.
+#[cfg(unix)]
 pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
     let message = encode(fields)?;
@@ -73,6 +76,7 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
 /// # Errors
 ///
 /// A message that was cut short, or the socket's refusal.
+#[cfg(unix)]
 pub fn receive(
     socket: BorrowedFd<'_>,
     buffer: &mut [u8],

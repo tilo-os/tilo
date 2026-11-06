@@ -96,3 +96,37 @@ migrated deployment keeps its workspace, its identity and its bot state.
 entry from one commit, tests both and publishes `dev-<commit>`.
 `test-entrypoint.sh` asserts the environment-to-flags mapping and
 `test-image.sh` what the built image must carry.
+
+## Using it before it is published
+
+`test-integration.sh` runs the image the way the deployment does and uses it:
+the entrypoint reads production-shaped `TILO_ROOMS_*` on this machine's own
+ports, the web entry is served beside it, and two headless Chromium contexts
+open it, join the Lounge through its door as two people, chat, share a desk
+and see each other present. It also starts the image on the state the
+previous release left and proves either that this build opens it (keeping the
+record it migrated) or that it refuses it by the format's name and version.
+It is the gate `publish-site` runs before publishing, so a dispatched build
+publishes nothing a person cannot use.
+
+```
+bash os/containers/tilo-lounge/test-integration.sh \
+  out/lounge/image.oci.tar out/web-desktop/bundle
+```
+
+It needs buildah (it starts the image chrooted, as `test-image.sh` does),
+node, a headless Chrome (`CHROME`, else Playwright's cache), openssl and
+curl, and the artifacts `publish-site` builds: `lounge-binaries.sh` +
+`lounge-context.sh` + `publish/oci-build.sh` for the image, and
+`web-desktop-bundle.sh wasm` + `web-desktop-bundle.sh bundle` for the bundle.
+`integration/previous-state.tar.b64` is the state one fresh start of the
+previous release wrote, unpacked into the volume before the start; it holds a
+version 2 governed workspace record, which is what makes the migration path a
+check and not a hope. The records are binary, so the fixture is the tar of
+that volume that git can hold; re-make it from a volume the published image
+started on, keeping the tar's order and timestamps fixed:
+
+```
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+  -C previous-state -cf - . | base64 -w 76 > previous-state.tar.b64
+```

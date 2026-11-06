@@ -186,17 +186,6 @@ fn strings(f: &Func) -> Vec<String> {
     out
 }
 
-/// How often a function calls the function `target` of its module.
-fn calls_of(f: &Func, target: usize) -> usize {
-    let mut n = 0;
-    visit(f, &mut |e| {
-        if matches!(&e.kind, Ek::Call(t, _) if *t == target) {
-            n += 1;
-        }
-    });
-    n
-}
-
 fn has(calls: &[String], want: &str) -> bool {
     calls.iter().any(|c| c == want)
 }
@@ -204,13 +193,6 @@ fn has(calls: &[String], want: &str) -> bool {
 fn count(calls: &[String], want: &str) -> usize {
     calls.iter().filter(|c| *c == want).count()
 }
-
-const NOTES: &str = "type Note {\n    title: Text (title)\n    body: Text (body)\n    pinned: Bool = false\n}\n\
-type Notebook {\n    notes: Collection<Note>\n}\n\
-enum NoteOrder {\n    created\n    title\n}\n\
-root Notebook\ndefault view notebook for Notebook\n\
-fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {\n    return match order {\n        .created => nb.notes.filter(n -> true),\n        .title => nb.notes.sort_by(n -> n.title),\n    }\n}\n\
-view notebook(nb: Notebook) {\n    state order: NoteOrder = .created\n    std.list(nb, listed(nb, order), sort: order, empty: \"No notes yet\") { n ->\n        row(n.title, secondary: n.body, mark: if n.pinned { .pin }, checkbox: n.pinned)\n    }\n}";
 
 #[test]
 fn a_type_with_a_row_view_lists_without_an_item_block() {
@@ -661,6 +643,24 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
     );
 }
 
+/// A template's parameters are names of the template: a caller's block is read where it was
+/// written, so a name there that a parameter shares is the caller's. Reading it in the
+/// template's place made the block call the parameter itself, expanding it forever.
+#[test]
+fn a_callers_block_reads_its_names_in_the_callers_scope() {
+    let got = diagnostics(
+        "type Note {\n    title: Text (title)\n}\ntype Notes {\n    items: Collection<Note>\n}\n\
+         template view frame<T>(items: List<T>, row: (T, Int) -> View) {\n\
+             ui.VirtualList {\n        for x in items {\n            row(x, 0)\n        }\n    }\n}\n\
+         view notes(ns: Notes) {\n    frame(ns.items) { (x, at) ->\n        row(x.title)\n    }\n}",
+    );
+    assert_eq!(
+        got.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+        ["E063"],
+        "{got:#?}"
+    );
+}
+
 /// The package `body` checked: its diagnostics.
 fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
     let src = format!("app t.x \"X\"\n{body}\n");
@@ -673,98 +673,6 @@ fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
     let env = crate::resolve::resolve(&module, &lock, &[], &mut diags);
     let _ = super::check_module(&env, &module, &mut diags);
     diags
-}
-
-#[test]
-fn std_list_is_a_shell_over_a_virtual_list_whose_rows_render_as_shown() {
-    let (m, _) = lower(NOTES);
-    let calls = ui_calls(func(&m, "notebook"));
-    let at = |calls: &[String], want: &str| {
-        calls
-            .iter()
-            .position(|c| c == want || c.starts_with(&format!("{want}:")))
-            .unwrap_or_else(|| panic!("no {want} in {calls:#?}"))
-    };
-    // The library's frame, expanded in the view: a shell, its list one loop node whose rows are
-    // each a view of their own, rendered when the host shows them.
-    assert!(at(&calls, "node ui.NavShell") < at(&calls, "node ui.VirtualList"));
-    let list = at(&calls, "node ui.VirtualList");
-    assert!(
-        calls[list..]
-            .iter()
-            .any(|c| c == "node for" || c.starts_with("node for:")),
-        "the list holds its loop: {calls:#?}"
-    );
-    assert!(
-        !has(&calls, "node ui.ListItem"),
-        "no row is built with the list"
-    );
-    // The rows' view: the boundary of the list's loop (the header's More menu is one too).
-    let row = m
-        .funcs
-        .iter()
-        .filter(|f| f.name == "notebook row")
-        .map(ui_calls)
-        .find(|calls| calls.iter().any(|c| c == "node ui.ListItem"))
-        .expect("the rows' view");
-    assert!(
-        at(&row, "node ui.ListItem") < at(&row, "node ui.ListRow"),
-        "{row:#?}"
-    );
-    // A row is its own affordances only: the host puts the item's menu and swipe on it.
-    for want in [
-        "prop title",
-        "prop secondary",
-        "prop mark",
-        "bind",
-        "prop presence",
-    ] {
-        assert!(has(&row, want), "{want} in {row:#?}");
-    }
-    let s = strings(func(&m, "notebook"));
-    assert!(s.contains(&"No notes yet".to_string()));
-}
-
-#[test]
-fn the_sort_is_a_menu_and_the_item_types_toggles_are_the_sidebars_places() {
-    let (m, ids) = lower(NOTES);
-    let f = func(&m, "notebook");
-    let calls = ui_calls(f);
-    assert!(has(&calls, "node ui.NavList"), "the places: {calls:#?}");
-    assert!(has(&calls, "node ui.MenuButton"), "the sort menu");
-    // The places are the item type's filters, asked of the platform where the list expands;
-    // the list as the place chosen shows it is the one query the index answers, of the items
-    // the view passed once. A place that shows a count asks that query itself.
-    let note = ids.get("Note").expect("id").to_string();
-    let mut filters = Vec::new();
-    let mut queries = 0;
-    for g in m.funcs.iter().filter(|g| g.name.starts_with("notebook")) {
-        visit(g, &mut |e| match &e.kind {
-            Ek::Host(Imp::Filters, args) => {
-                filters.push(args.first().and_then(text).map(str::to_owned));
-            }
-            Ek::Host(Imp::Query, _) => queries += 1,
-            _ => {}
-        });
-    }
-    assert_eq!(filters, [Some(note)]);
-    assert_eq!(
-        queries, 1,
-        "the list, and no count of the places: {queries}"
-    );
-    let listed = m
-        .funcs
-        .iter()
-        .position(|x| x.name == "listed")
-        .expect("listed");
-    assert_eq!(calls_of(f, listed), 1, "the items are listed once");
-    // Which place is chosen is the window's state, the library's own, kept under the view.
-    let notebook = ids.get("notebook").expect("id");
-    assert!(
-        strings(f).contains(&format!("{notebook}:list.query")),
-        "{:?}",
-        strings(f)
-    );
 }
 
 #[test]

@@ -1,6 +1,6 @@
-//! An agent's program (agents.md, "One language, one tool"): statements run as a flow written by
-//! the agent, over every mounted app. It reads, finds, loops and applies actions like a flow, and
-//! its top-level `let`s are kept for the next program of the session ([`ProgramResult::lets`]).
+//! An agent's program (agents.md, "One language, one tool"): statements run as an action the agent
+//! wrote, over every mounted app. It reads, finds, loops and calls actions, and its top-level
+//! `let`s are kept for the next program of the session ([`ProgramResult::lets`]).
 //! The words a session adds to the language are the agent library's ([`crate::agent`]), in scope
 //! without a `use`; this module lowers what only a program does: kept `let`s, the last line's
 //! value, and a field set on a resource at the app that holds it.
@@ -31,7 +31,7 @@ pub struct ProgramResult {
     pub lets: Vec<(String, Ty)>,
 }
 
-/// Checks a program whose earlier bindings are `params`, lowered to the flow `export`.
+/// Checks a program whose earlier bindings are `params`, lowered to the action `export`.
 pub fn check_program(
     env: &Env,
     stmts: &[ast::Stmt],
@@ -53,7 +53,7 @@ pub fn check_program(
         at: None,
         outer_at: None,
     };
-    c.begin(Ctx::Flow, params, Ty::Unit, export);
+    c.begin(Ctx::Program, params, Ty::Unit, export);
     c.st.written = Written::Program;
     let mut lets: Vec<(String, Ty)> = Vec::new();
     for (at, s) in stmts.iter().enumerate() {
@@ -88,7 +88,7 @@ pub fn check_program(
             _ => c.stmt(s),
         }
     }
-    let mut f = c.end(FuncKind::Flow, "main", export);
+    let mut f = c.end(FuncKind::Action, "main", export);
     f.nparams = params.len();
     ProgramResult {
         module: ir::Module {

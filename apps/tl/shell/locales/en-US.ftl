@@ -821,6 +821,9 @@ d-chvuqgur = A note place
 d-tnecawb6 = A foreign place
     .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like (§2).
 
+d-b3rfswle = Show place
+    .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
+
 d-i6ll2n4j = Desk view
 
 d-72tgr4px = Clock

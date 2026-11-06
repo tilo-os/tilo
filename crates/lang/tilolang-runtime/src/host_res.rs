@@ -608,9 +608,9 @@ impl Core {
                 }
             });
         }
-        let in_flow = self.frames.borrow().flow().is_some();
-        if in_flow {
-            // A flow's reads go through its journal, which takes the frames to record them.
+        let in_run = self.frames.borrow().run().is_some();
+        if in_run {
+            // A run's reads go through its journal, which takes the frames to record them.
             let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
             let field = self.text(fh)?;
             let (_, f) = self.lookup_field(&target, &field)?;
@@ -721,11 +721,7 @@ impl Core {
     }
 
     fn apply_mut(&self, ctx: &MutCtx, m: &Mutation) -> HResult<Applied> {
-        let applied = self
-            .store
-            .borrow_mut()
-            .apply(ctx.txn, &ctx.target, m)
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let applied = self.journaled_apply(ctx.txn, &ctx.target, m)?;
         self.touched(ctx.target.id_string());
         Ok(applied)
     }
@@ -894,12 +890,20 @@ impl Core {
             app: String::new(),
             fields: item_ty.specs(),
         };
+        // The id it is given is a read like any other: a run that is run again after it waited
+        // gives the item the id it gave it before.
+        let id =
+            match self.journaled_read(|| Ok(Value::Text(self.store.borrow_mut().fresh_id("i"))))? {
+                Value::Text(id) => id,
+                other => return trap(format!("expected an id, got {}", other.kind_name())),
+            };
         let applied = self.apply_mut(
             &ctx,
             &Mutation::CollInsert {
                 field: ctx.field.id.clone(),
                 item: new,
                 index: None,
+                id: Some(id),
             },
         )?;
         let Applied::Item(id) = applied else {
@@ -953,10 +957,7 @@ impl Core {
                     ));
                 }
             };
-            self.store
-                .borrow_mut()
-                .apply(ctx.txn, target, &m)
-                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+            self.journaled_apply(ctx.txn, target, &m)?;
         }
         Ok(())
     }

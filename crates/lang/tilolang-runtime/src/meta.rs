@@ -3,7 +3,7 @@
 //! type become a [`FieldKind`], and how a type travels through wasm.
 
 pub use tilolang::meta::{
-    ActionMeta, AnchorMeta, DefaultMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta,
+    ActionMeta, AnchorMeta, DefaultMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta,
     NamedRootMeta, PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TriggerArgMeta,
     TriggerMeta, TriggerWhenMeta, TypeMeta, VariantMeta, ViewMeta,
 };

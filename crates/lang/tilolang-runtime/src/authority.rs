@@ -1,6 +1,6 @@
 //! The `Authority` trait and the reference `SimpleAuthority`.
 //!
-//! Before it runs an action on anyone's behalf (a press, a flow's step, a block), the runtime
+//! Before it runs an action on anyone's behalf (a press, a step of a run, a block), the runtime
 //! asks the authority with the invoker, the authorship chain (every code author between the
 //! invoker and the action) and what the action is. The answer is Allow, Ask or Deny; Ask
 //! suspends the invocation as a suggestion. The rules are authority.md's.

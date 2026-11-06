@@ -274,3 +274,27 @@ fn hundred_million_row_lists_mount_and_request_only_the_window() {
         assert!((bottom.y1 - track.y1).abs() < 0.001);
     }
 }
+
+#[test]
+fn a_list_laid_out_again_at_the_same_size_asks_for_no_change() {
+    let model = VecListModel::new((0..40_u64).collect(), |key| *key).unwrap();
+    let mut list = VirtualList::new(model, 20.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    })
+    .with_viewport_height(200.0);
+    let _ = lay_out(&mut list, 300.0);
+    let _ = crate::widget::Widget::take_structure_change(&mut list);
+    for turn in 0..3 {
+        let _ = lay_out(&mut list, 300.0);
+        assert_eq!(
+            crate::widget::Widget::take_structure_change(&mut list),
+            crate::widget::StructureChange::None,
+            "laid out again at the same size, turn {turn}, it has nothing to report"
+        );
+    }
+}

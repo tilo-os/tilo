@@ -446,6 +446,54 @@ async fn a_plane_seals_under_the_keys_it_now_holds() {
     );
 }
 
+/// A participant the workspace admits while a plane is running is heard from
+/// then on: the plane started with the roster of the moment it joined, and
+/// the member arrives through [`Plane::set_roster`].
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_that_joins_the_roster_after_the_plane_started_is_heard() {
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint) =
+        (endpoint().await, endpoint().await, endpoint().await);
+    let (a_key, b_key) = (*a_endpoint.id().as_bytes(), *b_endpoint.id().as_bytes());
+    let (a_cert, b_cert) = (authority.admit_device(a_key), authority.admit_device(b_key));
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+
+    // `a` opens knowing only itself: the workspace had no other participant
+    // when it joined. `b` is admitted afterwards, and `a` is told so.
+    let a_carrier = native::Iroh::new(a_endpoint, addr(&relay_endpoint));
+    let a = Plane::join(
+        &a_carrier,
+        &grant_for(&a_cert),
+        join(a_key, Roster::new([a_key]), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b_carrier = native::Iroh::new(b_endpoint, addr(&relay_endpoint));
+    let b = Plane::join(
+        &b_carrier,
+        &grant_for(&b_cert),
+        join(b_key, Roster::new([a_key, b_key]), keys.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+
+    a.set_roster(Roster::new([a_key, b_key]));
+    // Presence repeats, so a subscription that attached a moment after the
+    // roster moved is still proven by the next one.
+    let mut sequence = 1;
+    wait_until("the plane hears the device that joined its roster", || {
+        b.publish(Track::Presence, sequence, b"joined=late")
+            .unwrap();
+        sequence = sequence.saturating_add(1);
+        heard(&a, Track::Presence)
+            .iter()
+            .any(|object| object.body == b"joined=late" && object.sender == b_key)
+    });
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_member_that_reached_another_relay_is_heard_here() {
     let authority = Authority::new();

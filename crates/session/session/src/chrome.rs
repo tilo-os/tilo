@@ -275,7 +275,17 @@ impl Activities {
                         tracing::warn!(%error, app, "a live activity does not read back");
                     })
                     .ok()
-                    .map(|published| (app, published))
+                    .map(|mut published: Published| {
+                        // A card's header names the app that shows the
+                        // activity, in the person's language: the app knows
+                        // its own copy, never the name this device calls it.
+                        if let Some(summary) = &mut published.summary
+                            && summary.source.is_empty()
+                        {
+                            summary.source = crate::app_names::app_name(&app);
+                        }
+                        (app, published)
+                    })
             })
             .collect()
     }

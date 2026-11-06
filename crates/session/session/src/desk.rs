@@ -36,26 +36,6 @@ pub(crate) fn prefs() -> Prefs {
     )))
 }
 
-/// What plays, as the desk's music widget shows it: the song, whether it
-/// plays, and what its controls can do, from the machine's own reading of the
-/// player in front.
-pub(crate) fn playing(
-    reading: &crate::status::Playing,
-) -> tilo_desktop::desk_widgets::music::NowPlaying {
-    tilo_desktop::desk_widgets::music::NowPlaying {
-        title: reading.title.clone(),
-        subtitle: reading.subtitle.clone(),
-        player: reading.player.clone(),
-        art: reading.art.clone(),
-        playing: reading.playing,
-        can_toggle: reading.can_toggle,
-        can_previous: reading.can_previous,
-        can_next: reading.can_next,
-        position_ms: reading.position_ms,
-        duration_ms: reading.duration_ms,
-    }
-}
-
 impl crate::Shared {
     /// Steer the player in front, as the panel's own controls do: the music
     /// widget's play or pause, previous and next are the `media` resource's

@@ -21,14 +21,18 @@
 //! | Gesture            | Effect                                             |
 //! |--------------------|----------------------------------------------------|
 //! | click              | select only `i`; anchor = primary = `i`            |
-//! | Ctrl+click         | toggle `i`; anchor = primary = `i`                 |
+//! | Ctrl+click         | toggle `i`; primary = `i`                          |
 //! | Shift+click        | select the inclusive range anchor..=`i` (replace)  |
 //! | Ctrl+Shift+click   | add the inclusive range anchor..=`i` to the set    |
 //! | arrow (no mod)     | select only the new index                          |
 //! | Shift+arrow        | extend the range from the anchor to the new index  |
 //!
 //! When there is no anchor yet, Shift gestures degrade to a plain
-//! single-select (there is nothing to extend from).
+//! single-select (there is nothing to extend from), and the first
+//! modified click sets it. After that a modified click adds to or removes
+//! from the choice without moving the anchor: Shift then extends the
+//! choice the person built, and the rows they gathered before it stay in
+//! it, instead of the range from the row just clicked replacing them.
 
 use std::collections::{BTreeSet, HashSet};
 use std::hash::Hash;
@@ -140,7 +144,9 @@ where
                 }
             }
         }
-        self.anchor = Some(key.clone());
+        if self.anchor.is_none() {
+            self.anchor = Some(key.clone());
+        }
         self.primary = Some(key);
     }
 
@@ -293,16 +299,20 @@ impl SelectionModel {
         self.primary = Some(i);
     }
 
-    /// Toggle `i` in/out of the selection (Ctrl-click). The anchor and
-    /// cursor both move to `i` so a subsequent Shift gesture extends
-    /// from here.
+    /// Toggle `i` in/out of the selection (Ctrl-click). The cursor moves
+    /// to `i`; the anchor stays where the choice began, so a subsequent
+    /// Shift gesture extends what the person gathered rather than
+    /// replacing it with a range from `i`. A toggle on an empty anchor
+    /// sets it.
     pub fn toggle(&mut self, i: usize) {
         if self.selected.contains(&i) {
             self.selected.remove(&i);
         } else {
             self.selected.insert(i);
         }
-        self.anchor = Some(i);
+        if self.anchor.is_none() {
+            self.anchor = Some(i);
+        }
         self.primary = Some(i);
     }
 
@@ -449,9 +459,13 @@ mod tests {
         selection.remap_indices(|index| [Some(3), None, Some(1)].get(index).copied().flatten());
         assert_eq!(selection.selected(), vec![3]);
         assert_eq!(selection.primary(), Some(1));
-        assert_eq!(selection.anchor(), Some(1));
+        assert_eq!(
+            selection.anchor(),
+            Some(3),
+            "the anchor is where the choice began, not where the modified click moved the cursor"
+        );
         selection.apply_click(2, false, true);
-        assert_eq!(selection.selected(), vec![1, 2]);
+        assert_eq!(selection.selected(), vec![2, 3]);
         selection.remap_indices(|index| (index == 2).then_some(0));
         assert_eq!(selection.selected(), vec![0]);
         assert_eq!(selection.primary(), Some(0));
@@ -545,8 +559,10 @@ mod tests {
                 vec![
                     click(0, false, false),
                     click(1, false, true),
-                    click(5, true, false),
-                    click(7, true, true).selects(&[0, 1, 5, 6, 7]),
+                    click(5, true, false).anchor(Some(0)),
+                    click(7, true, true)
+                        .selects(&[0, 1, 2, 3, 4, 5, 6, 7])
+                        .anchor(Some(0)),
                 ],
             ),
             (
@@ -618,8 +634,8 @@ mod tests {
             let pruned = m.clamp_to(6);
             assert!(pruned);
             assert_eq!(m.selected(), vec![1, 5]);
-            // Anchor/primary were 8 → dropped.
-            assert_eq!(m.anchor(), None);
+            // The cursor at 8 is gone with the item; the anchor at 1 still stands.
+            assert_eq!(m.anchor(), Some(1));
             assert_eq!(m.primary(), None);
             assert!(!m.clamp_to(6));
         }
@@ -634,6 +650,47 @@ mod tests {
             m.replace_indices([3, 8], Some(99));
             assert_eq!(m.selected(), vec![3, 8]);
             assert_eq!(m.primary(), Some(3));
+        }
+    }
+
+    /// The way a person gathers a few rows: click one, add the next with Control, then walk
+    /// with Shift and the arrow. The walk extends what they gathered; it does not drop the
+    /// rows they clicked before it, which used to leave the choice the same size.
+    #[test]
+    fn the_walk_extends_the_choice_modified_clicks_gathered() {
+        {
+            let mut m = SelectionModel::new();
+            m.apply_click(0, false, false);
+            m.apply_click(1, true, false);
+            assert_eq!(m.selected(), vec![0, 1]);
+            m.move_to(2, true);
+            assert_eq!(m.selected(), vec![0, 1, 2]);
+            assert_eq!(m.anchor(), Some(0));
+            assert_eq!(m.primary(), Some(2));
+            // Back up the same way: the range narrows to the rows between.
+            m.move_to(1, true);
+            assert_eq!(m.selected(), vec![0, 1]);
+        }
+
+        {
+            let mut selection = KeySelection::new();
+            selection.select_only("a");
+            selection.toggle("b");
+            selection.select_range("c", ["a", "b", "c"], false);
+            let mut held: Vec<&str> = selection.stored_keys().copied().collect();
+            held.sort_unstable();
+            assert_eq!(held, ["a", "b", "c"]);
+            assert_eq!(selection.anchor(), Some(&"a"));
+            assert_eq!(selection.primary(), Some(&"c"));
+        }
+
+        {
+            // A modified click with no choice before it begins the one the walk grows.
+            let mut m = SelectionModel::new();
+            m.apply_click(4, true, false);
+            assert_eq!(m.anchor(), Some(4));
+            m.move_to(5, true);
+            assert_eq!(m.selected(), vec![4, 5]);
         }
     }
 }

@@ -4,17 +4,17 @@
 //! operations below onto its own documents. So that the host can keep the store while guest
 //! code runs, a transaction is an owned token ([`Txn`]), the operations are methods of the
 //! store, and the store speaks in mutations and field values, not documents. A store also keeps
-//! flow journals, so a suspended flow survives a restart.
+//! run journals, so a suspended run survives a restart.
 
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 
-use crate::flow::Journal;
 use crate::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use crate::meta::FieldKind;
 use crate::registry::TypeInfo;
+use crate::run::Journal;
 use crate::value::ResourceRef;
 
 #[derive(Debug, thiserror::Error)]
@@ -237,11 +237,14 @@ pub enum Mutation {
         field: FieldId,
         value: crate::rich::RichValue,
     },
-    /// Insert a new item with a fresh id; `index` of `None` appends.
+    /// Insert a new item; `index` of `None` appends.
     CollInsert {
         field: FieldId,
         item: NewRecord,
         index: Option<usize>,
+        /// The id the item takes, or `None` for a fresh one. A run that is run again after it
+        /// waited names the id it gave before, so the change it makes is the one it was making.
+        id: Option<ItemId>,
     },
     /// Remove the item, with every item in it ([`crate::place`]).
     CollRemove {
@@ -351,7 +354,7 @@ pub struct ChangeNote {
     /// moment and zone it ran at, what it fetched and what it drew (convergence.md, "Actions").
     /// Kept with the change, so history says what the change was made of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub effects: Vec<crate::flow::JournalEntry>,
+    pub effects: Vec<crate::run::JournalEntry>,
     /// How many items the change was made over: one for an action applied to its subject, and
     /// for one action applied to many items at once (`many`), as many as the items.
     #[serde(default = "one", skip_serializing_if = "is_one")]
