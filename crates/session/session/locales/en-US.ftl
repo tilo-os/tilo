@@ -105,12 +105,23 @@ refused-write-app = Changes
 refused-write-title = { $device } will not take your change
 refused-write-body = Your change stays on the devices that took it: { $reason }.
 
-# What a person changed on a workspace's shared desk did not reach the
-# workspace: the desk stays as the workspace holds it, and what the person
-# changed stays on this device.
-desk-not-shared-app = Workspace desk
-desk-not-shared-title = { $workspace } did not take your change
-desk-not-shared-body = Its desk is as the workspace holds it; what you changed stays on this device: { $reason }.
+## Why a device or a workspace did not take a change, as the rest of the
+## sentence before it.
+refusal-reason-revoked = the device's access was revoked
+refusal-reason-expired = the device's certificate expired
+refusal-reason-not-certified = the device is not a member here
+refusal-reason-forbidden = it may not change this
+refusal-reason-malformed = the change could not be read
+refusal-reason-waiting = it waits for earlier changes
+refusal-reason-conflict = another change holds its place
+refusal-reason-full = there is no room left there
+refusal-reason-other = the reason is not known
+
+# What a person changed on a workspace's shared desk did not arrive there: the
+# change stays on this device.
+desk-not-shared-app = Shared desk
+desk-not-shared-title = { $workspace } did not take your window arrangement
+desk-not-shared-body = It stays on this device: { $reason }.
 
 # A collaborator's device speaks another Tilo protocol version: the two work
 # together again once one of them updates.

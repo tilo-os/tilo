@@ -108,12 +108,23 @@ refused-write-app = Änderungen
 refused-write-title = { $device } nimmt deine Änderung nicht an
 refused-write-body = Deine Änderung bleibt auf den Geräten, die sie angenommen haben: { $reason }.
 
-# Was eine Person am geteilten Schreibtisch eines Workspace geändert hat, ist
-# nicht beim Workspace angekommen: der Schreibtisch bleibt, wie der Workspace
-# ihn hält, und die Änderung bleibt auf diesem Gerät.
-desk-not-shared-app = Workspace-Schreibtisch
-desk-not-shared-title = { $workspace } nimmt deine Änderung nicht an
-desk-not-shared-body = Der Schreibtisch bleibt, wie der Workspace ihn hält; deine Änderung bleibt auf diesem Gerät: { $reason }.
+## Warum ein Gerät oder ein Arbeitsbereich eine Änderung nicht angenommen hat,
+## als Fortsetzung des Satzes davor.
+refusal-reason-revoked = dem Gerät wurde der Zugang entzogen
+refusal-reason-expired = die Bescheinigung des Geräts ist abgelaufen
+refusal-reason-not-certified = das Gerät gehört nicht dazu
+refusal-reason-forbidden = das darf es nicht ändern
+refusal-reason-malformed = die Änderung war nicht lesbar
+refusal-reason-waiting = sie wartet auf frühere Änderungen
+refusal-reason-conflict = eine andere Änderung hält ihren Platz
+refusal-reason-full = dort ist kein Platz mehr
+refusal-reason-other = der Grund ist nicht bekannt
+
+# Was eine Person am geteilten Schreibtisch eines Arbeitsbereichs geändert hat,
+# ist dort nicht angekommen: die Änderung bleibt auf diesem Gerät.
+desk-not-shared-app = Geteilter Schreibtisch
+desk-not-shared-title = { $workspace } hat deine Fensteranordnung nicht übernommen
+desk-not-shared-body = Sie bleibt auf diesem Gerät: { $reason }.
 
 # Das Gerät einer mitarbeitenden Person spricht eine andere Tilo-Protokollversion:
 # die beiden arbeiten wieder zusammen, sobald eines von ihnen aktualisiert.

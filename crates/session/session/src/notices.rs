@@ -768,16 +768,37 @@ pub(crate) fn downloaded_apps_notice() -> Notice {
     }
 }
 
+/// Why a device or a workspace did not take a change, in the person's own
+/// words: the rest of the sentence that says the change stays here.
+#[must_use]
+pub(crate) fn reason_in_words(reason: neighbour_wire::RefusalReason) -> String {
+    use neighbour_wire::RefusalReason;
+    t(match reason {
+        RefusalReason::Revoked => "refusal-reason-revoked",
+        RefusalReason::Expired => "refusal-reason-expired",
+        RefusalReason::NotCertified => "refusal-reason-not-certified",
+        RefusalReason::Forbidden => "refusal-reason-forbidden",
+        RefusalReason::Malformed => "refusal-reason-malformed",
+        RefusalReason::MissingDependency => "refusal-reason-waiting",
+        RefusalReason::Conflict => "refusal-reason-conflict",
+        RefusalReason::Full => "refusal-reason-full",
+        RefusalReason::Other => "refusal-reason-other",
+    })
+}
+
 /// The notice that a device stopped taking one of this device's writes, and
 /// why: waiting changes nothing, so the change stays on the devices that took
 /// it and the person hears it once. Raised by the pass that serves the
 /// activity ([`crate::Shared::serve_activity`]).
-pub(crate) fn refused_write_notice(device: &str, reason: &str) -> Notice {
+pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::RefusalReason) -> Notice {
     Notice {
         app: t("refused-write-app"),
         urgency: 2,
         title: t_args("refused-write-title", &[("device", device.into())]),
-        body: t_args("refused-write-body", &[("reason", reason.into())]),
+        body: t_args(
+            "refused-write-body",
+            &[("reason", reason_in_words(reason).into())],
+        ),
         actions: Vec::new(),
         expires_after: None,
         machine_wide: true,
@@ -785,14 +806,20 @@ pub(crate) fn refused_write_notice(device: &str, reason: &str) -> Notice {
     }
 }
 
-/// The workspace did not take what the person changed on its shared desk: the
-/// desk is as the workspace holds it, and what they changed stays here.
-pub(crate) fn desk_not_shared_notice(workspace: &str, reason: &str) -> Notice {
+/// The workspace did not take what the person changed on its shared desk: what
+/// they changed stays here.
+pub(crate) fn desk_not_shared_notice(
+    workspace: &str,
+    reason: neighbour_wire::RefusalReason,
+) -> Notice {
     Notice {
         app: t("desk-not-shared-app"),
         urgency: 2,
         title: t_args("desk-not-shared-title", &[("workspace", workspace.into())]),
-        body: t_args("desk-not-shared-body", &[("reason", reason.into())]),
+        body: t_args(
+            "desk-not-shared-body",
+            &[("reason", reason_in_words(reason).into())],
+        ),
         actions: Vec::new(),
         expires_after: None,
         machine_wide: true,
@@ -812,7 +839,7 @@ pub(crate) fn tell_desk_not_taken(
         .iter()
         .find(|workspace| workspace.id() == room)
         .map_or_else(String::new, |workspace| workspace.name.clone());
-    let reason = neighbour_wire::RefusalReason::of(&why).describe();
+    let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()
         .tell(desk_not_shared_notice(&workspace, reason));
