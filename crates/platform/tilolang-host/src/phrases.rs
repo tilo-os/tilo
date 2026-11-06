@@ -244,6 +244,7 @@ mod tests {
         for id in [
             "tilolang-all",
             "tilolang-empty",
+            "tilolang-empty-kind",
             "tilolang-none-selected",
             "tilolang-sort",
             "tilolang-done",
@@ -259,6 +260,14 @@ mod tests {
             german.say("tilolang-empty", &[]),
             english.say("tilolang-empty", &[]),
             "German has its own"
+        );
+        assert_eq!(
+            german.say(
+                "tilolang-empty-kind",
+                &[("kind".to_owned(), "Notizen".to_owned())]
+            ),
+            "Noch keine Notizen",
+            "a list that finds nothing reads in the person's language"
         );
         assert_eq!(english.say("no-such-phrase", &[]), "no-such-phrase");
     }
