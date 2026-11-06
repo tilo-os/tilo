@@ -685,10 +685,10 @@ search.md, "What a type declares" and "Types, references and paths".
   a field of one resource type is; a `Collection<A | B>` owns items of each type, each read as
   the type it is stored as (`$type`). An enum's cases are plain names (E110); a case that holds
   data is a type of its own. `Option` and `Result` stay built in.
-- **A name for a container is a resource.** `type Notes = Collection<Note>` is a resource
-  type with one field, `items`, which code never names: the resource is used as the container
-  where one goes. Any other `type X = T` is another name for `T`. A root is named
-  (`root notes: Notes`) and reached as `notes`, or `alias.notes` from another package.
+- **A type name is another name for a type.** `type X = T` names `T` and is nothing more: a
+  resource is a `type` with fields, so what holds a collection holds it as a field
+  (`type Notebook { notes: Collection<Note> }`). A root is named (`root notebook: Notebook`)
+  and reached as `notebook`, or `alias.notebook` from another package.
 - **A label that interpolates is read where it can be.** Over the subject alone it follows the
   subject in the action's presentation view, as an `if` label does. Over other arguments
   (`"Move to {col.title}"`) it is read where the action is applied with them,

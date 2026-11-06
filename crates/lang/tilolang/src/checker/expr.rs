@@ -35,11 +35,6 @@ impl Checker<'_> {
             };
             return Self::some(ex, want);
         }
-        // A resource that names a container is that container where a list goes.
-        if matches!(want, Ty::List(_)) && self.held_of(&ex.ty).is_some() {
-            let read = self.unhold(ex, span);
-            return self.coerce(read, want, span);
-        }
         if let Ty::Option(inner) = want
             && ex.ty.same(inner)
         {
@@ -177,7 +172,7 @@ impl Checker<'_> {
                         None => Ex::error(),
                     };
                 }
-                // `notes.notes`: a named root of an imported package.
+                // `notes.notebook`: a named root of an imported package.
                 if let Some(path) = dotted(base)
                     && self.names_import(base)
                     && let Some(import) = self.env.find_import(&path.join("."))

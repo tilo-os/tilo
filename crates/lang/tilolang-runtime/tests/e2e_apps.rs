@@ -223,7 +223,7 @@ mod cases {
     }
 
     fn start_chat(w: &World, apps: &Apps) -> (ResourceRef, ResourceRef) {
-        let chat = w.create("Conversations");
+        let chat = w.create("BlockChat");
         let conv =
             returned_ref(w.call(&apps.chat, "start", vec![res(&chat), Value::text("Plans")]));
         (chat, conv)
@@ -505,7 +505,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let notebook = w.create("Notes");
+        let notebook = w.create("Notebook");
         let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&notebook)]));
         w.call(
             &apps.notes,
@@ -1074,7 +1074,7 @@ mod cases {
     fn a_notebook_row_opens_its_note_in_a_window_of_its_own() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notes");
+        let nb = w.create("Notebook");
         let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
         w.call(
             &apps.notes,
@@ -1123,7 +1123,7 @@ mod cases {
     fn two_people_in_one_window_sort_it_for_themselves() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notes");
+        let nb = w.create("Notebook");
         for title in ["b", "a"] {
             let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
             w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
@@ -1379,9 +1379,9 @@ mod cases {
         let w = world(apps, &AmStore::new());
         // Today reads the other apps' roots: the workspace's one of each.
         let today = w.create("Today");
-        let notebook = w.rt.create_root("Notes").unwrap();
+        let notebook = w.rt.create_root("Notebook").unwrap();
         let list = w.rt.create_root("Tasks").unwrap();
-        let chat = w.rt.create_root("Channels").unwrap();
+        let chat = w.rt.create_root("Conversations").unwrap();
         Morning {
             w,
             today,
@@ -1496,7 +1496,7 @@ mod cases {
             "one question for the clear, then one per note action, in flow order"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
-        let notes = items(&m.w, &m.notebook, "items");
+        let notes = items(&m.w, &m.notebook, "notes");
         assert_eq!(notes.len(), 1, "replays did not file a second note");
         assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 2 done");
         assert_eq!(
@@ -1575,7 +1575,7 @@ mod cases {
             4,
             "nothing went: the task opened again for its step"
         );
-        let notes = items(&m.w, &m.notebook, "items");
+        let notes = items(&m.w, &m.notebook, "notes");
         assert_eq!(notes.len(), 1, "the note still says how the morning went");
         assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 0 done");
     }
@@ -2174,7 +2174,7 @@ mod cases {
     fn notes_list_rows_carry_the_title_and_a_preview() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notes");
+        let nb = w.create("Notebook");
         w.call(&apps.notes, "new_note", vec![res(&nb)]);
         let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));

@@ -14,7 +14,9 @@ type Comment (attached) {
 }
 
 /// Every comment of the workspace, in the order they were made.
-type Comments = Collection<Comment>
+type Comments {
+    items: Collection<Comment>
+}
 
 root comments: Comments
 
@@ -27,7 +29,7 @@ row view remark for Comment
 /// says something the same way, its comment its own as any person's is.
 action comment(all: Comments, text: RichText) -> Comment (icon: .message_square, label: "Comment") {
     require not text.is_empty() "Write a comment first"
-    all.insert(Comment(text: text))
+    all.items.insert(Comment(text: text))
 }
 
 /// Changes what a comment says. Only its author may.
@@ -41,7 +43,7 @@ action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") 
 /// and the removal is a version of the comment, so who removed it stays answerable.
 destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Delete") {
     require created(c)?.who == .some(invoker) "Only its author can delete a comment"
-    all.remove(c)
+    all.items.remove(c)
 }
 
 /// What people said about `about`, oldest first — each with the face of who said it, when, what
@@ -55,7 +57,7 @@ view thread(about: host.Resource) {
     lens draft: RichText = RichText("")
     lens editing: Option<Comment> = .none
     lens revised: RichText = RichText("")
-    let all = comments
+    let all = comments.items
     let said = all.filter(c -> created(c)?.from == .some(about))
     let unread = said.find(c -> not unseen(c).is_empty())
     section("Discussion") {
@@ -70,7 +72,7 @@ view thread(about: host.Resource) {
         std.composer(
             draft,
             "Comment on this {meta(about).noun}",
-            comment(all, draft).made_from(about),
+            comment(comments, draft).made_from(about),
         )
     }
 }
@@ -136,7 +138,7 @@ view revision(c: Comment, editing: State<Option<Comment>>, revised: State<RichTe
 /// Everything said lately, each remark under the resource it is about: the window of the app
 /// itself, where a thread is found by what it is about and opens it.
 view recently(all: Comments) {
-    std.list(all, all, empty: "Nothing said yet")
+    std.list(all, all.items, empty: "Nothing said yet")
 }
 
 /// One comment as a row: the title of what it is about, and what was said about it; pressing it

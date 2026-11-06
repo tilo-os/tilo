@@ -1,9 +1,9 @@
 //! The module's own types: what each declares, and what its fields mean to the platform.
 
-use super::{FieldInfo, HOLDER_FIELD, Resolver, TypeInfo, id_of, is_builtin_type, name_case_ok};
+use super::{FieldInfo, Resolver, TypeInfo, id_of, is_builtin_type, name_case_ok};
 use crate::ast::{self, Item, TypeExpr, TypeExprKind};
 use crate::ids::IdsLock;
-use crate::types::{MergeKind, TypeKey};
+use crate::types::TypeKey;
 
 impl Resolver<'_> {
     pub(super) fn types(&mut self, module: &ast::Module, lock: &IdsLock) {
@@ -56,7 +56,6 @@ impl Resolver<'_> {
             }
             decls.push(t);
         }
-        let mut holders: Vec<&ast::AliasDecl> = Vec::new();
         for item in &module.items {
             let Item::Alias(a) = item else { continue };
             let name = &a.name.name;
@@ -79,42 +78,25 @@ impl Resolver<'_> {
                 );
                 continue;
             }
-            let container = matches!(&a.ty.kind, TypeExprKind::Generic(g, _) if matches!(g.name.as_str(), "Collection" | "Set" | "Map"));
-            if container {
-                self.own_types.insert(name.clone());
-                holders.push(a);
-            } else {
-                self.own_aliases.insert(name.clone(), a.ty.clone());
+            // A name names a type: a container is not a resource named so, and a `root` takes a
+            // record type with fields.
+            if let TypeExprKind::Generic(g, _) = &a.ty.kind
+                && matches!(g.name.as_str(), "Collection" | "Set" | "Map")
+            {
+                self.err(
+                    "E013",
+                    a.ty.span,
+                    format!(
+                        "`{name}` would name a `{}`, and a name for a container is no resource; declare a record type that holds it (`type {name} {{ items: {}<...> }}`) and root that",
+                        g.name, g.name
+                    ),
+                );
+                continue;
             }
+            self.own_aliases.insert(name.clone(), a.ty.clone());
         }
         for e in enums {
             self.enum_decl(e, lock);
-        }
-        for a in holders {
-            let name = &a.name.name;
-            let ty = self.resolve_type(&a.ty, true);
-            self.env.types.push(TypeInfo {
-                key: TypeKey {
-                    app: self.env.app.clone(),
-                    name: name.clone(),
-                },
-                id: id_of(lock, name),
-                doc: a.doc.join("\n"),
-                fields: vec![FieldInfo {
-                    name: HOLDER_FIELD.to_owned(),
-                    id: id_of(lock, &format!("{name}.{HOLDER_FIELD}")),
-                    ty,
-                    merge: MergeKind::Structural,
-                    personal: false,
-                    doc: String::new(),
-                    default: None,
-                    role: None,
-                    derived: None,
-                }],
-                search: crate::meta::SearchMeta::default(),
-                holder: true,
-                origin: None,
-            });
         }
         let aliases: Vec<(String, TypeExpr)> = self
             .own_aliases
@@ -155,7 +137,6 @@ impl Resolver<'_> {
                 doc: t.doc.join("\n"),
                 fields,
                 search: crate::meta::SearchMeta::default(),
-                holder: false,
                 origin: t.origin.as_ref().map(|o| o.name.clone()),
             });
         }

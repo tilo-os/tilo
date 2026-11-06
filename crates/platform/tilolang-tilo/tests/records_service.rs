@@ -63,7 +63,7 @@ fn new_note(service: &mut RecordService, meta: &tilolang_runtime::Meta) -> Strin
     let notebook = service
         .resources()
         .into_iter()
-        .find(|resource| resource.kind == format!("tl.{APP}.Notes"))
+        .find(|resource| resource.kind == format!("tl.{APP}.Notebook"))
         .expect("the notebook is published");
     let started = service
         .invoke(

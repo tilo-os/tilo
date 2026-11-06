@@ -1,5 +1,6 @@
-//! A root that is a named collection (`type Board = Collection<Card>`, `root board: Board`) and
-//! a collection of a union of types, through the workspace record and a second replica.
+//! A root that holds a named collection (`type Board { pins: Collection<Pin> }`,
+//! `root board: Board`) and a collection of a union of types, through the workspace record and
+//! a second replica.
 
 use automerge::AutoCommit;
 use tilolang_runtime::{InvokeOutcome, Principal, Value};
@@ -21,24 +22,26 @@ type Link {
 
 type Pin = Note | Link
 
-type Board = Collection<Pin>
+type Board {
+    pins: Collection<Pin>
+}
 
 root board: Board
 
-default view pins for board
+default view pins for Board
 
 action note(b: Board, text: Text) -> Pin {
-    b.insert(Note(text: text))
+    b.pins.insert(Note(text: text))
 }
 
 action link(b: Board, url: Text) -> Pin {
-    b.insert(Link(url: url))
+    b.pins.insert(Link(url: url))
 }
 
 /// What each pin says, in order.
 action read(b: Board) -> Text {
     let out = ""
-    for p in b {
+    for p in b.pins {
         out += match p {
             n: Note => "[{n.text}]",
             l: Link => "<{l.url}>",
@@ -49,7 +52,7 @@ action read(b: Board) -> Text {
 
 view pins(b: Board) {
     stack {
-        for p in b {
+        for p in b.pins {
             match p {
                 n: Note => text(n.text),
                 l: Link => text(l.url),

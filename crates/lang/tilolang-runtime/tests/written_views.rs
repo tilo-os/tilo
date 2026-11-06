@@ -283,7 +283,7 @@ view unread_mail(m: mail.Mail) {\n\
 
         // Ada sends it to the team's channel. Only the chat travels between them.
         let before: Vec<_> = ada.store.doc_ids();
-        let channels = ada.rt.create_root("Channels").unwrap();
+        let channels = ada.rt.create_root("Conversations").unwrap();
         let general = returned_ref(ada.call(
             &apps.chat,
             "new_channel",

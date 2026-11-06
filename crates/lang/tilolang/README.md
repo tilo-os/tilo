@@ -159,12 +159,14 @@ enum NoteOrder {
     title
 }
 
-type Notes = Collection<Note>          // a resource that is a collection
+type Notebook {                        // a resource holding a collection
+    notes: Collection<Note>
+}
 type Channel = TextChannel | Thread    // a resource of either type
 
-root notes: Notes                      // one per room; the launcher opens it
-default view notebook for notes       // what a window of the root shows
-default view note_editor for Note     // what a window of a Note shows
+root notebook: Notebook                // one per workspace; the launcher opens it
+default view notebook for Notebook     // what a window of the root shows
+default view note_editor for Note      // what a window of a Note shows
 ```
 
 **Enums** are plain named cases. A value is a dot literal resolved from the type the context
@@ -210,12 +212,13 @@ them too (`filter "Today" = today and not done`), so the same task stands in one
 and not another's. `others(t.today)` is the people other than the one looking whose value is set
 (`List<Principal>`), which is how a view shows that someone else picked a task.
 
-**Type names and roots.** `type Name = T` names any type. A name for a collection, set or map is
-a resource of its own that code uses as that container (`notes.insert(n)`, `for n in notes`,
-`std.list(notes, notes)`); its one field is `Name.items` in the ids lock, so renaming an old
-`type Notebook { notes: Collection<Note> }` to it (`tilolang ids --rename`) keeps its records. A
-root names one such resource per room: `root notes: Notes` is `notes` in the package and
-`alias.notes` in a package that uses it.
+**Type names and roots.** `type Name = T` names any type and nothing else: `type Names =
+List<Note>` is a name for a list. A name for a `Collection`, `Set` or `Map` is refused (E013):
+it would read as a resource where the container goes. A resource is a `type` with fields, so
+what holds a collection says so, `type Notebook { notes: Collection<Note> }`, and code reads
+it as a field (`nb.notes.insert(n)`, `for n in nb.notes`, `std.list(nb, nb.notes)`). A root
+names one resource per workspace: `root notebook: Notebook` is `notebook` in the package and
+`alias.notebook` in a package that uses it, its collection `alias.notebook.notes`.
 
 **`if` and blocks.** There is one `if`: `if cond { ... } else { ... }`. Used as a value its branches
 agree on a type and the value is each block's last expression; as a statement it needs no

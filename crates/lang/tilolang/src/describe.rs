@@ -29,12 +29,6 @@ pub fn declarations(meta: &PackageMeta) -> String {
     for t in &meta.types {
         out.push('\n');
         doc(&mut out, &t.doc, "");
-        if t.holder
-            && let [held] = t.fields.as_slice()
-        {
-            let _ = writeln!(out, "type {} = {}", t.name, ty(&held.ty));
-            continue;
-        }
         let _ = writeln!(out, "type {} {{", t.name);
         fields(&mut out, &t.fields, "    ");
         out.push_str("}\n");

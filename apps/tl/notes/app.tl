@@ -15,8 +15,10 @@ type Note {
     }
 }
 
-/// The workspace's notes.
-type Notes = Collection<Note>
+/// The workspace's notebook: its notes, in the order it lists them.
+type Notebook {
+    notes: Collection<Note>
+}
 
 /// The order a notebook lists its notes in.
 enum NoteOrder {
@@ -26,17 +28,17 @@ enum NoteOrder {
     title
 }
 
-root notes: Notes
+root notebook: Notebook
 
-default view notebook for notes
+default view notebook for Notebook
 
 default view note_editor for Note
 
 row view note_row for Note
 
 /// Starts a note. Its title starts empty: what is typed first names it.
-primary action new_note(notes: Notes) -> Note (icon: .plus, group: "Note", frequent: true) {
-    notes.insert(Note(title: ""))
+primary action new_note(nb: Notebook) -> Note (icon: .plus, group: "Note", frequent: true) {
+    nb.notes.insert(Note(title: ""))
 }
 
 /// Pins or unpins a note.
@@ -51,8 +53,8 @@ action pin(n: Note, pinned: Bool = not n.pinned) (
 }
 
 /// Deletes a note.
-destructive action delete(notes: Notes, n: Note) (icon: .trash, group: "Note") {
-    notes.remove(n)
+destructive action delete(nb: Notebook, n: Note) (icon: .trash, group: "Note") {
+    nb.notes.remove(n)
 }
 
 /// Renames a note.
@@ -70,8 +72,9 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
 }
 
-/// The notes in an order.
-fn listed(notes: Notes, order: NoteOrder) -> List<Note> {
+/// The notes of a notebook, in an order.
+fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
+    let notes: List<Note> = nb.notes
     match order {
         .created => notes,
         .title => notes.sort_by(.title),
@@ -80,9 +83,9 @@ fn listed(notes: Notes, order: NoteOrder) -> List<Note> {
 
 /// The notebook's window: its notes, each opening in a window of its own, in the order the
 /// person looking chose.
-view notebook(notes: Notes) {
+view notebook(nb: Notebook) {
     window order: NoteOrder = .created
-    std.list(notes, listed(notes, order), sort: order, empty: "No notes yet")
+    std.list(nb, listed(nb, order), sort: order, empty: "No notes yet")
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
@@ -116,7 +119,7 @@ view note_editor(n: Note) {
 
 /// A notebook a week into a project: enough notes to scroll, a few of them pinned.
 scenario "a week of notes" -> Note {
-    let plan = notes.insert(
+    let plan = notebook.notes.insert(
         Note(
             title: "Q3 plan",
             body: RichText(
@@ -128,20 +131,20 @@ scenario "a week of notes" -> Note {
     plan.tags.add("planning")
     plan.tags.add("work")
     plan.tags.add("q3")
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Monday",
             body: RichText("Ada is on the sync bug. Bo pairs with Chen on the importer."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Groceries",
             body: RichText("Oat milk, eggs, sourdough, two lemons, coffee beans."),
             pinned: true,
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Interview questions",
             body: RichText(
@@ -149,19 +152,19 @@ scenario "a week of notes" -> Note {
             ),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Tuesday",
             body: RichText("Sync bug reproduced on two laptops. Importer handles tables now."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Book list",
             body: RichText("The Dispossessed, Piranesi, A Psalm for the Wild-Built."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Flat viewing",
             body: RichText(
@@ -169,38 +172,38 @@ scenario "a week of notes" -> Note {
             ),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Wednesday",
             body: RichText("Release candidate cut. Docs still need the new screenshots."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Gift ideas",
             body: RichText("A good kitchen knife for Sam, concert tickets for Mia."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Retro notes",
             body: RichText("Fewer meetings on Thursdays. Keep the demo at the end of each week."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Thursday",
             body: RichText("Two blockers left. Chen is out of office."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Running plan",
             body: RichText("Three easy runs and one long run a week, up to fifteen kilometres."),
             pinned: true,
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Recipe: lentil soup",
             body: RichText(
@@ -208,7 +211,7 @@ scenario "a week of notes" -> Note {
             ),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Friday",
             body: RichText("Release went out at four. Nobody deploys over the weekend."),
@@ -219,7 +222,7 @@ scenario "a week of notes" -> Note {
 
 /// A notebook just started: one note, half written.
 scenario "a first note" {
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Ideas for the garden",
             body: RichText("Tomatoes along the south wall, herbs by the door."),

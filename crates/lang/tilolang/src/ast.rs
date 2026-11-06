@@ -213,7 +213,7 @@ pub struct VariantDecl {
     pub span: Span,
 }
 
-/// `type Notes = Collection<Note>`, `type Channel = TextChannel | Thread`.
+/// `type Notes = List<Note>`, `type Channel = TextChannel | Thread`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AliasDecl {
     pub node: NodeId,

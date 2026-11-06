@@ -346,7 +346,6 @@ impl Env {
                 doc: t.doc.clone(),
                 fields,
                 search: t.search.clone(),
-                holder: t.holder,
                 origin: t.origin.clone(),
             });
         }

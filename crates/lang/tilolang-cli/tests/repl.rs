@@ -82,7 +82,10 @@ fn a_session_whose_door_runs_no_programs_is_refused_with_why() {
     let socket = dir.path().join("agent.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     let door = std::thread::spawn(move || old_door(&listener));
-    let output = repl(&["--door", socket.to_str().unwrap()], "notes.notes\n");
+    let output = repl(
+        &["--door", socket.to_str().unwrap()],
+        "notes.notebook.notes\n",
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stderr}");
     assert!(

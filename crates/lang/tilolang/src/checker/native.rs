@@ -167,7 +167,6 @@ impl Checker<'_> {
             return n;
         };
         let list = self.expr(items, None);
-        let list = self.unhold(list, items.span);
         let Some(Ty::Record(key)) = list.ty.element().cloned() else {
             if !list.ty.is_error() {
                 let t = self.show(&list.ty);

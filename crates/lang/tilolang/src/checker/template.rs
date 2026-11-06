@@ -454,11 +454,6 @@ impl Checker<'_> {
                         self.entry_action(a.value.span, &a.value);
                     }
                     let v = self.expr(&a.value, (!want.is_error()).then_some(&want));
-                    let v = if matches!(&te.kind, TypeExprKind::Generic(..)) {
-                        self.unhold(v, a.value.span)
-                    } else {
-                        v
-                    };
                     if !Self::unify(te, &v.ty, &params, &mut types) {
                         let (w, f) = (self.show(&want), self.show(&v.ty));
                         self.err(

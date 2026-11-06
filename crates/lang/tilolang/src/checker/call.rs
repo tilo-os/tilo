@@ -713,7 +713,7 @@ impl Checker<'_> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return false;
                 };
-                !self.in_std() && self.env.own_type(name).is_some_and(|t| !t.holder)
+                !self.in_std() && self.env.own_type(name).is_some()
             }
             ast::ExprKind::If { then, els, .. } => {
                 let last = then.stmts.last();
@@ -1330,10 +1330,6 @@ impl Checker<'_> {
             return self.value_method(r, name, args, span);
         }
         let r = self.expr(recv, None);
-        // `notes.insert(n)` of a resource that names a container: that container's method.
-        if let Some((key, f)) = self.held_of(&r.ty) {
-            return self.container_method(r, &key, &f, name, args, span);
-        }
         self.value_method(r, name, args, span)
     }
 

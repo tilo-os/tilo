@@ -103,7 +103,7 @@ fn note(service: &mut RecordService, meta: &tilolang_tilo::runtime::Meta, title:
     let notebook = service
         .resources()
         .into_iter()
-        .find(|resource| resource.kind == format!("tl.{NOTES_APP}.Notes"))
+        .find(|resource| resource.kind == format!("tl.{NOTES_APP}.Notebook"))
         .unwrap();
     let Started::Done(made) = service
         .invoke(
