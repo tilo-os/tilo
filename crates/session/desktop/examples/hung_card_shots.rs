@@ -57,6 +57,8 @@ fn desk(theme: Theme, viewport: (u32, u32)) -> (FrameHarness, tilo_desktop_surfa
             surface_id,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     };
     let notes = window(&mut minter, "Notes", "so.tilo.notes", 41);
     let mail = window(&mut minter, "Mail", "so.tilo.mail", 42);

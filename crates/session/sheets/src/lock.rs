@@ -65,11 +65,11 @@ const PROMPT_ID: &str = "lock-password";
 /// The clock's size in logical pixels: content-sized like the greeter's, so
 /// it reads as one line at any window size rather than following the detail
 /// text scale.
-const CLOCK_SIZE: f32 = 88.0;
+pub const CLOCK_SIZE: f32 = 88.0;
 
 /// The clock's weight: the light end of the variable face, as the greeter
 /// sets its own.
-const CLOCK_WEIGHT: f32 = 280.0;
+pub const CLOCK_WEIGHT: f32 = 280.0;
 
 /// The field's width: one large field with its inline arrow, no wider than
 /// the greeter's credentials, and narrower on a display that is.
@@ -184,8 +184,9 @@ pub struct Battery {
 /// What the device says about itself, shown under the card.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Status {
-    /// The network the person is on, when there is one.
-    pub network: Option<String>,
+    /// The link this machine's traffic leaves on, when the session read one:
+    /// its kind draws the glyph, its name the words beside it.
+    pub link: Option<ui::widget::LinkStatus>,
     /// The battery, when the machine has one.
     pub battery: Option<Battery>,
     /// The keyboard layout in use, when the session names it.
@@ -569,7 +570,11 @@ fn staged_shown(name: &str) -> Shown {
         checking: false,
         caps_lock: false,
         status: Status {
-            network: Some("Home".to_owned()),
+            link: Some(ui::widget::LinkStatus {
+                kind: ui::widget::LinkKind::Wifi,
+                name: Some("Home".to_owned()),
+                signal: 4,
+            }),
             battery: Some(Battery {
                 percent: Some(82),
                 charging: false,
@@ -977,8 +982,8 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
         .with_rhythm(Rhythm::Sibling)
         .with_align_items(ui::taffy::AlignItems::Center)
         .with_justify(ui::taffy::JustifyContent::Center);
-    if let Some(network) = &shown.status.network {
-        row = row.push(status_item(Icon::Wifi, network));
+    if let Some(link) = &shown.status.link {
+        row = row.push(status_item(link.kind.icon(), link.name.as_deref()));
     }
     if let Some(battery) = &shown.status.battery {
         let glyph = if battery.charging {
@@ -990,7 +995,7 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
             || t("lock-battery"),
             |percent| ui::format::percent(f64::from(percent) / 100.0),
         );
-        row = row.push(status_item(glyph, &label));
+        row = row.push(status_item(glyph, Some(&label)));
     }
     if shown.status.layouts > 1 {
         let layout = shown.status.layout.clone().unwrap_or_default();
@@ -1044,18 +1049,20 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
     Box::new(row)
 }
 
-/// One quiet item of the status row: a glyph and what it stands for.
-fn status_item(icon: Icon, label: &str) -> Element {
-    Box::new(
-        Row::new()
-            .no_wrap()
-            .with_rhythm(Rhythm::Tight)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(Box::new(IconWidget::new(icon).sized(IconSize::Small).dim()))
-            .push(Box::new(
-                Text::new(label).with_role(TextRole::Caption).dimmed(),
-            )),
-    )
+/// One quiet item of the status row: a glyph and, when there is something to
+/// say, what it stands for.
+fn status_item(icon: Icon, label: Option<&str>) -> Element {
+    let mut row = Row::new()
+        .no_wrap()
+        .with_rhythm(Rhythm::Tight)
+        .with_align_items(ui::taffy::AlignItems::Center)
+        .push(Box::new(IconWidget::new(icon).sized(IconSize::Small).dim()));
+    if let Some(label) = label {
+        row = row.push(Box::new(
+            Text::new(label).with_role(TextRole::Caption).dimmed(),
+        ));
+    }
+    Box::new(row)
 }
 
 /// A child centred across the width it is given.

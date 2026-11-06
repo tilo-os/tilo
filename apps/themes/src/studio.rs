@@ -322,6 +322,7 @@ impl Theme {
         let origin = self.origin();
         let origin = origin.as_ref();
         ThemeDocument {
+            icons: origin.and_then(|origin| origin.icons),
             schema_version: THEME_SCHEMA_VERSION,
             id: id.to_owned(),
             name: if self.name.trim().is_empty() {

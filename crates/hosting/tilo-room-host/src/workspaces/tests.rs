@@ -4,11 +4,12 @@
 )]
 
 use super::*;
+use crate::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 pub(crate) use super::fixtures::{
     admit_view_reader, door_join, governor, governor_with, restricted_until, signed_pre_admission,
-    test_host,
+    test_host, test_host_with_grants,
 };
 
 #[cfg(feature = "agents")]
@@ -259,6 +260,49 @@ async fn assert_view_reader_refused(
     );
 }
 
+/// Publish `revoked` while a reader of `source` waits on the governed workspace
+/// lock: the reader must recheck admission behind that same lock and be refused.
+#[cfg(feature = "agents")]
+async fn publish_a_revocation_with_a_reader_waiting(
+    workspaces: &Workspaces,
+    workspace: &str,
+    workspace_id: u64,
+    caller: &tilo_actions::remote::Caller,
+    source: &tilo_peer_state::document_frame::DocumentRoute,
+    revoked: tilo_user_identity::RevocationEntry,
+    key: &SigningKey,
+) {
+    let queued_read = workspaces.resource_view_document(workspace_id, caller, source);
+    tokio::pin!(queued_read);
+    let state = workspaces.workspace(workspace).await.unwrap();
+    let mut workspace = state.lock().await;
+    // Poll the actual reader to Pending while the governed workspace lock is held.
+    // It must recheck admission after acquiring this same lock.
+    assert!(
+        std::future::poll_fn(|cx| {
+            use std::future::Future;
+            std::task::Poll::Ready(queued_read.as_mut().poll(cx).is_pending())
+        })
+        .await
+    );
+    let now = SystemTime::now();
+    let mut candidate = workspace.peer().clone();
+    candidate
+        .governance_mut()
+        .publish_governed_revocations(&[revoked], key, now)
+        .unwrap();
+    let collaboration = workspace.collaboration().clone();
+    workspace
+        .commit(candidate, key, now, |_, _| Ok(collaboration))
+        .unwrap();
+    drop(workspace);
+    drop(state);
+    assert_eq!(
+        queued_read.await.err().unwrap(),
+        "resource read not permitted"
+    );
+}
+
 #[cfg(feature = "agents")]
 #[tokio::test]
 async fn view_read_policy_requires_current_certified_person_and_observes_revocation() {
@@ -333,37 +377,16 @@ async fn view_read_policy_requires_current_certified_person_and_observes_revocat
         signature: [0; 64],
     };
     tilo_user_identity::sign_revocation_entry(&mut revoked, &identity_key).unwrap();
-    {
-        let queued_read = workspaces.resource_view_document(created.workspace_id, &caller, &source);
-        tokio::pin!(queued_read);
-        let state = workspaces.workspace(&created.workspace).await.unwrap();
-        let mut workspace = state.lock().await;
-        // Poll the actual reader to Pending while the governed workspace lock is held.
-        // It must recheck admission after acquiring this same lock.
-        assert!(
-            std::future::poll_fn(|cx| {
-                use std::future::Future;
-                std::task::Poll::Ready(queued_read.as_mut().poll(cx).is_pending())
-            })
-            .await
-        );
-        let now = SystemTime::now();
-        let mut candidate = workspace.peer().clone();
-        candidate
-            .governance_mut()
-            .publish_governed_revocations(&[revoked], &key, now)
-            .unwrap();
-        let collaboration = workspace.collaboration().clone();
-        workspace
-            .commit(candidate, &key, now, |_, _| Ok(collaboration))
-            .unwrap();
-        drop(workspace);
-        drop(state);
-        assert_eq!(
-            queued_read.await.err().unwrap(),
-            "resource read not permitted"
-        );
-    }
+    publish_a_revocation_with_a_reader_waiting(
+        &workspaces,
+        &created.workspace,
+        created.workspace_id,
+        &caller,
+        &source,
+        revoked,
+        &key,
+    )
+    .await;
     assert_view_reader_refused(&workspaces, created.workspace_id, &caller, &source).await;
     drop(workspaces);
     relay.shutdown().await;
@@ -500,7 +523,7 @@ fn a_created_room_restores_with_its_governance_and_publication() {
             .unwrap();
     assert!(!created.record.outgoing.is_empty());
     assert!(created.record.outgoing.iter().all(|entry| entry.checkpoint));
-    let restored = GovernedWorkspace::open(created.path.clone(), &cert, &key, None).unwrap();
+    let restored = GovernedWorkspace::open(created.path.clone(), &cert, None).unwrap();
     assert_eq!(restored.record.workspace, created.record.workspace);
     assert_eq!(restored.record.generation, 1);
     assert_eq!(restored.summary().name, "Team");
@@ -584,7 +607,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     assert_ne!(second, first);
     assert_eq!(workspace.parts.files(), 1, "the replaced part is removed");
 
-    let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, &key, None).unwrap();
+    let restored = GovernedWorkspace::open(workspace.path.clone(), &cert, None).unwrap();
     assert_eq!(
         restored.peer().document("notes", "plan"),
         workspace.peer().document("notes", "plan")
@@ -602,7 +625,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[0] ^= 1;
     std::fs::write(&path, bytes).unwrap();
-    assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, &key, None).is_err());
+    assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, None).is_err());
 }
 
 #[test]
@@ -614,7 +637,7 @@ fn a_room_is_only_restored_by_its_governor() {
             .unwrap();
     let mut other = cert;
     other.device_label = "someone else".into();
-    assert!(GovernedWorkspace::open(created.path, &other, &key, None).is_err());
+    assert!(GovernedWorkspace::open(created.path, &other, None).is_err());
 }
 
 #[test]
@@ -1221,7 +1244,7 @@ async fn a_renamed_room_shows_its_new_name_to_members_and_after_a_restart() {
     };
     drop(workspaces);
     relay.shutdown().await;
-    let restored = GovernedWorkspace::open(path, &cert, &key, None).unwrap();
+    let restored = GovernedWorkspace::open(path, &cert, None).unwrap();
     assert_eq!(restored.summary().name, "Plaza");
     assert_eq!(
         restored.peer().governance().workspace_name().as_deref(),
@@ -1337,17 +1360,14 @@ async fn the_owner_restricts_until_a_time_and_lifts_it() {
     relay.shutdown().await;
 }
 
-/// A member device of a workspace governed by a relay certified with some
-/// capabilities, which has asked the workspace's governor for one record's
-/// channel key.
+/// A relay certified with `capabilities`, a workspace it governs, and one of
+/// the workspace's member devices, with the channel route that member asks for.
 struct AskedForAChannel {
-    /// The relay's state and the member's channel records.
+    /// The relay's state.
     state: tempfile::TempDir,
     relay: crate::workspaces::fixtures::TestHost,
     workspaces: Workspaces,
     workspace: String,
-    governor: collab_types::Ed25519PublicKey,
-    member: collab_types::Ed25519PublicKey,
     channel: collab_types::ChannelId,
 }
 
@@ -1356,7 +1376,6 @@ struct AskedForAChannel {
 /// access request for a fresh record channel, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
-    let takes_part = capabilities.takes_part_in_room_channels();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
@@ -1367,8 +1386,6 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     member.capabilities = DeviceCapabilities::member();
     sign_device_cert(&mut member, &SigningKey::from_bytes(&[1; 32])).unwrap();
     admit_view_reader(&workspaces, &created.workspace, &key, &member).await;
-    let governor = collab_types::Ed25519PublicKey::from_bytes(cert.device_public_key);
-    let device = collab_types::Ed25519PublicKey::from_bytes(member.device_public_key);
     // The device names the record it asks for: a channel nobody named may
     // be anyone's own record and admits no one.
     let route = collab_types::ChannelRoute::new("so.tilo.notes", "tab:0000000000000001");
@@ -1397,44 +1414,16 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
         .absorb(&created.workspace, member.device_public_key, &body)
         .await
         .unwrap();
-    let asked = AskedForAChannel {
+    AskedForAChannel {
         state: dir,
         relay,
         workspaces,
         workspace: created.workspace,
-        governor,
-        member: device,
         channel,
-    };
-    if takes_part {
-        // Nothing yielded since: the channels pass `absorb` spawned has not run.
-        assert!(
-            asked.waiting(),
-            "the room queued the member's request for its channels"
-        );
-    } else {
-        // A host that is no device's peer keeps the request for whoever takes
-        // part in the workspace's channels.
-        let retained = asked.retains_the_request().await;
-        assert!(
-            retained,
-            "the room retained the member's request for its channels"
-        );
     }
-    asked
 }
 
 impl AskedForAChannel {
-    /// Whether the member's request still waits for the workspace's channels pass.
-    fn waiting(&self) -> bool {
-        self.workspaces
-            .inner
-            .channel_notices
-            .lock()
-            .unwrap()
-            .contains_key(&self.workspace)
-    }
-
     /// Whether the workspace kept the member's request among the records it
     /// retains for the devices that take part in its channels.
     async fn retains_the_request(&self) -> bool {
@@ -1461,26 +1450,6 @@ impl AskedForAChannel {
             })
     }
 
-    /// The governor's part in the workspace's channels.
-    async fn participation(&self) -> Option<Arc<participation::Participant>> {
-        self.workspaces
-            .workspace(&self.workspace)
-            .await
-            .unwrap()
-            .lock()
-            .await
-            .participation
-            .clone()
-    }
-
-    /// Where the governor would seal the workspace's channel state.
-    fn channels_dir(&self) -> PathBuf {
-        self.workspaces
-            .inner
-            .dir
-            .join(format!("{}.channels", self.workspace))
-    }
-
     /// Shut the relay down, then remove its state.
     async fn shut_down(self) {
         let Self {
@@ -1495,128 +1464,21 @@ impl AskedForAChannel {
     }
 }
 
-/// security.md, "What a workspace host reads and originates": a host
-/// certified only to host workspaces governs them without taking part in their
-/// channels and holds no channel key. A member's request for a record's key
-/// reaches the workspace's channels pass and finds no participant: no MLS group,
-/// no channel state on disk, nothing to lend.
+/// security.md, "What a workspace host reads and originates": a host that runs
+/// no channel service takes part in no channel and holds no channel key, and
+/// keeps what the workspace's channels are made of like any other governance,
+/// for whoever takes part.
 #[tokio::test]
-async fn a_plain_host_governs_a_room_without_taking_part_in_its_channels() {
+async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
     let asked = a_member_asks_for_a_channel(DeviceCapabilities::host()).await;
     assert!(
-        asked.participation().await.is_none(),
-        "a plain host certificate must never take part in a governed room's channels"
+        asked.workspaces.device_keys().is_none(),
+        "a host runs no channel service and holds no channel keys"
     );
     assert!(
-        !asked.channels_dir().exists(),
-        "a plain host keeps no channel state for the room"
+        asked.retains_the_request().await,
+        "the room retained the member's request for its channels"
     );
-    asked.shut_down().await;
-}
-
-/// The other half of the same claim, so the plain host's test observes its
-/// subject: a node certified to own workspaces takes part in the channel of
-/// every record in the workspaces it governs, is a member of each group beside the
-/// member devices governance lets read it, and seals its state on disk.
-#[tokio::test]
-async fn an_owner_capable_node_takes_part_in_the_channels_of_the_rooms_it_governs() {
-    let asked =
-        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
-            .await;
-    let participant = asked
-        .participation()
-        .await
-        .expect("a node that may own workspaces takes part in its rooms' channels");
-    let members = tilo_test_env::within("the node admits the member to the channel", async {
-        loop {
-            let members = participant.channels.lock().await.members(asked.channel);
-            if let Some(members) = members.filter(|members| members.contains(&asked.member)) {
-                break members;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    assert!(
-        members.contains(&asked.governor),
-        "the node is a member of the group, so it holds the channel's keys"
-    );
-    assert!(asked.channels_dir().exists());
-    drop(participant);
-    asked.shut_down().await;
-}
-
-/// What a test runs inside a workspace's channels pass, by workspace.
-type PassHooks = std::sync::Mutex<HashMap<String, Arc<dyn Fn() + Send + Sync>>>;
-
-fn pass_hooks() -> &'static PassHooks {
-    static HOOKS: std::sync::OnceLock<PassHooks> = std::sync::OnceLock::new();
-    HOOKS.get_or_init(PassHooks::default)
-}
-
-/// Run the hook a test installed for `workspace`'s channels pass, where the pass
-/// does its MLS work.
-pub(crate) fn channels_pass_hook(workspace: &str) {
-    let hook = pass_hooks().lock().unwrap().get(workspace).cloned();
-    if let Some(hook) = hook {
-        hook();
-    }
-}
-
-/// A channels pass's MLS work holds no runtime worker. The pass stalls in
-/// its MLS work until the test, on a runtime with a single worker, lets it
-/// go: run on that worker, the pass would stall the test with it, and give
-/// up waiting unreleased.
-#[tokio::test]
-async fn a_channels_pass_does_its_mls_work_off_the_runtime_workers() {
-    let asked =
-        a_member_asks_for_a_channel(tilo_user_identity::cloud_enrollment::host_capabilities())
-            .await;
-    let (entered_tx, entered) = std::sync::mpsc::channel::<()>();
-    let (release, released_rx) = std::sync::mpsc::channel::<()>();
-    let entered_tx = std::sync::Mutex::new(entered_tx);
-    let released_rx = std::sync::Mutex::new(released_rx);
-    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let observed = Arc::clone(&released);
-    pass_hooks().lock().unwrap().insert(
-        asked.workspace.clone(),
-        Arc::new(move || {
-            let _ = entered_tx.lock().unwrap().send(());
-            let in_time = released_rx
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .is_ok();
-            observed.store(in_time, std::sync::atomic::Ordering::SeqCst);
-        }),
-    );
-    tilo_test_env::within("the channels pass starts its MLS work", async {
-        while entered.try_recv().is_err() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    // Only this runtime's one worker can get here while the pass stalls.
-    release.send(()).unwrap();
-    let participant = asked.participation().await.expect("the node takes part");
-    tilo_test_env::within("the node admits the member to the channel", async {
-        while !participant
-            .channels
-            .lock()
-            .await
-            .members(asked.channel)
-            .is_some_and(|members| members.contains(&asked.member))
-        {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-    pass_hooks().lock().unwrap().remove(&asked.workspace);
-    assert!(
-        released.load(std::sync::atomic::Ordering::SeqCst),
-        "the runtime's worker was free while the pass did its MLS work"
-    );
-    drop(participant);
     asked.shut_down().await;
 }
 
@@ -1805,6 +1667,7 @@ fn write_windows(
             mine: &mine,
             retained: &|_| false,
             carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+            records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
         },
     )
     .unwrap();
@@ -1844,6 +1707,8 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
                     surface_id: 7,
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: own(3),
             width: WindowWidth::Normal,
@@ -2055,6 +1920,8 @@ async fn terminals_opened(
                 surface_id: counter,
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: own(counter),
         width: WindowWidth::Normal,
@@ -2093,6 +1960,98 @@ async fn titles_shared(workspaces: &Workspaces, workspace: &str) -> Vec<String> 
     titles_in(governed.peer().admitted_workspace().unwrap())
 }
 
+/// A document write the workspace refused is filed as this device's verdict in
+/// the workspace's own document, signed by its device and naming the write's
+/// route, author and sequence: one fact, carried by the sync that already
+/// carries the workspace. A change to the workspace's topology names no record
+/// and files nothing, and the same write again keeps the verdict held.
+#[tokio::test]
+async fn a_refused_document_write_is_filed_in_the_workspaces_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Studio").await.unwrap().workspace;
+    let (member, member_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
+    let member_key = SigningKey::from_bytes(&[3; 32]);
+    let author = collab_types::Ed25519PublicKey::from_bytes(member_key.verifying_key().to_bytes());
+    let (app, record) = ("so.tilo.notes", "notes");
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        vec![7; 12],
+        collab_types::document_artifact_id(app, &workspace, record),
+        author,
+        collab_types::document_attestation_id(app, &workspace, record),
+        collab_types::OpKind::Change,
+        SystemTime::now(),
+        7,
+    );
+    collab_types::sign_op(&mut envelope, &member_key).unwrap();
+    let body = postcard::to_stdvec(&neighbour_wire::NeighbourMsg::AppDocument {
+        peer: tilo_peer_state::peer_handle(member_key.verifying_key().as_bytes()),
+        app_id: app.into(),
+        cluster_id: workspace.clone(),
+        record_id: record.into(),
+        envelope: Box::new(envelope),
+    })
+    .unwrap();
+    let reason = "record read forbidden: notes/main";
+    workspaces
+        .publish_refusal(&workspace, &body, reason)
+        .await
+        .unwrap();
+    {
+        let state = workspaces.workspace(&workspace).await.unwrap();
+        let governed = state.lock().await;
+        let held = governed.peer().workspace().write_refusals();
+        assert_eq!(held.len(), 1, "the workspace files its verdict: {held:?}");
+        let refusal = &held[0];
+        assert_eq!(
+            refusal.author, member.device_public_key,
+            "the write's author"
+        );
+        assert_eq!(refusal.by, cert.device_public_key, "the refusing device");
+        assert!(
+            refusal.signed_by(&cert.device_public_key),
+            "signed as its own"
+        );
+        assert_eq!(
+            (refusal.app.as_str(), refusal.record.as_str()),
+            (app, record)
+        );
+        assert_eq!(refusal.seq, 7);
+        assert_eq!(refusal.reason, neighbour_wire::RefusalReason::Forbidden);
+        assert_eq!(refusal.detail, reason);
+    }
+    // A topology change is no record's write: it names no route for a verdict.
+    let topology = terminals_opened(&workspaces, &workspace, &member, member_salt).await;
+    workspaces
+        .publish_refusal(&workspace, &topology, "the workspace's layout is personal")
+        .await
+        .unwrap();
+    // The same write again keeps the verdict the workspace already holds.
+    workspaces
+        .publish_refusal(&workspace, &body, reason)
+        .await
+        .unwrap();
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let governed = state.lock().await;
+    assert_eq!(
+        governed
+            .peer()
+            .workspace()
+            .write_refusals()
+            .iter()
+            .filter(|refusal| refusal.author == member.device_public_key)
+            .count(),
+        1,
+        "one verdict per write's author and route"
+    );
+    drop(governed);
+    drop(state);
+    drop(workspaces);
+    relay.shutdown().await;
+}
+
 /// Two strangers in a public workspace: A opens two terminals, and B is never
 /// given them, their app or their titles. The door refuses A's change, and
 /// the governor, should it reach it anyway, commits nothing of it.
@@ -2115,7 +2074,7 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
         )
         .await
         .unwrap();
-    assert!(workspaces.is_public(&workspace));
+    assert!(workspaces.is_personal(&workspace));
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let (_b, _) = admitted_member(&workspaces, &workspace, &key, &cert, 4).await;
     let generation = workspaces
@@ -2212,7 +2171,7 @@ async fn in_a_private_room_the_windows_a_member_opens_are_still_shared() {
     let workspace = workspaces.create("Team").await.unwrap().workspace;
     let (a, a_salt) = admitted_member(&workspaces, &workspace, &key, &cert, 3).await;
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
-    assert!(!workspaces.is_public(&workspace));
+    assert!(!workspaces.is_personal(&workspace));
     workspaces
         .decide_layout_write(&workspace, a.device_public_key, &body)
         .await
@@ -2417,17 +2376,17 @@ async fn a_member_admitted_later_is_replayed_no_window_withdrawn_before() {
     }
 }
 
-/// A workspace listed in the directory (open admission) whose governor chose no
-/// layout scope becomes personal when the relay opens it: the windows the
-/// governor committed of a member while it shared them are removed, its
-/// governance says it is personal for every member's device to read, and its
-/// doors refuse members' windows from then on.
+/// A workspace becomes public in the directory: its arrangement stays what it
+/// was. Open admission is not a layout decision: the room keeps sharing its
+/// members' windows and strips across a restart, exactly as before it was
+/// listed. A governor who wants each member's windows on their own device
+/// says so ([`the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it`]).
 #[allow(
     clippy::significant_drop_tightening,
     reason = "fires only in some feature sets: the relay stays held through the assertions; Relay::shutdown consumes it"
 )]
 #[tokio::test]
-async fn a_listed_room_refuses_members_windows_after_a_restart() {
+async fn a_listed_room_keeps_sharing_its_layout_after_a_restart() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -2461,31 +2420,30 @@ async fn a_listed_room_refuses_members_windows_after_a_restart() {
 
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
-    assert!(workspaces.is_public(&workspace));
-    assert!(
-        titles_shared(&workspaces, &workspace).await.is_empty(),
-        "what was committed of A's windows is gone"
+    assert!(!workspaces.is_personal(&workspace));
+    assert_eq!(
+        titles_shared(&workspaces, &workspace).await.len(),
+        2,
+        "the room still holds its members' windows"
     );
     {
         let state = workspaces.workspace(&workspace).await.unwrap();
         let governed = state.lock().await;
         assert_eq!(
             governed.peer().governance().workspace_layout(),
-            tilo_desktop_model::projection::WorkspaceLayout::Personal,
-            "every member's device reads that the room is personal"
+            tilo_desktop_model::projection::WorkspaceLayout::Shared,
+            "every member's device reads the same arrangement"
         );
     }
-    assert!(
-        workspaces
-            .decide_layout_write(&workspace, a.device_public_key, &body)
-            .await
-            .is_err()
-    );
+    workspaces
+        .decide_layout_write(&workspace, a.device_public_key, &body)
+        .await
+        .unwrap();
     workspaces
         .absorb(&workspace, a.device_public_key, &body)
         .await
         .unwrap();
-    assert!(titles_shared(&workspaces, &workspace).await.is_empty());
+    assert_eq!(titles_shared(&workspaces, &workspace).await.len(), 2);
     drop(workspaces);
     relay.shutdown().await;
 }
@@ -2530,7 +2488,7 @@ async fn the_governor_chooses_the_layout_scope_and_the_room_keeps_to_it() {
         .set_layout(&workspace, WorkspaceLayout::Shared)
         .await
         .unwrap();
-    assert!(!workspaces.is_public(&workspace));
+    assert!(!workspaces.is_personal(&workspace));
     // A's device publishes its windows again, now that the workspace shares them.
     let body = terminals_opened(&workspaces, &workspace, &a, a_salt).await;
     workspaces
@@ -2870,4 +2828,79 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     }
     drop(workspaces);
     relay.shutdown().await;
+}
+
+/// A host that renamed its own governor certificate — the same device key,
+/// the same capabilities, a new label — serves the workspaces that
+/// certificate already governs: a name is not what governs a workspace, and
+/// refusing it made a host renamed by an upgrade unable to start.
+#[tokio::test]
+async fn a_host_serves_the_workspaces_its_renamed_certificate_governs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let created = relay.workspaces().create("Demo").await.unwrap();
+    relay.shutdown().await;
+
+    // The same device and capabilities, under another name, signed again by
+    // the workspace's owner root as a relay signs its own certificate.
+    let mut renamed = tilo_user_identity::DeviceCert {
+        device_label: "the same host, renamed".into(),
+        ..cert.clone()
+    };
+    // Signed by the person's root, as the fixture's certificate was.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    tilo_user_identity::sign_device_cert(&mut renamed, &root).unwrap();
+    let reopened = test_host(dir.path(), &key, &renamed).await;
+    let names: Vec<String> = reopened
+        .workspaces()
+        .list()
+        .await
+        .into_iter()
+        .map(|workspace| workspace.name)
+        .collect();
+    assert_eq!(names, vec![created.name]);
+    reopened.shutdown().await;
+
+    // Another device's certificate is still refused: only the label moved,
+    // and a host whose certificate names a different key does not serve the
+    // workspace.
+    let other_root = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+    let other_key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+    let mut other_cert = tilo_user_identity::DeviceCert {
+        user_public_key: other_root.verifying_key().to_bytes(),
+        device_public_key: other_key.verifying_key().to_bytes(),
+        device_label: "another host".into(),
+        capabilities: DeviceCapabilities::host(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut other_cert, &other_root).unwrap();
+    let refused = WorkspaceHost::open(
+        HostConfig {
+            max_workspace_grants: None,
+            ..HostConfig::new(dir.path().to_owned(), HostMode::CertifiedHost)
+        },
+        HostIdentity {
+            user_public_key: other_cert.user_public_key,
+            device_signing_key: other_key.clone(),
+            device_cert: other_cert,
+            revocations: RevocationList::new(),
+        },
+        iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .secret_key(iroh::SecretKey::from_bytes(&other_key.to_bytes()))
+            .bind()
+            .await
+            .expect("a loopback endpoint binds"),
+        None,
+    )
+    .await
+    .expect_err("a host of another device does not open the workspace");
+    assert!(
+        refused
+            .to_string()
+            .contains("governed by a different device"),
+        "{refused}"
+    );
 }

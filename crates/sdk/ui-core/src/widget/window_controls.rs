@@ -10,9 +10,9 @@
 //! window and which to what the window shows.
 //!
 //! A Tilo window has no minimized state — it is a tab in a group, and its
-//! group is what a person puts away — so the pill offers no minimize. A
-//! foreign native window that carries a minimize keeps it in its own
-//! header ([`crate::host_chrome`]).
+//! group is what a person puts away — so the pill offers no minimize there.
+//! A window of the app's own on a desktop that leaves decorations to it does
+//! have one ([`WindowControls::lay_out_own_window`]).
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -24,6 +24,7 @@ use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowControl {
+    Minimize,
     Maximize,
     Close,
 }
@@ -70,6 +71,9 @@ pub struct WindowControls {
     /// The glass pill around every control: the window's own, not a
     /// control's, so it never changes with hover, press or focus.
     pub pill: Rect,
+    /// The window of the app's own, on a desktop that leaves its frame to the
+    /// app, is the one control a Tilo window has no state for.
+    pub minimize: Rect,
     pub maximize: Rect,
     pub close: Rect,
 }
@@ -83,7 +87,7 @@ pub struct ControlsState {
     /// How far each control's hover ring has come in, by control
     /// ([`WindowControl::index`]): on the toolkit's spring, so a ring
     /// fades in and out rather than appearing and vanishing.
-    pub lifts: [f32; 2],
+    pub lifts: [f32; 3],
 }
 
 impl WindowControl {
@@ -93,7 +97,38 @@ impl WindowControl {
         match self {
             WindowControl::Maximize => 0,
             WindowControl::Close => 1,
+            WindowControl::Minimize => 2,
         }
+    }
+
+    /// The control's name in the window's locale: what a screen reader says
+    /// and an agent presses it by.
+    #[must_use]
+    pub fn name_key(self, maximized: bool) -> &'static str {
+        match self {
+            WindowControl::Minimize => "host-window-minimize",
+            WindowControl::Maximize if maximized => "host-window-restore",
+            WindowControl::Maximize => "host-window-maximize",
+            WindowControl::Close => "host-window-close",
+        }
+    }
+
+    /// The target assistive technology and automation press it by.
+    #[must_use]
+    pub fn target(self) -> &'static str {
+        match self {
+            WindowControl::Minimize => "window-control-minimize",
+            WindowControl::Maximize => "window-control-maximize",
+            WindowControl::Close => "window-control-close",
+        }
+    }
+
+    /// The control the accessibility target `target` names.
+    #[must_use]
+    pub fn of_target(target: &str) -> Option<Self> {
+        [Self::Minimize, Self::Maximize, Self::Close]
+            .into_iter()
+            .find(|control| control.target() == target)
     }
 }
 
@@ -102,6 +137,18 @@ impl WindowControls {
     /// line, inside one pill.
     #[must_use]
     pub fn lay_out(row: Rect) -> Self {
+        Self::place(row, false)
+    }
+
+    /// The controls of a window the app draws the frame of itself (a desktop
+    /// that leaves decorations to the client): minimize joins maximize and
+    /// close, in the order desktops put them.
+    #[must_use]
+    pub fn lay_out_own_window(row: Rect) -> Self {
+        Self::place(row, true)
+    }
+
+    fn place(row: Rect, minimize: bool) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
         }
@@ -113,14 +160,24 @@ impl WindowControls {
         let pill_x1 = row.x1 - EDGE_INSET;
         let close = square(pill_x1 - pad);
         let maximize = square(close.x0 - PILL_PAD);
-        let pill = Rect::new(
-            maximize.x0 - pad,
-            y0,
-            pill_x1.max(maximize.x1 + pad),
-            y0 + pill_h,
-        );
+        let minimize = if minimize {
+            let minimum = square(maximize.x0 - PILL_PAD);
+            if minimum.x0 < row.x0 {
+                return Self::default();
+            }
+            minimum
+        } else {
+            Rect::ZERO
+        };
+        let lead = if minimize.area() > 0.0 {
+            minimize.x0
+        } else {
+            maximize.x0
+        };
+        let pill = Rect::new(lead - pad, y0, pill_x1.max(maximize.x1 + pad), y0 + pill_h);
         Self {
             pill,
+            minimize,
             maximize,
             close,
         }
@@ -147,9 +204,30 @@ impl WindowControls {
                 maximize.x1 + pad,
                 self.pill.y1,
             ),
+            minimize: Rect::ZERO,
             maximize,
             close: Rect::ZERO,
         }
+    }
+
+    /// The pill around any window's own controls, laid out on `bar`: as tall as a bar control
+    /// with the pill's padding, centred on the bar's centre line, from `controls`' leading
+    /// edge less the padding to its trailing edge less the window's own inset. `Rect::ZERO`
+    /// for no controls.
+    #[must_use]
+    pub fn around(bar: Rect, controls: Rect) -> Rect {
+        if controls.area() <= 0.0 || bar.height() <= 0.0 || controls.width() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let height = (CONTROL_PX + 2.0 * PILL_PAD).min(bar.height());
+        let x0 = controls.x0 - PILL_PAD;
+        let x1 = (controls.x1 + PILL_PAD).min(bar.x1 - EDGE_INSET);
+        Rect::new(
+            x0,
+            bar.center().y - height / 2.0,
+            x1.max(x0 + height),
+            bar.center().y + height / 2.0,
+        )
     }
 
     /// Where the controls begin, less the gap anything before them keeps;
@@ -165,6 +243,7 @@ impl WindowControls {
 
     pub fn iter(&self) -> impl Iterator<Item = (WindowControl, Rect)> {
         [
+            (WindowControl::Minimize, self.minimize),
             (WindowControl::Maximize, self.maximize),
             (WindowControl::Close, self.close),
         ]
@@ -185,7 +264,12 @@ impl WindowControls {
     }
 
     pub fn offset(&mut self, shift: vello::kurbo::Vec2) {
-        for r in [&mut self.pill, &mut self.maximize, &mut self.close] {
+        for r in [
+            &mut self.pill,
+            &mut self.minimize,
+            &mut self.maximize,
+            &mut self.close,
+        ] {
             if r.area() > 0.0 {
                 *r = *r + shift;
             }
@@ -197,9 +281,8 @@ impl WindowControls {
         if self.pill.area() <= 0.0 {
             return;
         }
+        paint_pill(scene, transform, self.pill, theme);
         let ground = crate::chrome::panel_ground(theme);
-        let radius = crate::chrome::ChromeRole::Selector.radius(theme, self.pill.height());
-        crate::surface::panel_unsnapped(scene, transform, self.pill, radius, theme);
         // The pill is the ground its controls stand on: their ink and their
         // hover ring are resolved against it, never against the window's.
         let theme = &theme.on_ground(ground);
@@ -218,13 +301,16 @@ impl WindowControls {
             // has brought it — coming in, or going out from where it was.
             let ring = if pressed { 1.0 } else { lift };
             let glyph = match control {
+                WindowControl::Minimize => icons::Icon::Minus,
                 WindowControl::Maximize if state.maximized => icons::Icon::Minimize2,
                 WindowControl::Maximize => icons::Icon::Maximize2,
                 WindowControl::Close => icons::Icon::X,
             };
             let glyph_box = match control {
                 WindowControl::Close => square_at(rect.center(), CLOSE_GLYPH_PX),
-                WindowControl::Maximize => square_at(rect.center(), ACTION_GLYPH_PX),
+                WindowControl::Minimize | WindowControl::Maximize => {
+                    square_at(rect.center(), ACTION_GLYPH_PX)
+                }
             };
             let colour = match control {
                 WindowControl::Close => theme
@@ -233,7 +319,7 @@ impl WindowControls {
                     .semantic
                     .danger
                     .with_alpha(CLOSE_RING_ALPHA * crate::num::f32_of_f64(ring)),
-                WindowControl::Maximize => {
+                WindowControl::Minimize | WindowControl::Maximize => {
                     crate::tokens::Colors::hairline_on(ground, scale_alpha(HOVER_TINT_ALPHA, ring))
                 }
             };
@@ -263,6 +349,18 @@ impl WindowControls {
             );
         }
     }
+}
+
+/// Paint the floating pill the window's own controls stand in: the panel ground of the
+/// floating material, at the selector's radius, over the window's own ground or over the app's
+/// header row. Every window's controls stand in this one pill, so a bar says the same thing
+/// about them wherever the frame puts them.
+pub fn paint_pill(scene: &mut Scene, transform: Affine, pill: Rect, theme: &Theme) {
+    if pill.area() <= 0.0 {
+        return;
+    }
+    let radius = crate::chrome::ChromeRole::Selector.radius(theme, pill.height());
+    crate::surface::panel_unsnapped(scene, transform, pill, radius, theme);
 }
 
 /// `alpha` of an opaque line, `progress` of the way in.
@@ -382,6 +480,27 @@ mod tests {
         assert_eq!(c.hit(Point::new(10.0, 22.0)), None);
         assert!(c.on_pill(Point::new(c.pill.x0 + 1.0, c.pill.center().y)));
         assert!(!c.on_pill(Point::new(10.0, 22.0)));
+    }
+
+    #[test]
+    fn the_window_s_controls_stand_in_one_pill_inside_its_bar() {
+        let bar = Rect::new(0.0, 0.0, 800.0, crate::widget::tabs::TAB_BAR_HEIGHT);
+        let controls = Rect::new(700.0, 8.0, 788.0, 36.0);
+        let pill = WindowControls::around(bar, controls);
+        assert!(
+            pill.contains(controls.center()) && pill.area() > controls.area(),
+            "the pill holds the controls with room around them: {pill:?} for {controls:?}"
+        );
+        assert!(pill.height() <= bar.height() + f64::EPSILON);
+        assert!(
+            (pill.x1 - (bar.x1 - EDGE_INSET)).abs() < f64::EPSILON,
+            "the pill stands the window's own inset from its trailing edge: {pill:?}"
+        );
+        assert!(
+            (pill.center().y - bar.center().y).abs() < f64::EPSILON,
+            "the pill is centred on the bar",
+        );
+        assert_eq!(WindowControls::around(bar, Rect::ZERO), Rect::ZERO);
     }
 
     #[test]

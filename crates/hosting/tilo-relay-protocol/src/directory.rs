@@ -18,6 +18,7 @@
 //! | [`DIRECTORY_PATH`] | none | [`DirectoryPage`] |
 //! | `<door>join` | [`DoorJoin`] | [`DoorAnswer`] |
 //! | `<door>report` | [`DoorReport`] | `204` |
+//! | `<door>errors` | [`PageError`] | `204` |
 //!
 //! `<door>` is a [`DirectoryEntry::door`], resolved against the directory's
 //! own address. A site names its directory in its `entry.json`
@@ -196,6 +197,63 @@ impl DoorReport {
     }
 }
 
+/// The largest page error report a door takes.
+pub const MAX_PAGE_ERROR_BYTES: usize = 4096;
+
+/// A page's own uncaught error, reported to the door that let the page in:
+/// the host logs it for the site's operator, and keeps nothing else.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageError {
+    /// What happened: `error` or `unhandledrejection`.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub message: String,
+    /// The file the error came from, when the browser named one.
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub line: u32,
+    #[serde(default)]
+    pub column: u32,
+    /// The call stack the page held, when it held one.
+    #[serde(default)]
+    pub stack: String,
+    /// The page that failed: its path on the site.
+    #[serde(default)]
+    pub page: String,
+    /// The page's build, as `version.json` names it.
+    #[serde(default)]
+    pub build: String,
+}
+
+impl PageError {
+    /// The report a page sent, when it is one this host logs.
+    ///
+    /// # Errors
+    ///
+    /// A body larger than [`MAX_PAGE_ERROR_BYTES`], or one that is not a
+    /// report: a page's own code, not another site's identity, is what a
+    /// door takes here.
+    pub fn parse(body: &[u8]) -> Result<Self, &'static str> {
+        if body.len() > MAX_PAGE_ERROR_BYTES {
+            return Err("a page error report is at most 4 KiB");
+        }
+        serde_json::from_slice(body).map_err(|_| "not a page error report")
+    }
+
+    /// The kind as a host logs it: a kind this version does not know logs as
+    /// `other` rather than being dropped.
+    #[must_use]
+    pub fn kind(&self) -> &str {
+        match self.kind.as_str() {
+            "error" | "unhandledrejection" => self.kind.as_str(),
+            _ => "other",
+        }
+    }
+}
+
 /// How lively a public workspace is, as its listing says in a word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
@@ -307,6 +365,33 @@ mod tests {
         assert_eq!(listed.activity(now), Activity::Quiet);
         listed.here_count = 4;
         assert_eq!(listed.activity(now), Activity::HereNow(4));
+    }
+
+    #[test]
+    fn a_page_error_report_is_what_the_page_sends() {
+        let body = serde_json::json!({
+            "kind": "error", "message": "x is not a function", "source": "https://site.example/v/1/page.js",
+            "line": 12, "column": 4, "stack": "at page.js:12", "page": "/", "build": "1.2.3",
+        })
+        .to_string();
+        let error = PageError::parse(body.as_bytes()).unwrap();
+        assert_eq!(error.kind(), "error");
+        assert_eq!(error.line, 12);
+        assert_eq!(error.build, "1.2.3");
+        // A report without the optional parts is still a report.
+        let rejection =
+            PageError::parse(br#"{"kind": "unhandledrejection", "message": "gone"}"#).unwrap();
+        assert_eq!(rejection.kind(), "unhandledrejection");
+        assert_eq!(rejection.source, "");
+        // A kind this version does not know is logged as one, not refused.
+        assert_eq!(
+            PageError::parse(br#"{"kind": "console", "message": "hi"}"#)
+                .unwrap()
+                .kind(),
+            "other"
+        );
+        assert!(PageError::parse(b"not json").is_err());
+        assert!(PageError::parse(&vec![b' '; MAX_PAGE_ERROR_BYTES + 1]).is_err());
     }
 
     #[test]

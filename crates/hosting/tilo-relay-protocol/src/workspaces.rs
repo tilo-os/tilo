@@ -478,6 +478,9 @@ pub enum WorkspacesRequest {
         workspace: String,
         name: String,
     },
+    /// Retired: a conversation is an ordinary record of the workspace. It
+    /// keeps the requests after it at their encoded positions.
+    RetiredPair {},
 }
 
 /// The answer to a [`WorkspacesRequest`].
@@ -510,6 +513,9 @@ pub enum WorkspacesReply {
     Shared(u32),
     /// The workspace names the caller as asked, for [`WorkspacesRequest::Name`].
     Named,
+    /// Retired with [`WorkspacesRequest::RetiredPair`]; it keeps the replies
+    /// after it at their encoded positions.
+    RetiredPaired,
 }
 
 /// One `/join` step.

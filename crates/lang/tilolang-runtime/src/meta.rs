@@ -4,9 +4,10 @@
 
 pub use tilolang::meta::{
     ActionMeta, AnchorMeta, DefaultMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta,
-    PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    NamedRootMeta, PackageMeta, ParamMeta, ProposalMeta, Reach, StateMeta, TypeMeta, VariantMeta,
+    ViewMeta,
 };
-pub use tilolang::types::{EffectClass, MergeKind, Ty, TypeKey};
+pub use tilolang::types::{EffectClass, FieldRole, MergeKind, Ty, TypeKey};
 
 /// Packages are described by the compiler's metadata.
 pub type Meta = PackageMeta;

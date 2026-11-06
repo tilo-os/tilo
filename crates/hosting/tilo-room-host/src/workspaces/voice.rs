@@ -20,7 +20,7 @@
 //! every governance decision and every second, so removing a member or
 //! ending a call ends their participation within one observation of the
 //! decision. The members' devices carry the call's media between them on the
-//! call's own lane (`tilo_call_lane`), by the keys their participation and
+//! workspace's live plane (`tilo_live`), by the keys their participation and
 //! the workspace's channels give them.
 //!
 //! A workspace this relay only carries, governed elsewhere or by no one (a
@@ -350,7 +350,7 @@ impl Policy {
     /// other replica keeps such a Chat as ciphertext and fails closed.
     fn read(workspace: &GovernedWorkspace) -> Result<Self, String> {
         let peer = workspace.peer();
-        let calls = if workspace.participation.is_some() {
+        let calls = if workspace.seals() {
             peer.media().keyed_media_policy()?
         } else {
             peer.validated_media_policy()?

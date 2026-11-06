@@ -81,7 +81,7 @@ pub(super) struct ChildReask<'a> {
 pub(super) fn child_provenance(
     lease: &str,
     invocation: &str,
-    caller: Option<durable_local_invocation::LocalCaller>,
+    caller: Result<durable_local_invocation::LocalCaller, String>,
 ) -> Result<
     Option<(
         durable_local_invocation::LocalCaller,
@@ -98,11 +98,10 @@ pub(super) fn child_provenance(
     if id.is_nil() {
         return Err(BrokerError::failed("nil task invocation".into()));
     }
-    Ok(Some((
-        caller
-            .ok_or_else(|| BrokerError::failed("native task channel custody unavailable".into()))?,
-        tilo_actions::InvocationId(id),
-    )))
+    let caller = caller.map_err(|reason| {
+        BrokerError::failed(format!("native task channel custody unavailable: {reason}"))
+    })?;
+    Ok(Some((caller, tilo_actions::InvocationId(id))))
 }
 
 fn native_request(
@@ -425,7 +424,14 @@ impl AppBrokerState {
             match self.task_run_cancelled(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
             {
                 Ok(false) => {}
-                Ok(true) | Err(_) => return,
+                Ok(true) => return,
+                Err(error) => {
+                    // The run's own records cannot say whether it stopped, so
+                    // nothing this hold waits for would arrive: it ends, and a
+                    // person reading the run's history sees why.
+                    tracing::warn!(%error, run = reask.run_id, "task run cancellation could not be read; the hold ends");
+                    return;
+                }
             }
             tokio::select! {
                 signal = changes.changed(), if signalled => {
@@ -721,7 +727,10 @@ impl AppBrokerState {
                 drop(subscribers);
                 workspaces
             }
-            Err(_) => return,
+            Err(error) => {
+                tracing::warn!(%error, "native task subscribers cannot be read; delivery is not refreshed");
+                return;
+            }
         };
         self.refresh_tracker_runs(&workspaces);
     }

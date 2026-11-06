@@ -147,7 +147,7 @@ impl SessionFabric {
             PersonalFabricPayload::Snapshot(bytes) => {
                 let taken = self.runtime.lock_recover().snapshot(peer, bytes);
                 if let Err(error) = taken {
-                    tracing::debug!(%error, %peer, "a device sent a snapshot this session does not take");
+                    tracing::warn!(%error, %peer, "a device sent a snapshot this session does not take");
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
@@ -158,7 +158,7 @@ impl SessionFabric {
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        tracing::debug!(%error, %peer, "a device sent an action this session does not take");
+                        tracing::warn!(%error, %peer, "a device sent an action this session does not take");
                     }
                 }
             }
@@ -177,7 +177,7 @@ impl SessionFabric {
                     outputs.clone(),
                 );
                 if let Err(error) = taken {
-                    tracing::debug!(%error, %peer, "a device's outputs are not taken as they stand");
+                    tracing::warn!(%error, %peer, "a device's outputs are not taken as they stand");
                 }
             }
             PersonalFabricPayload::DisplayOutputs { stamp, outputs } => {
@@ -187,7 +187,7 @@ impl SessionFabric {
                     outputs.clone(),
                 );
                 if let Err(error) = taken {
-                    tracing::debug!(%error, %peer, "a device's output facts are not taken");
+                    tracing::warn!(%error, %peer, "a device's output facts are not taken");
                 }
             }
             // The bytes of a Nearby Send this device took: the transfer
@@ -416,21 +416,21 @@ impl FabricLink for SessionFabric {
     fn share_wake_routes(&self, routes: Vec<tilo_device_fabric::WakeRoute>) {
         let taken = self.runtime.lock_recover().set_wake_routes(routes);
         if let Err(error) = taken {
-            tracing::debug!(%error, "this device's wake routes are not shared");
+            tracing::warn!(%error, "this device's wake routes are not shared");
         }
     }
 
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let taken = self.runtime.lock_recover().share_clipboard(entries);
         if let Err(error) = taken {
-            tracing::debug!(%error, "the clipboard is not shared");
+            tracing::warn!(%error, "the clipboard is not shared");
         }
     }
 
     fn publish_owner_session(&self, session: tilo_device_fabric::OwnerSession) {
         let taken = self.runtime.lock_recover().set_owner_session(session);
         if let Err(error) = taken {
-            tracing::debug!(%error, "this device's session is not said to the others");
+            tracing::warn!(%error, "this device's session is not said to the others");
         }
     }
 
@@ -448,7 +448,7 @@ impl FabricLink for SessionFabric {
         match taken {
             Ok(changed) => changed,
             Err(error) => {
-                tracing::debug!(%error, "this device's displays are not shared");
+                tracing::warn!(%error, "this device's displays are not shared");
                 false
             }
         }
@@ -461,7 +461,7 @@ impl FabricLink for SessionFabric {
     fn share_unlock(&self, unlock: tilo_device_fabric::unlock::UnlockFabricState) {
         let taken = self.runtime.lock_recover().set_unlock(unlock);
         if let Err(error) = taken {
-            tracing::debug!(%error, "this device's disk unlock is not shared");
+            tracing::warn!(%error, "this device's disk unlock is not shared");
         }
     }
 }

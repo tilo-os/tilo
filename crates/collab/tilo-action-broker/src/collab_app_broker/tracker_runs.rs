@@ -61,7 +61,7 @@ pub(super) fn reports_on_own_issue(
     app == TRACKER_APP
         && tilo_actions::selection::logical_resource_id(resource) == TRACKER_RESOURCE
         && json
-            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok()) // optional-decode: an argument that is no JSON map names no issue
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok()) // ignored-failure: an argument that is no JSON map names no issue
             .is_some_and(|arguments| arguments.get("issue").and_then(|v| v.as_str()) == Some(issue))
 }
 
@@ -276,7 +276,7 @@ impl AppBrokerState {
             self.notify_run_questions(workspace, &runs);
             for run in runs.iter().filter(|run| run.active) {
                 if let Err(error) = self.dispatch_tracker_run(workspace, run) {
-                    tracing::debug!(%error, issue = %run.issue, "approved issue run not delivered");
+                    tracing::warn!(%error, issue = %run.issue, "approved issue run not delivered");
                 }
             }
         }

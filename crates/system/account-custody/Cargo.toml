@@ -98,6 +98,9 @@ uuid = { workspace = true, optional = true }
 
 [dev-dependencies]
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+# The file-backed secret store a test names with `TILO_SECRETS_DIR` stands in
+# for a keyring that answers.
+tilo-secrets.workspace = true
 cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-server"] }
 cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }

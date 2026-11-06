@@ -61,19 +61,3 @@ d-xqxkoqbj = Note row
 d-6wqou47w = Note editor
     .w-untitled = Untitled
     .w-write-something = Write something
-
-d-akcqjax3-row0 = Notebook for p
-
-d-akcqjax3-row1 = Notebook for x
-
-d-akcqjax3-row2 = Notebook for x
-
-d-6wqou47w-row0 = Note editor for t
-
-d-6wqou47w-row1-row0 = Note editor for c
-
-d-6wqou47w-row1-row1-row0 = Note editor for c
-
-d-6wqou47w-row1-row1 = Note editor for v
-
-d-6wqou47w-row1 = Note editor for s

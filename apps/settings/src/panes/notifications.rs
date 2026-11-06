@@ -71,7 +71,12 @@ fn installed_notification_apps(
         settings_store::notification_policy::AppNotificationRule,
     >,
 ) -> Vec<InstalledNotificationApp> {
-    installed_notification_apps_from(existing, &desktop_entry::cache::cached_scan().entries)
+    let locales =
+        desktop_entry::locale::language_candidates(ui::i18n::preferred_language().as_deref());
+    installed_notification_apps_from(
+        existing,
+        &desktop_entry::cache::cached_scan(&locales).entries,
+    )
 }
 
 /// Merge the Tilo registry with the system's freedesktop application catalog.
@@ -809,6 +814,7 @@ mod tests {
             let entries = desktop_entry::scan_dirs(
                 &[apps_dir],
                 &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
+                &[],
             )
             .entries;
 

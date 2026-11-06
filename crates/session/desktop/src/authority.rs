@@ -43,7 +43,6 @@ pub trait WorkspaceAuthority {
     /// Whether `user` is allowed, without asking first, an action of `kind`
     /// at `relative`, a path below the workspace.
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool;
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool;
     fn role_of(&self, user: &UserId) -> Option<CapRole>;
     /// The sandbox actor a person is in this workspace.
     fn actor_for_person(&self, user: &UserId) -> Actor;
@@ -102,9 +101,6 @@ impl WorkspaceAuthority for Workspace {
     }
     fn person_allowed(&self, user: &str, relative: &TreePath, kind: ActionKind) -> bool {
         self.answer_at(user, &self.node().join(relative), kind, unix_now()) == Answer::Allow
-    }
-    fn transfer_owner_as(&mut self, current_owner: &UserId, new_owner: &UserId) -> bool {
-        self.transfer_owner_as_at(current_owner, new_owner, unix_now())
     }
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
         Workspace::role_of(self, user).filter(|_| !self.is_blocked(user))

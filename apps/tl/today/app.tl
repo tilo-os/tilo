@@ -17,8 +17,8 @@ default view today for Today
 /// changes belong to the todo and notes apps, so each one asks until Today is trusted.
 flow morning_cleanup(list: todo.Tasks, nb: notes.Notes) -> Int {
     let n = 0
-    // The clear is refused while nothing is done, so it is asked only then.
-    if list.items.any(x -> x.done) {
+    // The clear is refused while nothing is finished, so it is asked only then.
+    if list.items.any(x -> x.finished) {
         n = todo.clear_done(list)
     }
     let note = notes.new_note(nb)

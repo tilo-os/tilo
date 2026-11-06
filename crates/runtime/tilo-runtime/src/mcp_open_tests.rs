@@ -1339,7 +1339,6 @@ fn the_http_bridge_does_not_readmit_a_failed_text_handle_mutation() {
         "workspace".into(),
         "owner".into(),
         Some("secret".into()),
-        None,
     );
     run(async {
         let initialize = json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params": {

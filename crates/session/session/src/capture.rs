@@ -15,15 +15,18 @@
 //! A colour pick is answered on that same pass, from the same picture: the
 //! pixel under the pointer where the screenshot of every display puts it.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use tilo_compositor::Compositor;
 use tilo_portal::{Capture, CaptureError, CaptureTarget, Pending};
 use tilo_service::Wake;
 
+use crate::capture_io::{CaptureIo, NO_WORKER, Written};
 use crate::capture_studio::CaptureStudio;
 
 /// What the portal asks for: what to capture, where its answer goes, and
@@ -64,6 +67,9 @@ pub struct Captures {
     requests: Receiver<Asked>,
     directory: PathBuf,
     selector: Arc<AtomicBool>,
+    /// The screenshots being written off the loop, in the order they were
+    /// asked for, each with the app waiting for its file.
+    writes: VecDeque<(Receiver<Result<Written, String>>, Reply)>,
 }
 
 /// A portal side and the session side that answers it, the screenshots
@@ -83,6 +89,7 @@ pub fn channel_to(directory: PathBuf, wake: Wake) -> (ScreenCapture, Captures) {
             requests: asked,
             directory,
             selector,
+            writes: VecDeque::new(),
         },
     )
 }
@@ -170,19 +177,26 @@ impl Capture for ScreenCapture {
 impl Captures {
     /// Answer every screenshot and pick asked for since the last pass: what
     /// the session captures itself, and what the person takes in `studio`'s
-    /// selector.
-    pub(crate) fn serve(&self, compositor: &mut Compositor, studio: Option<&mut CaptureStudio>) {
+    /// selector. The picture is read back here and written on `io`, whose
+    /// answer is taken up on a later pass.
+    pub(crate) fn serve(
+        &mut self,
+        compositor: &mut Compositor,
+        studio: Option<&mut CaptureStudio>,
+        io: &Rc<CaptureIo>,
+    ) {
         let mut studio = studio;
         if studio.is_some() {
             // From here on there is a selector to ask the person in, so
             // apps may ask for what only they can name.
             self.selector.store(true, Ordering::Release);
         }
+        self.take_writes();
         while let Ok(asked) = self.requests.try_recv() {
             match asked {
                 Asked::Screenshot { id, target, reply } => match target {
                     CaptureTarget::Screen | CaptureTarget::ActiveWindow => {
-                        let _ = reply.send(self.take(compositor, target));
+                        self.take(compositor, target, reply, io);
                     }
                     CaptureTarget::Window | CaptureTarget::Area => {
                         let Some(selector) = studio.as_mut() else {
@@ -204,35 +218,63 @@ impl Captures {
                 }
             }
         }
+        self.take_writes();
     }
 
+    /// Hand the picture asked for to the worker, which writes it off the
+    /// loop: the app is answered on a later pass, once the file is there.
     fn take(
-        &self,
+        &mut self,
         compositor: &mut Compositor,
         target: CaptureTarget,
-    ) -> Result<PathBuf, CaptureError> {
+        reply: Reply,
+        io: &Rc<CaptureIo>,
+    ) {
         let picture = match target {
             CaptureTarget::Screen => picture(compositor),
             CaptureTarget::ActiveWindow => focused(compositor),
             CaptureTarget::Window | CaptureTarget::Area => {
-                return Err(CaptureError::Failed(format!(
+                let _ = reply.send(Err(CaptureError::Failed(format!(
                     "a {target:?} is taken by the person, not here"
-                )));
+                ))));
+                return;
             }
-        }
-        .map_err(CaptureError::Failed)?;
-        keep(&self.directory, &picture).map_err(CaptureError::Failed)
+        };
+        let picture = match picture {
+            Ok(picture) => picture,
+            Err(error) => {
+                let _ = reply.send(Err(CaptureError::Failed(error)));
+                return;
+            }
+        };
+        let write = io.write(picture, self.directory.clone(), false);
+        self.writes.push_back((write, reply));
     }
-}
 
-/// Write `picture` as a PNG under `directory`, named fresh; its path.
-pub(crate) fn keep(directory: &Path, picture: &image::RgbaImage) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
-    let path = unique(directory, "screenshot", "png");
-    picture
-        .save_with_format(&path, image::ImageFormat::Png)
-        .map_err(|error| error.to_string())?;
-    Ok(path)
+    /// Answer the apps whose screenshots the worker wrote since the last
+    /// pass, in the order they asked.
+    fn take_writes(&mut self) {
+        loop {
+            let Some((write, _)) = self.writes.front() else {
+                return;
+            };
+            let answer = match write.try_recv() {
+                Ok(answer) => answer,
+                // Not written yet: it and every ask behind it wait for their
+                // turn on the one worker.
+                Err(TryRecvError::Empty) => return,
+                Err(TryRecvError::Disconnected) => Err(NO_WORKER.to_owned()),
+            };
+            let Some((_, reply)) = self.writes.pop_front() else {
+                return;
+            };
+            let _ = reply.send(
+                answer
+                    .map(|written| written.path)
+                    .map_err(CaptureError::Failed),
+            );
+        }
+    }
 }
 
 /// The window with the keyboard's focus, as the compositor draws it.
@@ -259,7 +301,14 @@ pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
 
 /// Every display on, each at its place in the layout.
 pub(crate) fn picture(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
-    Ok(desk(compositor, None)?.picture)
+    Ok(desk(compositor, Look::Whole)?.picture)
+}
+
+/// Every display on, each at its place in the layout, as the person in front
+/// of them sees it: the session's own look at its displays, for a check, with
+/// nothing withheld.
+pub(crate) fn shown(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
+    Ok(desk(compositor, Look::Drawn)?.picture)
 }
 
 /// Every display on, each at its place in the layout, drawn to fit `max` —
@@ -269,7 +318,7 @@ pub(crate) fn video(
     compositor: &mut Compositor,
     max: (u32, u32),
 ) -> Result<image::RgbaImage, String> {
-    Ok(desk(compositor, Some(max))?.picture)
+    Ok(desk(compositor, Look::Fitted(max))?.picture)
 }
 
 /// The colour under the pointer: the pixel under it where a screenshot of
@@ -287,7 +336,7 @@ fn colour(compositor: &mut Compositor) -> Result<(f64, f64, f64), CaptureError> 
     {
         return Err(none());
     }
-    let desk = desk(compositor, None).map_err(CaptureError::Failed)?;
+    let desk = desk(compositor, Look::Whole).map_err(CaptureError::Failed)?;
     desk.colour_at(pointer).ok_or_else(none)
 }
 
@@ -319,31 +368,51 @@ struct Frame {
 /// A display's name and its place in the layout, in its own pixels.
 type Layout = (String, (i32, i32, i32, i32));
 
-/// Every display on, each at its place in the layout; `max` fits the whole
-/// layout into that frame — the size a video of the desktop is streamed at —
-/// and `None` keeps every display's own pixels.
-fn desk(compositor: &mut Compositor, max: Option<(u32, u32)>) -> Result<Desk, String> {
+/// What a copy of the desk is for.
+#[derive(Clone, Copy)]
+enum Look {
+    /// The session's own look at its displays, for a check: what is drawn on
+    /// them, nothing withheld.
+    Drawn,
+    /// A copy that leaves the session, at every display's own pixels: a
+    /// screenshot.
+    Whole,
+    /// A copy that leaves the session, the whole layout fitted into `max`: a
+    /// video frame.
+    Fitted((u32, u32)),
+}
+
+/// Every display on, each at its place in the layout, as `look` copies it; a
+/// fitted copy fits the whole layout into that frame — the size a video of
+/// the desktop is streamed at — and every other keeps each display's own
+/// pixels.
+fn desk(compositor: &mut Compositor, look: Look) -> Result<Desk, String> {
     let displays: Vec<Layout> = compositor
         .outputs()
         .into_iter()
         .filter_map(|output| output.rect.map(|rect| (output.name, rect)))
         .collect();
-    let factor = max.map_or(1.0, |max| layout_factor(&displays, max));
+    let fitted = match look {
+        Look::Fitted(max) => Some(max),
+        Look::Drawn | Look::Whole => None,
+    };
+    let factor = fitted.map_or(1.0, |max| layout_factor(&displays, max));
     let mut frames = Vec::new();
     for output in compositor.outputs() {
         let Some(rect) = output.rect else {
             continue;
         };
         let target = tilo_compositor::capture::Target::output(output.name.clone());
-        let shot = match max {
-            Some(_) => compositor.read_back_scaled(
+        let shot = match look {
+            Look::Drawn => compositor.read_back_shown(&target),
+            Look::Whole => compositor.read_back(&target),
+            Look::Fitted(_) => compositor.read_back_scaled(
                 &target,
                 (
                     fit(f64::from(rect.2) * factor),
                     fit(f64::from(rect.3) * factor),
                 ),
             ),
-            None => compositor.read_back(&target),
         }
         .map_err(|error| error.to_string())?;
         // The frame is in the output's pixels: its place in the layout
@@ -378,7 +447,7 @@ fn desk(compositor: &mut Compositor, max: Option<(u32, u32)>) -> Result<Desk, St
     let size = |from: i64, to: i64| u32::try_from(to.saturating_sub(from)).unwrap_or(0);
     let (width, height) = (size(left, right), size(top, bottom));
     let mut composed = image::RgbaImage::new(width, height);
-    if max.is_some() {
+    if fitted.is_some() {
         // Between the displays is the desk, as a display shows it, not
         // nothing: a video frame has no alpha to carry.
         for pixel in composed.pixels_mut() {

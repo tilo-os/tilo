@@ -530,6 +530,7 @@ impl Backend for DrmBackend {
         &mut self,
         state: &mut State,
         target: &crate::capture::Target,
+        held: crate::capture::Held,
     ) -> Result<crate::backend::Screenshot, crate::capture::CaptureError> {
         let mut inner = self.inner.borrow_mut();
         if !inner.active {
@@ -545,6 +546,7 @@ impl Backend for DrmBackend {
             &mut renderer,
             state,
             target,
+            held,
         )
     }
 
@@ -757,8 +759,17 @@ impl Backend for DrmBackend {
             .gpus
             .values()
             .flat_map(|gpu| gpu.outputs.values())
-            .filter(|lit| !lit.queued && !lit.dark && state.redraw_owed(&lit.output))
-            .map(|lit| lit.next_frame)
+            .filter(|lit| !lit.dark && state.redraw_owed(&lit.output))
+            // A frame already queued is shown at the blank it was built for:
+            // what changed since is drawn in the frame built after it.
+            .filter_map(|lit| {
+                if lit.queued {
+                    lit.pacing
+                        .queued_next_frame(lit.interval, lit.vrr == Vrr::On)
+                } else {
+                    Some(lit.next_frame)
+                }
+            })
             .min()
     }
 }
@@ -1070,21 +1081,7 @@ fn vblank(
     lit.queued = false;
     let shown = vblank_instant(metadata);
     lit.next_frame = lit.pacing.shown(shown, lit.interval, lit.vrr == Vrr::On);
-    if let Some(summary) = lit.pacing.take_summary(shown, lit.interval) {
-        tracing::debug!(
-            output = lit.output.name(),
-            shown = summary.shown,
-            missed = summary.missed,
-            interval_us = lit.interval.as_micros(),
-            lead_us = summary.lead_us,
-            cost_p50_us = summary.cost.0,
-            cost_p99_us = summary.cost.1,
-            build_to_vblank_p50_us = summary.build_to_vblank.0,
-            build_to_vblank_p99_us = summary.build_to_vblank.1,
-            gap_max_us = summary.gap_max_us,
-            "frame pacing"
-        );
-    }
+    lit.pacing.log(&lit.output.name(), shown, lit.interval);
     match lit.wake.as_mut() {
         // The link is up; what the kernel holds says the rest.
         Some(wake) if !wake.judged => {
@@ -1453,13 +1450,21 @@ fn remove_gpu(
 
 /// The GPU whose connectors to drive: udev's primary, else the one with the
 /// most connected connectors.
+///
+/// udev's primary is followed unless its node provably cannot scan out: a
+/// board can hand out a render-only `cardN` for its GPU (the Raspberry Pi's
+/// V3D, for one) while the display controller's node beside it drives the
+/// outputs, and only the latter carries connectors.
 fn primary_gpu(seat: &str, udev: &UdevBackend) -> Result<PathBuf, BackendError> {
-    if let Ok(Some(path)) = udev::primary_gpu(seat) {
+    let sysfs = Path::new("/sys/class/drm");
+    if let Ok(Some(path)) = udev::primary_gpu(seat)
+        && devices::has_connectors(&path, sysfs) != Some(false)
+    {
         return Ok(path);
     }
     let candidates =
         devices::filter_kms_nodes(udev.device_list().map(|(_, path)| path.to_path_buf()));
-    devices::order_by_connected_connectors(candidates, Path::new("/sys/class/drm"))
+    devices::order_by_connected_connectors(candidates, sysfs)
         .into_iter()
         .next()
         .ok_or_else(|| BackendError(format!("no KMS device on seat {seat}")))

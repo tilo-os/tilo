@@ -67,8 +67,12 @@ impl crate::Shared {
             Action::Next => "next",
         };
         let address = tilo_actions::ActionAddress::new(crate::MEDIA, action);
-        if let Err(error) = self.doors.invoke(&address, &serde_json::Map::new()) {
-            tracing::debug!(%error, ?action, "the desk's music control did not reach the player");
+        if let Err(error) = self.doors.invoke(
+            &address,
+            &serde_json::Map::new(),
+            &mut tilo_surface_host::Look::none(),
+        ) {
+            tracing::warn!(%error, ?action, "the desk's music control did not reach the player");
         }
     }
 }
@@ -161,9 +165,9 @@ pub(crate) fn desk(
                 Box::new(surface),
                 handle.clone(),
                 CollaborationLaunchpad::new(),
+                Rc::clone(&asks),
                 beneath,
             )
-            .with_asks(Rc::clone(&asks))
             .with_wallpaper(move |workspace| pictures.picture(workspace))
             .with_reveals(Rc::clone(&band_reveals)),
         )

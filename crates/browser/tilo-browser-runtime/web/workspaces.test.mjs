@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, HostAdmissionError, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, leaveWaitList, waitListing, confirmWaitList, waitListStanding, joinWhenSeated, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, spectate, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, isPublicHome, joinViaHost, leaveOnWaitList, leaveWaitList, waitListing, confirmWaitList, waitListStanding, keptMembership, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -491,13 +491,36 @@ test('a workspace whose host needs an invitation, or a call without a person, is
   assert.equal(calls.posted.length, 0);
 });
 
-test('a full workspace and a cooldown are told apart', async () => {
-  const full = harness({joinReply: {status: 503, headers: {'retry-after': '60'}, body: {error: 'the workspace is full'}}});
-  await assert.rejects(joinViaHost(full.options), error => error instanceof HostAdmissionError && error.code === 'full' && error.retryAfter === 60);
+test('a host still starting, and a cooldown, are told', async () => {
   const down = harness({joinReply: {status: 503, body: {error: 'the room is starting'}}});
   await assert.rejects(joinViaHost(down.options), error => error.code === 'unavailable');
   const cooling = harness({joinReply: {status: 403, body: {error: 'removed'}}});
   await assert.rejects(joinViaHost(cooling.options), error => error.code === 'cooling-down');
+});
+
+test('a door with no seat is waited out as long as it asked, then the same person joins', async () => {
+  const {calls, options} = harness();
+  const busy = {status: 503, headers: {'retry-after': '30'}, body: {error: 'the workspace is full'}};
+  const answers = [busy, busy];
+  options.fetch = async (url, init) => {
+    calls.posted.push({url: String(url), body: JSON.parse(init.body)});
+    return answers.length ? reply(answers.shift()) : reply({body: {invitation: 'INV', admissionToken: 'TOKEN'}});
+  };
+  const peer = await joinViaHost(options);
+  assert.equal(peer.workspace, 'WORKSPACE');
+  assert.equal(calls.posted.length, 3, 'asked again after each wait');
+  assert.deepEqual(calls.posted.map(post => post.body.userPublicKey), Array(3).fill('22'.repeat(32)), 'the same person every time');
+  assert.deepEqual(calls.waited.map(wait => [wait.attempt, wait.error.code, wait.retryAfter]), [[0, 'full', 30], [1, 'full', 30]]);
+  assert.equal(calls.renewed.length, 0, 'the seat was the only thing missing, not the person');
+  assert.equal(calls.joined.length, 1, 'one join, once there was a seat');
+  assert.equal(calls.joined[0].admissionToken, 'TOKEN');
+  assert.equal(calls.joined[0].origin, 'https://rooms.example', 'a door that names no origin is its workspace’s host');
+});
+
+test('the door is asked for the browser’s own person, never for a visitor’s device key', async () => {
+  const {calls, options} = harness();
+  await joinViaHost(options);
+  assert.deepEqual(calls.posted[0].body, {userPublicKey: options.identity.userPublicKey, displayName: 'Brave Otter'});
 });
 
 test('display names are an adjective and an animal', () => {
@@ -555,64 +578,6 @@ test('the home workspace is listed first, then the person\u2019s own, each host 
   assert.deepEqual(listedWorkspaces(), []);
   assert.equal(workspaceAt(listedWorkspaces({stored: [team]}), 'https://team.example'), team);
   assert.equal(workspaceAt([team], 'https://elsewhere.example'), null);
-});
-
-function spectating(spectateReply) {
-  const calls = {posted: [], connected: []};
-  // A real clock reading, beyond 2^53: it must reach the runtime unrounded.
-  const certificate = '{"user_public_key":[' + Array(32).fill(0x5e).join(',') + '],"device_public_key":[' + Array(32).fill(1).join(',')
-    + '],"device_label":"Spectator","issued_at_ns":1791962530023125779}';
-  return {
-    calls,
-    certificate,
-    options: {
-      workspace: commons,
-      fetch: async (url, init) => {
-        calls.posted.push({url: String(url), body: JSON.parse(init.body)});
-        return reply(spectateReply ?? {body: {certificate, origin: 'https://rooms.example', room: 'WORKSPACE'}});
-      },
-      runtime: {hostInfo: async () => JSON.stringify({hostCert: {device_public_key: Array(32).fill(9)}})},
-      connect: async options => { calls.connected.push(options); return {workspace: options.workspace}; },
-    },
-  };
-}
-
-test('a spectator certifies an in-memory device key and connects without a person or storage', async () => {
-  const {calls, certificate, options} = spectating();
-  await spectate(options);
-  assert.equal(calls.posted[0].url, 'https://rooms.example/spectate');
-  const {devicePublicKey} = calls.posted[0].body;
-  assert.match(devicePublicKey, /^[0-9a-f]{64}$/);
-  const [connected] = calls.connected;
-  assert.equal(connected.identity, undefined);
-  assert.equal(connected.profile, undefined);
-  assert.equal(connected.origin, 'https://rooms.example');
-  assert.equal(connected.workspace, 'WORKSPACE');
-  assert.equal(connected.userPublicKey, '5e'.repeat(32));
-  assert.equal(connected.watching, true, 'the page only watches');
-  assert.equal(Array.from(connected.custody.publicKey, b => b.toString(16).padStart(2, '0')).join(''), devicePublicKey);
-  assert.equal(connected.deviceCertificate, `{"cert":${certificate},"hostCert":{"device_public_key":[${Array(32).fill(9).join(',')}]}}`);
-  assert.match(connected.deviceCertificate, /"issued_at_ns":1791962530023125779[,}]/);
-  // The key signs, and cannot be exported: nothing about it outlives the page.
-  assert.equal((await connected.custody.sign(new Uint8Array([1]))).length, 64);
-  await connected.store.put('k', 'v');
-  assert.equal(await connected.store.get('k'), 'v');
-});
-
-test("the host's certificate reaches a spectator's session byte for byte, its nanosecond timestamps intact", async () => {
-  const nanos = '1792023733547123457';
-  const certificate = `{"user_public_key":[${Array(32).fill(94)}],"device_public_key":[1],"issued_at_ns":${nanos}}`;
-  const {calls, options} = spectating({body: {certificate, origin: 'https://rooms.example', room: 'WORKSPACE'}});
-  options.runtime = {hostInfo: async () => `{"hostCert":{"issued_at_ns":${nanos}}}`};
-  await spectate(options);
-  assert.equal(calls.connected[0].deviceCertificate, `{"cert":${certificate},"hostCert":{"issued_at_ns":${nanos}}}`);
-  assert.equal(calls.connected[0].userPublicKey, '5e'.repeat(32));
-});
-
-test('above the spectator cap the embed is told the workspace is full', async () => {
-  const {calls, options} = spectating({status: 503, headers: {'retry-after': '30'}, body: {error: 'too many people are watching'}});
-  await assert.rejects(spectate(options), error => error instanceof HostAdmissionError && error.code === 'full' && error.retryAfter === 30);
-  assert.equal(calls.connected.length, 0);
 });
 
 test('a paired device is kept as its person and reconnects as them, never as a person of its own', async () => {
@@ -834,35 +799,36 @@ test('the person switches between the home and the workspaces they entered, neve
   ]);
 });
 
-test('a watching page joins only once the door has a seat, asking without taking one', async () => {
-  const asked = [], timers = [];
-  const answers = [{open: false}, {open: false}, {open: true}];
-  let joined = 0;
-  joinWhenSeated({
-    workspace: commons, retryAfter: 30, join: () => { joined += 1; }, random: () => 0,
-    fetch: async (url, options) => { asked.push([String(url), options]); return {ok: true, json: async () => answers.shift()}; },
-    schedule: (run, ms) => { timers.push([run, ms]); return timers.length; },
+test('the directory lists the workspaces this page holds by the host actions that open them, the one in front included', () => {
+  const held = heldWorkspaces({
+    entered: [
+      {origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Commons'},
+      // The same workspace remembered twice is offered once.
+      {origin: 'https://rooms.example/', room: 'WORKSPACE', name: 'Commons'},
+      {origin: 'https://garden.example', room: 'GARDEN', name: null},
+    ],
+    current: {kind: 'room', host: 'https://rooms.example/join', room: 'HERE', name: 'Here'},
   });
-  for (let round = 0; round < 3; round++) {
-    assert.equal(timers.length, round + 1, 'one question waits at a time');
-    assert.equal(timers[round][1], 30000);
-    await timers[round][0]();
-  }
-  assert.deepEqual(asked.map(([url]) => url), Array(3).fill('https://rooms.example/presence'));
-  assert.deepEqual(asked[0][1], {credentials: 'omit'});
-  assert.equal(joined, 1, 'it joins when the door says open, and not before');
-  assert.equal(timers.length, 3, 'and asks no more after');
+  assert.deepEqual(held, [
+    {workspace: 'HERE', key: 'open-workspace:https://rooms.example/HERE', name: 'Here'},
+    {workspace: 'WORKSPACE', key: 'open-workspace:https://rooms.example/WORKSPACE', name: 'Commons'},
+    {workspace: 'GARDEN', key: 'open-workspace:https://garden.example/GARDEN', name: 'garden.example'},
+  ]);
+  // A page in no workspace holds only what it remembered.
+  assert.deepEqual(heldWorkspaces({entered: [], current: {kind: 'own'}}), []);
 });
 
-test('a watching page that stops asking never joins', async () => {
-  const timers = [];
-  let joined = 0;
-  const stop = joinWhenSeated({
-    workspace: commons, join: () => { joined += 1; }, random: () => 0,
-    fetch: async () => ({ok: true, json: async () => ({open: true})}),
-    schedule: run => { timers.push(run); return 7; }, cancel: () => {},
-  });
-  stop();
-  await timers[0]();
-  assert.equal(joined, 0);
+test('a join the directory was granted is made with its invitation and token, then opened under its name', async () => {
+  const joined = [];
+  const grant = await joinGranted(
+    {origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', workspace: 'WORKSPACE', name: 'Gardeners'},
+    {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Brave Otter'},
+  );
+  assert.deepEqual(joined, [{origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', displayName: 'Brave Otter'}]);
+  assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Gardeners'});
+});
+
+test('a grant that carries no invitation joins nothing', async () => {
+  await assert.rejects(() => joinGranted({origin: 'https://rooms.example', invitation: ''}, {join: async () => {}}), TypeError);
+  await assert.rejects(() => joinGranted({origin: '', invitation: 'INV'}, {join: async () => {}}), TypeError);
 });

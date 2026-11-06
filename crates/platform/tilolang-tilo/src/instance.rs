@@ -22,6 +22,7 @@
 //! primary action a person runs shows what it made.
 
 pub mod form;
+mod person_state;
 #[cfg(feature = "record")]
 pub mod record;
 pub mod rows;
@@ -738,6 +739,8 @@ impl Instance {
         host.runtime().set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone_name(move || platform.zone_name());
+        let platform = Rc::clone(&self.platform);
+        host.runtime().set_week_start(move || platform.week_start());
         host.set_words(PlatformWords(Rc::clone(&self.platform)));
         if let Some(sink) = self.sink.take() {
             host.runtime().set_sink(crate::origin::RoutingSink {
@@ -760,20 +763,19 @@ impl Instance {
         Some(host)
     }
 
-    /// The name a bound control is announced by: the field or view state it edits.
+    /// The name a bound control is announced by: the field it edits, through what the host
+    /// declares of that field.
     fn field_name(host: &Host, binding: &Binding) -> String {
-        let (target, field) = match &binding.target {
-            BindTarget::State { name, .. } => return sentence(name),
-            BindTarget::Field { target, field } => (target, field),
-        };
-        type_of(host, &target.ty)
-            .and_then(|(_, ty)| {
-                ty.fields
-                    .iter()
-                    .find(|declared| declared.id == *field)
-                    .map(|declared| sentence(&declared.name))
-            })
-            .unwrap_or_default()
+        announced(binding, |target, field| {
+            type_of(host, &target.ty)
+                .and_then(|(_, ty)| {
+                    ty.fields
+                        .iter()
+                        .find(|declared| declared.id == field)
+                        .map(|declared| sentence(&declared.name))
+                })
+                .unwrap_or_default()
+        })
     }
 
     // ----- later builds --------------------------------------------------------------------
@@ -1043,6 +1045,18 @@ impl Instance {
             view.lists.insert(list, rows);
         }
         self.out.extend(sent);
+    }
+
+    /// Whether a view has something to run again: a reading it took moved, the time it read
+    /// passed, or a record it shows changed ([`ViewInstance::is_stale`]). A slot the host fills
+    /// moves one — the person's own state, given back when their window opens or kept on another
+    /// device of theirs, and what they have seen — so the frame runs the views that read it
+    /// rather than waiting for a change of the person's here.
+    fn views_stale(&self) -> bool {
+        [Lane::Root, Lane::Detail]
+            .into_iter()
+            .filter_map(|lane| self.lane(lane))
+            .any(|shown| shown.view.borrow().is_stale())
     }
 
     /// Re-run the views whose reads changed, and send the window what changed: their trees'
@@ -2264,7 +2278,8 @@ impl Instance {
             || lenses
             || renamed
             || members
-            || timed;
+            || timed
+            || self.views_stale();
         if changed {
             self.poll_views();
         }
@@ -2306,35 +2321,6 @@ impl Instance {
         );
         self.members_from = Some((standing.person, standing.policy, self.people.clone()));
         true
-    }
-
-    /// What the person has seen, as the system keeps it in their own record (task-legibility
-    /// §2): per resource the newest version they saw (`None` takes a mark back), and the task
-    /// runs they reviewed. What `unseen(r)` and the marks the host draws read; each view that
-    /// read one runs again.
-    pub fn set_seen(
-        &mut self,
-        marks: impl IntoIterator<Item = (String, Option<crate::runtime::seen::SeenMark>)>,
-        runs: &[String],
-    ) {
-        let Some(host) = self.host() else {
-            return;
-        };
-        let person = host.viewer().0.clone();
-        let runtime = host.runtime();
-        for (resource, mark) in marks {
-            runtime.set_seen(&person, &resource, mark);
-        }
-        runtime.set_seen_runs(&person, runs);
-    }
-
-    /// What the person marked seen in this window since last asked (opening, reviewing,
-    /// a mark's Mark seen), for the host to keep in their own record with the system's
-    /// `mark seen` action.
-    pub fn take_seen(&mut self) -> Vec<crate::runtime::seen::SeenWrite> {
-        self.host()
-            .map(|host| host.runtime().take_seen())
-            .unwrap_or_default()
     }
 
     /// Which person each participant presence reports is a device of, `(participant,
@@ -2807,6 +2793,21 @@ pub fn type_of(host: &Host, ty: &str) -> Option<(Meta, TypeMeta)> {
     })
 }
 
+/// The name a bound control is announced by, as `field` says what a field of a resource is
+/// called. A view state's name is a name in the code (`draft`, `step`), not a word a person
+/// says: a control bound to one is named by what the view says it is for — its placeholder,
+/// its label — and carries no name of ours.
+#[must_use]
+pub fn announced(binding: &Binding, field: impl FnOnce(&ResourceRef, &str) -> String) -> String {
+    match &binding.target {
+        BindTarget::State { .. } => String::new(),
+        BindTarget::Field {
+            target,
+            field: name,
+        } => field(target, name),
+    }
+}
+
 /// A name in sentence case: `new_note` and `NewNote` read "New note".
 #[must_use]
 pub fn sentence(name: &str) -> String {
@@ -2841,10 +2842,12 @@ pub fn title_of(host: &Host, resource: &ResourceRef) -> String {
     let Some((meta, ty)) = type_of(host, &resource.ty) else {
         return String::new();
     };
-    let titled = ty
-        .fields
-        .iter()
-        .find(|field| field.role.as_deref() == Some("title"));
+    let titled = ty.fields.iter().find(|field| {
+        field
+            .role
+            .as_ref()
+            .is_some_and(tilolang_runtime::meta::FieldRole::is_title)
+    });
     if let Some(field) = titled
         && let Ok(value) = host.runtime().read(resource, &field.id)
     {
@@ -2909,6 +2912,32 @@ mod tests {
         assert_eq!(sentence("toggle_pin"), "Toggle pin");
         assert_eq!(sentence("Note"), "Note");
         assert_eq!(sentence(""), "");
+    }
+
+    /// A control bound to view state is not announced by that state's name in the code, which
+    /// a person never says; it is announced by what the view says it is for.
+    #[test]
+    fn a_bound_control_is_not_named_by_a_name_in_the_code() {
+        let state = Binding {
+            target: BindTarget::State {
+                key: crate::runtime::StateKey::lens("w", "person:me", "draft"),
+                name: "draft".to_owned(),
+                ty: "Text".to_owned(),
+            },
+            author: crate::runtime::ModuleHash(String::new()),
+        };
+        assert_eq!(
+            announced(&state, |_, _| "should not be asked".to_owned()),
+            ""
+        );
+        let field = Binding {
+            target: BindTarget::Field {
+                target: ResourceRef::parse_id("r1", String::new()).expect("a resource id"),
+                field: "due".to_owned(),
+            },
+            author: crate::runtime::ModuleHash(String::new()),
+        };
+        assert_eq!(announced(&field, |_, field| sentence(field)), "Due");
     }
 
     #[test]

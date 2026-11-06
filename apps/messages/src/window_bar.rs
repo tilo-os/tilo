@@ -103,12 +103,7 @@ impl Bar {
         if person.is_empty() {
             return None;
         }
-        self.sources
-            .contacts()
-            .people
-            .get(&Id::from_raw(person))
-            .filter(|person| !person.removed)
-            .map(|person| person.label.clone())
+        self.sources.person_name(person)
     }
 
     /// The person a conversation is with, with the routes to them as the

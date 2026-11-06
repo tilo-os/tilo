@@ -62,6 +62,9 @@ impl MenuPart {
                 icon: item.icon,
                 destructive: item.destructive,
                 checked: item.checked,
+                disabled: item.disabled,
+                reason: item.reason.clone(),
+                group: item.group.clone(),
                 key: item.key.clone(),
                 choose: item.choose.clone(),
             }),
@@ -307,7 +310,7 @@ pub fn menu_entries(parts: Vec<MenuPart>) -> Vec<MenuEntry> {
     {
         entries.pop();
     }
-    entries
+    MenuEntry::fold_groups(entries)
 }
 
 #[cfg(test)]

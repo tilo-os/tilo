@@ -620,6 +620,7 @@ pub fn governed_value(doc: Option<&AutoCommit>) -> MediaGovernanceValue {
     }) {
         Ok(0) => MediaGovernanceValue::Absent,
         Ok(_) => MediaGovernanceValue::Values(fingerprints),
+        // ignored-failure: an unreadable media policy is its own named state, carried to the reader
         Err(_) => MediaGovernanceValue::Unreadable,
     }
 }

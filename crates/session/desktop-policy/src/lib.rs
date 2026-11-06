@@ -26,8 +26,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
+use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
-    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace,
+    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
 };
 use tilo_desktop_surface::crashed_app::Closed;
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
@@ -84,9 +85,32 @@ pub struct Layout {
 /// Windows waiting for their tab, shared with the surface's tile source.
 type Arriving = Rc<RefCell<BTreeMap<u64, Window>>>;
 
+/// One launch the desk asks this session to make: the command naming the app,
+/// and the tab the desk holds for the window it opens, when it made one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchAsk {
+    /// The launch command, as the desk was asked for it.
+    pub app: String,
+    /// The tab the window takes when it maps. It is the window's instance:
+    /// what the app's own continuation reports are addressed by.
+    pub tab: Option<TabId>,
+}
+
 /// The launches the desktop asked for and no window is behind: the session
 /// starts each one ([`DesktopPolicy::take_launches`]).
-type Launches = Rc<RefCell<Vec<String>>>;
+type Launches = Rc<RefCell<Vec<LaunchAsk>>>;
+
+/// What each window on this desk shows, as its app holds the record: the
+/// record it is on and the kind of resource that record keeps.
+pub trait WindowNotes {
+    /// The record `tab`'s window shows and the kind of resource it keeps,
+    /// when its app holds one.
+    fn window_record(&self, tab: TabId) -> Option<(String, String)>;
+}
+
+/// The session's notes, shared with the surface this policy places windows on:
+/// in place once the session that keeps them runs.
+type Notes = Rc<RefCell<Option<Rc<dyn WindowNotes>>>>;
 
 /// The app each notice tab is about, by tab: the launch its Reopen asks for
 /// again. What the tile source draws in place of a window that is not
@@ -114,6 +138,20 @@ struct HeldTab {
 /// window lands in the one its own open asked for.
 type Held = Rc<RefCell<BTreeMap<String, Vec<HeldTab>>>>;
 
+/// A tab the person carried to another workspace whose window an app this
+/// device started fills: the session starts that app again where the person
+/// put it, and the tab takes the window that comes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarriedTab {
+    /// The tab the person carried.
+    pub tab: TabId,
+    /// The workspace they carried it to.
+    pub to: WorkspaceSlot,
+}
+
+/// The tabs the person carried to another workspace, waiting for the session.
+type Carried = Rc<RefCell<Vec<CarriedTab>>>;
+
 /// Where a window of an app that asked to open beside one of its own lands:
 /// the tab it lands after, and whether it takes focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -138,6 +176,11 @@ struct Windows {
     titles: Titles,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the person carried to another workspace, which only the
+    /// session can move.
+    carried: Carried,
+    /// What each window shows, as its app reports it.
+    notes: Notes,
 }
 
 impl TileSource for Windows {
@@ -175,7 +218,12 @@ impl TileSource for Windows {
         let reopened = app;
         TileHost::new(ui::widget::TileContent::App(Box::new(
             tilo_desktop_surface::crashed_app::CrashedApp::new(&title, closed, move || {
-                launches.borrow_mut().push(reopened.clone());
+                // The notice keeps its tab: the window that comes opens in it
+                // when the app is back, so the launch names no other.
+                launches.borrow_mut().push(LaunchAsk {
+                    app: reopened.clone(),
+                    tab: None,
+                });
             }),
         )))
     }
@@ -212,6 +260,8 @@ impl TileSource for Windows {
                     label: app.to_owned(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             });
         }
         if let Some(app) = app.strip_prefix(CRASHED_PREFIX) {
@@ -230,6 +280,8 @@ impl TileSource for Windows {
                     label: app.to_owned(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             });
         }
         if let Some(window_id) = app.strip_prefix(LAUNCH_PREFIX) {
@@ -246,12 +298,44 @@ impl TileSource for Windows {
                     surface_id: window.id,
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
         } else {
-            // A Tilo package or one of the machine's apps: the session starts
-            // it, and the window it opens takes its tab then.
-            self.launches.borrow_mut().push(app.to_owned());
-            None
+            // A Tilo package or one of the machine's apps: this session starts
+            // it, and its window takes the tab the desk holds for it from this
+            // frame. The tab is what the window is known by — an app's
+            // continuation reports are addressed by its id — so the launch
+            // names it.
+            self.held
+                .borrow_mut()
+                .entry(app.to_owned())
+                .or_default()
+                .push(HeldTab {
+                    tab: Some(id),
+                    background: false,
+                });
+            self.launches.borrow_mut().push(LaunchAsk {
+                app: app.to_owned(),
+                tab: Some(id),
+            });
+            let title = self
+                .titles
+                .borrow()
+                .get(app)
+                .cloned()
+                .unwrap_or_else(|| shown_name(app));
+            Some(Tab {
+                id,
+                title,
+                tile: TileContent::AppPlaceholder {
+                    kind: tilo_desktop_model::AppKind::Other(app.to_owned()),
+                    label: app.to_owned(),
+                },
+                app_title: None,
+                view: String::new(),
+                pinned: false,
+            })
         }
     }
 
@@ -274,7 +358,20 @@ impl TileSource for Windows {
                 tab: Some(tab.id),
                 background: false,
             });
-        self.launches.borrow_mut().push(app_id.clone());
+        self.launches.borrow_mut().push(LaunchAsk {
+            app: app_id.clone(),
+            tab: Some(tab.id),
+        });
+    }
+
+    fn window_record(&self, tab: TabId) -> Option<(String, String)> {
+        let notes = self.notes.borrow().clone()?;
+        notes.window_record(tab)
+    }
+
+    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+        self.carried.borrow_mut().push(CarriedTab { tab, to });
+        true
     }
 }
 
@@ -292,6 +389,11 @@ pub struct DesktopPolicy {
     titles: Titles,
     /// The tabs held for the apps' coming windows.
     held: Held,
+    /// The tabs the person carried to another workspace, waiting for the
+    /// session.
+    carried: Carried,
+    /// What each window shows, as its app reports it.
+    notes: Notes,
     /// The places the apps asked for, oldest first, by the app that asked:
     /// its next window lands at the one its open asked for.
     places: BTreeMap<String, Vec<Beside>>,
@@ -313,15 +415,21 @@ impl DesktopPolicy {
         Self::with_tree(seed_tree(&mut minter, "Desk", Vec::new()), salt)
     }
 
-    /// A policy over `tree`, the desktop as last kept.
+    /// A policy over `tree`, the desktop as last kept, minting under `salt`:
+    /// a kept tree carries no range of its own (it is not written to the
+    /// file), so the device whose session builds the desk says which it is.
     #[must_use]
     pub fn with_tree(tree: DesktopTree, salt: u16) -> (Self, DesktopSurface) {
+        let mut tree = tree;
+        tree.salt = salt;
         let arriving = Arriving::default();
         let launches = Launches::default();
         let crashed = Crashed::default();
         let closures = Closures::default();
         let titles = Titles::default();
         let held = Held::default();
+        let carried = Carried::default();
+        let notes = Notes::default();
         let (surface, handle) = DesktopSurface::new(
             tree,
             salt,
@@ -332,6 +440,8 @@ impl DesktopPolicy {
                 closures: Rc::clone(&closures),
                 titles: Rc::clone(&titles),
                 held: Rc::clone(&held),
+                carried: Rc::clone(&carried),
+                notes: Rc::clone(&notes),
             }),
         );
         let policy = Self {
@@ -342,6 +452,8 @@ impl DesktopPolicy {
             closures,
             titles,
             held,
+            carried,
+            notes,
             places: BTreeMap::new(),
             placed: BTreeSet::new(),
             floating: BTreeMap::new(),
@@ -354,8 +466,15 @@ impl DesktopPolicy {
     /// oldest first: the session starts each. A window that already arrived
     /// is not here ([`TileSource::launch`] takes it instead), and neither is
     /// a repeated notice tab.
-    pub fn take_launches(&mut self) -> Vec<String> {
+    pub fn take_launches(&mut self) -> Vec<LaunchAsk> {
         std::mem::take(&mut *self.launches.borrow_mut())
+    }
+
+    /// Read what each window shows from `notes`, the session's: the desk asks
+    /// it for the windows a person may share, and a window whose app reports
+    /// no record shows none.
+    pub fn reads_window_records(&mut self, notes: Rc<dyn WindowNotes>) {
+        *self.notes.borrow_mut() = Some(notes);
     }
 
     /// Show that the app `asked` names stopped working, in a tab of its own
@@ -634,10 +753,7 @@ impl DesktopPolicy {
         let Some(HeldTab { tab: Some(tab), .. }) = self.forget_held(app) else {
             return;
         };
-        let mut tree = self.handle.read(Clone::clone);
-        if tree.close_tab(tab).is_some() {
-            self.handle.replace_tree(tree);
-        }
+        self.close_held(tab);
     }
 
     /// Let go of the place held for `app`'s next window, leaving the tab it
@@ -646,6 +762,24 @@ impl DesktopPolicy {
     /// launch's.
     pub fn give_up_held(&mut self, app: &str) {
         self.forget_held(app);
+    }
+
+    /// The launch the desk held `tab` for opens no window in it: the place
+    /// held for the app's next window and the tab go.
+    pub fn release_tab(&mut self, tab: TabId) {
+        self.held.borrow_mut().retain(|_, queue| {
+            queue.retain(|held| held.tab != Some(tab));
+            !queue.is_empty()
+        });
+        self.close_held(tab);
+    }
+
+    /// Close `tab`, one the desk held for a window that never came.
+    fn close_held(&self, tab: TabId) {
+        let mut tree = self.handle.read(Clone::clone);
+        if tree.close_tab(tab).is_some() {
+            self.handle.replace_tree(tree);
+        }
     }
 
     /// The place held for `app`'s next window, taken back without touching a
@@ -691,20 +825,28 @@ impl DesktopPolicy {
     /// what the person sees where the window would be, and closes when they
     /// are done with it. False when the tab is gone or holds no app.
     pub fn note_in_tab(&mut self, tab: TabId, note: &str) -> bool {
+        self.handle.note_in_tab(tab, note)
+    }
+
+    /// The tabs the person carried to another workspace whose window an app
+    /// this device started fills, oldest first: the session starts each app
+    /// again where the person put it, and the tab takes the window that comes.
+    pub fn take_carried(&self) -> Vec<CarriedTab> {
+        std::mem::take(&mut *self.carried.borrow_mut())
+    }
+
+    /// Carry tab `tab` into the workspace at `to`, with a window of its own:
+    /// where the session puts a tab whose app it started again there.
+    ///
+    /// # Errors
+    /// The tab is not on the desk, it is already in that workspace, or there
+    /// is no such workspace.
+    pub fn carry(&mut self, tab: TabId, to: WorkspaceSlot) -> Result<(), String> {
         let mut tree = self.handle.read(Clone::clone);
-        let Some(found) = tabs_mut(&mut tree).find(|found| found.id == tab) else {
-            return false;
-        };
-        let TileContent::LocalApp { note: said, .. } = &mut found.tile else {
-            return false;
-        };
-        if said == note {
-            return false;
-        }
-        note.clone_into(said);
+        let mut mint = || Ok(self.handle.mint_id());
+        move_tab_to_workspace(&mut tree, tab, to, &mut mint)?;
         self.handle.replace_tree(tree);
-        self.handle.rebuild(tab);
-        true
+        Ok(())
     }
 
     /// Whether `tab` still waits for the window of a saved app: what the

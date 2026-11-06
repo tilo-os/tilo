@@ -2,12 +2,11 @@
 //! it is called, an enum's cases, and the platform's own phrases. Each is a value of the
 //! language, so a view composes headers, menus and presence from them as `std` does.
 
-use super::{Checker, Ex};
+use super::{CKind, Checker, Ctx, Ex};
 use crate::abi::Imp;
 use crate::ast;
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
-use crate::resolve::CKind;
 use crate::types::{Ty, TypeKey};
 
 /// A value type of the host: `host.Action`.
@@ -57,11 +56,54 @@ impl Checker<'_> {
     /// take it (`delete(nb, n)` on a note). Each is a `host.Action`: label, icon, role,
     /// whether it is the primary one, its parameters with their defaults, and `run`, the
     /// action applied to `r`, which a control runs.
+    ///
+    /// `actions(r, above)` offers them where the view shows `r` under `above`: the item just
+    /// above it in its group, or `.none` for the first of its group. An action that reads a
+    /// place (`above: Option<T> (above)`) is offered with it, and one whose `applies` does not
+    /// hold there is left out. Only the host draws them: a view that read them back would be
+    /// reflecting over the declarations the host already places (E047).
     pub(super) fn builtin_actions(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let Some(r) = self.resource_arg("actions", args, span) else {
+        if self.st.ctx == Ctx::View {
+            self.err(
+                "E047",
+                span,
+                "a view never reads a resource's actions back to draw them: declare them on its \
+                 type, place the affordances of the thing itself, and the host puts the rest in \
+                 the window's bar and on the item's menu",
+            );
+            return Ex::error();
+        }
+        let Some(r) = self.resource_arg("actions", args.get(..1).unwrap_or_default(), span) else {
             return Ex::error();
         };
-        Ex::host(Imp::Actions, vec![r], Ty::List(Box::new(host_ty("Action"))))
+        let subject = r.ty.clone();
+        let above = match args.get(1) {
+            Some(a) => {
+                if a.name.is_some() {
+                    self.err(
+                        "E022",
+                        a.value.span,
+                        "`actions` takes the place it offers the item in by position: `actions(r, above)`",
+                    );
+                }
+                let want = Ty::Option(Box::new(subject));
+                self.expr_as(&a.value, &want)
+            }
+            None => Ex::host(Imp::NoneV, Vec::new(), Ty::Option(Box::new(subject))),
+        };
+        if let Some(extra) = args.get(2) {
+            self.err(
+                "E022",
+                extra.value.span,
+                "`actions` takes the item and where the view shows it: `actions(r)` or `actions(r, above)`",
+            );
+            let _ = self.expr(&extra.value, None);
+        }
+        Ex::host(
+            Imp::Actions,
+            vec![r, above],
+            Ty::List(Box::new(host_ty("Action"))),
+        )
     }
 
     /// `lenses(r)`: the lenses on `r` now, the person's own and everyone else's: the people
@@ -86,6 +128,27 @@ impl Checker<'_> {
                 )
             }
         }
+    }
+
+    /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how it
+    /// links, a `host.LinkHow`: made from it (`.created_from`), naming it in a field
+    /// (`.field`), or mentioning it in its rich text (`.mention`). One definition for views,
+    /// search and agents; a store with an index answers it from a reverse list per resource.
+    pub(super) fn builtin_links(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("linked", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::Links, vec![r], Ty::List(Box::new(host_ty("Link"))))
+    }
+
+    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text: what the
+    /// actions would do in words. Empty when nothing waits, so a row that carries it shows
+    /// nothing.
+    pub(super) fn builtin_proposal_note(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some(r) = self.resource_arg("proposal_note", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(Imp::ProposalNote, vec![r], Ty::Text)
     }
 
     /// `steps(r)`: the history of `r` as people read it, newest first: consecutive versions by
@@ -460,29 +523,41 @@ impl Checker<'_> {
         )
     }
 
-    /// `dated(text, at)`: when `text` says something is due, as people type it into a quick
-    /// add ("Call the landlord tomorrow 9am"), read against the time `at` (in an action, `now`)
-    /// in the zone of who runs it: a `host.Dated` holding the text without the phrase that said
-    /// when, the day it named and the moment, when it named a time (`crate::natural`).
-    pub(super) fn builtin_dated(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [text, at] = args else {
+    /// The action and the text of `entry_parts(action, text)`: the action a call left its
+    /// `(entry)` parameter of, and what is typed in the entry.
+    fn entry_args(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<(Ex, Ex)> {
+        let [action, text] = args else {
             self.err(
                 "E022",
                 span,
-                "`dated` takes the text and the time it is read at: `dated(entry, now)`",
+                format!("`{what}` takes the action the entry runs and the text typed in it: `{what}(action, typed)`"),
             );
-            return Ex::error();
+            return None;
         };
-        if let Some(a) = [text, at].into_iter().find(|a| a.name.is_some()) {
+        if let Some(a) = [action, text].into_iter().find(|a| a.name.is_some()) {
             self.err(
                 "E022",
                 a.value.span,
-                "`dated` takes its text and time by position: `dated(entry, now)`",
+                format!("`{what}` takes its action and text by position: `{what}(action, typed)`"),
             );
         }
+        let action = self.expr_as(&action.value, &Ty::Action);
         let text = self.expr_as(&text.value, &Ty::Text);
-        let at = self.expr_as(&at.value, &Ty::Time);
-        Ex::host(Imp::Dated, vec![text, at], host_ty("Dated"))
+        Some((action, text))
+    }
+
+    /// `entry_parts(action, text)`: what the text typed in an entry will make of the action it
+    /// runs, as the words it takes out of the title and leaves to the action's parameters
+    /// (`crate::entry`): a `host.EntryPart` each, in the order they stand.
+    pub(super) fn builtin_entry_parts(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let Some((action, text)) = self.entry_args("entry_parts", args, span) else {
+            return Ex::error();
+        };
+        Ex::host(
+            Imp::EntryParts,
+            vec![action, text],
+            Ty::List(Box::new(host_ty("EntryPart"))),
+        )
     }
 
     /// `phrase("tilolang-empty")` or `phrase("tilolang-none-selected", kind: noun)`: one of the
@@ -669,8 +744,9 @@ impl Checker<'_> {
         Ex::host(Imp::ActUndo, vec![what, of], Ty::Action)
     }
 
-    /// `e.label()`, `e.icon()` or `e.name()` of a value of a declared enum: what a control shows
-    /// for its case, the name of its icon, and the case's name.
+    /// `e.label()`, `e.icon()`, `e.tone()` or `e.name()` of a value of a declared enum: what a
+    /// control shows for its case, the name of its icon, the tone it reads in and the case's
+    /// name.
     pub(super) fn enum_method(&mut self, r: Ex, key: &TypeKey, m: &str) -> Option<Ex> {
         self.env.enum_info(key)?;
         match m {
@@ -683,6 +759,11 @@ impl Checker<'_> {
                     None => Ex::host(Imp::NoneV, Vec::new(), opt.clone()),
                 }))
             }
+            // The tone a case reads in, as the tone case name a component's `tone:` prop
+            // holds; a case that names none is neutral.
+            "tone" => Some(self.per_variant(r, key, Ty::Text, |v| {
+                Ex::str(v.tone.as_deref().unwrap_or("neutral"))
+            })),
             _ => None,
         }
     }

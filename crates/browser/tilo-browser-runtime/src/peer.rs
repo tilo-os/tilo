@@ -310,10 +310,6 @@ struct ConnectConfig {
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
-    /// The page only watches the workspaces it joins, as a public workspace's
-    /// spectator ([`PeerConfig::watching`]).
-    #[serde(default)]
-    watching: bool,
     /// The page keeps this peer beside the workspace in front, to deliver for
     /// it ([`PeerConfig::background`]).
     #[serde(default)]
@@ -1389,6 +1385,75 @@ enum JsVoiceEvent {
         call: String,
         reason: String,
     },
+    /// One frame of a call's voice, as the device `from` published it on the
+    /// workspace's plane: the page's app plays it.
+    Heard {
+        room: String,
+        from: String,
+        sequence: u64,
+        timestamp48k: u64,
+        opus: String,
+    },
+    /// One picture of a call on the workspace's plane: the tilo-video/1
+    /// object of `from`'s camera or screen, in hex, as the app's decoder
+    /// draws it.
+    Picture {
+        room: String,
+        from: String,
+        source: &'static str,
+        keyframe: bool,
+        object: String,
+    },
+    /// What the call now shows of this page's pictures: the layers to encode
+    /// of each source, and the sources to start over at a keyframe.
+    Demand {
+        room: String,
+        wanted: Vec<JsWanted>,
+        keyframes: Vec<&'static str>,
+    },
+}
+
+/// The layers of one source a call shows.
+#[derive(Serialize)]
+struct JsWanted {
+    source: &'static str,
+    layers: Vec<&'static str>,
+}
+
+/// The name `web/voice-video.mjs` gives `source`.
+fn js_source(source: tilo_live::video::Source) -> &'static str {
+    match source {
+        tilo_live::video::Source::Camera => "camera",
+        tilo_live::video::Source::Screen => "screen",
+    }
+}
+
+/// The name `web/voice-video.mjs` gives `layer`.
+fn js_layer(layer: tilo_live::video::Layer) -> &'static str {
+    match layer {
+        tilo_live::video::Layer::Low => "low",
+        tilo_live::video::Layer::Mid => "mid",
+        tilo_live::video::Layer::High => "high",
+    }
+}
+
+/// The source a name of `web/voice-video.mjs` is.
+fn source_of_name(name: &str) -> Option<tilo_live::video::Source> {
+    match name {
+        "camera" => Some(tilo_live::video::Source::Camera),
+        "screen" => Some(tilo_live::video::Source::Screen),
+        _ => None,
+    }
+}
+
+/// The layer a name of `web/voice-video.mjs` is.
+fn layer_of_name(name: &str) -> Option<tilo_live::video::Layer> {
+    match name {
+        "low" => Some(tilo_live::video::Layer::Low),
+        "mid" => Some(tilo_live::video::Layer::Mid),
+        "high" => Some(tilo_live::video::Layer::High),
+        _ => None,
+    }
 }
 
 fn workspace_of(
@@ -1609,7 +1674,9 @@ pub fn verify_agent_delegation(
         label: delegation.label,
         color: tilo_relay_protocol::agents::color_hex(delegation.color),
         device: hex::encode(delegation.device_public_key),
-        workspaces: delegation.scope.workspaces,
+        // The page calls a delegation's workspaces what its own API does; the
+        // protocol spells the scope's as rooms.
+        workspaces: delegation.scope.rooms,
         apps: delegation.scope.apps,
         expires_at_ns: delegation.expires_at_ns,
     })
@@ -1636,7 +1703,7 @@ pub struct WasmPeer {
     /// is joined and replicated ([`crate::replication`]).
     replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
     /// The workspace the person takes part in through this page, once joined
-    /// as a person rather than a spectator: the one that names them.
+    /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
 }
 
@@ -1659,8 +1726,7 @@ fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
 #[wasm_bindgen]
 impl WasmPeer {
     /// Start a session. `configJson` is `{cert, hostCert}` from
-    /// [`certify_device`], optionally with `displayName`, and `watching:
-    /// true` for a page that only watches public workspaces. With `namespace`
+    /// [`certify_device`], optionally with `displayName`. With `namespace`
     /// (`{profile, device}` JSON, whose storage the page has opened) the
     /// peer record lives in that profile's durable store; otherwise `record`
     /// is the stored record bytes (or `undefined`) and `save(bytes)` writes
@@ -1725,7 +1791,6 @@ impl WasmPeer {
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: config.watching,
                 background: config.background,
             },
             Arc::new(signer),
@@ -1743,8 +1808,8 @@ impl WasmPeer {
         }
         // Every peer replicates the workspace it joins, so a desktop mounted
         // through it always has a replica to attach to. A peer kept in no
-        // profile (a watching page's, whose device lives only in memory)
-        // keeps the workspace's documents in memory for as long as the page.
+        // profile (a page's, whose device lives only in memory) keeps the
+        // workspace's documents in memory for as long as the page.
         let replication_store = match profile_store {
             Some(store) => (store, crate::replication::Kept::InProfile),
             None => (
@@ -1837,21 +1902,16 @@ impl WasmPeer {
         self.listeners.borrow_mut().push(listener);
     }
 
-    /// Join a workspace (uuid). A page of the person's own joins it once its
-    /// host governs it, creating it there as `name` (the workspace's name,
-    /// `Workspace` when the page knows none) unless the host has it; a
-    /// page that only watches joins it as it is.
+    /// Join a workspace (uuid). The page joins it once its host governs it,
+    /// creating it there as `name` (the workspace's name, `Workspace` when the
+    /// page knows none) unless the host has it.
     #[wasm_bindgen(js_name = joinWorkspace)]
     pub fn join_workspace(&self, workspace: &str, name: Option<String>) -> Result<(), JsError> {
         let workspace_id = workspace_number(workspace)?;
-        if self.handle.watching() {
-            self.handle.join(workspace_id).map_err(js_error)?;
-        } else {
-            let name = name.filter(|name| !name.trim().is_empty());
-            self.handle
-                .join_placed(workspace, name.as_deref().unwrap_or("Workspace"))
-                .map_err(js_error)?;
-        }
+        let name = name.filter(|name| !name.trim().is_empty());
+        self.handle
+            .join_placed(workspace, name.as_deref().unwrap_or("Workspace"))
+            .map_err(js_error)?;
         self.voice_workspaces
             .borrow_mut()
             .insert(workspace_id, workspace.to_owned());
@@ -1866,10 +1926,7 @@ impl WasmPeer {
                 store,
             )
             .map_err(js_error)?;
-            // The workspace the page replicates is the one its person talks in
-            // privately; a page that only watches has no conversations.
-            if !self.handle.watching() && crate::page_person::speaks(self.id) {
-                crate::person_chat::install(self.handle.clone(), workspace);
+            if crate::page_person::speaks(self.id) {
                 if let Some(identity) = ui::local_identity::load() {
                     set_member_name(&self.handle, workspace, &identity.display_name);
                 }
@@ -2262,8 +2319,9 @@ impl WasmPeer {
 
     /// Call events since the last call, as a JSON array of `{kind: 'calls',
     /// room, calls | error}`, `{kind: 'callResult', room, request, call |
-    /// error}`, `{kind: 'granted', room, grant}` and `{kind: 'ended', room,
-    /// call, reason}`.
+    /// error}`, `{kind: 'granted', room, grant}`, `{kind: 'ended', room,
+    /// call, reason}` and `{kind: 'heard', room, from, sequence,
+    /// timestamp48k, opus}` (`opus` in hex), which the app plays.
     #[wasm_bindgen(js_name = takeVoiceEvents)]
     pub fn take_voice_events(&self) -> String {
         let out: Vec<JsVoiceEvent> = self
@@ -2272,48 +2330,199 @@ impl WasmPeer {
             .into_iter()
             .filter_map(|event| match event {
                 PeerEvent::Voice(event) => Some(voice_event(event, &self.voice_workspaces)),
+                PeerEvent::CallAudio {
+                    workspace_id,
+                    from,
+                    sequence,
+                    timestamp_48k,
+                    opus,
+                } => Some(JsVoiceEvent::Heard {
+                    room: workspace_of(workspace_id, &self.voice_workspaces),
+                    from: hex::encode(from),
+                    sequence,
+                    timestamp48k: timestamp_48k,
+                    opus: hex::encode(opus),
+                }),
+                PeerEvent::CallPicture {
+                    workspace_id,
+                    from,
+                    source,
+                    keyframe,
+                    object,
+                } => Some(JsVoiceEvent::Picture {
+                    room: workspace_of(workspace_id, &self.voice_workspaces),
+                    from: hex::encode(from),
+                    source: js_source(source),
+                    keyframe,
+                    object: hex::encode(object),
+                }),
+                PeerEvent::CallDemand {
+                    workspace_id,
+                    wanted,
+                    keyframes,
+                } => {
+                    let mut by_source: Vec<JsWanted> = Vec::new();
+                    for (source, layer) in wanted {
+                        let name = js_source(source);
+                        match by_source.iter_mut().find(|entry| entry.source == name) {
+                            Some(entry) => entry.layers.push(js_layer(layer)),
+                            None => by_source.push(JsWanted {
+                                source: name,
+                                layers: vec![js_layer(layer)],
+                            }),
+                        }
+                    }
+                    Some(JsVoiceEvent::Demand {
+                        room: workspace_of(workspace_id, &self.voice_workspaces),
+                        wanted: by_source,
+                        keyframes: keyframes.into_iter().map(js_source).collect(),
+                    })
+                }
                 _ => None,
             })
             .collect();
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
-    /// Take one turn of `workspace`'s call: `turn` is a `LaneTurn` as JSON
-    /// (the frames this page's microphone and encoders made, what it shows of
-    /// the call's devices, and which of them it asks to start over), and the
-    /// answer is a `LaneAnswer` as JSON: what the call sent for this page,
-    /// opened, and what its devices show and ask of it.
-    ///
-    /// `workspace` is the workspace's uuid, as its records' routes name it:
-    /// the call's frames are sealed with the content keys of the channel its
-    /// app and record belong to. Rejects when this page holds no keys for that
-    /// channel, when the session is watching only, or when it is closed.
-    #[wasm_bindgen(js_name = callLaneTurn)]
-    pub async fn call_lane_turn(&self, workspace: String, turn: String) -> Result<String, JsError> {
-        let turn: tilo_browser_peer::LaneTurn = serde_json::from_str(&turn).map_err(js_error)?;
-        let (reply, receipt) = tokio::sync::oneshot::channel();
-        let done: tilo_browser_peer::LaneCompletion = Box::new(move |answer| {
-            let _ = reply.send(answer);
-        });
-        self.handle
-            .call_lane_then(&workspace, turn, done)
-            .map_err(js_error)?;
-        let answer = receipt
-            .await
-            .map_err(|_| js_error("peer session closed"))?
-            .map_err(js_error)?;
-        serde_json::to_string(&answer).map_err(js_error)
-    }
-
-    /// Leave the call of `workspace`: the page's next turn starts a fresh one,
-    /// sealed from the start.
+    /// Publish `frames` (JSON array of `{timestamp48k, opus}`, `opus` in hex)
+    /// on `workspace`'s live plane as this page's voice, in the order given:
+    /// one voice object per frame, heard by every device in the call.
     ///
     /// # Errors
     ///
-    /// Throws for a closed session.
-    #[wasm_bindgen(js_name = callLaneLeave)]
-    pub fn call_lane_leave(&self, workspace: &str) -> Result<(), JsError> {
-        self.handle.call_lane_end(workspace).map_err(js_error)
+    /// Throws for a malformed workspace or frames, or a closed session.
+    #[wasm_bindgen(js_name = callAudio)]
+    pub fn call_audio(&self, workspace: &str, frames: &str) -> Result<(), JsError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Frame {
+            timestamp48k: u64,
+            opus: String,
+        }
+        let frames: Vec<Frame> = serde_json::from_str(frames).map_err(js_error)?;
+        let frames: Vec<tilo_browser_peer::CallFrame> = frames
+            .into_iter()
+            .filter_map(|frame| {
+                Some(tilo_browser_peer::CallFrame {
+                    timestamp_48k: frame.timestamp48k,
+                    opus: hex::decode(frame.opus).ok()?,
+                })
+            })
+            .collect();
+        self.handle
+            .publish_call_audio(workspace_number(workspace)?, frames)
+            .map_err(js_error)
+    }
+
+    /// Publish `pictures` this page's camera and screen encoded on the plane
+    /// of `workspace`, as JSON: `[{source, layer, sequence, keyframe,
+    /// timestampUs, width, height, payload}]`, `source` and `layer` as
+    /// `web/voice-video.mjs` names them and `payload` in hex. Every device
+    /// showing the layer draws it.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace or picture, or a closed session.
+    #[wasm_bindgen(js_name = callPictures)]
+    pub fn call_pictures(&self, workspace: &str, pictures: &str) -> Result<(), JsError> {
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Picture {
+            source: String,
+            layer: String,
+            sequence: u64,
+            keyframe: bool,
+            timestamp_us: u64,
+            width: u16,
+            height: u16,
+            payload: String,
+        }
+        let pictures: Vec<Picture> = serde_json::from_str(pictures).map_err(js_error)?;
+        let pictures: Vec<tilo_browser_peer::CallPicture> = pictures
+            .into_iter()
+            .filter_map(|picture| {
+                Some(tilo_browser_peer::CallPicture {
+                    source: source_of_name(&picture.source)?,
+                    layer: layer_of_name(&picture.layer)?,
+                    sequence: picture.sequence,
+                    keyframe: picture.keyframe,
+                    timestamp_us: picture.timestamp_us,
+                    width: picture.width,
+                    height: picture.height,
+                    payload: hex::decode(picture.payload).ok()?,
+                })
+            })
+            .collect();
+        self.handle
+            .publish_call_pictures(workspace_number(workspace)?, pictures)
+            .map_err(js_error)
+    }
+
+    /// Show the devices' layers of `shown` on the plane of `workspace`, as
+    /// JSON: `[{device, camera: [layer], screen: [layer]}]`, `device` in hex.
+    /// The devices left out are no longer read, and their owners stop encoding
+    /// the layers nobody shows.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace or entry, or a closed session.
+    #[wasm_bindgen(js_name = callShowing)]
+    pub fn call_showing(&self, workspace: &str, shown: &str) -> Result<(), JsError> {
+        #[derive(serde::Deserialize)]
+        struct Shown {
+            device: String,
+            camera: Vec<String>,
+            screen: Vec<String>,
+        }
+        let shown: Vec<Shown> = serde_json::from_str(shown).map_err(js_error)?;
+        let shown: Vec<tilo_browser_peer::CallShown> = shown
+            .into_iter()
+            .filter_map(|entry| {
+                let device: [u8; 32] = hex::decode(&entry.device).ok()?.try_into().ok()?;
+                Some(tilo_browser_peer::CallShown {
+                    device,
+                    camera: entry
+                        .camera
+                        .iter()
+                        .filter_map(|layer| layer_of_name(layer))
+                        .collect(),
+                    screen: entry
+                        .screen
+                        .iter()
+                        .filter_map(|layer| layer_of_name(layer))
+                        .collect(),
+                })
+            })
+            .collect();
+        self.handle
+            .show_call_pictures(workspace_number(workspace)?, shown)
+            .map_err(js_error)
+    }
+
+    /// Ask `device` (hex) for `source` (`camera` or `screen`) afresh on the
+    /// plane of `workspace`: its next picture starts a group this page can
+    /// begin decoding at.
+    ///
+    /// # Errors
+    ///
+    /// Throws for a malformed workspace, device or source, or a closed
+    /// session.
+    #[wasm_bindgen(js_name = callPictureRestart)]
+    pub fn call_picture_restart(
+        &self,
+        workspace: &str,
+        device: &str,
+        source: &str,
+    ) -> Result<(), JsError> {
+        let device: [u8; 32] = hex::decode(device)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| js_error("device must be 32 bytes of hex"))?;
+        let source =
+            source_of_name(source).ok_or_else(|| js_error("source must be camera or screen"))?;
+        self.handle
+            .restart_call_picture(workspace_number(workspace)?, device, source)
+            .map_err(js_error)
     }
 
     /// Post this person's display name, the window they focus (`window`:
@@ -2461,7 +2670,7 @@ impl WasmPeer {
                         },
                         // Semantic work requires an authenticated record
                         // consumer, and presence no longer comes this way.
-                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::Presence(_) => {
+                        LiveFrame::Ops(OpsFrame::Semantic { .. }) | LiveFrame::RetiredPresence => {
                             return None;
                         }
                     };
@@ -2672,7 +2881,6 @@ impl WasmPeer {
         self.handle.close();
         crate::replication::close(self.id);
         if crate::page_person::release(self.id) {
-            crate::person_chat::uninstall();
             ui::local_identity::install_source(None);
         }
     }

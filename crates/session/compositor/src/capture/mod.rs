@@ -14,7 +14,9 @@
 //! the backend draws the scene again into the client's buffer (a dma-buf is
 //! drawn into directly; shared memory through an offscreen image read
 //! back), see [`copy`]. A locked session's outputs show only the lock
-//! surface, so output captures do too, and window captures wait.
+//! surface, so output captures do too, and window captures wait. The
+//! session's own look at its displays is no copy: it draws them as they are
+//! ([`Held::Nothing`]).
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -26,7 +28,7 @@ pub mod protect;
 mod screencopy;
 mod toplevels;
 
-pub use protect::holds_secrets;
+pub use protect::{Held, holds_secrets};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::{Buffer as _, Format, Fourcc};
@@ -676,9 +678,15 @@ where
         // A window's frame is its whole buffer.
         Scene::Window(..) | Scene::Cursor(_) => size,
     };
-    let Some((elements, clear)) =
-        scene_elements(renderer, state, &scene, &frame.target, frame.cursor, scale)
-    else {
+    let Some((elements, clear)) = scene_elements(
+        renderer,
+        state,
+        &scene,
+        &frame.target,
+        frame.cursor,
+        scale,
+        Held::Back,
+    ) else {
         // A locked session shows no windows: their frames wait for the
         // unlock.
         return Ok(Copied::Waiting);
@@ -762,7 +770,7 @@ type SceneElements<R> = (Vec<RelocateRenderElement<OutputRenderElement<R>>>, [f3
 /// Whether `window` is one a capture may not show (see [`protect`]), and
 /// so one a picture of it may not show either.
 pub(crate) fn protected(state: &State, window: &smithay::desktop::Window) -> bool {
-    crate::state::describe(&state.display, &state.icons, window)
+    crate::state::describe(state, window)
         .is_some_and(|info| state.capture.protection.covers(info.app_id.as_deref()))
 }
 
@@ -798,14 +806,24 @@ where
 /// stands on it, in physical pixels: the windows of an app the session keeps
 /// private (one that closed included, while the desktop still animates it
 /// away), and the layers of a hosted surface that shows a secret (see
-/// [`protect`] and [`crate::host::SurfaceHost::withholds_captures`]).
-/// A capture draws them over the scene and under the pointer: a protected
-/// window or surface hides, one that merely passes behind it is covered
-/// along with it, which shows nothing it would not show anyway.
-fn placeholders<R>(state: &State, output: &Output, scale: f64) -> Vec<OutputRenderElement<R>>
+/// [`protect`] and [`crate::host::SurfaceHost::withholds_captures`]), and the
+/// lock screen while it is up. A capture draws them over the scene and under
+/// the pointer: a protected window or surface hides, one that merely passes
+/// behind it is covered along with it, which shows nothing it would not show
+/// anyway. A copy that is the session's own look ([`Held::Nothing`]) covers
+/// nothing.
+fn placeholders<R>(
+    state: &State,
+    output: &Output,
+    scale: f64,
+    held: Held,
+) -> Vec<OutputRenderElement<R>>
 where
     R: ImportAll + ImportMem,
 {
+    if held == Held::Nothing {
+        return Vec::new();
+    }
     let Some(geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
@@ -884,8 +902,8 @@ where
 }
 
 /// What `scene` shows, drawn with `renderer`: its elements and what is
-/// cleared behind them. `None` while the session is locked, when no window
-/// is shown.
+/// cleared behind them, with what `held` covers. `None` while the session is
+/// locked, when no window is shown.
 fn scene_elements<R>(
     renderer: &mut R,
     state: &State,
@@ -893,6 +911,7 @@ fn scene_elements<R>(
     target: &Target,
     cursor: bool,
     scale: f64,
+    held: Held,
 ) -> Option<SceneElements<R>>
 where
     R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
@@ -905,13 +924,15 @@ where
             } else {
                 Vec::new()
             };
-            elements.extend(placeholders(state, output, scale));
+            elements.extend(placeholders(state, output, scale, held));
             elements.extend(output_elements(renderer, state, output));
             let offset = Point::<i32, Physical>::from((-region.loc.x, -region.loc.y));
             (elements, offset, BACKGROUND)
         }
+        // A locked session shows no window: there is nothing for a window's
+        // frame to copy, whoever asks.
         Scene::Window(..) if state.locked() => return None,
-        Scene::Window(window, _) if protected(state, window) => {
+        Scene::Window(window, _) if held == Held::Back && protected(state, window) => {
             let size = window.geometry().size.to_physical_precise_round(scale);
             (
                 vec![placeholder(Point::default(), size, 1.0)],
@@ -955,11 +976,13 @@ where
 }
 
 /// What `target` shows now, drawn with `renderer` into an offscreen image
-/// and read back as rows of R, G, B, A: what a share stream pushes.
+/// and read back as rows of R, G, B, A, with what `held` covers: what a share
+/// stream pushes, or the session's own look at a display.
 pub(crate) fn read_back<R, T>(
     renderer: &mut R,
     state: &State,
     target: &Target,
+    held: Held,
 ) -> Result<Screenshot, CaptureError>
 where
     R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
@@ -973,7 +996,7 @@ where
     } = state
         .view(target)
         .ok_or_else(|| BackendError("the captured output or window is gone".into()))?;
-    let (elements, clear) = scene_elements(renderer, state, &scene, target, false, scale)
+    let (elements, clear) = scene_elements(renderer, state, &scene, target, false, scale, held)
         .ok_or_else(|| BackendError("the session is locked".into()))?;
     let rgba = render_to_memory::<R, T, _>(renderer, size, scale, transform, &elements, clear)?;
     Ok(Screenshot {
@@ -1009,8 +1032,9 @@ where
     let Some((small, factor)) = scaled_size(size, max) else {
         return Err(BackendError("the captured output or window is empty".into()).into());
     };
-    let (elements, clear) = scene_elements(renderer, state, &scene, target, false, scale)
-        .ok_or_else(|| BackendError("the session is locked".into()))?;
+    let (elements, clear) =
+        scene_elements(renderer, state, &scene, target, false, scale, Held::Back)
+            .ok_or_else(|| BackendError("the session is locked".into()))?;
     // Every element is drawn into the smaller frame instead of the target's
     // own: a scene scaled by one factor is what a stream at that size shows.
     let scaled: Vec<_> = elements

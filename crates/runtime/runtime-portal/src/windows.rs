@@ -138,7 +138,7 @@ pub fn send_open(door: &Descriptor, request: &[u8], fds: &[&Descriptor]) -> io::
     {
         use std::os::fd::AsFd as _;
         let fds: Vec<_> = fds.iter().map(|fd| fd.as_fd()).collect();
-        crate::jobs::send(door.as_fd(), &[OPEN_VERB, request], &fds)
+        crate::door::send(door.as_fd(), &[OPEN_VERB, request], &fds)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -157,7 +157,7 @@ pub fn send_serves(door: &Descriptor) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsFd as _;
-        crate::jobs::send(door.as_fd(), &[SERVES_VERB], &[])
+        crate::door::send(door.as_fd(), &[SERVES_VERB], &[])
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -240,7 +240,7 @@ pub fn send_patch(door: &Descriptor, instance: u64, patch: &Descriptor) -> io::R
     {
         use std::os::fd::AsFd as _;
         let instance = instance.to_string();
-        crate::jobs::send(
+        crate::door::send(
             door.as_fd(),
             &[PATCH_VERB, instance.as_bytes()],
             &[patch.as_fd()],
@@ -267,11 +267,11 @@ pub fn receive_message(door: &Descriptor) -> io::Result<Option<Message>> {
         use std::os::fd::AsFd as _;
         let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_owned());
         let mut buffer = vec![0_u8; MAX_MESSAGE];
-        let Some((length, fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        match crate::jobs::decode(message).as_slice() {
+        match crate::door::decode(message).as_slice() {
             [verb, request] if *verb == OPEN_VERB => Ok(Some(Message::Open(request.to_vec(), fds))),
             [verb, instance] if *verb == PATCH_VERB => {
                 let instance = std::str::from_utf8(instance)
@@ -301,11 +301,11 @@ pub fn receive_open(door: &Descriptor) -> io::Result<Option<(Vec<u8>, Vec<Descri
     {
         use std::os::fd::AsFd as _;
         let mut buffer = vec![0_u8; MAX_MESSAGE];
-        let Some((length, fds)) = crate::jobs::receive(door.as_fd(), &mut buffer)? else {
+        let Some((length, fds)) = crate::door::receive(door.as_fd(), &mut buffer)? else {
             return Ok(None);
         };
         let message = buffer.get(..length).unwrap_or_default();
-        match crate::jobs::decode(message).as_slice() {
+        match crate::door::decode(message).as_slice() {
             [verb, request] if *verb == OPEN_VERB => Ok(Some((request.to_vec(), fds))),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -361,7 +361,7 @@ mod tests {
     fn anything_but_a_request_is_refused() {
         use std::os::fd::AsFd as _;
         let (shell, app) = pair().unwrap();
-        crate::jobs::send(shell.as_fd(), &[b"job", b"label"], &[]).unwrap();
+        crate::door::send(shell.as_fd(), &[b"job", b"label"], &[]).unwrap();
         assert!(receive_open(&app).is_err());
     }
 }

@@ -91,7 +91,6 @@ impl BotParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: false,
                 background: false,
             },
             Arc::new(identity.key.clone()),
@@ -164,13 +163,6 @@ impl BotParticipant {
                 frame,
             } if workspace_id == self.workspace_id => {
                 self.live.receive(from, &frame, now);
-            }
-            PeerEvent::LiveMember {
-                workspace_id,
-                device,
-                active,
-            } if workspace_id == self.workspace_id => {
-                self.live.member(device, active);
             }
             _ => {}
         }
@@ -425,7 +417,7 @@ impl super::door::DoorParticipant for BotParticipant {
 fn bounded(activity: &str) -> String {
     let mut end = activity
         .len()
-        .min(tilo_relay_protocol::live::MAX_PARTICIPANT_ACTIVITY_BYTES);
+        .min(collab_types::presence::MAX_ACTIVITY_BYTES);
     while !activity.is_char_boundary(end) {
         end = end.saturating_sub(1);
     }

@@ -3,8 +3,10 @@
 
 use super::{
     AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace, authorized_state_source,
-    desktop_refusal, enqueue_state_inner, governor_notice, resume_record, unix_now_ns, unpublished,
+    desktop_refusal, enqueue_state_inner, file_refusal_of, governor_notice, resume_record,
+    unix_now_ns, unpublished,
 };
+use crate::workspace_access::WorkspaceOperation;
 
 /// Spends `peer`'s budget for one change, unless the relay's own user sent
 /// it: the host device and the bots a host-held root delegated must never
@@ -153,9 +155,10 @@ async fn admit_commit(
     if let Some(limited) = over_change_limit(peer, session) {
         return refused(&limited.to_string());
     }
-    let Some(source) = authorized_state_source(&ws, peer, session).await? else {
-        let reason = unpublished(&*ws.lock().await, peer);
-        return refused(reason);
+    let Some(source) =
+        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish).await?
+    else {
+        return refused(unpublished());
     };
     let digest = *blake3::hash(&delta).as_bytes();
     let claiming = crate::timing::start();
@@ -187,15 +190,6 @@ async fn admit_commit(
     };
     if let Some(reason) = commit_refusal(&ws, author_device_public_key, &delta).await {
         return refused(&reason);
-    }
-    // The caret and typing this device sends next wait for this change, as
-    // for one it sent alone (`super::handle_delta`). A host carrying its
-    // members' changes forgoes it: the caret is a device's own.
-    {
-        let mut runtime = ws.lock().await;
-        if !runtime.attached(&peer.device_public_key) {
-            runtime.note_delta(peer.device_public_key, tokio::time::Instant::now());
-        }
     }
     let authored = delta.clone();
     let admitted = Box::pin(enqueue_state_inner(
@@ -290,9 +284,16 @@ async fn commit_refusal(
     };
     if let Some(reason) = crate::surfaces::refusal(&*payloads, bytes, standings.as_deref()) {
         tracing::warn!(%reason, device = %hex::encode(author), "refused a document change");
+        file_refusal_of(ws, delta, &reason).await;
         return Some(reason);
     }
-    desktop_refusal(ws, author, delta).await
+    if let Some(reason) = desktop_refusal(ws, author, delta).await {
+        return Some(reason);
+    }
+    let reason = crate::surfaces::role_refusal(bytes, standings.as_deref(), author)?;
+    tracing::warn!(%reason, device = %hex::encode(author), "refused a change a viewer's role writes nothing of");
+    file_refusal_of(ws, delta, &reason).await;
+    Some(reason)
 }
 
 /// Hand `delta`, a member's change `ws` kept, to the workspace's governor, if a

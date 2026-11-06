@@ -467,49 +467,50 @@ fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
 }
 
 #[test]
-fn delivery_admission_review_unindexed_retained_input_requires_live_freshness() {
+fn delivery_admission_review_unindexed_retained_input_is_history_live_input_must_be_fresh() {
     let (receiver, _, key, _, now) = seeded();
     let mut author = receiver.clone();
     let message = incremental(&mut author, &key, now, "old-unindexed");
     let source = key.verifying_key().to_bytes();
     let later = now + Duration::from_secs(301);
-    // Legacy retained replay remains supported, independently of the strict API.
+    let retained = TransportOrigin::RetainedRelayDelta(source);
+    // A retained frame is its author's history: admitted as of its own
+    // timestamp, through either entry point.
     let mut legacy = receiver.clone();
     assert!(
         legacy
-            .receive_from(
-                TransportOrigin::RetainedRelayDelta(source),
-                message.clone(),
-                later
-            )
+            .receive_from(retained, message.clone(), later)
             .unwrap()
             .changed
     );
-    for origin in [
-        TransportOrigin::RelayDelta(source),
-        TransportOrigin::RetainedRelayDelta(source),
-    ] {
-        let mut strict = receiver.clone();
-        strict.select_admission_v5().unwrap();
-        let rows = strict.rows();
-        assert!(
-            strict
-                .receive_from_report(origin, message.clone(), later)
-                .is_err(),
-            "unindexed stale input admitted through {origin:?}"
-        );
-        assert_eq!(strict.rows(), rows);
-        assert!(
-            strict
-                .lookup_exact_document(origin, &message, later)
-                .unwrap()
-                .is_none()
-        );
-    }
+    let mut strict = receiver.clone();
+    strict.select_admission_v5().unwrap();
+    let rows = strict.rows();
+    let report = strict
+        .receive_from_report(retained, message.clone(), later)
+        .unwrap();
+    assert!(matches!(report.primary(), InputDisposition::Accepted(_)));
+    assert_ne!(strict.rows(), rows);
+    assert!(
+        strict
+            .lookup_exact_document(retained, &message, later)
+            .unwrap()
+            .is_some()
+    );
+    // The same frame arriving live is too old to be a live write.
+    let mut live = receiver;
+    live.select_admission_v5().unwrap();
+    let rows = live.rows();
+    assert!(
+        live.receive_from_report(TransportOrigin::RelayDelta(source), message, later)
+            .is_err(),
+        "a live frame beyond the clock skew was admitted"
+    );
+    assert_eq!(live.rows(), rows);
 }
 
 #[test]
-fn delivery_admission_review_strict_drain_rechecks_retained_pending_freshness() {
+fn delivery_admission_review_strict_drain_keeps_retained_pending_history_held() {
     let (mut receiver, authority, key, _, now) = seeded();
     let mut author = receiver.clone();
     let _first = incremental(&mut author, &key, now, "A");
@@ -535,10 +536,14 @@ fn delivery_admission_review_strict_drain_rechecks_retained_pending_freshness() 
         .unwrap();
     assert_eq!(
         report.summary().rejected,
-        1,
-        "expired retained pending entry was not rejected"
+        0,
+        "retained pending history is not expired by its age"
     );
-    assert_eq!(receiver.pending_count(), 0);
+    assert_eq!(
+        receiver.pending_count(),
+        1,
+        "it still waits for the write it builds on"
+    );
     assert!(report.settled().is_empty());
     assert!(
         receiver

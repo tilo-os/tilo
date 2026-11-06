@@ -17,7 +17,9 @@
 
 mod common;
 
+use tilo_actions::ResourceSpec;
 use tilo_actions::door::{ActionDescriptor, survey};
+use tilo_sheets::Seat as _;
 
 use common::{private_home, seeded_session};
 
@@ -60,6 +62,21 @@ fn published(session: &tilo_session::Session) -> Vec<(String, String)> {
             },
         )
         .collect()
+}
+
+/// The name the session publishes `kind` under, wherever it stands in the
+/// tree it offers.
+fn named(session: &tilo_session::Session, kind: &str) -> Option<String> {
+    fn find(specs: &[ResourceSpec], kind: &str) -> Option<String> {
+        specs.iter().find_map(|spec| {
+            if spec.kind == kind {
+                Some(spec.label.clone())
+            } else {
+                find(&spec.children, kind)
+            }
+        })
+    }
+    find(&session.resources(), kind)
 }
 
 /// Sets the desktop's language for everything resolved from here on.
@@ -130,5 +147,72 @@ fn the_surviving_surfaces_speak_the_persons_language() {
                 "`{german}` is published where `{english}` is: {labels:?}"
             );
         }
+    }
+
+    // A sheet names the resource it publishes, in the person's language.
+    speak("de-DE");
+    sheets_name_themselves(&session);
+
+    // The same cards on an English desktop say what they declare.
+    speak("en-US");
+    let power = session.power_menu().expect("the power menu mounted");
+    power.presentation().open(false);
+    assert_eq!(named(&session, "power.session").as_deref(), Some("Power"));
+    assert_eq!(
+        named(&session, "uninstall.question").as_deref(),
+        Some("Uninstall")
+    );
+}
+
+/// A sheet names the resource it publishes: the name its declaration gives it,
+/// read through the catalogue the moment it is published. Each card is put up
+/// the way the session puts it up, and read off what it offers.
+fn sheets_name_themselves(session: &tilo_session::Session) {
+    let power = session.power_menu().expect("the power menu mounted");
+    power.presentation().open(false);
+    let settings = session.workspace_settings().expect("settings mounted");
+    settings.presentation().open(false);
+    let directory = session
+        .workspace_directory()
+        .expect("the directory mounted");
+    directory.presentation().open(false);
+    let portal = session.portal().expect("the portal sheet mounted");
+    portal.presentation().open(false);
+    let chooser = session.file_picker().expect("the file chooser mounted");
+    chooser.presentation().open(false);
+    let guide = session
+        .shortcut_guide()
+        .expect("the shortcut guide mounted");
+    guide.presentation().open(false);
+    let confirm = session
+        .display_confirm()
+        .expect("the confirm sheet mounted");
+    confirm.presentation().open(false);
+    let displays = session.display_sheet().expect("the display sheet mounted");
+    displays.presentation().open(false);
+    let add = session.add_app_sheet().expect("the add sheet mounted");
+    add.presentation().open(false);
+    let uninstall = session
+        .uninstall_sheet()
+        .expect("the uninstall sheet mounted");
+    uninstall.presentation().open(false);
+
+    for (kind, german) in [
+        ("power.session", "Ein/Aus"),
+        ("workspace-settings.lens", "Arbeitsbereich-Einstellungen"),
+        ("workspace-directory.listing", "Öffentliche Arbeitsbereiche"),
+        ("portal-sheet.question", "Systemfrage"),
+        ("file-chooser.request", "Dateiauswahl"),
+        ("shortcut-guide.guide", "Tastenkürzel"),
+        ("display-confirm.question", "Anzeigeänderung"),
+        ("display-sheet.layouts", "Anzeige"),
+        ("add-app.question", "Zu den Apps hinzufügen"),
+        ("uninstall.question", "Deinstallieren"),
+    ] {
+        assert_eq!(
+            named(session, kind).as_deref(),
+            Some(german),
+            "a German desktop reads `{kind}` in German"
+        );
     }
 }

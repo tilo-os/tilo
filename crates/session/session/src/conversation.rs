@@ -251,7 +251,7 @@ impl Conversation {
                 .runs
                 .record_step_typed(&finished.run, step, &finished.person)
             {
-                tracing::debug!(%error, run = finished.run, "a conversation's step was not kept");
+                tracing::warn!(%error, run = finished.run, "a conversation's step was not kept");
             }
         }
     }

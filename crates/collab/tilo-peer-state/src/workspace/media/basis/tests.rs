@@ -248,6 +248,11 @@ fn historical_basis(
             }
             admissions.insert(canonical_bytes(proof).map_err(|_| MediaPolicyError::Malformed)?);
         }
+        let mut delegations = BTreeSet::new();
+        for delegation in &row.workspace_delegations {
+            delegations
+                .insert(canonical_bytes(delegation).map_err(|_| MediaPolicyError::Malformed)?);
+        }
         for entry in row.revocations {
             if entry.user_public_key != row.device_cert.user_public_key {
                 return Err(MediaPolicyError::Binding);
@@ -255,7 +260,7 @@ fn historical_basis(
             revocations.push(entry);
         }
         certificates.insert(device, row.device_cert.user_public_key);
-        rows.insert(device, (row.device_cert, admissions));
+        rows.insert(device, (row.device_cert, admissions, delegations));
     }
     if !certificates.values().any(|root| *root == owner_key)
         || roster
@@ -299,4 +304,42 @@ fn historical_basis(
     hasher.update(b"tilo-room-media-auth-basis-v1\0");
     hasher.update(&bytes);
     Ok(*hasher.finalize().as_bytes())
+}
+
+/// A row a build before the owner-root layout wrote carries a workspace
+/// delegation. It is what the row's bytes held, and the media authorization
+/// basis computed over them is a digest a stored policy still names, so the
+/// projection hashes it in the place it always held: a workspace that held
+/// one opens.
+#[test]
+fn media_basis_hashes_the_delegation_an_older_row_carries() {
+    use crate::state::WorkspaceDelegation;
+    let (mut doc, root, device) = fixture();
+    let identities = doc.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
+    let bytes = super::super::strict_bytes(&doc, &identities, &device).unwrap();
+    let mut row: crate::state::GovernedIdentity = serde_json::from_slice(&bytes).unwrap();
+    row.workspace_delegations = vec![WorkspaceDelegation {
+        version: 1,
+        room: "0f0e0d0c-0b0a-4908-8706-050403020100".into(),
+        workspace_id: 7,
+        authority_device_public_key: row.device_cert.device_public_key,
+        delegate: row.device_cert.clone(),
+        permissions: crate::state::WorkspaceDelegationPermissions {
+            issue_invitations: true,
+            admit_invited_members: true,
+        },
+        nonce: [3; 16],
+        expires_at_ns: None,
+        signature: [0; 64],
+    }];
+    doc.put(
+        &identities,
+        &device,
+        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+    )
+    .unwrap();
+    doc.commit();
+    let expected = historical_basis(&doc, &[]).unwrap();
+    assert_eq!(basis(&doc, &[]), Ok(expected));
+    let _ = root;
 }

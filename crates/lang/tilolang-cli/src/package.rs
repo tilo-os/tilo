@@ -145,7 +145,7 @@ aarch64 = "aarch64"
 {capabilities}
 
 [resources]
-kinds = [{record_kind}]
+kinds = [{record_kinds}]
 
 [publisher]
 identity = "ed25519:{publisher}"
@@ -186,7 +186,13 @@ ext = []
         version = toml_string(&options.version),
         runtime = toml_string(&options.tilo_runtime),
         tilolang = toml_string(&options.tilolang_runtime),
-        record_kind = toml_string(RECORD_KIND),
+        // The app's workspace record, and the workspace's record of each person's own state
+        // of it, which every app of the language opens.
+        record_kinds = [
+            toml_string(RECORD_KIND),
+            toml_string(tilolang::PERSONAL_RECORD_KIND),
+        ]
+        .join(", "),
         bin = toml_string(RUNTIME_BIN),
         shell_ui = ui::floating_surface::FLOATING_SURFACE_PROTOCOL_VERSION,
         services = runtime_portal::RUNTIME_INTERFACE_VERSION,

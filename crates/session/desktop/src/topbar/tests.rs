@@ -1,4 +1,3 @@
-use super::clock::clock_overlay_controls;
 use super::*;
 use automerge::AutoCommit;
 use tilo_desktop_model::{
@@ -126,175 +125,6 @@ fn idle_clock_wakes_and_repaints_when_the_minute_turns() {
         );
         assert!(!bar.update(&(), &()), "one repaint per minute");
     });
-}
-
-fn floating_clock() -> TopBarChrome {
-    let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-        active: WorkspaceSlot::from(0),
-        ..Default::default()
-    };
-    tree.active = tree.workspaces[0].slot;
-    let chrome = super::fixture::FixtureChrome::new(tree.clone());
-    {
-        let mut state = chrome.borrow_mut();
-        state.overlays.clock = true;
-        state.clock_activity = Some(ClockActivity {
-            label: "Tea".into(),
-            remaining_secs: 125,
-            overlay: true,
-            ..Default::default()
-        });
-    }
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
-    bar.clock_overlay_rect = Rect::new(100.0, 80.0, 352.0, 238.0);
-    [
-        bar.clock_pause_rect,
-        bar.clock_add_rect,
-        bar.clock_close_rect,
-    ] = clock_overlay_controls(bar.clock_overlay_rect);
-    bar
-}
-
-/// The floating timer's controls are Clocks' own: each press carries the
-/// command and the timer it belongs to, and the close button also puts the
-/// overlay away.
-#[test]
-fn the_floating_timers_controls_hand_the_timer_back_to_clocks() {
-    let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-        active: WorkspaceSlot::from(0),
-        ..Default::default()
-    };
-    tree.active = tree.workspaces[0].slot;
-    let chrome = super::fixture::FixtureChrome::new(tree.clone());
-    {
-        let mut state = chrome.borrow_mut();
-        state.overlays.clock = true;
-        state.clock_activity = Some(ClockActivity {
-            activity_id: Some("timer-1".into()),
-            label: "Tea".into(),
-            remaining_secs: 125,
-            overlay: true,
-            ..Default::default()
-        });
-    }
-    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
-    bar.activate_clock_control(0);
-    bar.activate_clock_control(1);
-    bar.activate_clock_control(2);
-    assert_eq!(
-        chrome.borrow().intents.as_slice(),
-        [
-            ChromeIntent::ClockCommand {
-                command: "toggle".into(),
-                activity_id: Some("timer-1".into()),
-            },
-            ChromeIntent::ClockCommand {
-                command: "add-minute".into(),
-                activity_id: Some("timer-1".into()),
-            },
-            ChromeIntent::HideClock,
-            ChromeIntent::ClockCommand {
-                command: "close".into(),
-                activity_id: Some("timer-1".into()),
-            },
-        ]
-    );
-    assert!(!chrome.borrow().overlays.clock, "the overlay is away");
-}
-
-#[test]
-fn floating_clock_cursor_exposes_buttons_and_drag_state() {
-    let mut bar = floating_clock();
-    assert_eq!(
-        bar.cursor_shape(bar.clock_pause_rect.center()),
-        Some(winit::window::CursorIcon::Pointer)
-    );
-    let header = Point::new(
-        bar.clock_overlay_rect.x0 + 20.0,
-        bar.clock_overlay_rect.y0 + 20.0,
-    );
-    assert_eq!(
-        bar.cursor_shape(header),
-        Some(winit::window::CursorIcon::Grab)
-    );
-    assert!(bar.begin_clock_drag_at(header));
-    assert_eq!(
-        bar.cursor_shape(Point::new(900.0, 700.0)),
-        Some(winit::window::CursorIcon::Grabbing)
-    );
-}
-
-/// The floating timer is a Panel: the floating material's ground, not the
-/// raised band a field well stands on. It painted `surfaces.raised` with a
-/// literal 18 px radius until this test: the tone of a control inside a
-/// window, floating over the desktop with nothing holding it off the ground.
-#[test]
-fn the_floating_timer_stands_on_the_floating_material() {
-    let theme = Theme::default();
-    let mut bar = floating_clock();
-    bar.clock_overlay_pos = Some(Point::new(300.0, 200.0));
-    let activity = ClockActivity {
-        label: "Tea".into(),
-        remaining_secs: 125,
-        overlay: true,
-        ..Default::default()
-    };
-    let (width, height) = (800u32, 400u32);
-    let mut scene = Scene::new();
-    bar.draw_clock_overlay(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &theme,
-        &activity,
-    );
-    let panel = bar.clock_overlay_rect;
-    assert!(
-        panel.x0 >= 0.0
-            && panel.y0 >= 0.0
-            && panel.x1 <= f64::from(width)
-            && panel.y1 <= f64::from(height),
-        "the timer stands inside the frame: {panel:?}"
-    );
-    let rgba = ui::offscreen::OffscreenRenderer::new(width, height).render(&scene, Color::BLACK);
-    // Inside the panel: below the headline and the timecode, above the action
-    // row that starts 56 px from its foot, clear of the grip.
-    let inside = ui::offscreen::OffscreenRenderer::sample(
-        &rgba,
-        width,
-        ui::num::u32_of_f64(panel.x0 + 24.0),
-        ui::num::u32_of_f64(panel.y0 + 78.0),
-    );
-    let ground = ui::chrome::ChromeRole::Panel.surface(&theme).to_rgba8();
-    assert_eq!(
-        inside,
-        (ground.r, ground.g, ground.b, ground.a),
-        "the timer's body is the floating material's ground"
-    );
-    let raised = theme.tokens.colors.surfaces.raised.to_rgba8();
-    assert_ne!(
-        inside,
-        (raised.r, raised.g, raised.b, raised.a),
-        "the timer is not a raised band inside content"
-    );
-}
-
-#[test]
-fn floating_clock_accessibility_announces_time_and_focus() {
-    let mut bar = floating_clock();
-    bar.clock_control_focus = Some(1);
-    let node = bar.clock_accessibility_node().expect("visible timer node");
-    assert_eq!(node.name.as_deref(), Some("Floating timer"));
-    assert!(
-        node.description
-            .as_deref()
-            .is_some_and(|text| text.contains("Alt"))
-    );
-    assert_eq!(node.children[0].name.as_deref(), Some("Tea"));
-    assert_eq!(node.children[0].value.as_deref(), Some("2:05"));
-    assert!(node.children[2].state.focused);
 }
 
 fn lay_out_and_draw_with_theme(bar: &mut TopBarChrome, width: f32, theme: &Theme) {
@@ -537,10 +367,10 @@ fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
     let mut bar = sample_chrome();
     lay_out_and_draw(&mut bar, 1280.0);
     let desktop = bar.tray_pill_rect;
-    assert_eq!(bar.tray_slot_count(), 1, "the bell, with nothing unread");
+    assert_eq!(bar.tray_slots().len(), 1, "the bell, with nothing unread");
     bar.bell.only = true;
     lay_out_and_draw(&mut bar, 1280.0);
-    assert_eq!(bar.tray_slot_count(), 1, "the same bell");
+    assert_eq!(bar.tray_slots().len(), 1, "the same bell");
     assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
     let node = bar.accessibility().expect("topbar semantics");
     let tray = node
@@ -746,6 +576,95 @@ fn compact_large_text_preserves_the_full_activity_sentence_and_detail_route() {
         "the explicit chevron label points to the activity detail route"
     );
     assert!(!chrome.borrow().overlays.workspace_activity);
+}
+
+/// A press on the pill pulls the activity it names out of the bar as its
+/// card; the plain clock reading opens the board instead.
+#[test]
+fn pressing_the_pill_expands_the_activity_it_names() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: Vec::new(),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    chrome.borrow_mut().activities = vec![
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
+            .with_id("tea"),
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Music, "Album", "Track 2")
+            .with_id("music"),
+    ];
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
+    bar.last_cursor = Some(bar.center_rect.center());
+    let mut handled = false;
+    bar.handle_left_click(&mut handled);
+    assert!(handled, "the bar takes the press");
+    assert_eq!(
+        chrome.borrow().intents.last(),
+        Some(&crate::chrome::ChromeIntent::ExpandActivity {
+            activity: "tea".to_owned()
+        }),
+        "the pill's leading activity comes out as its card"
+    );
+    assert!(
+        !chrome.borrow().overlays.workspace_activity,
+        "the card is the floating layer's, not an overlay"
+    );
+}
+
+/// A live activity reads in the bar as its own reading in a pill that hugs
+/// it, with a dot for each activity waiting behind it; the time steps aside
+/// while it runs.
+#[test]
+fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        active_strip: HashMap::default(),
+        active_group: HashMap::default(),
+        collaborators: Vec::new(),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = super::fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    let tea = ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
+        .with_id("tea");
+    chrome.borrow_mut().activities = vec![tea.clone()];
+    lay_out_and_draw(&mut bar, 1600.0);
+    let alone = bar.center_rect;
+    assert_eq!(
+        bar.clock_widget_text(),
+        bar.center_pill().reading(),
+        "the pill reads the activity, not the time"
+    );
+    assert!(
+        !bar.center_is_plain_text(),
+        "the reading stands on the pill, not as bare text"
+    );
+    assert!(
+        alone.width() < bar.center_lane.width() / 2.0,
+        "an activity is a pill, not a second bar: {alone:?}"
+    );
+    assert!((alone.center().x - bar.center_lane.center().x).abs() < 1e-9);
+
+    let one = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
+    chrome.borrow_mut().activities = vec![
+        tea,
+        ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Coffee", "0:30")
+            .with_id("coffee"),
+    ];
+    lay_out_and_draw(&mut bar, 1600.0);
+    assert_eq!(bar.center_pill().more, 1, "one activity waits behind it");
+    // The band follows its target, so the pill it grows into is what the
+    // width is asked for: a dot is part of the pill, not painted over it.
+    let two = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
+    assert!(two > one, "its dot widens the pill: {two} against {one}");
 }
 
 fn press_named_key(bar: &mut TopBarChrome, key: winit::keyboard::NamedKey) -> bool {
@@ -1749,6 +1668,8 @@ fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
                     surface_id: *surface,
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: *surface,
             width: WindowWidth::Normal,
@@ -1926,6 +1847,8 @@ fn disclosure_keeps_identity_and_target_when_user_switches_workspaces() {
                 surface_id: 42,
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab_id,
         width: WindowWidth::Normal,
@@ -2184,7 +2107,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
 }
 
 #[test]
-fn spectators_and_marked_agents_read_in_the_avatar_stack() {
+fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
     let mut tree = DesktopTree {
         workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
         ..Default::default()
@@ -2224,7 +2147,7 @@ fn spectators_and_marked_agents_read_in_the_avatar_stack() {
         );
     };
 
-    // Spectators alone: the chip is the People control, not Invite.
+    // Pages watching alone: the chip is the People control, not Invite.
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     chrome.borrow_mut().watching = 2;
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
@@ -2243,7 +2166,7 @@ fn spectators_and_marked_agents_read_in_the_avatar_stack() {
             .name
             .as_deref()
             .is_some_and(|name| name.contains("2 people watching"))),
-        "the bar names its spectators"
+        "the bar says how many pages are watching"
     );
     bar.last_cursor = Some(bar.people_button_rect.center());
     let mut handled = false;
@@ -2420,7 +2343,7 @@ fn a_present_collaborator_in_this_workspace_gets_an_avatar() {
 #[test]
 fn every_reading_the_machine_has_draws_its_own_glyph() {
     let mut bar = sample_chrome();
-    assert_eq!(bar.tray_slot_count(), 1, "the bell alone");
+    assert_eq!(bar.tray_slots().len(), 1, "the bell alone");
     bar.status = crate::chrome::SystemStatus {
         battery_percent: Some(72),
         battery_charging: false,
@@ -2439,7 +2362,7 @@ fn every_reading_the_machine_has_draws_its_own_glyph() {
         summary: String::new(),
     };
     assert_eq!(
-        bar.tray_slot_count(),
+        bar.tray_slots().len(),
         4,
         "the bell, the volume, the link and the battery"
     );
@@ -2451,7 +2374,7 @@ fn every_reading_the_machine_has_draws_its_own_glyph() {
     );
     bar.status = crate::chrome::SystemStatus::default();
     lay_out_and_draw(&mut bar, 1280.0);
-    assert_eq!(bar.tray_slot_count(), 1, "nothing known, nothing drawn");
+    assert_eq!(bar.tray_slots().len(), 1, "nothing known, nothing drawn");
     assert!(bar.tray_pill_rect.width() < known.width());
 }
 

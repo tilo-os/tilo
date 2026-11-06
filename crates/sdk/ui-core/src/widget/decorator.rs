@@ -475,6 +475,7 @@ decorator_trait! {
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
+        fn snap_points(axis: crate::widget::ScrollAxis, out: &mut Vec<f32>);
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
@@ -483,6 +484,7 @@ decorator_trait! {
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
         fn is_focused() -> bool;
+        fn context_menu_anchor() -> Option<vello::kurbo::Rect>;
         fn wants_tab_input() -> bool;
         fn ime_cursor_rect() -> Option<vello::kurbo::Rect>;
         fn traps_focus() -> bool;
@@ -519,6 +521,7 @@ decorator_trait! {
         fn next_wake_deadline() -> Option<Instant>;
         fn holds_frame_until(now: Instant) -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;
+        fn presents_modal() -> bool;
         fn has_pending_visual_work() -> bool;
         fn has_transient_feedback() -> bool;
         fn needs_redraw() -> bool;
@@ -559,6 +562,7 @@ decorator_trait! {
         ) -> Result<(), crate::bound_dispatch::BoundDispatchError>;
         fn set_platform_conventions(conventions: crate::platform::PlatformConventions);
         fn set_interaction_environment(environment: crate::interaction::InteractionEnvironment);
+        fn set_window_bar_control(in_bar: bool);
         fn sync(state: &AppModel, path: &ModelPath);
         fn update(state: &AppModel, path: &ModelPath) -> bool;
         fn serve_deadline(now: Instant) -> bool;
@@ -617,6 +621,7 @@ decorator_trait! {
         fn restore_dev_route(route: &crate::widget::router::RouteSnapshot) -> bool;
         fn set_motion_reduced(reduced: bool);
         fn take_structure_dirty() -> bool;
+        fn dismiss_presented_modal() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
         fn release_scene_cache();

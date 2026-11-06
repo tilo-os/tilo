@@ -5,22 +5,24 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FlowDecl, FnDecl, Ident, Item, LetBind,
-    MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, RootDecl, ScenarioDecl,
-    SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt, StmtKind, StrPart,
-    TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl, VariantDecl,
-    ViewDecl,
+    DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FlowDecl,
+    FnDecl, Ident, Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
+    Place, Proposal, RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl,
+    StateLayer, Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind,
+    UiStmt, UnOp, UseDecl, VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
 use crate::types::MergeKind;
 
-/// Whether call arguments name only a filter's options: `(icon: .circle)`.
+/// Whether call arguments name only a filter's options: `(icon: .circle, count: true)`.
 fn only_opts(args: &[Arg]) -> bool {
     !args.is_empty()
-        && args
-            .iter()
-            .all(|a| a.name.as_ref().is_some_and(|n| n.name == "icon"))
+        && args.iter().all(|a| {
+            a.name
+                .as_ref()
+                .is_some_and(|n| matches!(n.name.as_str(), "icon" | "count"))
+        })
 }
 
 /// The arguments as a filter's options.
@@ -221,6 +223,7 @@ const TYPE_ARGS: &[&str] = &[
     "Map",
     "Collection",
     "Option",
+    "Filter",
     "Result",
     "State",
 ];
@@ -261,6 +264,16 @@ impl<'a> Parser<'a> {
 
     fn peek_at(&self, n: usize) -> &Tok {
         self.toks.get(self.pos + n).map_or(&Tok::Eof, |t| &t.tok)
+    }
+
+    /// How many doc comments stand before the next token: a declaration is documented by them,
+    /// and reads them itself.
+    fn docs_ahead(&self) -> usize {
+        let mut at = 0;
+        while matches!(self.peek_at(at), Tok::Doc(_) | Tok::Newline) {
+            at += 1;
+        }
+        at
     }
 
     fn span(&self) -> Span {
@@ -315,7 +328,15 @@ impl<'a> Parser<'a> {
 
     /// Whether an `(` at the cursor opens the parameters of a lambda, `(a, b) ->`.
     fn params_arrow(&self) -> bool {
-        let mut at = 1;
+        self.params_arrow_at(0)
+    }
+
+    /// Whether the `(` `at` tokens ahead opens the parameters of a lambda.
+    fn params_arrow_at(&self, at: usize) -> bool {
+        if !matches!(self.peek_at(at), Tok::LParen) {
+            return false;
+        }
+        let mut at = at + 1;
         loop {
             if !matches!(self.peek_at(at), Tok::Ident(_)) {
                 return false;
@@ -543,6 +564,13 @@ impl<'a> Parser<'a> {
     fn at_row_view(&self) -> bool {
         matches!(self.peek(), Tok::Ident(n) if n == "row")
             && matches!(self.peek_at(1), Tok::Kw("view"))
+    }
+
+    /// `views a, b for T` at the start of an item: the views a window of the type switches
+    /// between.
+    fn at_views(&self) -> bool {
+        matches!(self.peek(), Tok::Ident(n) if n == "views")
+            && matches!(self.peek_at(1), Tok::Ident(_) | Tok::Kw("view"))
     }
 
     /// `scenario "name" { ... }` at the start of an item.
@@ -786,6 +814,23 @@ impl<'a> Parser<'a> {
                 span: start.to(Span::new(self.prev_end(), self.prev_end())),
             }));
         }
+        if self.at_views() {
+            self.bump();
+            let node = self.node();
+            let mut views = vec![self.views_entry()?];
+            while self.eat(&Tok::Comma) {
+                views.push(self.views_entry()?);
+            }
+            self.expect_kw("for")?;
+            let ty = self.type_expr()?;
+            return Ok(Item::Views(ViewsDecl {
+                node,
+                doc,
+                views,
+                ty,
+                span: start.to(Span::new(self.prev_end(), self.prev_end())),
+            }));
+        }
         if self.at_scenario() {
             self.bump();
             let node = self.node();
@@ -907,6 +952,18 @@ impl<'a> Parser<'a> {
             && !matches!(self.peek_at(3), Tok::Ident(_) | Tok::LParen)
     }
 
+    /// One view of a `views` declaration: its name, and the options it is offered by
+    /// (`views list_, board (icon: .columns) for Project`).
+    fn views_entry(&mut self) -> PResult<crate::ast::ViewsEntry> {
+        let view = self.ident("the name of a view")?;
+        let opts = if self.at_variant_opts() {
+            self.action_opts()?
+        } else {
+            Vec::new()
+        };
+        Ok(crate::ast::ViewsEntry { view, opts })
+    }
+
     fn use_decl(&mut self, start: Span) -> PResult<UseDecl> {
         self.expect_kw("use")?;
         let node = self.node();
@@ -953,6 +1010,7 @@ impl<'a> Parser<'a> {
         };
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
+        let mut derives = Vec::new();
         let mut search: Option<SearchBlock> = None;
         loop {
             self.skip_nl();
@@ -962,8 +1020,11 @@ impl<'a> Parser<'a> {
             if matches!(self.peek(), Tok::Eof) {
                 return self.unexpected("`}` to close the type");
             }
-            if matches!(self.peek(), Tok::Ident(w) if w == "search")
-                && matches!(self.peek_at(1), Tok::LBrace)
+            // What is declared is behind the comment it is documented with, which the
+            // declaration reads.
+            let at = self.docs_ahead();
+            if matches!(self.peek_at(at), Tok::Ident(w) if w == "search")
+                && matches!(self.peek_at(at + 1), Tok::LBrace)
             {
                 match self.search_block() {
                     Ok(block) => {
@@ -974,6 +1035,22 @@ impl<'a> Parser<'a> {
                             );
                         } else {
                             search = Some(block);
+                        }
+                    }
+                    Err(Abort) => self.recover_stmt(),
+                }
+                continue;
+            }
+            if matches!(self.peek_at(at), Tok::Ident(w) if w == "derive") {
+                match self.derived() {
+                    Ok(d) => {
+                        derives.push(d);
+                        if !self.eat(&Tok::Comma)
+                            && !matches!(self.peek(), Tok::Newline | Tok::RBrace)
+                        {
+                            let _: PResult<()> =
+                                self.unexpected("a new line, `,` or `}` after the derived key");
+                            self.recover_stmt();
                         }
                     }
                     Err(Abort) => self.recover_stmt(),
@@ -999,7 +1076,32 @@ impl<'a> Parser<'a> {
             name,
             origin,
             fields,
+            derives,
             search,
+            span: start.to(Span::new(self.prev_end(), self.prev_end())),
+        })
+    }
+
+    /// `derive folded: Bool = finished and parent.all(folded)`: a value the store derives from
+    /// the collection, never the record.
+    fn derived(&mut self) -> PResult<DerivedDecl> {
+        let doc = self.docs();
+        let start = self.span();
+        if !matches!(self.bump().tok, Tok::Ident(w) if w == "derive") {
+            return self.unexpected("`derive`");
+        }
+        let node = self.node();
+        let name = self.ident("a name for the derived key")?;
+        self.expect(&Tok::Colon)?;
+        let ty = self.type_expr()?;
+        self.expect(&Tok::Assign)?;
+        let expr = self.expr()?;
+        Ok(DerivedDecl {
+            node,
+            doc,
+            name,
+            ty,
+            expr,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
     }
@@ -1149,10 +1251,39 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        let marker_at = self.span();
         let marker = if self.eat(&Tok::LParen) {
-            let m = self.ident("`title` or `body`")?;
+            let name =
+                self.ident("`title`, `body`, `previously`, `repeats`, `reminds` or `time`")?;
+            let mut args = Vec::new();
+            // A marker reads its fields after a colon, `(repeats: due)`, or after the words it
+            // takes, `(time of: due)`.
+            if self.eat(&Tok::Colon) || !matches!(self.peek(), Tok::RParen) {
+                loop {
+                    let first = self.ident("a field of the type")?;
+                    let arg = if self.eat(&Tok::Colon) {
+                        MarkerArg {
+                            name: Some(first),
+                            field: self.ident("a field of the type")?,
+                        }
+                    } else {
+                        MarkerArg {
+                            name: None,
+                            field: first,
+                        }
+                    };
+                    args.push(arg);
+                    if !self.eat(&Tok::Comma) {
+                        break;
+                    }
+                }
+            }
             self.expect(&Tok::RParen)?;
-            Some(m)
+            Some(FieldMarker {
+                name,
+                args,
+                span: marker_at.to(Span::new(self.prev_end(), self.prev_end())),
+            })
         } else {
             None
         };
@@ -1256,8 +1387,42 @@ impl<'a> Parser<'a> {
             let name = self.ident("a parameter name")?;
             self.expect(&Tok::Colon)?;
             let ty = self.type_expr()?;
+            // `above: Option<Task> (above)`: the place the view offering the action supplies,
+            // written as part of what the parameter is. No caller gives it, so it has no default.
+            // `title: Text (entry)`: the text the entry at a list's end is typed into.
+            let (place, entry) = if self.is(&Tok::LParen) {
+                self.bump();
+                let role = self.ident("a part a parameter is (`above`, `entry`)")?;
+                self.expect(&Tok::RParen)?;
+                if role.name == "entry" {
+                    (None, true)
+                } else {
+                    (Some(role), false)
+                }
+            } else {
+                (None, false)
+            };
             let default = if self.eat(&Tok::Assign) {
-                Some(self.expr()?)
+                let default = self.expr()?;
+                // `above: Option<Task> = .none (above)` reads as the variant `.none` given
+                // `above`; it is a place written after a default instead, which no place takes.
+                let written_as_a_place = matches!(
+                    &default.kind,
+                    ExprKind::Variant { args: Some(args), .. }
+                        if args.len() == 1
+                            && matches!(&args[0].value.kind, ExprKind::Ident(read) if *read == name.name)
+                );
+                if self.is(&Tok::LParen) || written_as_a_place {
+                    let at = Span::new(self.prev_end(), self.prev_end());
+                    return self.fail(
+                        at,
+                        format!(
+                            "a place a view supplies comes right after the parameter's type, as `{}: Type ({})`; it takes no default",
+                            name.name, name.name
+                        ),
+                    );
+                }
+                Some(default)
             } else {
                 None
             };
@@ -1266,6 +1431,8 @@ impl<'a> Parser<'a> {
                 name,
                 ty,
                 default,
+                place,
+                entry,
             });
             if !self.eat(&Tok::Comma) {
                 break;
@@ -1312,7 +1479,7 @@ impl<'a> Parser<'a> {
             None
         };
         let opts = self.action_opts()?;
-        let (requires, body) = self.action_body()?;
+        let (requires, applies, body) = self.action_body()?;
         Ok(ActionDecl {
             node,
             doc,
@@ -1323,6 +1490,7 @@ impl<'a> Parser<'a> {
             proposal,
             opts,
             requires,
+            applies,
             body,
             span: start.to(Span::new(self.prev_end(), self.prev_end())),
         })
@@ -1421,35 +1589,46 @@ impl<'a> Parser<'a> {
     // ---- statements -----------------------------------------------------------------------
 
     /// An action's body: the `require` lines heading it, then its statements.
-    fn action_body(&mut self) -> PResult<(Vec<crate::ast::Require>, Block)> {
+    fn action_body(
+        &mut self,
+    ) -> PResult<(Vec<crate::ast::Require>, Vec<crate::ast::Require>, Block)> {
         let start = self.expect(&Tok::LBrace)?;
         let mut requires = Vec::new();
+        let mut applies = Vec::new();
         loop {
             self.skip_nl();
-            // `require` is a word of its own only where it heads a line of an action's body
-            // and a condition follows; elsewhere it is an ordinary name.
-            let heads = matches!(self.peek(), Tok::Ident(word) if word == "require")
-                && !matches!(
+            // `require` and `applies` are words of their own only where they head a line of an
+            // action's body and a condition follows; elsewhere they are ordinary names.
+            let head = match self.peek() {
+                Tok::Ident(word) if word == "require" || word == "applies" => (!matches!(
                     self.peek_at(1),
                     Tok::Assign | Tok::Dot | Tok::LParen | Tok::Newline | Tok::RBrace
-                );
-            if !heads {
+                ))
+                .then(|| word == "applies"),
+                _ => None,
+            };
+            let Some(is_applies) = head else {
                 break;
-            }
+            };
             let at = self.span();
             self.bump();
             let cond = self.expr()?;
             let reason = self.expr()?;
-            requires.push(crate::ast::Require {
+            let line = crate::ast::Require {
                 cond,
                 span: at.to(reason.span),
                 reason,
-            });
+            };
+            if is_applies {
+                applies.push(line);
+            } else {
+                requires.push(line);
+            }
             if !matches!(self.peek(), Tok::Newline | Tok::RBrace) {
                 return self.unexpected("a new line after the requirement's reason");
             }
         }
-        Ok((requires, self.block_after(start)?))
+        Ok((requires, applies, self.block_after(start)?))
     }
 
     fn block(&mut self) -> PResult<Block> {
@@ -1528,6 +1707,39 @@ impl<'a> Parser<'a> {
                     StmtKind::Return(None)
                 } else {
                     StmtKind::Return(Some(self.expr()?))
+                }
+            }
+            // `window place = Task.done` (or `lens place = x`): the state a scenario stages a
+            // window at, either as the view declares it or with the view's name before it
+            // (`home.place`). A declaration names its type where this names a value, so the
+            // two never read alike.
+            Tok::Ident(word)
+                if (word == "window" || word == "lens")
+                    && matches!(self.peek_at(1), Tok::Ident(_))
+                    && (matches!(self.peek_at(2), Tok::Assign)
+                        || (matches!(self.peek_at(2), Tok::Dot)
+                            && matches!(self.peek_at(3), Tok::Ident(_))
+                            && matches!(self.peek_at(4), Tok::Assign))) =>
+            {
+                self.bump();
+                let layer = if word == "window" {
+                    StateLayer::Window
+                } else {
+                    StateLayer::Lens
+                };
+                let first = self.ident("a state name")?;
+                let (view, name) = if self.eat(&Tok::Dot) {
+                    (Some(first), self.ident("a state name")?)
+                } else {
+                    (None, first)
+                };
+                self.expect(&Tok::Assign)?;
+                let value = self.expr()?;
+                StmtKind::SeedState {
+                    layer,
+                    view,
+                    name,
+                    value,
                 }
             }
             _ => {
@@ -1763,12 +1975,17 @@ impl<'a> Parser<'a> {
                 span,
             });
         }
-        if self.is_kw("try") {
+        if self.is_kw("try") || self.is_kw("suggest") {
+            let suggest = self.is_kw("suggest");
             let start = self.bump().span;
             let operand = self.unary()?;
             let span = start.to(operand.span);
             return Ok(Expr {
-                kind: ExprKind::Try(Box::new(operand)),
+                kind: if suggest {
+                    ExprKind::Suggest(Box::new(operand))
+                } else {
+                    ExprKind::Try(Box::new(operand))
+                },
                 span,
             });
         }
@@ -1892,6 +2109,25 @@ impl<'a> Parser<'a> {
             Tok::Kw("false") => {
                 self.bump();
                 ExprKind::Bool(false)
+            }
+            // `made from r { ... }`: two words no other expression pairs, so a name `made` or a
+            // field `from` stays an ordinary name.
+            Tok::Ident(name)
+                if name == "made"
+                    && matches!(self.peek_at(1), Tok::Ident(word) if word == "from") =>
+            {
+                self.bump();
+                self.bump();
+                let of = self.expr()?;
+                let body = self.block()?;
+                let span = start.to(body.span);
+                return Ok(Expr {
+                    kind: ExprKind::MadeFrom {
+                        of: Box::new(of),
+                        body,
+                    },
+                    span,
+                });
             }
             Tok::Ident(name) if name == "root" && matches!(self.peek_at(1), Tok::Ident(_)) => {
                 self.bump();
@@ -2388,13 +2624,27 @@ impl<'a> Parser<'a> {
         let node = self.node();
         let call = self.postfix()?;
         let mut block = None;
-        let mut item = None;
+        let mut params = Vec::new();
         if self.is(&Tok::LBrace) {
-            if matches!(self.peek_at(1), Tok::Ident(_)) && matches!(self.peek_at(2), Tok::Arrow) {
+            let arrow = (matches!(self.peek_at(1), Tok::Ident(_))
+                && matches!(self.peek_at(2), Tok::Arrow))
+                || self.params_arrow_at(1);
+            if arrow {
                 // `list(items) { x -> ... }`, or a view that takes a view of an item:
-                // `std.list(nb, nb.notes) { n -> row(n.title) }`.
+                // `std.list(nb, nb.notes) { n -> row(n.title) }`. A block of a template's
+                // function may take several values: `rows(xs) { (x, parent) -> ... }`.
                 self.bump();
-                item = Some(self.ident("the item's name")?);
+                if self.is(&Tok::LParen) {
+                    self.bump();
+                    params.push(self.ident("the block's name")?);
+                    while self.is(&Tok::Comma) {
+                        self.bump();
+                        params.push(self.ident("the block's name")?);
+                    }
+                    self.expect(&Tok::RParen)?;
+                } else {
+                    params.push(self.ident("the item's name")?);
+                }
                 self.expect(&Tok::Arrow)?;
                 block = Some(self.ui_block_rest()?);
             } else {
@@ -2413,7 +2663,7 @@ impl<'a> Parser<'a> {
         Ok(UiCall {
             node,
             call,
-            item,
+            params,
             block,
             anchor,
         })

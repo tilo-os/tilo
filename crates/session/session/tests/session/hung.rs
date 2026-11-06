@@ -68,7 +68,7 @@ fn until_answered(
     what: &str,
     mut done: impl FnMut(&mut Session) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         other.exchange();
         session.step(Duration::from_millis(2)).expect("step");

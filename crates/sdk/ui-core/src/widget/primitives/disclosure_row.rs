@@ -640,12 +640,6 @@ impl DisclosureRow {
     }
 
     /// Set by the list the row sits in: whether a rule runs under it.
-    pub(crate) fn set_separator(&mut self, below: bool) {
-        if self.separator != below {
-            self.separator = below;
-            self.dirty = true;
-        }
-    }
 
     /// Play the row's reveal at `feel` rather than the theme's pace.
     #[must_use]

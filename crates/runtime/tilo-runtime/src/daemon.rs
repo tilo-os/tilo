@@ -767,11 +767,6 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
         })
         .transpose()?;
     let search = crate::os_search::start(host.clone(), session.workspace(), session.actor())?;
-    let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
-    // Tasks learned in legacy apps live in the profile beside everything else
-    // this device keeps, so a connection that learns one leaves it for the
-    // next run.
-    let adapters = Some(Arc::new(crate::adapters::Adapters::in_profile(profile)));
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
     // endpoint, and a second --daemon cannot reach this point.
@@ -779,8 +774,8 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
     let listener = tilo_files::native::private::bind_socket(&path)?;
     if let Some((config, workspace)) = mcp {
         stages.enter("binding the MCP HTTP endpoint");
-        // Computer, viewer and media are scoped to this profile's private
-        // desktop. A shared-workspace endpoint has only the semantic action door.
+        // Viewer and media are scoped to this profile's private desktop. A
+        // shared-workspace endpoint has only the semantic action door.
         let private = workspace == session.workspace();
         let viewer = if private {
             crate::viewer::start_from_env(profile)?
@@ -792,7 +787,6 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
             workspace.clone(),
             session.actor().to_owned(),
             config.token.clone(),
-            private.then(|| computer.clone()).flatten(),
             viewer,
         );
         endpoint.serve_sessions(session.mcp_session_factory(&workspace)?)?;
@@ -812,8 +806,6 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
     let endpoint = Endpoint {
         session_factory: session.mcp_session_factory(session.workspace())?,
         status,
-        computer,
-        adapters,
         joiner: session.joiner(),
         search,
         media: session.media(),
@@ -825,9 +817,6 @@ fn serve_profile<S: RuntimeServices>(profile: &Path, policy: StartupPolicy) -> i
 struct Endpoint<H> {
     session_factory: crate::mcp::SessionFactory<H>,
     status: Status,
-    computer: Option<Arc<crate::computer::Computer>>,
-    /// Tasks learned in legacy apps, which every connection can replay.
-    adapters: Option<Arc<crate::adapters::Adapters>>,
     joiner: Option<crate::Joiner>,
     /// Opens the host search results another process was handed.
     search: Arc<tilo_os_search::OsSearch>,
@@ -847,8 +836,6 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             }
             let factory = Arc::clone(&self.session_factory);
             let status = self.status.clone();
-            let computer = self.computer.clone();
-            let adapters = self.adapters.clone();
             let joiner = self.joiner.clone();
             let search = Arc::clone(&self.search);
             let media = self.media.clone();
@@ -860,12 +847,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                 .spawn(move || {
                     let _slot = slot;
                     let server = match factory() {
-                        Ok(server) => Arc::new(
-                            server
-                                .with_computer(computer)
-                                .with_adapters(adapters)
-                                .with_media(media),
-                        ),
+                        Ok(server) => Arc::new(server.with_media(media)),
                         Err(error) => {
                             tracing::debug!(%error, "native MCP session admission unavailable");
                             return;
@@ -876,10 +858,6 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                     {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
-                    // The connection was one agent run: what it still holds
-                    // on the compositor's seat, and the strip it worked in,
-                    // are released with it.
-                    server.leave_computer();
                 })?;
         }
         Ok(())

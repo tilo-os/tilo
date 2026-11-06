@@ -876,7 +876,7 @@ impl AttachedView {
         let Some(held) = self.beside.get_mut(record) else {
             return;
         };
-        if let Ok((delta, heads)) = self.records.replication_delta(record, &mut held.frontier) {
+        if let Ok((delta, heads)) = self.records.own_delta(record, &mut held.frontier) {
             held.frontier.advance(heads);
             if !delta.is_empty() {
                 held.unsent.push(delta);
@@ -888,7 +888,7 @@ impl AttachedView {
     fn set_aside_own(&mut self) {
         if let Ok((delta, heads)) = self
             .records
-            .replication_delta(&self.checkout.id, &mut self.frontier)
+            .own_delta(&self.checkout.id, &mut self.frontier)
         {
             self.frontier.advance(heads);
             if !delta.is_empty() {

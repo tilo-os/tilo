@@ -6,6 +6,12 @@ license.workspace = true
 publish.workspace = true
 
 [features]
+# This desktop presents another device's shared window, so the surface
+# decodes it into a tile. A screenless host that links this crate only for a
+# contract it holds (an agent's participant, with the receipt transport)
+# turns it off and links no media stack.
+default = ["peer-view"]
+peer-view = ["tilo-desktop-surface/peer-view"]
 # The profile card is not linked into the desktop that holds it: the program
 # fetches its code the first time a card opens and hands it over
 # (`profile_card::PROFILE_CARD`); a quiet panel stands under the avatar until
@@ -31,7 +37,7 @@ tilo-action-policy = { path = "../../collab/action-policy" }
 uuid.workspace = true
 tilo-app = { path = "../../sdk/tilo-app", default-features = false }
 tilo-desktop-model = { path = "../desktop-model" }
-tilo-desktop-surface = { path = "../desktop-surface" }
+tilo-desktop-surface = { path = "../desktop-surface", default-features = false }
 tilo-desktop-search = { path = "../desktop-search" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
@@ -59,6 +65,7 @@ tilo-app-state = { path = "../../system/app-state" }
 tempfile.workspace = true
 notes = { path = "../../../apps/notes" }
 tilo-tts = { path = "../../system/tts" }
+tilo-activities = { path = "../activities" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, features = ["test-support"] }
 
 # The palette's proof that it stands over the windows: the compositor's own

@@ -202,6 +202,7 @@ impl StatePeer {
                     admission: None,
                     admissions: vec![],
                     delegate: Some(row),
+                    workspace_delegations: Vec::new(),
                 }
             }
             (None, None) => return Err("a new bot needs its device and delegation".into()),
@@ -323,6 +324,7 @@ impl StatePeer {
                     admission: None,
                     admissions: vec![],
                     delegate: Some(fresh),
+                    workspace_delegations: Vec::new(),
                 },
             ]
         };
@@ -505,6 +507,19 @@ impl StatePeer {
 }
 
 impl PeerGovernance<'_> {
+    /// Every bot the workspace has, as its governance records them: the ones
+    /// it runs and the ones a member asked its host for that do not run yet.
+    /// What a desk lists of a workspace's bots
+    /// ([`crate::workspace::workspace_bots_of`]).
+    #[must_use]
+    pub fn workspace_bots(self) -> Vec<tilo_desktop_model::WorkspaceBot> {
+        self.peer
+            .core
+            .workspace_doc
+            .as_deref()
+            .map_or_else(Vec::new, crate::workspace::workspace_bots_of)
+    }
+
     /// Every bot the workspace asks its host to run, by entry.
     #[must_use]
     pub fn bot_requests(self) -> Vec<RequestedBot> {
@@ -530,6 +545,7 @@ impl PeerGovernance<'_> {
         let (_, programs) = doc.get(ROOT, PROGRAMS).ok()??;
         match doc.get(&programs, hash).ok()?? {
             (automerge::Value::Scalar(value), _) => match value.as_ref() {
+                // ignored-failure: a program hash that is not text names no program
                 automerge::ScalarValue::Bytes(bytes) => String::from_utf8(bytes.clone()).ok(),
                 _ => None,
             },
@@ -718,6 +734,7 @@ impl StatePeer {
             admission: None,
             admissions: vec![],
             delegate: Some(fresh),
+            workspace_delegations: Vec::new(),
         };
         self.put_bot_change(
             &BotWrite {
@@ -791,6 +808,7 @@ fn read_request(
 ) -> Option<RequestedBot> {
     match doc.get(requests, entry).ok()?? {
         (automerge::Value::Scalar(value), _) => match value.as_ref() {
+            // ignored-failure: a request that does not decode names no requested bot
             automerge::ScalarValue::Bytes(bytes) => serde_json::from_slice::<RequestedBot>(bytes)
                 .ok()
                 .filter(|row| row.request.entry == entry && row.request.validate().is_ok()),

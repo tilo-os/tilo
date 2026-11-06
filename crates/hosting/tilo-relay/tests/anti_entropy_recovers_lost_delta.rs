@@ -32,7 +32,7 @@ use automerge::{AutoCommit, ROOT};
 use tilo_relay::{Envelope, RelayClient, reconcile};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{HANG_BOUND, TestUser, client_endpoint, spawn_relay_on};
+use crate::common::{TestUser, client_endpoint, spawn_relay_on};
 
 fn pending_count(dir: &std::path::Path) -> usize {
     std::fs::read_dir(dir).map_or(0, |rd| {
@@ -229,7 +229,7 @@ async fn anti_entropy_recovers_delta_drained_then_lost() {
 
     // ---- Anti-entropy: B reconciles against the host's MATERIALIZED
     //      doc — the only place d1 still lives — and converges. ----
-    let applied = reconcile(&b2, WS, &mut doc_b, HANG_BOUND)
+    let applied = reconcile(&b2, WS, &mut doc_b, tilo_test_env::hang_bound())
         .await
         .expect("reconcile round trip");
     assert!(

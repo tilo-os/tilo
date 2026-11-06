@@ -20,6 +20,36 @@ fn source_matches(candidate: &Provenance, source: &Provenance) -> bool {
 }
 
 impl Daemon {
+    /// The slot's record, after re-applying the generation an interrupted
+    /// transition left behind, with a note saying so.
+    ///
+    /// A transition marks its target pending before it activates and clears
+    /// the mark once that generation is current, so a mark outliving the
+    /// daemon that wrote it means an apply was cut short, with the live slot
+    /// holding part of a generation that never became current. Re-applying
+    /// the recorded one is the repair `slot restart` runs; doing it here makes
+    /// re-running the swap do what the slot's own issue says.
+    fn repaired_admission(
+        &mut self,
+        slot: &str,
+        expected: u64,
+    ) -> Result<(SlotRecord, Option<String>), DaemonError> {
+        let record = self.load_slot(slot)?;
+        let Some(interrupted) = self.slots.pending(slot) else {
+            return Ok((record, None));
+        };
+        if record.current != expected {
+            return Ok((record, None));
+        }
+        self.restart(slot)?;
+        Ok((
+            self.load_slot(slot)?,
+            Some(format!(
+                "re-applied generation {expected} after the interrupted transition to generation {interrupted}"
+            )),
+        ))
+    }
+
     fn admit_userspace(&mut self, request: &UserspaceApply) -> Result<Admitted, DaemonError> {
         self.admit_userspace_against(request, Path::new("/usr/share/tilo-apps"))
     }
@@ -29,7 +59,8 @@ impl Daemon {
         request: &UserspaceApply,
         base_registry: &Path,
     ) -> Result<Admitted, DaemonError> {
-        let record = self.load_slot(&request.slot)?;
+        let (record, repaired) =
+            self.repaired_admission(&request.slot, request.expected_generation)?;
         if record.current != request.expected_generation
             || self.slots.pending(&request.slot).is_some()
         {
@@ -61,7 +92,7 @@ impl Daemon {
             ));
         }
         let mut entries = Vec::new();
-        let mut warnings = Vec::new();
+        let mut warnings: Vec<String> = repaired.into_iter().collect();
         let mut cohort = None;
         for (member, expected) in request.members.iter().zip(USERSPACE_COMPONENTS) {
             if member.component != *expected
@@ -107,9 +138,11 @@ impl Daemon {
             .as_ref()
             .and_then(|manifest| manifest.get(&member.component))
             .ok_or_else(|| {
-                DaemonError::InvalidParams(
-                    "userspace cohort: required canonical component is absent".into(),
-                )
+                DaemonError::InvalidParams(format!(
+                    "userspace cohort: this daemon's component manifest does not know {}: swap vmd \
+                     from the cohort's tree first",
+                    member.component
+                ))
             })?;
         if component.info.scope != Scope::Session || component.info.reboot {
             return Err(DaemonError::InvalidParams(
@@ -565,6 +598,25 @@ mod tests {
     ) {
         request.expected_generation = 1;
         mirror.lock().unwrap().clear();
+        if case == "interrupted" {
+            // The daemon stopped mid-apply: its mark outlives it, and the
+            // swap that follows must repair the slot instead of refusing.
+            daemon.slots.mark_pending(&request.slot, 2).unwrap();
+            let admitted = daemon
+                .admit_userspace_against(&request, &root.join("base"))
+                .unwrap();
+            assert_eq!(daemon.slots.pending(&request.slot), None);
+            assert_eq!(daemon.load_slot(&request.slot).unwrap().current, 1);
+            assert!(
+                admitted
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.contains("interrupted transition to generation 2")),
+                "{:?}",
+                admitted.warnings
+            );
+            return;
+        }
         if case == "noop-damaged" {
             let layer = &request.members.first().unwrap().layer;
             fs::write(
@@ -668,6 +720,7 @@ mod tests {
             "noop-root-drift",
             "noop-duplicate",
             "noop-damaged",
+            "interrupted",
         ] {
             let state = root.join(format!("state-{case}"));
             let mirror = Arc::new(Mutex::new(Vec::new()));
@@ -734,7 +787,7 @@ mod tests {
             assert_eq!(before.device, after.device);
             assert_eq!(after.current, 1);
             verify_first_refresh(&result, &mirror);
-            if case.starts_with("noop") {
+            if case.starts_with("noop") || case == "interrupted" {
                 verify_repeat(&mut daemon, request, root, case, &mirror);
             }
         }

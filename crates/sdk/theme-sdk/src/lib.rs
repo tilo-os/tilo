@@ -37,7 +37,7 @@ pub use peniko;
 pub use motion::{Easing, Transition};
 pub use part::{Part, PartState, States};
 pub use scene::{Brush, Lens, Op, PaintedPart, PartImage, PartScene, Sampling, ShaderSource, Stop};
-pub use tokens::{Param, ParamSpec, PartTokens};
+pub use tokens::{Param, ParamSpec, PartTokens, Sides};
 
 use kurbo::Size;
 

@@ -126,15 +126,12 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
             dir.path().join("ledger.json"),
         )
         .unwrap();
-        let sink = Arc::new(WatchRecorder::default());
         let endpoint = Endpoint::build(
             StubHost::default(),
             "workspace".into(),
             "owner".into(),
             token.map(str::to_owned),
-            None,
             Some(Arc::new(viewer)),
-            Some(WatchLease::new(sink.clone(), WATCH_LEASE)),
         );
         let admissions = Arc::new(AtomicUsize::new(0));
         let count = admissions.clone();
@@ -152,7 +149,6 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
                 (Method::POST, "/mcp"),
                 (Method::DELETE, "/mcp"),
                 (Method::GET, "/mcp"),
-                (Method::POST, "/watch"),
                 (Method::POST, "/viewer/invitations"),
                 (Method::DELETE, &revoke),
                 (Method::POST, &role),
@@ -177,7 +173,6 @@ fn missing_endpoint_credentials_deny_every_protected_route_before_side_effects()
         assert_eq!(endpoint.session_count(), 0);
         assert_eq!(admissions.load(Ordering::SeqCst), 0);
         assert_eq!(viewer_calls.load(Ordering::SeqCst), 0);
-        assert!(sink.0.lock().unwrap().is_empty());
     }
 }
 

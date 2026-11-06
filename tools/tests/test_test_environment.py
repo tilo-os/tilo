@@ -124,19 +124,50 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertIn("setup-scripts", config["experimental"])
         scripts = dict(config["scripts"]["setup"])
         # The session's sibling binaries are built before its tests in every
-        # profile that has no environment of its own (the default one).
+        # profile: a test that started Cargo itself would build the workspace
+        # again inside the run.
         siblings = scripts.pop("session-siblings")
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
-        self.assertIn("click-test-client:click_test_client", siblings["command"][2:])
-        default_rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["default"]["scripts"]}
-        self.assertEqual(default_rules, {"package(tilo-session)": "session-siblings"})
+        self.assertEqual(siblings["command"][2:], [
+            "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+            "tilo-quick-settings:tilo-quick-settings",
+        ])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "session-siblings"]
+            expected = ([("package(tilo-session) or package(tilo-quick-settings)",
+                         {"host": 'cfg(target_os = "linux")'})]
+                        if profile == "default" else [])
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                expected,
+                f"the {profile} profile builds the session's siblings for its tests",
+            )
+        # Chat's acceptance starts the app, the launcher that starts it and the
+        # runtime host the app runs on, so the run that drives it builds the
+        # three packages of other crates first.
+        chat = scripts.pop("chat-siblings")
+        self.assertEqual(chat["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
+        self.assertEqual(chat["command"][2:], ["chat:chat", "launcher:tilo-launcher",
+                                               "tilo-runtime:tilo-runtime"])
+        for profile in ("default", "ci"):
+            rules = [rule for rule in config["profile"][profile]["scripts"]
+                     if rule["setup"] == "chat-siblings"]
+            self.assertEqual(
+                [(rule["filter"], rule["platform"]) for rule in rules],
+                [("package(tilo-session) and binary(chat_2x2)",
+                  {"host": 'cfg(target_os = "linux")'})],
+                f"the {profile} profile builds Chat and its launcher for the acceptance",
+            )
         steps = {name: script["command"][2:] for name, script in scripts.items()}
         self.assertEqual(steps, {"test-runtime": ["runtime"], "headless-audio": ["audio"],
                                  "ntfs-fixtures": ["ntfs"]})
         for script in scripts.values():
             self.assertEqual(script["command"][:2], ["bash", "tools/test-env-setup.sh"])
         rules = {rule["filter"]: rule["setup"] for rule in config["profile"]["ci"]["scripts"]}
+        # `ci` inherits `default`'s rules, so it names only what it adds.
         self.assertEqual(rules, {"all()": ["test-runtime", "headless-audio"],
+                                 "package(tilo-session) and binary(chat_2x2)": "chat-siblings",
                                  "package(tilo-ntfs-helper)": "ntfs-fixtures"})
 
     def test_runtime_provides_the_renderer_and_the_promised_capabilities(self) -> None:
@@ -166,6 +197,53 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         self.assertEqual(env, {"TILO_NTFS_FIXTURES": "/fixtures"})
         result, _ = self.setup("bogus")
         self.assertEqual(result.returncode, 2)
+
+
+class SiblingBinaryTests(unittest.TestCase):
+    """tools/build-sibling-binaries.sh builds only what the run was not handed."""
+
+    def run_script(self, work: Path, cargo: str, *binaries: str, **handed: str):
+        fake = work / "cargo"
+        fake.write_text(f"#!/bin/sh\necho \"$*\" >>{work}/cargo-ran\n{cargo}\n")
+        fake.chmod(0o755)
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "CARGO": str(fake),
+               "NEXTEST_ENV": str(work / "env"), **handed}
+        result = subprocess.run(["bash", str(ROOT / "tools/build-sibling-binaries.sh"), *binaries],
+                                env=env, capture_output=True, text=True, check=False)
+        ran = (work / "cargo-ran").read_text() if (work / "cargo-ran").exists() else ""
+        told = (work / "env").read_text().splitlines() if (work / "env").exists() else []
+        return result, ran, told
+
+    def test_handed_binaries_are_told_and_never_built(self) -> None:
+        # t's archive holds them and names each as NEXTEST_BIN_EXE_<bin>: no Cargo runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for name in ("osk", "tilo-lock-screen"):
+                (work / name).write_text("#!/bin/sh\n")
+                (work / name).chmod(0o755)
+            result, ran, told = self.run_script(
+                work, "exit 9", "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+                **{"NEXTEST_BIN_EXE_tilo-lock-screen": str(work / "tilo-lock-screen"),
+                   "NEXTEST_BIN_EXE_osk": str(work / "osk")})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran, "")
+            self.assertEqual(told, [f"TILO_SIBLING_BIN_tilo_lock_screen={work}/tilo-lock-screen",
+                                    f"TILO_SIBLING_BIN_osk={work}/osk"])
+
+    def test_a_binary_not_handed_is_built_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            for name in ("osk", "tilo-lock-screen"):
+                (work / name).write_text("#!/bin/sh\n")
+                (work / name).chmod(0o755)
+            built = f'echo \'{{"executable":"{work}/osk"}}\''
+            result, ran, told = self.run_script(
+                work, built, "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+                **{"NEXTEST_BIN_EXE_tilo-lock-screen": str(work / "tilo-lock-screen")})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(ran, "build --locked --message-format=json-render-diagnostics "
+                                  "--package osk --bin osk\n")
+            self.assertEqual(told[-1], f"TILO_SIBLING_BIN_osk={work}/osk")
 
 
 class CargoRunnerTests(unittest.TestCase):

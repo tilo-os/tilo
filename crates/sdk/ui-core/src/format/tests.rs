@@ -1,6 +1,7 @@
 use super::*;
 use crate::clock::TimeStyle;
 use crate::i18n::I18nManager;
+use crate::widget::Tone;
 use chrono::NaiveDate;
 
 /// Speak `locale` on this thread, the toolkit's catalogue loaded.
@@ -423,5 +424,178 @@ fn the_locale_section_reads_key_by_key() {
         let section = serde_json::json!({ "date_format": stored });
         let read = RegionFormats::from_section(section.as_object().cloned().unwrap());
         assert_eq!(read.date, want, "{stored}");
+    }
+}
+
+/// The day fact across its boundaries: a day gone, today, tomorrow, the week ahead, the rest of
+/// the year and another year, in both languages.
+#[test]
+fn the_day_fact_names_a_day_by_how_far_it_is_in_english_and_german() {
+    let today = day(2026, 6, 30); // a Tuesday
+    speak("en-US");
+    for (when, english, _) in [
+        (
+            day(2026, 6, 20),
+            "Overdue since Jun 20",
+            "Überfällig seit 20. Juni",
+        ),
+        (day(2026, 6, 30), "Today", "Heute"),
+        (day(2026, 7, 1), "Tomorrow", "Morgen"),
+        (day(2026, 7, 2), "Thursday", "Donnerstag"),
+        (day(2026, 7, 6), "Monday", "Montag"),
+        (day(2026, 7, 7), "Jul 7", "7. Juli"),
+        (day(2026, 12, 31), "Dec 31", "31. Dez."),
+        (day(2027, 1, 2), "Jan 2, 2027", "2. Jan. 2027"),
+    ] {
+        assert_eq!(H24.day_fact(when, None, today).text, english, "{when:?}");
+    }
+    speak("de-DE");
+    for (when, _, german) in [
+        (
+            day(2026, 6, 20),
+            "Overdue since Jun 20",
+            "Überfällig seit 20. Juni",
+        ),
+        (day(2026, 6, 30), "Today", "Heute"),
+        (day(2026, 7, 1), "Tomorrow", "Morgen"),
+        (day(2026, 7, 2), "Thursday", "Donnerstag"),
+        (day(2026, 7, 6), "Monday", "Montag"),
+        (day(2026, 7, 7), "Jul 7", "7. Juli"),
+        (day(2026, 12, 31), "Dec 31", "31. Dez."),
+        (day(2027, 1, 2), "Jan 2, 2027", "2. Jan. 2027"),
+    ] {
+        assert_eq!(H24.day_fact(when, None, today).text, german, "{when:?}");
+    }
+}
+
+/// A day gone by is the only day read in the overdue tone, and it is read so across midnight,
+/// the end of the week and the end of the year, saying which day it was.
+#[test]
+fn the_day_fact_is_overdue_through_midnight_and_the_years_end() {
+    let midnight = || chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap();
+    speak("en-US");
+    let fact = H24.day_fact(day(2026, 6, 29), Some(midnight()), day(2026, 6, 30));
+    assert_eq!(fact.text, "Overdue since Jun 29 00:00");
+    assert_eq!(fact.tone, crate::widget::Tone::Danger);
+    let fact = H24.day_fact(day(2026, 6, 30), Some(midnight()), day(2026, 6, 30));
+    assert_eq!(fact.text, "Today 00:00");
+    assert_eq!(fact.tone, crate::widget::Tone::Neutral);
+    let fact = H24.day_fact(day(2027, 1, 1), None, day(2026, 12, 31));
+    assert_eq!(fact.text, "Tomorrow");
+    assert_eq!(fact.tone, crate::widget::Tone::Neutral);
+    assert_eq!(
+        H24.day_fact(day(2026, 12, 31), None, day(2027, 1, 1)).text,
+        "Overdue since Dec 31, 2026"
+    );
+}
+
+/// A day something was done on reads as the day it happened: today, yesterday, the weekday
+/// within the week gone by, the month and day of this year and the date of another. It is
+/// history, so no day of it reads as overdue.
+#[test]
+fn a_done_day_reads_as_the_day_it_happened_in_english_and_german() {
+    let today = day(2026, 6, 30); // a Tuesday
+    speak("en-US");
+    for (when, english, _) in [
+        (day(2026, 6, 30), "Today", "Heute"),
+        (day(2026, 6, 29), "Yesterday", "Gestern"),
+        (day(2026, 6, 24), "Wednesday", "Mittwoch"),
+        (day(2026, 6, 20), "Jun 20", "20. Juni"),
+        (day(2026, 1, 5), "Jan 5", "5. Jan."),
+        (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
+    ] {
+        assert_eq!(H24.day_done(when, today), english, "{when:?}");
+    }
+    speak("de-DE");
+    for (when, _, german) in [
+        (day(2026, 6, 30), "Today", "Heute"),
+        (day(2026, 6, 29), "Yesterday", "Gestern"),
+        (day(2026, 6, 24), "Wednesday", "Mittwoch"),
+        (day(2026, 6, 20), "Jun 20", "20. Juni"),
+        (day(2026, 1, 5), "Jan 5", "5. Jan."),
+        (day(2025, 12, 31), "Dec 31, 2025", "31. Dez. 2025"),
+    ] {
+        assert_eq!(H24.day_done(when, today), german, "{when:?}");
+    }
+}
+
+/// A day and the time of it are one fact: today's time stands with "Today", the week ahead's
+/// with its weekday, and a day gone by says its date under the overdue tone.
+#[test]
+fn a_day_and_its_time_read_as_one_fact_in_english_and_german() {
+    let today = day(2026, 6, 30);
+    let cases = [
+        (
+            day(2026, 6, 30),
+            (9, 0),
+            "Today 09:00",
+            "Heute 09:00",
+            Tone::Neutral,
+        ),
+        (
+            day(2026, 7, 1),
+            (9, 0),
+            "Tomorrow 09:00",
+            "Morgen 09:00",
+            Tone::Neutral,
+        ),
+        (
+            day(2026, 7, 2),
+            (14, 30),
+            "Thu 14:30",
+            "Do. 14:30",
+            Tone::Neutral,
+        ),
+        (
+            day(2026, 7, 8),
+            (9, 0),
+            "Jul 8 09:00",
+            "8. Juli 09:00",
+            Tone::Neutral,
+        ),
+        (
+            day(2025, 6, 29),
+            (9, 0),
+            "Overdue since Jun 29, 2025 09:00",
+            "Überfällig seit 29. Juni 2025 09:00",
+            Tone::Danger,
+        ),
+        (
+            day(2026, 6, 29),
+            (14, 30),
+            "Overdue since Jun 29 14:30",
+            "Überfällig seit 29. Juni 14:30",
+            Tone::Danger,
+        ),
+        (
+            day(2026, 6, 25),
+            (7, 5),
+            "Overdue since Jun 25 07:05",
+            "Überfällig seit 25. Juni 07:05",
+            Tone::Danger,
+        ),
+        (
+            day(2026, 6, 10),
+            (7, 5),
+            "Overdue since Jun 10 07:05",
+            "Überfällig seit 10. Juni 07:05",
+            Tone::Danger,
+        ),
+    ];
+    for (when, (h, m), english, _, tone) in cases {
+        speak("en-US");
+        let time = chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        let fact = H24.day_fact(when, Some(time), today);
+        assert_eq!(fact.text, english, "{when:?}");
+        assert_eq!(fact.tone, tone, "{when:?}");
+    }
+    for (when, (h, m), _, german, _) in cases {
+        speak("de-DE");
+        let time = chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        assert_eq!(
+            H24.day_fact(when, Some(time), today).text,
+            german,
+            "{when:?}"
+        );
     }
 }

@@ -149,9 +149,6 @@ pub struct GovernedCall {
     /// The chat's voice channel the call is on.
     pub channel: String,
     pub call: CallState,
-    /// How this test's call participants are found, so a page's call reaches
-    /// them without a directory.
-    pub lookup: iroh::address_lookup::memory::MemoryLookup,
     _state: tempfile::TempDir,
 }
 
@@ -278,7 +275,7 @@ impl GovernedCall {
         let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
         let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
         let state = tempfile::tempdir().unwrap();
-        let TestHost { relay, web, lookup } =
+        let TestHost { relay, web } =
             start_workspace_host(&alice, &host, state.path(), false).await;
         let address = relay.node_addr();
         let workspace = relay.workspaces().unwrap().create("Standup").await.unwrap();
@@ -326,7 +323,6 @@ impl GovernedCall {
             owner,
             channel,
             call,
-            lookup,
             _state: state,
         }
     }

@@ -537,6 +537,10 @@ pub struct FrameHarness {
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
+    /// The widget that held the trap while it was open, as its node stood when it engaged: on
+    /// release, focus resting on the trap itself stays there, while focus the trap moved into
+    /// its content goes back to the control it was taken from.
+    focus_trap_node: Option<NodeId>,
     /// Identity the driver's commits and undos are attributed to. Mirrors
     /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
     /// author-scoped history a user does.
@@ -700,6 +704,27 @@ fn full_relayout_forced() -> bool {
 /// How many replaced compositions may be re-admitted inside one another
 /// before a view counts as never settling.
 const MAX_READMISSIONS: u8 = 8;
+
+/// The modifiers a key spec holds down and the key it presses: `Shift+F10` is
+/// Shift held for `F10`, `+` types a plus. A leading name that is no modifier
+/// is the key itself. Only the names are trimmed: the key is the character
+/// written after the last `+`, and a space is a key.
+fn chord(spec: &str) -> (&str, Vec<String>) {
+    let mut held = Vec::new();
+    let mut rest = spec;
+    while let Some((name, after)) = rest.split_once('+') {
+        let name = name.trim();
+        if !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "ctrl" | "control" | "shift" | "alt" | "logo" | "super" | "meta" | "command"
+        ) {
+            break;
+        }
+        held.push(name.to_owned());
+        rest = after;
+    }
+    (rest, held)
+}
 
 thread_local! {
     /// Re-admissions in progress on this thread, nested inside each other.
@@ -930,6 +955,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.focus_trap_node = None;
         self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
@@ -1618,6 +1644,7 @@ impl FrameHarness {
             activation_recomposed: false,
             saved_instance_focus: HashMap::new(),
             focus_before_trap: None,
+            focus_trap_node: None,
             author: author(),
             action_registry: tilo_actions::ActionRegistry::new(),
             action_transport: Box::new(tilo_actions::LocalTransport::new()),
@@ -3958,7 +3985,9 @@ impl FrameHarness {
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         // Logical layout, rasterised at the capture's device scale, as the
-        // live host draws at its window's scale factor.
+        // live host draws at its window's scale factor. What a widget places
+        // again as it paints lands on the same pixels layout does.
+        let _grid = crate::widget::layout::enter_device_scale(self.input_scale);
         let transform = self.capture_draw_transform();
         // A quiet frame that only re-applied positions moved laid-out
         // content and nothing else; nothing in presence fades or animates.
@@ -4484,6 +4513,15 @@ impl FrameHarness {
         }
     }
 
+    /// The node of the widget holding the open trap, as the tree stands now.
+    fn focus_trap_node(&self) -> Option<NodeId> {
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
+        self.node_map.keys().copied().find(|&node| {
+            // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+            unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
+        })
+    }
+
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
@@ -4513,6 +4551,7 @@ impl FrameHarness {
                     &self.bindings,
                 )
             });
+            self.focus_trap_node = self.focus_trap_node();
         }
         let mut before = if self.focus_trap_active && !trapped {
             // Bound component delegates can be absent from Widget::children's
@@ -4521,10 +4560,29 @@ impl FrameHarness {
             let (allowed, _) = self
                 .tree()
                 .layout_map_focus_order(self.child_node, &restrictions);
-            let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
-                saved.restore(&self.node_map, &self.bindings, Some(&allowed))
+            let saved = self.focus_before_trap.take();
+            let target = saved.as_ref().and_then(|saved| unsafe {
+                saved.resolve(&self.node_map, &self.bindings, Some(&allowed))
             });
-            if let Some(target) = restored
+            // Focus the trap itself moved, still standing, outlives it: a menu's
+            // "Rename" opens the field the person types into next, and the control
+            // that opened the menu is gone. So does focus the person put on the
+            // trap itself, which never went into what it hides. Focus the trap
+            // took into its content goes back to the control it was taken from.
+            let trap_node = self.focus_trap_node.take();
+            let kept = self
+                .focused
+                .filter(|id| order.contains(id) && (target.is_none() || Some(*id) == trap_node));
+            let restored = match (&saved, kept) {
+                (Some(saved), Some(keep)) => unsafe {
+                    saved.restore_keeping(&self.node_map, &self.bindings, Some(&allowed), keep)
+                },
+                (Some(saved), None) => unsafe {
+                    saved.restore(&self.node_map, &self.bindings, Some(&allowed))
+                },
+                (None, _) => None,
+            };
+            if let Some(target) = kept.or(restored)
                 && !order.contains(&target)
             {
                 order.push(target);
@@ -4966,6 +5024,11 @@ impl FrameHarness {
     /// The full accessibility tree the AccessKit bridge exports for the
     /// current frame — the exact `(NodeId, Node)` list that reaches AT-SPI2 /
     /// Orca and the built-in screen reader, with the driver's focus marked.
+    /// The accessibility nodes with their bounds in the tree's **logical**
+    /// pixels (scale 1.0): a widget lays itself out in logical pixels, so its
+    /// node stands there too, whatever device scale the frame is drawn at.
+    /// A host that draws at a device scale converts them to the screen with
+    /// the rest of its layout, and never divides them by that scale again.
     pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
@@ -6705,6 +6768,14 @@ impl FrameHarness {
         self.drain_undo_requests();
     }
 
+    /// How many resources the components here have published since this
+    /// frame started: a host that could not reach a destination yet asks
+    /// again when it moves, rather than on every frame.
+    #[must_use]
+    pub fn published(&self) -> u64 {
+        self.bound_publication.published()
+    }
+
     /// Invoke one explicit component destination using its current captured owner.
     ///
     /// # Errors
@@ -7861,7 +7932,8 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Press and release one key.
+    /// Press and release one key, holding the modifiers a `+` chord names
+    /// (`Ctrl+Z`, `Shift+F10`) for as long as the press lasts.
     ///
     /// `Tab` drives host focus traversal unless the focused widget explicitly
     /// owns it (for example, a code editor's indentation). This mirrors
@@ -7883,9 +7955,16 @@ impl FrameHarness {
         });
         let _framework_frame = FrameworkInputFrame::new(&self.framework_input, framework);
         self.pump_component_wakes();
+        let (spec, held) = chord(spec);
         let key = keys::parse_key(spec);
+        if !held.is_empty() {
+            self.set_modifiers(&held);
+        }
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send_host_event(&key_input(&key, state));
+        }
+        if !held.is_empty() {
+            self.set_modifiers(&[]);
         }
     }
 
@@ -9161,6 +9240,26 @@ impl FrameHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_key_spec_holds_the_modifiers_it_names_and_leaves_a_plus_and_a_space_alone() {
+        for (spec, pressed, expected) in [
+            ("Shift+F10", "F10", &["Shift"][..]),
+            ("ctrl+shift+k", "k", &["ctrl", "shift"][..]),
+            ("Tab", "Tab", &[][..]),
+            ("+", "+", &[][..]),
+            (" ", " ", &[][..]),
+            ("Ctrl+ ", " ", &["Ctrl"][..]),
+        ] {
+            let (key, modifiers) = chord(spec);
+            let held: Vec<&str> = modifiers.iter().map(String::as_str).collect();
+            assert_eq!(
+                (key, held.as_slice()),
+                (pressed, expected),
+                "{spec} is {pressed} with {expected:?} held"
+            );
+        }
+    }
 
     /// A theme change repaints everything on the next frame, retained caches
     /// included: a window switched from dark to light renders exactly what a

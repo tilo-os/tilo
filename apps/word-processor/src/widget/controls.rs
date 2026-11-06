@@ -901,7 +901,6 @@ impl Editor {
         self.push_clipboard_rows(&mut menu, &mut actions);
 
         menu.open_at(pos);
-        menu.constrain_to(self.rect);
         self.context_menu = menu;
         self.context_actions = actions;
         self.lifecycle.dirty = true;

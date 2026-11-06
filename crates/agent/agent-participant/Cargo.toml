@@ -26,8 +26,10 @@ tilo-actions = { path = "../../collab/actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
-# Purpose-specific receipt validation; app projection remains confined.
-tilo-desktop = { path = "../../session/desktop" }
+# Purpose-specific receipt validation; app projection remains confined. An
+# agent's participant has no screen, so it links the desktop without the
+# surface's remote-window viewer.
+tilo-desktop = { path = "../../session/desktop", default-features = false }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
 # the chooser that asks through tilo-model-gateway.
 agent = { path = "../../../apps/agent" }
@@ -38,7 +40,7 @@ activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = [] }
-camera = { path = "../../../apps/camera" }
+camera = { path = "../../../apps/camera", default-features = false, features = ["live-capture"] }
 canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
 chip-design = { path = "../../../apps/chip-design" }
@@ -66,10 +68,10 @@ speed-test = { path = "../../../apps/speed-test" }
 tasks = { path = "../../../apps/tasks" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
-tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }
+tube = { path = "../../../apps/tube", default-features = false, features = [] }
 typst-editor = { path = "../../../apps/typst-editor" }
 video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
-video-player = { path = "../../../apps/video-player" }
+video-player = { path = "../../../apps/video-player", default-features = false, features = [] }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end
@@ -147,8 +149,6 @@ tempfile.workspace = true
 tilo-paths.workspace = true
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-support"] }
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
-# The page's calls ride a lane of their own; the test support opens one.
-tilo-call-lane = { path = "../../collab/tilo-call-lane", features = ["lanes"] }
 iroh.workspace = true
 # tilo-browser-peer's test support (its HTTPS client), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
@@ -169,7 +169,7 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-call-lane", "tilo-net", "tokio-rustls"]
+ignored = ["bytes", "channel-crypto", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]
 workspace = true

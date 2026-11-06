@@ -5486,6 +5486,15 @@ pub struct FaceColumn<'a> {
     pub kind: TextKind,
 }
 
+impl<Row: 'static> DataTable<Row> {
+    /// The row the semantic target `target` names, as the table's rows are
+    /// indexed, or `None` when it names something else or a row it no longer
+    /// holds.
+    pub(crate) fn semantic_row(&self, target: &str) -> Option<usize> {
+        self.core.semantic_row_index(target)
+    }
+}
+
 impl<'a> FaceColumn<'a> {
     pub fn new(header: &'a str, width: ColumnWidth) -> Self {
         Self {

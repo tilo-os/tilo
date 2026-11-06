@@ -20,6 +20,10 @@ mod idle_inhibit;
 mod ime;
 #[path = "headless/liveness.rs"]
 mod liveness;
+#[path = "headless/pacing.rs"]
+mod pacing;
+#[path = "headless/seats.rs"]
+mod seats;
 #[path = "headless/session_follow.rs"]
 mod session_follow;
 #[path = "headless/touch.rs"]
@@ -41,9 +45,9 @@ use smithay::utils::{Logical, Point, Rectangle, Transform};
 use tilo_compositor::{
     Arrangement, BackdropImage, BackdropRequest, Compositor, GestureEvent, HostDrag, HostFrame,
     HostIme, HostKey, HostLayer, HostTextInput, IconArtwork, InputEvent, KeyClaim, KeyboardLayout,
-    OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch, TabletEvent, TabletPadEvent,
-    TabletPhase, TextField, TextFieldRefusal, TextInsertion, WindowEffect, WindowFrame, WindowIcon,
-    WindowInfo, WindowPicture, WindowPolicy,
+    LayoutPoint, LayoutRect, OutputConfig, PadAction, StackPolicy, SurfaceHost, Switch,
+    TabletEvent, TabletPadEvent, TabletPhase, TextField, TextFieldRefusal, TextInsertion,
+    WindowEffect, WindowFrame, WindowIcon, WindowInfo, WindowPicture, WindowPolicy,
 };
 use wayland_client::Connection;
 use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
@@ -68,7 +72,7 @@ fn a_window_is_composited_where_the_policy_places_it() {
     assert_eq!(windows.len(), 1);
     assert_eq!(windows[0].1, (220, 190, 200, 100), "centred on the output");
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!((frame.width, frame.height), (640, 480));
     assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
@@ -104,7 +108,7 @@ fn a_window_opens_from_its_first_buffer() {
     // stands there to be animated open.
     pump(&mut compositor, &mut [&mut client], |_, _| true);
     assert!(compositor.windows().is_empty());
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(320, 240), Some(BACKGROUND));
 
@@ -116,7 +120,7 @@ fn a_window_opens_from_its_first_buffer() {
     });
     let (info, rect) = compositor.windows()[0].clone();
     assert_eq!(rect, (220, 190, 200, 100));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(320, 240), Some([255, 0, 0, 255]));
 
@@ -128,7 +132,7 @@ fn a_window_opens_from_its_first_buffer() {
             ..WindowEffect::default()
         }),
     );
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let opening = frame.pixel(320, 240).expect("a pixel");
     assert_ne!(opening, [255, 0, 0, 255], "opening faded");
@@ -146,7 +150,7 @@ fn a_scaled_output_composites_in_physical_pixels() {
     // drawn at twice its size, physical (440, 380) to (840, 580); edges are
     // filtered, so the checks sit a few pixels inside and outside.
     assert_eq!(compositor.windows()[0].1, (220, 190, 200, 100));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(460, 400), Some([0, 0, 255, 255]));
     assert_eq!(frame.pixel(820, 560), Some([0, 0, 255, 255]));
@@ -320,7 +324,7 @@ fn a_trusted_client_locks_the_session_and_hides_every_window() {
         &mut [&mut locker, &mut window],
         |compositor, _| compositor.locked(),
     );
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     pump(&mut compositor, &mut [&mut locker], |_, clients| {
         clients[0].seen.locked
     });
@@ -658,7 +662,7 @@ fn hosted_surfaces_draw_above_windows_and_take_the_pointer_over_them() {
     )));
     let mut client = mapped_client(&mut compositor, "under", (200, 100), [255, 0, 0, 255]);
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         frame.pixel(320, 240),
@@ -706,7 +710,7 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
         Rc::clone(&log),
     )));
     let shown = |compositor: &mut Compositor, x, y| {
-        compositor.render().unwrap();
+        compositor.draw_frame().expect("a frame");
         compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
     };
     assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
@@ -989,7 +993,7 @@ fn a_surface_below_the_windows_shows_and_takes_the_pointer_only_around_them() {
     ));
     let mut client = mapped_client(&mut compositor, "over", (200, 100), [255, 0, 0, 255]);
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         frame.pixel(320, 240),
@@ -1087,14 +1091,14 @@ fn the_policy_moves_focus_and_closes_windows_through_its_own_controls() {
     );
 
     *focus.borrow_mut() = Some(id(&compositor, "first"));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     assert_eq!(
         compositor.focused_window().and_then(|info| info.app_id),
         Some("first".into())
     );
 
     closes.borrow_mut().push(id(&compositor, "second"));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     pump(
         &mut compositor,
         &mut [&mut first, &mut second],
@@ -1112,7 +1116,7 @@ fn luma(pixel: [u8; 4]) -> u32 {
 fn a_window_is_drawn_with_rounded_corners_and_a_shadow_below_it() {
     let mut compositor = headless(Box::new(StackPolicy));
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let pixel = |x, y| frame.pixel(x, y).expect("on the output");
     let red = [255, 0, 0, 255];
@@ -1153,7 +1157,7 @@ fn a_window_keeps_its_corners_and_shadow_when_its_effect_scales_it() {
             ..WindowEffect::default()
         }),
     );
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let pixel = |x, y| frame.pixel(x, y).expect("on the output");
     let red = [255, 0, 0, 255];
@@ -1178,7 +1182,7 @@ fn a_window_framed_square_is_drawn_as_its_buffer_is() {
     let (info, _) = compositor.windows()[0].clone();
     // A window that fills the display stands on it: no corners, no shadow.
     compositor.set_window_frame(WindowFrame::square());
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let pixel = |x, y| frame.pixel(x, y).expect("on the output");
     assert_eq!(pixel(221, 191), [255, 0, 0, 255], "the corner is square");
@@ -1191,7 +1195,7 @@ fn a_window_framed_square_is_drawn_as_its_buffer_is() {
     // A window can say so itself, leaving the rest of the desktop framed.
     compositor.set_window_frame(WindowFrame::default());
     compositor.set_window_frame_for(info.id, Some(WindowFrame::square()));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         frame.pixel(221, 191),
@@ -1199,7 +1203,7 @@ fn a_window_framed_square_is_drawn_as_its_buffer_is() {
         "square again"
     );
     compositor.set_window_frame_for(info.id, None);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_ne!(
         frame.pixel(221, 191),
@@ -1216,7 +1220,7 @@ fn the_desktop_moves_scales_and_fades_a_window_without_moving_it() {
     assert_eq!(rect, (220, 190, 200, 100));
     let red = Some([255, 0, 0, 255]);
     let shown = |compositor: &mut Compositor, x, y| {
-        compositor.render().unwrap();
+        compositor.draw_frame().expect("a frame");
         compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
     };
 
@@ -1274,7 +1278,7 @@ fn a_window_that_closed_is_still_drawn_until_the_desktop_lets_it_go() {
     let (info, rect) = compositor.windows()[0].clone();
     assert_eq!(rect, (220, 190, 200, 100));
     let shown = |compositor: &mut Compositor, x, y| {
-        compositor.render().unwrap();
+        compositor.draw_frame().expect("a frame");
         compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
     };
     assert_eq!(shown(&mut compositor, 320, 240), Some([255, 0, 0, 255]));
@@ -1354,7 +1358,7 @@ fn a_closed_window_is_drawn_where_and_as_big_as_it_stood() {
     let mut client = mapped_client(&mut compositor, "blue", (200, 100), [0, 0, 255, 255]);
     let (info, _) = compositor.windows()[0].clone();
     let shown = |compositor: &mut Compositor, x, y| {
-        compositor.render().unwrap();
+        compositor.draw_frame().expect("a frame");
         compositor.screenshot("HEADLESS-1").unwrap().pixel(x, y)
     };
     assert_eq!(shown(&mut compositor, 640, 480), Some([0, 0, 255, 255]));
@@ -1409,7 +1413,7 @@ fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
         opacity: 1.0,
         clip: None,
     })));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     // 200 x 100 fits 100 x 100 as 100 x 50, centred: rows 35..85.
     assert_eq!(frame.pixel(12, 40), Some([255, 0, 0, 255]));
@@ -1425,7 +1429,7 @@ fn a_hosted_surface_pictures_a_window_live_in_a_rect_of_its_own() {
     // The picture is live: the window's next buffer shows in it.
     client.show(200, 100, [0, 255, 0, 255]);
     pump(&mut compositor, &mut [&mut client], |_, _| true);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(60, 60), Some([0, 255, 0, 255]));
 }
@@ -1441,7 +1445,7 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
         opacity: 1.0,
         clip: None,
     })));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let pixel = |x, y| frame.pixel(x, y).expect("on the output");
     // Half size in a 100 x 100 rect: 100 x 50 at (10, 35), corners cut by 7.
@@ -1463,7 +1467,7 @@ fn a_picture_of_a_window_carries_its_corners_and_its_lift() {
             ..WindowEffect::default()
         }),
     );
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         frame.pixel(60, 60),
@@ -1501,7 +1505,7 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
         opacity: 1.0,
         clip: None,
     })));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         frame.pixel(60, 60),
@@ -1510,7 +1514,7 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
     );
 
     compositor.protect_app("org.example.shared", true);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         display.pixel(IN_WINDOW.0, IN_WINDOW.1),
@@ -1558,7 +1562,7 @@ fn a_private_window_is_pictured_as_the_placeholder_its_captures_show() {
 
     // Shown again once the session no longer marks it private.
     compositor.protect_app("org.example.shared", false);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(frame.pixel(60, 60), Some([255, 0, 0, 255]), "pictured live");
 }
@@ -1581,7 +1585,7 @@ fn a_picture_of_an_app_that_holds_secrets_is_its_placeholder() {
         opacity: 1.0,
         clip: None,
     })));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").unwrap();
     let placeholder = display
         .pixel(IN_PICTURE[0].0, IN_PICTURE[0].1)
@@ -1617,7 +1621,7 @@ fn a_private_window_that_closed_is_a_placeholder_in_copies() {
     );
     compositor.protect_app("org.example.shared", true);
     // The frame it drew last is kept for its close.
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     client.toplevel.as_ref().unwrap().destroy();
     client.surface.as_ref().unwrap().destroy();
     pump(&mut compositor, &mut [&mut client], |compositor, _| {
@@ -1628,7 +1632,7 @@ fn a_private_window_that_closed_is_a_placeholder_in_copies() {
         1,
         "its last frame is kept"
     );
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let display = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         display.pixel(IN_WINDOW.0, IN_WINDOW.1),
@@ -1654,7 +1658,7 @@ fn a_private_window_that_closed_is_a_placeholder_in_copies() {
     // Once the desktop lets it go, nothing of it is on the desk at all.
     let info = compositor.closing_windows()[0].0.id;
     compositor.release_snapshot(info);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let copy = compositor
         .read_back_region("HEADLESS-1", (0, 0, 640, 480))
         .expect("a capture of the output");
@@ -1699,7 +1703,7 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
     // part is red, the rest background.
     let handed = Rc::new(RefCell::new(Vec::new()));
     compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let first = handed.borrow_mut().pop().flatten().expect("a backdrop");
     assert_eq!(first.texels, (40, 20));
     assert_eq!(first.rgba.len(), 40 * 20 * 4);
@@ -1725,7 +1729,7 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
         "the window's edge is blurred: {edge:?}"
     );
 
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     assert!(
         handed.borrow().iter().all(Option::is_none),
         "nothing below changed, nothing is drawn again"
@@ -1734,7 +1738,7 @@ fn translucent_chrome_is_handed_a_blur_of_what_lies_below_it_when_that_changes()
 
     client.show(200, 100, [0, 0, 255, 255]);
     pump(&mut compositor, &mut [&mut client], |_, _| true);
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let again = handed.borrow_mut().pop().flatten().expect("a new backdrop");
     assert!(at(&again, 35, 15)[2] > 200, "now blue");
 }
@@ -1745,7 +1749,7 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
     let _client = mapped_client(&mut compositor, "red", (200, 100), [255, 0, 0, 255]);
     let handed = Rc::new(RefCell::new(Vec::new()));
     compositor.add_host(Box::new(Frosted(Rc::clone(&handed))));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     handed.borrow_mut().clear();
 
     // The desktop slides the window 200 px left: it now covers the left of
@@ -1758,7 +1762,7 @@ fn a_backdrop_follows_the_effects_the_windows_are_drawn_with() {
             ..WindowEffect::default()
         }),
     );
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let moved = handed
         .borrow_mut()
         .pop()
@@ -2364,7 +2368,7 @@ fn the_policy_knows_each_output_by_the_monitor_on_it() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-2", 320, 240).at(640, 0))
         .unwrap();
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     // Without an EDID a monitor is known by its connector.
     let names: Vec<String> = told.borrow().iter().map(|(_, name)| name.clone()).collect();
     assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
@@ -2562,12 +2566,12 @@ fn the_crosshair_guides_follow_the_pointer() {
     compositor
         .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
         .expect("input");
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(plain.pixel(10, 240), Some(BACKGROUND));
 
     with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = true);
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let guided = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_ne!(
         guided.pixel(10, 240),
@@ -2586,7 +2590,7 @@ fn the_crosshair_guides_follow_the_pointer() {
     );
 
     with_a11y(&mut compositor, |a11y| a11y.cursor.crosshair = false);
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let plain_again = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(plain_again.pixel(10, 240), Some(BACKGROUND));
 }
@@ -2594,12 +2598,12 @@ fn the_crosshair_guides_follow_the_pointer() {
 #[test]
 fn the_visual_alert_lights_the_display_edge_and_fades() {
     let mut compositor = headless(Box::new(StackPolicy));
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let before = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(before.pixel(320, 240), Some(BACKGROUND));
 
     compositor.flash();
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
     let edge = lit.pixel(320, 1).expect("pixel");
     assert!(
@@ -2625,7 +2629,7 @@ fn the_visual_alert_lights_the_display_edge_and_fades() {
         compositor
             .dispatch(Duration::from_millis(16))
             .expect("dispatch");
-        compositor.render().expect("render");
+        compositor.draw_frame().expect("a frame");
         let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
         if frame.pixel(320, 1) == Some(BACKGROUND) {
             faded = true;
@@ -2638,16 +2642,16 @@ fn the_visual_alert_lights_the_display_edge_and_fades() {
 #[test]
 fn a_frame_after_the_alerts_run_puts_the_visual_alert_away() {
     let mut compositor = headless(Box::new(StackPolicy));
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     compositor.flash();
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let lit = compositor.screenshot("HEADLESS-1").expect("screenshot");
     let edge = lit.pixel(320, 1).expect("pixel");
     assert!(edge[2] > 120, "the alert is on screen: {edge:?}");
     // No frame is drawn while the alert runs: the next one comes after it,
     // as a busy machine's would.
     std::thread::sleep(Duration::from_millis(600));
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").expect("screenshot");
     assert_eq!(
         frame.pixel(320, 1),
@@ -2664,7 +2668,7 @@ fn the_lens_magnifies_the_scene_around_the_pointer() {
     compositor
         .input(InputEvent::PointerMotion { x: 320.0, y: 240.0 })
         .expect("input");
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let plain = compositor.screenshot("HEADLESS-1").expect("screenshot");
     let plain_green = count(&plain, GREEN);
     assert!(plain_green > 0, "the window is drawn");
@@ -2675,7 +2679,7 @@ fn the_lens_magnifies_the_scene_around_the_pointer() {
             view: tilo_compositor::MagnifierView::Lens,
         };
     });
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let lensed = compositor.screenshot("HEADLESS-1").expect("screenshot");
     let lensed_green = count(&lensed, GREEN);
     assert!(
@@ -2687,7 +2691,7 @@ fn the_lens_magnifies_the_scene_around_the_pointer() {
     with_a11y(&mut compositor, |a11y| {
         a11y.magnifier.view = tilo_compositor::MagnifierView::FullScreen;
     });
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let full = compositor.screenshot("HEADLESS-1").expect("screenshot");
     let full_green = count(&full, GREEN);
     assert!(
@@ -2911,5 +2915,60 @@ fn an_inhibiting_client_keeps_the_desktops_chords_until_focus_or_the_release_cho
         log.borrow().taken.last(),
         Some(&(KEY_X, false)),
         "the desktop answers its own chord again"
+    );
+}
+
+/// A hosted surface that only records how long the display holds a frame.
+struct Paced {
+    heard: Rc<RefCell<Vec<Duration>>>,
+}
+
+impl SurfaceHost for Paced {
+    fn layers(&self) -> Vec<HostLayer> {
+        Vec::new()
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+
+    fn set_frame_interval(&mut self, interval: Duration) {
+        self.heard.borrow_mut().push(interval);
+    }
+}
+
+#[test]
+fn a_hosted_surface_hears_how_long_the_display_holds_a_frame() {
+    let heard = Rc::new(RefCell::new(Vec::new()));
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).unwrap();
+    compositor
+        .add_output(&OutputConfig {
+            refresh_mhz: 144_000,
+            ..OutputConfig::new("HEADLESS-1", 640, 480)
+        })
+        .unwrap();
+    compositor.add_host(Box::new(Paced {
+        heard: Rc::clone(&heard),
+    }));
+    compositor.render().unwrap();
+    assert_eq!(
+        heard.borrow().last().copied(),
+        Some(Duration::from_nanos(1_000_000_000_000 / 144_000)),
+        "the surface draws on the display's grid"
+    );
+    // The fastest display sets the grid: a frame kept for the slow one shows
+    // on the fast one later than it runs.
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-2", 640, 480))
+        .unwrap();
+    compositor.render().unwrap();
+    assert_eq!(
+        heard.borrow().last().copied(),
+        Some(Duration::from_nanos(1_000_000_000_000 / 144_000)),
+        "the shortest interval is the one the screens are shown at"
     );
 }

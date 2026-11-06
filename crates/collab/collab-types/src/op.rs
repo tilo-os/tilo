@@ -228,7 +228,7 @@ static LAST_UNORDERED_DOCUMENT_SEQUENCE: std::sync::atomic::AtomicU64 =
 /// Sequence for a document write signed outside its record owner's
 /// serialized turn: never below wall-clock microseconds and strictly
 /// increasing within the process, so the owner's own dense `floor + 1`
-/// reservations (recovery projections) cannot take it first.
+/// allocations cannot take it first.
 ///
 /// This is the one process-wide allocator for caller-signed document
 /// writes; every SDK document signer and every out-of-turn test signer
@@ -735,6 +735,20 @@ impl SignedOp {
     pub fn with_surface(mut self, surface: Option<[u8; 32]>) -> Self {
         self.surface = surface;
         self
+    }
+
+    /// Whether this op is the whole record rather than a change to it: a
+    /// compaction, which the key holder folded the record's sealed history
+    /// into, or a checkpoint, the record as its writer saved it. It names
+    /// the record on its own, so a replica holding none of the route founds
+    /// it with this op, and a writer that founds a record sealed publishes
+    /// one instead of a cleartext genesis a member, who reads only what the
+    /// channel seals, could never account for.
+    #[must_use]
+    pub fn is_whole_record(&self) -> bool {
+        self.kind == OpKind::Compaction
+            || self.encryption.and_then(|metadata| metadata.retention())
+                == Some(ContentRetention::Checkpoint)
     }
 
     /// Canonical bytes the author signs to mint this envelope — the struct

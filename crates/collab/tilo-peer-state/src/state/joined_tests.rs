@@ -25,7 +25,7 @@ fn a_joined_replica_keeps_a_guest_whose_certificate_expired_and_refuses_it_still
     let now = SystemTime::now();
     let host_root = SigningKey::from_bytes(&[1; 32]);
     let authority = certificate(&host_root, &SigningKey::from_bytes(&[2; 32]), None);
-    // A watching page's device, certified for an hour that has passed.
+    // A guest's device, certified for an hour that has passed.
     let guest_device = SigningKey::from_bytes(&[4; 32]);
     let guest = certificate(
         &SigningKey::from_bytes(&[3; 32]),

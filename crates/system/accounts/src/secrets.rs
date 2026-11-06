@@ -143,13 +143,16 @@ pub struct SecretStore {
 
 impl SecretStore {
     pub fn open() -> Self {
-        Self {
-            vault: SecretVault::open(),
-        }
+        Self::open_person(None)
     }
     pub fn open_in(root: &std::path::Path) -> Self {
+        Self::open_person(Some(root))
+    }
+    /// The store under `root` (the person's own when `None`); see
+    /// [`SecretVault::open_person`].
+    pub fn open_person(root: Option<&std::path::Path>) -> Self {
         Self {
-            vault: SecretVault::open_in(root),
+            vault: SecretVault::open_person(root),
         }
     }
 

@@ -77,7 +77,7 @@ pub fn is_appimage(path: &Path) -> bool {
 ///
 /// The file could not be read or its image is damaged.
 #[cfg(feature = "appimage")]
-pub(crate) fn read_identity(path: &Path) -> io::Result<Option<Found>> {
+pub(crate) fn read_identity(path: &Path, locales: &[String]) -> io::Result<Option<Found>> {
     let mut file = File::open(path)?;
     let Some(offset) = header(&mut file)? else {
         return Ok(None);
@@ -97,8 +97,7 @@ pub(crate) fn read_identity(path: &Path) -> io::Result<Option<Found>> {
     };
     let contents = String::from_utf8_lossy(&contents);
     let id = desktop_name.trim_end_matches(".desktop").to_owned();
-    let locales = crate::locale::locale_candidates();
-    let Some(entry) = crate::entry::parse(&contents, &id, path, &locales) else {
+    let Some(entry) = crate::entry::parse(&contents, &id, path, locales) else {
         return Ok(None);
     };
     let icon = embedded_icon(&mut image, &names, entry.icon.as_deref());

@@ -8,6 +8,10 @@ use std::{
 #[cfg(all(feature = "voice", unix, not(target_arch = "wasm32")))]
 pub mod gst;
 
+/// One call's audio devices: the microphone picked from this device's graph
+/// and the connection the call's audio runs on.
+pub mod call;
+
 pub const RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 960;
 pub const FRAME_DURATION: Duration = Duration::from_millis(20);
@@ -18,6 +22,9 @@ pub const MAX_PACKET_BYTES: usize = 4064;
 /// ones speaking. A new voice takes the slot of the one quiet longest, and is
 /// not heard while every slot is speaking.
 pub const MAX_PUBLISHERS: usize = 8;
+/// Frames one publisher may hold across its jitter queue and its decoder.
+/// A machine that falls behind gives the new frame up, never the call.
+pub const MAX_PUBLISHER_FRAMES: usize = 10;
 pub const SEND_LIFETIME: Duration = Duration::from_millis(100);
 pub const RECEIVE_LIFETIME: Duration = Duration::from_millis(200);
 
@@ -377,7 +384,7 @@ impl JitterBuffer {
             .stats
             .late
             .saturating_add(count(before.saturating_sub(publisher.frames.len())));
-        if publisher.frames.len() == 10 {
+        if publisher.frames.len() >= MAX_PUBLISHER_FRAMES {
             self.stats.overruns = self.stats.overruns.saturating_add(1);
             return Err(AudioError::Capacity);
         }

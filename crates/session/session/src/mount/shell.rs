@@ -524,7 +524,7 @@ impl Service for Shell {
                     .collect(),
             })),
             FOCUS => {
-                let target = self.overlays.target();
+                let target = crate::chrome::keyboard_target(&self.handle, &self.overlays);
                 Some(reading(&Focus {
                     target: target.as_str(),
                     surface: target.slot().map(Slot::as_str),

@@ -76,6 +76,19 @@ impl Phrases {
         self.locale
     }
 
+    /// The language the person prefers (`de` for `de-DE`), the one they type dates and times
+    /// in, whatever language the window's phrases are in.
+    #[must_use]
+    pub fn language(&self) -> String {
+        let preference = normalized(&self.preference);
+        preference
+            .split('-')
+            .next()
+            .filter(|language| !language.is_empty())
+            .unwrap_or("en")
+            .to_owned()
+    }
+
     /// The phrases of the language the process's environment names.
     #[must_use]
     pub fn from_env() -> Self {
@@ -235,6 +248,8 @@ mod tests {
             "tilolang-sort",
             "tilolang-done",
             "tilolang-no-date",
+            "tilolang-all-done",
+            "tilolang-add",
         ] {
             let kind = [("kind".to_owned(), "notes".to_owned())];
             assert_ne!(english.say(id, &kind), id, "{id} has a phrase");

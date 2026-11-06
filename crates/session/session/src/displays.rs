@@ -89,6 +89,49 @@ fn internal(outputs: &[OutputInfo]) -> Option<&str> {
         .map(|output| output.name.as_str())
 }
 
+/// A display the compositor's outputs put somewhere: its connector, whether it
+/// is on, where it stands in logical `(x, y, w, h)` and the scale it draws at.
+/// What the shell's parts and the panel's readout both read.
+#[derive(Clone, Debug)]
+pub(crate) struct Placed {
+    /// The connector (`eDP-1`), which tells the displays apart.
+    pub(crate) connector: String,
+    /// Whether the display is on now.
+    pub(crate) on: bool,
+    /// Where it stands, logical `(x, y, w, h)`: signed, since a display left of
+    /// or above the first starts below zero.
+    pub(crate) rect: (i32, i32, i32, i32),
+    /// The scale it draws at: what is painted on it is as crisp as the panel.
+    pub(crate) scale: f64,
+}
+
+impl Placed {
+    /// Where a surface host stands on it: its rectangle with sides at least one
+    /// pixel, in the unsigned coordinates hosts lay a part out in.
+    pub(crate) fn part_rect(&self) -> (i32, i32, u32, u32) {
+        let (x, y, width, height) = self.rect;
+        let side = |side: i32| u32::try_from(side.max(1)).unwrap_or(1);
+        (x, y, side(width), side(height))
+    }
+}
+
+/// Every display `outputs` put somewhere, in the order the compositor lists
+/// them: the ones with no rectangle are shown nowhere.
+#[must_use]
+pub(crate) fn placed(outputs: &[OutputInfo]) -> Vec<Placed> {
+    outputs
+        .iter()
+        .filter_map(|output| {
+            Some(Placed {
+                connector: output.name.clone(),
+                on: output.enabled,
+                rect: output.rect?,
+                scale: output.scale,
+            })
+        })
+        .collect()
+}
+
 /// The arrangement `outputs` show now.
 #[must_use]
 pub fn current(outputs: &[OutputInfo]) -> DisplayMode {
@@ -796,6 +839,7 @@ mod tests {
             label: name.into(),
             enabled: true,
             rect: Some((x, 0, 1280, 800)),
+            scale: 1.0,
             description: None,
             colour: DisplayCapabilities::sdr_default(),
         }

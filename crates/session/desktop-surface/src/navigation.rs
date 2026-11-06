@@ -1146,8 +1146,9 @@ fn admit_chrome(
 
 /// A launch of `app`, checked against the desktop it opens on.
 fn admit_launch(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
-    let workspace = tree.active_workspace().ok_or("Workspace unavailable")?;
-    active_strip(tree, workspace).ok_or("Strip unavailable")?;
+    // A workspace may hold no strip yet: the first window opened in it makes
+    // the strip it goes in.
+    tree.active_workspace().ok_or("Workspace unavailable")?;
     if app.is_empty() {
         return Err("Application unavailable".into());
     }
@@ -1600,6 +1601,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: 4,
             width: WindowWidth::Normal,

@@ -152,6 +152,7 @@ mod tests {
             label: "A display".to_owned(),
             enabled,
             rect: enabled.then_some((0, 0, 1920, 1080)),
+            scale: 1.0,
             description: None,
             colour: tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default(),
         }

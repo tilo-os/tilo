@@ -87,38 +87,45 @@ fn read_request(stream: &mut TcpStream) -> Option<String> {
 }
 
 fn prepare_plan_credentials(case: &str, profile: &ProviderProfile) {
-    if case != "unavailable-storage" {
-        // The subprocess has a disposable, explicit test root, not a live
-        // Secret Service session. Opt into local test custody deliberately.
-        let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
-        let (reference, authorization) = credential_binding(profile).unwrap();
-        ServiceCredentials::open_in(&root)
-            .store(
-                &reference,
-                &authorization,
-                if case == "invalid-key" {
-                    "fabricated\ninvalid-key"
-                } else {
-                    "fabricated-test-key"
-                },
-            )
-            .unwrap();
-        if case == "missing-key" {
-            // An absent key is meaningful only after custody was established.
-            // Removing the disposable entry leaves a valid empty sealed vault.
-            assert!(
-                ServiceCredentials::open_in(&root)
-                    .remove(&reference, &authorization)
-                    .unwrap()
-            );
-        }
-        assert_eq!(
-            ServiceCredentials::open()
-                .status(&reference, &authorization)
-                .unwrap(),
-            case != "missing-key"
+    let root = PathBuf::from(std::env::var("XDG_CONFIG_HOME").unwrap()).join("tilo");
+    if case == "unavailable-storage" {
+        // Custody falls back to an owner-only key beside the ciphertext, so an
+        // absent keyring no longer leaves the vault unavailable. The state has
+        // to be made: a path no vault can be read from.
+        let vault = accounts::vault_dir_in(&root);
+        fs::create_dir_all(vault.parent().unwrap()).unwrap();
+        fs::write(&vault, b"").unwrap();
+        return;
+    }
+    // The subprocess has a disposable, explicit test root, not a live Secret
+    // Service session. Opt into local test custody deliberately.
+    let (reference, authorization) = credential_binding(profile).unwrap();
+    ServiceCredentials::open_in(&root)
+        .store(
+            &reference,
+            &authorization,
+            if case == "invalid-key" {
+                "fabricated\ninvalid-key"
+            } else {
+                "fabricated-test-key"
+            },
+        )
+        .unwrap();
+    if case == "missing-key" {
+        // An absent key is meaningful only after custody was established.
+        // Removing the disposable entry leaves a valid empty sealed vault.
+        assert!(
+            ServiceCredentials::open_in(&root)
+                .remove(&reference, &authorization)
+                .unwrap()
         );
     }
+    assert_eq!(
+        ServiceCredentials::open()
+            .status(&reference, &authorization)
+            .unwrap(),
+        case != "missing-key"
+    );
 }
 
 fn child_profile(case: &str) -> ProviderProfile {

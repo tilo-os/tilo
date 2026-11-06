@@ -948,6 +948,38 @@ impl CompositionFocus {
         bindings: &BoundNodeMap,
         allowed: Option<&[NodeId]>,
     ) -> Option<NodeId> {
+        let target = unsafe { self.resolve(nodes, bindings, allowed) };
+        unsafe { self.hand_over(nodes, bindings, target, None) };
+        target
+    }
+
+    /// Restore, but leave `keep` holding the keyboard: the focus a trap itself
+    /// moved to, when it outlives the trap. The restored control takes no
+    /// focus, and every other focused control still lets go, so one owner
+    /// remains. Returns what was restored, so a caller can tell the two apart.
+    /// # Safety
+    /// The caller exclusively owns the rebuilt tree described by both maps.
+    pub(crate) unsafe fn restore_keeping(
+        &self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &BoundNodeMap,
+        allowed: Option<&[NodeId]>,
+        keep: NodeId,
+    ) -> Option<NodeId> {
+        let target = unsafe { self.resolve(nodes, bindings, allowed) };
+        unsafe { self.hand_over(nodes, bindings, target, Some(keep)) };
+        target
+    }
+
+    /// Which control the saved focus names now, if exactly one does.
+    /// # Safety
+    /// The caller exclusively owns the rebuilt tree described by both maps.
+    pub(crate) unsafe fn resolve(
+        &self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &BoundNodeMap,
+        allowed: Option<&[NodeId]>,
+    ) -> Option<NodeId> {
         let mut candidates: Vec<_> = nodes
             .keys()
             .copied()
@@ -977,7 +1009,7 @@ impl CompositionFocus {
                 .unwrap_or(false)
             });
         }
-        let target = candidates
+        candidates
             .first()
             .copied()
             .filter(|_| candidates.len() == 1)
@@ -991,22 +1023,37 @@ impl CompositionFocus {
                     })
                 }
                 .unwrap_or(false)
-            });
+            })
+    }
+
+    /// Hand the keyboard to `target` and let every other focused control go.
+    /// `keep` names a control holding it instead: then `target` takes no focus,
+    /// and the path kept is the one whose members are left alone.
+    /// # Safety
+    /// The caller exclusively owns the rebuilt tree described by both maps.
+    unsafe fn hand_over(
+        &self,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+        bindings: &BoundNodeMap,
+        target: Option<NodeId>,
+        keep: Option<NodeId>,
+    ) {
         // A compound editor and its focused line form one focus path. Blurring
         // either member can clear the other, so only blur unrelated controls.
         // Relationships come from the freshly admitted layout, including
         // child delegates omitted from retained-widget traversal.
-        let related: std::collections::HashSet<_> = target
+        let related: std::collections::HashSet<_> = keep
+            .or(target)
             .into_iter()
-            .flat_map(|target| {
+            .flat_map(|anchor| {
                 nodes
                     .keys()
                     .copied()
                     .filter(|&node| {
                         self.same_owner(bindings, node)
-                            && (node == target
-                                || bindings.is_descendant(node, target)
-                                || bindings.is_descendant(target, node))
+                            && (node == anchor
+                                || bindings.is_descendant(node, anchor)
+                                || bindings.is_descendant(anchor, node))
                     })
                     .collect::<Vec<_>>()
             })
@@ -1018,11 +1065,15 @@ impl CompositionFocus {
             // SAFETY: same exclusive live-tree ownership, no topology changes.
             let _ = unsafe {
                 mutate_bound_node(bindings, nodes, node, |widget| {
-                    if Some(node) != target && widget.is_focused() {
+                    if Some(node) != keep && Some(node) != target && widget.is_focused() {
                         widget.set_focus(false);
                     }
                 })
             };
+        }
+        if keep.is_some() {
+            // The trap's own focus stays where the person put it.
+            return;
         }
         // Compound controls propagate focus into their internal editor. Restore
         // the owner after all other nodes have blurred; HashMap iteration order
@@ -1048,7 +1099,6 @@ impl CompositionFocus {
                 })
             };
         }
-        target
     }
 }
 

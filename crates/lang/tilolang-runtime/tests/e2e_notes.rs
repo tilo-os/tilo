@@ -248,9 +248,11 @@ mod cases {
         // These checks read the whole tree, as a host that draws every row does.
         view.set_lazy_rows(false).unwrap();
         assert_eq!(titles(&view), ["b", "a"]);
-        assert_eq!(
-            node_with(view.tree(), "ui.NavItem", "key", "is:pinned").props["count"],
-            Value::Int(1)
+        assert!(
+            !node_with(view.tree(), "ui.NavItem", "key", "is:pinned")
+                .props
+                .contains_key("count"),
+            "a filter that is not a place shows no count"
         );
         fire_on(&view, "ui.NavItem", "key", "is:pinned", "select");
         view.poll_patches().unwrap();

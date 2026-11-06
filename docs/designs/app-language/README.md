@@ -67,6 +67,26 @@ A field marked `(body)` is the resource's document body: the document's own view
 editor for it, `ui.BlockEditor(bind: note.body)`, whether the field holds `Text` (the body kept
 as Markdown) or `RichText` (its paragraphs, lists, quotes, tables and code kept as such).
 
+A field whose item comes round again says which day it counts from, and a field that reminds
+someone says when it does and whom it reminds:
+
+```
+type Task {
+    title: Text (title)
+    due: Option<Date> = .none
+    at: Option<Time> = .none
+    assignee: Option<Principal> = .none
+    repeats: Option<std.Repeat> (repeats: due) = .none
+    remind: Option<std.Reminder> (reminds: due, at, who: assignee) = .none
+}
+```
+
+The compiler refuses a `std.Repeat` field with no `(repeats: …)` and a `std.Reminder` with no
+`(reminds: …)`, and refuses a role naming a field the type does not have or one of the wrong
+type. The role is published with the type, so whatever holds the record — a desktop with the
+app closed, an agent, another device — finds what repeats and when it reminds without running
+the app's code. A record naming nobody is its creator's to be reminded of.
+
 ## How it runs
 
 - Code compiles to wasm and runs sandboxed. Authority follows authorship: what code may do is
@@ -98,4 +118,4 @@ as Markdown) or `RichText` (its paragraphs, lists, quotes, tables and code kept 
 | The shell | shell.md |
 | The first new experience | first-experience.md |
 | Language changes found by writing the apps | language-changes.md |
-| Chat, the flagship app | chat.md |
+| Chat | chat.md |

@@ -386,6 +386,29 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 return Some(node.clone());
             }
         }
+        // The rows the resource can hang under: the ones the publisher says
+        // hold children, and the one its own id extends. A provider that
+        // publishes a tree whole lists its root as a plain row, and the tree
+        // answers under it all the same, so the id decides as well. The row an
+        // id extends is read down alone: its level holds the resource, and the
+        // top level of a workspace lists more rows than a peek reads, so the
+        // branch that names the resource is not spent looking elsewhere.
+        let extends = |node: &&Node| {
+            found
+                .resource
+                .strip_prefix(node.id.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+        };
+        let extending: Vec<&Node> = top.children.iter().filter(extends).collect();
+        let containers: Vec<&Node> = if extending.is_empty() {
+            top.children
+                .iter()
+                .filter(|node| node.container)
+                .take(ROOT_PEEK)
+                .collect()
+        } else {
+            extending.into_iter().take(ROOT_PEEK).collect()
+        };
         // A bound field's row (a note's body) is published under the record
         // holding it, named by the key the bound id spells: the record's own
         // key with the field's after it. The record is asked by the name the
@@ -398,12 +421,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             && let Some((_, field)) = key.rsplit_once('/')
         {
             let field = field.to_owned();
-            for container in top
-                .children
-                .iter()
-                .filter(|node| node.container)
-                .take(ROOT_PEEK)
-            {
+            for container in &containers {
                 for name in [&found.label, &field] {
                     let Ok(Some(at)) = self.named(provider, &container.id, name).await else {
                         continue;
@@ -432,37 +450,86 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 return Some(node.clone());
             }
         }
-        for container in top
-            .children
-            .iter()
-            .filter(|node| node.container)
-            .take(ROOT_PEEK)
-        {
-            // Asked by the name the search gave it: the resource's own
-            // label names it where its id does not (an id a publication
-            // minted is never a name the app knows).
-            for asked in asked.iter().chain([&found.label]) {
-                let Ok(Some(inside)) = self.named(provider, &container.id, asked).await else {
+        // The resource can hang below the row its id extends: a mailbox is
+        // under its account, not under the app's root.
+        self.under_rows(provider, found, asked.as_deref(), &containers, levels)
+            .await
+    }
+
+    /// The row `found` names below the rows `starts`: a provider that
+    /// publishes a tree by path publishes its root as a plain row, so the
+    /// tree is walked down, each row asked for the names the search gave the
+    /// resource, and a level listed only where its names answer nothing. It
+    /// stops when the row is found or the tree is deeper than an app draws
+    /// it, reading no more rows than a peek at each level.
+    async fn under_rows(
+        &self,
+        provider: &str,
+        found: &Found,
+        asked: Option<&str>,
+        starts: &[&Node],
+        levels: &mut Levels,
+    ) -> Option<Node> {
+        let key = bound_key(&found.resource);
+        let mut frontier: Vec<Node> = starts.iter().map(|node| (*node).clone()).collect();
+        let mut visited: Vec<String> = Vec::new();
+        let mut expanded = 0usize;
+        for _ in 0..DEEP_READS {
+            let mut deeper: Vec<Node> = Vec::new();
+            for container in std::mem::take(&mut frontier) {
+                if expanded >= ROOT_PEEK || visited.contains(&container.id) {
+                    continue;
+                }
+                visited.push(container.id.clone());
+                expanded = expanded.saturating_add(1);
+                // Asked by the name the search gave it: the resource's own
+                // label names it where its id does not (an id a publication
+                // minted is never a name the app knows).
+                for name in asked
+                    .into_iter()
+                    .chain(std::iter::once(found.label.as_str()))
+                {
+                    let Ok(Some(inside)) = self.named(provider, &container.id, name).await else {
+                        continue;
+                    };
+                    if let Some(node) = inside
+                        .children
+                        .iter()
+                        .find(|node| Self::same_resource(node, found))
+                    {
+                        return Some(node.clone());
+                    }
+                }
+                // A bound field's row is a child of the container itself,
+                // named by the key the bound id spells. Only a bound id: a
+                // plain resource is a row the level above named.
+                let Ok(level) = self.level(provider, &container.id, levels).await else {
                     continue;
                 };
-                if let Some(node) = inside
+                // A row the container's level lists is a row the resource
+                // can be: a mailbox stands under its account, a note under its
+                // notebook, and neither has to be asked for by name.
+                if let Some(node) = level
                     .children
                     .iter()
                     .find(|node| Self::same_resource(node, found))
                 {
                     return Some(node.clone());
                 }
+                if found.resource.starts_with(BOUND_PREFIX)
+                    && let Some(key) = &key
+                    && let Some(node) = level.children.iter().find(|node| node.key == *key)
+                {
+                    return Some(node.clone());
+                }
+                // Only a row the publisher says holds children has a level to
+                // read: one that says it holds none ends the branch there.
+                deeper.extend(level.children.into_iter().filter(|node| node.container));
             }
-            // A bound field's row is a child of the container itself, named
-            // by the key the bound id spells. Only a bound id: a plain
-            // resource is a row the level above named.
-            if found.resource.starts_with(BOUND_PREFIX)
-                && let Some(key) = &key
-                && let Ok(level) = self.level(provider, &container.id, levels).await
-                && let Some(node) = level.children.iter().find(|node| node.key == *key)
-            {
-                return Some(node.clone());
+            if deeper.is_empty() {
+                break;
             }
+            frontier = deeper;
         }
         None
     }

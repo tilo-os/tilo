@@ -46,6 +46,69 @@ pub struct Param {
     pub value: f32,
 }
 
+/// The sides of a part that stand on the display's own edge.
+///
+/// A surface flush with the screen has no neighbour on that side and no
+/// display behind it: it must not draw an edge, a rim or a hairline there,
+/// because a pixel of another colour would show between it and the screen's
+/// edge. A painter reads this to skip its outline on those sides only;
+/// every other side keeps whatever the part's material gives it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Sides(u8);
+
+impl Sides {
+    /// No side stands on the display's edge.
+    pub const NONE: Self = Self(0);
+    /// The top side is the display's own edge.
+    pub const TOP: Self = Self(1);
+    /// The bottom side is the display's own edge.
+    pub const BOTTOM: Self = Self(2);
+    /// The leading side is the display's own edge.
+    pub const LEADING: Self = Self(4);
+    /// The trailing side is the display's own edge.
+    pub const TRAILING: Self = Self(8);
+
+    /// These sides with `other`'s added.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+
+    /// Whether `side` stands on the display's edge.
+    #[must_use]
+    pub const fn has(self, side: Self) -> bool {
+        self.0 & side.0 == side.0
+    }
+
+    /// Whether any side stands on the display's edge.
+    #[must_use]
+    pub const fn any(self) -> bool {
+        self.0 != 0
+    }
+
+    /// The sides these bits name; unknown bits are `NONE`, so a newer peer's
+    /// bits read as sides this version does not know rather than as a
+    /// different set.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits & 0b1111)
+    }
+
+    /// These sides as bits, for the wire and for a document.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
+impl std::ops::BitOr for Sides {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        self.union(other)
+    }
+}
+
 /// The theme's values for one part, resolved for its role and state: the
 /// colours already carry the theme's contrast guarantees, so a painter that
 /// lays `ink` on `fill` is legible.
@@ -100,6 +163,9 @@ pub struct PartTokens {
     /// with the evaluated shader. A theme's document is validated when it is
     /// read, so a shader here has already been checked.
     pub shader: crate::ShaderSource,
+    /// The sides standing on the display's own edge, where a body draws no
+    /// edge of its own and a rim does not light ([`Sides`]).
+    pub flush: Sides,
 }
 
 impl PartTokens {
@@ -134,6 +200,7 @@ impl Default for PartTokens {
             backdrop: false,
             params: Arc::new([]),
             shader: crate::ShaderSource::default(),
+            flush: Sides::NONE,
         }
     }
 }

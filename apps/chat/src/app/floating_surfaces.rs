@@ -106,7 +106,6 @@ impl FloatingSurfaceProvider for ChatApp {
                 .clone_from(&self.workspace_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
-            surface.view.refresh_person_conversation();
             if matches!(
                 surface.placement.attachment(),
                 ui::floating_surface::Attachment::Desktop { .. }
@@ -185,7 +184,6 @@ impl FloatingSurfaceProvider for ChatApp {
                 .clone_from(&self.workspace_colors);
             surface.view.messages.clone_from(&self.messages);
             surface.view.channels.clone_from(&self.channels);
-            surface.view.refresh_person_conversation();
             let content = surface.placement.rect(surface.source, desktop);
             surface.view.rect = content;
             let view = &mut surface.view;

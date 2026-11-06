@@ -481,7 +481,6 @@ mod tests {
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id),
             channel_crypto::ChannelGate {
                 encryption_required: true,
-                head_epoch: None,
             },
         );
         assert_eq!(admission(), OpAdmission::EncryptionRequired);

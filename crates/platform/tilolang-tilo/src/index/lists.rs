@@ -135,7 +135,7 @@ fn str_at(bytes: &[u8], at: usize) -> Option<(&str, usize)> {
     let start = at.checked_add(4)?;
     let end = start.checked_add(len)?;
     // `PageBuf::decode` checks every entry before `get` reads one.
-    // optional-decode: `None` is `Corrupt` to `PageBuf::decode`
+    // ignored-failure: `None` is `Corrupt` to `PageBuf::decode`
     let text = std::str::from_utf8(bytes.get(start..end)?).ok()?;
     Some((text, end))
 }
@@ -435,21 +435,31 @@ impl<S: ListSource> Pages<S> {
             .flatten()
     }
 
-    /// How many of the list's first entries hold no value: the run of the empty key, which the
-    /// columns write for the items without one (a day, a time).
+    /// How many of the list's first entries hold no value: the run of the empty value, which
+    /// the columns write for the items without one (a day, a time) and which comes before every
+    /// value.
     pub fn absent_run(&self) -> usize {
+        let holds_none = super::columns::holds_no_value;
         let mut n = 0usize;
         for (index, page) in self.dir.pages.iter().enumerate() {
-            if !page.first.0.is_empty() {
-                // The run ends in this page, if it reaches it.
-                return n.saturating_add(
-                    self.with_page(index, |held| {
-                        held.keys.iter().take_while(|key| key.is_empty()).count()
-                    })
-                    .unwrap_or(0),
-                );
+            // The directory says which entry each page starts with: a page the next one starts
+            // with a value after holds no value at all, and the run ends in the one before that
+            // page, which is the only page read.
+            let continues = self
+                .dir
+                .pages
+                .get(index.saturating_add(1))
+                .is_some_and(|next| holds_none(&next.first.0));
+            if continues {
+                n = n.saturating_add(page.count as usize);
+                continue;
             }
-            n = n.saturating_add(page.count as usize);
+            let run = self
+                .with_page(index, |held| {
+                    held.keys.iter().take_while(|key| holds_none(key)).count()
+                })
+                .unwrap_or(0);
+            return n.saturating_add(run);
         }
         n
     }

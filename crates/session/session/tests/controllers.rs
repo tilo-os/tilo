@@ -21,6 +21,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::Write as _;
@@ -200,13 +202,9 @@ fn session_with(fake: &Fake) -> (Session, ScopedEnv) {
 /// Step the session until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..500 {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked for", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// Press or release `keycode` on the keyboard and let the session carry it
@@ -365,7 +363,7 @@ fn pump(
     clients: &mut [&mut TestClient],
     mut done: impl FnMut(&mut Session, &[&mut TestClient]) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    let deadline = tilo_test_env::hang_deadline();
     loop {
         for client in clients.iter_mut() {
             client.exchange();
@@ -379,7 +377,8 @@ fn pump(
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "condition not reached"
+            "gave up waiting for what the test asked after {:?}; it looks hung (set TILO_TEST_HANG_BOUND_SECS to wait longer)",
+            tilo_test_env::hang_bound()
         );
     }
 }

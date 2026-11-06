@@ -859,6 +859,7 @@ impl ImportMemWl for GlesRenderer {
                     .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
                 self.gl
                     .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                swizzle_blue_first(&self.gl, fourcc);
                 self.gl
                     .PixelStorei(ffi::UNPACK_ROW_LENGTH, stride / pixelsize as i32);
 
@@ -913,6 +914,22 @@ impl ImportMemWl for GlesRenderer {
     }
 }
 
+/// Reads DRM's `XRGB2101010` the way its bytes lie: blue in the low bits,
+/// where the `RGBA` upload format above finds red. Every other supported
+/// format already matches.
+fn swizzle_blue_first(gl: &ffi::Gles2, format: Fourcc) {
+    if format != Fourcc::Xrgb2101010 {
+        return;
+    }
+    // SAFETY: the caller binds the texture it uploaded before calling, and
+    // these parameters belong to whatever texture is bound.
+    unsafe {
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_R, ffi::BLUE as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_B, ffi::RED as i32);
+        gl.TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_SWIZZLE_A, ffi::ONE as i32);
+    }
+}
+
 const SUPPORTED_MEM_FORMATS_2: &[Fourcc] = &[
     Fourcc::Abgr8888,
     Fourcc::Xbgr8888,
@@ -926,6 +943,7 @@ const SUPPORTED_MEM_FORMATS_3: &[Fourcc] = &[
     Fourcc::Xrgb8888,
     Fourcc::Abgr2101010,
     Fourcc::Xbgr2101010,
+    Fourcc::Xrgb2101010,
     Fourcc::Abgr16161616f,
     Fourcc::Xbgr16161616f,
 ];
@@ -956,6 +974,7 @@ impl ImportMem for GlesRenderer {
         }
 
         let has_alpha = has_alpha(format);
+        let fourcc = format;
         let (mut internal, format, layout) =
             fourcc_to_gl_formats(format).expect("We check the format before");
         if self.gl_version.major == 2 {
@@ -978,6 +997,7 @@ impl ImportMem for GlesRenderer {
                     .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_S, ffi::CLAMP_TO_EDGE as i32);
                 self.gl
                     .TexParameteri(ffi::TEXTURE_2D, ffi::TEXTURE_WRAP_T, ffi::CLAMP_TO_EDGE as i32);
+                swizzle_blue_first(&self.gl, fourcc);
                 self.gl.TexImage2D(
                     ffi::TEXTURE_2D,
                     0,

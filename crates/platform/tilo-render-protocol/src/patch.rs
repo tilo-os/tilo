@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::WireError;
 
+pub mod diff;
 pub mod local;
 #[cfg(target_os = "linux")]
 pub mod unix;

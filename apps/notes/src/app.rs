@@ -2,9 +2,10 @@
 //! the storage layer, and the two panes (the [`PageSidebar`] page tree +
 //! [`MainPanel`]). Coordinates the data flow:
 //!
-//! - sidebar emits [`OutEvent`]s when the user clicks / renames /
-//!   creates / deletes,
-//! - the app applies them to the workspace,
+//! - the page tree's controls submit the notebook's own actions through its
+//!   dispatcher, like every other control in the window,
+//! - the app follows what those submissions did: the note a make opened, the
+//!   toast a deletion says, the note a row chose,
 //! - the workspace is then pushed back into the sidebar (so the new
 //!   tree shape reflects), the main panel (title update), and the
 //!   storage saver (debounced disk persistence).
@@ -40,7 +41,7 @@ use crate::effect::NotesEffect;
 use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagId, Workspace};
 use crate::shortcuts_overlay::ShortcutsOverlay;
-use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
+use crate::sidebar::{Gone, Made, PageSidebar};
 use crate::status_bar::{SaveStatus, StatusBarState, StatusModel};
 
 mod asset_reads;
@@ -394,8 +395,15 @@ pub struct NotesApp {
     /// content arrival count it started at.
     asset_reads: asset_reads::AssetReads,
     asset_read_looked: u64,
-    /// View/legacy callback intents that must wait for a mutable bound record admission.
-    pending_events: Vec<OutEvent>,
+    /// Notes chosen in the page tree the window does not show yet, opened
+    /// once the projection holds them.
+    pending_open: Vec<PageId>,
+    /// A note the window's own submission makes, opened once the notebook
+    /// keeps it.
+    made: Option<Made>,
+    /// A deletion the window's own submission makes, said once the notebook
+    /// keeps it: with what its undo toast says.
+    gone: Option<(Gone, String)>,
     /// Last mouse position in logical coords. Used to hit-test
     /// link marks on mouse click without dragging the click event
     /// through every nested widget.
@@ -406,8 +414,6 @@ pub struct NotesApp {
     /// A note just made from the keyboard or the header's New note: its
     /// title takes the keyboard once its body is bound, so typing names it.
     naming_page: Option<PageId>,
-    /// The next page created is named first ([`Self::naming_page`]).
-    name_next_created: bool,
     /// The tree has been laid out once, so the shell's columns are known.
     laid_out: bool,
     /// Forces a redraw when our own chrome changes without any child widget
@@ -575,7 +581,7 @@ impl NotesApp {
             "bound_page": page,
             "main_page": page,
             "editor_binding_page": self.bound_page,
-            "pending_page_events": self.pending_events.len() + self.opened.borrow().requests.len(),
+            "pending_page_events": self.pending_open.len() + self.opened.borrow().requests.len(),
             "adopted": self.projection_adopted,
             "canonical_sync_key": canonical_sync_key,
             "hash_algorithm": "blake3",
@@ -765,11 +771,12 @@ impl NotesApp {
             canonical_assets_waiting: None,
             asset_reads: asset_reads::AssetReads::new(),
             asset_read_looked: 0,
-            pending_events: Vec::new(),
+            pending_open: Vec::new(),
+            made: None,
+            gone: None,
             last_mouse: Point::ZERO,
             bound_page: None,
             naming_page: None,
-            name_next_created: false,
             laid_out: false,
             self_dirty: false,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
@@ -813,8 +820,8 @@ impl NotesApp {
 
     /// Recompute the status bar snapshot from the workspace and the record's
     /// save state.
-    /// Cheap — called from `handle_event`'s tail and after every
-    /// `apply_event`. The status bar diffs internally so a no-op
+    /// Cheap — called from `handle_event`'s tail and after every page-tree
+    /// submission. The status bar diffs internally so a no-op
     /// refresh doesn't dirty its render.
     /// The open note's word count, counted once per change of its blocks
     /// rather than once per status refresh: every pointer move and scroll
@@ -1238,7 +1245,7 @@ impl NotesApp {
                 if !named {
                     // As Ctrl+N does: the new note, its title taking the
                     // keyboard. Opened once the link is in the note.
-                    self.pending_events.push(OutEvent::Select(id));
+                    self.pending_open.push(id);
                     self.naming_page = Some(id);
                 }
             }
@@ -1710,6 +1717,7 @@ impl NotesApp {
         live: ui::framework::Live<crate::resource::Notebook>,
     ) {
         self.main.attach_notebook(dispatcher.clone(), actions);
+        self.sidebar.attach_notebook(dispatcher.clone());
         self.dispatcher = Some(dispatcher);
         self.live = Some(live);
     }
@@ -1874,67 +1882,105 @@ impl NotesApp {
         Ok(())
     }
 
-    fn apply_canonical_event(
-        &mut self,
-        edits: &mut ui::widget::Edits<'_>,
-        event: OutEvent,
-    ) -> Result<(), String> {
-        let gone = |app: &Self, id: PageId| app.workspace.get(id).is_none();
-        if let OutEvent::Select(id) = event
-            && !gone(self, id)
-        {
-            // Choosing a note the window shows writes nothing: it is taken
-            // against the workspace on screen, as `sync` takes it, without
-            // reading the notebook again. A note a collaborator removed since
-            // leaves the selection when the next projection arrives; one the
-            // window does not show yet (created before the next presentation)
-            // is looked up in the document below.
-            self.workspace.set_selected(Some(id));
-            self.sidebar.sync_from_workspace(&self.workspace);
-            if let Some(page) = self.workspace.get(id) {
-                self.main.set_title(Some(page.title.clone()));
-            }
-            self.record_current_route();
-            self.refresh_status();
-            return Ok(());
+    /// Show note `id` in the window: the page tree, the note's title and the
+    /// body that binds to it on the next sync. `false` when the notebook
+    /// does not show it (yet).
+    fn select_page(&mut self, id: PageId) -> bool {
+        if self.workspace.get(id).is_none() {
+            return false;
         }
-        self.reconcile_canonical(edits.doc())?;
-        match event {
-            OutEvent::Select(id) => {
-                if gone(self, id) {
-                    return Err("page no longer exists".into());
-                }
-                self.workspace.set_selected(Some(id));
+        self.workspace.set_selected(Some(id));
+        self.sidebar.sync_from_workspace(&self.workspace);
+        if let Some(page) = self.workspace.get(id) {
+            self.main.set_title(Some(page.title.clone()));
+        }
+        self.record_current_route();
+        self.refresh_status();
+        true
+    }
+
+    /// Take the view intents the page tree's controls had — the notes they
+    /// chose, and a menu's Rename field — and the submissions the window
+    /// follows up on. Runs before the projection, so a deletion still knows
+    /// the note it removes.
+    fn follow_page_tree(&mut self) {
+        for page in self.sidebar.take_open() {
+            if !self.select_page(page) {
+                self.pending_open.push(page);
             }
-            OutEvent::CreateChild { parent } => {
-                if parent.is_some_and(|id| gone(self, id)) {
-                    return Err("parent page no longer exists".into());
-                }
-                let id = PageId::new_v4();
-                self.dispatch(
-                    edits,
-                    &actions::create_page_action(id, parent, crate::notebook::UNTITLED),
-                )?;
-                self.reconcile_canonical(edits.doc())?;
-                self.workspace.set_selected(Some(id));
-                if std::mem::take(&mut self.name_next_created) {
-                    self.naming_page = Some(id);
+        }
+        if let Some(made) = self.sidebar.take_made() {
+            self.made = Some(made);
+        }
+        if let Some(gone) = self.sidebar.take_gone() {
+            let notice = self.deletion_notice(gone.page());
+            self.gone = Some((gone, notice));
+        }
+        self.sidebar.open_menu_rename();
+        self.sidebar.open_requested_menu();
+    }
+
+    /// Open the notes chosen in the tree that the projection shows now.
+    fn open_pending(&mut self) {
+        let pending = std::mem::take(&mut self.pending_open);
+        let mut moved = false;
+        for page in pending {
+            if self.select_page(page) {
+                moved = true;
+            }
+        }
+        if moved {
+            // A presented window takes no projection for a move, so the
+            // page tree marks the note it now shows.
+            self.sidebar.sync_from_workspace(&self.workspace);
+        }
+    }
+
+    /// Follow what the window's own submissions landed: open the note it
+    /// made, and say what it deleted. Only the answer to the submission is
+    /// taken — a newer landing of anything else leaves these waiting.
+    fn follow_landed(&mut self) {
+        let Some(landed) = self
+            .dispatcher
+            .as_ref()
+            .map(ui::framework::Dispatcher::landed)
+        else {
+            return;
+        };
+        let revision = landed.revision();
+        let answer = landed.get();
+        let answered = |action: &'static str| {
+            answer
+                .as_ref()
+                .is_some_and(|answer| answer.action == action)
+        };
+        if let Some(made) = self.made
+            && revision != made.after()
+        {
+            self.made = None;
+            if answered(made.action()) {
+                let page = answer.as_ref().and_then(|answer| {
+                    answer
+                        .minted()
+                        .into_iter()
+                        .find_map(|id| crate::notebook::page_of(&id))
+                });
+                if let Some(page) = page.filter(|page| self.workspace.get(*page).is_some()) {
+                    if made.naming {
+                        self.naming_page = Some(page);
+                    }
+                    self.select_page(page);
+                    if self.shell.geometry().sidebar == SidebarPlacement::Drawer {
+                        self.set_drawer_open(false);
+                    }
                 }
             }
-            OutEvent::Rename { id, new_title } => {
-                if gone(self, id) {
-                    return Err("page no longer exists".into());
-                }
-                self.dispatch(edits, &actions::rename_page_action(id, &new_title))?;
-            }
-            OutEvent::Delete(id) => {
-                if gone(self, id) {
-                    return Err("page no longer exists".into());
-                }
-                let notice = self.deletion_notice(id);
-                self.dispatch(edits, &actions::delete_page_action(id))?;
-                // A note goes with everything inside it, so the deletion
-                // says so and can be taken back at once, in the window's bar.
+        }
+        if let Some((gone, notice)) = self.gone.clone()
+            && revision != gone.after()
+        {
+            self.gone = None;
+            if answered(gone.action()) {
                 self.shell.toast_with_action(
                     notice,
                     ui::widget::toast::ToastKind::Info,
@@ -1943,62 +1989,7 @@ impl NotesApp {
                 );
                 self.delete_undo = DeleteUndo::Offered;
             }
-            OutEvent::Reparent {
-                id,
-                new_parent,
-                before,
-            } => {
-                if gone(self, id) || new_parent.is_some_and(|id| gone(self, id)) {
-                    return Err("page no longer exists".into());
-                }
-                self.dispatch(edits, &actions::move_page_action(id, new_parent, before))?;
-            }
-            OutEvent::Duplicate(source) => {
-                let parent = self
-                    .workspace
-                    .get(source)
-                    .ok_or("page no longer exists")?
-                    .parent;
-                let before = self
-                    .workspace
-                    .pages()
-                    .iter()
-                    .map(|page| page.id)
-                    .collect::<std::collections::HashSet<_>>();
-                self.dispatch(edits, &actions::duplicate_action(source))?;
-                self.reconcile_canonical(edits.doc())?;
-                // The copy is the one new note beside the original.
-                let copy = self
-                    .workspace
-                    .pages()
-                    .iter()
-                    .find(|page| page.parent == parent && !before.contains(&page.id))
-                    .map(|page| page.id);
-                if let Some(copy) = copy {
-                    self.workspace.set_selected(Some(copy));
-                }
-            }
         }
-        self.reconcile_canonical(edits.doc())?;
-        self.record_current_route();
-        self.refresh_status();
-        Ok(())
-    }
-
-    /// Apply one sidebar [`OutEvent`]: the notebook's action for it lands in
-    /// the shared document on the same replayable path the palette uses.
-    fn apply_and_dispatch(&mut self, edits: &mut ui::widget::Edits<'_>, ev: OutEvent) {
-        if let Err(error) = self.apply_canonical_event(edits, ev) {
-            tracing::warn!(%error, "notes: rejected page action; reconciling");
-            let _ = self.reconcile_canonical(edits.doc());
-            self.self_dirty = true;
-        }
-    }
-
-    /// Take one [`OutEvent`] from the sidebar: applied with the document on
-    /// the next sync.
-    fn apply_event(&mut self, ev: OutEvent) {
-        self.pending_events.push(ev);
     }
 
     fn record_current_route(&mut self) {
@@ -2092,9 +2083,9 @@ impl NotesApp {
                 .get(id)
                 .is_some_and(|page| page.title != new_title.trim())
         {
-            self.pending_events.push(OutEvent::Rename { id, new_title });
+            self.sidebar.rename(id, new_title);
         }
-        self.pending_events.push(OutEvent::Select(id));
+        self.pending_open.push(id);
     }
 
     /// Complete a first-note request from the empty-state button. This runs
@@ -2105,15 +2096,25 @@ impl NotesApp {
         if !self.main.take_empty_action() {
             return false;
         }
-        self.apply_and_dispatch(edits, OutEvent::CreateChild { parent: None });
-        self.sidebar.sync_from_workspace(&self.workspace);
+        let id = PageId::new_v4();
+        let created = self.dispatch(
+            edits,
+            &actions::create_page_action(id, None, crate::notebook::UNTITLED),
+        );
+        if let Err(error) = created {
+            tracing::warn!(%error, "notes: creating the first note was refused");
+        }
+        let _ = self.reconcile_canonical(edits.doc());
+        self.pending_open.push(id);
+        self.self_dirty = true;
         true
     }
 
     /// Commit either a keyboard/pointer title edit or an accessibility value
-    /// change through the one page-tree action route. Kept callable from sync
-    /// because semantic actions target `MainPanel` directly and naturally
-    /// request a subsequent sync rather than travelling through `handle_event`.
+    /// change through the notebook's rename, the one page-title action route.
+    /// Kept callable from sync because semantic actions target `MainPanel`
+    /// directly and naturally request a subsequent sync rather than
+    /// travelling through `handle_event`.
     fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(new_title) = self.main.take_title_rename() else {
             return;
@@ -2126,16 +2127,18 @@ impl NotesApp {
             .workspace
             .get(id)
             .is_some_and(|meta| meta.title != trimmed);
-        if !trimmed.is_empty() && changed {
-            self.apply_and_dispatch(
-                edits,
-                OutEvent::Rename {
-                    id,
-                    new_title: trimmed.to_string(),
-                },
-            );
-            self.sidebar.sync_from_workspace(&self.workspace);
+        if trimmed.is_empty() || !changed {
+            return;
         }
+        // The title band is the note's own: it applies the rename as its
+        // gesture, so a refusal returns the field to the note's title rather
+        // than leaving what was typed.
+        let renamed = self.dispatch(edits, &actions::rename_page_action(id, trimmed));
+        if let Err(error) = renamed {
+            tracing::warn!(%error, "notes: the title rename was refused; reconciling");
+        }
+        let _ = self.reconcile_canonical(edits.doc());
+        self.self_dirty = true;
     }
 
     /// Route a note-header tag activation through the durable resource
@@ -2164,37 +2167,23 @@ impl NotesApp {
         }
     }
 
+    /// Take what the page tree's input asked for, and let the field it opened
+    /// keep the keyboard: the person types into the rename next, and a focus
+    /// trap closing around that field must not take the keyboard back.
+    fn follow_page_tree_input(&mut self, ctx: &mut ui::widget::EventCtx<'_>, node: NodeId) {
+        self.follow_page_tree();
+        if self.sidebar.is_renaming() {
+            *ctx.focus_target = Some(node);
+        }
+        self.claim_sidebar_focus(*ctx.focus_target);
+    }
+
     /// A press the page tree claimed focus for gives it keyboard focus at
     /// once, so a key that follows in the same frame reaches its commands.
     fn claim_sidebar_focus(&mut self, focus_target: Option<NodeId>) {
         if focus_target.is_some() && focus_target == self.sidebar_node {
             self.sidebar.set_focus(true);
         }
-    }
-
-    /// Drain the sidebar's outbound event queue and apply each, dispatching the
-    /// matching page-tree action against the shared document. Called after every
-    /// `handle_event` call.
-    fn drain_sidebar_events(&mut self, edits: &mut ui::widget::Edits<'_>) {
-        if let Some(transfer) = self.sidebar.take_transfer() {
-            self.request(&match transfer {
-                SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdownFile,
-                SidebarTransfer::ImportNotion => NotesEffect::ImportNotionExport,
-                SidebarTransfer::CopyLink(page) => NotesEffect::CopyLink { page },
-                SidebarTransfer::ExportMarkdown(page) => NotesEffect::ExportMarkdown { page },
-                SidebarTransfer::InsertImage(page) => NotesEffect::InsertImage { page },
-            });
-        }
-        let events = self.sidebar.take_events();
-        if events.is_empty() {
-            return;
-        }
-        for ev in events {
-            self.apply_and_dispatch(edits, ev);
-        }
-        // After mutation, push the new workspace snapshot back into
-        // the sidebar so the tree shape reflects.
-        self.sidebar.sync_from_workspace(&self.workspace);
     }
 
     /// Test accessor: snapshot of the current page list. Kept out of
@@ -2250,20 +2239,32 @@ impl NotesApp {
         self.refresh_status();
     }
 
-    /// Test hook: apply one [`OutEvent`] through the same code path
-    /// the sidebar would drive it. Lets integration tests simulate
-    /// "user clicked Create Child in the sidebar" without forging
-    /// fake winit events.
+    /// Test hook: make a note through the page tree's published action, as
+    /// its "+" or New note control does (`parent`: inside that note).
     #[doc(hidden)]
-    pub fn apply_event_for_test(&mut self, ev: OutEvent) {
-        self.apply_event(ev);
+    pub fn new_note_for_test(&mut self, parent: Option<PageId>) {
+        self.sidebar.new_note(parent, false);
     }
 
-    /// Test hook: apply one [`OutEvent`] and dispatch its page-tree action against
-    /// `doc`, as the live sidebar-event path does.
+    /// Test hook: rename a note through its published action, as the inline
+    /// field does.
     #[doc(hidden)]
-    pub fn dispatch_event_for_test(&mut self, edits: &mut ui::widget::Edits<'_>, ev: OutEvent) {
-        self.apply_and_dispatch(edits, ev);
+    pub fn rename_page_for_test(&mut self, id: PageId, title: &str) {
+        self.sidebar.rename(id, title.to_owned());
+    }
+
+    /// Test hook: duplicate a note through its published action, as the
+    /// page menu's Duplicate does.
+    #[doc(hidden)]
+    pub fn duplicate_page_for_test(&mut self, id: PageId) {
+        self.sidebar.duplicate(id);
+    }
+
+    /// Test hook: delete a note through its published action, as Delete
+    /// does.
+    #[doc(hidden)]
+    pub fn delete_page_for_test(&mut self, id: PageId) {
+        self.sidebar.delete(id);
     }
 
     /// Test hook: whether the page tree is a drawer over the note rather
@@ -2291,6 +2292,18 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_row_center_for_test(&self, idx: usize) -> Option<Point> {
         self.sidebar.row_center_for_test(idx)
+    }
+
+    /// Test hook: a point over sidebar row `idx`, `fraction` of the way down it.
+    #[doc(hidden)]
+    pub fn sidebar_row_point_for_test(&self, idx: usize, fraction: f64) -> Option<Point> {
+        self.sidebar.row_point_for_test(idx, fraction)
+    }
+
+    /// Test hook: centre of the affordance `action` on sidebar row `idx`.
+    #[doc(hidden)]
+    pub fn sidebar_row_action_center_for_test(&self, idx: usize, action: usize) -> Option<Point> {
+        self.sidebar.row_action_center_for_test(idx, action)
     }
 
     /// Test hook: x of the disclosure triangle for sidebar row `idx`.
@@ -2322,6 +2335,12 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_rename_is_plain_for_test(&self) -> Option<bool> {
         self.sidebar.rename_is_plain_for_test()
+    }
+
+    /// Test hook: the text the inline page rename holds.
+    #[doc(hidden)]
+    pub fn sidebar_rename_draft_for_test(&self) -> Option<String> {
+        self.sidebar.rename_draft_for_test()
     }
 
     /// Test hook: centre of the sidebar header's "New note" button, for
@@ -2555,9 +2574,14 @@ impl ui::application_view::ApplicationViewState for NotesApp {
         // are indexed again for search and links.
         self.adopt(workspace);
         self.sidebar = sidebar;
+        if let Some(dispatcher) = &self.dispatcher {
+            self.sidebar.attach_notebook(dispatcher.clone());
+        }
         self.active_tag_filter = active_tag;
         self.bound_page = self.workspace.selected();
-        self.pending_events.clear();
+        self.pending_open.clear();
+        self.made = None;
+        self.gone = None;
         self.pending_block_reveal = None;
         self.pending_block_range = None;
         self.pending_responsive_view = Some((local.drawer_open, false));
@@ -2695,10 +2719,7 @@ impl Widget for NotesApp {
     /// for since the last frame, applied through the notebook's actions.
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
         self.drain_title_rename(edits);
-        for event in std::mem::take(&mut self.pending_events) {
-            self.apply_and_dispatch(edits, event);
-        }
-        self.drain_sidebar_events(edits);
+        self.follow_page_tree();
         self.drain_pasted_images(edits);
         self.drain_slash_request(edits);
         self.drain_empty_note_request(edits);
@@ -2726,6 +2747,9 @@ impl Widget for NotesApp {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // What the page tree asked for, taken before the projection so a
+        // deletion still knows the note it removed and its undo says so.
+        self.follow_page_tree();
         self.follow_notebook();
         if self.link_copy.failed() {
             self.notify(
@@ -2756,25 +2780,7 @@ impl Widget for NotesApp {
         }
         // Moving to another note writes nothing, so it is taken up here, in
         // the frame that asked; edits wait for the settle pass.
-        let mut pending = std::mem::take(&mut self.pending_events);
-        let mut moved = false;
-        pending.retain(|event| match event {
-            OutEvent::Select(id) => {
-                if self.workspace.get(*id).is_some() {
-                    self.workspace.set_selected(Some(*id));
-                    self.record_current_route();
-                    moved = true;
-                }
-                false
-            }
-            _ => true,
-        });
-        self.pending_events = pending;
-        if moved {
-            // A presented window takes no projection for a move, so the
-            // page tree marks the note it now shows here.
-            self.sidebar.sync_from_workspace(&self.workspace);
-        }
+        self.open_pending();
         // Project the workspace only when its inputs moved: committed
         // heads, an open transaction (a settle pass may have written),
         // the selected page or the tag filter. Re-projecting every frame
@@ -2811,6 +2817,9 @@ impl Widget for NotesApp {
             self.canonical_synced = Some(key);
             self.self_dirty = true;
         }
+        // What the window's own submissions made or removed, now that the
+        // projection shows it.
+        self.follow_landed();
         self.record_current_route();
         self.ensure_editor_bound(state);
         self.drain_tag_open();
@@ -2839,16 +2848,26 @@ impl Widget for NotesApp {
     }
 
     /// The main panel says whether its change is described (a header that
-    /// rebuilt its widgets); the shell's columns changing is a rebuild.
+    /// rebuilt its widgets); the shell's columns changing is a rebuild. The
+    /// page tree hangs under a column slot the shell made, not under the
+    /// shell's own widgets, so its rows are mounted where they stand from
+    /// here.
     fn take_structure_change(&mut self) -> ui::widget::StructureChange {
-        let main = self.main.take_structure_change();
-        let shell = self.shell.take_structure_change();
-        let outline = if self.outline.take_structure_dirty() {
-            ui::widget::StructureChange::Rebuild
-        } else {
-            ui::widget::StructureChange::None
-        };
-        main.join(shell).join(outline)
+        // The shell places the page tree and the note panel under the slots
+        // of the columns it shows: a column it puts away (a closed drawer) is
+        // no part of the tree, so nothing can carry a change of its widgets
+        // out, and its own build lays it out whole when it comes back.
+        let mut change = self
+            .main
+            .take_structure_change()
+            .join(self.shell.take_structure_change());
+        if self.sidebar_node.is_some() {
+            change = change.join(self.sidebar.take_structure_change());
+            if self.outline_node.is_some() && self.outline.take_structure_dirty() {
+                change = change.join(ui::widget::StructureChange::Rebuild);
+            }
+        }
+        change
     }
 
     fn build_layout(
@@ -3104,7 +3123,9 @@ impl Widget for NotesApp {
             && !self.shortcuts.is_visible()
             && !self.sidebar.menu_is_open()
             && !self.sidebar.is_renaming()
-            && self.pending_events.is_empty()
+            && self.pending_open.is_empty()
+            && self.made.is_none()
+            && self.gone.is_none()
             && !(self.shell.geometry().sidebar == SidebarPlacement::Drawer
                 && self.shell.is_sidebar_open())
     }
@@ -3409,16 +3430,10 @@ impl NotesApp {
         } else {
             None
         };
-        // The new note opens with its title taking the keyboard: Ctrl+N,
-        // the name, Enter, the note.
-        self.name_next_created = true;
-        self.apply_and_dispatch(&mut ctx.state, OutEvent::CreateChild { parent });
-        self.name_next_created = false;
-        self.sidebar.sync_from_workspace(&self.workspace);
-        self.ensure_editor_bound(ctx.state.doc());
-        if self.main.title_focused() {
-            *ctx.focus_target = self.main.title_node();
-        }
+        // The new note opens with its title taking the keyboard once the
+        // notebook keeps it: Ctrl+N, the name, Enter, the note.
+        self.sidebar.new_note(parent, true);
+        self.self_dirty = true;
         *ctx.handled = true;
         true
     }
@@ -3431,9 +3446,7 @@ impl NotesApp {
         if self.header.new_note.take() {
             // As Ctrl+N does: the new note opens with its title taking the
             // keyboard, so the name comes first.
-            self.name_next_created = true;
-            self.pending_events
-                .push(OutEvent::CreateChild { parent: None });
+            self.sidebar.new_note(None, true);
             self.self_dirty = true;
         }
         if self.header.note_menu.take() {
@@ -3486,8 +3499,7 @@ impl NotesApp {
         let selected = self.workspace.selected();
         self.sidebar
             .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        self.claim_sidebar_focus(*ctx.focus_target);
-        self.drain_sidebar_events(&mut ctx.state);
+        self.follow_page_tree_input(ctx, node);
         if self.shell.geometry().sidebar == SidebarPlacement::Drawer
             && self.workspace.selected() != selected
             && !self.sidebar.menu_is_open()
@@ -3704,16 +3716,15 @@ impl NotesApp {
             index
         };
         match index {
-            0 => self.apply_and_dispatch(state, OutEvent::CreateChild { parent: Some(page) }),
+            0 => self.sidebar.new_note(Some(page), false),
             1 => self.main.begin_title_edit(),
-            2 => self.apply_and_dispatch(state, OutEvent::Duplicate(page)),
-            3 => self.request(&NotesEffect::CopyLink { page }),
-            4 => self.request(&NotesEffect::ExportMarkdown { page }),
-            5 => self.request(&NotesEffect::InsertImage { page }),
-            7 => self.apply_and_dispatch(state, OutEvent::Delete(page)),
+            2 => self.sidebar.duplicate(page),
+            3 => self.sidebar.request(&NotesEffect::CopyLink { page }),
+            4 => self.sidebar.request(&NotesEffect::ExportMarkdown { page }),
+            5 => self.sidebar.request(&NotesEffect::InsertImage { page }),
+            7 => self.sidebar.delete(page),
             _ => {}
         }
-        self.sidebar.sync_from_workspace(&self.workspace);
         self.refresh_status();
     }
 
@@ -3733,14 +3744,11 @@ impl NotesApp {
         // modal and gets its input from `handle_shell`.
         if self.shell.geometry().sidebar != SidebarPlacement::Drawer
             && (!editor_menu_open || !is_keyboard)
+            && let Some(n) = self.sidebar_node
         {
-            if let Some(n) = self.sidebar_node {
-                self.sidebar
-                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-                self.claim_sidebar_focus(*ctx.focus_target);
-            }
-            // Drain any commands the sidebar produced.
-            self.drain_sidebar_events(&mut ctx.edits());
+            self.sidebar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            self.follow_page_tree_input(ctx, n);
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename
@@ -4052,17 +4060,6 @@ mod tests {
         app
     }
 
-    /// The published notebook resource `id`, as the framework root resolves it
-    /// from the notebook's state.
-    fn published(doc: &AutoCommit, id: &str) -> tilo_actions::ResourceSpec {
-        use ui::tilo_resource::Resource as _;
-        let state = crate::resource::Notebook::read(doc).unwrap();
-        if id == "notes.notebook" {
-            return ui::tilo_resource::publish::<crate::resource::Notebook>(id, "Notes", &state);
-        }
-        crate::resource::Notebook::child(&state, id).unwrap()
-    }
-
     #[test]
     fn images_beside_a_markdown_file_become_notebook_assets() {
         eprintln!("phase images_beside_a_launched_file_join_the_notebook");
@@ -4147,123 +4144,6 @@ mod tests {
             app.frame(&mut doc, &automerge::ROOT);
             assert_eq!(app.workspace.pages().len(), 1);
             assert!(app.workspace.selected().is_some());
-        }
-    }
-
-    #[test]
-    fn page_events_create_delete_rename_and_dispatch_canonical_actions() {
-        eprintln!("phase apply_event_create_child_appends_and_selects");
-        {
-            let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: Some(root) },
-            );
-            let children = app.workspace.children_of(Some(root));
-            assert_eq!(children.len(), 1);
-            assert_eq!(app.workspace.selected(), Some(children[0].id));
-        }
-
-        eprintln!("phase delete_removes_the_page_and_resets_selection");
-        {
-            let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: Some(root) },
-            );
-            let child = app.workspace.selected().unwrap();
-            assert!(crate::read::page_body(&state.doc, child).is_some());
-            app.dispatch_event_for_test(&mut Edits::lend(&mut state.doc), OutEvent::Delete(child));
-            app.frame(&mut state.doc, &state.root);
-            assert!(crate::read::page_body(&state.doc, child).is_none());
-            // Selection falls back to a remaining root page.
-            assert_eq!(app.workspace.selected(), Some(root));
-        }
-
-        eprintln!("phase rename_updates_main_panel_title");
-        {
-            let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::Rename {
-                    id: root,
-                    new_title: "Index".into(),
-                },
-            );
-            assert_eq!(app.main.title(), Some("Index"));
-        }
-
-        eprintln!("phase sidebar_delete_and_palette_encode_identically");
-        {
-            let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
-
-            // Palette side: the welcome note's item offers delete with the
-            // note bound.
-            let page = published(&state.doc, &actions::page_resource_id(welcome));
-            assert_eq!(page.label, "Welcome");
-            let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
-            let from_palette = delete_spec
-                .build_json(&serde_json::Map::new())
-                .expect("the note is bound");
-
-            // Affordance side: the sidebar's Delete event through the app path,
-            // as the change it recorded names it.
-            let before = state.doc.get_heads();
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::Delete(welcome),
-            );
-            // Undo takes a deleted note back, so it lands at once.
-            assert!(
-                !state.doc.get_changes(&before).is_empty(),
-                "deleting a note asks nothing"
-            );
-            let change = state.doc.get_changes(&before).into_iter().last().unwrap();
-            let context =
-                tilo_actions::ActionContext::from_change_message(change.message().unwrap())
-                    .unwrap();
-            let from_button = crate::actions::encode(&actions::delete_page_action(welcome));
-            assert!(
-                matches!(&context.what, Some(tilo_actions::Did::Verb(verb)) if verb.action.action == "delete"),
-                "{context:?}"
-            );
-
-            assert_eq!(from_palette.type_id, from_button.type_id);
-            let operation = |encoded: &tilo_actions::EncodedAction| {
-                serde_json::from_slice::<actions::Action>(&encoded.payload)
-                    .unwrap()
-                    .operation
-            };
-            assert_eq!(
-                serde_json::to_value(operation(&from_palette)).unwrap(),
-                serde_json::to_value(operation(&from_button)).unwrap(),
-                "the sidebar affordance and the palette build the same action"
-            );
-        }
-
-        eprintln!("phase creating_a_page_dispatches_an_upsert_into_the_doc");
-        {
-            let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
-            let before = crate::read::list_pages(&state.doc).len();
-
-            app.dispatch_event_for_test(
-                &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: None },
-            );
-
-            assert_eq!(
-                crate::read::list_pages(&state.doc).len(),
-                before + 1,
-                "the create wrote a new page into the shared document"
-            );
-            let new_page = app
-                .workspace
-                .selected()
-                .expect("new page becomes the active page");
-            assert!(
-                !crate::read::page_blocks(&state.doc, new_page).is_empty(),
-                "the new page body also crossed the typed action executor"
-            );
         }
     }
 
@@ -4468,12 +4348,12 @@ mod tests {
     fn canonical_open_refuses_missing_pages_and_blocks_before_projection_adoption() {
         let (mut app, mut state, _tmp, page) = app_seeded_into_doc();
         let current = shown(&state.doc);
-        let pending = app.pending_events.len();
+        let pending = app.pending_open.len();
         assert_eq!(
             app.open_block(&current, page, Some("missing-block".into())),
             Err("the block no longer exists".into())
         );
-        assert_eq!(app.pending_events.len(), pending);
+        assert_eq!(app.pending_open.len(), pending);
         let delete = actions::delete_page_action(page);
         tilo_actions::apply_local(&mut state.doc, &delete, actions::encode(&delete)).unwrap();
         let current = shown(&state.doc);
@@ -4487,7 +4367,7 @@ mod tests {
             Err("the note no longer exists".into())
         );
         assert_eq!(
-            app.pending_events.len(),
+            app.pending_open.len(),
             pending,
             "refused Open cannot queue a selection"
         );
@@ -4557,13 +4437,12 @@ mod tests {
             // attach a real native link mark to an existing source block. This is
             // intentionally not a Markdown-parser test: incoming links must be
             // derived from the same canonical mark data collaborators receive.
-            app.dispatch_event_for_test(
+            let target = PageId::new_v4();
+            app.apply_action(
                 &mut Edits::lend(&mut state.doc),
-                OutEvent::CreateChild { parent: None },
+                &actions::create_page_action(target, None, crate::notebook::UNTITLED),
             );
-            let target = app
-                .selected_for_test()
-                .expect("new page becomes the backlink destination");
+            app.frame(&mut state.doc, &state.root);
             assert_ne!(source, target);
             let source_block = app.search_blocks[&source][0].id.clone();
             let action = crate::actions::set_mark_action(

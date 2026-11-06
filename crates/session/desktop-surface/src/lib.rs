@@ -19,6 +19,7 @@
 pub mod activity;
 pub mod crashed_app;
 pub mod drill_in;
+pub mod floating_layer;
 pub mod history_log;
 pub mod i18n;
 pub mod navigation;
@@ -29,12 +30,14 @@ mod shared_tree;
 pub mod surface;
 mod wake;
 pub mod warmth;
+pub mod window;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
 pub use surface::peer_view::{
     NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart, PeerSurface,
     PeerSurfaces, PeerTiles, PeerView, PictureWake, Standing, SurfaceId,
 };
+pub use surface::slide::Slides;
 pub use surface::{
     ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
     DesktopSurface, HistorySource, HostAction, HostActionSource, LivenessChoice,

@@ -380,6 +380,22 @@ impl PropType for Person {
     }
 }
 
+/// A case of one of the app's own enums, by its name, as a binding says it: which cases it
+/// holds is the field the binding names, so a description says only that it takes one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EnumCase;
+
+impl PropType for EnumCase {
+    fn ty() -> Type {
+        Type::Enum
+    }
+
+    /// A case is read from the field it binds, never from a prop: nothing places one as a value.
+    fn from_value(value: &Value) -> Result<Self, String> {
+        Err(wrong(&Self::ty(), value))
+    }
+}
+
 /// A moment, as a component shows one: the instant, in seconds since the Unix epoch. The
 /// component decides how it reads (a time of day, a day's divider).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]

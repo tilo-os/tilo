@@ -47,6 +47,14 @@ pub struct Journal {
     pub args: Vec<Value>,
     pub invoker: Principal,
     pub chain: Vec<ModuleHash>,
+    /// The resource the run was invoked from, when it was made from one: what the resources its
+    /// actions create were made from, kept across a suspension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<crate::value::ResourceRef>,
+    /// Who proposed the run, when the person running it accepted a suggestion: recorded in the
+    /// changes its actions make, so history says who suggested it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_by: Option<String>,
     pub entries: Vec<JournalEntry>,
     pub pending: Option<Suggestion>,
     pub finished: bool,

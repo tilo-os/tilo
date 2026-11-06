@@ -279,6 +279,14 @@ pub fn row_bleed(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s2)
 }
 
+/// The gutter a disclosure chevron hangs in, left of the content it opens
+/// (`icon_sm` and the gap to what follows it): the one step a list indents a
+/// nested row by, so a row's chevron stands in the gutter of its own depth
+/// and the rows' content keeps one column.
+pub fn disclosure_gutter(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.spacing.rhythm.related)
+}
+
 /// The content edge of a window's overview or content column, from the
 /// column's leading edge: where the shell starts the column's header title,
 /// and so where the column's rows, headings and fields start their text.

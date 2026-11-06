@@ -281,7 +281,7 @@ const CHAT: (&str, &str) = (
 /// Every argument travels in the shape the action's published parameter declares, which the
 /// broker binds before it delivers, and arrives as the value the program gave: a resource of a
 /// union (a channel or a thread) by a reference naming which it is, an optional resource, rich
-/// text, a plain enum's case.
+/// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
     let door = Rc::new(Apps::new(&[&[CHAT], &[TODO]]));
@@ -317,20 +317,5 @@ fn each_argument_is_sent_as_its_published_parameter_takes_it() {
             "print(ch.messages.len(), ch.messages.filter(m -> m.reply_to == .some(first)).len())"
         ),
         "2 1"
-    );
-    let answer = task.run(
-        "let t = tasks.new_task(tasks.tasks, \"Check the launch video\")\ntasks.prioritize(t, .high)",
-        true,
-    );
-    assert_eq!(answer["state"], "done", "{answer:#}");
-    let prioritize = task.door.invoked.borrow().last().cloned().unwrap();
-    assert_eq!(
-        prioritize["arguments"]["priority"],
-        json!("high"),
-        "{prioritize:#}"
-    );
-    assert_eq!(
-        task.said("print(tasks.tasks.items.filter(t -> t.priority == .high).len())"),
-        "1"
     );
 }

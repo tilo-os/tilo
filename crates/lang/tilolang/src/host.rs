@@ -3,13 +3,15 @@
 //! `Invocation` records what happened to an action a block applied: the host creates and
 //! changes these resources, and code only reads them. Every module sees the package as `host`.
 
-use crate::meta::{FieldMeta, PackageMeta, TypeMeta};
+use crate::meta::{EnumMeta, FieldMeta, PackageMeta, TypeMeta, VariantMeta};
 use crate::types::MergeKind;
 
 /// The app id of the host's package.
 pub const HOST_APP: &str = "tilo.host";
 /// The id of the `Invocation` type.
 pub const INVOCATION_TYPE: &str = "host-invocation";
+/// The id of `LinkHow`, the enum a `host.Link`'s `how` holds.
+pub const LINK_HOW_TYPE: &str = "host-link-how";
 
 /// The ids of the built-in enum `Result<T, E>`: its type, its variants and their payload
 /// fields. `try act(args)` builds one from an invocation's outcome.
@@ -29,6 +31,40 @@ pub struct ValueType {
     /// Its fields: name, type as metadata writes it, doc.
     pub fields: &'static [(&'static str, &'static str, &'static str)],
 }
+
+/// A closed set of the host's surface: a type whose values code names by case, so that a case
+/// the host never answers is a compile error.
+pub struct HostEnum {
+    pub name: &'static str,
+    pub id: &'static str,
+    pub doc: &'static str,
+    /// Its cases: name, which is also its id, what a control shows for it, and doc.
+    pub variants: &'static [(&'static str, &'static str, &'static str)],
+}
+
+/// The enums of the host.
+pub const HOST_ENUMS: &[HostEnum] = &[HostEnum {
+    name: "LinkHow",
+    id: LINK_HOW_TYPE,
+    doc: "How a resource is linked to another, as `linked(r)` answers: made from it, naming it in a field, or mentioning it in its rich text.",
+    variants: &[
+        (
+            "created_from",
+            "Made from it",
+            "An action made it from the resource it links to.",
+        ),
+        (
+            "field",
+            "Named in a field",
+            "A reference field of it points at the resource it links to.",
+        ),
+        (
+            "mention",
+            "Mentioned in its text",
+            "Its rich text names the resource it links to.",
+        ),
+    ],
+}];
 
 /// The value types of the host, each held as a tuple of its fields in their order.
 pub const VALUE_TYPES: &[ValueType] = &[
@@ -91,6 +127,25 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Whether it is a command the person reaches for on most things of its type \
                  (`frequent: true`): a surface showing the resource's actions draws it directly.",
             ),
+            (
+                "available",
+                "Bool",
+                "Whether it can run on the resource now: the requirements its subject decides \
+                 hold. A control for one that cannot is disabled, and says `reason`.",
+            ),
+            (
+                "reason",
+                "Text",
+                "Why it cannot run now, as the `require` or `applies` that does not hold says \
+                 it, in the person's language; empty while it can.",
+            ),
+            (
+                "applies",
+                "Bool",
+                "Whether it can apply to the item where it is offered at all: the `applies` \
+                 conditions its subject and place decide hold. A menu leaves one that does not \
+                 apply out; a palette lists it, disabled with `reason`.",
+            ),
         ],
     },
     ValueType {
@@ -132,14 +187,33 @@ pub const VALUE_TYPES: &[ValueType] = &[
             ),
             ("of", "Resource", "The resource it is a version of."),
             (
+                "from",
+                "Option<Resource>",
+                "The resource it was made from, for the version that made it: the invocation that made it was made from that resource. `.none` for a change that made none.",
+            ),
+            (
                 "mine",
                 "Bool",
                 "Whether the person looking made it, outside any task run: one they may undo on its own.",
             ),
             (
+                "actor",
+                "Text",
+                "Who made it, as a sentence names them: you for the person looking, everyone else by their name.",
+            ),
+            (
                 "description",
                 "Text",
                 "What the action that made it does, as its declaration describes it: `Renames a note.`; empty for one that describes nothing.",
+            ),
+            (
+                "did",
+                "Text",
+                "What it did, in words a sentence goes on with after who did it \
+                 (`moved this to`): the sentence of the fields it changed, derived from the \
+                 change itself; what its action declares (`did:`); or, for one that made or \
+                 removed the resource, `created this` or `removed this`. Empty when there is \
+                 nothing to say but what the action does.",
             ),
             (
                 "icon",
@@ -150,6 +224,28 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "changes",
                 "List<Change>",
                 "Each field it changed, with what the field held before and after, read from the change itself; empty for one that made or removed the resource.",
+            ),
+            (
+                "suggested",
+                "Text",
+                "Who proposed the action the change made, as a sentence names them, when the person making it accepted their suggestion; empty for a change made on its own.",
+            ),
+        ],
+    },
+    ValueType {
+        name: "Link",
+        id: "host-link",
+        doc: "A resource linked to another, as `linked(r)` answers: what links to it and how.",
+        fields: &[
+            (
+                "of",
+                "Resource",
+                "The linked resource: one made from the resource the query named, one whose text mentions it, or one whose field refers to it.",
+            ),
+            (
+                "how",
+                "enum LinkHow",
+                "How it is linked: `created_from`, `field` or `mention`.",
             ),
         ],
     },
@@ -176,7 +272,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
     ValueType {
         name: "Change",
         id: "host-change",
-        doc: "A field a version changed: which, and what it held before and after, each shown as the field's type shows it.",
+        doc: "A field a version changed: which, what it held before and after, each shown as the field's type shows it, and the words history says it with.",
         fields: &[
             ("field", "Text", "The field, by its name in the source."),
             ("label", "Text", "The field, in words: `Due` for `due`."),
@@ -189,6 +285,22 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "after",
                 "View",
                 "What the field holds after the change, shown as its type shows it.",
+            ),
+            (
+                "said",
+                "Text",
+                "The change in words a sentence goes on with (`moved this to`, `assigned this \
+                 to`), decided by the field's role and type and by what it held before and \
+                 after, from the words the platform keeps; empty when the field reads as \
+                 nothing of its own. The first change of a version opens with who made it, and \
+                 each later one with `and`.",
+            ),
+            (
+                "shows",
+                "Text",
+                "Which of the two values the words speak of: `after` (`renamed this to`), \
+                 `before` (`moved this out of`), or empty when they speak of neither \
+                 (`completed this`).",
             ),
         ],
     },
@@ -211,24 +323,25 @@ pub const VALUE_TYPES: &[ValueType] = &[
         ],
     },
     ValueType {
-        name: "Dated",
-        id: "host-dated",
-        doc: "When a text says something is due, as `dated(text, at)` read it.",
+        name: "EntryPart",
+        id: "host-entry-part",
+        doc: "One thing the text of an entry will make of the action it runs, as `entry_parts` \
+              read it: a day, a time, a person or a record, taken out of the title.",
         fields: &[
             (
-                "text",
+                "label",
                 "Text",
-                "The text without the phrase that said when: `Call the landlord`.",
+                "What it says: `Fri 30 Oct`, `10:00`, `@Bo`, `#Move flat`.",
             ),
             (
-                "day",
-                "Option<Date>",
-                "The day it named, in the zone of who typed it.",
+                "icon",
+                "Option<Text>",
+                "Its icon, a kebab-case name of the platform's icon set.",
             ),
             (
-                "at",
-                "Option<Time>",
-                "The moment it named, when it named a time.",
+                "without",
+                "Text",
+                "What is typed once it is removed: the text without its words.",
             ),
         ],
     },
@@ -296,12 +409,17 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether it opens in a window of its own: its type has a default view.",
             ),
+            (
+                "row",
+                "Bool",
+                "Whether its type declares a row view, the one a list of its type draws each item through.",
+            ),
         ],
     },
     ValueType {
         name: "Filter",
         id: "host-filter",
-        doc: "A filter of a type, as a list's places and search's chips show it: one per case of an enum's.",
+        doc: "A filter a type declares, as code names it and as a list's places and search's chips show it: one per case of an enum's.",
         fields: &[
             ("key", "Text", "What a query names it by: `done`, `status`."),
             ("label", "Text", "What its control shows."),
@@ -313,12 +431,18 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "query",
                 "Text",
-                "What choosing it asks, as people type it in search: `is:done`, `status:open`; empty for one whose value is picked.",
+                "What choosing it asks, as people type it in search: `is:done`, `status:open`, `project:<id>`; empty for a filter whose value is still to be picked.",
             ),
             (
                 "toggle",
                 "Bool",
                 "Whether it is on or off: a place of a list, a chip of search.",
+            ),
+            (
+                "counts",
+                "Bool",
+                "Whether the place it makes shows how many items it holds: whether it declares \
+                 `count: true`.",
             ),
         ],
     },
@@ -412,6 +536,7 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         doc: doc.to_string(),
         default: None,
         role: None,
+        derived: None,
     }
 }
 
@@ -440,6 +565,16 @@ pub fn host_meta() -> PackageMeta {
                     "run",
                     "Text",
                     "The suggestion's run on the device that made it.",
+                ),
+                field(
+                    "subject",
+                    "Option<Resource>",
+                    "The resource the action is about, when a person proposed it: the resource it waits on.",
+                ),
+                field(
+                    "proposed",
+                    "Bool",
+                    "Whether a person proposed the action, to accept or dismiss, rather than the authority asking about one as it was applied.",
                 ),
             ],
             search: crate::meta::SearchMeta::default(),
@@ -471,6 +606,7 @@ pub fn host_meta() -> PackageMeta {
                         doc: (*doc).to_string(),
                         default: None,
                         role: None,
+                        derived: None,
                     })
                     .collect(),
                 search: crate::meta::SearchMeta::default(),
@@ -479,6 +615,27 @@ pub fn host_meta() -> PackageMeta {
             }
         }))
         .collect(),
+        enums: HOST_ENUMS
+            .iter()
+            .map(|e| EnumMeta {
+                id: e.id.to_string(),
+                name: e.name.to_string(),
+                doc: e.doc.to_string(),
+                variants: e
+                    .variants
+                    .iter()
+                    .map(|(name, label, doc)| VariantMeta {
+                        id: (*name).to_string(),
+                        name: (*name).to_string(),
+                        doc: (*doc).to_string(),
+                        label: (*label).to_string(),
+                        icon: None,
+                        tone: None,
+                        fields: Vec::new(),
+                    })
+                    .collect(),
+            })
+            .collect(),
         ..PackageMeta::default()
     }
 }

@@ -71,7 +71,7 @@ pub use endpoint::{ChannelContentKeys, MEDIA_STREAM_TAG_LEN};
 pub use errors::{Error, Result};
 pub use gate::{ChannelGate, admission};
 pub use group::{ChannelGroup, MemberAddition};
-pub use peer::{Access, ChannelPeer, PeerEvent, Reconciled};
+pub use peer::{Access, ChannelPeer, PeerEvent, Reconciled, backs};
 pub use persistence::VaultKey;
 pub use signer::{DeviceSigner, SignFuture};
 // Re-exported so callers can take/return KeyPackage values without

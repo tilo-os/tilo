@@ -128,6 +128,7 @@ fn word(said: PeerPresencePayload) -> Option<Payload> {
         PeerPresencePayload::Following { target } => Payload::Following { target },
         PeerPresencePayload::Wave { seq, target } => Payload::Wave { seq, target },
         PeerPresencePayload::Composing { composing } => Payload::Composing { composing },
+        PeerPresencePayload::Person { name } => Payload::Person { name },
         _ => return None,
     })
 }
@@ -145,10 +146,51 @@ fn here(sync: &Client, from: u8) {
     heard(sync, from, WORKSPACE, PeerPresencePayload::Arrived);
 }
 
+/// `from` arrives saying what everyone here calls them: the person's name,
+/// which is what their device's certificate cannot say.
+fn named(sync: &Client, from: u8, name: &str) {
+    heard(
+        sync,
+        from,
+        WORKSPACE,
+        PeerPresencePayload::Person {
+            name: name.to_owned(),
+        },
+    );
+    here(sync, from);
+}
+
 /// A device's identity announcement: which person it is a device of,
 /// and what to call it.
 /// The person the device `seed` is a device of, in the hex everyone here
 /// knows them by: the root key its certificate is signed with.
+/// The person `seed`'s root key, in the bytes their devices' certificates
+/// carry.
+fn root(seed: u8) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+        .verifying_key()
+        .to_bytes()
+}
+
+/// Where a device of the person `user` is reached for a workspace, as it
+/// signed it: `opaque` says which address.
+fn host_hint(
+    user: u8,
+    device_seed: u8,
+    opaque: &str,
+) -> (DeviceCert, tilo_peer_state::join::TransportHint) {
+    let (cert, key) = certified(user, device_seed, "The host");
+    let hint = tilo_peer_state::join::sign_transport_hint(
+        tilo_peer_state::join::TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1,
+        opaque,
+        cert.clone(),
+        key.verifying_key().to_bytes(),
+        &key,
+    )
+    .expect("a host signs its own address");
+    (cert, hint)
+}
+
 fn person(seed: u8) -> String {
     hex::encode(
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -191,8 +233,8 @@ fn hello(from: u8, user: u8, device_label: &str) -> NetEvent {
 }
 
 /// Where a peer's pointer moved, on the tile of `tab` of `workspace`.
-fn pointer_moved(sync: &Client, from: u8, workspace: &str, tab: u64, point: (f64, f64)) {
-    let frame = Presence::pointing(workspace, tab, point.0 as f32, point.1 as f32);
+fn pointer_moved(sync: &Client, from: u8, workspace: &str, tab: u64, point: (f32, f32)) {
+    let frame = Presence::pointing(workspace, tab, point.0, point.1);
     sync.heard_presence(workspace, device(from), &frame);
 }
 
@@ -200,6 +242,28 @@ fn pointer_moved(sync: &Client, from: u8, workspace: &str, tab: u64, point: (f64
 fn pointer_cleared(sync: &Client, from: u8, workspace: &str, tab: u64) {
     let frame = Presence::pointer_left(workspace, tab);
     sync.heard_presence(workspace, device(from), &frame);
+}
+
+#[test]
+fn a_device_of_the_person_coming_up_owes_it_the_list() {
+    let (sync, _said) = session("Desk", Some(0x04));
+    assert!(
+        !sync.sibling_arrived(),
+        "no device of the person said anything yet"
+    );
+    sync.keep_personal(&NetEvent::Sibling {
+        peer: device(0x11),
+        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
+        certs: Vec::new(),
+        revocations: Vec::new(),
+    });
+    // The pass that hears it tells the list; the next one has nothing new to
+    // say, so a device that stayed up is not told it again on every pass.
+    assert!(
+        sync.sibling_arrived(),
+        "a device that just came up has not heard it"
+    );
+    assert!(!sync.sibling_arrived());
 }
 
 #[test]
@@ -267,7 +331,7 @@ fn what_a_peer_says_they_are_doing_is_the_roster_line() {
 fn a_peer_in_a_call_says_which_channel_to_join() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
-    here(&sync, 1);
+    named(&sync, 1, "Ada");
     assert!(sync.calls().is_empty());
 
     let voice = ui::CallPresence {
@@ -292,11 +356,11 @@ fn a_peer_in_a_call_says_which_channel_to_join() {
         .iter()
         .map(|person| person.label.as_str())
         .collect();
-    assert_eq!(who, ["Framework 16"]);
+    assert_eq!(who, ["Ada"], "the call names the person, not their machine");
 
     // Someone else in the same channel is in the same call, not another.
     sync.hear(hello(2, 0xbb, "Phone"));
-    here(&sync, 2);
+    named(&sync, 2, "Ben");
     heard(&sync, 2, WORKSPACE, in_voice(Some(voice.encode())));
     let calls = sync.calls();
     assert_eq!(calls.len(), 1);
@@ -704,7 +768,7 @@ fn an_agents_shell_frame_puts_its_face_on_the_desk() {
 fn a_wave_reaches_the_person_it_is_for() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
-    here(&sync, 1);
+    named(&sync, 1, "Ada");
     let me = device(0xf0).to_string();
     heard(
         &sync,
@@ -717,12 +781,12 @@ fn a_wave_reaches_the_person_it_is_for() {
         "the client takes the wave and hands it to the bar"
     );
     let notice = sync.wave_notice().expect("the bar has a wave to say");
-    assert_eq!(notice.from, "Framework 16");
+    assert_eq!(notice.from, "Ada");
 
     // A wave at someone else here is not this person's news: the bar
     // keeps saying the wave at this person.
     sync.hear(hello(2, 0xbb, "Desktop"));
-    here(&sync, 2);
+    named(&sync, 2, "Ben");
     heard(
         &sync,
         2,
@@ -734,7 +798,7 @@ fn a_wave_reaches_the_person_it_is_for() {
     );
     assert_eq!(
         sync.wave_notice().map(|notice| notice.from),
-        Some("Framework 16".to_owned()),
+        Some("Ada".to_owned()),
         "a wave at someone else here is not this person's news"
     );
 }
@@ -862,4 +926,56 @@ fn payloads(sync: &Client) -> Vec<Payload> {
         .into_iter()
         .map(|frame| frame.payload)
         .collect()
+}
+
+#[test]
+fn a_device_of_the_person_says_where_its_workspaces_are_reached() {
+    let (sync, _said) = session("Desk", Some(0x04));
+    let sync = sync.taking_part_as(&person(0x04));
+    assert!(
+        sync.host_hint(WORKSPACE).is_none(),
+        "no device of the person said where a workspace is reached yet"
+    );
+    let (cert, hint) = host_hint(0x04, 0x21, "one address");
+    sync.keep_personal(&NetEvent::SiblingMsg {
+        peer: device(0x11),
+        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
+        msg: NeighbourMsg::PersonalHosts {
+            user_public_key: root(0x04),
+            hosts: vec![neighbour_wire::PersonalHost {
+                workspace: WORKSPACE.to_owned(),
+                hint: postcard::to_stdvec(&hint).expect("a signed address"),
+            }],
+        },
+    });
+    let kept = sync
+        .host_hint(WORKSPACE)
+        .expect("the device's address for the workspace is kept");
+    assert_eq!(kept, hint);
+    assert!(
+        kept.host.device_public_key == cert.device_public_key,
+        "it is the device's own answer"
+    );
+}
+
+#[test]
+fn another_persons_host_hints_are_not_where_this_persons_workspaces_are() {
+    let (sync, _said) = session("Desk", Some(0x04));
+    let sync = sync.taking_part_as(&person(0x04));
+    let (_, hint) = host_hint(0x05, 0x22, "someone else's address");
+    sync.keep_personal(&NetEvent::SiblingMsg {
+        peer: device(0x12),
+        membership_epoch: tilo_network_actor::MembershipEpoch::for_test(1),
+        msg: NeighbourMsg::PersonalHosts {
+            user_public_key: root(0x05),
+            hosts: vec![neighbour_wire::PersonalHost {
+                workspace: WORKSPACE.to_owned(),
+                hint: postcard::to_stdvec(&hint).expect("a signed address"),
+            }],
+        },
+    });
+    assert!(
+        sync.host_hint(WORKSPACE).is_none(),
+        "another person's workspaces are theirs to enter, never this person's"
+    );
 }

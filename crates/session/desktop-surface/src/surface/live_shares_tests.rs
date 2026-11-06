@@ -228,6 +228,8 @@ fn desk_with(seen: &Seen, notes_title: &str) -> (ui::headless::FrameHarness, u64
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         });
     }
     let tree = seed_tree(&mut minter, "Desk", tabs);

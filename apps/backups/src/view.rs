@@ -21,8 +21,8 @@ use ui::widget::{
     Banner, Button, ChipStyle, Column, Container, ControlSize, Dropdown, Element, EmptyState,
     Field, FormSection, ListRow, ModalDialog, NavItem, NavList, NavSection, NumberInput,
     ProgressBar, ProgressRing, ProgressRingSize, Property, PropertyList, Row, Scrollable, Section,
-    SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeNode, TreeRowDecoration,
-    TreeRowTone, TreeView, Widget,
+    SectionHeader, Spacer, StatGroup, StatTile, Text, Tone, TreeMarks, VecListModel, VirtualList,
+    Widget,
 };
 
 use crate::i18n;
@@ -1035,73 +1035,63 @@ pub fn restore_dialog(
 
 /// The snapshot's file index as a tree, every folder open, sizes trailing.
 fn file_tree(files: &[SnapFile]) -> Option<Element> {
-    // Build the forest from the depth-ordered index.
-    let mut stack: Vec<TreeNode<Option<u64>>> = Vec::new();
-    let mut roots: Vec<TreeNode<Option<u64>>> = Vec::new();
-    let mut depths: Vec<usize> = Vec::new();
-    let close = |stack: &mut Vec<TreeNode<Option<u64>>>,
-                 depths: &mut Vec<usize>,
-                 roots: &mut Vec<TreeNode<Option<u64>>>| {
-        if let Some(node) = stack.pop() {
-            depths.pop();
-            match stack.last_mut() {
-                Some(parent) => parent.children.push(node),
-                None => roots.push(node),
-            }
-        }
-    };
+    /// One row of the index: a file or a folder, and the folder it stands under.
+    struct Entry {
+        key: u64,
+        label: String,
+        parent: Option<u64>,
+        folder: bool,
+        size: Option<u64>,
+    }
+    // The index comes depth-ordered: each row stands under the last folder over it.
+    let mut entries: Vec<Entry> = Vec::with_capacity(files.len());
+    let mut open: Vec<(usize, u64)> = Vec::new();
     for (index, file) in files.iter().enumerate() {
-        while depths.last().is_some_and(|depth| *depth >= file.depth) {
-            close(&mut stack, &mut depths, &mut roots);
+        while open.last().is_some_and(|(depth, _)| *depth >= file.depth) {
+            open.pop();
         }
-        let id = index as u64 + 1;
-        let node = if file.is_dir {
-            TreeNode::branch(id, file.name.clone(), file.size, Vec::new())
-        } else {
-            TreeNode::leaf(id, file.name.clone(), file.size)
-        };
-        stack.push(node);
-        depths.push(file.depth);
-    }
-    while !stack.is_empty() {
-        close(&mut stack, &mut depths, &mut roots);
-    }
-    let root = match roots.len() {
-        0 => return None,
-        1 => roots.pop()?,
-        _ => TreeNode::branch(0, "Snapshot", None, roots),
-    };
-    let mut branches = Vec::new();
-    open_branches(&root, &mut branches);
-    let mut tree = TreeView::new(root)
-        .with_id("backups-restore-contents")
-        .with_row_decoration(|model: &TreeNode<Option<u64>>, row, theme| {
-            let node = model.find(row.id);
-            let mut face = TreeRowDecoration::new().icon(
-                if node.is_some_and(TreeNode::is_branch) {
-                    Icon::Folder
-                } else {
-                    Icon::File
-                },
-                theme.tokens.colors.text_dim,
-            );
-            if let Some(bytes) = node.and_then(|node| node.data) {
-                face = face.trailing(size(bytes));
-            }
-            face.tone(TreeRowTone::Primary)
+        let key = index as u64 + 1;
+        entries.push(Entry {
+            key,
+            label: file.name.clone(),
+            parent: open.last().map(|(_, key)| *key),
+            folder: file.is_dir,
+            size: file.size,
         });
-    tree.restore_expanded(branches);
-    Some(Box::new(tree))
-}
-
-/// The id of every folder under and including `node`.
-fn open_branches(node: &TreeNode<Option<u64>>, out: &mut Vec<u64>) {
-    if node.is_branch() {
-        out.push(node.id);
-        for child in &node.children {
-            open_branches(child, out);
+        if file.is_dir {
+            open.push((file.depth, key));
         }
     }
+    if entries.is_empty() {
+        return None;
+    }
+    let model = VecListModel::new(entries, |entry| entry.key)
+        .map(|model| model.with_parents(|entry| entry.parent))
+        .ok()?;
+    let marks = Rc::new(TreeMarks::default());
+    let depths = Rc::clone(&marks);
+    Some(Box::new(
+        VirtualList::new(
+            model,
+            ui::tokens::Metrics::BASE.panel_row_height,
+            move |model, index, key| {
+                let Some(entry) = model.item(index) else {
+                    return Box::new(ListRow::new(key.to_string(), "")) as Element;
+                };
+                let mut row = ListRow::new(key.to_string(), entry.label.as_str())
+                    .depth(depths.depth(key))
+                    .icon(if entry.folder { Icon::Folder } else { Icon::File });
+                if let Some(bytes) = entry.size {
+                    row = row.value(size(bytes));
+                }
+                Box::new(row)
+            },
+        )
+        .with_tree(marks)
+        .with_id("backups-restore-contents")
+        .with_semantic_key(ToString::to_string)
+        .fitting_rows(),
+    ))
 }
 
 /// Where setup stands on a device with no usable repository.

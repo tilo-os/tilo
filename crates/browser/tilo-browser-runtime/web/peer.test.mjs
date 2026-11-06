@@ -223,47 +223,9 @@ test('a page holding the root certifies itself, with no pairing code, and renews
   await assert.rejects(connect(options(runtime, store, {userPublicKey: 'cc'.repeat(32), identity})), TypeError);
 });
 
-test('a watching page sees the members live and sends nothing of its own', async () => {
-  const runtime = fakeRuntime();
-  const peer = await connect(options(runtime, memoryStore(), {watching: true}));
-  assert.equal(runtime.peer.config.watching, true, 'the session asks no channel for access');
-  assert.equal(peer.voice, undefined, 'a watching page joins no call');
-  await until(() => peer.live.state === 'live', 'the live layer');
-  assert.deepEqual(runtime.peer.announced, [], 'a watcher joins no presence');
-  assert.equal(peer.live.publisherId, SELF);
-
-  const presence = [];
-  peer.live.onPresence(value => presence.push(value.publisher));
-  say(runtime, [
-    {kind: 'arrived', publisher: OTHER},
-    {kind: 'pointer', publisher: OTHER, tab: 7, at: [1, 2], sentAtMs: Date.now()},
-  ]);
-  await until(() => presence.length, 'a member\'s presence and pointer');
-  assert.deepEqual(peer.live.members(), [OTHER]);
-  assert.deepEqual(peer.live.remoteState(performance.now() + 50)[0].pointer, {tile: {tab: 7}, at: [1, 2]});
-
-  peer.live.publishPresence({pointer: {tile: {tab: 7}, at: [5, 6]}});
-  const record = {app: 'so.tilo.notes', record: 'note-1'};
-  assert.equal(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'x'}]), false);
-  peer.live.endPreview(record);
-  peer.setDisplayName('Visitor');
-  runtime.peer.here = async () => { throw new Error('a watching page posted /here'); };
-  assert.deepEqual(await peer.here(null, [{id: '01', action: 'Edited', resource: 'Note', app: 'Notes', at_ms: 1}]), []);
-  // What a layer says of itself leaves at the end of the task it was said in
-  // (nothing was sent before, so no rate limit defers it): one turn of the
-  // event loop has run every send these calls queued.
-  await settle();
-  assert.deepEqual(runtime.peer.published, [], 'no presence of its own');
-  assert.deepEqual(runtime.peer.leftPointers, [], 'and no pointer to take back');
-  assert.deepEqual(runtime.peer.previews, []);
-  assert.deepEqual(runtime.peer.endedPreviews, []);
-  await peer.dispose();
-});
-
 test('a member page joins its workspace as one device of it, and leaves it', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore()));
-  assert.equal(runtime.peer.config.watching, false);
   await until(() => peer.live.state === 'live', 'the live layer');
   assert.deepEqual(runtime.peer.announced, [{workspace: WORKSPACE, arrived: true}]);
   assert.equal(peer.live.publisherId, SELF, 'the publisher the workspace knows this device by');

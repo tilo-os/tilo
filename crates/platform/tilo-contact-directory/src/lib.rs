@@ -637,7 +637,7 @@ fn refused() -> Refusal {
 }
 
 fn validate_endpoint(service: &str, recipient: &str) -> Result<(), Refusal> {
-    if !["tilo", "whatsapp", "signal", "sms"].contains(&service)
+    if !["whatsapp", "signal", "sms"].contains(&service)
         || recipient.is_empty()
         || recipient.len() > 512
         || recipient

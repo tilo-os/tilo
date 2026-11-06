@@ -30,6 +30,7 @@ impl App {
     fn resource_cache_key(&self) -> ResourceCacheKey {
         ResourceCacheKey {
             mutation_generation: self.actions.resource_generation.get(),
+            locale: crate::i18n::I18nManager::revision(),
         }
     }
 

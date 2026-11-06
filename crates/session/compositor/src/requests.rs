@@ -170,7 +170,7 @@ impl State {
                 fullscreen.0.set(*on);
             }
         }
-        let Some(info) = crate::state::describe(&self.display, &self.icons, window) else {
+        let Some(info) = crate::state::describe(self, window) else {
             return;
         };
         if !self.policy.request(&info, request) {

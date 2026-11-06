@@ -41,6 +41,7 @@ fn governor_creates_empty_record(joined: &Enrolled) {
                 joined.workspace,
                 TransportOrigin::RetainedRelayDelta(governor),
                 message,
+                Some(&crate::owner::testing::member_key()),
                 joined.now,
             )
             .unwrap();
@@ -155,7 +156,7 @@ fn a_member_bootstrap_is_its_own_signed_change_onto_the_hosts_empty_record() {
         .initialize_application_record_as_member(
             joined.workspace,
             &creator,
-            &member(),
+            &crate::owner::testing::member_key(),
             initialization,
             joined.now,
         )
@@ -200,7 +201,7 @@ fn a_member_bootstrap_is_its_own_signed_change_onto_the_hosts_empty_record() {
             .initialize_application_record_as_member(
                 joined.workspace,
                 &creator,
-                &member(),
+                &crate::owner::testing::member_key(),
                 initialization,
                 joined.now,
             )

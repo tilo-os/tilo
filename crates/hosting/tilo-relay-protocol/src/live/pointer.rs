@@ -16,7 +16,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{LiveRecord, LiveWireError, Result, finite};
+use super::LiveRecord;
 
 /// What a pointer is over, and where within it, in logical pixels.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,20 +87,6 @@ impl LivePointer {
             (Self::Strip { strip: a, .. }, Self::Strip { strip: b, .. }) => a == b,
             _ => false,
         }
-    }
-
-    pub(super) fn validate(&self) -> Result<()> {
-        match self {
-            Self::Window { record, .. } => record.validate()?,
-            Self::Beside { record, edge, .. } => {
-                record.validate()?;
-                if !edge.iter().all(|fraction| (0.0..=1.0).contains(fraction)) {
-                    return Err(LiveWireError::Invalid);
-                }
-            }
-            Self::Strip { .. } => {}
-        }
-        finite(&self.at()).map_err(|_| LiveWireError::Invalid)
     }
 }
 
@@ -403,11 +389,5 @@ mod tests {
             record: notes(),
             at: [1.0, 2.0]
         }));
-        let bad_edge = LivePointer::Beside {
-            record: notes(),
-            edge: [1.5, 0.0],
-            at: [1.0, 2.0],
-        };
-        assert!(bad_edge.validate().is_err());
     }
 }

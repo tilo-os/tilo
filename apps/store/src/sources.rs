@@ -171,15 +171,12 @@ fn tilo_developer(package_id: &str) -> String {
     }
 }
 
+/// The person's interface language, which selects the catalogue names and
+/// descriptions a listing shows: the same one answer every surface resolves
+/// its language from (`ui::i18n::preferred_language`), the system locale only
+/// as its default.
 pub(crate) fn preferred_locale() -> String {
-    ["LC_ALL", "LC_MESSAGES", "LANG"]
-        .into_iter()
-        .find_map(|name| std::env::var(name).ok())
-        .and_then(|value| {
-            let tag = value.split('.').next()?.replace('_', "-");
-            ui::registry::valid_language_tag(&tag).then_some(tag)
-        })
-        .unwrap_or_else(|| "en".into())
+    ui::i18n::preferred_language().unwrap_or_else(|| "en".into())
 }
 
 /// The source label of an installed Tilo app no repository currently

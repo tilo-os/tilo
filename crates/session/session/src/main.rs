@@ -1,15 +1,15 @@
 //! The native session: `tilo-session [--backend drm|headless|nested]
-//! [--size WxH] [--shell screen] [--host-desktop]
+//! [--size WxH] [--scale S|--panel-mm WxH] [--shell screen] [--host-desktop]
 //! [--firstboot|--firstboot-only]
 //! [--provision-identity|--verify-collaboration-identity] [--no-x11]
 //! [--session-bus ADDRESS|none] [--system-bus ADDRESS|none]
 //! [--admit-repl PATH]... [--test-control PATH] [--admin-control PATH]
 //! [--headless-owner-control] [--seed-apps]
-//! [-- command args...]`. Listens on a fresh `wayland-N` socket, starts
-//! Xwayland for X11 clients (unless `--no-x11`), prints both displays and the
-//! agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl --door`
-//! takes) and starts `command` with `WAYLAND_DISPLAY` and `DISPLAY` set to
-//! them; with a command, the session lasts as long as it does. `--shell
+//! [-- command args...]`. Listens on a fresh `wayland-N` socket, serves X11
+//! clients one display per workspace (unless `--no-x11`), prints the socket
+//! and the agent door it serves (`TILO_AGENT_DOOR=`, what `tilolang repl
+//! --door` takes) and starts `command` with `WAYLAND_DISPLAY` set to it; with
+//! a command, the session lasts as long as it does. `--shell
 //! screen` shows the tilolang shell (`apps/tl/shell`): the whole screen, its
 //! bar, dock and the person's arrangement as their preset shows it, every
 //! window in its place's well. The desktop services serve
@@ -70,6 +70,12 @@ static DEV_IMAGE_SESSION_BUILD_MARKER: [u8; 27] = *b"tilo-dev-image-session-v1--
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    // A workspace this session joins is decoded in a worker process started
+    // from this executable; that worker is served here and exits. This comes
+    // before anything here starts a thread, as serving one requires.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return ExitCode::from(code);
+    }
     // The earliest point the process can measure itself from: what the
     // session's own startup marks are read against.
     tilo_startup_metrics::init();
@@ -78,7 +84,7 @@ fn main() -> std::process::ExitCode {
     // Everything this process reports, and the panic that would end it, goes
     // through the one log from here on — including the render service, which
     // is this binary in its own mode.
-    tilo_session::logging::install();
+    tilo_session_logging::install();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     // An app's workspace render service is this binary in its own mode: it
@@ -127,6 +133,7 @@ fn main() -> std::process::ExitCode {
         Ok(None) => {}
     }
     let identity = tilo_session::startup::identity();
+    tilo_startup_metrics::mark("identity-verified");
     match &identity {
         tilo_session::startup::Identity::Desk
         | tilo_session::startup::Identity::WaitForClock { .. } => {}
@@ -197,6 +204,10 @@ fn first_boot(ours: &[String], host_desktop: bool) -> Option<std::process::ExitC
 struct CommandLine {
     backend: Backend,
     size: (u16, u16),
+    /// The scale a headless output draws at (`--scale`), or the physical size
+    /// of its panel (`--panel-mm`), which decides the scale
+    /// ([`tilo_compositor::panel_scale`]). `None` draws at 1.
+    headless: HeadlessPanel,
     reach: Reach,
     /// Whether the tilolang shell runs, when the command line asked for it.
     shell: bool,
@@ -233,21 +244,47 @@ fn device_owner() -> std::io::Result<bool> {
     )
 }
 
-/// The command line `ours` parsed, or `None` when it names a backend there
-/// is not.
+/// The density a headless output comes up at: a scale named outright, or the
+/// panel's physical size, from which the scale is derived as a real
+/// connector's is.
 #[cfg(target_os = "linux")]
-fn command_line(ours: &[String]) -> Option<CommandLine> {
-    let value = |flag: &str| {
-        ours.iter()
-            .position(|arg| arg == flag)
-            .and_then(|index| ours.get(index.saturating_add(1)))
-    };
-    let name = value("--backend").map_or("drm", String::as_str);
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum HeadlessPanel {
+    /// Physical pixels per logical pixel.
+    Scale(f64),
+    /// The panel's physical size across and down, in millimetres.
+    Millimetres((u32, u32)),
+}
+
+/// The argument `flag` names on `ours`.
+#[cfg(target_os = "linux")]
+fn value<'a>(ours: &'a [String], flag: &str) -> Option<&'a str> {
+    ours.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| ours.get(index.saturating_add(1)))
+        .map(String::as_str)
+}
+
+/// The output `ours` asks for: its backend, the panel it draws, and whether
+/// the tilolang shell runs.
+#[cfg(target_os = "linux")]
+struct Output {
+    backend: Backend,
+    /// The panel's size across and down, in logical pixels.
+    size: (u16, u16),
+    /// The density a headless output draws at.
+    headless: HeadlessPanel,
+    shell: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn parse_output(ours: &[String]) -> Option<Output> {
+    let name = value(ours, "--backend").unwrap_or("drm");
     let Some(backend) = Backend::named(name) else {
         eprintln!("tilo-session: unknown backend {name} (drm, headless, nested)");
         return None;
     };
-    let shell = match value("--shell").map(String::as_str) {
+    let shell = match value(ours, "--shell") {
         None => false,
         Some("screen") => true,
         Some(other) => {
@@ -255,45 +292,111 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
             return None;
         }
     };
-    let size: (u16, u16) = value("--size")
+    let size: (u16, u16) = value(ours, "--size")
         .and_then(|size| size.split_once('x'))
         .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)))
         .unwrap_or((1280, 720));
-    let bus = |flag: &str| match value(flag).map(String::as_str) {
+    // A headless output's density, as DRM takes its own from the connector:
+    // a scale named outright, or the panel's physical size, from which the
+    // scale is derived. Without either it draws at 1.
+    let headless = match (value(ours, "--scale"), value(ours, "--panel-mm")) {
+        (Some(scale), _) => match scale.parse::<f64>() {
+            Ok(scale) if scale.is_finite() && scale > 0.0 => HeadlessPanel::Scale(scale),
+            _ => {
+                eprintln!("tilo-session: --scale takes a positive number");
+                return None;
+            }
+        },
+        (None, Some(mm)) => {
+            let Some(size) = millimetres(mm) else {
+                eprintln!("tilo-session: --panel-mm takes WxH in whole millimetres");
+                return None;
+            };
+            HeadlessPanel::Millimetres(size)
+        }
+        (None, None) => HeadlessPanel::Scale(1.0),
+    };
+    if !matches!(backend, Backend::Headless) && headless != HeadlessPanel::Scale(1.0) {
+        eprintln!("tilo-session: --scale and --panel-mm are for a headless session");
+    }
+    Some(Output {
+        backend,
+        size,
+        headless,
+        shell,
+    })
+}
+
+/// The panel's physical size `--panel-mm` names: across and down, in whole
+/// millimetres.
+#[cfg(target_os = "linux")]
+fn millimetres(mm: &str) -> Option<(u32, u32)> {
+    let (across, down) = mm.split_once('x')?;
+    match (across.parse::<u32>(), down.parse::<u32>()) {
+        (Ok(across), Ok(down)) if across > 0 && down > 0 => Some((across, down)),
+        _ => None,
+    }
+}
+
+/// The bus `flag` names, for the desktop this session runs in.
+#[cfg(target_os = "linux")]
+fn bus(ours: &[String], flag: &str) -> Bus {
+    match value(ours, flag) {
         None => Bus::Default,
         Some("none") => Bus::None,
         Some(address) => Bus::Address(address.to_owned()),
-    };
-    // What a session in a window of another desktop reaches of it: no bus of
-    // it unless a flag names one, and no displays exported to it.
-    let reach = Reach::new(
+    }
+}
+
+/// What a session in a window of another desktop reaches of it: no bus of it
+/// unless a flag names one, and no displays exported to it.
+#[cfg(target_os = "linux")]
+fn reach(ours: &[String], backend: Backend) -> Reach {
+    Reach::new(
         backend,
         Buses {
-            session: bus("--session-bus"),
-            system: bus("--system-bus"),
+            session: bus(ours, "--session-bus"),
+            system: bus(ours, "--system-bus"),
         },
-    );
-    let admit_repl = ours
-        .iter()
+    )
+}
+
+/// The programs the person admits to act as them at the agent door
+/// (`--admit-repl PATH`, as often as they name one).
+#[cfg(target_os = "linux")]
+fn admit_repl(ours: &[String]) -> Vec<std::path::PathBuf> {
+    ours.iter()
         .zip(ours.iter().skip(1))
         .filter(|(flag, _)| *flag == "--admit-repl")
         .map(|(_, program)| std::path::PathBuf::from(program))
-        .collect();
-    let named = value("--test-control").map(String::as_str);
-    let test_control =
+        .collect()
+}
+
+/// Where the development test-control socket opens, when the command line
+/// named one and this build opens it.
+#[cfg(target_os = "linux")]
+fn test_control(ours: &[String]) -> Option<std::path::PathBuf> {
+    let named = value(ours, "--test-control");
+    let control =
         tilo_session::test_control::path(tilo_session::test_control::OPENED_BY_THIS_BUILD, named);
-    if named.is_some() && test_control.is_none() {
+    if named.is_some() && control.is_none() {
         eprintln!("tilo-session: --test-control is honoured by development builds only");
     }
+    control
+}
+
+/// Where the owner's control socket opens, when this session serves one.
+#[cfg(target_os = "linux")]
+fn admin_control(ours: &[String], backend: Backend) -> Option<std::path::PathBuf> {
     // The owner's door: the seat's own for a session that owns the machine, the
     // headless session's own when it was asked to open one, and nothing for a
     // session in another desktop's window.
-    let named_admin = ours
+    let named = ours
         .iter()
         .position(|arg| arg == "--admin-control")
         .and_then(|index| ours.get(index.saturating_add(1)))
         .map(std::path::PathBuf::from);
-    let named_admin = match named_admin {
+    let named = match named {
         Some(path) if !path.is_absolute() => {
             eprintln!("tilo-session: --admin-control takes an absolute path");
             None
@@ -314,7 +417,7 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
     // device at its first login. A path named on the command line is the person's own say-so,
     // and a session in another desktop's window, or one nobody asked for an owner's door,
     // serves none.
-    let owned = match named_admin {
+    let owned = match named {
         Some(_) => this_machine,
         None if !this_machine => false,
         None => match tilo_session::test_control::owner_decision(
@@ -328,22 +431,35 @@ fn command_line(ours: &[String]) -> Option<CommandLine> {
             }
         },
     };
-    let admin_control =
-        tilo_session::test_control::admin_path(owned, backend == Backend::Headless, named_admin);
-    let asked_seed = ours.iter().any(|arg| arg == "--seed-apps");
-    let seed_apps = asked_seed && tilo_session::seeded_apps::SEEDED_BY_THIS_BUILD;
-    if asked_seed && !seed_apps {
+    tilo_session::test_control::admin_path(owned, backend == Backend::Headless, named)
+}
+
+/// Whether the session publishes the seeded tilolang apps.
+#[cfg(target_os = "linux")]
+fn seed_apps(ours: &[String]) -> bool {
+    let asked = ours.iter().any(|arg| arg == "--seed-apps");
+    let seed = asked && tilo_session::seeded_apps::SEEDED_BY_THIS_BUILD;
+    if asked && !seed {
         eprintln!("tilo-session: --seed-apps is honoured by development builds only");
     }
+    seed
+}
+
+/// The command line `ours` parsed, or `None` when it names a backend there
+/// is not.
+#[cfg(target_os = "linux")]
+fn command_line(ours: &[String]) -> Option<CommandLine> {
+    let output = parse_output(ours)?;
     Some(CommandLine {
-        backend,
-        size,
-        reach,
-        shell,
-        admit_repl,
-        test_control,
-        admin_control,
-        seed_apps,
+        backend: output.backend,
+        size: output.size,
+        headless: output.headless,
+        shell: output.shell,
+        reach: reach(ours, output.backend),
+        admit_repl: admit_repl(ours),
+        test_control: test_control(ours),
+        admin_control: admin_control(ours, output.backend),
+        seed_apps: seed_apps(ours),
     })
 }
 
@@ -367,6 +483,7 @@ fn start(
     let CommandLine {
         backend,
         size,
+        headless,
         reach,
         shell,
         admit_repl,
@@ -375,13 +492,26 @@ fn start(
         seed_apps,
     } = line;
     let buses = reach.buses.clone();
+    // A mark never waits for the disk from here on: the session is several
+    // threads already, and the file is written beside them.
+    tilo_startup_metrics::start_writer();
+    tilo_startup_metrics::mark("services-start");
     // Who sits here, read now and kept current by workers: nothing the loop
     // asks of the identity directory waits on the disk.
     tilo_session::identity::install();
+    tilo_startup_metrics::mark("identity-installed");
+    // The font system every renderer shares is built on a thread from here:
+    // the services, the desk build and the compositor's first frame run
+    // beside it, and what needs text finds it ready. Building it on this
+    // thread instead put font discovery and face mapping (the font index
+    // alone is a large read) in front of everything the session says to its
+    // first client.
+    let _warmup = ui::warmup::spawn_warmup();
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is
     // part of them.
     let config = tilo_session::SessionConfig::load();
+    tilo_startup_metrics::mark("settings-read");
     // The machine's power: that policy, applied by the session's loop and
     // acted on over logind by the service started beside the others. A
     // headless session has no lid, keys or person at a seat: it would act on
@@ -428,6 +558,7 @@ fn start(
     // eject the notice offers goes over the system bus the desktop services
     // already hold.
     let drives = drives(backend, desktop.as_ref(), &wake);
+    tilo_startup_metrics::mark("services-done");
     let mut options = Options {
         services,
         wake,
@@ -445,7 +576,7 @@ fn start(
         admit_repl,
         test_control,
         admin_control,
-        ..device_options(machine)
+        ..device_options(machine, config)
     };
     // A headless session has no input device: nothing the person does can
     // ever reset its idle timers, so they would only blank and lock it.
@@ -479,7 +610,8 @@ fn start(
     let agent_door = options.agent_door.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
-    let mut session = match start_session(backend, options, size) {
+    tilo_startup_metrics::mark("session-open-start");
+    let mut session = match start_session(backend, options, size, headless) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("tilo-session: {error}");
@@ -524,18 +656,21 @@ fn start_session(
     backend: Backend,
     options: tilo_session::Options,
     size: (u16, u16),
+    headless: HeadlessPanel,
 ) -> Result<tilo_session::Session, tilo_compositor::Error> {
     use tilo_compositor::{DisplayConfig, NestedConfig, OutputConfig};
     use tilo_session::Session;
     match backend {
-        Backend::Headless => Session::headless(
-            options,
-            &[OutputConfig::new(
-                "HEADLESS-1",
-                i32::from(size.0),
-                i32::from(size.1),
-            )],
-        ),
+        Backend::Headless => {
+            let output = OutputConfig::new("HEADLESS-1", i32::from(size.0), i32::from(size.1));
+            // The scale a real connector starts at: the one named, or the one
+            // its panel's density argues for, as DRM derives it.
+            let output = match headless {
+                HeadlessPanel::Scale(scale) => output.with_scale(scale),
+                HeadlessPanel::Millimetres(mm) => output.panel(mm),
+            };
+            Session::headless(options, &[output])
+        }
         Backend::Drm => Session::drm(options, DisplayConfig::default()),
         Backend::Nested => Session::nested(
             options,
@@ -568,6 +703,7 @@ fn run(
             return ExitCode::FAILURE;
         }
     };
+    tilo_startup_metrics::mark("display-bound");
     println!("WAYLAND_DISPLAY={socket}");
     // A session added to this machine's own login serves the installed folder
     // importer: whether identity setup is over, on the socket named for this
@@ -592,30 +728,27 @@ fn run(
             admin.display()
         );
     }
-    let x11_display = if ours.iter().any(|arg| arg == "--no-x11") {
-        None
-    } else {
-        start_x11(session.compositor())
-    };
-    // X11 apps on this display compose through the input method's XIM: the
-    // engine opens the display once it runs, as the session's own Xwayland
-    // accepts this login's X clients.
-    session.set_x11_display(x11_display.clone());
-    // The apps opened from now on connect where the person's windows are.
-    // X11 needs the authority file Xwayland was started with as well, which
-    // the compositor does not hand out yet.
+    // X11 is served per workspace: each gets a display when an app is launched
+    // into it, and its server starts when that app connects. `--no-x11` serves
+    // none of them.
+    let x11 = session.compositor().x11_displays();
+    match &x11 {
+        Some(displays) if ours.iter().any(|arg| arg == "--no-x11") => displays.disable(),
+        Some(_) => {}
+        None => tracing::warn!("the compositor serves no X11 display: no X11 apps"),
+    }
+    // The apps opened from now on connect where the person's windows are, and
+    // each is told the display of the workspace it is launched into.
     if let Some(launch) = launch {
         launch.set_displays(
             tilo_paths::xdg::runtime_dir_or_default().join(&socket),
-            x11_display.clone().map(|display| (display, None)),
+            x11,
             session_bus.map(str::to_owned),
         );
         launch.set_render_node(session.compositor().render_node());
     }
     let environment = SessionEnvironment {
         wayland_display: socket,
-        x11_display,
-        x11_authority: None,
     };
     if export_displays {
         environment.clone().export();
@@ -715,20 +848,23 @@ fn desktop_services(
     }
 }
 
-/// What the session reads of this device: its configuration, search, quick
-/// settings over its own backends and the players, its session actions and
-/// who unlocks it. A session in a window of another desktop
-/// ([`tilo_session::Machine::Window`]) reads no device of its own and
-/// carries out no session action: the window's machine is the host's.
+/// What the session reads of this device: the person's `config` as read once
+/// at startup, their search, quick settings over its own backends and the
+/// players, its session actions and who unlocks it. A session in a window of
+/// another desktop ([`tilo_session::Machine::Window`]) reads no device of its
+/// own and carries out no session action: the window's machine is the host's.
 #[cfg(target_os = "linux")]
-fn device_options(machine: tilo_session::Machine) -> tilo_session::Options {
+fn device_options(
+    machine: tilo_session::Machine,
+    config: tilo_session::SessionConfig,
+) -> tilo_session::Options {
     use tilo_session::{
-        ActionPlane, Options, SessionConfig, Vpn,
+        ActionPlane, Options, Vpn,
         displays::{Backlights, Screens},
     };
     let owned = machine.is_owned();
     Options {
-        config: SessionConfig::load(),
+        config,
         search: search_options(),
         // The apps this session starts reach its services over the socket the
         // launcher hands them; a session inside another desktop's window
@@ -807,24 +943,6 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
     ]
 }
 
-/// Xwayland for X11 clients, its display printed. They connect as soon as
-/// its sockets are there, which they are once it is started; without it
-/// only Wayland is named.
-#[cfg(target_os = "linux")]
-fn start_x11(compositor: &mut tilo_compositor::Compositor) -> Option<String> {
-    match compositor.start_xwayland() {
-        Ok(display) => {
-            let display = format!(":{display}");
-            println!("DISPLAY={display}");
-            Some(display)
-        }
-        Err(error) => {
-            tracing::warn!(%error, "Xwayland did not start: no X11 clients");
-            None
-        }
-    }
-}
-
 /// `program` started with `rest` on `environment`'s displays and, when a
 /// flag named the session bus, on that bus rather than the one it inherits.
 #[cfg(target_os = "linux")]
@@ -838,10 +956,9 @@ fn start_command(
     started
         .args(rest)
         .env("WAYLAND_DISPLAY", &environment.wayland_display);
-    match &environment.x11_display {
-        Some(display) => started.env("DISPLAY", display),
-        None => started.env_remove("DISPLAY"),
-    };
+    // A display belongs to a workspace: an app started with the session is in
+    // none, and gets the display of the workspace it is launched into later.
+    started.env_remove("DISPLAY");
     if let Some(address) = session_bus {
         started.env("DBUS_SESSION_BUS_ADDRESS", address);
     }

@@ -529,6 +529,7 @@ fn assignments(
             continue;
         }
         let rule = index
+            // ignored-failure: an index that does not parse names no rule of the preset
             .parse::<usize>()
             .ok()
             .and_then(|index| preset.rules.get(index));

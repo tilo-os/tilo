@@ -25,7 +25,6 @@ pub mod local_host;
 pub mod media_caps;
 pub mod native_ingress;
 mod opened_records;
-pub mod private_messages;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod siblings;
@@ -378,13 +377,6 @@ pub enum NetCmd {
         ws: WorkspaceId,
         channel: [u8; 32],
     },
-    /// Publish one canonical live frame (presence, previews) on `ws`'s
-    /// workspace hosts' live planes, where browsers and agents meet this
-    /// device. Lossy.
-    PublishLive {
-        ws: WorkspaceId,
-        frame: Vec<u8>,
-    },
     /// Hold an enrolled workspace's relay session, over its host's HTTPS routes
     /// when given, else over the iroh endpoint its hint names.
     NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
@@ -401,7 +393,6 @@ pub enum NetCmd {
     /// Wake the compositor loop when legacy-window traffic arrives: an idle
     /// headless loop otherwise sleeps until something else wakes it.
     SetWake(LoopWake),
-    PrivateMessages(tokio::sync::oneshot::Sender<crate::private_messages::Transport>),
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
     /// A message for the hosts of topic `ws` ([`NetCmd::JoinHostedTopic`])
@@ -457,8 +448,7 @@ pub enum NetCmd {
         ws: WorkspaceId,
         devices: Vec<RosterDevice>,
     },
-    /// Publish `msg` on every session of `ws`. Pointer moves are paced by
-    /// each session's writer (`tilo_relay_session::pointer_pacing`).
+    /// Publish `msg` on every session of `ws`.
     Publish {
         ws: WorkspaceId,
         msg: NeighbourMsg,
@@ -559,13 +549,6 @@ pub enum WorkspaceControlRoute {
 
 #[derive(Debug, Clone)]
 pub enum NetEvent {
-    /// A live frame another live member of `ws` published through a
-    /// workspace host, attributed to the device the host authenticated.
-    Live {
-        ws: WorkspaceId,
-        from: [u8; 32],
-        frame: Vec<u8>,
-    },
     NativeInput(native_ingress::Input),
     /// One of the person's devices proved itself on the session between the
     /// two ([`device_sessions`]), or proved itself anew there (a renewed
@@ -661,7 +644,6 @@ impl NetEvent {
     /// What the event is, for timing: the message kind for a message.
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::Live { .. } => "Live",
             Self::NativeInput(_) => "NativeInput",
             Self::Sibling { .. } => "Sibling",
             Self::SiblingLeft { .. } => "SiblingLeft",
@@ -863,10 +845,6 @@ struct HeldSurfaceUnits {
 enum HostEvent {
     NativeInput(native_ingress::Input),
     Ready,
-    Live {
-        from: [u8; 32],
-        frame: Vec<u8>,
-    },
     /// A member joined or left the host's live plane.
     Member {
         device: [u8; 32],
@@ -1312,7 +1290,6 @@ struct ActorState {
     endpoint: Endpoint,
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
-    private_messages: crate::private_messages::Transport,
     native_routes: native_ingress::Routes,
     /// Where the channel traffic of workspaces' host sessions goes while the
     /// collaboration broker's drain runs: straight to it.
@@ -1564,9 +1541,6 @@ impl ActorState {
             self.reachability.wake(why);
         }
         match command {
-            Some(NetCmd::PrivateMessages(reply)) => {
-                let _ = reply.send(self.private_messages.clone());
-            }
             Some(NetCmd::WireTally(reply)) => {
                 let _ = reply.send(Arc::clone(&self.tally));
             }
@@ -1680,13 +1654,6 @@ impl ActorState {
                 }
             }
             Some(NetCmd::OpenRecord { ws, channel }) => self.open_record(ws, channel),
-            Some(NetCmd::PublishLive { ws, frame }) => {
-                for ((session_ws, _), runtime) in &self.host_sessions {
-                    if *session_ws == ws {
-                        let _ = runtime.session.publish_live(frame.clone());
-                    }
-                }
-            }
             Some(NetCmd::Publish { ws, msg }) => {
                 self.observe_surface_stream(ws, &msg);
                 remember_governance(&mut self.governance, ws, &msg);
@@ -3133,7 +3100,6 @@ impl ActorState {
             }
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => self.host_ready(ws, peer),
-            HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
                 ws,
@@ -3390,8 +3356,6 @@ impl ActorState {
             || !self.held_surface_units.is_empty()
         {
             "a window streamed with a peer"
-        } else if self.private_messages.is_bound() {
-            "a Messages account receives texts"
         } else {
             return None;
         })
@@ -3827,9 +3791,7 @@ async fn run(
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let (input_tx, mut input_rx) = mpsc::channel(64);
     let connection_incarnations = Arc::new(AtomicU64::new(1));
-    let private_messages = crate::private_messages::Registry::new(endpoint.id());
     let router = Router::builder(endpoint.clone())
-        .accept(crate::private_messages::ALPN, private_messages.clone())
         .accept(
             SURFACE_STREAM_ALPN,
             SurfaceStreamProtocol {
@@ -3869,11 +3831,6 @@ async fn run(
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let lanes = workspace_lane::Lanes::new(endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
-        private_messages: crate::private_messages::Transport::new(
-            endpoint.clone(),
-            private_messages,
-            reachability.clone(),
-        ),
         reachability,
         endpoint,
         lookup,
@@ -4250,7 +4207,6 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
             _ => "HostNativeInput",
         },
         HostEvent::Ready => "HostReady",
-        HostEvent::Live { .. } => "HostLive",
         HostEvent::Member { .. } => "HostMember",
         HostEvent::RecordOpened { .. } => "HostRecordOpened",
         HostEvent::Kept { .. } => "HostKept",
@@ -4681,7 +4637,6 @@ fn host_event(
             replaying.store(false, Ordering::Release);
             HostEvent::Ready
         }
-        HostInbound::Live { from, frame } => HostEvent::Live { from, frame },
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
         // A call's audio is the session's, carried by the relay session the
         // call itself holds.

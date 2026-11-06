@@ -608,7 +608,13 @@ fn stale_or_malformed_view_payloads_fall_back_without_installing_state() {
             serde_json::from_slice(&app.capture_application_view().unwrap().unwrap().payload)
                 .unwrap();
         assert!(local.active_tag.is_none());
-        assert_eq!(local.expanded_pages, vec![f.root]);
+        // The payload asked to open `root`, and this notebook has since lost the
+        // notes it held: nothing of it stays open, so nothing is saved expanded.
+        assert!(
+            local.expanded_pages.is_empty(),
+            "{:?}",
+            local.expanded_pages
+        );
         let component = restored_component(&f, 11, existing(&checkout), RestoreInput::Local(saved));
         let mut a = FrameHarness::from_component(component, (1000, 500), runner_inputs()).unwrap();
         a.expect(&SemanticExpectation::named("note_title").value("Projects"))

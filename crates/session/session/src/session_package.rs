@@ -93,11 +93,19 @@ fn instances() -> Vec<(ResourceSpec, Option<Declared>)> {
     let mut out: Vec<(ResourceSpec, Option<Declared>)> = Vec::new();
     // The desk describes each window as a resource of its own; a desk that
     // names none leaves the kind out rather than failing the description.
-    if let Some(window) =
-        tilo_desktop::desk_verbs::desk_resource(&[(0, String::new())], &[0], &[], None)
-            .children
-            .into_iter()
-            .find(|child| child.kind == tilo_desktop::desk_verbs::WINDOW_KIND)
+    if let Some(window) = tilo_desktop::desk_verbs::desk_resource(
+        &[tilo_desktop::desk_verbs::Shown {
+            tab: 0,
+            title: String::new(),
+            foreign: None,
+        }],
+        &[0],
+        &[],
+        None,
+    )
+    .children
+    .into_iter()
+    .find(|child| child.kind == tilo_desktop::desk_verbs::WINDOW_KIND)
     {
         out.push((window, Some(<DeskEffect as Effect>::declaration)));
     }

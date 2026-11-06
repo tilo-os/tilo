@@ -64,6 +64,11 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "a command line parsed once per launch: boxing a variant would need \
+              clap support for boxed subcommands it does not have"
+)]
 enum Cmd {
     /// Run a package directly from an unpacked payload + manifest.
     Run {
@@ -246,20 +251,9 @@ enum Cmd {
     /// namespace. Run by `tilo-sandbox-view.service`.
     #[command(subcommand)]
     SandboxView(SandboxViewCmd),
-    /// The compositor's app spawner: starts each launch born in a cgroup of
-    /// its own (`launcher::spawner`). Internal: its stdin is the compositor's
-    /// socket.
-    #[command(name = "app-spawner", hide = true)]
-    AppSpawner {
-        /// Serve this cgroupfs directory as the app tree instead of asking
-        /// the user manager for one.
-        #[arg(long)]
-        tree: Option<PathBuf>,
-    },
     /// List the apps running in this person's session, each with its
-    /// cgroup's processes, memory, CPU time, tier and OOM kills. Apps are
-    /// cgroups of one delegated scope (`tilo-apps-<n>.scope`), not units of
-    /// their own, so `systemctl --user` does not list them.
+    /// cgroup's processes, memory, CPU time, tier and OOM kills: one
+    /// `app-tilo-<id>-<pid>.scope` per launch in `app.slice`.
     Apps {
         /// Print JSON instead of a table.
         #[arg(long)]
@@ -354,13 +348,10 @@ struct RunHostArgs {
     /// `XDG_RUNTIME_DIR` are both derived from it.
     #[arg(long)]
     wayland_socket: Option<PathBuf>,
-    /// Rootless Xwayland display supplied by the compositor for legacy
-    /// X11 applications.
-    #[arg(long, requires = "x11_authority")]
+    /// The X11 display of the workspace this app is launched into, supplied
+    /// by the compositor for legacy X11 applications.
+    #[arg(long)]
     x11_display: Option<String>,
-    /// Xauthority file paired with `--x11-display`.
-    #[arg(long, requires = "x11_display")]
-    x11_authority: Option<PathBuf>,
     /// A file to open. Expands the entry's `%f`/`%F` field codes (and
     /// `%u`/`%U` as a `file://` URL).
     #[arg(long)]
@@ -396,9 +387,7 @@ const DESCRIPTOR_TABLE_SIZE: libc::c_int = 256;
 /// process whose table is shared by several threads wait for an RCU grace
 /// period (`expand_fdtable` -> `synchronize_rcu`, milliseconds) every time
 /// that table grows; growing it now, single-threaded, costs nothing. A
-/// launcher used to start with a large table only because the compositor
-/// leaked descriptors into it; one the app spawner starts has just its
-/// three standard streams.
+/// launcher started by the session has just its three standard streams.
 fn presize_descriptor_table() {
     // SAFETY: duplicates stderr to the lowest free descriptor at or above the
     // table's last slot, close-on-exec, and closes that copy at once.
@@ -500,7 +489,6 @@ fn dispatch_command(
         ),
         Cmd::RunHost(args) => run_host(args),
         Cmd::SandboxView(command) => sandbox_view(command),
-        Cmd::AppSpawner { tree } => run_app_spawner(tree),
         Cmd::Apps { json } => list_apps(json),
         Cmd::RuntimeResident { user: true, .. } => runtime_resident_user(),
         Cmd::RuntimeResident {
@@ -751,56 +739,6 @@ fn sandbox_view(command: SandboxViewCmd) -> ExitCode {
     }
 }
 
-/// Serve the compositor on the socket it gave as stdin.
-fn run_app_spawner(tree: Option<PathBuf>) -> ExitCode {
-    use std::os::fd::{AsRawFd as _, OwnedFd};
-    // SAFETY: fd 0 is the socket the compositor handed over; it is moved to a
-    // close-on-exec descriptor before anything is started, so no launch
-    // inherits it, and /dev/null takes its place.
-    let socket = unsafe { libc::fcntl(0, libc::F_DUPFD_CLOEXEC, 3) };
-    if socket < 0 {
-        eprintln!("tilo-spawner: {}", std::io::Error::last_os_error());
-        return ExitCode::from(1);
-    }
-    // SAFETY: the descriptor was just created and is owned here alone.
-    let socket = unsafe { OwnedFd::from_raw_fd(socket) };
-    // fd 1, when it is a socket, is where the compositor hears of what the
-    // spawner reports on its own (a job that ended for memory). It moves off
-    // stdout the same way.
-    let events = {
-        // SAFETY: fstat into a zeroed stat buffer on fd 1.
-        let is_socket = unsafe {
-            let mut stat: libc::stat = std::mem::zeroed();
-            libc::fstat(1, &raw mut stat) == 0 && stat.st_mode & libc::S_IFMT == libc::S_IFSOCK
-        };
-        // SAFETY: duplicating fd 1 to a fresh close-on-exec descriptor.
-        let events = if is_socket {
-            unsafe { libc::fcntl(1, libc::F_DUPFD_CLOEXEC, 3) }
-        } else {
-            -1
-        };
-        // SAFETY: a descriptor just created and owned here alone.
-        (events >= 0).then(|| unsafe { OwnedFd::from_raw_fd(events) })
-    };
-    match std::fs::File::open("/dev/null") {
-        // SAFETY: both are descriptors this process owns.
-        Ok(null) => unsafe {
-            libc::dup2(null.as_raw_fd(), 0);
-            if events.is_some() {
-                libc::dup2(null.as_raw_fd(), 1);
-            }
-        },
-        Err(error) => eprintln!("tilo-spawner: /dev/null: {error}"),
-    }
-    match launcher::spawner::serve(&socket, events, tree) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("tilo-spawner: {error}");
-            ExitCode::from(1)
-        }
-    }
-}
-
 fn list_apps(json: bool) -> ExitCode {
     let uid = rustix::process::getuid().as_raw();
     let apps = launcher::app_cgroup::running_apps(&launcher::app_cgroup::user_app_slice(uid));
@@ -1013,8 +951,8 @@ fn verify_in_app_cgroup(
     payload_root: &std::path::Path,
     opts: &RunOptions,
 ) -> Result<launcher::manifest::ManifestView, launcher::run::RunError> {
-    // Started by the compositor's spawner, the launcher was born in its app
-    // cgroup and there is nothing to join.
+    // A launcher already inside an app's cgroup (an app running another
+    // program of its own) has nothing to join.
     let born_in_cgroup = launcher::app_cgroup::current_is_app_cgroup();
     if born_in_cgroup {
         tilo_startup_metrics::handoff_mark("scope-joined");
@@ -1052,14 +990,31 @@ fn verify_in_app_cgroup(
 
 /// Make sure this launcher is in the app's own cgroup before it forks the
 /// sandbox, so the app's memory, OOM handling and lifetime are its own and
-/// never the compositor's (see [`launcher::scope`]). A launcher the
-/// compositor's spawner started was born there; any other asks the user
-/// manager for a scope and moves into it. The compositor always names the
-/// app; without a reachable user manager the app still starts, where the
+/// never the compositor's (see [`launcher::scope`]). The session always names
+/// the app; without a reachable user manager the app still starts, where the
 /// launcher already runs.
+///
+/// A Tilo app is then one OOM group: the kernel ends every process of it
+/// together rather than one, which would leave the rest of the app half
+/// working (see [`launcher::app_cgroup::set_oom_group`]). A host app is not:
+/// its scope is not delegated and runs the program alone.
 fn enter_app_scope(app_id: &str) {
     if let Err(error) = launcher::scope::join(app_id, app_id) {
         eprintln!("tilo-launcher: {app_id} runs outside a session scope: {error}");
+        return;
+    }
+    if launcher::app_cgroup::current_is_app_cgroup()
+        && let Err(error) = launcher::app_cgroup::set_oom_group(
+            &launcher::app_cgroup::fs_path(
+                &launcher::app_cgroup::app_cgroup_at(
+                    &std::fs::read_to_string("/proc/self/cgroup").unwrap_or_default(),
+                )
+                .unwrap_or_default(),
+            ),
+            true,
+        )
+    {
+        eprintln!("tilo-launcher: {app_id} keeps one OOM victim: {error}");
     }
     tilo_startup_metrics::handoff_mark("scope-joined");
 }
@@ -1430,7 +1385,6 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         program,
         wayland_socket,
         x11_display,
-        x11_authority,
         open,
         open_url,
         dry_run,
@@ -1439,7 +1393,6 @@ fn run_host(args: RunHostArgs) -> ExitCode {
     let env = LaunchEnv {
         wayland_socket,
         x11_display,
-        x11_authority,
         activation_token: std::env::var("TILO_HOST_ACTIVATION_TOKEN").ok(),
         files: open
             .as_deref()
@@ -1452,8 +1405,10 @@ fn run_host(args: RunHostArgs) -> ExitCode {
         (Some(program), _) if dry_run => launcher::host::plan_host_program(program, &env),
         (Some(program), _) => launcher::host::make_runnable(program)
             .and_then(|()| launcher::host::plan_host_program(program, &env)),
-        (None, Some(path)) => launcher::host::plan_host_file(path, &env),
-        (None, None) => launcher::host::plan_host(&desktop_id, &env),
+        (None, Some(path)) => {
+            launcher::host::plan_host_file(path, &env, &launcher::host::locales())
+        }
+        (None, None) => launcher::host::plan_host(&desktop_id, &env, &launcher::host::locales()),
     };
     if dry_run {
         return match planned {

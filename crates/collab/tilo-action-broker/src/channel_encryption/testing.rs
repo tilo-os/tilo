@@ -109,14 +109,10 @@ pub enum Announcements {
 }
 
 pub struct Directory {
-    pub governor: Ed25519PublicKey,
     pub policy: Policy,
 }
 
 impl ChannelDirectory for Directory {
-    fn governor_of(&self, _: WorkspaceId) -> Option<Ed25519PublicKey> {
-        Some(self.governor)
-    }
     fn allowed_devices(
         &self,
         _: WorkspaceId,
@@ -171,6 +167,17 @@ impl ChannelDirectory for Directory {
 
 pub fn key(seed: u8) -> SigningKey {
     SigningKey::from_bytes(&[seed; 32])
+}
+
+impl Policy {
+    /// A policy whose channels are read by the devices `seeds` name.
+    pub fn readers(seeds: impl IntoIterator<Item = u8>) -> Self {
+        let policy = Self::default();
+        for seed in seeds {
+            policy.allowed.lock().unwrap().insert(public(seed));
+        }
+        policy
+    }
 }
 
 pub fn public(seed: u8) -> Ed25519PublicKey {

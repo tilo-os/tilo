@@ -358,17 +358,72 @@ impl PeerPublicationMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
+        self.publish_sealed(
+            app,
+            record,
+            &DocumentMutation::Incremental(changes),
+            seal,
+            key,
+            now,
+        )
+    }
+
+    /// Save the whole of `record` of `app` as it stands, sealed by the
+    /// channel's key holder with `seal`, signed by `key`, and admit it like
+    /// any sealed write. The first write of a record in a workspace whose
+    /// channels are sealed is this checkpoint, so the record is sealed from
+    /// the start rather than started in the clear and encrypted from its
+    /// second write on; every write after it is a sealed change. It founds
+    /// the record where this state holds none of it, as the checkpoint a
+    /// store keeps at the head of a sealed channel founds it on a device
+    /// catching up.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::publish_sealed_incremental`], for a checkpoint of the
+    /// record's channel; this peer is unchanged then.
+    pub fn publish_sealed_checkpoint(
+        self,
+        app: &str,
+        record: &str,
+        document: Vec<u8>,
+        seal: &mut SealCheckpoint<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        self.publish_sealed(
+            app,
+            record,
+            &DocumentMutation::Snapshot(document),
+            seal,
+            key,
+            now,
+        )
+    }
+
+    fn publish_sealed(
+        self,
+        app: &str,
+        record: &str,
+        mutation: &DocumentMutation,
+        seal: &mut SealCheckpoint<'_>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
         let route = Route {
             app: app.into(),
             record: record.into(),
         };
-        let document = self
-            .peer
-            .core
-            .documents
-            .get(&route)
-            .ok_or("sealed write to a record this state does not hold")?;
-        let mutation = DocumentMutation::Incremental(changes);
+        // A change needs the record it changes; a checkpoint is the whole
+        // record, so it is all a route it founds needs.
+        let retention = match mutation {
+            DocumentMutation::Incremental(_) => ContentRetention::Delta,
+            DocumentMutation::Snapshot(_) => ContentRetention::Checkpoint,
+        };
+        let document = self.peer.core.documents.get(&route);
+        if document.is_none() && retention == ContentRetention::Delta {
+            return Err("sealed write to a record this state does not hold".into());
+        }
         // Readers without the key decide a sealed write by the claims of
         // its changes, as a member's page names them: each naming the units
         // its action may write by the surface the op names.
@@ -379,24 +434,23 @@ impl PeerPublicationMut<'_> {
                 app,
                 record,
             },
-            super::record_kind(&*document.doc).as_deref(),
+            document
+                .and_then(|held| super::record_kind(&*held.doc))
+                .as_deref(),
             surface.as_ref(),
-            collab_types::mutation_claims(&mutation, collab_types::record_unit).map_err(err)?,
+            collab_types::mutation_claims(mutation, collab_types::record_unit).map_err(err)?,
         );
         let plaintext = mutation.encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&plaintext)?;
-        if metadata.retention() != Some(ContentRetention::Delta)
+        if metadata.retention() != Some(retention)
             || metadata.channel
                 != collab_types::document_channel_id(app, &self.peer.core.workspace, record)
         {
-            return Err("a sealed write is a delta of the record's channel".into());
+            return Err("a sealed write is a delta or a checkpoint of the record's channel".into());
         }
         let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
         let seq = document
-            .channel
-            .last_seq_per_author
-            .get(&author)
-            .copied()
+            .and_then(|held| held.channel.last_seq_per_author.get(&author).copied())
             .unwrap_or(0)
             .checked_add(1)
             .ok_or("sequence exhausted")?;
@@ -558,11 +612,14 @@ pub(super) fn supersede(
     compaction: &SignedOp,
 ) -> Result<Vec<SignedOp>, String> {
     let wrapper = SealedCompaction::parse(compaction).map_err(err)?;
-    if history.is_empty() && floors.is_empty() {
+    if history.is_empty() {
         // Nothing of this route is here to supersede: its key holder's
         // compaction is the whole record, the first thing a replica that
         // holds none of it receives, as a device catching up from a store
-        // that keeps only ciphertext does.
+        // that keeps only ciphertext does. A replica that holds the route from
+        // the governance's coverage holds the floors that says it reached and
+        // none of its writes; there is nothing of it to hide from, and the
+        // compaction is how the store hands it over.
         return Ok(vec![compaction.clone()]);
     }
     let (superseded, kept): (Vec<&SignedOp>, Vec<&SignedOp>) =

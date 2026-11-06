@@ -21,10 +21,17 @@ class Element {
 
 // Run the real page wiring and workspace actions. Replace only the booted
 // WASM/GPU peer, arrival animation, and root custody with fixtures.
-async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
+async function fixture({boot, remembered = [], own = false, search = '', session = {}} = {}) {
   const values = new Map();
+  const stored = new Map(Object.entries(session));
+  const listeners = [];
   globalThis.localStorage = {getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key)};
-  globalThis.sessionStorage = {getItem: () => null, removeItem() {}};
+  globalThis.sessionStorage = {getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value), removeItem: key => stored.delete(key)};
+  globalThis.addEventListener = (type, listener) => listeners.push({type, listener});
+  globalThis.removeEventListener = (type, listener) => {
+    const index = listeners.findIndex(held => held.type === type && held.listener === listener);
+    if (index >= 0) listeners.splice(index, 1);
+  };
   globalThis.location = {href: 'https://web.example/#/room', search, pathname: '/', reload: () => calls.push('reload'), assign: () => calls.push('assign')};
   globalThis.history = {pushState: () => calls.push('history')};
   globalThis.document = {body: new Element('body'), documentElement: {dataset: {}, toggleAttribute() {}}, createElement: tag => new Element(tag),
@@ -60,8 +67,8 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
     .replace("import {failureMessage, startArrival, STOPPED_DRAWING} from './arrival.mjs';", "const startArrival = () => {}, failureMessage = error => error.message, STOPPED_DRAWING = 'stopped';")
     .replace("import {servedVersion, watchForUpdate} from './bundle-update.mjs';", "import {servedVersion} from './bundle-update.mjs';\nconst watchForUpdate = () => {};")
     .replace("import {rendererUnavailable} from './webgpu-safety.mjs';", 'const rendererUnavailable = async () => null;')
-    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;')
-    .replace('isPublicHome, joinViaHost,', 'isPublicHome,')
+    .replace("import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';", 'const currentIdentity = () => globalThis.__entryPageFixture.identity;\nconst browserPerson = async () => globalThis.__entryPageFixture.identity;')
+    .replace('isPublicHome, joinGranted, joinViaHost,', 'isPublicHome, joinGranted,')
     .replace('const PAGE_BUILD', 'const joinViaHost = (...args) => globalThis.__entryPageFixture.joinViaHost(...args);\nconst PAGE_BUILD')
     .replace(/from '(\.\/[^']+)'/g, (_all, path) => `from '${new URL(path, import.meta.url).href}'`);
   // A fresh module per fixture; the nonce rides in the source since Bun refuses a fragment on a base64 data URL.
@@ -69,7 +76,7 @@ async function fixture({boot, remembered = [], own = false, search = ''} = {}) {
   // A page that cannot get in throws its cause on, to the console.
   const failure = await startEntryPage({mode: 'desktop'}).then(() => null, error => error);
   await tick();
-  return {calls, shown, diagnostics, page, prepared, failure};
+  return {calls, shown, diagnostics, page, prepared, listeners, session: stored, failure};
 }
 
 test('the GPU is set up once the host lets the page in, not while it asks', async () => {
@@ -125,14 +132,14 @@ test('workspaces another host held at the origin of the page host are no longer 
     {origin: ORIGIN, room: 'gone-2', hostDevice: 'e2'.repeat(32), name: 'Other'},
     {origin: 'https://elsewhere.example', room: 'away', hostDevice: 'e3'.repeat(32), name: 'Away'},
   ]});
-  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Invite someone']);
+  assert.deepEqual(shown.at(-1).map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'Open Away', 'New workspace', 'Join a workspace', 'Invite someone']);
   assert.deepEqual(enteredWorkspaces().map(entry => entry.room), ['current', 'other', 'away']);
 });
 
 test('the page keeps switch and invitation actions together and dispatches both', async () => {
   const {calls, shown, diagnostics} = await fixture();
   const actions = shown.at(-1);
-  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Invite someone']);
+  assert.deepEqual(actions.map(action => action.title), ['Set up a machine', 'Open your desktop', 'Open Other', 'New workspace', 'Join a workspace', 'Invite someone']);
   diagnostics.onHostAction('invite-someone');
   await tick();
   assert.deepEqual(calls, ['invite']);
@@ -234,6 +241,95 @@ test('an embedded workspace offers no Invite it could not carry out', async () =
   assert.equal(deps.onInvite, undefined);
   await fixture({boot: async (options, page) => { deps = options.deps; return page; }});
   assert.equal(typeof deps.onInvite, 'function');
+});
+
+const LOUNGE = {name: 'Lounge', host: {origin: 'https://home.example'}, admission: 'https://home.example/peer/v1/directory/lounge/'};
+
+test('an embed shows its site’s fallback until the visitor’s first gesture, which joins', async () => {
+  const told = [];
+  const requests = [];
+  globalThis.window = globalThis;
+  globalThis.parent = {postMessage: (message, origin) => told.push({message, origin})};
+  globalThis.fetch = async url => { requests.push(String(url)); throw new Error('the page asked the network before anyone did anything'); };
+  const {calls, failure, listeners, session} = await fixture({search: '?embed=1', boot: async (options, booted) => {
+    const {deps} = options;
+    deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', embedder: 'https://site.example'}});
+    // Nothing mounts. The page takes no seat and makes no person of its own.
+    assert.deepEqual(await deps.enterViaHost({workspace: LOUNGE}), {idle: true});
+    assert.equal(document.documentElement.dataset.entry, 'idle');
+    assert.equal(document.getElementById('status').textContent, 'Click or type to join');
+    return null;
+  }});
+  assert.equal(failure, null);
+  assert.deepEqual(told, [{message: {type: 'tilo-embed', state: 'idle'}, origin: 'https://site.example'}]);
+  assert.deepEqual(requests, [], 'no spectate, no door, no person');
+  assert.deepEqual(calls, []);
+  // The first pointer or key joins on the page that loads for it, and the
+  // gesture goes no further than the page.
+  const gesture = listeners.find(held => held.type === 'pointerdown');
+  assert.ok(gesture);
+  assert.ok(listeners.some(held => held.type === 'keydown'));
+  let stopped = false;
+  gesture.listener({preventDefault: () => { stopped = true; }, stopPropagation: () => { stopped = true; }});
+  assert.ok(stopped, 'the site’s own click handlers never see it');
+  assert.equal(document.getElementById('status').textContent, 'Joining…');
+  assert.equal(session.get('tilo-embed-join'), '1');
+  assert.deepEqual(calls, ['reload']);
+  assert.deepEqual(listeners.filter(held => ['pointerdown', 'keydown'].includes(held.type)), [], 'the gesture is taken once');
+});
+
+test('the page that loads after the gesture joins as this browser’s own person', async () => {
+  const requests = [];
+  globalThis.window = globalThis;
+  globalThis.parent = {postMessage: () => {}};
+  globalThis.fetch = async url => { requests.push(String(url)); throw new Error('no request before the door'); };
+  const joined = [];
+  const {failure, session} = await fixture({search: '?embed=1', session: {'tilo-embed-join': '1'}, boot: async (options, booted) => {
+    const {deps} = options;
+    deps.onScope({scope: booted.router.route.target.scope, entry: {base: 'https://home.example/', embedder: 'https://site.example'}});
+    globalThis.__entryPageFixture.joinViaHost = async options => { joined.push(options); return {workspace: 'LOUNGE', origin: 'https://home.example'}; };
+    assert.equal((await deps.enterViaHost({workspace: LOUNGE})).workspace, 'LOUNGE');
+    return null;
+  }});
+  assert.equal(failure, null);
+  assert.equal(joined.length, 1, 'joined once, with no pairing code');
+  // The person the browser holds, not a visitor's key the page made up.
+  assert.equal(joined[0].identity.userPublicKey, USER);
+  assert.equal(joined[0].workspace, LOUNGE);
+  assert.match(joined[0].displayName, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.deepEqual(requests, [], 'no request was made for a visitor');
+  assert.equal(session.has('tilo-embed-join'), false, 'the gesture is spent');
+});
+
+test('an uncaught page error reaches the door the site names', async () => {
+  const beacons = [];
+  globalThis.window = globalThis;
+  globalThis.parent = {postMessage: () => {}};
+  Object.defineProperty(globalThis, 'navigator', {configurable: true,
+    value: {sendBeacon: (url, body) => { beacons.push({url: String(url), body}); return true; }, language: 'en'}});
+  const {failure, listeners} = await fixture({search: '?embed=1', boot: async (options, booted) => {
+    options.deps.onScope({scope: booted.router.route.target.scope,
+      entry: {base: 'https://home.example/', home: LOUNGE, embedder: 'https://site.example'}});
+    return null;
+  }});
+  assert.equal(failure, null);
+  const fire = (type, event) => listeners.filter(held => held.type === type).forEach(held => held.listener(event));
+  fire('error', {message: 'x is not a function', filename: 'https://home.example/v/7/page.js', lineno: 12, colno: 4,
+    error: {stack: 'at page.js:12'}});
+  fire('unhandledrejection', {reason: Error('the host went away')});
+  assert.equal(beacons.length, 2);
+  assert.equal(beacons[0].url, 'https://home.example/peer/v1/directory/lounge/errors', 'the door\'s own errors route');
+  assert.deepEqual(JSON.parse(await beacons[0].body.text()), {
+    kind: 'error', message: 'x is not a function', source: 'https://home.example/v/7/page.js', line: 12, column: 4,
+    stack: 'at page.js:12', page: '/', build: 'development'});
+  const rejection = JSON.parse(await beacons[1].body.text());
+  assert.equal(rejection.kind, 'unhandledrejection');
+  assert.equal(rejection.message, 'the host went away');
+  assert.equal(rejection.page, '/');
+  assert.equal(typeof rejection.stack, 'string');
+  // A page that keeps failing says five things a load, never more.
+  for (let i = 0; i < 10; i++) fire('error', {message: `again ${i}`});
+  assert.equal(beacons.length, 5);
 });
 
 // A session's own status, as the peer publishes it (PeerSnapshot).

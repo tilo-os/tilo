@@ -150,7 +150,7 @@ fn one_output(told: &Rc<RefCell<Told>>) -> Compositor {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     compositor
 }
 
@@ -230,7 +230,7 @@ fn an_output_plugged_in_while_the_desk_runs_is_lit_beside_the_others_and_told_to
     assert_eq!(client.outputs(), 2, "clients see the new output");
 
     // It draws, rather than sitting dark until something else does.
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
     assert_eq!(shot.pixel(1279, 719), Some(BACKGROUND));
 }

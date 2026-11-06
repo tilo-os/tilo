@@ -390,16 +390,13 @@ view shown(p: Post) {{
 }
 
 #[test]
-fn an_action_list_is_an_action_prop_run_by_events_of_the_node() {
-    let c = compile_body(&format!(
+fn an_action_list_prop_takes_the_actions_the_host_offers() {
+    // A view never reads the actions back, so it cannot make one: the host fills the prop.
+    let (code, message) = one_error(&format!(
         "{CHAT}\nview more(m: Message) {{\n    ui.MenuButton(\"More\", actions: actions(m))\n}}"
     ));
-    validate(&c.wasm);
-    let strings = String::from_utf8_lossy(&c.wasm).into_owned();
-    assert!(
-        strings.contains("ui_actions"),
-        "the actions reach the host as offered"
-    );
+    assert_eq!(code, "E047");
+    assert!(message.contains("host"), "{message}");
     let (code, message) = one_error(&format!(
         "{CHAT}\nview more(m: Message) {{\n    ui.MenuButton(\"More\", actions: [m.text])\n}}"
     ));

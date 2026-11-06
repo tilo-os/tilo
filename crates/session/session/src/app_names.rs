@@ -9,6 +9,15 @@
 //! desktop carries; this adds what only a session knows: the name the
 //! device's app lists last read for an installed app or desktop entry.
 
+/// The `Name[xx]` candidates of the person's interface language: what every
+/// desktop entry this session reads is named in, so a German machine with
+/// English chosen lists `Files` and not `Dateien`.
+pub(crate) fn entry_locales() -> Vec<String> {
+    desktop_entry::locale::language_candidates(
+        settings_store::appearance::preferred_language().as_deref(),
+    )
+}
+
 /// What the app `app_id` is called: the installed package's own name, else
 /// the machine's desktop entry for it, else the registry's name, else its
 /// id written as words (`org.example.file-explorer` → "File Explorer").

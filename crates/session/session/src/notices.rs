@@ -1,15 +1,24 @@
 //! What the session itself tells the person, through their notifications.
 //!
-//! Seven things the desktop knows and the person should: that storage is
+//! Eight things the desktop knows and the person should: that storage is
 //! running out, that the battery is too, that the media codecs they asked for
 //! finished or failed, that the session or the computer stopped and started
-//! again, that an update waits for a restart, that the machine's graphics
-//! stopped and every frame is drawn in software from now on, and that a drive
-//! they plugged in is ready to open or eject. Each becomes an ordinary
-//! notification ([`tilo_notifications_service::Notification`]) published by
-//! the notifications service: the banners and the centre read it from the
-//! same resource any app's notification is read from, the person closes or
-//! acts on it as they would on any other, and nothing here draws.
+//! again, that an update waits for a restart, that a deployment it tried did
+//! not start and this computer went back to the one that worked, that the
+//! machine's graphics stopped and every frame is drawn in software from now
+//! on, and that a drive they plugged in is ready to open or eject. Each
+//! becomes an ordinary notification ([`tilo_notifications_service::Notification`])
+//! published by the notifications service: the banners and the centre read it
+//! from the same resource any app's notification is read from, the person
+//! closes or acts on it as they would on any other, and nothing here draws.
+//!
+//! Two more say what this computer could not read of the person's own state —
+//! the list of their workspaces, and how far its last update got — so a list
+//! that starts empty or an update that does nothing is not unexplained. The
+//! same goes for what it kept of the agents they let work here, and of the
+//! programs they added to their apps: each is asked about again, or missing
+//! from the launcher, and they are told once why. Each of these keeps its
+//! operator's own warning in the log beside the person's notice.
 //!
 //! They are the whole machine's news, so they are shown on every display
 //! ([`Notification::machine_wide`]).
@@ -21,14 +30,15 @@
 //! Nothing is polled hard: storage is one `statvfs` per filesystem every two
 //! minutes (every twenty seconds while one of them is low), the codecs are a
 //! watch on the helper's status file, the crash records are read once at
-//! start, the update state once the desktop has settled and then hourly, and
-//! the graphics fallback is a read of what the renderers recorded, once per
-//! pass of the session's loop.
+//! start, and the graphics fallback is a read of what the renderers recorded,
+//! once per pass of the session's loop. The one about an update waiting for a
+//! restart, and the one about a deployment the machine went back from, are
+//! raised by the clock that finishes the update ([`crate::update_finish`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
@@ -37,7 +47,7 @@ use tilo_desktop_surface::notifications::{
 };
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
-use tilo_notifications_service::{Notification, Notifications, Taken};
+use tilo_notifications_service::{Notification, Notifications};
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
@@ -47,7 +57,7 @@ use crate::mount::drives::Medium;
 
 /// The action the update notice offers: restart the machine into the staged
 /// update.
-pub const RESTART_ACTION: &str = "restart-to-update";
+pub const RESTART_ACTION: &str = update::RESTART_TO_UPDATE;
 
 /// The action a plugged-in drive's notice offers: open it in Files on its
 /// mount point.
@@ -56,16 +66,6 @@ pub const OPEN_MEDIUM_ACTION: &str = "open-medium";
 /// The action a plugged-in drive's notice offers: eject it, so it can be
 /// pulled out.
 pub const EJECT_MEDIUM_ACTION: &str = "eject-medium";
-
-/// The shortest time between two notices that an update waits for a restart.
-/// They batch instead of interrupting the person every day.
-pub const ASK_INTERVAL: Duration = Duration::from_secs(2 * 24 * 60 * 60);
-
-/// When the session first looks for a staged update: once it has settled.
-const FIRST_LOOK_AFTER: Duration = Duration::from_secs(10 * 60);
-
-/// How often it looks again. Staging happens a few times a day at most.
-const LOOK_EVERY: Duration = Duration::from_secs(60 * 60);
 
 /// How often storage is looked at, and how often while one filesystem is low:
 /// it is when it changes fastest.
@@ -140,8 +140,11 @@ impl Notice {
 
     /// Show it on the desk this session draws, for a session with no
     /// notifications service: what the session raises is kept there rather
-    /// than lost, and it stays until the person lets it go.
-    pub(crate) fn tell_desk(self, desk: &DesktopNotifications) {
+    /// than lost, and it stays until the person lets it go. What the notice
+    /// offers the person it offers there too, so a question keeps its
+    /// answers. Says which notification went out: the notice whose answer the
+    /// session waits on finds it by that id.
+    pub(crate) fn tell_desk(self, desk: &DesktopNotifications) -> u64 {
         let severity = match self.urgency {
             0 => NotificationSeverity::Info,
             1 => NotificationSeverity::Warning,
@@ -153,15 +156,16 @@ impl Notice {
             .expires_after
             .filter(|after| !after.is_zero())
             .unwrap_or(PERSISTENT_DISMISS);
-        let desk_notice = DeskNotification::new(self.title, self.body)
+        let mut desk_notice = DeskNotification::new(self.title, self.body)
             .with_app_name(self.app)
             .with_severity(severity)
             .with_dismiss_after(dismiss_after);
+        desk_notice.actions = self.actions;
         desk.post(if self.machine_wide {
             desk_notice.machine_wide()
         } else {
             desk_notice
-        });
+        })
     }
 
     /// Show it to the person, and say which notification went out: a producer
@@ -584,9 +588,10 @@ pub fn tell_graphics_fallback(notifications: &Notifications) {
     graphics_notice().tell(notifications);
 }
 
-/// The notice that a staged update waits for a restart, offering the action
-/// that takes it.
-fn update_notice() -> Notice {
+/// The notice that an update waits for a restart of the machine, offering
+/// the action that takes it: raised by the update's own clock
+/// ([`crate::update_finish`]), at most every two days.
+pub(crate) fn update_notice() -> Notice {
     Notice {
         app: t("system-update-app-name"),
         urgency: 1,
@@ -601,51 +606,140 @@ fn update_notice() -> Notice {
     }
 }
 
-/// Whether to ask now: a restart is needed and the last request is at least
-/// [`ASK_INTERVAL`] old, or there was none.
-#[must_use]
-pub fn update_due(needed: bool, last_asked: Option<SystemTime>, now: SystemTime) -> bool {
-    needed
-        && last_asked.is_none_or(|asked| {
-            now.duration_since(asked)
-                .is_ok_and(|since| since >= ASK_INTERVAL)
-        })
-}
-
-/// Whether a staged update needs a restart of the machine: what the live
-/// update says, or, where none runs, that an image is staged at all. An
-/// update that applied live and waits only for the desktop says nothing here.
-fn restart_needed() -> bool {
-    update::restart_needed(update::staged(), update::live_state().as_ref())
-}
-
-/// When the person was last asked, as recorded at `path`.
-fn last_asked_at(path: &Path) -> Option<SystemTime> {
-    let seconds = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
-    SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
-}
-
-fn record_asked_at(path: &Path, now: SystemTime) {
-    let seconds = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    if let Err(error) =
-        tilo_files::native::atomic::write_creating_parent(path, seconds.to_string().as_bytes())
-    {
-        tracing::warn!(%error, "could not record when a restart was last asked for");
+/// The notice that the update state the services last published does not read
+/// back: this machine cannot tell how far its last update got, so it acts on
+/// nothing it could not read and says so once. Raised by the update's own
+/// clock ([`crate::update_finish`]), which keeps the warning for operators.
+pub(crate) fn update_state_notice() -> Notice {
+    Notice {
+        app: t("system-update-app-name"),
+        urgency: 1,
+        title: t("update-state-unreadable-title"),
+        body: t("update-state-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
     }
 }
 
-fn asked_path() -> Option<PathBuf> {
-    tilo_paths::state_dir().map(|root| root.join("tilo/update-restart-asked"))
+/// The notice of a deployment this machine went back from: what did not
+/// start, how many tries it spent, what runs instead, and where the failed
+/// tries left what they found. Raised once per fallback by the update's own
+/// clock ([`crate::update_finish`]), and it stays until the person dismisses
+/// it: a computer that went back from an update is not news to lose.
+pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
+    let what = fallback
+        .version
+        .clone()
+        .or_else(|| fallback.image.clone())
+        .unwrap_or_else(|| t("system-update-went-back-unnamed"));
+    let tries = fallback.tries.map_or_else(
+        || t("system-update-went-back-several-tries"),
+        |tries| tries.to_string(),
+    );
+    let running = fallback
+        .running
+        .clone()
+        .unwrap_or_else(|| t("system-update-went-back-runs-before"));
+    let args = [
+        ("what", what.into()),
+        ("tries", tries.into()),
+        ("running", running.into()),
+        ("summary", fallback.summary.as_str().into()),
+    ];
+    Notice {
+        app: t("system-update-app-name"),
+        urgency: 2,
+        title: t("system-update-went-back-title"),
+        body: t_args("system-update-went-back-body", &args),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
 }
 
-/// Restart the machine into the staged update, as the notice's action asks.
-fn restart() {
-    if let Err(error) =
-        os_actions::session::perform_session_action(os_actions::SessionAction::Restart)
-    {
-        tracing::warn!(%error, "the machine could not restart into the update");
+/// The notice that the workspaces this computer remembered do not read back:
+/// the list starts empty, so it says why rather than letting an empty list
+/// look like workspaces that are gone. Raised once, by the pass that opens the
+/// list ([`crate::workspaces::Personal::open`]), which keeps the warning for
+/// operators.
+pub(crate) fn workspaces_notice() -> Notice {
+    Notice {
+        app: t("workspaces-app-name"),
+        urgency: 1,
+        title: t("workspaces-unreadable-title"),
+        body: t("workspaces-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice that the "Always allow" answers this computer kept for the
+/// agents at its door do not read back: `agent` is the one the answer was
+/// given to, as far as the kept file still says, and `None` when it does not
+/// say even that. Raised by the door's own mount
+/// ([`crate::agent_door::mount_named`]), which keeps the warning for
+/// operators; each answer is asked for again the next time its agent
+/// connects.
+pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {
+    let (title, body) = match agent {
+        Some(agent) => (
+            t_args("agent-bindings-lost-title", &[("agent", agent.into())]),
+            t_args("agent-bindings-lost-body", &[("agent", agent.into())]),
+        ),
+        None => (
+            t("agent-bindings-unreadable-title"),
+            t("agent-bindings-unreadable-body"),
+        ),
+    };
+    Notice {
+        app: t("agent-bindings-app-name"),
+        urgency: 1,
+        title,
+        body,
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice that the registry of the programs the person downloaded does
+/// not read back: none of their apps is listed until it does, so it says why
+/// rather than letting them look gone. Raised once, by the pass that reads it
+/// ([`crate::Shared::downloaded_apps`]), which keeps the warning for
+/// operators.
+pub(crate) fn downloaded_apps_notice() -> Notice {
+    Notice {
+        app: t("downloaded-apps-app-name"),
+        urgency: 1,
+        title: t("downloaded-apps-unreadable-title"),
+        body: t("downloaded-apps-unreadable-body"),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
+    }
+}
+
+/// The notice that a device stopped taking one of this device's writes, and
+/// why: waiting changes nothing, so the change stays on the devices that took
+/// it and the person hears it once. Raised by the pass that serves the
+/// activity ([`crate::Shared::serve_activity`]).
+pub(crate) fn refused_write_notice(device: &str, reason: &str) -> Notice {
+    Notice {
+        app: t("refused-write-app"),
+        urgency: 2,
+        title: t_args("refused-write-title", &[("device", device.into())]),
+        body: t_args("refused-write-body", &[("reason", reason.into())]),
+        actions: Vec::new(),
+        expires_after: None,
+        machine_wide: true,
+        sound: None,
     }
 }
 
@@ -658,20 +752,6 @@ pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
     };
     let today = ui::clock::local_now().date_naive();
     news_notice(&news, today).tell(notifications);
-}
-
-/// One look for a staged update that waits for a restart: ask the person at
-/// most every [`ASK_INTERVAL`].
-fn look_for_update(notifications: &Notifications) {
-    let Some(path) = asked_path() else {
-        return;
-    };
-    let now = SystemTime::now();
-    if !update_due(restart_needed(), last_asked_at(&path), now) {
-        return;
-    }
-    record_asked_at(&path, now);
-    update_notice().tell(notifications);
 }
 
 /// The codecs status last seen by the watch.
@@ -707,7 +787,7 @@ fn follow_codecs(notifications: &Notifications) {
                 *held = Some(watch);
             }
         }
-        Err(error) => tracing::debug!(%error, "codec pack notices are unavailable"),
+        Err(error) => tracing::warn!(%error, "codec pack notices are unavailable"),
     }
 }
 
@@ -756,8 +836,8 @@ impl tilo_compositor::LoopTurns for Turns {
 static TELLING: OnceLock<()> = OnceLock::new();
 
 /// Start telling the person what this desktop knows about its machine: the
-/// crash records of the last start now, then storage, the codecs and a staged
-/// update as they change. Once per process.
+/// crash records of the last start now, then storage and the codecs as they
+/// change. Once per process.
 pub fn start(notifications: &Notifications) {
     if TELLING.set(()).is_err() {
         return;
@@ -765,7 +845,7 @@ pub fn start(notifications: &Notifications) {
     // The records are files, and the kernel's are read through commands: the
     // main thread walks no path.
     let news = notifications.clone();
-    let _ = std::thread::Builder::new()
+    let crash_news = std::thread::Builder::new()
         .name("crash-news".into())
         .spawn(move || {
             let Some(dir) = tilo_crash_records::directory() else {
@@ -776,31 +856,18 @@ pub fn start(notifications: &Notifications) {
             tilo_crash_records::stopped::take_in(&dir);
             tell_crash_news(&news, &dir);
         });
+    if let Err(error) = crash_news {
+        tracing::warn!(%error, "crash records are not watched for");
+    }
     follow_codecs(notifications);
 
     let storage = notifications.clone();
-    let _ = std::thread::Builder::new()
+    let storage_watch = std::thread::Builder::new()
         .name("storage-watch".into())
         .spawn(move || watch_storage(&storage));
-
-    let updates = notifications.clone();
-    let _ = std::thread::Builder::new()
-        .name("update-watch".into())
-        .spawn(move || {
-            std::thread::sleep(FIRST_LOOK_AFTER);
-            loop {
-                look_for_update(&updates);
-                std::thread::sleep(LOOK_EVERY);
-            }
-        });
-
-    notifications.on_taken(move |_id, taken| {
-        if let Taken::Action { key, .. } = taken
-            && key == RESTART_ACTION
-        {
-            restart();
-        }
-    });
+    if let Err(error) = storage_watch {
+        tracing::warn!(%error, "storage is not watched for");
+    }
 }
 
 /// Watch the free space of the person's filesystems, announcing each one that
@@ -827,6 +894,7 @@ mod tests {
     use super::*;
     use os_actions::codec_pack::CodecPackStatus;
     use tilo_compositor::LoopTurns as _;
+    use tilo_notifications_service::Taken;
     use tilo_service::Service;
 
     fn room(capacity_gib: u64, available_mib: u64) -> Workspace {
@@ -1224,38 +1292,53 @@ mod tests {
         assert!(notice.body.contains("stays on this computer"));
     }
 
+    /// What this computer could not read of the person's workspaces and of its
+    /// own update reaches them as ordinary notifications: what did not read,
+    /// and what is still true for them.
     #[test]
-    fn a_staged_update_asks_for_a_restart_at_most_every_two_days() {
-        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        let hours = |h: u64| start + Duration::from_secs(h * 60 * 60);
+    fn what_this_computer_could_not_read_reaches_the_person() {
+        let notifications = Notifications::new();
+        workspaces_notice().tell(&notifications);
+        update_state_notice().tell(&notifications);
+
+        let live = notifications.live();
+        assert_eq!(live.len(), 2, "each failure is its own notice");
+
+        let workspaces = live
+            .iter()
+            .find(|notification| notification.summary == "Your workspaces could not be read")
+            .expect("the workspaces notice");
+        assert_eq!(workspaces.app_name, "Workspaces");
         assert!(
-            !update_due(false, None, start),
-            "nothing staged, nothing asked"
+            workspaces.body.contains("Nothing was removed"),
+            "an empty list is not lost workspaces: {}",
+            workspaces.body
         );
         assert!(
-            update_due(true, None, start),
-            "the first staged update asks"
+            workspaces.machine_wide,
+            "the person's list is their news on every display"
         );
-        assert!(!update_due(true, Some(start), hours(47)));
-        assert!(update_due(true, Some(start), hours(48)));
-        assert!(!update_due(false, Some(start), hours(100)));
+
+        let update = live
+            .iter()
+            .find(|notification| notification.summary == "The update state could not be read")
+            .expect("the update notice");
+        assert_eq!(update.app_name, "Updates");
+        assert!(
+            update.body.contains("did not act on it"),
+            "the person learns nothing was done on a state it could not read: {}",
+            update.body
+        );
+    }
+
+    #[test]
+    fn the_update_notice_offers_the_restart_of_the_machine() {
         let notice = update_notice();
         assert_eq!(notice.title, "Restart to finish updating");
         assert_eq!(
             notice.actions,
             [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
         );
-    }
-
-    /// The two days between requests survive a restart of the session.
-    #[test]
-    fn the_last_request_survives_a_restart_of_the_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("tilo/update-restart-asked");
-        assert_eq!(last_asked_at(&path), None);
-        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-        record_asked_at(&path, at);
-        assert_eq!(last_asked_at(&path), Some(at));
     }
 
     /// The compositor's hook marks the loop's turns as the watchdog counts

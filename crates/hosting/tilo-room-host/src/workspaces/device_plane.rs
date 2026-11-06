@@ -308,7 +308,7 @@ fn load_permille() -> u32 {
     let Some(one) = report.split_whitespace().next() else {
         return 0;
     };
-    // optional-decode: a load this machine cannot read is none in hand.
+    // ignored-failure: a load this machine cannot read is none in hand.
     let Ok(load) = one.parse::<f32>() else {
         return 0;
     };

@@ -222,7 +222,7 @@ fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
         "the wait withholds the desk's actions"
     );
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while session.setup_up() {
         assert!(
             std::time::Instant::now() < deadline,

@@ -1,7 +1,7 @@
 //! `CompactVolunteer` and `Compacted`: members volunteering to compact sealed
 //! routes and the coverage statements the host acts on.
 
-use super::{AuthenticatedPeer, Envelope, SessionCtx, workspace_access};
+use super::{AuthenticatedPeer, Envelope, SessionCtx};
 
 /// A member volunteering to compact sealed routes, or its coverage
 /// statement for one: the host removes the entries the statement names. A
@@ -30,10 +30,6 @@ pub(super) async fn handle_compaction(
     // Compaction is a device's own act: a host carrying its members' changes
     // does not compact on their behalf.
     if ws.lock().await.attached(&peer.device_public_key) {
-        return;
-    }
-    // Compacting rewrites what the workspace keeps: a spectator never does.
-    if workspace_access::watches_only(&*ws.lock().await, peer) {
         return;
     }
     let Envelope::Compacted {

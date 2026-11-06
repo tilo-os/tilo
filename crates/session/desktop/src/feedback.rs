@@ -242,6 +242,8 @@ mod focus_tests {
                     title: "Bank statement".into(),
                     tile,
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 active_tab: id,
                 width: WindowWidth::Fraction(500),

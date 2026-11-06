@@ -103,11 +103,6 @@ impl Peek {
         self.follow = Rect::ZERO;
     }
 
-    /// How open the peek is, 0 to 1.
-    pub(super) fn openness(&self, now: Instant) -> f64 {
-        self.shown.progress(now)
-    }
-
     pub(super) fn is_moving(&self, now: Instant) -> bool {
         self.shown.is_moving(now)
     }
@@ -130,8 +125,7 @@ impl Peek {
         }
     }
 
-    /// Paint the peek; returns the card as laid out, for the message box to
-    /// stand beside.
+    /// Paint the peek; returns the card as laid out.
     pub(super) fn draw(
         &mut self,
         scene: &mut Scene,
@@ -174,8 +168,7 @@ impl Peek {
             + f64::from(spacing.s3)
             + control
             + pad;
-        let reserve = super::composer::height(theme, false) + gap(theme);
-        self.card = place(model, (width, height), reserve, theme);
+        self.card = place(model, (width, height), theme);
         let card = self.card;
         let progress = self.shown.progress(now);
         let origin = Appear::origin(card, model.anchor.center());
@@ -308,9 +301,8 @@ fn paint_follow(ctx: &mut ui::paint::PaintCtx<'_>, slot: Rect, model: &PeekModel
 }
 
 /// Where the card of `size` goes: beside the panel, away from the edge it
-/// rests on, level with the row it opened from, kept on screen with
-/// `reserve` free under it for the message box.
-fn place(model: &PeekModel<'_>, (width, height): (f64, f64), reserve: f64, theme: &Theme) -> Rect {
+/// rests on, level with the row it opened from, kept on screen.
+fn place(model: &PeekModel<'_>, (width, height): (f64, f64), theme: &Theme) -> Rect {
     let gap = gap(theme);
     let margin = f64::from(theme.tokens.spacing.s3);
     let host = model.host;
@@ -323,7 +315,7 @@ fn place(model: &PeekModel<'_>, (width, height): (f64, f64), reserve: f64, theme
     let clamp_y = |y: f64| {
         y.clamp(
             host.y0 + margin,
-            (host.y1 - margin - height - reserve).max(host.y0 + margin),
+            (host.y1 - margin - height).max(host.y0 + margin),
         )
     };
     let (x, y) = match model.edge {
@@ -337,7 +329,7 @@ fn place(model: &PeekModel<'_>, (width, height): (f64, f64), reserve: f64, theme
         ),
         DockEdge::Bottom => (
             clamp_x(model.panel.x0),
-            (model.panel.y0 - gap - height - reserve).max(host.y0 + margin),
+            (model.panel.y0 - gap - height).max(host.y0 + margin),
         ),
     };
     Rect::new(x, y, x + width, y + height)

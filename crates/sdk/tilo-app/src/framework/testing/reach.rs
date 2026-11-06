@@ -140,7 +140,11 @@ pub fn unreachable_actions_in_share<A: ResourceApp>(
                     unreachable.push(format!("{} {}: {error}", address.resource, address.action));
                 }
             }
-            Err(_) => {}
+            Err(error) => {
+                // Only an action the door no longer resolves continues the
+                // walk; any other refusal is worth saying.
+                tracing::warn!(%error, resource = %address.resource, action = %address.action, "an action could not be invoked");
+            }
         }
     }
     unreachable
@@ -181,10 +185,11 @@ fn sample_param(
     use tilo_actions::ParamType;
     let numeric = matches!(param.ty, ParamType::Integer | ParamType::Number);
     if let Some(choice) = param.choices.first() {
-        return numeric
-            .then(|| serde_json::from_str(choice).ok())
-            .flatten()
-            .unwrap_or_else(|| serde_json::Value::String(choice.to_string()));
+        // A choice the schema writes as JSON text is that number; any other
+        // choice is the text itself.
+        // ignored-failure: a choice that is not a JSON number is the text itself
+        let number = numeric.then(|| serde_json::from_str(choice).ok()).flatten();
+        return number.unwrap_or_else(|| serde_json::Value::String(choice.to_string()));
     }
     if let Some(value) = param.schema.as_deref().and_then(sample_schema) {
         return value;

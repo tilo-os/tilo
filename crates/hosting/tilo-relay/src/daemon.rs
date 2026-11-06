@@ -160,6 +160,10 @@ pub struct Relay {
     web: Box<WebContext>,
     /// The workspaces this relay governs; absent when it hosts no workspace authority.
     workspaces: Option<crate::workspaces::Workspaces>,
+    /// This device's part in the channels of the workspaces it governs:
+    /// absent when its certificate does not let it own workspaces, and so it
+    /// holds no channel keys.
+    _channels: Option<Arc<crate::channels::Channels>>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -473,6 +477,19 @@ impl Relay {
             && !additional_protocols.iter().any(|(alpn, _)| {
                 alpn.as_slice() == tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN
             });
+        // A relay whose device may own workspaces takes part in every channel of
+        // the workspaces it governs, as one participant beside their members; a
+        // relay whose device may not keeps no channel keys at all.
+        let channels = (governs_rooms
+            && identity
+                .device_cert
+                .capabilities
+                .takes_part_in_workspace_channels())
+        .then(|| {
+            crate::channels::Channels::open(&cfg.state_root, identity.device_signing_key.clone())
+        })
+        .transpose()?
+        .map(Arc::new);
         let (sessions, governed) = crate::host::HostSessions::open(
             crate::host::HostConfig {
                 state_root: cfg.state_root.clone(),
@@ -486,11 +503,14 @@ impl Relay {
             identity.clone(),
             endpoint.clone(),
             governs_rooms,
-            None,
+            channels.as_ref().map(|channels| channels.device()),
             |_workspaces, rest| rest,
         )
         .await?;
         let governed = governed.map(|governed| governed.workspaces);
+        if let (Some(channels), Some(governed)) = (&channels, &governed) {
+            channels.attach(governed);
+        }
         let workspaces = sessions.workspaces.clone();
         let metrics = sessions.metrics.clone();
         let live = sessions.identity.clone();
@@ -572,6 +592,7 @@ impl Relay {
             full_replica: full_replica.clone(),
             web,
             workspaces: governed,
+            _channels: channels,
         })
     }
 
@@ -702,32 +723,6 @@ impl Relay {
             .sessions
             .replace_governed_workspace_access(workspace_id, pinned, access, state_root)
             .await?)
-    }
-
-    /// Let visitors watch `workspace_id` read-only as `spectators`: every
-    /// device the spectator root certified reads the workspace's state and
-    /// writes nothing, up to `spectators.seats` subscribed at once (see
-    /// `crate::workspace_access`). The spectator person must be a member of the
-    /// workspace, which is also what lets its devices through the handshake.
-    pub async fn admit_spectators(
-        &self,
-        workspace_id: u64,
-        spectators: crate::workspace_access::Spectators,
-    ) -> Result<(), RelayError> {
-        let workspace = self
-            .sessions
-            .workspaces
-            .lock()
-            .await
-            .get(&workspace_id)
-            .cloned()
-            .ok_or_else(|| {
-                RelayError::GovernedAccess(format!("workspace {workspace_id} is not open here"))
-            })?;
-        workspace.lock().await.spectators = Some(spectators);
-        // Live subscriptions are audited again: fewer seats end the extra.
-        crate::authority_epoch::bump();
-        Ok(())
     }
 
     /// The workspaces this relay governs, when it hosts the workspace authority.

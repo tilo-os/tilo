@@ -14,11 +14,8 @@ use std::{
     process::{Child, Command},
 };
 
-pub mod adapter_tools;
-pub mod adapters;
 mod apps;
 pub mod cli;
-pub mod computer;
 mod daemon;
 #[cfg(target_os = "macos")]
 pub mod device_grants;
@@ -34,7 +31,6 @@ pub mod session_door;
 pub mod standalone;
 pub mod unix;
 pub mod viewer;
-pub mod watch;
 
 // Workspace admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.

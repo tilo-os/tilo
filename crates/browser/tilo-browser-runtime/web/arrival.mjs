@@ -336,10 +336,10 @@ function failure(kind, workspace, messages) {
     : localized(messages, `arrival-failed-${kind}-unnamed`, unnamed);
 }
 
-/** Whether `error` is a host's door turning this visitor away for a while
+/** Whether `error` is a host's door turning this person away for a while
  * (`cooling-down`: the address someone removed from the workspace joined from;
  * `removed`: the person themselves; `invitation-only`: a workspace that takes
- * people by invitation, and this visitor came without one),
+ * people by invitation, and this person came without one),
  * which trying again does not change. */
 export function refusedByHost(error) {
   return error?.name === 'HostAdmissionError' && ['cooling-down', 'removed', 'invitation-only'].includes(error.code);
@@ -441,36 +441,6 @@ export function failureMessage(error, {workspace = null, loaded = true, admitted
   const name = workspace || (loaded ? null : 'Tilo');
   if (unreachable(error)) return failure('unreachable', name, messages);
   return failure(admitted ? 'desktop' : 'general', name, messages);
-}
-
-/**
- * What a page watching a workspace through its door says about joining, so it
- * never promises a join the door will not give. `entered`: `watching` (an
- * embed, until a gesture) or `seatless` (the door had no seat, `because`
- * its code); `presence`: the door's answer (`admission`: `open` or
- * `invite`; `joins`: `false` while nobody joins), `null` when it did not
- * answer. `join` is what the page does
- * next: `gesture` joins on a click or key, `seat` once the door has a seat
- * for a guest again, `none` never by itself.
- */
-export function visitLine({entered, because = null, presence = null, workspace = null, messages = null}) {
-  const embed = entered === 'watching';
-  // Only members and invitees get in: the door's own words for it.
-  if (embed && presence?.admission === 'invite') {
-    return {line: `You’re watching live. ${failure('invitation-only', workspace, messages)}`, join: 'none'};
-  }
-  if (presence?.joins === false) {
-    return embed
-      ? {line: 'You’re watching live. Joining is closed for now; you can join once it opens.', join: 'seat'}
-      : {line: 'Joining is closed for now, so you’re watching live. You’ll join once it opens.', join: 'seat'};
-  }
-  if (embed) return {line: 'Click or type to join', join: 'gesture'};
-  return {
-    line: because === 'full'
-      ? 'It’s full right now, so you’re watching live. You’ll join when a seat frees up.'
-      : 'You couldn’t join just now, so you’re watching live. You’ll join in a moment.',
-    join: 'seat',
-  };
 }
 
 /** The language the desktop speaks before the person chooses one in

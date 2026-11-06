@@ -20,6 +20,28 @@ In production Rust under `crates/session/` and `apps/` this refuses:
   base colour, a backdrop's ground) — so only a written-out colour counts,
   by the provenance test the scrim rule (`MEDIA_FILL`) goes by.
 
+A session surface — a sheet, menu, quick-settings page, bar, banner, lock
+screen, onboarding page — looks like the apps only if it is built from the
+same components they are (docs/architecture/ui-inventory.md). In production
+Rust under `crates/session/` these refuse a surface that lays itself out
+instead of composing the shared ones:
+
+- hand-panel: painting a panel, card, edge or shadow itself
+  (`RoundedRect::from_rect`, `panel_ground`, `panel_border`, `panel_shadow`,
+  `surface::card`, …) instead of `ui::widget::paint_surface` /
+  `SurfaceLevel`, `FloatingPanelFace`, `ListRowFace`, `QuickTileFace` or the
+  `Button`/`IconButton` faces;
+- hand-text: painting a bare text run (`draw_text`, `draw_style`) instead of
+  putting the words in a widget (`Text`, `TextStack`, `ListRow`, `Section`,
+  `Button`);
+- hand-row: a painted shape within a few lines of a text run — a row, tile
+  or field composed by hand — instead of `ListRow`, `ControlRow`,
+  `ListRowFace` or `PropertyList`;
+- hand-metric: a literal radius, padding, inset or gap instead of the
+  theme's (`theme.tokens.radii`, `Spacing::…`, `Metrics::…`);
+- own-scroll: a scroll position the surface keeps and clamps itself instead
+  of the shared `Scrollable` / `Scroll`.
+
 Text an agent's model reads is not interface: the agent's tool schemas,
 tool descriptions and operation summaries (`MODEL_TEXT`) are prompts, in the
 notation the model is prompted with (`id — label`, `| variant`), and no
@@ -80,7 +102,71 @@ TEXT_RUN = re.compile(r"\.draw_(?:text|style)\s*\(")
 # How close a rounded fill and a text run must be to count as one control.
 NEAR_LINES = 12
 
-RULES = ("hand-rolled", "glyph-join", "glyph-icon", "raw-colour")
+# --- session surfaces (docs/architecture/ui-inventory.md) -------------------
+#
+# A session surface that composes the shared components draws no ground of its
+# own and paints no words: it hands content to a widget, which owns both. The
+# patterns below are the ways a surface takes that back into its own hands.
+HAND_PANEL = re.compile(
+    r"\bRoundedRect::(?:from_rect|new)\s*\("
+    r"|\b(?:panel_ground|panel_border|panel_shadow)\s*\("
+    r"|\bsurface::(?:card|card_on|shadow|elevation|panel|panel_unsnapped|floating_shadow)\s*\("
+)
+HAND_TEXT = re.compile(r"\.(?:draw_text|draw_style|draw_text_at)\s*\(")
+# A literal instead of a token: a radius, a padding, an inset or a gap written
+# as a number. Values the theme names (a token read, a size measured from one)
+# are not literals and do not count.
+HAND_METRIC = re.compile(
+    r"\b(?:radius|card_radius|row_radius|panel_radius|corner_radius|badge_radius)\s*:\s*-?\d"
+    r"|\.radius\s*\(\s*-?\d"
+    r"|Insets::(?:all|symmetric|horizontal|vertical|new)\s*\(\s*-?\d"
+    r"|\.padding\s*\(\s*-?\d"
+    r"|\.with_gap\s*\(\s*-?\d"
+    # A rounded rect whose corner radius is a written-out number.
+    r"|RoundedRect::(?:from_rect|new)\s*\([^()]*,\s*-?\d"
+)
+# A scroll position a surface keeps and clamps itself, instead of a
+# `Scrollable` (a whole body) or the `Scroll` widget (a list's rows).
+OWN_SCROLL = re.compile(r"\bscroll_(?:y|offset|top|position|x)\b")
+# A `Decorator` that overrides `draw`: a widget wrapped to paint it itself.
+# A decorator that only reads input is how a sheet keeps its own keyboard
+# model (Enter, Escape) and is not a surface that paints.
+DECORATOR_IMPL = re.compile(r"\bimpl\s+(?:[\w:<>]*::)?Decorator\s+for\s+\w+")
+# A rounded rect used as a clip mask (a fade or reveal layer) is not a painted
+# panel: it shapes what the wrapped widget drew. How far above the rect its
+# `push_layer` may stand.
+CLIP_LAYER = re.compile(r"\bpush_layer\s*\(")
+CLIP_REACH = 8
+
+RULES = (
+    "hand-rolled",
+    "glyph-join",
+    "glyph-icon",
+    "raw-colour",
+    "hand-panel",
+    "hand-text",
+    "hand-row",
+    "hand-metric",
+    "own-scroll",
+    "own-draw",
+)
+
+# What to build it from instead, named in the failure so the fix is the shared
+# component and not another local copy of it.
+ADVICE = {
+    "hand-rolled": "ui::widget::{ButtonFace, BarControlFace, ListRowFace, ChipFace, …}",
+    "glyph-join": "ui::widget::{Facts, TextStack, KeyHintsFace}",
+    "glyph-icon": "ui::icons::Icon",
+    "raw-colour": "a theme token",
+    "hand-panel": ("ui::widget::{paint_surface, FloatingPanelFace, ListRowFace, QuickTileFace, "
+                   "Button, IconButton}"),
+    "hand-text": "a widget that holds the words (Text, TextStack, ListRow, Section, Button)",
+    "hand-row": "ui::widget::{ListRow, ListRowFace, ControlRow, PropertyList}",
+    "hand-metric": "theme.tokens.radii, ui::tokens::Spacing, ui::tokens::Metrics",
+    "own-scroll": "ui::widget::{Scrollable, Scroll}",
+    "own-draw": ("the shared widget that draws it (Surface, FloatingPanel, ListRow, Button, "
+                 "Scrollable), wrapped only to read input if that is all the wrapper does"),
+}
 
 # Sources whose string literals are written for an agent's model, not shown to
 # a person: the agent's tools (their schemas, descriptions and the operation
@@ -99,6 +185,18 @@ TEXT_RULES = ("glyph-join", "glyph-icon")
 def is_model_text(relative: str) -> bool:
     return any(relative == entry or (entry.endswith("/") and relative.startswith(entry))
                for entry in MODEL_TEXT)
+
+
+# The crates that draw the shell's own surfaces (the desktop, its chrome, the
+# sheets, the greeter, setup). Everything under `crates/session` paints one
+# person-facing surface or another, except the compositor, which shapes a
+# client's buffer and has no toolkit to compose from.
+SURFACE_SCOPE = "crates/session/"
+SURFACE_EXCEPTIONS = ("crates/session/compositor/",)
+
+
+def is_surface_path(relative: str) -> bool:
+    return relative.startswith(SURFACE_SCOPE) and not relative.startswith(SURFACE_EXCEPTIONS)
 
 
 def sources(root: Path) -> list[Path]:
@@ -123,7 +221,41 @@ def literal_value(value: str) -> str:
     return re.sub(r"\{[^{}]*\}", "x", value)
 
 
-def count_file(text: str) -> Counter:
+def count_own_draw(code: str) -> int:
+    """`Decorator` impls that paint in their own `draw`: a surface drawn by the
+    wrapper instead of by the widget it wraps.
+
+    A wrapper that moves, fades or clips what it wraps only forwards `draw`,
+    and one that reads input only overrides `handle_event`; neither is a
+    surface of its own.
+    """
+    counts = 0
+    for found in DECORATOR_IMPL.finditer(code):
+        brace = code.find("{", found.end())
+        if brace < 0:
+            continue
+        body = code[brace:rust_source.matching(code, brace)]
+        draw = re.search(r"\bfn\s+draw\s*\(", body)
+        if not draw:
+            continue
+        draw_brace = body.find("{", draw.end())
+        if draw_brace < 0:
+            continue
+        drawn = body[draw_brace:rust_source.matching(body, draw_brace)]
+        if re.search(r"\bscene\.(?:fill|stroke|draw_glyphs)\s*\(", drawn):
+            counts += 1
+    return counts
+
+
+def in_clip_layer(lines: list[str], index: int) -> bool:
+    """Whether the rounded rect on line `index` is a clip mask for the wrapped
+    widget (a fade or a reveal), not a panel painted in its place: the
+    `push_layer` it belongs to names it within the few lines above."""
+    above = "\n".join(lines[max(0, index - CLIP_REACH):index + 1])
+    return bool(CLIP_LAYER.search(above))
+
+
+def count_file(text: str, relative: str = "") -> Counter:
     counts: Counter = Counter()
     code, literals = rust_source.lex(text)
     marked = list(code)
@@ -155,14 +287,40 @@ def count_file(text: str) -> Counter:
         if any(MEDIA_FILL.search(lines[n]) for n in range(max(0, fill - NEAR_LINES), fill + 1)):
             continue
         counts["hand-rolled"] += 1
+    # A session surface's own ground, words, geometry and scrolling: counted in
+    # the crates that draw the shell, where the shared components are the only
+    # way to make one look like the rest of Tilo.
+    if is_surface_path(relative):
+        panels = [
+            i for i, line in enumerate(lines)
+            if HAND_PANEL.search(line) and not in_clip_layer(lines, i)
+        ]
+        counts["hand-panel"] += len(panels)
+        counts["hand-text"] += len(HAND_TEXT.findall(production))
+        counts["hand-metric"] += len(HAND_METRIC.findall(production))
+        counts["own-scroll"] += len(OWN_SCROLL.findall(production))
+        counts["own-draw"] += count_own_draw(production)
+        texts = [i for i, line in enumerate(lines) if HAND_TEXT.search(line)]
+        # One row drawn with several calls (its ground, its edge) is one row:
+        # panel lines close together are the same shape.
+        clusters: list[list[int]] = []
+        for panel in panels:
+            if clusters and panel - clusters[-1][-1] <= NEAR_LINES:
+                clusters[-1].append(panel)
+            else:
+                clusters.append([panel])
+        counts["hand-row"] += sum(
+            1 for cluster in clusters
+            if any(abs(panel - t) <= NEAR_LINES for panel in cluster for t in texts)
+        )
     return counts
 
 
 def scan(root: Path) -> dict[tuple[str, str], int]:
     found: dict[tuple[str, str], int] = {}
     for path in sources(root):
-        counts = count_file(path.read_text(errors="replace"))
         relative = path.relative_to(root).as_posix()
+        counts = count_file(path.read_text(errors="replace"), relative)
         for rule, count in counts.items():
             if rule in TEXT_RULES and is_model_text(relative):
                 continue
@@ -196,8 +354,10 @@ def check(root: Path, baseline_path: Path) -> list[str]:
         file, rule = key
         have, may = found.get(key, 0), allowed.get(key, 0)
         if have > may:
-            errors.append(f"{file}: {have} {rule} (allowed {may}); build it from the "
-                          "design system's primitives (docs/design-language.md, Primitives)")
+            advice = ADVICE.get(rule, "the design system's primitives")
+            errors.append(f"{file}: {have} {rule} (allowed {may}); build it from {advice} "
+                          "(docs/design-language.md, Primitives; "
+                          "docs/architecture/ui-inventory.md)")
         elif have < may:
             errors.append(f"{shown}: {rule} {may} {file} is now {have}; "
                           "lower the count (or delete the line at 0)")
@@ -206,8 +366,9 @@ def check(root: Path, baseline_path: Path) -> list[str]:
 
 def print_baseline(root: Path) -> None:
     print("# Code under crates/session and apps that still paints controls by hand,")
-    print("# joins facts with glyphs, uses symbols as icons or raw colours")
-    print("# (tools/policy/check_primitives.py). Counts only shrink.")
+    print("# joins facts with glyphs, uses symbols as icons, writes out colours,")
+    print("# or (in a session surface) lays out its own ground, words, geometry or")
+    print("# scrolling (tools/policy/check_primitives.py). Counts only shrink.")
     for (file, rule), count in sorted(scan(root).items(), key=lambda kv: (kv[0][1], kv[0][0])):
         print(f"{rule} {count} {file}")
 

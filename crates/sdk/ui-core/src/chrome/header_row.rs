@@ -106,8 +106,16 @@ impl HeaderRowMetrics {
     /// `row` (`0` is the corner).
     #[must_use]
     pub fn trailing_chip(&self, row: Rect, index: usize) -> Rect {
+        self.trailing_chip_from(row, index, self.inset)
+    }
+
+    /// [`Self::trailing_chip`] measured `edge` in from the row's trailing end: the
+    /// content gutter where the row's controls keep the gutter its title starts at,
+    /// the inset beside a sidebar.
+    #[must_use]
+    pub fn trailing_chip_from(&self, row: Rect, index: usize, edge: f64) -> Rect {
         let y = row.y0 + (row.height() - self.chip) / 2.0;
-        let x1 = row.x1 - self.inset - f64_of_usize(index) * (self.chip + self.gap);
+        let x1 = row.x1 - edge - f64_of_usize(index) * (self.chip + self.gap);
         Rect::new(x1 - self.chip, y, x1, y + self.chip)
     }
 }
@@ -213,8 +221,12 @@ impl HeaderRowFace {
     #[must_use]
     pub fn with_history(mut self) -> Self {
         if self.trailing.width() > 0.0 {
-            self.history = self.metrics.trailing_chip(self.row, 0);
-            self.trailing = self.metrics.trailing_chip(self.row, 1);
+            self.history = self
+                .metrics
+                .trailing_chip_from(self.row, 0, self.trailing_inset());
+            self.trailing = self
+                .metrics
+                .trailing_chip_from(self.row, 1, self.trailing_inset());
             self.trailing_count = self.trailing_count.saturating_add(1);
             self.refresh();
         } else {
@@ -253,8 +265,20 @@ impl HeaderRowFace {
         rect
     }
 
+    /// The edge the row's trailing shell buttons keep from its end: the gutter its
+    /// title starts at where it does, the buttons' inset beside a sidebar.
+    fn trailing_inset(&self) -> f64 {
+        if self.gutter_title {
+            self.metrics.gutter
+        } else {
+            self.metrics.inset
+        }
+    }
+
     fn next_trailing(&mut self) -> Rect {
-        let rect = self.metrics.trailing_chip(self.row, self.trailing_count);
+        let rect =
+            self.metrics
+                .trailing_chip_from(self.row, self.trailing_count, self.trailing_inset());
         self.trailing_count = self.trailing_count.saturating_add(1);
         self.refresh();
         rect
@@ -270,7 +294,14 @@ impl HeaderRowFace {
             self.row.x0 + m.inset
         };
         let x1 = if self.trailing_count > 0 {
-            self.row.x1 - m.inset - f64_of_usize(self.trailing_count) * (m.chip + m.gap) + m.gap
+            self.row.x1
+                - self.trailing_inset()
+                - f64_of_usize(self.trailing_count) * (m.chip + m.gap)
+                + m.gap
+        } else if self.gutter_title {
+            // The actions end at the gutter the title starts at: the bar's leading and
+            // trailing controls keep the same edge.
+            self.row.x1 - m.gutter
         } else {
             self.row.x1 - m.inset
         };
@@ -486,7 +517,11 @@ mod tests {
         assert!(m.height >= f64::from(theme.tokens.metrics.header_height));
         assert_eq!(face.toggle.x0, m.inset);
         assert_eq!(face.back.x0, face.toggle.x1 + m.gap);
-        assert_eq!(face.history.x1, 1000.0 - m.inset);
+        assert_eq!(
+            face.history.x1,
+            1000.0 - m.gutter,
+            "a content row's trailing control keeps the gutter its title starts at"
+        );
         assert!(face.title.x0 > face.back.x1);
         assert!(face.title.x1 <= face.history.x0);
         assert_eq!(face.body_of(area).y0, m.height);
@@ -495,6 +530,17 @@ mod tests {
         assert_eq!(
             plain.title.x0, m.gutter,
             "a title with no leading button starts at the content gutter"
+        );
+        assert_eq!(
+            plain.actions.x1,
+            area.x1 - m.gutter,
+            "the actions end at the gutter the title starts at"
+        );
+        let sidebar = HeaderRowFace::new(area, &theme).with_inset_title();
+        assert_eq!(
+            sidebar.actions.x1,
+            area.x1 - m.inset,
+            "a sidebar's row keeps its inset on both edges"
         );
         let (title, actions) = plain.split(200.0);
         assert_eq!(title.width(), 200.0);

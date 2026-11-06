@@ -2,6 +2,7 @@ use super::{CheckpointCapture, CheckpointRoute};
 use crate::owner::application_record::tests::{Fixture, fixture};
 use crate::owner::{
     ApplicationRecord, DocumentRead, NativeWorkspaceOwner, WorkspaceId, open_file, testing,
+    testing::record_on_disk,
 };
 use automerge::transaction::Transactable as _;
 use collab_types::CommitNamed as _;
@@ -123,6 +124,7 @@ fn publish_peer_change(
                     publisher: fixture.certificate.device_public_key,
                 },
                 message,
+                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -183,6 +185,7 @@ fn checkpoint_member(fixture: &mut Fixture) -> tilo_user_identity::DeviceCert {
                     publisher: fixture.certificate.device_public_key,
                 },
                 postcard::from_bytes(&frame).unwrap(),
+                Some(&fixture.key),
                 fixture.now,
             )
             .unwrap();
@@ -234,12 +237,12 @@ fn checkpoint_two_routes_share_generation_and_reopen_retry_pins_original_bytes()
     mutate(&fixture, &routes[1], "later second route");
     let path = fixture.directory.path().join("owner.json");
     let reopened = open_file(&path).unwrap();
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     assert_eq!(
         capture(&reopened, &fixture, id, "original", &routes).unwrap(),
         ack
     );
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     let materialized = reopened
         .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
@@ -261,7 +264,7 @@ fn checkpoint_two_routes_share_generation_and_reopen_retry_pins_original_bytes()
             .unwrap_err()
             .contains("immutable")
     );
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
 }
 
 #[test]
@@ -270,7 +273,7 @@ fn checkpoint_failed_publication_and_missing_route_leave_no_acknowledgement() {
     let fixture = fixture();
     prepare(&fixture);
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     let before = generation(&fixture.owner);
     let id = uuid::Uuid::new_v4();
     assert!(
@@ -279,7 +282,7 @@ fn checkpoint_failed_publication_and_missing_route_leave_no_acknowledgement() {
         })
         .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     assert_eq!(generation(&fixture.owner), before);
     assert!(
         fixture
@@ -296,7 +299,7 @@ fn checkpoint_failed_publication_and_missing_route_leave_no_acknowledgement() {
     let mut missing = routes();
     missing[1].record = "missing".into();
     assert!(capture(&fixture.owner, &fixture, id, "failed", &missing).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     let ack = capture(&fixture.owner, &fixture, id, "failed", &routes()).unwrap();
     assert_eq!(ack.captured_generation, before);
     assert_eq!(ack.publication_generation, before + 1);
@@ -347,7 +350,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
         .join(address);
     let original = std::fs::read(&block).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     std::fs::remove_file(&block).unwrap();
     assert!(resolve().is_err(), "resolution must require every snapshot");
     assert!(execute_find().is_err(), "find must require every snapshot");
@@ -372,7 +375,7 @@ fn checkpoint_missing_or_corrupt_second_snapshot_never_returns_read_find_or_retr
             .is_err()
     );
     assert!(capture(&fixture.owner, &fixture, id, "retained", &routes()).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     assert!(
         open_file(&path).is_err(),
         "restore must verify every snapshot"
@@ -399,9 +402,9 @@ fn checkpoint_name_collision_is_refused_but_binding_moves_name_without_moving_co
     let second = uuid::Uuid::new_v4();
     let first_ack = capture(&fixture.owner, &fixture, first, "latest", &routes()).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     assert!(capture(&fixture.owner, &fixture, second, "latest", &routes()).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     mutate(&fixture, &routes()[0], "new checkpoint");
     let second_ack = capture(&fixture.owner, &fixture, second, "second", &routes()).unwrap();
     fixture
@@ -829,7 +832,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
     let path = fixture.directory.path().join("owner.json");
     revoke_membership_grant(&fixture, grants[2].id.clone());
     let reopened = open_file(&path).unwrap();
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     for owner in [&fixture.owner, &reopened] {
         owner
             .with_current(workspace(), |view| {
@@ -870,7 +873,7 @@ fn checkpoint_current_member_route_revocation_gates_reads_and_retries() {
             original.documents
         );
     }
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
 }
 
 #[test]
@@ -889,7 +892,7 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
         ack
     );
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     let mut substituted = member.clone();
     substituted.device_label.push_str(" substituted");
     assert!(
@@ -899,7 +902,7 @@ fn checkpoint_certificate_evidence_gates_reads_and_retries() {
             .is_err()
     );
     assert!(capture_member(&fixture, &fixture.owner, &substituted, id).is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     publish_peer_change(&fixture, |peer| {
         assert!(peer.governance_mut().remove_member(
             member.user_public_key,
@@ -1030,6 +1033,7 @@ fn checkpoint_stale_signed_publication_cannot_rewind_current_root_or_name() {
                 publisher: fixture.certificate.device_public_key,
             },
             postcard::from_bytes(&bytes).unwrap(),
+            Some(&fixture.key),
             fixture.now,
         );
         assert_eq!(
@@ -1075,7 +1079,7 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
         .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
         .unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     let before = generation(&fixture.owner);
     let rejected = uuid::Uuid::new_v4();
     assert!(
@@ -1084,7 +1088,7 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
             .contains("capacity")
     );
     assert_eq!(generation(&fixture.owner), before);
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     let reopened = open_file(&path).unwrap();
     for owner in [&fixture.owner, &reopened] {
         assert_eq!(
@@ -1112,7 +1116,7 @@ fn checkpoint_full_name_index_refuses_capture_without_damaging_existing_checkpoi
                 .is_err()
         );
     }
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
 }
 
 #[test]
@@ -1136,7 +1140,7 @@ fn checkpoint_name_binding_verifies_damaged_snapshot_even_for_noop() {
         .join(address);
     let bytes = std::fs::read(&block).unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     let before = generation(&fixture.owner);
     std::fs::write(&block, b"damaged retained snapshot").unwrap();
     for name in ["original", "new alias"] {
@@ -1149,7 +1153,7 @@ fn checkpoint_name_binding_verifies_damaged_snapshot_even_for_noop() {
         );
     }
     assert_eq!(generation(&fixture.owner), before);
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     std::fs::write(&block, bytes).unwrap();
     fixture
         .owner
@@ -1162,7 +1166,7 @@ fn checkpoint_name_binding_verifies_damaged_snapshot_even_for_noop() {
         )
         .unwrap();
     assert_eq!(generation(&fixture.owner), before);
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     assert_eq!(
         open_file(&path)
             .unwrap()
@@ -1257,7 +1261,7 @@ fn checkpoint_manifest_carries_the_person_s_words_and_states_its_reach() {
     )
     .unwrap();
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     let shown = open_file(&path)
         .unwrap()
         .read_checkpoint(workspace(), &fixture.certificate, id, fixture.now)
@@ -1278,19 +1282,19 @@ fn checkpoint_manifest_carries_the_person_s_words_and_states_its_reach() {
     );
     // The description is part of the immutable manifest, not a mutable name.
     assert!(describe(&fixture, id, "before the rewrite", "a different story").is_err());
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     for text in [" padded ", &"x".repeat(281), "bad\u{7}description"] {
         assert!(
             describe(&fixture, uuid::Uuid::new_v4(), "bounded", text).is_err(),
             "{text:?} must not be retained"
         );
     }
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
     assert!(
         describe(&fixture, uuid::Uuid::new_v4(), "", "").is_err(),
         "an empty name is still refused"
     );
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
 }
 
 #[test]
@@ -1508,7 +1512,7 @@ fn checkpoint_invalid_bounds_duplicate_routes_and_wrong_custody_do_not_publish()
     let fixture = fixture();
     prepare(&fixture);
     let path = fixture.directory.path().join("owner.json");
-    let durable = std::fs::read(&path).unwrap();
+    let durable = record_on_disk(&path);
     let id = uuid::Uuid::new_v4();
     for name in [String::new(), "x".repeat(257), "bad\nname".into()] {
         assert!(capture(&fixture.owner, &fixture, id, &name, &routes()).is_err());
@@ -1573,5 +1577,5 @@ fn checkpoint_invalid_bounds_duplicate_routes_and_wrong_custody_do_not_publish()
             )
             .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), durable);
+    assert_eq!(record_on_disk(&path), durable);
 }

@@ -805,6 +805,8 @@ mod tests {
                     label: "Notes".into(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
         }
     }

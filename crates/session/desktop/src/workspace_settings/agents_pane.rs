@@ -1,27 +1,6 @@
-//! The Agents tab's rows: who works in the workspace, what it may do and
-//! how it was admitted, read from the workspace's own grants.
+//! The workspace's agents: who works in it, what each may do and how it was
+//! admitted, read from the workspace's own grants.
 use super::*;
-
-/// One explicitly non-human row in the Agents pane. Keeping this a
-/// separate type makes it hard for a future renderer to accidentally
-/// present agents as human roster entries.
-#[derive(Clone, Debug)]
-pub struct AgentRow {
-    pub agent: String,
-    /// The kinds of action its workspace grants allow.
-    pub kinds: tilo_action_policy::KindSet,
-    pub grant_count: usize,
-    /// A human-readable summary of the *scoped* authority, not a role.
-    /// Agents never inherit their admission capability as ambient access.
-    pub preset: AgentPreset,
-    /// Set when the agent is a service member: a cloud or relay identity
-    /// admitted to the workspace's encrypted channels with a stated purpose.
-    pub service: Option<ServiceMember>,
-    pub row_rect: Rect,
-    pub role_rect: Rect,
-    pub review_rect: Rect,
-    pub remove_rect: Rect,
-}
 
 /// A named starting point for an agent in the workspace: the grants it receives
 /// when admitted. Deliberately not a person's role.
@@ -73,37 +52,6 @@ pub fn agent_authority_preset(ws: &Workspace, agent: &str) -> AgentPreset {
         .unwrap_or(AgentPreset::Custom)
 }
 
-/// Admit `device` as a service member of this workspace: a cloud or relay
-/// identity that reads and acts in the workspace only through `kinds`, with the
-/// purpose `purpose` and, if it has one, the deadline `expires_at` (Unix
-/// seconds). Returns the grant to revoke it by when the job ends, or `None`
-/// when `actor` may not admit in this workspace.
-pub fn admit_service_member(
-    ws: &mut Workspace,
-    actor: &UserId,
-    device: &collab_types::Ed25519PublicKey,
-    purpose: &str,
-    kinds: tilo_action_policy::KindSet,
-    expires_at: Option<u64>,
-) -> Option<tilo_action_policy::GrantId> {
-    let grant = tilo_desktop_model::service_member::service_membership(
-        &ws.policy.workspace,
-        device,
-        purpose,
-        kinds,
-        expires_at,
-        tilo_action_policy::Subject::person(actor.clone()),
-    );
-    let id = grant.id.clone();
-    ws.govern_all_at(
-        actor,
-        vec![tilo_action_policy::Change::Grant(grant)],
-        tilo_clock::unix_now(),
-    )
-    .ok()
-    .map(|_| id)
-}
-
 /// Admit a named agent with the grants of `preset`, replacing the ones it
 /// was admitted with before, as `actor`.
 pub fn admit_agent(
@@ -138,8 +86,7 @@ pub fn admit_agent(
         .unwrap_or_default()
 }
 
-/// One agent as the Agents tab lists it, in the person's words: without the
-/// geometry the pane lays it out with.
+/// One agent as the Agents tab lists it, in the person's words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentSummary {
     /// What it is asked for by.
@@ -184,7 +131,7 @@ fn admission_prefix(agent: &str) -> String {
 }
 
 /// An agent's name, its badge and the line about what it may do: the one
-/// place both the pane and the tab read them.
+/// place the tab reads them.
 pub(super) fn agent_summary_parts(
     ws: &Workspace,
     agent: &str,
@@ -225,79 +172,4 @@ pub(super) fn agent_summary_parts(
         )
     };
     (name, badge, detail)
-}
-
-/// Geometry for the always-visible entry point into the guided setup.
-pub fn agents_add_rect(pane_rect: Rect) -> Rect {
-    Rect::new(
-        pane_rect.x0 + PANE_PAD_X,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP,
-        pane_rect.x0 + PANE_PAD_X + 132.0,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + AGENT_ONBOARDING_HEIGHT,
-    )
-}
-
-/// Stable, policy-backed rows for the Agents pane.
-pub fn agents_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<AgentRow> {
-    let mut agents = ws.agent_members_at(tilo_clock::unix_now());
-    agents.compact_sort_by(|a, b| a.0.cmp(&b.0));
-    let mut rows = Vec::new();
-    let mut cursor_y = pane_rect.y0
-        + PANE_PAD_TOP
-        + PANE_INTRO_HEIGHT
-        + PANE_INTRO_GAP
-        + AGENT_ONBOARDING_HEIGHT
-        + SECTION_HEADER_HEIGHT;
-    for (agent, kinds) in agents {
-        let row_rect = Rect::new(
-            pane_rect.x0 + PANE_PAD_X,
-            cursor_y,
-            pane_rect.x1 - PANE_PAD_X,
-            cursor_y + ROW_HEIGHT,
-        );
-        if row_rect.y1 > pane_rect.y1 - PANE_PAD_BOTTOM {
-            break;
-        }
-        let remove_rect = Rect::new(
-            row_rect.x1 - 12.0 - REVOKE_WIDTH,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            row_rect.x1 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let role_rect = Rect::new(
-            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0 - 96.0,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let review_rect = Rect::new(
-            remove_rect.x0 - 12.0 - AGENT_REVIEW_WIDTH,
-            row_rect.center().y - REVOKE_HEIGHT / 2.0,
-            remove_rect.x0 - 12.0,
-            row_rect.center().y + REVOKE_HEIGHT / 2.0,
-        );
-        let subject = tilo_action_policy::Subject::agent(agent.clone());
-        let admission = admission_prefix(&agent);
-        let grant_count = ws
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| grant.subject == subject && !grant.id.as_str().starts_with(&admission))
-            .count();
-        let preset = agent_authority_preset(ws, &agent);
-        let service = service_purpose(ws, &agent, tilo_clock::unix_now());
-        rows.push(AgentRow {
-            agent,
-            kinds,
-            grant_count,
-            preset,
-            service,
-            row_rect,
-            role_rect,
-            review_rect,
-            remove_rect,
-        });
-        cursor_y += ROW_HEIGHT + ROW_GAP;
-    }
-    rows
 }

@@ -284,6 +284,8 @@ fn published() -> tilolang::PackageMeta {
             ty.to_owned()
         },
         default: optional.then(DefaultMeta::none),
+        place: false,
+        entry: false,
     };
     tilolang::PackageMeta {
         app: "so.tilo.session".to_owned(),
@@ -308,11 +310,14 @@ fn published() -> tilolang::PackageMeta {
             icon: None,
             role: None,
             scenario: false,
+            did: None,
+            applies: false,
             present: None,
             toggles: None,
             key: None,
             group: None,
             frequent: false,
+            guard: false,
         }],
         ..tilolang::PackageMeta::default()
     }

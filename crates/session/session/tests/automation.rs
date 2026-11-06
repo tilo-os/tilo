@@ -469,10 +469,14 @@ fn a_schedule_fires_once_per_fire_time_and_keeps_its_place_across_a_restart() {
         vec!["tidy".to_string()],
         "the missed fire time ran once"
     );
-    for _ in 0..50 {
-        session.step(Duration::from_millis(2)).expect("step");
-    }
-    let (key, entry, next) = only_schedule(state.path());
+    // The ledger's move past the fire time is a write of the session's to disk:
+    // a counted number of frames is not that write landing.
+    let (key, entry, next) =
+        tilo_test_env::wait_for("the ledger to move past the fire time it ran", || {
+            session.step(Duration::from_millis(2)).expect("step");
+            let (key, entry, next) = only_schedule(state.path());
+            (next > due).then_some((key, entry, next))
+        });
     assert!(
         key.ends_with("/tidy/0"),
         "the ledger names the shortcut's trigger: {key}"

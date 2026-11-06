@@ -160,39 +160,21 @@ impl ListRows {
         if self.read {
             return self.keys.apply(patches);
         }
-        let structural = patches.iter().filter(|patch| {
-            matches!(
-                patch,
-                Patch::Insert { .. } | Patch::Remove { .. } | Patch::Move { .. }
-            )
-        });
-        let inserted: Option<Vec<(usize, String)>> = structural
-            .map(|patch| match patch {
-                Patch::Insert { index, node, .. } => Some((*index, node.key.clone())),
-                _ => None,
-            })
-            .collect();
-        if let Some(inserted) = inserted {
-            // Rows inserted say where: the keys need not be read for them.
-            inserted
-                .into_iter()
-                .map(|(index, key)| RowChange::Inserted {
-                    index: u32::try_from(index).unwrap_or(u32::MAX),
-                    key,
-                })
-                .collect()
-        } else {
-            // Where a removed or moved row was is in the order before the change, which was
-            // never read: the window reads the rows anew, and the keys are read from now on.
-            // The window drops the rows it holds, so each is sent again when it asks.
-            let order = self.read_keys();
-            self.keys = Keys {
-                order,
-                ..Keys::default()
-            };
-            self.read = true;
-            vec![RowChange::Reset]
+        // A row inserted or moved says where it goes, the order before needing no read: the
+        // window takes it there at once. A row removed says where it was only in that order,
+        // which was never read ([`Self::read_keys`]).
+        if let Some(changes) = where_the_rows_go(patches) {
+            return changes;
         }
+        // The window reads the rows anew, and the keys are read from now on. The window drops
+        // the rows it holds, so each is sent again when it asks.
+        let order = self.read_keys();
+        self.keys = Keys {
+            order,
+            ..Keys::default()
+        };
+        self.read = true;
+        vec![RowChange::Reset]
     }
 
     /// The view changed what the rows of `keys` show: those rendered, to send again.
@@ -215,6 +197,29 @@ pub struct Requested {
     pub start: usize,
     pub keys: Vec<String>,
     pub rows: Vec<UiNode>,
+}
+
+/// The changes of a list's rows from patches that take a host from the order the ones before
+/// left to the order after them, without that order read first: `None` when a row removed
+/// leaves the place it stood at untold.
+fn where_the_rows_go(patches: &[Patch]) -> Option<Vec<RowChange>> {
+    let mut changes = Vec::new();
+    for patch in patches {
+        match patch {
+            Patch::Insert { index, node, .. } => changes.push(RowChange::Inserted {
+                index: u32::try_from(*index).unwrap_or(u32::MAX),
+                key: node.key.clone(),
+            }),
+            Patch::Move { from, to, .. } => changes.push(RowChange::Moved {
+                from: u32::try_from(*from).unwrap_or(u32::MAX),
+                to: u32::try_from(*to).unwrap_or(u32::MAX),
+            }),
+            Patch::Remove { .. } => return None,
+            // Not a change of the rows themselves.
+            _ => {}
+        }
+    }
+    Some(changes)
 }
 
 impl Keys {
@@ -326,6 +331,42 @@ mod tests {
     }
 
     #[test]
+    fn a_row_inserted_or_moved_before_the_keys_were_read_says_where_it_goes() {
+        let parent = vec!["list".to_owned()];
+        let changes = where_the_rows_go(&[
+            Patch::Insert {
+                parent: parent.clone(),
+                index: 0,
+                node: UiNode::empty("fragment", "n"),
+            },
+            Patch::Move {
+                parent: parent.clone(),
+                key: "c".to_owned(),
+                from: 2,
+                to: 1,
+            },
+        ]);
+        assert_eq!(
+            changes,
+            Some(vec![
+                RowChange::Inserted {
+                    index: 0,
+                    key: "n".to_owned(),
+                },
+                RowChange::Moved { from: 2, to: 1 },
+            ])
+        );
+        // A removed row stood at a place only the order it left tells: the window reads it.
+        assert_eq!(
+            where_the_rows_go(&[Patch::Remove {
+                parent,
+                key: "b".to_owned(),
+            }]),
+            None
+        );
+    }
+
+    #[test]
     fn the_views_patches_of_a_list_are_the_changes_of_its_rows() {
         let keys =
             |list: &[&str]| -> Vec<String> { list.iter().map(|k| (*k).to_owned()).collect() };
@@ -347,6 +388,7 @@ mod tests {
             Patch::Move {
                 parent,
                 key: "c".to_owned(),
+                from: 2,
                 to: 1,
             },
         ]);

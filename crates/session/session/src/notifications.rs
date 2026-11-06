@@ -52,6 +52,7 @@ pub(crate) fn mount_banners(
     notices: &DesktopNotifications,
     desk: &tilo_desktop_surface::DesktopHandle,
     options: &crate::Options,
+    stack: crate::panels::Reserved,
 ) -> Link {
     let banners = Link::new();
     if options.shell {
@@ -67,6 +68,7 @@ pub(crate) fn mount_banners(
                 banners.clone(),
                 desk.clone(),
                 options.scale,
+                stack,
             )));
             compositor.add_host(Box::new(crate::panels::Held(Rc::clone(&surface))));
             doors.add(surface);
@@ -646,7 +648,9 @@ impl SessionNotifications {
             // A session without a notifications service still draws its
             // desk: what it raises is kept there, so nothing it says is
             // lost.
-            None => notice.tell_desk(&self.desktop),
+            None => {
+                notice.tell_desk(&self.desktop);
+            }
         }
     }
 
@@ -1080,7 +1084,15 @@ impl crate::Shared {
                     uri,
                     fallback: None,
                 },
-                &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+                &mut |own| {
+                    self.doors
+                        .invoke(
+                            &own.address,
+                            &own.arguments,
+                            &mut tilo_surface_host::Look::none(),
+                        )
+                        .map(drop)
+                },
             );
         }
         // What the person handed to an agent becomes the task it acts on, in
@@ -1111,7 +1123,15 @@ impl crate::Shared {
                 notifications::HistoryActivation::OpenApp { app_id, .. } => self.search.perform(
                     &workspace,
                     tilo_desktop_search::Target::Launch { app: app_id },
-                    &mut |own| self.doors.invoke(&own.address, &own.arguments).map(drop),
+                    &mut |own| {
+                        self.doors
+                            .invoke(
+                                &own.address,
+                                &own.arguments,
+                                &mut tilo_surface_host::Look::none(),
+                            )
+                            .map(drop)
+                    },
                 ),
                 other => tracing::debug!(?other, "notification chosen"),
             }

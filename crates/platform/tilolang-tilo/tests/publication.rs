@@ -2,6 +2,7 @@
 //! shape is: an enum parameter as its cases, a record parameter as a pick of a resource of its
 //! kind, a destructive action with its risk, kind and confirmation.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use automerge::AutoCommit;
@@ -9,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionSpec, Pick, Target};
 use tilo_resource::{JsonSchema, Model, Replica as Record, resource};
 use tilolang_runtime::SourceWords;
-use tilolang_runtime::meta::Meta;
+use tilolang_runtime::meta::{Meta, Ty, TypeKey};
+use tilolang_runtime::value::{EnumValue, Value};
 use tilolang_tilo::OpenEffect;
 use tilolang_tilo::action::DynAction;
+use tilolang_tilo::host::argument_json;
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{
     ActionTypes, PlanRequest, Planner, action_type, open_with_id, publish_record,
@@ -68,6 +71,35 @@ destructive action remove(shelf: Shelf, item: Item) (icon: .trash) { shelf.items
 "#;
 
 const ITEM_KIND: &str = "tl.so.tilo.lang.shapes.Item";
+
+/// A package with one command the person choosing it answers for, and one that runs on the
+/// resource alone.
+const ASKS: &str = r#"app so.tilo.lang.asks "Asks"
+
+type Pile {
+    name: Text
+}
+
+root Pile
+
+default view main for Pile
+
+view main(p: Pile) {
+    page {
+        text(p.name)
+    }
+}
+
+/// Renames it to what the person types.
+action rename(p: Pile, name: Text) {
+    p.name = name
+}
+
+/// Empties it: there is nothing left to ask.
+destructive action empty(p: Pile) (icon: .trash) {
+    p.name = ""
+}
+"#;
 
 /// The native counterpart of the package's `Size`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -173,6 +205,37 @@ fn an_enum_parameter_is_published_as_its_cases() {
     assert!(param.validate_declaration().is_empty());
 }
 
+/// What a program gives an enum parameter travels as the name of the case it gave, which the
+/// broker reads from the published parameter before it delivers the invocation.
+#[test]
+fn an_enum_argument_travels_as_the_name_of_its_case() {
+    let meta = shapes();
+    let size = meta
+        .enums
+        .iter()
+        .find(|declared| declared.name == "Size")
+        .unwrap();
+    let large = size
+        .variants
+        .iter()
+        .find(|variant| variant.name == "large")
+        .unwrap();
+    let ty = Ty::Enum(TypeKey {
+        app: meta.app.clone(),
+        name: "Size".to_owned(),
+    });
+    let value = Value::Enum(EnumValue {
+        ty: size.id.clone(),
+        variant: large.id.clone(),
+        fields: BTreeMap::new(),
+    });
+    let no_package = |app: &str| Err(format!("no package {app}"));
+    assert_eq!(
+        argument_json(&no_package, &meta, &value, &ty).unwrap(),
+        serde_json::json!("large")
+    );
+}
+
 #[test]
 fn a_record_parameter_is_published_as_a_pick_of_its_kind() {
     let meta = shapes();
@@ -272,6 +335,7 @@ fn the_planner_takes_the_arguments_as_published() {
             resource: Some(&root.id_string()),
             args: args.as_object().unwrap(),
             caller: None,
+            from: None,
         })
     };
     let resized = plan(&id("resize"), serde_json::json!({"size": "large"})).unwrap();
@@ -362,4 +426,27 @@ fn a_resource_lists_the_views_that_show_it() {
     // A view is listed on the type it shows: an item has none of its own.
     let item = publish_record(&types, "Item", "i", "An item");
     assert!(item.views.is_empty(), "{:?}", item.views);
+}
+
+/// A command the person choosing it still has to answer for says so with "…", as the runtime's
+/// own menus do: what the published spec is given is the resource, so the parameters after it
+/// are the form's. One that acts on what it is given reads plainly.
+#[test]
+fn a_command_that_asks_for_an_argument_says_so_before_it_opens() {
+    let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(ASKS, "")]);
+    let meta = &packages[0].meta;
+    let label = |name: &str| {
+        let action = meta
+            .actions
+            .iter()
+            .find(|action| action.name == name)
+            .unwrap();
+        let planner: Arc<dyn Planner> = Arc::new(NoPlanner);
+        action_type(meta, &meta.kind_of("Pile"), action, &planner, &SourceWords)
+            .bind(Target::new("l".to_owned()))
+            .label
+            .clone()
+    };
+    assert_eq!(label("rename"), "Rename…", "the name is the form's");
+    assert_eq!(label("empty"), "Empty", "it runs on what it is given");
 }

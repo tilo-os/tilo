@@ -2,7 +2,7 @@
 
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, OfferedAction, SlotType, Source};
+use crate::component::{Component, Described, Event, OfferedAction, ResourceId, SlotType, Source};
 use crate::icons::Icon;
 use crate::widget::{ButtonRole, MenuEntry};
 
@@ -21,6 +21,15 @@ pub struct MenuItemProps {
     pub destructive: bool,
     /// Whether it is the one chosen now, in a menu of choices (a sort order).
     pub checked: Option<bool>,
+    /// It cannot run now (a `require` of its action does not hold). It is listed all
+    /// the same, drawn as unavailable, and says `reason`.
+    pub disabled: bool,
+    /// Why it cannot run now, in the person's words (`require`'s own): read with
+    /// the row, and kept beside the label so a person sees what it waits on.
+    pub reason: Option<String>,
+    /// The run of commands it stands in (`group: "Due"`), as the app names it:
+    /// consecutive rows of one run fold into one row that opens them.
+    pub group: Option<String>,
     /// The plain key that runs it while the window it belongs to has the keyboard, as the app's
     /// action declared it (`key: "e"`), shown at the row's trailing edge as the keyboard in use
     /// spells it.
@@ -57,10 +66,19 @@ impl MenuItemProps {
             Some(checked) => item.with_checked(checked),
             None => item,
         };
+        let item = item.with_enabled(!props.disabled);
         // The app's declared key shows at the row's trailing edge, as the keyboard in use
         // spells it.
-        match props.key {
+        let item = match props.key {
             Some(key) => item.with_shortcut(key),
+            None => item,
+        };
+        let item = match props.reason.filter(|reason| !reason.trim().is_empty()) {
+            Some(reason) => item.with_description(reason),
+            None => item,
+        };
+        match props.group {
+            Some(group) => item.with_group(group),
             None => item,
         }
     }
@@ -79,10 +97,19 @@ impl MenuItemProps {
             Some(icon) => entry.with_icon(icon),
             None => entry,
         };
+        let entry = entry.with_enabled(!props.disabled);
         // The app's declared key shows at the row's trailing edge, as the keyboard in use
         // spells it.
-        match props.key {
+        let entry = match props.key {
             Some(key) => entry.with_shortcut(key),
+            None => entry,
+        };
+        let entry = match props.reason.filter(|reason| !reason.trim().is_empty()) {
+            Some(reason) => entry.with_description(reason),
+            None => entry,
+        };
+        match props.group {
+            Some(group) => entry.with_group(group),
             None => entry,
         }
     }
@@ -96,6 +123,9 @@ impl From<OfferedAction> for MenuItemProps {
             icon: action.icon,
             destructive: action.destructive,
             checked: action.on,
+            disabled: false,
+            reason: None,
+            group: None,
             key: action.key,
             choose: action.run,
         }
@@ -136,6 +166,9 @@ pub struct MenuButtonProps {
     pub role: Option<ButtonRole>,
     /// Actions offered on something (`actions(r)`), each a command after `items`.
     pub actions: Vec<OfferedAction>,
+    /// The resource whose published actions this menu lists, which the host fills: a bar that
+    /// lists the window in front's commands names the window and leaves the commands to it.
+    pub subject: Option<ResourceId>,
     /// The commands, in order.
     #[component(slot(default))]
     pub items: Vec<MenuItemProps>,
@@ -151,6 +184,7 @@ impl Described for MenuButton {
             icon_only,
             role,
             actions,
+            subject: _,
             items,
         } = props;
         let button = match icon {

@@ -38,7 +38,6 @@ class PrepareTestShardScript(unittest.TestCase):
             recorder = '#!/usr/bin/env bash\nprintf "%s %s\\n" "{name}" "$*" >> "$CALLS"\n{tail}'
             stubs = {
                 tree / "tools/ensure-headless-audio.sh": "",
-                tree / "tools/ci/ensure-x11-bridge-tools.sh": "",
                 tree / "tools/ci/ensure-session-bus-tools.sh": "",
                 tree / "tools/ci/install-pdfium.sh": 'echo /usr/lib64/libpdfium.so\n',
                 tree / "tools/ci/require-pdf-sandbox.sh": "",
@@ -74,10 +73,6 @@ class PrepareTestShardScript(unittest.TestCase):
                 calls, exported = self.prepare(packages)
                 self.assertEqual(self.tools(calls), ["tools/ensure-headless-audio.sh"])
                 self.assertEqual(exported, "")
-
-    def test_shell_shards_get_the_x11_bridge(self) -> None:
-        calls, _ = self.prepare("-p tilo-ui -p shell")
-        self.assertIn("tools/ci/ensure-x11-bridge-tools.sh", self.tools(calls))
 
     def test_nested_sandbox_shards_probe_user_namespaces(self) -> None:
         calls, _ = self.prepare("-p collab-types -p ush")

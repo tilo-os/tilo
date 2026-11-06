@@ -47,6 +47,8 @@ impl Unsynced {
                 self.0.push(handle);
                 Ok(())
             }
+            // No descriptor left to duplicate: the file is synced now.
+            // ignored-failure: the sync below stands in for the deferred one
             Err(_) => file.sync_data(),
         }
     }

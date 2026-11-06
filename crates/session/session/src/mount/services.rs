@@ -10,6 +10,8 @@ use tilo_service::Started;
 use tilo_surface_host::{Doors, Published};
 use ui::host_operation::ResourceOperationStart;
 
+use tilo_action_broker::collab_broker::FanoutState;
+
 use crate::plane::{DeskAuthority, Sealed, ShortcutLibrary};
 use crate::{
     ActionPlane, DesktopHandle, Options, Plane, Service, Services, activity, activity_provider,
@@ -42,7 +44,12 @@ impl surfaces::ActionDoor for tilo_surface_host::Doors {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        tilo_surface_host::Doors::invoke(self, address, arguments)
+        tilo_surface_host::Doors::invoke(
+            self,
+            address,
+            arguments,
+            &mut tilo_surface_host::Look::none(),
+        )
     }
 }
 
@@ -75,6 +82,7 @@ impl Published for ServiceDoor {
         &mut self,
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         match self
             .services
@@ -105,6 +113,10 @@ pub(crate) struct Collaboration<'a> {
     /// written through, whatever the session's collaboration plane.
     pub engine: Option<std::sync::Arc<crate::engine::Engine>>,
     pub sealed: Sealed,
+    /// What the broker hands the apps that have a record open: the one this
+    /// session hands a sibling's writes to, so those reach the apps on the
+    /// route this device's own writes do.
+    pub fanout: std::sync::Arc<FanoutState>,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
     /// The programs agents write in this session's tasks, run by its door.
@@ -225,6 +237,7 @@ pub(crate) fn start_action_plane(
         sync,
         engine,
         sealed,
+        fanout,
         content,
         task_programs,
         nearby,
@@ -261,6 +274,13 @@ pub(crate) fn start_action_plane(
     let file_clipboard = std::sync::Arc::new(crate::file_clipboard::NativeFileClipboard::new(
         options.wake.handle(),
     ));
+    // The person's own records this session keeps, open to their other
+    // devices: what the broker keeps them in as well as the desktop, and what
+    // a sibling's writes reach this session's apps through.
+    let personal = sync
+        .and_then(crate::sync::Client::personal)
+        .map(|personal| personal.sync().clone());
+    let channels = std::sync::Arc::clone(&sealed.broker);
     let broker = plane::serve(
         path.clone(),
         std::sync::Arc::clone(&link),
@@ -298,8 +318,28 @@ pub(crate) fn start_action_plane(
             // What a person copies or cuts in Files, pasted here, and what
             // the loop puts on the desktop's clipboard for another app.
             file_clipboard: std::sync::Arc::clone(&file_clipboard),
+            personal,
+            fanout: std::sync::Arc::clone(&fanout),
         },
     )?;
+    // The store's link is answered by this session's own endpoint, in `sync`:
+    // the door takes it from there, once the broker is up to hand what a
+    // sibling writes to the apps that have the record open.
+    let personal = match (sync, sync.and_then(crate::sync::Client::endpoint)) {
+        (Some(sync), Some(endpoint)) => sync.personal().map(|personal| {
+            // The person's other devices are dialled as this session's
+            // siblings too: the session between two of their desks tells each
+            // the workspaces the other holds.
+            personal.serve(
+                tilo_rt::app().handle(),
+                endpoint,
+                channels,
+                fanout,
+                sync.sibling_dials(),
+            )
+        }),
+        _ => None,
+    };
     // What arrives on this device's action plane is answered by the broker
     // that now serves: another of the person's devices runs nothing here the
     // person in front of it could not.
@@ -316,6 +356,7 @@ pub(crate) fn start_action_plane(
         calls,
         calls_service,
         file_clipboard,
+        _personal: personal,
     }))
 }
 
@@ -376,7 +417,6 @@ fn calls_service(
     let sources = crate::calls::Sources::carrier(
         std::sync::Arc::clone(calls),
         sync.endpoint_handle(),
-        sync.lane().clone(),
         sync.engine().map(|engine| engine.keys()),
         roster,
         options.questions.clone(),
@@ -397,54 +437,6 @@ fn offload_route(
 ) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
     let (actions, content) = (actions?, content?);
     actions.offload_route(std::sync::Arc::clone(content))
-}
-
-/// The person's private messages, published beside the other services: the
-/// conversations this device keeps and the action that sends a text. It
-/// answers peers on this session's own endpoint, so it is mounted with the
-/// collaboration plane and only there.
-pub(crate) fn mount_messages(
-    options: &mut Options,
-    sync: Option<&crate::sync::Client>,
-) -> Option<crate::messages::Messages> {
-    let sync = sync?;
-    let service = match crate::messages::Messages::new(&options.wake) {
-        Ok(service) => service,
-        Err(error) => {
-            tracing::warn!(%error, "private messages do not start");
-            return None;
-        }
-    };
-    if let Some(identity) = crate::sync::device_identity() {
-        service.act_as(identity, hex::encode(sync.publisher().as_bytes()));
-    }
-    service
-        .reached_at(serde_json::to_value(sync.endpoint_addr()).unwrap_or(serde_json::Value::Null));
-    // The lane this device's endpoint carries, bound when the peer actor
-    // hands it over: until then a send says this device carries none.
-    if let Some(answer) = sync.private_messages() {
-        let binding = service.clone();
-        let thread = std::thread::Builder::new()
-            .name("tilo-messages-bind".into())
-            .spawn(move || {
-                match answer.blocking_recv() {
-                    Ok(transport) => {
-                        if let Err(error) = binding.bind(transport) {
-                            tracing::warn!(?error, "private messages answer no peer");
-                        }
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "no endpoint carries private messages");
-                    }
-                }
-                binding.wake();
-            });
-        if let Err(error) = thread {
-            tracing::warn!(%error, "private messages answer no peer");
-        }
-    }
-    options.services.push(Box::new(service.clone()));
-    Some(service)
 }
 
 /// The services, published on the door.

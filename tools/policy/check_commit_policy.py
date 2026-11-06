@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """CI counterpart of commit-msg and pre-commit, including commits made with --no-verify.
 
-Every new commit's message, its exact changed blobs (text, LF) and the lines it
-adds (credentials, merge-conflict markers, dbg!: tools/policy/added_line_policy.py).
+Every new commit's message, its exact changed blobs (text, LF), the lines it
+adds (credentials, merge-conflict markers, dbg!: tools/policy/added_line_policy.py)
+and its changed wire enums (a variant a parent had, kept in its place:
+tools/policy/check_wire_enums.py).
 """
 import argparse
 import os
@@ -13,11 +15,15 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools/ci"))
+sys.path.insert(0, str(ROOT / "tools/policy"))
 from comparison_range import comparison_range
 from check_commit_message import EXAMPLES, validate
 from check_public_references import internal_reference
 from check_source_content import content_issues
+from check_wire_enums import allowed_breaks, diff_problems, in_scope, wire_enums
 from added_line_policy import GUIDANCE, added_line_issues, added_lines
+
+BREAKS = "tools/policy/wire_enum_breaks.toml"
 
 DIFF_TREE = ("diff-tree", "-r", "--raw", "--no-abbrev", "-z", "--no-renames", "--no-commit-id")
 # Modes whose object is not a blob: absent, and a submodule's commit.
@@ -88,6 +94,43 @@ def parent_versions(path, change, other_parents):
     return versions
 
 
+def wire_breaks(root, commit):
+    """The (file, enum) pairs `commit` names as broken on purpose."""
+    listed = subprocess.run(["git", "-C", str(root), "show", commit + ":" + BREAKS],
+                            capture_output=True)
+    return allowed_breaks(listed.stdout.decode()) if not listed.returncode else set()
+
+
+def tree_blobs(root, commit):
+    """{path: blob oid} for every file `commit`'s tree holds."""
+    found = {}
+    for record in git(root, "ls-tree", "-r", "-z", commit).split(b"\0"):
+        if record:
+            metadata, path = record.split(b"\t", 1)
+            mode, _, oid = metadata.split()
+            if mode not in NOT_A_BLOB:
+                found[path] = oid
+    return found
+
+
+def wire_failures(root, commit, touched, parents_changes, wire_now, read_blob):
+    """What `commit`'s enums break of every parent's version of the files it touches."""
+    allowed = wire_breaks(root, commit)
+    problems = []
+    for path in sorted(touched):
+        name = path.decode(errors="replace")
+        if not in_scope(name):
+            continue
+        for changes in parents_changes:
+            change = changes.get(path)
+            if change is None or change[0] in NOT_A_BLOB:
+                continue
+            before = wire_enums(read_blob(change[2]).decode(errors="replace"))
+            problems.extend(commit[:12] + ": " + problem
+                            for problem in diff_problems({name: before}, wire_now, allowed))
+    return problems
+
+
 def inspect(root, base, head="HEAD"):
     baseline = {}
     for record in git(root, "ls-tree", "-r", "-z", base).split(b"\0"):
@@ -120,7 +163,18 @@ def inspect(root, base, head="HEAD"):
             if failure:
                 failures.append(commit[:12] + ": " + failure)
             other_parents = [changed_blobs(root, parent, commit) for parent in parents[1:]]
-            for path, change in changed_blobs(root, parents[0] if parents else None, commit).items():
+            changes = changed_blobs(root, parents[0] if parents else None, commit)
+            parents_changes = [changes] + other_parents if parents else []
+            if parents_changes:
+                touched = set().union(*parents_changes)
+                tree = tree_blobs(root, commit)
+                wire_now = {}
+                for path in touched:
+                    name = path.decode(errors="replace")
+                    if in_scope(name) and path in tree:
+                        wire_now[name] = wire_enums(read_blob(tree[path]).decode(errors="replace"))
+                failures.extend(wire_failures(root, commit, touched, parents_changes, wire_now, read_blob))
+            for path, change in changes.items():
                 mode, oid = change[1], change[3]
                 if mode == b"000000":
                     continue

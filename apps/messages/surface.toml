@@ -230,16 +230,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "publish-tilo-account"
-kind = "undoable"
-params = [
-  { name = "id", required = true, schema = { type = "string" } },
-  { name = "display_name", required = true, schema = { type = "string" } },
-  { name = "scope", required = true, schema = { type = "string" } },
-  { name = "generation", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
 id = "remove-account"
 kind = "undoable"
 params = [

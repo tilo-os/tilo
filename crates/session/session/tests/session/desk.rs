@@ -120,13 +120,9 @@ pub(super) fn light_session() -> Session {
 /// Run frames until `done` holds, with no client to pump.
 #[track_caller]
 fn until_session(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..300 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    crate::common::wait_for(session, "what the capture asked of the desk", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// Hold this test's wall clock at the capture instant, as the launcher holds
@@ -285,7 +281,7 @@ fn capture_parity_frames() {
         // The screen is a process of its own, and the frame compared here is
         // the one it drew: until then a locked output shows the blank the
         // desk left behind.
-        let deadline = std::time::Instant::now() + Duration::from_secs(120);
+        let deadline = tilo_test_env::hang_deadline();
         while !session.compositor().lock_drawn() {
             assert!(
                 std::time::Instant::now() < deadline,

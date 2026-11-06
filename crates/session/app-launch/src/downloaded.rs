@@ -48,6 +48,13 @@ use tilo_service::{Jobs, Service, Started, Wake, Worker, decode, offer, reading}
 
 pub use effects::{DownloadedAppAction, DownloadedAppsAction};
 
+/// The `Name[xx]` candidates of the person's interface language: what an entry
+/// read or written here is named in, so a German machine with English chosen
+/// keeps English names.
+fn locales() -> Vec<String> {
+    desktop_entry::locale::language_candidates(ui::i18n::preferred_language().as_deref())
+}
+
 /// The resource every app and offer of the person's is read from.
 pub const RESOURCE: &str = wire::RESOURCE;
 /// The kind of [`RESOURCE`].
@@ -403,6 +410,7 @@ impl Core {
                 app_id: window.app_id.clone(),
                 icon: window_icon(window.artwork.as_ref()),
             },
+            &locales(),
         );
         match store.update_location(&identity, &program) {
             Ok(Some(desktop_id)) => {
@@ -480,7 +488,7 @@ impl Core {
         reason = "the read apps and the missing ones are saved in one hold, and the files are followed after it"
     )]
     fn rebuild(&self) -> bool {
-        let (generation, scan) = desktop_entry::cache::cached_scan_snapshot();
+        let (generation, scan) = desktop_entry::cache::cached_scan_snapshot(&locales());
         let apps: Vec<wire::DownloadedApp> = scan.entries.iter().filter_map(app).collect();
         let missing: HashSet<String> = scan
             .entries
@@ -526,8 +534,8 @@ impl Core {
             .and_then(workspace_record)
             .filter(|path| std::fs::metadata(path).is_ok_and(|meta| meta.is_file()));
         let changed = match moved {
-            Some(path) => store.locate(desktop_id, &path).is_ok(),
-            None => match store.fall_back(desktop_id) {
+            Some(path) => store.locate(desktop_id, &path, &locales()).is_ok(),
+            None => match store.fall_back(desktop_id, &locales()) {
                 Ok(copy) => copy.is_some(),
                 Err(error) => {
                     tracing::warn!(%desktop_id, %error, "could not follow a downloaded app's file");
@@ -633,7 +641,7 @@ impl Core {
         let Some(store) = &self.store else {
             return false;
         };
-        if let Err(error) = store.locate(desktop_id, path) {
+        if let Err(error) = store.locate(desktop_id, path, &locales()) {
             let name = self.name_of(desktop_id);
             return self.failed(
                 wire::DownloadedDoing::Locate,
@@ -889,7 +897,7 @@ fn kind(kind: ProgramKind) -> wire::DownloadedKind {
 
 /// Whether an entry of the machine's own names the window `app_id`.
 fn installed(app_id: &str) -> bool {
-    desktop_entry::cache::cached_scan()
+    desktop_entry::cache::cached_scan(&locales())
         .entries
         .iter()
         .any(|entry| {

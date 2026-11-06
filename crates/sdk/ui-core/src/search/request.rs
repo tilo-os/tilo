@@ -318,7 +318,13 @@ impl SearchRequest {
 }
 
 /// Whether `address` names the host search door.
-pub(crate) fn is_search_address(address: &tilo_actions::ActionAddress) -> bool {
+///
+/// A host that keeps one search for the whole desktop (the desk under the
+/// windows) answers this door with that search rather than opening a palette
+/// over its own tree: the request says "search the platform", and the
+/// platform's search is the one that knows the person's apps.
+#[must_use]
+pub fn is_search_address(address: &tilo_actions::ActionAddress) -> bool {
     address.resource == SEARCH_RESOURCE && address.action == SEARCH_ACTION
 }
 

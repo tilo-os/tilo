@@ -314,17 +314,6 @@ view sidebar(all: Channels) {
                 }
             }
         }
-        actions: {
-            // One primary affordance: with no channels the empty state below is where a new
-            // one is made, so the header leaves its primary button to it rather than showing
-            // the same button twice on one page. With channels there is no such empty state,
-            // so the header keeps it.
-            if all.is_empty() {
-                std.header(actions(all).filter(a -> not a.primary))
-            } else {
-                std.header(actions(all))
-            }
-        }
         content: {
             if all.is_empty() {
                 ui.EmptyState("No channels yet", icon: .hash, action: "New channel") {
@@ -524,7 +513,7 @@ view thread_typing_here(of: Thread) {
 
 /// Edit, for whoever may edit the message (its author): puts the editor in its place.
 view edit_button(m: Message, editing: State<Option<Message>>, revised: State<RichText>) {
-    if actions(m).any(a -> a.is(edit)) {
+    if created(m)?.who == .some(workspace.me) and not m.body.is_empty() {
         ui.Button("Edit", icon: .pencil, icon_only: true) {
             on press: set(revised, m.body).then(set(editing, m))
         }
@@ -557,6 +546,7 @@ view message(m: Message, editing: State<Option<Message>>, revised: State<RichTex
     if let t = m.thread {
         std.thread_chip(t, count: t.messages.len())
     }
+    std.linked(m, compact: true)
 }
 
 /// What a message says, and that it was edited when its history holds an edit.
@@ -656,6 +646,17 @@ scenario "a team's channels" -> TextChannel {
     // The conversation with yourself: your notes, which the sidebar labels as yours.
     let notes = message_person(channels, invoker)
     send(notes, RichText("Ask Leo about the walk on Saturday."))
+    design
+}
+
+/// A message made from another: the one it was made from draws the made message as a card, as
+/// picking the message a menu's Make is open on makes it.
+scenario "a message made from another" -> TextChannel {
+    let design = new_channel(channels, "design")
+    let ask = send(design, RichText("Can we move the account step to the end?"))
+    made from ask {
+        send(design, RichText("Then let them in first and ask once they save something."))
+    }
     design
 }
 

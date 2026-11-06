@@ -47,6 +47,8 @@ fn notes_tab(id: TabId) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

@@ -57,27 +57,6 @@ impl ChatApp {
     pub(super) fn conversation_accessibility(&self) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, Role};
 
-        if let Some(peer) = &self.direct_person {
-            let rows = self
-                .person_messages
-                .iter()
-                .map(|message| {
-                    let author = if &message.author == peer {
-                        self.person_display_name(peer)
-                    } else {
-                        self.me.name.clone()
-                    };
-                    AccessNode::new(Role::ListItem)
-                        .with_name(format!("{author}: {}", message.text))
-                        .with_role_description(crate::i18n::t("chat-message-kind"))
-                        .with_hashed_key((&self.active_channel, &message.id, "private-message"))
-                })
-                .collect();
-            return AccessNode::new(Role::List)
-                .with_name(crate::i18n::t("chat-person-chat-private"))
-                .with_children(rows)
-                .with_hashed_key(("private-message-list", &self.active_channel));
-        }
         let conversation = self
             .messages
             .iter()

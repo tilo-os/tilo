@@ -48,4 +48,4 @@ pub mod migration_startup;
 pub mod scan;
 
 pub use entry::{DesktopAction, DesktopEntry, EntryKind, EntrySource, EntryType, MainWindows};
-pub use scan::{Scan, ScanStats, scan, scan_dirs};
+pub use scan::{Scan, ScanStats, scan_dirs};

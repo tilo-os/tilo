@@ -5,21 +5,17 @@
 
 use crate::framework_support::{notes, surface};
 use notes::read;
-use notes::sidebar::OutEvent;
 use ui::widget::BlockKind;
 
 #[test]
 fn full_lifecycle_round_trips_through_the_record() {
     let mut app = notes();
     surface(&mut app, |notes| {
-        notes.apply_event_for_test(OutEvent::CreateChild { parent: None });
+        notes.new_note_for_test(None);
     });
     let target = surface(&mut app, |notes| notes.selected_for_test()).expect("new note opened");
     surface(&mut app, |notes| {
-        notes.apply_event_for_test(OutEvent::Rename {
-            id: target,
-            new_title: "Test Page".into(),
-        });
+        notes.rename_page_for_test(target, "Test Page");
     });
 
     let editor = *app.harness().targets().get("block_editor").unwrap();

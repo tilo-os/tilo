@@ -111,6 +111,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
   which invokes like `invoke` and builds the `Result` value in the host. Without `try`, a failed
   invocation yields an error value that traps when its scalar is unwrapped.
+- `suggest act(args)` records the action as a proposal on the resource it is about instead of
+  applying it: an agent's block whose whole expression it is, and a statement in an action or
+  flow (E044 elsewhere). An action records it once its own change has committed, so the proposal
+  is never part of that transaction. It compiles to one import, `suggest(act)`, and
+  `proposals(of)` draws what waits on `of`, each card naming who proposed it; accepting one runs
+  it as the person accepting, and the change it makes records who proposed it.
 - Sets and maps of Int and Float take their elements and values boxed with `some_i`/`some_f`
   through the existing `set_add`, `set_remove` and `map_put`. Set elements of Int or Float are
   stored under their text form, so a set iterates in text order.
@@ -120,20 +126,33 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
-- **Roles say what a surface does with an action, and only `internal` and `scenario` hide one.**
+- **A role says what an action is; only `internal` and `scenario` keep it from being listed.**
   `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
   skips the `scenario` actions and those with a hiding role, so a gesture-only action
-  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in a
-  `std` header or menu, or in an agent's choices, while the app can still name it where the
-  gesture wants it.
-- **A window's header shows its primary action and the commands the app marks `frequent` as
-  buttons, and every other action in the header's one menu.** `std.header` builds them that
-  way: a button per primary and per `frequent` action, and a `ui.Button(..., in_menu: true)`
-  per remaining action, which the shell's own More button holds whatever room the row has.
-  Which commands earn a place in the row is the app's judgement (`frequent: true`), not the
-  window's width, so a narrow window gives way with the menu, never with the one main thing to
-  do; a host that lists a window's actions elsewhere (`WindowBar::lists_actions`) hides the
-  menu's door instead, and nothing is offered twice.
+  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in
+  the host's bar or a window's menus, or in an agent's choices, while the app can still name it
+  where the gesture wants it.
+- **A window's bar shows its primary action and the commands the app marks `frequent` as
+  buttons, and every other action behind the bar's one menu.** The host builds them that way
+  from the declarations of the type the window shows: a button per primary and per `frequent`
+  action, and the remaining actions in the menu, which the shell's own More button holds
+  whatever room the bar has. A view never reads the actions back to draw them: it says what
+  can be done by declaring actions on the type and by placing the typed affordances of the
+  thing itself (a checkbox that completes, an entry that adds, a drag). `actions(r)` is
+  therefore an error in a view (E047); it stays readable to the host, which places the
+  declarations, and to an agent, which chooses among them. Which commands earn a
+  place in the bar is the app's judgement (`frequent: true`), not the window's width, so a
+  narrow window gives way with the menu, never with the one main thing to do.
+- **A window switches only between the views its type declares.** `views project_list,
+  project_board for Project` names them, in the order the bar shows them, its default view
+  first: the host draws them as the bar's labelled switch and opens the one the person last
+  chose in that window. A view of a type that is not named is the app's own helper (a row body,
+  a piece a page places), so it is never a window of its own.
+- **An item's actions are on the item.** A row, card or tree node standing for a resource
+  carries its type's actions in its context menu (right-click, long press, Menu key) and, for
+  a list row, as its swipe; the page of one item carries them behind the "…" beside its title.
+  The host places them there from the declarations, once, and the view places no menu of its
+  own.
 - **A row is drawn by the view that knows what the place around it says.** `row(title, ...)`
   stands in a list's item block, as a row view's body, or as the whole body of a view of one
   item (first parameter a record, body one row after its `let`s). The extra parameters are what
@@ -150,8 +169,10 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   `image` are `ui.Text`, `ui.BlockEditor`, ... : `prims.rs` names the component (`Prim::component`)
   and `checker::component::component_prim` checks and lowers the call as the component's own, so
   its props, slots, events and bindings are the description's and nothing is added. `button` (a
-  declared action's button) and `facts` build `ui.Button` and `ui.PropertyList` (`Prim::builds`)
-  because their arguments are the statement form's own. Removed with replacements named in
+  declared action's button) builds `ui.Button` (`Prim::builds`) because its arguments are the
+  statement form's own. `opening(of)` and `facts(of)` read the fields the type declares and build
+  from them: the page's start, and one wrapping row of chips, each the field it shows (a day's
+  `ui.DateField`, a person's chip). Removed with replacements named in
   E096: `card` (`ui.Card(item: x, title: meta(x).title)`), `column` (`stack`), `date`
   (`ui.DateField`, or `ui.DatePicker` for a calendar), and the arguments a component's own props
   carry (`text(x, style:)`, `button(act, size:)`, `image(src, width:)`). Layout stays the
@@ -167,6 +188,95 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   (`only_binding`), so the value's type and its merge (text spliced, rich text rich, a register
   replaced) are the description's, with no per-widget code, and a view's state binds like a
   field.
+
+- **Text and numbers are one method surface, on the value.** They are methods, not
+  `text.`/`math.` namespaces, because everything else a value is asked (`items.len()`,
+  `items.map(...)`, `p.name()`) already reads that way and a call reads best where its subject
+  is. `checker/text_math.rs` lowers all of them, and `checker/methods.rs` holds the one list of
+  names per type that both the lowering and the E027 message (and a container field's read)
+  consult, so a name offered in a message is one the type takes. `Text.len`, `to_int`, `find`,
+  `slice` and `replace` and `Int.to_float`, `Float.to_int` and `to_text` moved out of `call.rs`
+  into it with no aliases; `find` gives an `Option<Int>` rather than a sentinel index.
+- **A text is counted in graphemes.** `len`, `find` and `slice` count what a reader sees, so a
+  cut never lands inside a family emoji, a flag or a letter with an accent; `src/text.rs` is the
+  one reading of that, shared by the runtime's `Text` calls, the index's `len` of a text column
+  (`pred.rs`) and search's identifier patterns, so a filter and a view count a column alike.
+  Case changes are Unicode case mapping, not locale tailoring: the language carries no locale
+  data, `upper("straße")` is `STRASSE`, and a locale's own rule belongs to the system's
+  formatting, not to a pure string method. `matches` is the identifiers' `*` glob, so a search
+  query and an app's own test ask the same question.
+- **The arity of `round`, `floor` and `ceil` is the result's type.** No argument gives the whole
+  number as an `Int`; the places to keep give a `Float`, so `f.round(2)` keeps the fraction it
+  asked for. Places are clamped to 0..=15 (where every place a double has is representable) and
+  the rounding is over the scaled value, so a rounded figure is the one written with that many
+  places. `Int` arithmetic saturates where the host's own would trap: `abs` of the least `Int`
+  stays the greatest, and a sum stops at the end of the range. An empty list's `avg` is 0.0.
+  `clamp(n, lo, hi)` is `max(lo)` then `min(hi)`, which for a reversed range gives `hi` rather
+  than failing. Nothing is added for padding or aligning a number: how wide a figure is drawn is
+  the UI's numeric formatting (`numeric: true`), not a pure text method. Bytes↔Text is not part
+  of the language at all: there is no Bytes type.
+
+## Derived keys
+
+- **Resources store facts; the index derives.** A value that follows from other records (a
+  branch finished, a parent's done and total children) is not a field anyone writes: it is a
+  `derive` key on the type, and the store's index works it out from the collection, keeps it
+  where a view reads fields from, and moves it with every change of what it reads. A stored
+  copy diverges under concurrent edits — two people checking the last two steps of a branch
+  would each write their own answer, and neither would see the branch finished — and needs a
+  migration for every record written before it, one that can only guess.
+- **What a key may read.** `derive name: Type = expr` declares one, a line in a type body, its
+  `Type` a `Bool` or an `Int`: the type's own fields of those types, another key the same type
+  derives, and `not`, `and`, `or`, comparisons of two counts (`>`, `>=`, `<`, `<=`, `==`,
+  `!=`), `children.count`, `children.count(x)`, `children.all(x)`, `children.any(x)` and
+  `parent.all(x)`. `children` are the items naming the item in its parent field, `parent` the
+  item it names there, so a type whose keys read either marks that field:
+  `parent: Option<Item> (parent) = .none` (E119 says so). Nothing else is derived from other
+  records: text, a day, a record or arithmetic on counts cannot be a key.
+- **A key reads one way.** It reads the items under an item or the items above it, never both
+  (E119): the two are worked out by walks in opposite directions, and one value cannot be
+  settled by both. Reading one direction takes two keys — `finished` downward, `folded`
+  upward — which is what makes a branch fold when its last steps are checked and unfold when
+  one is opened.
+- **A key reads itself and the keys declared before it.** The item's own keys are worked out in
+  the order the type declares them, so `folded: Bool = finished and parent.all(folded)` reads
+  `finished` declared over it. A key that reads one declared below it is E119: it would read a
+  value not worked out yet.
+- **Nothing writes a key.** It is a field of its type: a view reads it as any other, and search
+  filters, sorts and groups by it. An action that assigns it, or a record made with one, is
+  E119 — the change is derived again wherever it is applied, so a written value would be a
+  second answer to the same question.
+- **A key is worked out where its items change.** The index keeps each item's children and the
+  chain it stands in. A change derives the item, walks the items above it deepest first, and
+  then — from the highest whose value moved — the items under it, stopping where a value no
+  longer moves; a key that reads neither is not recomputed for it, so a title keystroke costs
+  nothing. A write of the parent field moves the item between two lists and derives the old
+  and the new chain; a whole-record write derives every item it visits, the items under each
+  before the items above.
+- **Readers are told.** A derived value is named to the views that read it and, in a change
+  another replica sent, as that item's own change (`Derive::derived_keys`): a branch that folds
+  because someone checked its last step elsewhere is redrawn there, though the change named
+  only the step.
+
+## What links to a resource
+
+- **`linked(r)` is three answers, in one order.** A resource links to another when an action
+  made it from there (`created(r)?.from` of it names that one), when a reference field of it
+  names it (the register's value, through options, lists, tuples and enums), or when its rich
+  text mentions it (`RichText::references`). Each is a `host.Link`: `of` the resource and
+  `how` a `host.LinkHow`, `created_from`, `field` or `mention`, in that order, then by what is
+  linked. It is a system query, not a declaration: no type declares it and no app takes part.
+- **The index keeps both ways.** Each resource's outgoing set is a pseudo-field (`$links`) of
+  the pairs, kept with the fields it is derived from (`store::LINKS`), and each target holds
+  the reverse list of what links to it; `Store::linked` reads the target's list, so its cost is
+  what links to `r`, never the size of the workspace (a test at 1k and at 10k items reads the
+  same). The runtime's in-memory store has no index and answers by walking the log; that path is
+  for tests, and documented as such.
+- **A change tells its readers.** A resource's outgoing set is derived where its fields are: a
+  rich text written, a field set or cleared, a resource removed, and a resource made (the
+  `created_from` pair, from the change's source). The entries move with it, and the keys are
+  named as the changes that made them (`Derive::links`, `derived_keys`), so a view of
+  `linked(r)` runs again when one more resource is made from or names `r`.
 
 ## Packages of several files
 
@@ -336,6 +446,51 @@ convergence.md, "Actions".
   the same register (`t.tag = tidy(t.tag)`, `t.n = t.n * 2`) are legitimate replays. E030's
   advice no longer suggests writing the read and the write out.
 
+## Time is values
+
+A day, a moment and a length of time are values of their own: `Date`, `Time` and `Duration`.
+`Date` and `Time` were already held as ISO text that compares; the length was a shape of filter
+literals only, written `7d` in a query and nowhere else.
+
+- **A length of time is a type, not a filter's spelling.** `30m`, `2h`, `3d` and `1w` are
+  `Duration` values anywhere an expression stands, and what they mean in a filter is unchanged:
+  relative times still resolve to the minute, and ranges (`a..b`) remain a filter's own. The
+  alternative — teaching the checker that a bare `7d` is an `Int` of seconds — would have made
+  `due + 7d` and `due + 604800` the same expression, and made `{7d}` read `604800`. A `Duration`
+  is an `i64` of seconds at the ABI, like an `Int`, and not one in the language: mixing them is
+  E024, and `Duration(n)` reads a stored number as one.
+- **Stored lengths stay numbers.** A field cannot hold a `Duration` (E023): a length an app
+  keeps is the number it measures it in (Mail's `hold: Int = 10`), read where it is used
+  (`now + Duration(m.hold)`). The stored format does not change, and no migration is needed.
+- **A day moves by whole days; a moment by anything.** A `Date` is a calendar day and has no
+  time of day to move, so `today + 2h` is E024 where it is written, and a length only code holds
+  fails where it moves the day (`day_shift`). A `Time` moves by the seconds it is given
+  (`time_shift`), and `Date - Date`/`Time - Time` are the seconds between them.
+- **What a day and a moment are made of reads on them, not from free functions.** `d.weekday()`,
+  `d.day()`, `d.month()`, `d.year()`, `d.start_of_week()`, `t.day()` and `t.time_of_day()` are
+  methods: the receiver says which reading is asked, and `t.day()` needs no `day_of(t)` beside
+  `now` and `today`. `Date.parse(text, near: at)` and `Time.parse(text, near: at)` stand on the
+  type, which is not a value: the checker reads them before the receiver as one (a name that is
+  no local and no import), so a package can still hold a root named `Date`.
+- **One zone source.** Every reading of a day and a moment is the person's: `t.day()` is the day
+  the moment falls on in their zone as the filter's `today` reads it, `today` is where `now`
+  falls, `Time.parse` resolves a wall time of day through the person's IANA zone
+  (`Platform::zone_name`, `Core.zone_name`) so 09:00 tomorrow is right across a change of
+  clocks, and `Date.start_of_week` uses the region's first day of the week
+  (`Platform::week_start`, `Core.week_start`, Monday where a host names none) — the same locale
+  data the toolkit's dates use. Without a named zone, the host's offset stands in, as it does for
+  repeats.
+- **A moment belongs to an invocation.** `now` and `today` read only in an action (E049
+  elsewhere): the moment is recorded with the change, so replaying a change computes the same
+  days. `Date.parse`/`Time.parse` take the moment in words are read against as an argument
+  (`near:`), which is what keeps them pure.
+- **The entry keeps reading words, not the language.** A typed entry's `Text (entry)` is filled
+  by the runtime's own scanner (`Core::entry_fill`, `natural`), so the phrase filling an action's
+  day and moment does not need the language; `Date.parse`/`Time.parse` are for code that reads
+  words itself and names the moment it reads them at. `dated(text, now)` (which answered the
+  rest of the text with its day and moment) and `day_of(t)` (which `t.day()` is) are removed
+  with no alias.
+
 ## Search
 
 search.md, "What a type declares" and "Types, references and paths".
@@ -351,10 +506,12 @@ search.md, "What a type declares" and "Types, references and paths".
   field), E101 (a type no filter compares), E102 (a named filter the index cannot keep), E103
   (an order the field does not have), E104 (repeated, hidden and filtered, a reserved key),
   each naming the type with its doc comment's first line.
-- **A filter's icon is declared** with the annotation enum cases and actions take:
-  `filter done (icon: .circle_check)`, `filter "Open" = not done (icon: .circle)`. After a
-  named filter's predicate the parenthesis would read as a call; one that names only options
-  is the filter's options. A filter that declares none has no icon.
+- **A filter's options are declared** with the annotation enum cases and actions take:
+  `filter done (icon: .circle_check)`, `filter "Today" = due <= today (icon: .star, count:
+  true)`. After a named filter's predicate the parenthesis would read as a call; one that names
+  only options is the filter's options. `icon:` is what its control shows beside its label, and
+  `count:` whether the place it makes shows how many items it holds. A filter that declares
+  neither has no icon and shows no count.
 - **Named filters are predicates of the existing vocabulary.** They read fields with `not`,
   `and`, `or`, comparisons, `.len()` and `.is_empty()`. search.md's
   `attachments.count > 0` is written `not attachments.is_empty()` or
@@ -371,8 +528,9 @@ search.md, "What a type declares" and "Types, references and paths".
   the type's filters at run time (`tilolang_runtime::query`). So `find("from:*@x.com is:unread
   received:-7d")` and `query(Message, from: "*@x.com", unread: true, received: -7d)` are one
   query. `today` and `now` are bare words in a query's values, as `now` is in an action;
-  search.md's `today()` is accepted too. Durations (`7d`, `-30d`; units s, m, h, d, w) and
-  ranges (`a..b`, `a..`, `..b`) are values of filters only (E105 elsewhere).
+  search.md's `today()` is accepted too. Durations are values of their own everywhere (see
+  "Time is values"); in a filter they are the same lengths (`7d`, `-30d`; units s, m, h, d, w),
+  and ranges (`a..b`, `a..`, `..b`) are values of filters only (E105 elsewhere).
 - **Relative times resolve to the minute.** `-7d` and `today` read the host's clock rounded
   to the minute, so a view asks one query a minute; a list does not move by itself as time
   passes.
@@ -384,17 +542,54 @@ search.md, "What a type declares" and "Types, references and paths".
   view's metadata. `std.list`'s `window query: Text` holds the place chosen, as people type
   it in search (`is:done`); its places are `filters(T)`'s toggles after all of the items
   (`all`, named `everything:`, by default from the type's plural noun, `host.Meta.plural`: "All notes"); `place:` is
-  the place a window starts on, the state's default (Letters starts on `is:drafts`), each counted by `items.matching(p.query).len()`. The `filter:` and `count:`
-  parameters are gone.
+  the place a window starts on, the state's default (Letters starts on `is:drafts`). A place shows a
+  count only where its filter declares `count: true` (`items.matching(p.query).len()`), never the
+  all place, a project's or one that declares none. The `filter:` and `count:` parameters are
+  gone.
+- **A list groups by the key its caller gives.** `std.rows(group:)` takes `(T) -> Option<K>` and
+  heads each run of items naming the same key with the key itself, as the platform presents a
+  value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that
+  name no key stand under `ungrouped:`, in the order the caller gave them; `tail:` names the
+  items done with, under `tail_title:`. A place that groups or folds by what it says rather than
+  by its items answers per item (`group: x -> if by_day { x.due } else { .none }`,
+  `tail: x -> folds and x.folded`), so nothing reads the whole collection on every change:
+  `headings:`, `folding:` and `closed:` are gone, and a caller whose fold must stand last
+  orders its items itself (`sort_by(.folded)`).
+- **A function argument binds the type parameters its result names.** A template's type parameter
+  is not a variable, so `rows<T, K>(group: Option<(T) -> Option<K>>)` learns `K` where a call
+  passes the lambda, from what the lambda makes (`group: .due` a day, `group: x -> .some(x.t)` a
+  word); a function that makes something else is told so. A function passed on by the name its
+  caller gave it binds them from that function's result as well.
 - **Reflection reads the log, and may not have it.** `created(r)` and `updated(r)` are
   `Option<host.Version>` (`who`, `at`, `what`): a resource whose changes the device has not
   read yet has no versions to show, and code says what it shows then. A version is a change
   that wrote the resource itself (a field, or its insertion), not one of its items. The runtime
   records each change's resources and time with it (`ChangeNote::touched`, `::at`; on Tilo,
   `DynAction::changed` and `Authorship::at`, read back from the record's changes).
+- **What a resource was made from is a change's fact.** An invocation carries the resource it
+  is made from when it has one (`Runtime::invoke_action_from`, `Journal.from`; on Tilo a plan
+  names it, `PlanRequest.from`, and the change records it as `Authorship.from`), and the first
+  version of a resource says it: `created(r)?.from`, an `Option<host.Resource>`. It is not a
+  field anyone declares or writes — every type has it, and an action writes none. A store
+  without a record of changes keeps it nowhere and answers nothing.
 - **A scenario's `as` block is a change of its own.** `as who at time { ... }` commits what came
   before, then the block, as `who` at `time`; history names the scenario as the action, since
   seed data is the scenario's doing. Rolling back on a failure undoes the last block only.
+- **`made from r { ... }` says what a scenario's seed data was made from.** The block runs as a
+  change made from `r`, the way an invocation on `r` is, so what it creates records it
+  (`created(r)?.from`) and what links to `r` names them, as a person's make from `r` does. It is
+  a change of its own for the same reason `as` is: what the block makes is made from `r`, while
+  what came before is not. Only a scenario writes it, since seed data is what shows a
+  provenance feature in `layout-check`.
+- **A scenario seeds the view state its window stands on.** `window place = Task.done` (and
+  `lens picked = ...`) in a scenario names a state the view declares, with an optional view
+  (`window home.place = ...`) where two declare one name, and the value is checked as the
+  declaration's type is. It sets the declaration, not an instance: the host reads a declared
+  state as the person's slot, then the scenario's seed, then the declaration's default, so a
+  window that opens later stands on it too, and the seed is a generation bump so an open window
+  draws again. A person's own choice is their slot and wins over the seed, and the seed is
+  never written as their change — a capture can show a place no one picked without recording
+  that anyone did. Only a scenario writes it: production code cannot stage a person's place.
 - **`a.then(b)` joins actions.** It is a method of action values, so it means the same wherever
   one is written; `b` runs once `a` is done. A composer sends its lens draft and clears it with
   `send(c, draft).then(set(draft, ""))`; a button presents the first action.
@@ -487,3 +682,17 @@ search.md, "What a type declares" and "Types, references and paths".
   field to declare, and a view or a function cannot call it (E040). Nothing happens for an item
   that repeats nowhere or for `done = false`, so a check that does not repeat is the app's own
   `done` write.
+- **A place the view supplies, and the commands only a view can offer.** An action parameter
+  written `above: Option<T> (above)` is a *place*: the view offering the action fills it with
+  what it shows there — `std.rows` and `std.outline` pass the item just over this one in its
+  group, under the same parent, on the same side of the fold — through `actions(x, above)`. The
+  store's order never decides it, so a task first under its day's heading is never nested under
+  one of another day. An `applies` line states what this view must show for the action to be
+  offered at all (`applies above != .none "Nothing above it here"`); a `require` line states
+  what the item's own state must be, and a menu keeps that one listed, disabled, with its
+  reason. An item menu (a row's, a window's `...`) leaves out what does not apply there, while
+  the published `applies` flag beside `available` and `reason` lets a surface that lists
+  everything — a palette, an agent's choices — show it disabled, why. The `run` of an offered
+  action carries the place it was offered with, so what runs is what the person saw. Two
+  actions offered on one kind of item that both ask for a value of one type and write it to the
+  same field are one command under two names (E120).

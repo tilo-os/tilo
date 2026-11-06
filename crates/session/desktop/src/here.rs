@@ -58,6 +58,10 @@ pub struct LiveMember {
     pub kind: String,
     #[serde(default)]
     pub label: String,
+    /// What the device calls itself, from its certificate: what tells two
+    /// devices of one person apart. Empty on a device that named none.
+    #[serde(default)]
+    pub device: String,
     #[serde(default)]
     pub focus: Option<Focus>,
     /// An agent's own activity line.
@@ -133,6 +137,17 @@ impl Line {
     }
 }
 
+/// One device a person is here on, as their face lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PersonDevice {
+    /// The device's live publisher, hex.
+    pub id: String,
+    /// What the device calls itself, from its certificate.
+    pub label: String,
+    /// How available that device said it was.
+    pub availability: ui::Availability,
+}
+
 /// Someone present, as the desktop shows them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Person {
@@ -141,7 +156,11 @@ pub struct Person {
     /// The person (user root, hex) as the host authenticated them, once
     /// its lines say: the id that stays theirs on every device.
     pub user: Option<String>,
+    /// What everyone here calls them: the person's name, whichever of their
+    /// devices is the one listed.
     pub label: String,
+    /// The devices they are here on, each as it calls itself.
+    pub devices: Vec<PersonDevice>,
     pub rgb: (u8, u8, u8),
     pub agent: bool,
     /// The window of the record they focus, when this desktop shows it.
@@ -373,7 +392,7 @@ impl HereState {
                 let Some(name) = self.member_name(member) else {
                     continue;
                 };
-                arrived.push(labels.label(id, name));
+                arrived.push(labels.label(person, name));
                 persons.push(person);
             }
             announced.insert(id.to_owned());
@@ -531,6 +550,62 @@ impl HereState {
         self.user_of(publisher).unwrap_or(publisher)
     }
 
+    /// The devices the person behind `publisher` is here on: which of their
+    /// machines are here, each as it calls itself and as it said it was. A
+    /// device that named none is known by its publisher, never by its
+    /// person's name.
+    #[must_use]
+    pub fn devices_of(&self, publisher: &str) -> Vec<PersonDevice> {
+        let person = self.person_of(publisher);
+        self.members
+            .iter()
+            .flatten()
+            .chain(self.own.as_ref())
+            .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
+            .map(|member| {
+                let named = member.device.trim();
+                PersonDevice {
+                    id: member.publisher.clone(),
+                    label: if named.is_empty() {
+                        crate::profile_card::short_key(&member.publisher)
+                    } else {
+                        named.to_owned()
+                    },
+                    availability: availability_of(member),
+                }
+            })
+            .collect()
+    }
+
+    /// Everyone here, by the device their presence comes from: the name and
+    /// colour of the person they are. What names a device in a place only
+    /// its publisher reaches, such as a pointer over a tile.
+    #[must_use]
+    pub fn person_names(&self) -> HashMap<String, (String, (u8, u8, u8))> {
+        let labels = self.labels();
+        let colors = self.colors();
+        let mut names = HashMap::new();
+        for member in self.members.iter().flatten().chain(self.own.as_ref()) {
+            let agent = member.kind == "agent";
+            let label = self
+                .member_name(member)
+                .map_or_else(guest_label, str::to_owned);
+            let key = if agent {
+                member.publisher.as_str()
+            } else {
+                self.person_of(&member.publisher)
+            };
+            names.insert(
+                member.publisher.clone(),
+                (
+                    labels.label(key, &label),
+                    color_in(&colors, &member.publisher),
+                ),
+            );
+        }
+        names
+    }
+
     /// Where `person`'s windows are: the layout of the first of their
     /// devices in the live layer that says.
     fn screen_of(&self, person: &str) -> Option<Screen> {
@@ -592,7 +667,9 @@ impl HereState {
         } else {
             label.to_owned()
         };
-        let label = self.labels().label(&line.device, &label);
+        // Told apart by their person's name, as everywhere here names them.
+        let person_of = self.person_of(&line.device).to_owned();
+        let label = self.labels().label(&person_of, &label);
         // A device that left the live layer keeps its line a while: their
         // person's own colour then, as when alone here.
         let rgb = self
@@ -715,11 +792,13 @@ impl HereState {
                 label: [
                     member.label.as_str(),
                     line_of.map_or("", |l| l.label.as_str()),
+                    member.device.as_str(),
                 ]
                 .into_iter()
                 .map(str::trim)
                 .find(|label| !label.is_empty())
                 .map_or_else(guest_label, str::to_owned),
+                devices: self.devices_of(&member.publisher),
                 rgb: color_in(&colors, &member.publisher),
                 agent,
                 tab,
@@ -752,6 +831,7 @@ impl HereState {
                 label: Some(l.label.trim())
                     .filter(|label| !label.is_empty())
                     .map_or_else(guest_label, str::to_owned),
+                devices: self.devices_of(&l.device),
                 rgb: color_in(&colors, &l.device),
                 agent: false,
                 tab,
@@ -768,7 +848,10 @@ impl HereState {
         people.compact_sort_by_key(|person| person.agent);
         let labels = self.labels();
         for person in people.iter_mut().filter(|person| !person.agent) {
-            person.label = labels.label(&person.id, &person.label);
+            // A person is told apart by their own name: every device of
+            // theirs is the same person, never a second one.
+            let person_of = person.user.clone().unwrap_or_else(|| person.id.clone());
+            person.label = labels.label(&person_of, &person.label);
         }
         people
     }
@@ -777,15 +860,26 @@ impl HereState {
     /// someone else here goes by the same name.
     pub fn own_shown(&self) -> Option<String> {
         let own = self.own_label()?;
-        let id = self.own_id()?;
-        Some(self.labels().label(id, own))
+        let id = self.person_of(self.own_id()?).to_owned();
+        Some(self.labels().label(&id, own))
     }
 
     /// The numbers the people here are told apart by, this page's own
     /// person included: the live layer's people, else the host's lines.
-    /// Keyed by live publisher, which every page in the workspace names alike.
-    fn labels(&self) -> ui::presence::ParticipantLabels {
-        let mut named: Vec<(&str, String)> = Vec::new();
+    /// Keyed by person, so two devices of one person are one name to number.
+    fn labels<'a>(&'a self) -> ui::presence::ParticipantLabels {
+        let mut named: Vec<(&'a str, String)> = Vec::new();
+        // One name per person, whoever of theirs spoke first: a device that
+        // has not said whose it is yet does not keep their name out.
+        let guest = guest_label();
+        let add = |named: &mut Vec<(&'a str, String)>, id: &'a str, name: String| match named
+            .iter_mut()
+            .find(|(known, _)| *known == id)
+        {
+            Some((_, held)) if *held == guest => held.clone_from(&name),
+            Some(_) => {}
+            None => named.push((id, name)),
+        };
         if let Some(members) = &self.members {
             for member in members.iter().chain(self.own.as_ref()) {
                 if member.kind == "agent" {
@@ -794,17 +888,21 @@ impl HereState {
                 let label = self
                     .member_name(member)
                     .map_or_else(guest_label, str::to_owned);
-                named.push((member.publisher.as_str(), label));
+                add(&mut named, self.person_of(&member.publisher), label);
             }
         } else {
             for line in &self.lines {
                 let label = self
                     .line_label(&line.device)
                     .map_or_else(guest_label, str::to_owned);
-                named.push((line.device.as_str(), label));
+                add(&mut named, self.person_of(&line.device), label);
             }
             if let Some(own) = &self.own {
-                named.push((own.publisher.as_str(), own.label.trim().to_owned()));
+                add(
+                    &mut named,
+                    self.person_of(&own.publisher),
+                    own.label.trim().to_owned(),
+                );
             }
         }
         ui::presence::ParticipantLabels::new(named.iter().map(|(id, name)| (*id, name.as_str())))
@@ -1033,6 +1131,7 @@ mod tests {
             publisher: publisher.into(),
             kind: kind.into(),
             label: label.into(),
+            device: String::new(),
             focus: None,
             activity: (kind == "agent").then(|| "Reading the notes".into()),
             place: None,
@@ -1301,6 +1400,8 @@ mod tests {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let mut main = Strip::new(StripId(1), "Main");
         main.window_groups.push(WindowGroup {
@@ -1820,6 +1921,85 @@ mod tests {
         assert_eq!(ids, ["ada-tab-1"]);
     }
 
+    /// A person's devices are listed under their name, each as it calls
+    /// itself and as it said it was: what the card's device row and a pointer
+    /// over a tile read.
+    #[test]
+    fn a_persons_devices_are_listed_under_their_name_and_never_name_them() {
+        let mut here = HereState::default();
+        here.set_members(
+            None,
+            Some(vec![
+                LiveMember {
+                    device: "Framework 16".into(),
+                    availability: Some("available".into()),
+                    ..member("ada-laptop", "person", "Ada")
+                },
+                LiveMember {
+                    device: "ThinkPad".into(),
+                    availability: Some("focusing".into()),
+                    ..member("ada-handheld", "person", "Ada")
+                },
+                LiveMember {
+                    device: "Mac".into(),
+                    ..member("ben", "person", "Ben")
+                },
+            ]),
+        );
+        let lines = vec![
+            HostLine {
+                device: "ada-laptop".into(),
+                user: "ada-root".into(),
+                label: "Ada".into(),
+                ..HostLine::default()
+            },
+            HostLine {
+                device: "ada-handheld".into(),
+                user: "ada-root".into(),
+                label: "Ada".into(),
+                ..HostLine::default()
+            },
+            HostLine {
+                device: "ben".into(),
+                user: "ben-root".into(),
+                label: "Ben".into(),
+                ..HostLine::default()
+            },
+        ];
+        here.set_lines(lines, 0);
+
+        let people = here.people(&DesktopTree::default(), &[], &|_| None, 0);
+        let ada = people
+            .iter()
+            .find(|person| person.id == "ada-laptop")
+            .expect("Ada, listed once");
+        assert_eq!(ada.label, "Ada");
+        let devices: Vec<_> = ada
+            .devices
+            .iter()
+            .map(|device| (device.label.as_str(), device.availability))
+            .collect();
+        assert_eq!(
+            devices,
+            [
+                ("Framework 16", ui::Availability::Available),
+                ("ThinkPad", ui::Availability::Focusing),
+            ],
+            "each device as it calls itself, with how it said it was"
+        );
+
+        let names = here.person_names();
+        assert_eq!(
+            names.get("ada-laptop").map(|(name, _)| name.as_str()),
+            Some("Ada")
+        );
+        assert_eq!(
+            names.get("ada-handheld").map(|(name, _)| name.as_str()),
+            Some("Ada"),
+            "the same person, on either device, by one name"
+        );
+    }
+
     #[test]
     fn collaborators_overlay_marks_agents_and_keeps_existing_rows() {
         let mut tree = DesktopTree::default();
@@ -1831,6 +2011,7 @@ mod tests {
             id: "bot".into(),
             user: None,
             label: "Scribe".into(),
+            devices: Vec::new(),
             rgb: (1, 2, 3),
             agent: true,
             tab: None,

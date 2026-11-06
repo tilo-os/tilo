@@ -1,7 +1,7 @@
 //! `Board`: cards in lanes, moved between them by dragging (a kanban board,
 //! a pipeline, a hand of tasks by status).
 //!
-//! Each lane is a column with a header and its cards, side by side. The
+//! Each lane is a column with a header, where it has one, and its cards, side by side. The
 //! cards are any widgets (usually a pressable [`Card`](super::Card)), so a
 //! card opens, takes focus and is read out as itself. Dragging one shows a
 //! ghost under the pointer and the insertion line where it would land, over
@@ -51,6 +51,9 @@ pub struct BoardDrop {
 struct LaneKeys {
     key: String,
     cards: Vec<String>,
+    /// Whether the lane heads itself: its column starts with the heading, over the view that
+    /// scrolls its cards. A lane nobody named heads nothing, and its cards start at its top.
+    heading: bool,
 }
 
 /// A drag from press to release.
@@ -77,6 +80,14 @@ pub struct Board {
     drops: Option<crate::widget::ActionEmitter<BoardDrop>>,
     /// What the board is, for assistive technology.
     pub(crate) name: Option<String>,
+    /// The theme the lanes were last sized in: a lane's width follows the pane the board is
+    /// given, which is known only once it is laid out (`Board::size_lanes`).
+    theme: Option<Theme>,
+    /// The width the lanes were last given.
+    sized: Option<f32>,
+    /// The width the pane showing the board was last laid out at: what a lane is judged
+    /// compact against ([`Board::snap_points`]).
+    pane: Option<f64>,
 }
 
 impl Default for Board {
@@ -91,9 +102,8 @@ impl Board {
         Self {
             // The lanes stand the height of the board, so each one's cards scroll under its
             // header instead of the whole board growing past the pane. They keep a gutter at
-            // the board's sides too: the first and last lane sit the same distance from the
-            // pane's edges, so a board scrolled to its end leaves after the last lane the air
-            // it began with before the first.
+            // the board's sides too: a board scrolled to either end stands its first or last
+            // lane a gutter in from the pane's edge, the air it began with before the first.
             row: Row::new()
                 .no_wrap()
                 .with_align_items(taffy::AlignItems::Stretch)
@@ -105,22 +115,31 @@ impl Board {
             on_drop: None,
             drops: None,
             name: None,
+            theme: None,
+            sized: None,
+            pane: None,
         }
     }
 
-    /// Add a lane keyed `key`, headed by `header`, holding `cards` (each
-    /// with its key) in order.
+    /// Add a lane keyed `key`, headed by `header` where it has one, holding `cards` (each
+    /// with its key) in order, and `foot` standing at the lane's end under them: what adds to
+    /// the lane, always in reach while the cards scroll above it.
+    ///
+    /// A lane with no heading starts its cards at its top, where a list's first row stands. The
+    /// board's owner gives a lane without a name of its own the heading row of the lanes beside
+    /// it — an empty one — where they have headings, so every lane's cards line up.
     #[must_use]
     pub fn lane(
         mut self,
         key: impl Into<String>,
-        header: Element,
+        header: Option<Element>,
         cards: Vec<(String, Element)>,
+        foot: Option<Element>,
     ) -> Self {
         let mut cards_column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_rhythm(Rhythm::Related);
+            .with_rhythm(Rhythm::Sibling);
         let mut keys = Vec::with_capacity(cards.len());
         for (card, widget) in cards {
             keys.push(card);
@@ -135,11 +154,17 @@ impl Board {
             .with_child(Box::new(cards_column));
         // A lane takes the board's height where the board has one (a pane's),
         // and its content's where it does not.
-        let column = Column::new()
-            .with_no_padding()
-            .with_rhythm(Rhythm::Related)
-            .push(header)
-            .push(Box::new(scrolling));
+        let heading = header.is_some();
+        let mut column = Column::new().with_no_padding().with_rhythm(Rhythm::Related);
+        if let Some(header) = header {
+            column = column.push(header);
+        }
+        let column = column.push(Box::new(scrolling));
+        // What adds to the lane stands at its foot, under the cards, whichever of them shows.
+        let column = match foot {
+            Some(foot) => column.push(foot),
+            None => column,
+        };
         // The lane's width is a card's comfortable measure, set at layout
         // from the theme (`Board::size_lanes`).
         let lane = Container::new()
@@ -151,6 +176,7 @@ impl Board {
         self.lanes.push(LaneKeys {
             key: key.into(),
             cards: keys,
+            heading,
         });
         self
     }
@@ -195,7 +221,7 @@ impl Board {
     }
 
     /// Each lane's rect, in lane order.
-    fn lane_rects(&self) -> Vec<Rect> {
+    pub(crate) fn lane_rects(&self) -> Vec<Rect> {
         self.row
             .children()
             .iter()
@@ -218,10 +244,10 @@ impl Board {
         let Some(column) = lane_children.first() else {
             return Vec::new();
         };
-        // The column holds the lane's header, then the view that scrolls its
+        // The column holds the lane's heading where it has one, then the view that scrolls its
         // cards, whose only child holds them.
         let column_children = column.children();
-        let Some(scrolling) = column_children.get(1) else {
+        let Some(scrolling) = column_children.get(usize::from(keys.heading)) else {
             return Vec::new();
         };
         let scrolled = scrolling.children();
@@ -271,11 +297,35 @@ impl Board {
         Some((lane, before))
     }
 
-    /// Give every lane a regular card's measure under `theme`, so lanes
-    /// follow the text size the cards in them are set in.
-    fn size_lanes(&mut self, theme: &Theme) {
+    /// The width a card reads best in a lane (`metrics.board_lane_width`), never below the
+    /// measure a card's own text needs at this theme's type size.
+    fn comfortable_lane(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.metrics.board_lane_width).max(CardWidth::Regular.min_width(theme))
+    }
+
+    /// The width a lane takes on a board `width` wide: a lane's comfortable measure, the same
+    /// on every board and at every window width, so lanes stand left-aligned with the room a
+    /// wider pane leaves open beside them. Only a pane too narrow for one lane and the board's
+    /// gutters narrows it, and then to the pane, so a narrow board shows one whole lane per
+    /// page rather than one lane and a sliver of the next.
+    pub(crate) fn lane_width(theme: &Theme, width: f64) -> f32 {
+        let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let least = f64::from(CardWidth::Regular.min_width(theme));
+        let comfortable = Self::comfortable_lane(theme);
+        let room = (width - 2.0 * gutter).max(0.0);
+        let lane = if room >= comfortable {
+            comfortable
+        } else {
+            room.max(least)
+        };
         #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
-        let width = CardWidth::Regular.min_width(theme) as f32;
+        {
+            lane as f32
+        }
+    }
+
+    /// Give every lane's widget this width, which the lane builds itself from.
+    fn set_lane_widths(&mut self, width: f32) {
         for lane in self.row.children_mut() {
             if let Some(lane) = lane
                 .as_any_mut()
@@ -284,6 +334,30 @@ impl Board {
                 lane.set_width(width);
             }
         }
+    }
+
+    /// Give every lane this width, as its widget builds itself and as it already stands.
+    fn size_lanes(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        theme: &Theme,
+        width: f64,
+    ) -> bool {
+        let width = Self::lane_width(theme, width);
+        if self.sized.is_some_and(|sized| (sized - width).abs() < 0.05) {
+            return false;
+        }
+        self.sized = Some(width);
+        self.set_lane_widths(width);
+        for &lane in &taffy.children(node).unwrap_or_default() {
+            let Ok(mut style) = taffy.style(lane).cloned() else {
+                continue;
+            };
+            style.size.width = taffy::Dimension::length(width);
+            let _ = taffy.set_style(lane, style);
+        }
+        true
     }
 
     /// Where the insertion line goes for `target`, across its lane.
@@ -420,14 +494,67 @@ impl crate::widget::Decorator for Board {
             .map(|name| AccessNode::new(Role::Group).with_optional_name(Some(name.clone())))
     }
 
+    /// A lane a page at a time where the pane is too narrow to show two lanes side by side: the
+    /// board offers each lane's leading edge, less the air it keeps before the first, so the
+    /// view showing it settles a lane at a time. A pane wide enough for its lanes shows them
+    /// side by side and offers none: it scrolls freely.
+    fn snap_points(&self, axis: crate::widget::ScrollAxis, out: &mut Vec<f32>) {
+        if !matches!(axis, crate::widget::ScrollAxis::Horizontal) {
+            return;
+        }
+        let (Some(theme), Some(pane), Some(lane)) = (&self.theme, self.pane, self.sized) else {
+            return;
+        };
+        if f64::from(lane) * 2.0 <= pane {
+            return;
+        }
+        let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let leading = Widget::get_rect(self).x0;
+        out.extend(
+            Widget::children(&self.row)
+                .iter()
+                .map(|lane| crate::num::f32_of_f64(Widget::get_rect(*lane).x0 - leading - gutter)),
+        );
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.size_lanes(theme);
+        self.theme = Some(theme.clone());
+        // The lanes build at a lane's comfortable measure, or at the width the pane the board
+        // is given settles (`adjust_layout_style`).
+        #[allow(clippy::cast_possible_truncation, reason = "a lane width fits f32")]
+        let width = self.sized.unwrap_or(Self::comfortable_lane(theme) as f32);
+        self.set_lane_widths(width);
         Widget::build_layout(&mut self.row, taffy, theme, node_map)
+    }
+
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut crate::text_render::TextRenderer,
+    ) -> bool {
+        let Some(theme) = self.theme.clone() else {
+            return false;
+        };
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        let mut width = f64::from(layout.size.width);
+        // A board in a pane that scrolls sideways is as wide as its lanes; the room it shares
+        // them out over is the pane it shows through, its parent.
+        if let Some(parent) = taffy.parent(node)
+            && let Ok(pane) = taffy.layout(parent)
+            && pane.size.width > 0.0
+        {
+            width = width.min(f64::from(pane.size.width));
+        }
+        self.pane = Some(width);
+        self.size_lanes(taffy, node, &theme, width)
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
@@ -611,13 +738,15 @@ mod tests {
         Board::new()
             .lane(
                 "todo",
-                Box::new(Text::new("Todo")),
+                Some(Box::new(Text::new("Todo")) as Element),
                 vec![("a".into(), card()), ("b".into(), card())],
+                None,
             )
             .lane(
                 "done",
-                Box::new(Text::new("Done")),
+                Some(Box::new(Text::new("Done")) as Element),
                 vec![("c".into(), card())],
+                None,
             )
             .on_drop(move |drop| sink.borrow_mut().push(drop))
     }
@@ -638,7 +767,7 @@ mod tests {
         let cards: Vec<(String, Element)> = (0..8)
             .map(|index| (format!("card-{index}"), card()))
             .collect();
-        let board = Board::new().lane("todo", Box::new(Text::new("Todo")), cards);
+        let board = Board::new().lane("todo", Some(Box::new(Text::new("Todo"))), cards, None);
         let host = harness(board);
         let root = host.root::<Board>();
         let shown = root.card_rects(0);
@@ -664,25 +793,20 @@ mod tests {
         );
     }
 
-    /// The lanes keep the board's gutter at both ends: a pane as wide as three card measures,
-    /// the gaps between them and a gutter at each side holds all three lanes whole, the first
-    /// a gutter in from the leading edge and the last the same distance from the trailing one.
+    /// The lanes stand left-aligned at their comfortable measure: the first a gutter in from
+    /// the leading edge, each the sibling gap from the last, and the room a wider pane leaves
+    /// open beside them at the trailing edge.
     #[test]
     fn a_board_keeps_a_gutter_at_both_ends_of_its_lanes() {
         let theme = Theme::dark();
-        let lane = CardWidth::Regular.min_width(&theme);
+        let lane = f64::from(Board::lane_width(&theme, 1280.0));
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
         let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a pane width"
-        )]
-        let pane = (3.0 * lane + 2.0 * gap + 2.0 * gutter) as u32;
+        let pane = 1280u32;
         let mut lanes = Board::new();
         for key in ["todo", "doing", "done"] {
-            let header = Box::new(Text::new(key)) as Element;
-            lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())]);
+            let header = Some(Box::new(Text::new(key)) as Element);
+            lanes = lanes.lane(key, header, vec![(format!("{key}-card"), card())], None);
         }
         let host =
             crate::headless::FrameHarness::for_root(crate::State::new(), lanes, (pane, 600), theme);
@@ -694,16 +818,22 @@ mod tests {
             (rects[0].x0 - board.x0 - gutter).abs() < 1.0,
             "the first lane stands a gutter in from the leading edge: {rects:?} in {board:?}"
         );
-        assert!(
-            (board.x1 - rects[2].x1 - gutter).abs() < 1.0,
-            "the last lane stands the same gutter in from the trailing edge: {rects:?} in {board:?}"
-        );
         for (index, rect) in rects.iter().enumerate() {
             assert!(
-                rect.x0 >= board.x0 && rect.x1 <= board.x1,
-                "lane {index} stands whole in the board: {rect:?} in {board:?}"
+                (rect.width() - lane).abs() < 1.0,
+                "lane {index} keeps its comfortable measure: {rect:?}"
             );
+            if let Some(next) = rects.get(index + 1) {
+                assert!(
+                    (next.x0 - rect.x1 - gap).abs() < 1.0,
+                    "lane {index} is a sibling gap from the next: {rects:?}"
+                );
+            }
         }
+        assert!(
+            board.x1 - rects[2].x1 > gutter,
+            "a wider pane leaves its extra room open beside the lanes: {rects:?} in {board:?}"
+        );
     }
 
     #[test]

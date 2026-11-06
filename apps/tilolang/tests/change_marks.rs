@@ -72,6 +72,36 @@ pub(crate) fn rows(app: &mut HostedApp) -> Vec<(String, [f64; 4], bool)> {
         .collect()
 }
 
+/// Chooses the sidebar's place `label`, as a person does: a row a change takes out of the
+/// place it stood in is read where it went.
+pub(crate) fn choose(app: &mut HostedApp, label: &str) {
+    fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
+        if node.role == ui::a11y::Role::TreeItem
+            && node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with(label))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| place(child, label))
+    }
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let bounds = all
+        .iter()
+        .filter_map(|node| node.semantics.as_ref())
+        .find_map(|access| place(access, label))
+        .and_then(|access| access.bounds)
+        .unwrap_or_else(|| panic!("the sidebar offers {label}"));
+    app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    settle(app);
+}
+
 /// A reference to the published resource of `app` labelled `label`, as an action's argument
 /// names one.
 pub(crate) fn reference(app_id: &str, app: &mut HostedApp, label: &str) -> serde_json::Value {

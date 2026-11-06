@@ -2559,7 +2559,8 @@ impl Unopened {
         declarations: &[tilo_resource::Declaration],
         reason: &str,
     ) -> Self {
-        let mut resource = ResourceSpec::new(kind, kind, label);
+        let mut resource =
+            ResourceSpec::new(kind, kind, tilo_resource::label::localized(kind, label));
         for decl in declarations {
             resource = resource.with_action(tilo_resource::declaration_spec(decl));
         }

@@ -184,9 +184,11 @@ impl<'a> NavRowFace<'a> {
         self
     }
 
+    /// A quiet count the row holds, or the one live badge of its list. Zero shows nothing: a
+    /// number says something wants attention, and nothing does.
     #[must_use]
     pub fn count(mut self, count: NavCount) -> Self {
-        self.count = Some(count);
+        self.count = (count.value() > 0).then_some(count);
         self
     }
 
@@ -1454,6 +1456,21 @@ mod tests {
         assert!(hovered.count.is_none());
         assert_eq!(hovered.actions.len(), 1);
         assert!(hovered.label_x1 < hovered.actions[0].x0);
+    }
+
+    #[test]
+    fn a_zero_count_is_no_count_at_all() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        for count in [NavCount::Neutral(0), NavCount::Live(0)] {
+            let face = NavRowFace::new(row(&theme), "Inbox").count(count);
+            assert_eq!(face.count, None, "{count:?}");
+            assert_eq!(
+                nav_row_layout(&theme, &mut text, &face).count,
+                None,
+                "{count:?}"
+            );
+        }
     }
 
     #[test]

@@ -1,15 +1,17 @@
-//! Imports over `std.Repeat` and `std.Reminder`: the next occurrence of a repeating item, the
-//! moment to remind of it, and the words a row says it in.
+//! Imports over `std.Repeat`, `std.Reminder` and the person's clock: the next occurrence of a
+//! repeating item, the moment to remind of it, the words a row says it in, and the wall-clock
+//! time a time of day names for the person.
 //!
 //! The values are their RFC 5545 text (see `tilolang::repeat`), expanded by the shared
 //! `tilo-recurrence` crate, so a rule Calendar draws and one a task repeats by come from the same
 //! reading. The zone is the person's: an occurrence keeps its wall time of day across a change of
-//! clocks, and a day is theirs before it is UTC's.
+//! clocks, and a day is theirs before it is UTC's (`crate::time` reads days and moments by it).
 use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone};
 
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
+use crate::time::day_text;
 use crate::value::Value;
 
 impl Core {
@@ -52,6 +54,10 @@ impl Core {
                     self.instant_of(wall),
                 )))
             }
+            Imp::WallClock => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Text(self.wall_clock(&text)?))
+            }
             Imp::RepeatLabel => {
                 let held = self.text(a.h(0)?)?;
                 let repeat = Self::repeat(&held)?;
@@ -89,11 +95,7 @@ impl Core {
                 let text = self.word_of(&reminder.label());
                 self.ret_h(Value::Text(text))
             }
-            Imp::Today => {
-                let instant = self.now_seconds();
-                self.ret_h(Value::Text(day_text(self.local_day(instant))))
-            }
-            _ => trap("not a repeat or reminder import"),
+            _ => trap("not a repeat, reminder or clock import"),
         }
     }
 
@@ -120,15 +122,17 @@ impl Core {
             .word(label.id, &label.args, &label.source)
     }
 
-    /// A `Date` value as a day.
-    fn day(&self, h: i32) -> HResult<NaiveDate> {
-        let text = self.text(h)?;
-        NaiveDate::parse_from_str(&text, "%Y-%m-%d")
-            .map_err(|_| crate::engine::HostFail::Trap(format!("`{text}` is not a day")))
-    }
-
-    fn now_seconds(&self) -> i64 {
-        tilolang::calendar::instant(&self.clock_now()).unwrap_or(0)
+    /// The instant a wall-clock time names for the person: `2026-06-30T09:00`, read in their
+    /// zone, as the instant it is (`2026-06-30T16:00:00Z` where their clock is six hours behind
+    /// UTC). A time that is no time of day traps: the checker admits only well-formed ones.
+    fn wall_clock(&self, text: &str) -> HResult<String> {
+        let wall = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"]
+            .into_iter()
+            .find_map(|shape| NaiveDateTime::parse_from_str(text, shape).ok());
+        let Some(wall) = wall else {
+            return trap(format!("`{text}` is not a wall-clock time"));
+        };
+        Ok(tilolang::calendar::time_text(self.instant_of(wall)))
     }
 
     /// The person's zone as its IANA name, when the host named one this build knows.
@@ -150,7 +154,7 @@ impl Core {
 
     /// The moment `wall` names for the person: read in their zone, so an occurrence keeps its
     /// wall time of day; by their clock's offset where the host named no zone.
-    fn instant_of(&self, wall: NaiveDateTime) -> i64 {
+    pub(crate) fn instant_of(&self, wall: NaiveDateTime) -> i64 {
         let resolved = self
             .zone_name()
             .and_then(|zone| tilo_recurrence::wall_to_utc(&zone, wall))
@@ -159,7 +163,7 @@ impl Core {
     }
 
     /// The wall time the moment `instant` reads as for the person.
-    fn local_wall(&self, instant: i64) -> NaiveDateTime {
+    pub(crate) fn local_wall(&self, instant: i64) -> NaiveDateTime {
         let Some(utc) = DateTime::from_timestamp(instant, 0) else {
             return NaiveDateTime::default();
         };
@@ -173,12 +177,7 @@ impl Core {
     }
 
     /// The day `instant` falls on for the person.
-    fn local_day(&self, instant: i64) -> NaiveDate {
+    pub(crate) fn local_day(&self, instant: i64) -> NaiveDate {
         self.local_wall(instant).date()
     }
-}
-
-/// A day as the language holds one, `YYYY-MM-DD`.
-fn day_text(day: NaiveDate) -> String {
-    day.format("%Y-%m-%d").to_string()
 }

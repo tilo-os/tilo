@@ -1,5 +1,5 @@
 //! A direct conversation whose retained Chat presentation can move to the
-//! shared floating-surface host without duplicating its private editor.
+//! shared floating-surface host without duplicating its editor.
 
 use ui::Widget;
 use ui::floating_surface::{
@@ -12,7 +12,8 @@ use crate::app::ChatApp;
 
 pub(crate) struct AgentConversationSurface {
     pub(crate) id: String,
-    pub(crate) conversation: crate::composer::ConversationKey,
+    /// The person the conversation shown is with.
+    pub(crate) peer: String,
     pub(crate) view: Box<ChatApp>,
     pub(crate) placement: FloatingPlacement,
     pub(crate) source: Rect,
@@ -20,7 +21,7 @@ pub(crate) struct AgentConversationSurface {
     frame_shadow: ui::tokens::Shadow,
     frame_rim: f64,
     view_owns_editor: bool,
-    closed: bool,
+    pub(crate) closed: bool,
 }
 
 impl AgentConversationSurface {
@@ -46,7 +47,7 @@ impl AgentConversationSurface {
         let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
-            conversation: ChatApp::person_conversation_key(public_key),
+            peer: public_key.to_owned(),
             view: Box::new(view),
             placement,
             source,
@@ -83,11 +84,6 @@ impl AgentConversationSurface {
         self.view_owns_editor = true;
     }
 
-    pub(crate) fn close(&mut self) {
-        self.view.close_person_conversation();
-        self.closed = true;
-    }
-
     pub(crate) fn is_closed(&self) -> bool {
         self.closed
     }
@@ -95,11 +91,7 @@ impl AgentConversationSurface {
     pub(crate) fn request(&self) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
-            title: {
-                let crate::composer::ConversationKey::Person { public_key, .. } =
-                    &self.conversation;
-                self.view.person_display_name(public_key)
-            },
+            title: self.view.person_display_name(&self.peer),
             role: FloatingRole::Conversation,
             source: FloatingSource::AppElement {
                 app_id: "so.tilo.chat".into(),

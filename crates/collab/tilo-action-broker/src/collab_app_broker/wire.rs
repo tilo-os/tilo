@@ -381,9 +381,10 @@ impl ChannelSession {
                     let reply = channel.remote_action_dispatch(body);
                     Ok(Box::pin(async move { reply.await.map_err(Refusal::refusal) }) as Answering)
                 }
-                Service::PersonChat => channel
-                    .person_chat_dispatch(body, on_behalf_of)
-                    .map(|reply| -> Answering { Box::pin(std::future::ready(Ok(reply))) }),
+                // Retired with the private person-chat store it served.
+                Service::RetiredPersonChat => {
+                    Err("the private conversation service is retired".to_owned())
+                }
             };
         Box::pin(async move { Ok(Reply::Answer(answer?.await?)) })
     }
@@ -434,7 +435,7 @@ impl JoinedChannel {
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
-        state.keep_personally(&route, &envelope);
+        state.keep_personally(&route, &envelope)?;
         handle_authorized_signed_op_send(
             state,
             self.connection_id,
@@ -928,14 +929,10 @@ impl JoinedChannel {
         self.state
             .revalidate_admission(&route, &self.verified_identity)?;
         let broker_channels = &self.state.broker_channels;
-        let (ops, mut exhausted) = read_scrollback(broker_channels, artifact, before_seq, max);
+        let (ops, oldest, mut exhausted) =
+            read_scrollback(broker_channels, artifact, before_seq, max);
         if exhausted {
-            let peer_bound = ops
-                .iter()
-                .filter_map(|bytes| postcard::from_bytes::<SignedOp>(bytes).ok()) // optional-decode: read_scrollback encoded these from typed ops just now
-                .map(|op| op.seq)
-                .min()
-                .unwrap_or(before_seq);
+            let peer_bound = oldest.unwrap_or(before_seq);
             let ask = broker_channels
                 .lock()
                 .is_ok_and(|mut ch| ch.request_peer_history(artifact, peer_bound));
@@ -1068,7 +1065,7 @@ impl JoinedChannel {
     ) -> TaskAnswer {
         let state = self.state.clone();
         let peer_id = self.peer_id;
-        let caller = super::durable_local_invocation::LocalCaller::capture(self).ok();
+        let caller = super::durable_local_invocation::LocalCaller::capture(self);
         let route = self.route();
         let identity = self.verified_identity.clone();
         Box::pin(async move {
@@ -2403,23 +2400,6 @@ impl WireConnection {
                         let stream = session.invocation_feed(stable_ids).map_err(failed)?;
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Invocation))
                     }
-                    Topic::PersonChat { peer, on_behalf_of } => {
-                        let stream = super::person_chat::PrivateChanges::open(
-                            Rc::clone(&session.channel),
-                            peer,
-                            on_behalf_of,
-                        )
-                        .map_err(failed)?;
-                        tokio::task::spawn_local(pump_pulled(
-                            stream,
-                            id,
-                            frames,
-                            |(generation, conversation)| Event::PersonChat {
-                                generation,
-                                conversation,
-                            },
-                        ))
-                    }
                     Topic::Catalogue => {
                         let stream = session.catalogue_feed().map_err(failed)?;
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, |catalogue| {
@@ -2650,14 +2630,6 @@ impl Pulled for InvocationStreamServer {
     type Item = runtime_collab::wire::Invocation;
     async fn pull(&self) -> Result<Self::Item, BrokerError> {
         self.next().await?.on_wire()
-    }
-}
-
-impl Pulled for super::person_chat::PrivateChanges {
-    type Item = (u64, Vec<u8>);
-    async fn pull(&self) -> Result<Self::Item, BrokerError> {
-        let generation = self.next().await?;
-        Ok((generation, self.read()?))
     }
 }
 

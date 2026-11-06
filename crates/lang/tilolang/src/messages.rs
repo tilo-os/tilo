@@ -84,8 +84,10 @@ fn refined_blocks(catalogue: &str) -> Vec<(String, String)> {
 }
 
 /// A declared name as a label: in words, its first letter upper case (`NoteOrder` is
-/// `Note order`).
-fn label(name: &str) -> String {
+/// `Note order`). It is the words a declaration is called by when nothing names it otherwise,
+/// and the message catalogue's source for it, which a translation replaces.
+#[must_use]
+pub fn label(name: &str) -> String {
     let words = in_words(name);
     let mut chars = words.chars();
     match chars.next() {
@@ -130,6 +132,52 @@ pub fn stale_keys(source: &str, translation: &str) -> Vec<String> {
         .collect()
 }
 
+/// Why `words` read as code rather than as the words a person says, if they do: a name keeps
+/// what it was written with (`save_draft`, `notes.save()`, `store::notes`), and a word of one
+/// letter inside a phrase is the binding a name was built from (`Note editor for t`). A name of
+/// one word may be a letter of its own (an axis `x`).
+#[must_use]
+pub fn reads_as_code(words: &str) -> Option<&'static str> {
+    if words.contains('_') && !words.contains(' ') {
+        return Some("code identifier");
+    }
+    if words.contains("::") {
+        return Some("code path");
+    }
+    let words: Vec<&str> = words
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.iter().any(|word| word.ends_with("()")) {
+        return Some("function call");
+    }
+    if words.len() > 1 && words.iter().any(|word| one_letter(word)) {
+        return Some("code identifier");
+    }
+    None
+}
+
+/// Whether `word` is one letter: a binding a name was built from, or the words English writes
+/// with one letter (`a`, `I`).
+fn one_letter(word: &str) -> bool {
+    let mut chars = word.chars();
+    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_alphabetic())
+        && !matches!(word, "a" | "A" | "I")
+}
+
+/// The views of `meta` whose name reads as code ([`reads_as_code`]), each with the words it is
+/// called by: a view's name is one a person hears (its window's, its bar's), and a part the
+/// compiler makes of a loop body is named after the view it stands in, never after its binding.
+/// A field's name in words is data (`canvas_x` is "Canvas x", a place), not a name to say.
+#[must_use]
+pub fn views_named_as_code(meta: &PackageMeta) -> Vec<(String, String)> {
+    meta.views
+        .iter()
+        .map(|view| (view.name.clone(), label(&view.name)))
+        .filter(|(_, words)| reads_as_code(words).is_some())
+        .collect()
+}
+
 /// The package's source catalogue: one message per declaration, in declaration order.
 #[must_use]
 pub fn source_catalogue(meta: &PackageMeta) -> String {
@@ -152,10 +200,17 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
     }
     for action in meta.actions.iter().filter(|action| !action.scenario) {
         message(&mut out, &action.id, &action.label, &action.doc);
+        // What the action did, as a history entry says it after who did it.
+        if let Some(did) = &action.did {
+            attribute(&mut out, "did", &pattern(did));
+        }
     }
     // A view's doc comment says how it draws, for its author; a person sees its label.
     // The words it shows as written are its attributes (i18n.md §2).
-    for view in &meta.views {
+    // A view the compiler made of a loop body is a part of the view it stands in, not a
+    // declaration: it takes that view's name and shows its item's own words, so it has no
+    // message of its own.
+    for view in meta.views.iter().filter(|view| view.row_of.is_none()) {
         message(&mut out, &view.id, &label(&view.name), "");
         for word in meta.words.iter().filter(|word| word.view == view.id) {
             attribute(&mut out, &word.key, &pattern(&word.text));
@@ -275,7 +330,70 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{pattern, refined_blocks, stale_keys, summary, variable};
+    use super::{
+        pattern, reads_as_code, refined_blocks, source_catalogue, stale_keys, summary, variable,
+        views_named_as_code,
+    };
+    use crate::meta::{PackageMeta, ViewMeta};
+
+    /// A word a screen reader announces is words; a name that keeps an identifier is not, and a
+    /// binding a name was built from is one letter read on its own.
+    #[test]
+    fn words_that_read_as_code_are_not_names() {
+        for words in [
+            "Note editor for t",
+            "save_draft",
+            "notes.save()",
+            "store::notes",
+        ] {
+            assert!(reads_as_code(words).is_some(), "{words}");
+        }
+        for words in ["Note editor", "Save draft", "X", "A note", "I pinned this"] {
+            assert!(reads_as_code(words).is_none(), "{words}");
+            assert!(views_named_as_code(&alone(words)).is_empty(), "{words}");
+        }
+    }
+
+    /// A view the compiler makes of a loop body is a part of the view it stands in: it has no
+    /// words of its own, so the catalogue never names its binding.
+    #[test]
+    fn a_part_a_view_composes_has_no_words_of_its_own() {
+        let mut meta = alone("Note editor");
+        meta.views.push(ViewMeta {
+            id: "editor~row0".to_owned(),
+            row_of: Some("editor".to_owned()),
+            ..alone("Note editor").views[0].clone()
+        });
+        let catalogue = source_catalogue(&meta);
+        assert!(catalogue.contains("= Note editor"), "{catalogue}");
+        assert!(!catalogue.contains("editor-row0"), "{catalogue}");
+        assert!(!catalogue.contains(" for "), "{catalogue}");
+        // A part named after its binding is a name the compiler must never write.
+        meta.views[1].name = "Note editor for t".to_owned();
+        assert_eq!(
+            views_named_as_code(&meta).len(),
+            1,
+            "{:?}",
+            views_named_as_code(&meta)
+        );
+    }
+
+    /// A package whose one view is called `name`.
+    fn alone(name: &str) -> PackageMeta {
+        let mut meta = PackageMeta::default();
+        meta.views.push(ViewMeta {
+            id: "editor".to_owned(),
+            name: name.to_owned(),
+            doc: String::new(),
+            params: Vec::new(),
+            anchors: Vec::new(),
+            reaches: Vec::new(),
+            state: Vec::new(),
+            presents: None,
+            row_of: None,
+        });
+        meta
+    }
 
     /// A translation of words the source no longer has is reported by its key; a current one
     /// is not.

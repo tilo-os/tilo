@@ -260,21 +260,21 @@ mod tests {
         assert_eq!(
             share_node(workspace, "record:so.tilo.notes:", &note).map(|node| node.to_string()),
             Some(format!(
-                "workspace:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
+                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:*/item:p1"
             )),
             "a note of the workspace's notebook"
         );
         assert_eq!(
             share_node(workspace, "record:so.tilo.notes:r1", &note).map(|node| node.to_string()),
             Some(format!(
-                "workspace:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
+                "room:{workspace}/app:so.tilo.notes/kind:notes.notebook/resource:r1/item:p1"
             ))
         );
         let deck = reference("slides.deck", "d1");
         assert_eq!(
             share_node(workspace, "record:so.tilo.slides:d1", &deck).map(|node| node.to_string()),
             Some(format!(
-                "workspace:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
+                "room:{workspace}/app:so.tilo.slides/kind:slides.deck/resource:d1"
             )),
             "a whole record"
         );

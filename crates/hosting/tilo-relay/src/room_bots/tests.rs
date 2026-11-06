@@ -7,7 +7,7 @@
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::workspaces::fixtures::{governor, restricted_until, test_host};
+use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
@@ -30,6 +30,18 @@ pub(super) async fn bot_host(
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
     test_host(state, key, cert).await
+}
+
+/// The same host run on a device that takes part in its workspaces' channels,
+/// as a relay whose device owns workspaces does.
+async fn bot_host_taking_part(
+    state: &std::path::Path,
+    key: &ed25519_dalek::SigningKey,
+    cert: &DeviceCert,
+) -> crate::workspaces::fixtures::TestHost {
+    let _ = AppCatalogue::native();
+    crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    test_host_taking_part(state, key, cert).await
 }
 
 /// `bot`'s runner in `workspace`, the bot installed as a member first, as the
@@ -989,7 +1001,7 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let relay = bot_host(scratch.path(), &key, &cert).await;
+    let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
     let workspaces = relay.workspaces().clone();
     let (workspace, general) = chat_room(&workspaces, &cert).await;
     let (guest, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
@@ -1304,7 +1316,7 @@ async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, V
     let named = |category: Option<&tilo_resource::Id>| {
         chat.channels
             .values()
-            .filter(|channel| channel.conversation_with.is_none())
+            .filter(|channel| channel.is_channel())
             .filter(|channel| channel.category.as_ref() == category)
             .map(|channel| channel.name.clone())
             .collect::<Vec<_>>()
@@ -1572,6 +1584,33 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     assert_eq!(again, after);
 }
 
+/// Ada posts until the bot answers with `text`: a runner that just started
+/// answers only what is posted after its first look.
+async fn answered(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    general: &str,
+    text: &str,
+) {
+    tilo_test_env::within(format!("the bot answers {text}"), async {
+        loop {
+            ada_says(workspaces, workspace, cert, general, "hello").await;
+            for _ in 0..20 {
+                if posts(workspaces, workspace)
+                    .await
+                    .iter()
+                    .any(|post| post.text == text)
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+    })
+    .await;
+}
+
 /// A developer pushes their bot's program into a running workspace, then a
 /// changed one: the workspace's host runs each as soon as the workspace asks for it,
 /// without restarting, and the second is the same bot (its installation and
@@ -1631,34 +1670,6 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
                 .program
         }
     };
-    // Ada posts until the bot answers with `text`: a runner that just
-    // started answers only what is posted after its first look.
-    let answered = |text: &'static str| {
-        let (workspaces, workspace, cert, general) = (
-            workspaces.clone(),
-            workspace.clone(),
-            cert.clone(),
-            general.clone(),
-        );
-        async move {
-            tilo_test_env::within(format!("the bot answers {text}"), async {
-                loop {
-                    ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
-                    for _ in 0..20 {
-                        if posts(&workspaces, &workspace)
-                            .await
-                            .iter()
-                            .any(|post| post.text == text)
-                        {
-                            return;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    }
-                }
-            })
-            .await;
-        }
-    };
     let welcomes = |workspaces: Workspaces, workspace: String| async move {
         posts(&workspaces, &workspace)
             .await
@@ -1676,7 +1687,7 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
         row_program(installation.clone()).await,
         tilo_automation::program::program_hash(first.as_bytes())
     );
-    answered("welcome!").await;
+    answered(&workspaces, &workspace, &cert, general.as_str(), "welcome!").await;
     let first_answers = welcomes(workspaces.clone(), workspace.clone()).await;
 
     push("0.1.0-dev.2", &second).await;
@@ -1689,7 +1700,14 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
         tilo_automation::program::program_hash(second.as_bytes()),
         "the workspace's row names the program it runs now"
     );
-    answered("welcome, again!").await;
+    answered(
+        &workspaces,
+        &workspace,
+        &cert,
+        general.as_str(),
+        "welcome, again!",
+    )
+    .await;
     assert_eq!(
         welcomes(workspaces.clone(), workspace.clone()).await,
         first_answers,

@@ -9,8 +9,8 @@
 //! still reaches what it was pressed on. Escape folds it too. A click on
 //! the avatar while it waits as the dot opens it again.
 use super::{
-    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, RoundedRect, Scene, TextRenderer, TextRole,
-    Theme, TopBarChrome, at, t,
+    Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, TextRole, Theme,
+    TopBarChrome, t,
 };
 use crate::chrome::AvatarAsk;
 use ui::text_render::TextWeight;
@@ -84,22 +84,11 @@ impl TopBarChrome {
         let top = (center_y - BAR_CONTROL_PX / 2.0).max(self.rect.y0);
         let bottom = (center_y + BAR_CONTROL_PX / 2.0).min(self.rect.y1);
         let pill = Rect::new(right_x - words.width(pad, gap), top, right_x, bottom);
-        let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(pill, pill.height() / 2.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
-        );
+        // The pill is a floating panel's body: the overlay ground and its
+        // inner hairline, from the shared painter, on the bar.
+        ui::widget::FloatingPanelFace::new()
+            .body_empty(true)
+            .paint_body(scene, transform, pill, theme);
         words.paint(
             scene,
             transform,
@@ -321,7 +310,9 @@ impl AskWords {
         pad + self.question_w + self.detail_w + gap + self.later_w + gap + self.answer_w + pad
     }
 
-    /// The question, then the detail, from `x` on the line through `y`.
+    /// The question, then the detail beside it, from `x` on the line through
+    /// `y`: two facts laid out with space between, never joined into one
+    /// string, so the detail gives way first when the bar is narrow.
     fn paint(
         &self,
         scene: &mut Scene,
@@ -330,26 +321,25 @@ impl AskWords {
         text_renderer: &mut TextRenderer,
         (x, y): (f64, f64),
     ) {
-        let colors = &theme.tokens.colors;
-        let (question_style, detail_style) = Self::styles(theme);
-        let lines = [
-            Some((&self.question, colors.text_primary, &question_style, 0.0)),
-            self.detail.as_ref().map(|detail| {
-                let after = self.question_w + f64::from(theme.tokens.spacing.s2);
-                (detail, colors.text_dim, &detail_style, after)
-            }),
-        ];
-        for (text, color, style, dx) in lines.into_iter().flatten() {
-            let (_, h) = text_renderer.measure_style(text, None, style);
-            text_renderer.draw_style(
-                scene,
-                text,
-                color,
-                at(transform, (x + dx, y - f64::from(h) / 2.0)),
-                None,
-                style,
-            );
+        use ui::widget::Fact;
+        use ui::widget::primitives::FactsFace;
+        // Two separate facts with space between, never one joined string: the
+        // question stays and the detail gives way first when the bar is
+        // narrow, as the ask's own fit already elides them.
+        let mut facts = vec![Fact::text(&self.question).priority(1)];
+        if let Some(detail) = &self.detail {
+            facts.push(Fact::text(detail));
         }
+        let height = FactsFace::new(&facts).height(text_renderer, theme);
+        FactsFace::new(&facts).paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            Rect::new(
+                x,
+                y - height / 2.0,
+                x + self.question_w + self.detail_w,
+                y + height / 2.0,
+            ),
+        );
     }
 }
 
@@ -438,6 +428,8 @@ mod tests {
                         label: "Calculator".into(),
                     },
                     app_title: None,
+                    view: String::new(),
+                    pinned: false,
                 }],
                 active_tab: 30,
                 width: WindowWidth::Fraction(800),

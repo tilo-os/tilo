@@ -9,7 +9,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{Button, ButtonFace, ScrollRegion};
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 #[derive(Debug)]
@@ -187,6 +187,7 @@ impl NotificationReader {
         // it so neither the last line nor the scrollbar clips the document.
         let mut title_h = 0.0;
         let mut source_h = 0.0;
+        let mut body_h = 0.0;
         for _ in 0..2 {
             let width = f32_of_f64((self.region.content_rect().width() - 2.0 * gap).max(1.0));
             title_h = f64::from(
@@ -198,7 +199,7 @@ impl NotificationReader {
             } else {
                 f64::from(text.measure_style(&source, Some(width), &source_style).1)
             };
-            let body_h = f64::from(text.measure_style(body, Some(width), &body_style).1);
+            body_h = f64::from(text.measure_style(body, Some(width), &body_style).1);
             self.region.set_content_size(
                 viewport.width(),
                 title_h + source_h + body_h + 3.0 * gap + source_gap,
@@ -216,30 +217,35 @@ impl NotificationReader {
         }
         self.region
             .paint(scene, transform, theme, |scene, content| {
-                text.draw_style(
-                    scene,
-                    &notification.title,
+                // The title, the source line and the body are the shared text
+                // blocks at the reader's own type roles: no bare run of their
+                // own.
+                let right = gap + f64::from(width);
+                let title_rect = Rect::new(gap, gap, right, gap + title_h);
+                ui::widget::TextBlockFace::new(&notification.title, &title_style).paint(
+                    &mut ui::paint::PaintCtx::new(scene, content, text, theme),
+                    title_rect,
                     theme.tokens.colors.text_primary,
-                    content.pre_translate((gap, gap).into()),
-                    Some(width),
-                    &title_style,
                 );
-                text.draw_style(
-                    scene,
-                    &source,
-                    theme.tokens.colors.text_dim,
-                    content.pre_translate((gap, 2.0 * gap + title_h).into()),
-                    Some(width),
-                    &source_style,
-                );
-                text.draw_style(
-                    scene,
-                    body,
+                if !source.is_empty() {
+                    let source_rect = Rect::new(
+                        gap,
+                        2.0 * gap + title_h,
+                        right,
+                        2.0 * gap + title_h + source_h,
+                    );
+                    ui::widget::TextBlockFace::new(&source, &source_style).paint(
+                        &mut ui::paint::PaintCtx::new(scene, content, text, theme),
+                        source_rect,
+                        theme.tokens.colors.text_dim,
+                    );
+                }
+                let body_top = 2.0 * gap + source_gap + title_h + source_h;
+                let body_rect = Rect::new(gap, body_top, right, body_top + body_h);
+                ui::widget::TextBlockFace::new(body, &body_style).paint(
+                    &mut ui::paint::PaintCtx::new(scene, content, text, theme),
+                    body_rect,
                     theme.tokens.colors.text_primary,
-                    content
-                        .pre_translate((gap, 2.0 * gap + source_gap + title_h + source_h).into()),
-                    Some(width),
-                    &body_style,
                 );
             });
     }

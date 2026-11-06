@@ -97,11 +97,13 @@ history.
 - **No sender authentication inside the envelope.** Any key holder can seal
   for that epoch. Authorship comes from the outer `SignedOp` signature and
   the broker's live role check.
-- **Stale epochs are refused.** Once a membership change is applied, the
-  broker (`ChannelGate::accepts`) refuses new
-  content sealed under an older epoch. A removed member therefore cannot
-  inject content under keys it still holds. A lagging member must also catch
-  up first; until then, what it seals remains readable by the removed member.
+- **Stale epochs are admitted.** Content sealed under an epoch the channel
+  has moved past is taken: its author was a member when they wrote it, and
+  the receiving device still holds that epoch's key. A member's write
+  routinely reaches another device after the channel's next membership
+  change, so refusing it would lose that write. A removed member gains
+  nothing by holding the old keys: the channel's frames stop reaching it, and
+  the broker refuses an op whose author no longer stands in the workspace.
 - **Integrity of retention hints.** The retention class is signed with the
   op. Endpoints reject an op whose decrypted frame does not match its class.
 
@@ -258,8 +260,8 @@ plaintext path.
   every workspace of the person's workspace list the node hosts, as the list
   brings it.
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
-  the channel's gate (`ChannelGate`): plaintext is closed off, and content
-  sealed before the latest membership change is refused. Relays store and
+  the channel's gate (`ChannelGate`): plaintext is closed off, and
+  ciphertext must name that channel. Relays store and
   forward ciphertext and MLS control material without decoding either.
 
 ### Service members
@@ -292,8 +294,9 @@ ciphertext and MLS control material without decoding either.
   separate channel membership list can drift from permissions.
 - **Joiners read all history** through the key history in their Welcome.
 - **Removal protects future content.** Removing a person, a device or a
-  service is an MLS commit; the next epoch's keys are unknown to the removed
-  party, and every gate refuses content sealed under older epochs.
+  service is an MLS commit: the next epoch's keys are unknown to the removed
+  party, and content written after the removal is sealed under them. The keys
+  it kept open what was written while it was a member, and nothing newer.
 - **Apps never hold MLS secrets.** They receive content keys for routes of
   their own launch only, gated on the device being trusted and the person
   holding a reading role.

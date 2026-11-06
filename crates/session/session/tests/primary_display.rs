@@ -14,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::io::Write as _;
 use std::os::fd::AsFd as _;
 use std::time::Duration;
@@ -144,27 +146,20 @@ fn pump(
     client: &mut TestClient,
     mut done: impl FnMut(&mut Session, &TestClient) -> bool,
 ) {
-    for _ in 0..500 {
+    common::wait_for(session, "what the test asked of the session", |session| {
         client.exchange();
-        session.step(Duration::from_millis(2)).expect("step");
+        let answer = done(session, client);
         client.exchange();
-        if done(session, client) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+        answer.then_some(())
+    });
 }
 
 /// Let the session run until `done` holds.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..500 {
-        session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+    common::wait_for(session, "what the test asked of the session", |session| {
+        done(session).then_some(())
+    });
 }
 
 /// A session whose two displays sit side by side, `HEADLESS-1` on the left

@@ -14,11 +14,11 @@
 //! own locks; workspace I/O already runs on the blocking pool. The session
 //! janitor runs on a tokio interval.
 
-mod call_lane;
 mod envelopes;
 mod fetch;
 mod here;
 pub mod install;
+mod page_errors;
 mod sessions;
 #[cfg(test)]
 mod tests;
@@ -37,7 +37,6 @@ pub use tls::TlsSource;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
 use hyper::{Method, Request, Response, StatusCode, header};
-use tilo_call_lane::page::Up;
 use tilo_relay_protocol::certify::CertifyReply;
 pub(crate) use tilo_relay_protocol::web as protocol;
 use tilo_relay_protocol::web::{
@@ -46,7 +45,6 @@ use tilo_relay_protocol::web::{
 };
 use tilo_user_identity::CertificationRequest;
 
-use crate::auth::AuthenticatedPeer;
 use crate::daemon::{Relay, RelayError};
 use sessions::{SessionError, Sessions};
 
@@ -78,6 +76,25 @@ pub struct WebConfig {
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
+    /// The live plane the pages join, and where they dial it.
+    pub live: LiveConfig,
+}
+
+/// The live plane (WebTransport on UDP): the address its socket binds and the
+/// origin pages are told to dial it at. A proxy that publishes the plane
+/// somewhere other than the host's own origin, on a port of its choosing,
+/// names both.
+#[derive(Clone, Debug, Default)]
+pub struct LiveConfig {
+    /// The UDP address the page carrier binds. An address is the one a proxy
+    /// forwards to, so it binds exactly there or the host stops. Default: the
+    /// HTTPS listener's address and port, reusing the port where UDP allows
+    /// it and letting the kernel pick otherwise.
+    pub listen: Option<SocketAddr>,
+    /// The `https://host[:port]` origin pages dial the page carrier at. The
+    /// port it names is the one pages use, 443 when it names none. Default:
+    /// the relay's own origin's host on the port the socket bound.
+    pub origin: Option<String>,
 }
 
 /// The request header a proxy in front of the host names the client's
@@ -128,9 +145,8 @@ pub struct WebHandle {
 impl WebHandle {
     /// Open browser sessions per person (user root) now, for a public
     /// host's presence count and idle-guest pruning. One person on two
-    /// devices is one entry; a shared spectator person is one entry whose
-    /// count is its sessions, seated or still waiting for a seat (how many
-    /// watch is [`crate::workspaces::Workspaces::seated_spectators`]).
+    /// devices is one entry; the workspace's visitor person is one entry whose
+    /// count is its open pages.
     #[must_use]
     pub fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         self.sessions.online_users()
@@ -175,13 +191,12 @@ struct Web {
     )>,
     /// The fetch proxy, when [`WebConfig::fetch_proxy`] asked for one.
     fetch: Option<tilo_net::proxy::host::FetchProxy>,
-    /// The pages' calls: the lane member this host takes part as, answering
-    /// `/call/lane`.
-    calls: Arc<call_lane::CallLane>,
     /// The pages' live plane: the WebTransport listener they join, and the
     /// authority that admits their session tokens. `None` in a host that
     /// serves the browser routes without it.
     live: Option<Arc<wt::Live>>,
+    /// The page errors the door logs.
+    page_errors: page_errors::PageErrors,
 }
 
 /// Checks the published origins against the listeners they front.
@@ -264,24 +279,6 @@ fn browser_locator_origin(tls: &TlsSource, addr: SocketAddr) -> Result<Option<St
     }))
 }
 
-/// The lane the pages' calls travel on: `lane` when one was handed over, or
-/// the host's own endpoint, bound on first use under the device key its
-/// workspaces admit as a member.
-fn carried_calls(
-    context: &crate::daemon::WebContext,
-    lane: Option<iroh::Endpoint>,
-) -> Arc<call_lane::CallLane> {
-    Arc::new(match lane {
-        Some(lane) => call_lane::CallLane::at(lane),
-        None => call_lane::CallLane::new(
-            context.relay.identity.cert.device_public_key,
-            Some(iroh::SecretKey::from_bytes(
-                &context.relay.identity.signing_key.to_bytes(),
-            )),
-        ),
-    })
-}
-
 impl Relay {
     /// Make `origin` the one browser locators name, and return it shared.
     fn publish_browser_origin(
@@ -301,32 +298,9 @@ impl Relay {
     /// # Errors
     ///
     /// Returns [`RelayError::Iroh`] (the transport error kind) when the
-    /// certificate cannot be loaded or an address cannot be bound.
+    /// certificate cannot be loaded or an address cannot be bound (the live
+    /// plane's included).
     pub async fn serve_web(&self, config: WebConfig) -> Result<WebHandle, RelayError> {
-        self.serve_web_on(config, None).await
-    }
-
-    /// Serve browsers, carrying the pages' calls on `lane` (whose id is this
-    /// host's device) instead of an endpoint bound on demand. A test binds one
-    /// whose call's other devices it can reach without a directory.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::serve_web`].
-    #[cfg(feature = "test-support")]
-    pub async fn serve_web_with_lane(
-        &self,
-        config: WebConfig,
-        lane: iroh::Endpoint,
-    ) -> Result<WebHandle, RelayError> {
-        self.serve_web_on(config, Some(lane)).await
-    }
-
-    async fn serve_web_on(
-        &self,
-        config: WebConfig,
-        lane: Option<iroh::Endpoint>,
-    ) -> Result<WebHandle, RelayError> {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
@@ -361,9 +335,13 @@ impl Relay {
         )
         .map_err(failed)?;
         let live_tasks = std::mem::take(&mut live.tasks);
+        tracing::info!(
+            origin = %live.info.webtransport_origin,
+            udp = %live.bound,
+            "serving the live plane"
+        );
         let web = Arc::new(Web {
             sessions: sessions.clone(),
-            calls: carried_calls(&context, lane),
             host_info: HostInfo { host_cert },
             allowed_origins: config.allowed_origins,
             features: self.web_features() | fetch.features(),
@@ -377,6 +355,7 @@ impl Relay {
             country: config.country.and_then(country_header),
             fetch: fetch.proxy,
             live: Some(Arc::new(live)),
+            page_errors: page_errors::PageErrors::default(),
         });
         let mut tasks = live_tasks;
         tasks.extend(fetch.metrics);
@@ -556,8 +535,8 @@ fn json<T: serde::Serialize>(value: &T) -> Response<Body> {
     json_status(StatusCode::OK, value)
 }
 
-/// A public workspace's door (`/directory/<workspace>/join` or `…/report`):
-/// JSON in, JSON out, a refusal as `{error}` the person reads.
+/// A public workspace's door (`/directory/<workspace>/join`, `…/report` or
+/// `…/errors`): JSON in, JSON out, a refusal as `{error}` the person reads.
 #[allow(
     clippy::result_large_err,
     reason = "the error is the response the handler sends as it is"
@@ -578,6 +557,19 @@ async fn directory_door(
             &serde_json::json!({ "error": error.to_string() }),
         )
     };
+    let door_refused = |error: crate::workspaces::DoorRefusal| {
+        let full = match &error {
+            crate::workspaces::DoorRefusal::Full { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            crate::workspaces::DoorRefusal::Refused(_) => StatusCode::FORBIDDEN,
+        };
+        let mut response = json_status(full, &serde_json::json!({ "error": error.to_string() }));
+        if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error
+            && let Ok(seconds) = header::HeaderValue::from_str(&retry_after_secs.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, seconds);
+        }
+        response
+    };
     match step {
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
@@ -585,7 +577,7 @@ async fn directory_door(
             let (issued, token) = governed_workspaces(web)?
                 .admit_listed(workspace, &join)
                 .await
-                .map_err(refused)?;
+                .map_err(door_refused)?;
             Ok(json(&DoorAnswer {
                 invitation: base64::Engine::encode(
                     &base64::engine::general_purpose::URL_SAFE_NO_PAD,
@@ -602,6 +594,12 @@ async fn directory_door(
                 .report_listed(workspace, &report)
                 .await
                 .map_err(refused)?;
+            Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
+        }
+        // A page's own uncaught error: one log line for the site's operator,
+        // and the same answer whatever became of it, so a page never retries.
+        "errors" => {
+            web.page_errors.report(workspace, bytes);
             Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
         }
         _ => Err(status(StatusCode::NOT_FOUND, "not found")),
@@ -679,6 +677,38 @@ fn token(request: &Request<hyper::body::Incoming>) -> Option<[u8; 32]> {
 /// Headers a page may send to the browser routes.
 const ALLOWED_HEADERS: &str = "content-type, x-tilo-session, x-tilo-live-session";
 
+/// Whether `path` is part of the public directory: a listing anyone may read,
+/// and a door anyone may ask, from any site.
+fn public_directory_route(path: &str) -> bool {
+    path.strip_prefix(API_PREFIX).is_some_and(|route| {
+        route == tilo_relay_protocol::directory::DIRECTORY_PATH
+            || tilo_relay_protocol::directory::door_route(route).is_some()
+    })
+}
+
+/// CORS for the public directory: any origin, no credentials, and the
+/// `Retry-After` a full door answers with. A page on any site reads the
+/// listings and joins a workspace without going through its host.
+fn public_cors(response: &mut Response<Body>) {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        header::HeaderValue::from_static("POST, OPTIONS"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        header::HeaderValue::from_static("content-type"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        header::HeaderValue::from_static("retry-after"),
+    );
+}
+
 fn cors(
     allowed_origins: &[String],
     allowed_headers: &str,
@@ -723,6 +753,7 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         return fetch::handle(web, request).await;
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
+    let public = public_directory_route(request.uri().path());
     let mut response = if request.method() == Method::OPTIONS {
         reply(StatusCode::NO_CONTENT, Vec::new())
     } else if request.method() != Method::POST {
@@ -732,12 +763,16 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
             .await
             .unwrap_or_else(|response| response)
     };
-    cors(
-        &web.allowed_origins,
-        ALLOWED_HEADERS,
-        origin.as_ref(),
-        &mut response,
-    );
+    if public {
+        public_cors(&mut response);
+    } else {
+        cors(
+            &web.allowed_origins,
+            ALLOWED_HEADERS,
+            origin.as_ref(),
+            &mut response,
+        );
+    }
     response
 }
 
@@ -782,31 +817,6 @@ async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
 
 fn wait(ms: u32) -> Duration {
     Duration::from_millis(u64::from(ms.min(MAX_POLL_MS)))
-}
-
-/// The devices of `workspace_id`, in no particular order, if `peer` may take
-/// part in the workspace's calls now: its certificate current relay-wide and
-/// admitted by the workspace, see [`room_access::decide`].
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the guard only lives for the lookup; the value kept is a clone"
-)]
-async fn admitted_devices(
-    web: &Web,
-    peer: &AuthenticatedPeer,
-    workspace_id: u64,
-) -> Option<Vec<[u8; 32]>> {
-    let relay = &web.sessions.context().relay;
-    let workspace = relay.workspaces.lock().await.get(&workspace_id).cloned()?;
-    let workspace = workspace.lock().await;
-    crate::workspace_access::decide(
-        &workspace,
-        &relay.trust(),
-        peer,
-        crate::workspace_access::WorkspaceOperation::Publish,
-    )
-    .admitted()
-    .then(|| workspace.membership.devices.clone())
 }
 
 #[allow(
@@ -972,28 +982,6 @@ async fn route(
                 .map(|()| reply(StatusCode::NO_CONTENT, Vec::new()))
                 .map_err(|error| session_status(&error))
         }
-        "/call/lane" => {
-            let session = authed()?;
-            let up: Up = decode(&bytes)?;
-            let workspace_id = tilo_relay_protocol::room_workspace_id(&up.workspace)
-                .map_err(|_| status(StatusCode::BAD_REQUEST, "not a workspace id"))?;
-            let Some(devices) = admitted_devices(web, &session.peer, workspace_id).await else {
-                return Err(status(
-                    StatusCode::FORBIDDEN,
-                    "not admitted to this workspace",
-                ));
-            };
-            web.calls
-                .turn(devices, up)
-                .await
-                .map(|down| encoded(&down))
-                .map_err(|error| match error {
-                    call_lane::Failed::NoLane(reason) => {
-                        status(StatusCode::SERVICE_UNAVAILABLE, &reason)
-                    }
-                    call_lane::Failed::Refused(reason) => status(StatusCode::CONFLICT, &reason),
-                })
-        }
         "/events" => {
             let session = authed()?;
             let request: EventsRequest = decode(&bytes)?;
@@ -1034,66 +1022,6 @@ async fn route(
             if let Some(job) = job {
                 tokio::spawn(web.here.clone().summarize(job));
             }
-            Ok(encoded(&reply))
-        }
-        protocol::CHANNEL_KEYS_PATH => {
-            let session = authed()?;
-            let request: protocol::ChannelKeysRequest = decode(&bytes)?;
-            let relay = &web.sessions.context().relay;
-            let keys = web
-                .workspaces
-                .as_ref()
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?
-                .spectator_keys(&request, |runtime| {
-                    crate::workspace_access::decide(
-                        runtime,
-                        &relay.trust(),
-                        &session.peer,
-                        crate::workspace_access::WorkspaceOperation::ChannelReadKeys,
-                    )
-                })
-                .await
-                .map_err(|why| status(StatusCode::FORBIDDEN, &why))?;
-            let keys = keys
-                .to_bytes()
-                .map_err(|why| status(StatusCode::INTERNAL_SERVER_ERROR, &why.to_string()))?;
-            Ok(encoded(&protocol::ChannelKeys {
-                keys: keys.to_vec(),
-            }))
-        }
-        tilo_relay_protocol::workspaces::private::PRIVATE_PATH => {
-            use tilo_relay_protocol::workspaces::private::{MAX_REQUEST_BYTES, PrivateCall};
-            let session = authed()?;
-            // The governor's private door, the one a native device reaches
-            // over iroh, within the same bounds.
-            let door = web
-                .workspaces
-                .clone()
-                .map(crate::workspaces::PrivateProtocol::new)
-                .ok_or_else(|| status(StatusCode::NOT_FOUND, "this relay governs no workspaces"))?;
-            if bytes.len() > MAX_REQUEST_BYTES {
-                return Err(status(StatusCode::PAYLOAD_TOO_LARGE, "body too large"));
-            }
-            let call: PrivateCall = decode(&bytes)?;
-            let device = session.peer.device_public_key;
-            let _admitted = door
-                .admit(device)
-                .ok_or_else(|| status(StatusCode::SERVICE_UNAVAILABLE, "busy"))?;
-            // A watch is a long-poll, held as long as `/events` holds one.
-            let poll = async {
-                tokio::time::sleep(wait(MAX_POLL_MS)).await;
-                Ok(())
-            };
-            let reply = door
-                .serve(
-                    &session.peer.cert,
-                    &device,
-                    &call.workspace,
-                    call.operation,
-                    poll,
-                )
-                .await;
-            drop(door);
             Ok(encoded(&reply))
         }
         "/rooms" => {

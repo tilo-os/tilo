@@ -389,27 +389,71 @@ pub fn survey(resources: &[ResourceSpec]) -> Vec<ActionDescriptor> {
 
 fn survey_into(resource: &ResourceSpec, out: &mut Vec<ActionDescriptor>) {
     for action in &resource.actions {
-        let view = ResourceViewDescriptor::declared_for(resource, &action.id);
-        out.push(ActionDescriptor {
-            address: ActionAddress::new(resource.id.as_str(), &action.id),
-            semantic_identity: resource.semantic_identity.clone(),
-            resource_kind: resource.kind.clone(),
-            resource_label: resource.label.clone(),
-            action_label: action.label.clone(),
-            keywords: action.keywords.clone(),
-            icon: action.icon.clone(),
-            description: action.description.clone(),
-            state: action.state.clone(),
-            locus: action.locus,
-            kind: action.kind,
-            contract: action.contract.clone(),
-            input: InputSpec::of(action.input()),
-            params: action.params().to_vec(),
-            view,
-        });
+        out.push(describe(resource, action));
     }
     for child in &resource.children {
         survey_into(child, out);
+    }
+}
+
+/// One exported operation of a surveyed forest, in the row it stands in: the
+/// resource of the level above it, and whether its own resource holds rows
+/// below it, which a listing asked with that resource as its parent answers.
+#[derive(Clone, Debug)]
+pub struct PlacedAction {
+    /// The resource this row hangs under; empty at the top level.
+    pub parent: String,
+    /// Whether a query with this row's resource as parent answers more rows.
+    pub has_children: bool,
+    pub action: ActionDescriptor,
+}
+
+/// Walk a resource forest and describe every operation it exports, each in
+/// the row a listing publishes it in: [`survey`] flattened, with the resource
+/// it stands under and whether its own resource holds rows below it, so a
+/// caller reading a level at a time knows where a level continues.
+#[must_use]
+pub fn survey_placed(resources: &[ResourceSpec]) -> Vec<PlacedAction> {
+    let mut out = Vec::new();
+    for r in resources {
+        placed_into(r, "", &mut out);
+    }
+    out
+}
+
+fn placed_into(resource: &ResourceSpec, parent: &str, out: &mut Vec<PlacedAction>) {
+    let has_children = !resource.children.is_empty();
+    for action in &resource.actions {
+        out.push(PlacedAction {
+            parent: parent.to_owned(),
+            has_children,
+            action: describe(resource, action),
+        });
+    }
+    for child in &resource.children {
+        placed_into(child, resource.id.as_str(), out);
+    }
+}
+
+/// `action` of `resource`, as inert data: what a survey hands back.
+fn describe(resource: &ResourceSpec, action: &ActionSpec) -> ActionDescriptor {
+    let view = ResourceViewDescriptor::declared_for(resource, &action.id);
+    ActionDescriptor {
+        address: ActionAddress::new(resource.id.as_str(), &action.id),
+        semantic_identity: resource.semantic_identity.clone(),
+        resource_kind: resource.kind.clone(),
+        resource_label: resource.label.clone(),
+        action_label: action.label.clone(),
+        keywords: action.keywords.clone(),
+        icon: action.icon.clone(),
+        description: action.description.clone(),
+        state: action.state.clone(),
+        locus: action.locus,
+        kind: action.kind,
+        contract: action.contract.clone(),
+        input: InputSpec::of(action.input()),
+        params: action.params().to_vec(),
+        view,
     }
 }
 
@@ -993,6 +1037,47 @@ mod tests {
         let described = survey(&honest);
         drop(honest);
         assert_eq!(described.len(), 2);
+    }
+
+    /// A survey names the row each action stands in: the resource of the level above it, and
+    /// whether its own resource holds rows below it, so a reader asking a level at a time knows
+    /// where the listing continues and where it ends.
+    #[test]
+    fn a_survey_names_the_row_each_action_stands_in() {
+        let leaf = ResourceSpec::new("notes.note:1", "notes.note", "Harbour")
+            .with_action(ActionSpec::immediate("star", "Star", NOTE_TYPE, &Note::Star).unwrap());
+        let folder = ResourceSpec::new("notes.folder:a", "notes.folder", "Trips")
+            .with_action(
+                ActionSpec::immediate("archive", "Archive", NOTE_TYPE, &Note::Star).unwrap(),
+            )
+            .with_child(leaf);
+        let placed = survey_placed(std::slice::from_ref(&folder));
+        let at = |action: &str| {
+            placed
+                .iter()
+                .find(|placed| placed.action.address.action == action)
+                .expect("the action was surveyed")
+        };
+        let archived = at("archive");
+        assert_eq!(archived.parent, "", "the folder stands at the top level");
+        assert!(archived.has_children, "the folder holds the note below it");
+        let starred = at("star");
+        assert_eq!(starred.parent, "notes.folder:a", "the note is under it");
+        assert!(
+            !starred.has_children,
+            "nothing stands below the note: the listing ends here"
+        );
+        // The flat survey is the same actions, in the same order, without the rows.
+        assert_eq!(
+            survey(std::slice::from_ref(&folder))
+                .iter()
+                .map(|descriptor| descriptor.address.action.clone())
+                .collect::<Vec<_>>(),
+            placed
+                .iter()
+                .map(|placed| placed.action.address.action.clone())
+                .collect::<Vec<_>>(),
+        );
     }
 
     fn survey_annotates_only_the_declared_view_open_action() {

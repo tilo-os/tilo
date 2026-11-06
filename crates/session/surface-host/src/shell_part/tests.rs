@@ -30,11 +30,22 @@ fn reading() -> DeskReading {
     }
 }
 
-use crate::shell_part::tests_support::part_with;
+use crate::shell_part::tests_support::{part_on, part_with};
 
 fn part() -> (ShellPart, Rc<SessionLink>) {
     part_with(reading())
 }
+
+/// The canvas's entry, as assistive technology names it: the field is bound to a view state,
+/// whose name in the code (`typed`) is no word a person says, so it is announced by its own
+/// words.
+const CANVAS_ENTRY: &str = "Find something, or ask";
+/// The launcher's field, announced the same way: the view's own words for it, not the state's
+/// name in the code (`query`).
+const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
+/// The workspaces surface's field, announced the same way rather than by the state's name in
+/// the code (`name`).
+const WORKSPACE_NAME: &str = "Name a new workspace";
 
 fn click(part: &mut ShellPart, name: &str) {
     let (x, y, w, h) = part
@@ -241,11 +252,13 @@ fn a_press_in_the_centre_hands_the_desk_its_notice_action() {
                 resource: DESK_RESOURCE.to_owned(),
                 action: "dismiss-notice".to_owned(),
                 arguments: BTreeMap::from([("notice".to_owned(), "1".to_owned())]),
+                from: None,
             },
             Ask {
                 resource: DESK_RESOURCE.to_owned(),
                 action: "clear-notices".to_owned(),
                 arguments: BTreeMap::new(),
+                from: None,
             },
         ],
         "refusals {:?}",
@@ -550,6 +563,7 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
             resource: "app.so.tilo.sheets".to_owned(),
             action: "open".to_owned(),
             arguments: BTreeMap::new(),
+            from: None,
         }],
         "{:?}",
         part.refusals()
@@ -602,8 +616,9 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
         !SurfaceHost::wants_keyboard(&part),
         "a part nobody typed in leaves the keys to the window in front"
     );
+    click(&mut part, "Showing Strips");
     click(&mut part, "Frames");
-    click(&mut part, "Typed");
+    click(&mut part, CANVAS_ENTRY);
     assert!(
         SurfaceHost::text_input(&part).is_some(),
         "the press put the caret in the canvas's entry"
@@ -641,7 +656,7 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
 fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
     let (mut part, _link) = part();
     let display = part.placement().expect("the part stands on its display");
-    part.set_display(None);
+    part.set_display(None, 1.0);
     assert!(part.layers().is_empty(), "nothing of it is drawn");
     assert!(!part.accepts_pointer(100.0, 10.0), "it takes no pointer");
     assert!(
@@ -649,10 +664,13 @@ fn a_part_whose_display_went_stands_nowhere_until_it_comes_back() {
         "the door reaches the bars still standing, not this one"
     );
     // The compositor tells it of the outputs left: it does not stretch over them.
-    part.outputs_changed(&[(1280, 0, 1280, 800)]);
+    part.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (1280, 0, 1280, 800),
+        scale: 1.0,
+    }]);
     assert_eq!(part.placement(), None, "it stays off the other display");
     // The display comes back: the part stands on it again.
-    part.set_display(Some(display.clone()));
+    part.set_display(Some(display.clone()), 1.0);
     assert_eq!(part.placement(), Some(display));
     assert!(crate::Published::offered(&part));
     assert_eq!(
@@ -726,10 +744,20 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
     let (mut part, wells) = showing_one_window();
     assert!(part.below_windows(), "the windows stand over the screen");
     let labels = crate::Published::accessible_labels(&mut part);
-    for name in ["Notifications", "Strips", "Frames", "Spaces"] {
+    for name in ["Notifications", "Showing Strips"] {
         assert!(
             labels.iter().any(|label| label == name),
             "the screen shows {name}: {labels:?}"
+        );
+    }
+    // The preset switch is the bar's own menu, named by the preset in use: the ways of showing
+    // the same arrangement are its items, offered when the person opens it.
+    click(&mut part, "Showing Strips");
+    let labels = crate::Published::accessible_labels(&mut part);
+    for name in ["Frames", "Spaces"] {
+        assert!(
+            labels.iter().any(|label| label == name),
+            "the preset menu offers {name}: {labels:?}"
         );
     }
     let well = wells
@@ -740,18 +768,21 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
         "the well stands on the output, under the bar: {well:?}"
     );
 
-    // The strips show each strip's own controls (its width, beside the place's); the framed
-    // canvas shows none of them, and its entry (what typed text finds is placed on the canvas)
-    // instead.
+    // Each window's own controls stand in its one bar — its menu and its close, beside its
+    // maximize; the framed canvas shows none of them, and its entry (what typed text finds is
+    // placed on the canvas) instead.
     assert!(
-        labels.iter().any(|label| label == "Width"),
-        "the strips show their controls: {labels:?}"
+        labels.iter().any(|label| label == "This window")
+            && labels.iter().any(|label| label == "Close")
+            && labels.iter().any(|label| label == "Maximize"),
+        "the windows show their controls: {labels:?}"
     );
     // The preset switch shows the same place on the framed canvas, its well there.
     click(&mut part, "Frames");
     let labels = crate::Published::accessible_labels(&mut part);
     assert!(
-        !labels.iter().any(|label| label == "Width") && labels.iter().any(|label| label == "Typed"),
+        !labels.iter().any(|label| label == "This window")
+            && labels.iter().any(|label| label == CANVAS_ENTRY),
         "the canvas shows: {labels:?}; refused {:?}",
         part.refusals()
     );
@@ -846,6 +877,7 @@ fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
                 resource: "desktop:tab:7".to_owned(),
                 action: "close-tab".to_owned(),
                 arguments: BTreeMap::new(),
+                from: None,
             }),
             "with strips {strips:?}"
         );
@@ -920,13 +952,13 @@ fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
         part.draw();
     }
     let (_, _, width, _) = part
-        .control_bounds("Name")
+        .control_bounds(WORKSPACE_NAME)
         .expect("the surface shows its field");
     assert!(
         width >= 100.0,
         "the name field is wide enough to type in: {width}"
     );
-    click(&mut part, "Name");
+    click(&mut part, WORKSPACE_NAME);
     type_into(&mut part, "studio");
     click(&mut part, "Create");
     assert!(part.refusals().is_empty(), "{:?}", part.refusals());
@@ -955,7 +987,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
         part.prepare_frame();
         part.draw();
     }
-    click(&mut part, "Query");
+    click(&mut part, LAUNCHER_SEARCH);
     for letter in "quarterly".chars() {
         for pressed in [true, false] {
             let key = tilo_compositor::HostKey {
@@ -983,6 +1015,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
             resource: "desktop:desk".to_owned(),
             action: "search".to_owned(),
             arguments: BTreeMap::from([("query".to_owned(), "quarterly".to_owned())]),
+            from: None,
         }),
     );
 }
@@ -1015,8 +1048,11 @@ fn a_part_told_its_display_after_it_settled_lays_out_at_the_displays_width() {
         part.prepare_frame();
     }
     assert!(!part.due(), "the part settled");
-    part.outputs_changed(&[(0, 0, 1280, 800)]);
-    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))));
+    part.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, 1280, 800),
+        scale: 1.0,
+    }]);
+    part.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))), 1.0);
     for _ in 0..4 {
         part.prepare_frame();
     }
@@ -1284,5 +1320,45 @@ fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
     assert!(
         width(7) >= width(8),
         "the wider window takes the wider room: {pictures:?}"
+    );
+}
+
+/// A part on an output at `scale` draws its whole screen at that scale: a
+/// bar on a 2 display paints twice the pixels of a 1 display's, rather than
+/// one scale's worth stretched over twice the area (which is what made
+/// everything on a `HiDPI` panel grainy).
+#[test]
+fn a_part_on_a_scaled_output_paints_at_that_scale() {
+    let (mut plain, _link) = part_on(reading(), (1280, 800));
+    plain.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, 1280, 800),
+        scale: 1.0,
+    }]);
+    plain.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))), 1.0);
+    plain.prepare_frame();
+    let one = plain.widgets_mut().placement();
+
+    let (mut twice, _link) = part_on(reading(), (1280, 800));
+    twice.outputs_changed(&[tilo_compositor::HostedOutput {
+        rect: (0, 0, 1280, 800),
+        scale: 2.0,
+    }]);
+    twice.set_display(Some(("HEADLESS-1".to_owned(), (0, 0, 1280, 800))), 2.0);
+    twice.prepare_frame();
+    let two = twice.widgets_mut().placement();
+
+    assert_eq!(one.size, two.size, "the same screen in logical pixels");
+    assert!(
+        (one.scale - 1.0).abs() < f64::EPSILON && (two.scale - 2.0).abs() < f64::EPSILON,
+        "each part draws at its own output's scale: {one:?} then {two:?}"
+    );
+    // The layer is the frame the tree paints: at 2 it is twice as wide.
+    let width = |part: &mut ShellPart| part.layers()[0].frame.size().0;
+    let plain_width = width(&mut plain);
+    let wide_width = width(&mut twice);
+    assert_eq!(
+        wide_width,
+        plain_width * 2,
+        "a 2 display's part paints the pixels it shows, not half of them: {plain_width} then {wide_width}"
     );
 }

@@ -15,15 +15,22 @@ const workspace = await (await fetch('/api/room')).text();
 const device = await (await fetch('/api/host')).text();
 const api = (path, method = 'GET') => fetch(`/api/${who}/${path}`, {method, cache: 'no-store'});
 // Only the certified session crosses this fixture proxy. Call control, the
-// sealed turns the page posts to its host's call lane, and all
-// audio/capture/codec code are the production browser modules.
+// pictures the page publishes on its call's plane (and the layers it shows,
+// and the keyframes it asks for), and all audio/capture/codec code are the
+// production browser modules.
 const certified = {
   voiceJoin: (_, call) => {void api(`join/${call}`, 'POST');},
   voiceLeave: () => {void api('leave', 'POST');},
   voiceCalls: () => {void api('calls', 'POST');},
   voiceCall: (_, operation, request) => {void fetch(`/api/${who}/call/${request}`, {method: 'POST', body: operation, cache: 'no-store'});},
-  callLaneTurn: async (_, turn) => (await fetch(`/api/${who}/turn`, {method: 'POST', body: turn, cache: 'no-store'})).text(),
-  callLaneLeave: () => {void api('end', 'POST');},
+  // The microphone's frames, which the page publishes on its workspace's live
+  // plane: this fixture holds no plane, so it counts them instead.
+  callAudio: (_, frames) => {window.publishedFrames = (window.publishedFrames ?? 0) + JSON.parse(frames).length;},
+  // What the page makes and reads of the call's pictures, posted to the
+  // fixture that holds the plane: each as it is made, never on a timer.
+  callPictures: (_, pictures) => {void fetch(`/api/${who}/pictures`, {method: 'POST', body: pictures, cache: 'no-store'});},
+  callShowing: (_, shown) => {void fetch(`/api/${who}/showing`, {method: 'POST', body: shown, cache: 'no-store'});},
+  callPictureRestart: (_, device, source) => {void fetch(`/api/${who}/keyframe/${device}/${source}`, {method: 'POST', cache: 'no-store'});},
 };
 
 // Frames the call played here, by the device that sent them, and the most

@@ -603,8 +603,9 @@ fn read_back(
     Ok(())
 }
 
-/// One region of premultiplied RGBA rows, `source_stride` bytes apart, into a
-/// `wl_shm` buffer which is B, G, R, A in memory.
+/// One region of premultiplied RGBA rows, `source_stride` bytes apart and
+/// starting at the region's own left edge, into a `wl_shm` buffer of `width`
+/// pixels a row which is B, G, R, A in memory.
 fn copy_swizzled(
     source: &[u8],
     source_stride: usize,
@@ -613,15 +614,13 @@ fn copy_swizzled(
     region: &Region,
 ) {
     let stride = (width as usize).saturating_mul(4);
+    let destination_x = (region.x as usize).saturating_mul(4);
+    let len = (region.width as usize).saturating_mul(4);
     for row in 0..region.height {
-        let x = (region.x as usize).saturating_mul(4);
-        let from = (row as usize)
-            .saturating_mul(source_stride)
-            .saturating_add(x);
+        let from = (row as usize).saturating_mul(source_stride);
         let to = ((region.y.saturating_add(row)) as usize)
             .saturating_mul(stride)
-            .saturating_add(x);
-        let len = (region.width as usize).saturating_mul(4);
+            .saturating_add(destination_x);
         let (Some(from), Some(to)) = (
             source.get(from..from.saturating_add(len)),
             target.get_mut(to..to.saturating_add(len)),

@@ -438,7 +438,7 @@ impl crate::Session {
                 Ok(())
             }
             SessionCommand::AskUninstall { app } => {
-                self.shared.app_sheets.ask_uninstall(&app);
+                self.shared.ask_uninstall(&app);
                 Ok(())
             }
             SessionCommand::SetTouchpad { on } => {

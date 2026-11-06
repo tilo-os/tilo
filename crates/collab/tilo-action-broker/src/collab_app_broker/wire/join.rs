@@ -147,7 +147,10 @@ impl AppConnection {
                 }
                 verified_identity.worker_registration = Some(registration.clone());
             }
-        } else if state.durable_owner_required && !route.app_id.is_empty() && packaged_app.is_none()
+        } else if state.durable_owner_required
+            && !route.app_id.is_empty()
+            && packaged_app.is_none()
+            && !kept_for_every_app_of_the_workspace(&record_route)
         {
             return Err(BrokerError::failed(
                 "application requires host-owned worker descriptor admission".into(),
@@ -283,7 +286,6 @@ impl AppConnection {
         phases.mark("hold");
         let hold_id = hold.id();
         let handle = JoinedChannel {
-            person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: state.clone(),
             directories: Rc::clone(&self.directories),
@@ -309,4 +311,13 @@ impl AppConnection {
         phases.report(&ensured);
         Ok(handle)
     }
+}
+
+/// Whether `route` names a record every app of its workspace opens
+/// ([`collab_types::workspace_record`]): the workspace keeps it rather than the app that
+/// writes it, so any admitted app of the workspace holds its route, and
+/// [`attested_route_access`] lets it change the record as the workspace's grants on the
+/// owner decide.
+fn kept_for_every_app_of_the_workspace(route: &CrdtRoute) -> bool {
+    collab_types::workspace_record(&route.app_id, &route.record_id).is_some()
 }

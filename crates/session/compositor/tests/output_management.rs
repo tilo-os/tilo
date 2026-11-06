@@ -32,6 +32,7 @@ use wayland_protocols_wlr::output_power_management::v1::client::{
 };
 
 #[derive(Default, Debug)]
+
 struct Head {
     object: Option<ZwlrOutputHeadV1>,
     name: String,
@@ -240,7 +241,7 @@ fn a_display_tool_turns_an_output_off_and_on_again() {
             .any(|head| head.name == "HEADLESS-2" && head.enabled == Some(true))
     });
     assert!(compositor.output_lit("HEADLESS-2"));
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     let shot = compositor.screenshot("HEADLESS-2").expect("screenshot");
     assert_ne!(
         shot.pixel(10, 10),
@@ -307,7 +308,7 @@ fn ordinary_clients_cannot_switch_panels_off() {
 #[test]
 fn idle_blanking_darkens_every_panel_and_input_lights_them() {
     let mut compositor = two_outputs();
-    compositor.render().expect("render");
+    compositor.draw_frame().expect("a frame");
     compositor.blank_now().expect("blank");
     assert!(!compositor.output_lit("HEADLESS-1"));
     assert!(!compositor.output_lit("HEADLESS-2"));

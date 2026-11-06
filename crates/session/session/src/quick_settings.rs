@@ -292,7 +292,14 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
         let opened = shared
             .search
             .perform_checked(&workspace, target, &mut |own| {
-                shared.doors.invoke(&own.address, &own.arguments).map(drop)
+                shared
+                    .doors
+                    .invoke(
+                        &own.address,
+                        &own.arguments,
+                        &mut tilo_surface_host::Look::none(),
+                    )
+                    .map(drop)
             });
         if opened.is_ok() {
             return;

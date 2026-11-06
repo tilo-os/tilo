@@ -6,7 +6,8 @@
 use std::rc::Rc;
 
 use crate::Shared;
-use crate::{search, tab_app};
+use crate::arrangement::tab_app;
+use crate::search;
 use tilo_desktop_search::providers::places::Place;
 
 impl Shared {
@@ -15,13 +16,17 @@ impl Shared {
     pub(crate) fn observe(&self) {
         // Who is here changes faster than what is published: people and
         // calls come and go between two door revisions, so the empty
-        // palette's first group is not read with them. It is read once a
-        // second instead — everyone's face, the call they are in, the window
-        // they switched to, a second late at worst — because reading it
-        // costs more than the rest of this pass and a drag runs sixty of them.
+        // palette's first group is not read with them. Reading it costs more
+        // than the rest of this pass and a drag runs sixty of them, so it is
+        // read when presence moved — everyone's face, the call they are in,
+        // the window they switched to — and otherwise once a second, for what
+        // it says from the clock alone: who is away, and who counts as an
+        // agent.
+        let people = self.sync.as_ref().map_or(0, |sync| sync.people_revision());
         let second = ui::time::unix_now();
-        if self.here_at.get() != second {
+        if self.here_at.get() != second || self.here_seen.get() != people {
             self.here_at.set(second);
+            self.here_seen.set(people);
             self.search.set_here(self.here_now());
         }
         // The workspaces as this frame shows them, before the door revision
@@ -70,12 +75,9 @@ impl Shared {
         self.record_places(&tabs);
         let open_tabs = tabs.iter().map(|(tab, ..)| *tab).collect();
         // The downloaded programs, as their registry publishes them: search
-        // lists them from the one registry the app sheets read too.
-        let downloaded = self
-            .services
-            .borrow()
-            .read(tilo_app_launch::downloaded::RESOURCE)
-            .and_then(|reading| serde_json::from_value(reading).ok());
+        // lists them from the one registry the app sheets read too, so a
+        // registry that does not read back is said once, in one place.
+        let downloaded = self.downloaded_apps();
         let resources = self.doors.resources();
         // What a place made from a resource reads its app and views from:
         // the same tree search and the palette read.

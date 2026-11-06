@@ -35,7 +35,10 @@ pub struct WorkspaceChoice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceAction {
     pub id: String,
+    /// The action's name, not the sentence describing it.
     pub title: String,
+    /// The action's own picture, as it declares one.
+    pub icon: Option<Icon>,
     /// Losing something: leaving the workspace.
     pub destructive: bool,
 }
@@ -103,11 +106,14 @@ impl WorkspaceMenu {
         if !model.actions.is_empty() {
             rows.push((MenuItem::separator(), None));
             for action in &model.actions {
-                let item = if action.destructive {
+                let mut item = if action.destructive {
                     MenuItem::destructive_selection(&action.title)
                 } else {
                     MenuItem::selection(&action.title)
                 };
+                if let Some(icon) = action.icon {
+                    item = item.with_icon(icon);
+                }
                 rows.push((item, Some(WorkspaceMenuChoice::Action(action.id.clone()))));
             }
         }
@@ -279,12 +285,14 @@ mod tests {
             actions: vec![
                 WorkspaceAction {
                     id: "join-workspace".into(),
-                    title: "Join a workspace…".into(),
+                    title: "Join a workspace".into(),
+                    icon: Some(Icon::Link),
                     destructive: false,
                 },
                 WorkspaceAction {
                     id: "leave-workspace".into(),
-                    title: "Leave".into(),
+                    title: "Leave workspace".into(),
+                    icon: Some(Icon::ArrowUpRight),
                     destructive: true,
                 },
             ],
@@ -315,8 +323,8 @@ mod tests {
                 "Lounge",
                 "Home",
                 "Hosted by tilo.coffee",
-                "Join a workspace…",
-                "Leave",
+                "Join a workspace",
+                "Leave workspace",
                 "Overview",
                 "New strip",
             ]
@@ -343,7 +351,7 @@ mod tests {
             ("Overview", Some(WorkspaceMenuChoice::Overview)),
             ("New strip", Some(WorkspaceMenuChoice::NewStrip)),
             (
-                "Leave",
+                "Leave workspace",
                 Some(WorkspaceMenuChoice::Action("leave-workspace".into())),
             ),
             ("Lounge", None),

@@ -107,9 +107,6 @@ pub(crate) struct StoredWorkspace {
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,
-    /// Two-person private text; never included in public workspace or task state.
-    #[serde(default, rename = "privateDirectConversations")]
-    pub private_direct_conversations: crate::owner::PrivateDirectConversationStore,
     pub generation: u64,
     pub continuity: u64,
     /// Outgoing publication state; required on every committed workspace record.
@@ -166,6 +163,12 @@ pub(crate) struct StoredEnrollment {
 pub(crate) struct StoredVouch {
     #[serde(with = "base64_bytes")]
     pub bootstrap: Vec<u8>,
+    /// Where the host that answered is reached, for a workspace this device
+    /// holds as a further device of its person: the host hint its answer
+    /// came with, host-signed like a link's. Absent from a page's vouch,
+    /// which reaches its host through the session it authenticated to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<crate::join::TransportHint>,
 }
 
 /// Only a successful state-file publication creates an enrollment handle.

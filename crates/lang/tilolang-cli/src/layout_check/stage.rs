@@ -82,9 +82,23 @@ impl Platform for Packages {
         ui::i18n::speak_window_language(catalogues);
     }
 
-    /// A fixed instant, so every run lays out the same dates.
+    /// A fixed instant, so every run lays out the same dates: the clock the capture pins
+    /// ([`ui::clock::freeze_for_capture`]), which the days the app reads and the days its
+    /// window writes both come from.
     fn now(&self) -> String {
-        "2026-10-27T10:00:00Z".to_owned()
+        ui::clock::local_now()
+            .to_utc()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    /// The person's zone, as a window knows it: a seed's wall-clock time and every day the
+    /// window shows are read in it, so the layout is the one a person in their zone sees.
+    fn zone(&self) -> i64 {
+        i64::from(ui::clock::local_now().offset().local_minus_utc())
+    }
+
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
     }
 
     fn waker(&self) -> tilolang_tilo::background::Waker {
@@ -397,6 +411,17 @@ impl Staged {
             self.harness.click_named(id)
         };
         pressed.map_err(|error| format!("pressing {id:?}: {error}"))?;
+        self.exchange();
+        self.settle()
+    }
+
+    /// Press the action the control `id` publishes as a semantic child, as assistive technology
+    /// activates it: a control a widget paints itself (an empty state's action) has no node of
+    /// its own to tap, and the widget's own node is not where the action is.
+    pub fn press_action(&mut self, id: &str) -> Result<(), String> {
+        self.harness
+            .perform_named(id, &ui::a11y::Action::Activate)
+            .map_err(|error| format!("pressing {id:?}: {error}"))?;
         self.exchange();
         self.settle()
     }

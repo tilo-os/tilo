@@ -13,10 +13,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::workspaces::WorkspaceRole;
-
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
-pub const VERSION: u16 = 4;
+pub const VERSION: u16 = 5;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.
@@ -53,30 +51,6 @@ pub enum OperatorCommand {
     Admit {
         /// The six-digit code the guest's browser displays.
         pairing_code: String,
-    },
-    /// Pre-admit one guest of a persistent workspace: the child signs a
-    /// pre-admission with the workspace's owner root for `token_sha256`, issues
-    /// an invitation that only `user_public_key` can redeem, and answers
-    /// [`OperatorEvent::PreAdmitted`] or [`OperatorEvent::PreAdmitRefused`] for the
-    /// same digest.
-    PreAdmit {
-        /// The guest's user root (hex). Binding the invitation to it means a
-        /// leaked invitation and token admit nobody else, and lets the
-        /// service map a later [`OperatorEvent::MemberRemoved`] back to the join.
-        user_public_key: String,
-        /// SHA-256 of the one-time admission token (hex).
-        token_sha256: String,
-        /// How the workspace's notices name the guest.
-        label: String,
-        role: WorkspaceRole,
-    },
-    /// Certify an in-memory browser device as the persistent workspace's one
-    /// read-only spectator person, so a page embedding the workspace can watch it
-    /// without minting a member per visitor. The child answers
-    /// [`OperatorEvent::SpectatorCertified`] or [`OperatorEvent::SpectateRefused`].
-    Spectate {
-        /// The browser's device key (hex).
-        device_public_key: String,
     },
     /// Stop the workspace. A struct variant, so `deny_unknown_fields` holds for
     /// it too (serde ignores extra fields on a tagged unit variant).
@@ -125,25 +99,6 @@ pub enum OperatorCommand {
         request: String,
         /// SHA-256 (hex) of the confirmation secret.
         confirm_sha256: String,
-    },
-    /// Someone came back from Discord's consent page to the service's
-    /// callback, and Discord vouched for their account. The child hands it
-    /// to the workspace's Discord bridge, which offers the account to whoever
-    /// started the round trip (`state_sha256`) and holds the token whose
-    /// check `link_check` is. No answer: the browser is sent on at once and
-    /// asks the workspace for the offer itself.
-    DiscordAuthorized {
-        user_id: String,
-        user_name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        display_name: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        avatar: Option<String>,
-        /// SHA-256 (hex) of the round trip's `state`.
-        state_sha256: String,
-        /// SHA-256 (hex) of SHA-256 (hex) of the token the browser was
-        /// sent on with.
-        link_check: String,
     },
     /// Where the entry whose removal secret hashes to `removal_sha256`
     /// stands, for whoever left it. The child answers [`OperatorEvent::Standing`]
@@ -195,48 +150,10 @@ pub enum OperatorEvent {
         /// Why it certified nobody.
         reason: RefusalReason,
     },
-    /// The invitation for a [`OperatorCommand::PreAdmit`].
-    PreAdmitted {
-        /// The pre-admission's token digest (hex).
-        token_sha256: String,
-        /// The signed invitation, unpadded base64url.
-        invitation: String,
-    },
-    /// A [`OperatorCommand::PreAdmit`] that issued nothing. Answers the
-    /// waiting join at once instead of letting it time out.
-    PreAdmitRefused {
-        /// The pre-admission's token digest (hex).
-        token_sha256: String,
-        /// Why, for the operator's log.
-        reason: String,
-        /// The person was removed from the workspace within the day: the door
-        /// tells them so, as it tells anyone from the address they joined from.
-        removed: bool,
-        /// The workspace takes people by invitation only and the person is not a
-        /// member: the door tells them they need an invitation.
-        #[serde(default, skip_serializing_if = "is_false")]
-        invite_only: bool,
-    },
-    /// The certificate for a [`OperatorCommand::Spectate`].
-    SpectatorCertified {
-        /// The certified device key (hex).
-        device_public_key: String,
-        /// The device certificate, in the form the browser runtime takes.
-        certificate: tilo_user_identity::DeviceCert,
-    },
-    /// A [`OperatorCommand::Spectate`] that certified nothing.
-    SpectateRefused {
-        /// The device key (hex).
-        device_public_key: String,
-        /// Why, for the operator's log.
-        reason: String,
-    },
     /// Who has an open browser session now.
     Online {
-        /// Distinct people (user roots), the spectator person excluded.
+        /// Distinct people (user roots) with an open browser session.
         people: u32,
-        /// Open spectator sessions.
-        spectators: u32,
         /// Some of the members online, for the site's directory of public
         /// workspaces (at most [`crate::directory::MAX_FACES`]).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -513,41 +430,8 @@ mod tests {
                 allowed_origins: vec![],
                 workspace: Some("6f1c3b0e-58a1-4c2e-9d55-0b3c1f6a2e10".into()),
             },
-            OperatorEvent::PreAdmitted {
-                token_sha256: "ab".repeat(32),
-                invitation: "AAECAw".into(),
-            },
-            OperatorEvent::PreAdmitRefused {
-                token_sha256: "ab".repeat(32),
-                reason: "too many pre-admissions are open".into(),
-                removed: false,
-                invite_only: false,
-            },
-            OperatorEvent::PreAdmitRefused {
-                token_sha256: "ab".repeat(32),
-                reason: "the workspace takes people by invitation only".into(),
-                removed: false,
-                invite_only: true,
-            },
-            OperatorEvent::SpectatorCertified {
-                device_public_key: "ef".repeat(32),
-                certificate: tilo_user_identity::DeviceCert {
-                    user_public_key: [1; 32],
-                    device_public_key: [0xef; 32],
-                    device_label: "Watching visitor".into(),
-                    capabilities: tilo_user_identity::DeviceCapabilities::member(),
-                    issued_at_ns: 1,
-                    expires_at_ns: Some(2),
-                    signature: [3; 64],
-                },
-            },
-            OperatorEvent::SpectateRefused {
-                device_public_key: "ef".repeat(32),
-                reason: "no".into(),
-            },
             OperatorEvent::Online {
                 people: 3,
-                spectators: 9,
                 here: vec![crate::directory::Face {
                     user_public_key: "cd".repeat(32),
                     name: "Ada".into(),
@@ -602,33 +486,8 @@ mod tests {
     }
 
     #[test]
-    fn protocol_four_round_trips_and_pins_its_wire_form() {
-        assert_eq!(VERSION, 4);
-        let pre_admit = OperatorCommand::PreAdmit {
-            user_public_key: "cd".repeat(32),
-            token_sha256: "ab".repeat(32),
-            label: "Ada".into(),
-            role: WorkspaceRole::Editor,
-        };
-        assert_eq!(
-            pre_admit.to_line(),
-            format!(
-                "{{\"op\":\"pre_admit\",\"user_public_key\":\"{}\",\"token_sha256\":\"{}\",\"label\":\"Ada\",\"role\":\"Editor\"}}\n",
-                "cd".repeat(32),
-                "ab".repeat(32)
-            )
-        );
-        assert_eq!(
-            OperatorCommand::from_line(&pre_admit.to_line()).unwrap(),
-            pre_admit
-        );
-        let spectate = OperatorCommand::Spectate {
-            device_public_key: "ef".repeat(32),
-        };
-        assert_eq!(
-            OperatorCommand::from_line(&spectate.to_line()).unwrap(),
-            spectate
-        );
+    fn protocol_five_round_trips_and_pins_its_wire_form() {
+        assert_eq!(VERSION, 5);
         let wait = OperatorCommand::WaitList {
             request: "12".repeat(32),
             contact: "Ada@example.org".into(),
@@ -668,13 +527,12 @@ mod tests {
         assert_eq!(
             OperatorEvent::Online {
                 people: 7,
-                spectators: 2,
                 here: Vec::new(),
                 members: 0,
                 online: Vec::new(),
             }
             .to_line(),
-            "tilo-room-operator {\"event\":\"online\",\"people\":7,\"spectators\":2}"
+            "tilo-room-operator {\"event\":\"online\",\"people\":7}"
         );
     }
 

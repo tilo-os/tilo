@@ -336,6 +336,10 @@ fn e046_calling_a_flow() {
 #[test]
 fn e047_builtin_in_the_wrong_form() {
     expect("E047", "action a() {\n    model_call(\"k\", \"x\")\n}");
+    expect(
+        "E047",
+        "type C {\n    items: Collection<C>\n}\n/// Adds one.\nprimary action add(c: C) (icon: .plus) {\n    c.items.insert(C())\n}\nview list(c: C) {\n    let offered = actions(c)\n    text(\"{offered.len()}\")\n}",
+    );
 }
 
 #[test]
@@ -537,5 +541,198 @@ fn nothing_writes_what_a_type_held_previously() {
     assert_eq!(
         crate::common::codes(&format!("{MIGRATED}\n{created}")),
         ["E115"]
+    );
+}
+
+const NESTED: &str = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    /// Whether it and the items under it are done.\n    derive folded: Bool = done and children.all(folded)\n    derive subtasks: Int = children.count\n    derive subtasks_done: Int = children.count(done)\n}\n";
+
+#[test]
+fn nothing_writes_a_derived_key() {
+    // A derived key is the collection's, worked out by the store's index: an action writes the
+    // facts it is worked out from, never the value.
+    let assigned = "action check(i: Item) {\n    i.folded = true\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{NESTED}{assigned}")),
+        ["E119"]
+    );
+    let made = "action add(o: Shelf, title: Text) {\n    o.items.insert(Item(title: title, done: false, folded: true))\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{NESTED}type Shelf {{\n    items: Collection<Item>\n}}\n{made}"
+        )),
+        ["E119"]
+    );
+}
+
+#[test]
+fn a_derived_key_reads_the_keys_declared_before_it() {
+    // Folding is worked out from finishing: a key reads itself and the keys over it, so what it
+    // reads is worked out whatever order the collection's index walks the items in.
+    let forward = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive folded: Bool = finished and parent.all(folded)\n    derive finished: Bool = done\n}\n";
+    assert_eq!(crate::common::codes(forward), ["E119"]);
+    let over = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive finished: Bool = done\n    derive folded: Bool = finished and parent.all(folded)\n}\n";
+    assert_eq!(crate::common::codes(over), Vec::<String>::new());
+}
+
+#[test]
+fn a_derived_key_reads_the_items_under_an_item_or_above_it_not_both() {
+    // Each direction is walked its own way; one key cannot be worked out from both.
+    let both = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive busy: Bool = children.all(done) and parent.all(done)\n}\n";
+    let errors = crate::common::compile_with(&format!("app t.x \"X\"\n{both}\n"), &[])
+        .err()
+        .unwrap_or_else(|| panic!("a key reading both ways is refused"));
+    let said = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(said.contains("a key reads one way"), "{said}");
+}
+
+#[test]
+fn a_comparison_is_of_two_counts() {
+    let flags = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive has_steps: Bool = children.count > done\n}\n";
+    assert_eq!(crate::common::codes(flags), ["E119"]);
+    let counts = "type Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive has_steps: Bool = children.count > 0\n    derive all_done: Bool = children.count(done) == children.count\n}\n";
+    assert_eq!(crate::common::codes(counts), Vec::<String>::new());
+}
+
+#[test]
+fn a_derived_key_that_reads_the_items_under_it_says_which_field_they_stand_under() {
+    let no_parent = "type Note {\n    title: Text\n    done: Bool\n    derive folded: Bool = done and children.all(done)\n}\n";
+    let errors = crate::common::compile_with(&format!("app t.x \"X\"\n{no_parent}\n"), &[])
+        .err()
+        .unwrap_or_else(|| panic!("a type without a parent field cannot read the items under it"));
+    let said = errors
+        .iter()
+        .map(|d| d.message.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        said.contains("(parent)"),
+        "the error says which field the items stand under: {said}"
+    );
+}
+
+#[test]
+fn two_commands_that_write_one_field_from_a_value_they_ask_for_are_one_command() {
+    // A command that asks for a when and writes it, a second that asks for another and writes
+    // the same field, and a third that writes it without asking: the pair are one command
+    // under two names, and the preset is a command of its own.
+    let when = "type Day {\n    day: Text\n}\ntype Task {\n    title: Text (title)\n    due: Option<Day>\n}\n";
+    let schedule = "action schedule(t: Task, due: Option<Day>) {\n    t.due = due\n}\n";
+    let preset = "action due_none(t: Task) {\n    t.due = .none\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{when}{schedule}{preset}")),
+        Vec::<String>::new()
+    );
+    let snooze = "action snooze(t: Task, until: Option<Day>) {\n    t.due = until\n}\n";
+    assert_eq!(
+        crate::common::codes(&format!("{when}{schedule}{snooze}")),
+        ["E120"]
+    );
+}
+
+#[test]
+fn a_place_a_view_supplies_is_an_option_after_the_subject_and_named_above() {
+    let task = "type Task {\n    title: Text (title)\n}\n";
+    let places = |param: &str| {
+        crate::common::codes(&format!(
+            "{task}action move_under(t: Task, {param}) {{\n    t.title = \"x\"\n}}\n"
+        ))
+    };
+    assert_eq!(places("above: Option<Task> (above)"), Vec::<String>::new());
+    assert_eq!(places("above: Option<Task> (below)"), ["E054"]);
+    assert_eq!(places("above: Task (above)"), ["E055"]);
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}action move_under(t: Task, x: Text, above: Option<Task> (above)) {{\n    x = \"x\"\n}}\n"
+        )),
+        ["E053"],
+        "a place follows the subject it is offered on"
+    );
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}view show_task(t: Task (above)) {{\n    ui.Text(t.title)\n}}\n"
+        )),
+        ["E052"],
+        "only an action is offered on an item, so only its parameters have places"
+    );
+    assert_eq!(
+        places("above: Option<Task> (above) = .none"),
+        ["E056"],
+        "a place is written after the type and takes no default"
+    );
+    let misplaced = crate::common::compile_with(
+        &format!("app t.x \"X\"\n{task}action move_under(t: Task, above: Option<Task> = .none (above)) {{\n    t.title = \"x\"\n}}\n"),
+        &[],
+    )
+    .err()
+    .and_then(|d| d.into_iter().find(|d| d.code == "E003"))
+    .map_or_else(
+        || panic!("a place after a default says where it goes"),
+        |d| d.message,
+    );
+    assert!(
+        misplaced.contains("right after the parameter's type"),
+        "the error says where a place is written: {misplaced}"
+    );
+}
+
+#[test]
+fn a_parameter_takes_the_text_of_an_entry_last_and_as_text() {
+    let task = "type Task {\n    title: Text (title)\n}\n";
+    let add = |params: &str, body: &str| {
+        crate::common::codes(&format!(
+            "{task}action add(t: Task, {params}) {{\n{body}\n}}\n"
+        ))
+    };
+    assert_eq!(
+        add("title: Text (entry) = \"\"", "    t.title = title"),
+        Vec::<String>::new(),
+        "an action's last parameter takes the text typed in an entry"
+    );
+    assert_eq!(
+        add(
+            "title: Text (entry) = \"\", done: Bool = false",
+            "    t.title = title"
+        ),
+        ["E068"],
+        "what a call gives comes before the text of an entry"
+    );
+    assert_eq!(
+        add("title: Int (entry) = 0", "    t.title = \"x\""),
+        ["E059"]
+    );
+    assert!(
+        add(
+            "a: Text (entry) = \"\", b: Text (entry) = \"\"",
+            "    t.title = \"x\""
+        )
+        .contains(&"E058".to_owned()),
+        "one entry fills one parameter"
+    );
+    assert_eq!(
+        crate::common::codes(&format!(
+            "{task}view show_task(t: Task (entry)) {{\n    ui.Text(t.title)\n}}\n"
+        )),
+        ["E057"],
+        "an entry fills an action's parameter, not a view's"
+    );
+}
+
+#[test]
+fn e094_made_from_runs_only_in_a_scenario() {
+    expect(
+        "E094",
+        "type C {\n    t: Text\n}\nfn f(c: C) -> Int {\n    made from c { 1 }\n}\n",
+    );
+}
+
+#[test]
+fn e020_made_from_takes_a_resource() {
+    expect(
+        "E020",
+        "type C {\n    t: Text\n}\nroot C\nscenario \"a thing\" -> C {\n    made from 1 { root C }\n}\n",
     );
 }

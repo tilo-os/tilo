@@ -26,4 +26,6 @@ pub use said::{DESKTOP_APP, Presence};
 /// publisher and reader of a workspace's presence shares. One enum, so a
 /// frame is read the same wherever it is taken from.
 pub use crate::peer::PeerPresencePayload as Payload;
-pub use shell::{ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow};
+pub use shell::{
+    MAX_ACTIVITY_BYTES, ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow,
+};

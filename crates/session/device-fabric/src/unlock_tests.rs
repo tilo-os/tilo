@@ -74,6 +74,8 @@ struct World {
     fleet: CertifiedFleet,
     enrolments: BTreeMap<[u8; 32], UnlockEnrolment>,
     auto_approvals: BTreeMap<[u8; 32], AutoApproval>,
+    /// What the person's devices answered, as their fabric carries it.
+    decisions: BTreeMap<DecisionKey, UnlockDecisionRecord>,
     secret_sync: SecretKey,
     custodian: bool,
 }
@@ -103,6 +105,7 @@ impl World {
             fleet,
             enrolments,
             auto_approvals: BTreeMap::new(),
+            decisions: BTreeMap::new(),
             secret_sync,
             custodian: true,
         }
@@ -113,9 +116,22 @@ impl World {
             fleet: &self.fleet,
             enrolments: &self.enrolments,
             auto_approvals: &self.auto_approvals,
+            decisions: &self.decisions,
             custodian: self.custodian,
             secret_sync: self.custodian.then_some(&self.secret_sync),
         }
+    }
+
+    /// What the fabric does with an answer: the answering device keeps it,
+    /// and this device's merged view carries it.
+    fn kept(&mut self, decided: &Decided) {
+        let Some(record) = &decided.record else {
+            return;
+        };
+        record
+            .validate(&DeviceId::new(hex::encode(sibling())).unwrap())
+            .unwrap();
+        self.decisions.insert(record.key(), record.clone());
     }
 
     fn revoke(&mut self) {
@@ -185,14 +201,6 @@ fn pending_code(frame: &SiblingFrame) -> String {
     }
 }
 
-fn outcomes(sibling: &mut UnlockSibling) -> Vec<UnlockOutcome> {
-    sibling
-        .drain_history()
-        .into_iter()
-        .map(|event| event.outcome)
-        .collect()
-}
-
 #[test]
 fn an_approved_request_releases_the_half_to_that_boot_only() {
     let cert = boot_cert(None);
@@ -208,7 +216,7 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
     assert_eq!(pending[0].approval_code, code);
     assert_eq!(pending[0].slot, slot());
 
-    let frame = service
+    let decided = service
         .decide(
             &pending[0].request_digest,
             UnlockDecision::Approve {
@@ -218,18 +226,15 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
             NOW + 1,
         )
         .unwrap();
-    assert_eq!(boot.open(&request, &frame), half());
-    assert_eq!(
-        outcomes(&mut service),
-        vec![
-            UnlockOutcome::Requested {
-                approval_code: code
-            },
-            UnlockOutcome::Approved {
-                approver: sibling()
-            },
-        ]
-    );
+    assert_eq!(boot.open(&request, &decided.frame), half());
+    let record = decided
+        .record
+        .expect("an approval is the person's own signed answer");
+    assert_eq!(record.outcome, DecisionOutcome::Approve);
+    assert_eq!(record.decided_by, sibling());
+    assert_eq!(record.decided_at_ns, NOW + 1);
+    assert_eq!(record.boot_id, boot.id);
+    assert_eq!(record.slot, slot());
     // Decided once; a second decision finds nothing.
     assert!(
         service
@@ -248,42 +253,64 @@ fn an_approved_request_releases_the_half_to_that_boot_only() {
 #[test]
 fn a_denied_or_unanswered_request_releases_nothing() {
     let cert = boot_cert(None);
-    let world = World::new(&cert);
+    let mut world = World::new(&cert);
     let mut service = UnlockSibling::new(sibling());
     let boot = Boot::new(cert.clone(), 7);
     let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
     let request = boot.answer(&challenge, None);
     service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW);
     let digest = service.pending().next().unwrap().request_digest;
-    assert_eq!(
-        service.decide(
+    let decided = service
+        .decide(
             &digest,
             UnlockDecision::Deny {
-                approver: sibling()
+                approver: sibling(),
             },
             &world.view(),
-            NOW + 1
-        ),
-        Some(SiblingFrame::Denied)
-    );
+            NOW + 1,
+        )
+        .unwrap();
+    assert_eq!(decided.frame, SiblingFrame::Denied);
+    let record = decided
+        .record
+        .clone()
+        .expect("a denial is the person's own signed answer");
+    assert_eq!(record.outcome, DecisionOutcome::Deny);
+    world.kept(&decided);
 
-    // Nobody answers the next boot's request in time.
-    let boot = Boot::new(cert, 8);
-    let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [10; 32], NOW));
-    let request = boot.answer(&challenge, None);
-    service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW);
+    // Nobody answers the next boot's request, and its handler goes away with
+    // the boot: once its window passes it is no longer pending, and nothing
+    // is claimed in the person's name.
+    let boot = Boot::new(cert.clone(), 8);
     let late = NOW + APPROVAL_TIMEOUT_NS;
-    let expired = service.expire(late);
-    assert_eq!(expired.len(), 1);
-    assert_eq!(service.pending().count(), 0);
-    let history = outcomes(&mut service);
-    assert!(history.contains(&UnlockOutcome::Denied {
-        approver: Some(sibling())
-    }));
+    let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [10; 32], late));
+    let request = boot.answer(&challenge, None);
+    assert!(matches!(
+        service.request(&request, &boot.hello, &challenge.nonce, &world.view(), late),
+        SiblingFrame::Pending { .. }
+    ));
+    assert_eq!(service.pending().count(), 1);
+    let afterwards = late + APPROVAL_TIMEOUT_NS;
+    let fresh = Boot::new(cert, 9);
+    let challenge = challenge_of(service.hello(&fresh.hello, &world.view(), [11; 32], afterwards));
+    let request = fresh.answer(&challenge, None);
+    assert!(matches!(
+        service.request(
+            &request,
+            &fresh.hello,
+            &challenge.nonce,
+            &world.view(),
+            afterwards
+        ),
+        SiblingFrame::Pending { .. }
+    ));
+    assert_eq!(service.pending().count(), 1, "the spent question is gone");
     assert_eq!(
-        history.last(),
-        Some(&UnlockOutcome::Denied { approver: None })
+        world.decisions.len(),
+        1,
+        "the person's record holds the one answer they made; a question nobody saw is not a denial in their name"
     );
+    assert!(world.decisions.contains_key(&record.key()));
 }
 
 #[test]
@@ -305,8 +332,8 @@ fn replayed_exchanges_are_refused() {
             &world.view(),
             NOW,
         )
-        .unwrap();
-    service.drain_history();
+        .unwrap()
+        .frame;
 
     // The recorded request answered again on the same challenge.
     assert_eq!(
@@ -349,11 +376,6 @@ fn replayed_exchanges_are_refused() {
         ),
         SiblingFrame::Refused(RefusalReason::ChallengeExpired)
     );
-    let refusals = outcomes(&mut service)
-        .into_iter()
-        .filter(|outcome| matches!(outcome, UnlockOutcome::Refused { .. }))
-        .count();
-    assert_eq!(refusals, 4, "every refusal is in the history");
 }
 
 #[test]
@@ -369,12 +391,6 @@ fn requests_are_rate_limited_per_device() {
     assert_eq!(
         service.hello(&boot.hello, &world.view(), [99; 32], NOW + 1),
         SiblingFrame::Refused(RefusalReason::RateLimited)
-    );
-    assert_eq!(
-        outcomes(&mut service).last(),
-        Some(&UnlockOutcome::Refused {
-            reason: RefusalReason::RateLimited
-        })
     );
     // The window moves on.
     challenge_of(service.hello(&boot.hello, &world.view(), [98; 32], NOW + RATE_WINDOW_NS));
@@ -398,14 +414,16 @@ fn a_device_removed_from_the_fleet_is_refused() {
     let digest = service.pending().next().unwrap().request_digest;
     world.revoke();
     assert_eq!(
-        service.decide(
-            &digest,
-            UnlockDecision::Approve {
-                approver: sibling()
-            },
-            &world.view(),
-            NOW
-        ),
+        service
+            .decide(
+                &digest,
+                UnlockDecision::Approve {
+                    approver: sibling()
+                },
+                &world.view(),
+                NOW
+            )
+            .map(|decided| decided.frame),
         Some(SiblingFrame::Refused(RefusalReason::Revoked))
     );
     // And any new request is refused at the hello.
@@ -413,8 +431,12 @@ fn a_device_removed_from_the_fleet_is_refused() {
         service.hello(&boot.hello, &world.view(), [10; 32], NOW),
         SiblingFrame::Refused(RefusalReason::Revoked)
     );
-    service.remove_device(device(), NOW);
-    assert_eq!(outcomes(&mut service).last(), Some(&UnlockOutcome::Removed));
+    service.remove_device(device());
+    assert_eq!(
+        service.pending().count(),
+        0,
+        "nothing is kept waiting for a device that left the fleet"
+    );
     // With its enrolment gone too, nothing is held for it at all.
     world.enrolments.clear();
     assert_eq!(
@@ -562,8 +584,7 @@ fn auto_approval_needs_the_owner_setting_and_an_attested_boot_chain() {
         SiblingFrame::Pending { .. }
     ));
 
-    // Everything in place: released without a prompt, and logged.
-    service.drain_history();
+    // Everything in place: released without a prompt.
     let boot = Boot::new(cert, 11);
     let challenge =
         challenge_of(service.hello(&boot.hello, &world.view(), [5; 32], NOW + RATE_WINDOW_NS));
@@ -576,10 +597,6 @@ fn auto_approval_needs_the_owner_setting_and_an_attested_boot_chain() {
         NOW + RATE_WINDOW_NS,
     );
     assert_eq!(boot.open(&request, &frame), half());
-    assert_eq!(
-        outcomes(&mut service),
-        vec![UnlockOutcome::AutoApproved { boot_chain: chain }]
-    );
 }
 
 /// A marshalled TPM2 quote over `pcrs`, as a TPM would produce it.
@@ -602,4 +619,274 @@ fn attest_bytes(extra: &[u8], pcrs: &[(u8, [u8; 32])]) -> Vec<u8> {
     out.extend_from_slice(&32_u16.to_be_bytes());
     out.extend_from_slice(&attest::pcr_composite(pcrs));
     out
+}
+
+#[test]
+fn a_denied_boot_hears_it_again_without_a_second_question() {
+    let cert = boot_cert(None);
+    let mut world = World::new(&cert);
+    let mut service = UnlockSibling::new(sibling());
+    let boot = Boot::new(cert.clone(), 7);
+    let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
+    let request = boot.answer(&challenge, None);
+    assert!(matches!(
+        service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW),
+        SiblingFrame::Pending { .. }
+    ));
+    let digest = service.pending().next().unwrap().request_digest;
+    let decided = service
+        .decide(
+            &digest,
+            UnlockDecision::Deny {
+                approver: sibling(),
+            },
+            &world.view(),
+            NOW + 1,
+        )
+        .unwrap();
+    assert_eq!(decided.frame, SiblingFrame::Denied);
+    world.kept(&decided);
+
+    // The boot's stream went away before the answer reached it: it comes back
+    // with a fresh challenge and its own new key, and hears the same answer.
+    let mut again = Boot::new(cert, 7);
+    again.ephemeral = SecretKey::from_bytes([13; 32]);
+    let challenge = challenge_of(service.hello(&again.hello, &world.view(), [10; 32], NOW + 2));
+    let request = again.answer(&challenge, None);
+    assert_eq!(
+        service.request(
+            &request,
+            &again.hello,
+            &challenge.nonce,
+            &world.view(),
+            NOW + 2
+        ),
+        SiblingFrame::Denied
+    );
+    assert_eq!(
+        service.pending().count(),
+        0,
+        "nobody is asked a second time"
+    );
+    assert_eq!(
+        world.decisions.len(),
+        1,
+        "the person's record holds the one answer they made"
+    );
+
+    // Once the answer no longer holds, the person is asked again.
+    let later = NOW + DECISION_LIFETIME_NS + 1;
+    let challenge = challenge_of(service.hello(&again.hello, &world.view(), [11; 32], later));
+    let request = again.answer(&challenge, None);
+    assert!(matches!(
+        service.request(
+            &request,
+            &again.hello,
+            &challenge.nonce,
+            &world.view(),
+            later
+        ),
+        SiblingFrame::Pending { .. }
+    ));
+}
+
+#[test]
+fn an_allowed_boot_that_reconnects_gets_a_half_for_its_own_key() {
+    let cert = boot_cert(None);
+    let mut world = World::new(&cert);
+    let mut service = UnlockSibling::new(sibling());
+    let boot = Boot::new(cert.clone(), 7);
+    let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
+    let request = boot.answer(&challenge, None);
+    service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW);
+    let digest = service.pending().next().unwrap().request_digest;
+    let decided = service
+        .decide(
+            &digest,
+            UnlockDecision::Approve {
+                approver: sibling(),
+            },
+            &world.view(),
+            NOW + 1,
+        )
+        .unwrap();
+    assert_eq!(boot.open(&request, &decided.frame), half());
+    world.kept(&decided);
+
+    // The boot that asked never read its release: its next attempt draws a
+    // new key, and the half is sealed to that one.
+    let mut again = Boot::new(cert, 7);
+    again.ephemeral = SecretKey::from_bytes([14; 32]);
+    let challenge = challenge_of(service.hello(&again.hello, &world.view(), [10; 32], NOW + 2));
+    let request = again.answer(&challenge, None);
+    let frame = service.request(
+        &request,
+        &again.hello,
+        &challenge.nonce,
+        &world.view(),
+        NOW + 2,
+    );
+    assert_eq!(again.open(&request, &frame), half());
+    assert_eq!(
+        service.pending().count(),
+        0,
+        "nobody is asked a second time"
+    );
+    assert_eq!(
+        world.decisions.len(),
+        1,
+        "releasing the same boot again adds no second answer"
+    );
+}
+
+#[test]
+fn boots_whose_handlers_died_do_not_refuse_later_boots() {
+    let cert = boot_cert(None);
+    let world = World::new(&cert);
+    let mut service = UnlockSibling::new(sibling());
+    // Seventeen boots asked, and every handler died before the person
+    // answered. Each question is spent by the time the next boot asks, so a
+    // later boot still has the person's attention instead of a refusal that
+    // nobody can act on.
+    for n in 0..=MAX_PENDING {
+        let at = NOW + u64::try_from(n).unwrap() * RATE_WINDOW_NS;
+        let boot = Boot::new(cert.clone(), u8::try_from(n).unwrap());
+        let nonce = [u8::try_from(n).unwrap(); 32];
+        let challenge = challenge_of(service.hello(&boot.hello, &world.view(), nonce, at));
+        let request = boot.answer(&challenge, None);
+        assert!(
+            matches!(
+                service.request(&request, &boot.hello, &challenge.nonce, &world.view(), at),
+                SiblingFrame::Pending { .. }
+            ),
+            "boot {n} is asked for"
+        );
+    }
+    assert!(
+        service.pending().count() <= 1,
+        "the questions nobody can answer are let go"
+    );
+}
+
+#[test]
+fn a_boot_that_went_away_gives_its_question_up() {
+    let cert = boot_cert(None);
+    let world = World::new(&cert);
+    let mut service = UnlockSibling::new(sibling());
+    let boot = Boot::new(cert, 7);
+    let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
+    let request = boot.answer(&challenge, None);
+    service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW);
+    let digest = service.pending().next().unwrap().request_digest;
+    service.withdraw(&digest);
+    assert_eq!(service.pending().count(), 0);
+    assert!(
+        service
+            .decide(
+                &digest,
+                UnlockDecision::Deny {
+                    approver: sibling()
+                },
+                &world.view(),
+                NOW + 1
+            )
+            .is_none(),
+        "an answer on a question that went away decides nothing"
+    );
+}
+
+#[test]
+fn answers_merge_from_the_person_devices_only_while_they_hold() {
+    let cert = boot_cert(None);
+    let world = World::new(&cert);
+    let mut service = UnlockSibling::new(sibling());
+    let boot = Boot::new(cert, 7);
+    let challenge = challenge_of(service.hello(&boot.hello, &world.view(), [9; 32], NOW));
+    let request = boot.answer(&challenge, None);
+    service.request(&request, &boot.hello, &challenge.nonce, &world.view(), NOW);
+    let digest = service.pending().next().unwrap().request_digest;
+    let record = service
+        .decide(
+            &digest,
+            UnlockDecision::Deny {
+                approver: sibling(),
+            },
+            &world.view(),
+            NOW + 1,
+        )
+        .unwrap()
+        .record
+        .unwrap();
+
+    let answering = DeviceId::new(hex::encode(sibling())).unwrap();
+    let state = UnlockFabricState {
+        decisions: vec![record.clone()],
+        ..UnlockFabricState::default()
+    };
+    state.validate(&answering).unwrap();
+    // A device writing another's answer is not believed.
+    assert!(
+        state
+            .validate(&DeviceId::new(hex::encode(device())).unwrap())
+            .is_err()
+    );
+    // Nor are two answers to one boot, or one that holds for no time at all.
+    let mut doubled = state.clone();
+    doubled.decisions.push(record.clone());
+    assert!(doubled.validate(&answering).is_err());
+    let mut unheld = record.clone();
+    unheld.valid_until_ns = unheld.decided_at_ns;
+    assert!(
+        UnlockFabricState {
+            decisions: vec![unheld],
+            ..UnlockFabricState::default()
+        }
+        .validate(&answering)
+        .is_err()
+    );
+
+    let found = |merged: &MergedUnlock, now: u64| {
+        decision_for(
+            &merged.decisions,
+            &record.boot_cert_digest,
+            record.boot_id,
+            record.slot,
+            now,
+        )
+        .map(|found| found.outcome)
+    };
+    let merged = merged_unlock_state([&state], &world.fleet, NOW + 2);
+    assert_eq!(found(&merged, NOW + 2), Some(DecisionOutcome::Deny));
+    // After its lifetime, nothing is in force.
+    let merged = merged_unlock_state([&state], &world.fleet, record.valid_until_ns);
+    assert_eq!(found(&merged, record.valid_until_ns), None);
+
+    // An approval made later on another of the person's devices wins, and one
+    // made by a device the fleet does not certify is not believed at all.
+    let mut approved = record.clone();
+    approved.outcome = DecisionOutcome::Approve;
+    approved.decided_at_ns = NOW + 600;
+    approved.valid_until_ns = NOW + 1200;
+    let approval = UnlockFabricState {
+        decisions: vec![approved],
+        ..UnlockFabricState::default()
+    };
+    let merged = merged_unlock_state([&state, &approval], &world.fleet, NOW + 700);
+    assert_eq!(found(&merged, NOW + 700), Some(DecisionOutcome::Approve));
+    let mut stranger = record.clone();
+    stranger.decided_by = [42; 32];
+    stranger.decided_at_ns = NOW + 900;
+    stranger.valid_until_ns = NOW + 1500;
+    let merged = merged_unlock_state(
+        [
+            &state,
+            &UnlockFabricState {
+                decisions: vec![stranger],
+                ..UnlockFabricState::default()
+            },
+        ],
+        &world.fleet,
+        NOW + 1000,
+    );
+    assert_eq!(found(&merged, NOW + 1000), Some(DecisionOutcome::Deny));
 }

@@ -336,8 +336,9 @@ pub enum Service {
     AudioOutput,
     /// `native_media::Request` -> `native_media::Snapshot`, JSON.
     NativeMedia,
-    /// A person-chat or private-draft command and its reply.
-    PersonChat,
+    /// Retired: the private person-chat and draft commands. Kept in place so
+    /// every service after it keeps its position on the wire.
+    RetiredPersonChat,
     /// `SpeakerCommand` -> `SpeakerReply`, JSON; the Settings app's only.
     Speaker,
     /// A realtime command and its reply, JSON.
@@ -453,10 +454,6 @@ pub enum Topic {
     /// The action catalogue this endpoint may see, as it stands and then
     /// each time it changes.
     Catalogue,
-    /// The app's private conversation with the person whose public key is
-    /// `peer`, for the invocation `on_behalf_of` (UUID bytes, or none), as it
-    /// stands and then each time it changes.
-    PersonChat { peer: String, on_behalf_of: Vec<u8> },
     /// The realtime continuity events this app sees.
     Realtime,
     /// The reported progress of the approved check the encoded
@@ -565,12 +562,6 @@ pub enum Event {
     Invocation(Invocation),
     /// The action catalogue as JSON.
     Catalogue(String),
-    /// A private conversation at `generation`, in the person chat reply
-    /// encoding.
-    PersonChat {
-        generation: u64,
-        conversation: Vec<u8>,
-    },
     /// A task run handed to this agent, as `TaskRunEnvelope` JSON (its
     /// action context is free-form JSON, which postcard cannot carry).
     TaskRun(String),
@@ -606,6 +597,10 @@ pub enum ContextUpdate {
     HistoryAgents(Vec<RosterAgent>),
     /// Records of the application's trees a peer wrote and no window holds.
     RecordsArrived(Vec<String>),
+    /// Retired: a conversation is an ordinary record of the workspace, which
+    /// every window of it opens like any other. It keeps the updates after it
+    /// at their encoded positions.
+    RetiredPersonPairs,
 }
 
 /// What the host sends an endpoint.

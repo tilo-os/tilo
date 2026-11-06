@@ -50,17 +50,16 @@ fn main() -> std::process::ExitCode {
         }
     };
     println!("WAYLAND_DISPLAY={socket}");
-    // X11 clients through Xwayland, unless it is missing.
-    let x_display = match compositor.start_xwayland() {
-        Ok(number) => {
-            println!("DISPLAY=:{number}");
-            Some(format!(":{number}"))
-        }
-        Err(error) => {
-            eprintln!("tilo-compositor: no Xwayland: {error}");
-            None
-        }
-    };
+    // X11 clients through Xwayland: the display starts its server when the
+    // first one connects, so the command and whatever it starts share one.
+    let x_display = compositor
+        .x11_displays()
+        .and_then(|displays| displays.display_for("default"))
+        .map(|number| format!(":{number}"));
+    match &x_display {
+        Some(display) => println!("DISPLAY={display}"),
+        None => eprintln!("tilo-compositor: no X11 display"),
+    }
     let mut child = None;
     if let Some((program, rest)) = command.split_first() {
         let mut command = std::process::Command::new(program);

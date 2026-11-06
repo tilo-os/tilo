@@ -81,7 +81,7 @@ fn resource_reads_a_record_by_its_id_as_whatever_type_it_is() {
         "type Note {\n    title: Text\n}\n\
 type Notebook {\n    notes: Collection<Note>\n}\n\
 fn first(record: Text) -> Option<host.Resource> {\n    if record == \"\" { .none } else { resource(record) }\n}\n\
-view v(nb: Notebook) {\n    if let shown = first(nb.id()) {\n        text(meta(shown).title)\n        for a in actions(shown) {\n            text(a.group ?? \"\")\n        }\n    }\n}",
+view v(nb: Notebook) {\n    if let shown = first(nb.id()) {\n        text(meta(shown).title)\n    }\n}",
     );
     validate(&c.wasm);
     let has = |name: &str| c.wasm.windows(name.len()).any(|w| w == name.as_bytes());

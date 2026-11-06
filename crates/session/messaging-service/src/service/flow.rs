@@ -35,8 +35,6 @@ pub(crate) enum Order {
     GrantThenLink,
     /// Choose a SIM, review, grant, publish, start.
     ChooseThenGrant,
-    /// Review, grant, publish, start.
-    Grant,
 }
 
 /// How long the person has to answer a permission request: Passwords drops
@@ -357,7 +355,7 @@ impl<P: Provider> Flow<P> {
     }
 
     pub(crate) fn prepare(&self) -> Result<EnrollmentReview, SendError> {
-        if !matches!(P::ORDER, Order::Grant | Order::GrantThenLink) {
+        if P::ORDER != Order::GrantThenLink {
             return Err(SendError::Unavailable);
         }
         let service = self.service()?;
@@ -403,7 +401,7 @@ impl<P: Provider> Flow<P> {
                 drop(state);
                 taken
             }
-            _ => return Err(SendError::Unavailable),
+            Order::ChooseThenGrant => return Err(SendError::Unavailable),
         };
         let provider = self.provider.clone();
         let worker = service.clone();

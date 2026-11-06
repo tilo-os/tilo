@@ -28,9 +28,15 @@ pub struct Spacing {
 /// with, so the gap follows density, `ui_scale` and a custom spacing scale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rhythm {
-    /// The smallest gap two neighbours may have: a label and its caption.
+    /// Neighbours that meet: a window's bar and the content under it are one surface, not two
+    /// things standing beside each other, so nothing separates them.
+    None,
+    /// The smallest gap two neighbours may have: a label and its caption, and anything else
+    /// that takes no press.
     Tight,
-    /// Controls inside one cluster.
+    /// Controls inside one cluster: the closest two controls stand. The face a control draws is
+    /// smaller than the press target it takes, which reaches into the gap around it, so this is
+    /// the step two controls hold between them; `Tight` is for neighbours that take no press.
     Related,
     /// Siblings of equal weight: rows, cards, clusters on a bar.
     Sibling,
@@ -72,6 +78,7 @@ impl RhythmScale {
     #[must_use]
     pub fn get(&self, step: Rhythm) -> f32 {
         match step {
+            Rhythm::None => 0.0,
             Rhythm::Tight => self.tight,
             Rhythm::Related => self.related,
             Rhythm::Sibling => self.sibling,

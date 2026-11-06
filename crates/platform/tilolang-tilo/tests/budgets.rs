@@ -259,6 +259,16 @@ fn a_key_reruns_the_same_views_whatever_the_notebook_holds() {
             }
             continue;
         }
+        // A list's row reads the item above it to know what it continues, and the only note
+        // has no row above it: one item fewer at 1 note, and the same from 200 up.
+        if name == "items" {
+            if some != many || one > some {
+                misses.push(format!(
+                    "{name}: {one} at 1 note, {some} at 200, {many} at 10k"
+                ));
+            }
+            continue;
+        }
         if one != some || one != many {
             misses.push(format!(
                 "{name}: {one} at 1 note, {some} at 200, {many} at 10k"

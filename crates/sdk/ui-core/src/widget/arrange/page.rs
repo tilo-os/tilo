@@ -53,12 +53,17 @@ impl Layout for PageLayout {
         "Page"
     }
 
-    fn container(&self, resolved: &Resolved) -> Style {
+    fn container(&self, resolved: &Resolved, lead: f32) -> Style {
         let gutter = length(self.gutter(resolved));
         // A page that fills its pane is a surface that lays out its own parts (a board's lanes,
         // a desk's strips): it takes the pane's whole width, and what it holds keeps its own
         // gutter at the sides. Its height gutter stays the page's.
-        let side = if self.fill { length(0.0_f32) } else { gutter };
+        // The lead a document reserves around its heading control adds to the page's gutter.
+        let side = if self.fill {
+            length(lead)
+        } else {
+            length(self.gutter(resolved) + lead)
+        };
         let (top, bottom) = match self.row {
             Some(RowSpacing::Halves) => {
                 let half = length(resolved.gap(crate::tokens::Rhythm::Sibling) / 2.0);
@@ -67,6 +72,13 @@ impl Layout for PageLayout {
             Some(RowSpacing::After(gap)) => (length(resolved.gap(gap)), length(0.0_f32)),
             Some(RowSpacing::Foot) => {
                 (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
+            }
+            // A page that fills its pane lays out its own parts from the page gutter itself
+            // (a board's lanes start one standard content gap under the bar). Only content
+            // that grows with what it holds keeps the wider side gutter at its ends.
+            None if self.fill => {
+                let edge = length(resolved.gap(crate::tokens::Rhythm::Group));
+                (edge, edge)
             }
             None => (gutter, gutter),
         };

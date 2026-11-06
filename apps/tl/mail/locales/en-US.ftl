@@ -206,7 +206,7 @@ d-eqvgypxr = Archive
 d-eef4pxgf = Move to inbox
     .doc = Moves the conversation back to the inbox, and unmutes it: what a person brings back is what they want to see again.
 
-d-taywgw3n = Move to…
+d-taywgw3n = Move to
     .doc = Moves the conversation to another mailbox of its account.
 
 d-xytb2lle = Delete
@@ -257,7 +257,7 @@ d-trjwm3gb = Mark as unread
 d-7zk6ua6p = Send from
     .doc = Sends the message from another of the person's accounts.
 
-d-qrcwx7a6 = Discard
+d-qrcwx7a6 = Delete draft
     .doc = Throws a message being written away.
 
 d-qcfc2rhb = Send
@@ -352,21 +352,3 @@ d-oqpazwvc = Editor
     .w-name-example-org = name@example.org
     .w-subject = Subject
     .w-write-your-message = Write your message
-
-d-4fjgzcq6-row0 = Unified for l
-
-d-4fjgzcq6-row1-row0 = Unified for p
-
-d-4fjgzcq6-row1 = Unified for acct
-
-d-4fjgzcq6-row2 = Unified for x
-
-d-gka45our-row0 = Mailboxes for p
-
-d-gka45our-row1 = Mailboxes for l
-
-d-jgdzx3la-row0 = Thread list for x
-
-d-bbuecgsi-row0 = Conversation for m
-
-d-oqpazwvc-row0 = Editor for a

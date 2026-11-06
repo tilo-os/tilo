@@ -4,15 +4,12 @@ use super::Widget;
 
 /// A row's selection with its neighbours', for a delegate that paints its
 /// own selection: a run of selected rows is one lift
-/// ([`crate::chrome::RowJoin`]), and a separator hides beside a selected
-/// row.
+/// ([`crate::chrome::RowJoin`]), with no rule between rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RowSelection {
     pub selected: bool,
     pub above: bool,
     pub below: bool,
-    /// A row follows this one.
-    pub has_next: bool,
 }
 
 impl RowSelection {

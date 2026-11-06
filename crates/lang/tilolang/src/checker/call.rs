@@ -5,7 +5,7 @@ use super::{Checker, Ctx, Ex, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
-use crate::ir::{self, ActionRef, Conv, Ek, Stmt};
+use crate::ir::{self, ActionRef, Ek, Stmt};
 use crate::prims;
 use crate::resolve::{CKind, Callable, FieldInfo, Import};
 use crate::types::{Ty, TypeKey};
@@ -48,6 +48,12 @@ impl Checker<'_> {
                     if let Some(import) = self.env.find_import(&path).cloned() {
                         return self.call_foreign(&import, name, args, span);
                     }
+                }
+                // `Task.project(p)`: a filter of the type with the value it asks of.
+                if let Some(Ty::Record(key)) = self.type_named(base)
+                    && let Some(ex) = self.filter_value(&key, name, Some(args), span)
+                {
+                    return ex;
                 }
                 self.method(base, name, args, span)
             }
@@ -96,6 +102,25 @@ impl Checker<'_> {
                 }
             };
         }
+        // `Duration(n)`: a length of time of `n` seconds, for one an app keeps as a number.
+        if name == "Duration" {
+            let [n] = args else {
+                self.err(
+                    "E022",
+                    span,
+                    "`Duration` takes one number, its seconds: `Duration(hold)`",
+                );
+                return Ex::error();
+            };
+            if n.name.is_some() {
+                self.err(
+                    "E022",
+                    n.value.span,
+                    "`Duration` takes its seconds by position: `Duration(hold)`",
+                );
+            }
+            return self.expr_as(&n.value, &Ty::Int).typed(Ty::Duration);
+        }
         if let Some(ex) = self.program_builtin(name, args, span) {
             return ex;
         }
@@ -108,6 +133,7 @@ impl Checker<'_> {
             "open" => return self.builtin_open(args, span),
             "resource" => return self.builtin_resource(args, span),
             "person" => return self.builtin_person(args, span),
+            "agent" => return self.builtin_agent(args, span),
             "actions" => return self.builtin_actions(args, span),
             "lenses" => return self.builtin_lenses(args, span),
             "delivery" => return self.builtin_delivery(args, span),
@@ -116,6 +142,8 @@ impl Checker<'_> {
                 return self.builtin_versions(name, args, span);
             }
             "unseen" => return self.builtin_unseen(args, span),
+            "linked" => return self.builtin_links(args, span),
+            "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
             "mentions" => return self.builtin_mentions(args, span),
             "undo" => return self.builtin_undo(args, span),
@@ -124,7 +152,7 @@ impl Checker<'_> {
             "meta" => return self.builtin_meta(args, span),
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
-            "dated" => return self.builtin_dated(args, span),
+            "entry_parts" => return self.builtin_entry_parts(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -392,6 +420,8 @@ impl Checker<'_> {
                 name: name.clone(),
                 ty,
                 default: None,
+                place: false,
+                entry: false,
             });
             args.push(arg);
         }
@@ -473,6 +503,12 @@ impl Checker<'_> {
                 Ex::error()
             }
             (CKind::Action, Ctx::Action) => {
+                // `suggest act(args)` records the action as a proposal, so it is not applied
+                // here: nothing of it runs inside this action's own change.
+                if self.st.suggest.is_some() {
+                    let bound = self.applied_args(c, bound, span);
+                    return self.invoke(c, bound);
+                }
                 if !c.own {
                     self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
                     return Ex::error();
@@ -571,6 +607,9 @@ impl Checker<'_> {
     fn action_value(&mut self, c: &Callable, bound: Vec<Ex>) -> Ex {
         self.st.facts.action_values.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
+        // A block's whole expression is the proposal, and its value the action: the host
+        // records it as one where it runs the block, instead of applying it.
+        self.st.suggest = None;
         Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action)
     }
 
@@ -578,6 +617,14 @@ impl Checker<'_> {
         self.st.facts.invokes.insert(Self::action_ref(c));
         let list = self.arg_list(bound);
         let act = Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action);
+        if let Some(value) = self.st.suggest.take() {
+            // The host records the proposal where it runs; a block's value is the proposal
+            // itself, which the host records where it runs the block.
+            if value {
+                return act.typed(Ty::Action);
+            }
+            return Ex::host(Imp::Suggest, vec![act], Ty::Unit);
+        }
         if std::mem::take(&mut self.st.try_invoke) {
             // The host builds the `Result`: `.ok(result)`, or `.err(reason)`.
             let ty = Ty::Result(Box::new(c.result.clone()), Box::new(Ty::Text));
@@ -689,13 +736,28 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
-            if f.role.as_deref() == Some("previously") {
+            if f.role
+                .as_ref()
+                .is_some_and(crate::types::FieldRole::is_previously)
+            {
                 self.err(
                     "E115",
                     a.value.span,
                     format!(
                         "`{}` is what `{}` held previously: nothing writes it any more; give the value where the type keeps it now",
                         f.name, key.name
+                    ),
+                );
+                let _ = self.expr(&a.value, None);
+                continue;
+            }
+            if f.derived.is_some() {
+                self.err(
+                    "E119",
+                    a.value.span,
+                    format!(
+                        "`{}.{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what a `{}` is made with",
+                        key.name, f.name, key.name
                     ),
                 );
                 let _ = self.expr(&a.value, None);
@@ -815,6 +877,27 @@ impl Checker<'_> {
         };
         let name = self.expr_as(value, &Ty::Text);
         Ex::host(Imp::PrincipalNamed, vec![name], Ty::Principal)
+    }
+
+    /// `agent(name)`: software in the workspace a scenario stages, offered beside its people.
+    fn builtin_agent(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.written != Written::Scenario {
+            self.err("E094", span, "`agent(name)` makes sample software for a scenario; elsewhere a principal comes only from `invoker` or a stored field");
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [ast::Arg { name: None, value }] = args else {
+            self.err(
+                "E022",
+                span,
+                "`agent` takes the agent's name: `agent(\"Scout\")`",
+            );
+            return Ex::error();
+        };
+        let name = self.expr_as(value, &Ty::Text);
+        Ex::host(Imp::AgentNamed, vec![name], Ty::Principal)
     }
 
     fn builtin_outside(&mut self, args: &[ast::Arg], span: Span) -> Ex {
@@ -1409,6 +1492,15 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // `Date.parse(text, near: now)`: a day a text names, read at a moment. It stands on the
+        // type, which is not a value, so it is read before the receiver.
+        if let ExprKind::Ident(n) = &recv.kind
+            && self.lookup(n).is_none()
+            && !self.names_import(recv)
+            && let Some(ty) = parse_ty(n)
+        {
+            return self.type_method(ty, name, args, span);
+        }
         // `a.items.insert(x)` needs the record and the field, not the field's value.
         if let ExprKind::Field { base, name: fname } = &recv.kind
             && !self.names_import(base)
@@ -1441,7 +1533,13 @@ impl Checker<'_> {
         f.ty.is_container().then(|| (key.clone(), f.clone()))
     }
 
-    fn arity(&mut self, name: &ast::Ident, args: &[ast::Arg], n: usize, span: Span) -> bool {
+    pub(super) fn arity(
+        &mut self,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        n: usize,
+        span: Span,
+    ) -> bool {
         if args.len() == n && args.iter().all(|a| a.name.is_none()) {
             return true;
         }
@@ -1466,81 +1564,30 @@ impl Checker<'_> {
         if let (Ty::Map(t), "get" | "keys") = (&f.ty, m) {
             return self.map_read(b, f, t, name, args, span);
         }
-        let valid = matches!(
-            (&f.ty, m),
-            (
-                Ty::Collection(_),
-                "insert" | "remove" | "move" | "remove_where"
-            ) | (Ty::Set(_), "add" | "remove")
-                | (Ty::Map(_), "put" | "remove")
-        ) || (m == "add" && matches!(&f.ty, Ty::Map(v) if matches!(**v, Ty::Set(_))));
-        if !valid
-            && !matches!(
-                m,
-                "len"
-                    | "is_empty"
-                    | "map"
-                    | "filter"
-                    | "any"
-                    | "all"
-                    | "find"
-                    | "count"
-                    | "index_of"
-                    | "sort_by"
-                    | "first"
-                    | "last"
-                    | "matching"
-                    | "count_by"
-                    | "group"
-                    | "take"
-                    | "each"
-                    | "single"
-                    | "descendants"
-                    | "ancestors"
-            )
-        {
+        // What a container field can be written through, and what it answers besides: the
+        // reads are its value's (`methods::names`), so a field accepts what a list or set does.
+        let writes: &[&str] = match &f.ty {
+            Ty::Collection(_) => &["insert", "remove", "remove_where", "move"],
+            Ty::Set(_) => &["add", "remove"],
+            Ty::Map(v) if matches!(**v, Ty::Set(_)) => &["add", "remove", "put"],
+            Ty::Map(_) => &["put", "remove"],
+            _ => &[],
+        };
+        let valid = writes.contains(&m);
+        let reads = super::methods::names(&f.ty).unwrap_or_default();
+        if !valid && !reads.contains(&m) {
             let t = self.show(&f.ty);
             let ops = match &f.ty {
-                Ty::Collection(_) => {
-                    "insert, remove, remove_where, move, len, matching and the list methods"
+                Ty::Collection(_) | Ty::Set(_) => {
+                    format!("{}, and what its items answer: {}", writes.join(", "), reads.join(", "))
                 }
-                Ty::Set(_) => "add, remove, len and the list methods",
                 Ty::Map(v) if matches!(**v, Ty::Set(_)) => {
-                    "add(key, element), remove(key, element), remove(key), get (an Option of the set) and keys"
+                    "add(key, element), remove(key, element), remove(key), get (an Option of the set) and keys".to_owned()
                 }
-                _ => "put, remove, get (an Option of the value) and keys",
+                _ => "put, remove, get (an Option of the value) and keys".to_owned(),
             };
-            let methods = [
-                "insert",
-                "remove",
-                "remove_where",
-                "move",
-                "add",
-                "put",
-                "get",
-                "keys",
-                "len",
-                "is_empty",
-                "map",
-                "filter",
-                "any",
-                "all",
-                "find",
-                "count",
-                "index_of",
-                "sort_by",
-                "first",
-                "last",
-                "matching",
-                "count_by",
-                "group",
-                "take",
-                "each",
-                "single",
-                "descendants",
-                "ancestors",
-            ];
-            let hint = crate::diag::suggestion(m, methods);
+            let known = writes.iter().chain(reads.iter()).copied();
+            let hint = crate::diag::suggestion(m, known);
             self.err(
                 "E027",
                 name.span,
@@ -1812,6 +1859,65 @@ impl Checker<'_> {
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
+    /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
+    /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
+    /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
+    fn type_method(&mut self, ty: Ty, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let t = self.show(&ty);
+        if name.name != "parse" {
+            self.err(
+                "E027",
+                name.span,
+                format!("`{t}` is a type, not a value; it has one method of its own, `.parse(text, near: at)`, and builds a value with `{t}(text)`"),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let [text, near] = args else {
+            self.err(
+                "E022",
+                span,
+                format!("`.parse` takes the text and the moment it is read at: `{t}.parse(\"tomorrow 9am\", near: now)`"),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        if text.name.is_some() {
+            self.err(
+                "E022",
+                text.value.span,
+                "`.parse` takes the text by position: `.parse(\"tomorrow 9am\", near: now)`",
+            );
+        }
+        // The moment is named, as the text it is read at: a bare second argument reads as a
+        // count of something other than what it is.
+        match &near.name {
+            Some(named) if named.name == "near" => {}
+            Some(named) => self.err(
+                "E022",
+                named.span,
+                "`.parse` reads the text at the moment named `near:`",
+            ),
+            None => self.err(
+                "E022",
+                near.value.span,
+                "`.parse` reads the text at the moment named `near:`, such as `near: now`",
+            ),
+        }
+        let text = self.expr_as(&text.value, &Ty::Text);
+        let near = self.expr_as(&near.value, &Ty::Time);
+        let imp = if ty == Ty::Date {
+            Imp::DayParse
+        } else {
+            Imp::TimeParse
+        };
+        Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
+    }
+
     pub(super) fn value_method(
         &mut self,
         r: Ex,
@@ -1820,6 +1926,11 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
+        // The text and number surface first: it holds every method those values have (and the
+        // text and number methods of a list), and its names are `methods`'.
+        if let Some(ex) = self.text_math(r.clone(), name, args, span) {
+            return ex;
+        }
         match (&r.ty.clone(), m) {
             (Ty::Error, _) => {
                 for a in args {
@@ -1829,47 +1940,34 @@ impl Checker<'_> {
                 }
                 Ex::error()
             }
-            (Ty::Text, "len") if args.is_empty() => Ex::host(Imp::StrLen, vec![r], Ty::Int),
-            // The number the text writes, `.none` for text that writes none: an id another
-            // app gave as text, passed where its action takes the number.
-            (Ty::Text, "to_int") if args.is_empty() => {
-                Ex::host(Imp::StrToInt, vec![r], Ty::Option(Box::new(Ty::Int)))
-            }
-            (Ty::Text, "find") => {
-                if !self.arity(name, args, 1, span) {
-                    return Ex::error();
-                }
-                let Some(a) = args.first() else {
-                    return Ex::error();
-                };
-                let what = self.expr_as(&a.value, &Ty::Text);
-                Ex::host(Imp::StrFind, vec![r, what], Ty::Int)
-            }
-            (Ty::Text, "slice") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(from), Some(to)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let from = self.expr_as(&from.value, &Ty::Int);
-                let to = self.expr_as(&to.value, &Ty::Int);
-                Ex::host(Imp::StrSlice, vec![r, from, to], Ty::Text)
-            }
-            (Ty::Text, "replace") => {
-                if !self.arity(name, args, 2, span) {
-                    return Ex::error();
-                }
-                let (Some(from), Some(to)) = (args.first(), args.get(1)) else {
-                    return Ex::error();
-                };
-                let from = self.expr_as(&from.value, &Ty::Text);
-                let to = self.expr_as(&to.value, &Ty::Text);
-                Ex::host(Imp::StrReplace, vec![r, from, to], Ty::Text)
-            }
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // A day read as people read it: the day of the week it is, the day, month and year
+            // it names, and the first day of the week it stands in.
+            (Ty::Date, "weekday") if args.is_empty() => {
+                Ex::host(Imp::DayWeekday, vec![r], Ty::Choice("weekday"))
+            }
+            (Ty::Date, "day" | "month" | "year") if args.is_empty() => {
+                let part = match m {
+                    "day" => 0,
+                    "month" => 1,
+                    _ => 2,
+                };
+                let part = Ex::new(Ek::I32(part), Ty::Bool);
+                Ex::host(Imp::DayPart, vec![r, part], Ty::Int)
+            }
+            (Ty::Date, "start_of_week") if args.is_empty() => {
+                Ex::host(Imp::DayStartOfWeek, vec![r], Ty::Date)
+            }
+            // A moment read as people read it: the day it falls on for the person, in their
+            // zone, and the time of day it is then.
+            (Ty::Time, "day") if args.is_empty() => Ex::host(Imp::TimeDay, vec![r], Ty::Date),
+            (Ty::Time, "time_of_day") if args.is_empty() => {
+                Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
+            }
+            // A length of time as the seconds it is, which is how a record keeps one.
+            (Ty::Duration, "seconds") if args.is_empty() => r.typed(Ty::Int),
             // `r.next(from, done)`: the day the item comes round again. Counting from the due
             // day it steps on by the rule; counting from completion it steps from the day it was
             // done. Returns the day to be due next.
@@ -1925,13 +2023,6 @@ impl Checker<'_> {
             (Ty::Principal, "role") if args.is_empty() => {
                 Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
-            (Ty::Int, "to_float") if args.is_empty() => {
-                Ex::new(Ek::Conv(Conv::IntToFloat, Box::new(r)), Ty::Float)
-            }
-            (Ty::Float, "to_int") if args.is_empty() => {
-                Ex::new(Ek::Conv(Conv::FloatToInt, Box::new(r)), Ty::Int)
-            }
-            (Ty::Int | Ty::Float | Ty::Bool, "to_text") if args.is_empty() => self.text_of(r, span),
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
             // `a.then(b)`: an action that applies `a`, then `b` once `a` is done.
             (Ty::Action, "then") => {
@@ -1942,7 +2033,7 @@ impl Checker<'_> {
                 let next = self.expr_as(&next.value, &Ty::Action);
                 Ex::host(Imp::ActThen, vec![r, next], Ty::Action)
             }
-            (Ty::Enum(key), "label" | "icon" | "name") if args.is_empty() => {
+            (Ty::Enum(key), "label" | "icon" | "tone" | "name") if args.is_empty() => {
                 let key = key.clone();
                 self.enum_method(r, &key, m).unwrap_or_else(Ex::error)
             }
@@ -1980,12 +2071,26 @@ impl Checker<'_> {
                 let Some(a) = args.first() else {
                     return Ex::error();
                 };
-                let what = self.expr_as(&a.value, &elem);
+                let what = Self::handle_of(self.expr_as(&a.value, &elem));
                 Ex::host(
                     Imp::ListIndexOf,
                     vec![r, what],
                     Ty::Option(Box::new(Ty::Int)),
                 )
+            }
+            // `items.previous(x)`: the item just before `x` in the list as a view shows it —
+            // the row over the one a list is rendering — or none for the first. A row's place
+            // is the host's, so a row tells what stands over it without walking the list.
+            (Ty::List(t) | Ty::Collection(t), "previous") => {
+                let elem = (**t).clone();
+                if !self.arity(name, args, 1, span) {
+                    return Ex::error();
+                }
+                let Some(a) = args.first() else {
+                    return Ex::error();
+                };
+                let what = self.expr_as(&a.value, &elem);
+                Ex::host(Imp::ListPrevious, vec![r, what], Ty::Option(Box::new(elem)))
             }
             (Ty::List(_), "of") => self.list_of(r, args, span),
             (Ty::List(t) | Ty::Collection(t), "matching") => {
@@ -2017,21 +2122,13 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Text => "len, find, slice, replace, to_int",
-                    Ty::RichText => "is_empty (and the members excerpt, text, references, people)",
-                    Ty::Repeat => "next, next_at, label",
-                    Ty::Reminder => "at, label",
-                    Ty::Int => "to_float, to_text",
-                    Ty::Float => "to_int, to_text",
-                    Ty::Bool => "to_text",
-                    Ty::Record(_) => "id (and fields)",
-                    Ty::Option(_) | Ty::Result(..) | Ty::Enum(_) => {
-                        "none; take it apart with `match`, such as `match x { .some(v) => v, .none => 0 }`"
-                    }
-                    Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => {
-                        "len, is_empty, first, last, map, filter, any, all, find, count, index_of, sort_by, count_by, group, take, each, single, descendants, ancestors"
-                    }
-                    _ => "none",
+                    Ty::Repeat => "next, next_at, label".to_owned(),
+                    Ty::Reminder => "at, label".to_owned(),
+                    Ty::Principal => "name, kind, role".to_owned(),
+                    Ty::Action => "then".to_owned(),
+                    // Every other type's methods are in one table, whose names the check of a
+                    // container field reads too.
+                    other => super::methods::described(other),
                 };
                 let words = known.split([',', ' ', '(', ')']).filter(|w| {
                     !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase() || c == '_')
@@ -2066,8 +2163,12 @@ impl Checker<'_> {
         span: Span,
     ) -> Ex {
         let m = name.name.as_str();
+        // A count says how many items there are: a collection the store lists as it reads it
+        // is read to its end where the store cannot say otherwise, which is what counting it
+        // costs ([`Imp::CollCount`]). Length is what the store knows without that
+        // ([`Imp::ListLen`]); a list holds a collection too, so the host tells them apart.
         if m == "count" && args.is_empty() {
-            return Ex::host(Imp::ListLen, vec![list], Ty::Int);
+            return Ex::host(Imp::CollCount, vec![list], Ty::Int);
         }
         let lambda = match args {
             [a] if a.name.is_none() => super::optional::lambda_of(&a.value),
@@ -2524,5 +2625,15 @@ fn held_as(ty: &Ty, want: &Ty) -> Option<bool> {
         Some(true)
     } else {
         None
+    }
+}
+
+/// The type a text names, where it is written before a method instead of a value:
+/// `Date.parse(...)`, `Time.parse(...)`.
+fn parse_ty(name: &str) -> Option<Ty> {
+    match name {
+        "Date" => Some(Ty::Date),
+        "Time" => Some(Ty::Time),
+        _ => None,
     }
 }

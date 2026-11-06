@@ -53,12 +53,10 @@ fn encode_delta_charged(
 /// Presence items one `PresenceBatch` frame carries at most.
 const PRESENCE_BATCH_ITEMS: usize = 64;
 
-/// One connection's writer-side slot coding: each half sees every frame of
-/// its kind the writer writes, in order, as the reader's half does.
+/// One connection's writer-side delta coding: it sees every coded delta the
+/// writer writes, in order, as the reader's half does.
 #[derive(Default)]
 pub(super) struct SessionCoding {
-    /// Presence batches.
-    pub(super) presence: tilo_delivery_protocol::transport_v2::PresenceEncoder,
     /// Live deltas.
     deltas: tilo_delivery_protocol::transport_v2::DeltaEncoder,
 }
@@ -67,14 +65,12 @@ pub(super) struct SessionCoding {
 /// may ride along (`PresenceMailbox::take`), in one write.
 pub(super) async fn write_presence<W: tokio::io::AsyncWrite + Unpin>(
     mailbox: &crate::presence_mailbox::PresenceMailbox,
-    slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     write: &mut W,
 ) -> Result<(), PeerError> {
     let out = encode_presence(
         mailbox.take(tokio::time::Instant::now(), true),
-        slots,
         peer,
         session,
     )
@@ -86,10 +82,9 @@ pub(super) async fn write_presence<W: tokio::io::AsyncWrite + Unpin>(
 }
 
 /// Encode `due` presence for this connection, each workspace's authorised once,
-/// as slot-coded `PresenceBatch` frames. Charged to each workspace's live egress.
+/// as `PresenceBatch` frames. Charged to each workspace's live egress.
 async fn encode_presence(
     due: Vec<crate::presence_mailbox::DuePresence>,
-    slots: &mut tilo_delivery_protocol::transport_v2::PresenceEncoder,
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<Vec<u8>, PeerError> {
@@ -103,7 +98,14 @@ async fn encode_presence(
         for chunk in run.chunks(PRESENCE_BATCH_ITEMS) {
             let items: Vec<_> = chunk
                 .iter()
-                .map(|presence| slots.item(presence.key, &presence.payload))
+                .map(
+                    |presence| tilo_delivery_protocol::transport_v2::PresenceItem {
+                        slot: None,
+                        keep_prefix: 0,
+                        keep_suffix: 0,
+                        middle: presence.payload.to_vec(),
+                    },
+                )
                 .collect();
             out.extend(tilo_delivery_protocol::transport_v2::encode_presence_batch(
                 workspace, &items,
@@ -185,7 +187,7 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     }
     // One write, so one packet where it fits: the deltas, their position,
     // and the presence that may ride along, above all the author's caret and
-    // typing for this keystroke, held for it.
+    // typing beside this keystroke.
     let mut out = Vec::new();
     for delivery in &accepted {
         out.extend(encode_delta_charged(
@@ -204,7 +206,6 @@ pub(super) async fn write_state_deliveries<W: tokio::io::AsyncWrite + Unpin>(
     out.extend(
         encode_presence(
             presence.take(tokio::time::Instant::now(), true),
-            &mut coding.presence,
             peer,
             session,
         )

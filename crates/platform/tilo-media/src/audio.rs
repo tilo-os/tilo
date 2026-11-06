@@ -39,6 +39,8 @@ pub mod capture;
 pub mod default_node;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod group_tap;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod record;
 
 /// How long one `wpctl`/`pw-metadata` change may take.
 #[cfg(not(target_arch = "wasm32"))]

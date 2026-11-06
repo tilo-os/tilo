@@ -54,7 +54,11 @@ impl Session {
         if let Some(layout) = layout {
             compositor.set_keyboard_layout(&layout);
         }
-        let display = compositor.start_xwayland().expect("Xwayland");
+        let display = compositor
+            .x11_displays()
+            .expect("displays")
+            .display_for("xwayland")
+            .expect("X11 display");
         let (x11, root) = x11_client(&mut compositor, display);
         Self {
             compositor,
@@ -773,4 +777,242 @@ fn a_copy_in_a_wayland_app_pastes_in_an_x11_app() {
         .expect("property reply")
         .value;
     assert_eq!(value, b"copied in a wayland app");
+}
+
+/// A window `x11` creates on `root`, with the class and title a program
+/// gives a toplevel, unmapped.
+fn client_window(x11: &RustConnection, root: Window, instance: &str, class: &str) -> Window {
+    let window = x11.generate_id().expect("id");
+    x11.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        window,
+        root,
+        0,
+        0,
+        400,
+        300,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &CreateWindowAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+    )
+    .expect("window");
+    x11.change_property8(
+        PropMode::REPLACE,
+        window,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        format!("{instance}\0{class}\0").as_bytes(),
+    )
+    .expect("class");
+    x11.change_property8(
+        PropMode::REPLACE,
+        window,
+        AtomEnum::WM_NAME,
+        AtomEnum::STRING,
+        format!("{instance} window").as_bytes(),
+    )
+    .expect("title");
+    x11.flush().expect("flush");
+    window
+}
+
+/// The atom named `name` on `x11`'s server.
+fn client_atom(x11: &RustConnection, name: &str) -> Atom {
+    x11.intern_atom(false, name.as_bytes())
+        .expect("atom")
+        .reply()
+        .expect("atom reply")
+        .atom
+}
+
+/// Run a compositor without a client of the test's own, until `done`.
+fn pump_until(compositor: &mut Compositor, mut done: impl FnMut(&Compositor) -> bool) {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(20) {
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        if done(compositor) {
+            return;
+        }
+    }
+    panic!("the compositor never got there: {:?}", compositor.windows());
+}
+
+#[test]
+fn each_workspace_gets_its_own_x_server_and_clipboard() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720))
+        .expect("output");
+    let displays = compositor.x11_displays().expect("displays");
+    let mine = displays.display_for("workspace-one").expect("a display");
+    let theirs = displays.display_for("workspace-two").expect("a display");
+    assert_ne!(mine, theirs, "two workspaces, two displays");
+    assert_eq!(
+        displays.display_for("workspace-one"),
+        Some(mine),
+        "a workspace keeps its display while it runs apps"
+    );
+
+    let (one, one_root) = x11_client(&mut compositor, mine);
+    let (two, two_root) = x11_client(&mut compositor, theirs);
+    let window = client_window(&one, one_root, "xterm", "XTerm");
+    one.map_window(window).expect("map");
+    one.flush().expect("flush");
+    pump_until(&mut compositor, |compositor| {
+        compositor.windows().len() == 1
+    });
+    let (info, _) = compositor.windows().remove(0);
+    assert_eq!(info.app_id.as_deref(), Some("XTerm"));
+
+    // The other workspace's X server has never heard of that window.
+    let children = two
+        .query_tree(two_root)
+        .expect("tree")
+        .reply()
+        .expect("tree reply")
+        .children;
+    assert!(
+        !children.contains(&window),
+        "a window of one workspace is not on another's X server: {children:?}"
+    );
+
+    // A copy in one workspace is only a copy in that workspace.
+    two.flush().expect("flush");
+    assert_eq!(
+        two.get_selection_owner(client_atom(&two, "CLIPBOARD"))
+            .expect("owner")
+            .reply()
+            .expect("owner reply")
+            .owner,
+        x11rb::NONE,
+        "the other workspace's clipboard is empty"
+    );
+    one.set_selection_owner(window, client_atom(&one, "CLIPBOARD"), x11rb::CURRENT_TIME)
+        .expect("owner");
+    one.flush().expect("flush");
+    assert_eq!(
+        one.get_selection_owner(client_atom(&one, "CLIPBOARD"))
+            .expect("owner")
+            .reply()
+            .expect("owner reply")
+            .owner,
+        window,
+        "its own workspace's clipboard is the app's"
+    );
+    two.flush().expect("flush");
+    assert_eq!(
+        two.get_selection_owner(client_atom(&two, "CLIPBOARD"))
+            .expect("owner")
+            .reply()
+            .expect("owner reply")
+            .owner,
+        x11rb::NONE,
+        "and the copy does not reach the other workspace"
+    );
+}
+
+#[test]
+fn a_workspace_keeps_the_server_of_a_client_with_no_window_while_it_lives() {
+    // A clipboard owner or a helper connects and never maps a window. It
+    // needs its display while it lives, and its display's server follows it
+    // out: what keeps a windowless server running is its clients, and the
+    // session's own connections are not ones.
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720))
+        .expect("output");
+    let displays = compositor.x11_displays().expect("displays");
+    let number = displays.display_for("workspace").expect("a display");
+
+    let (x11, _root) = x11_client(&mut compositor, number);
+    assert_eq!(
+        displays.running(),
+        vec![number],
+        "the windowless app's connection starts its workspace's server"
+    );
+    let holding = Instant::now();
+    while holding.elapsed() < Duration::from_secs(6) {
+        compositor
+            .dispatch(Duration::from_millis(2))
+            .expect("dispatch");
+        assert_eq!(
+            displays.running(),
+            vec![number],
+            "no window yet, but the app is on the display"
+        );
+    }
+
+    drop(x11);
+    pump_until(&mut compositor, |_| displays.running().is_empty());
+    assert!(
+        displays.running().is_empty(),
+        "no X server runs once its last app client is gone"
+    );
+}
+
+#[test]
+fn a_workspace_runs_its_x_server_only_while_its_apps_run() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("headless");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 1280, 720))
+        .expect("output");
+    let displays = compositor.x11_displays().expect("displays");
+    let number = displays.display_for("workspace").expect("a display");
+    assert!(
+        displays.running().is_empty(),
+        "no X server runs before an X11 app opens"
+    );
+
+    let (x11, root) = x11_client(&mut compositor, number);
+    assert_eq!(
+        displays.running(),
+        vec![number],
+        "the app's connection starts its workspace's server"
+    );
+    let window = client_window(&x11, root, "xterm", "XTerm");
+    x11.map_window(window).expect("map");
+    x11.flush().expect("flush");
+    pump_until(&mut compositor, |compositor| {
+        compositor.windows().len() == 1
+    });
+
+    // The app lets its window go: the server follows shortly, its apps gone.
+    x11.destroy_window(window).expect("destroy");
+    x11.flush().expect("flush");
+    pump_until(&mut compositor, |compositor| {
+        compositor.windows().is_empty()
+    });
+    pump_until(&mut compositor, |_| displays.running().is_empty());
+    assert!(
+        displays.running().is_empty(),
+        "no X server runs with no window of the workspace's apps"
+    );
+
+    // The display stays: the workspace's next app finds the same number, and
+    // a fresh server behind it.
+    assert_eq!(
+        compositor
+            .x11_displays()
+            .expect("displays")
+            .display_for("workspace"),
+        Some(number),
+        "the workspace's display outlived its server"
+    );
+    // A server on its way out still holds the display's socket for a moment
+    // and answers a client that connects right then; the next one reaches the
+    // fresh server.
+    let started = Instant::now();
+    loop {
+        let (_again, _root) = x11_client(&mut compositor, number);
+        if displays.running() == vec![number] {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "the workspace's next app never got its server"
+        );
+    }
 }

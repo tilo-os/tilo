@@ -52,6 +52,7 @@ fn plan(
             resource: Some(resource),
             args: &args,
             caller: None,
+            from: None,
         })
         .unwrap();
     replica.apply(&planned);

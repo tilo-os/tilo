@@ -19,12 +19,16 @@ use std::rc::Rc;
 use serde_json::Value;
 use tilo_compositor::Compositor;
 use tilo_desktop::overlays::{Overlays, Slot, Target};
+use tilo_desktop_surface::DesktopHandle;
 use tilo_surface_host::slot_view::{Asked, SlotView, Spec};
 
 use crate::panels::Held;
 
 /// The tilolang views the session runs for the shell's slots.
 pub(crate) struct SlotViews {
+    /// The desk whose own state, the search it opens, takes the keyboard
+    /// before the chrome has published its surface.
+    handle: DesktopHandle,
     /// The overlay stack that says which surface holds the pointer and the
     /// keys.
     overlays: Overlays,
@@ -38,9 +42,10 @@ pub(crate) struct SlotViews {
 
 impl SlotViews {
     /// The views the session runs itself, feeding the keyboard's target from
-    /// `overlays` and drawing at `scale`.
-    pub(crate) const fn new(overlays: Overlays, scale: f64) -> Self {
+    /// `overlays` and the desk `handle`, drawing at `scale`.
+    pub(crate) const fn new(handle: DesktopHandle, overlays: Overlays, scale: f64) -> Self {
         Self {
+            handle,
             overlays,
             scale,
             hosts: BTreeMap::new(),
@@ -54,9 +59,12 @@ impl SlotViews {
             return Rc::clone(host);
         }
         let overlays = self.overlays.clone();
+        let handle = self.handle.clone();
         let surface = Slot::named(slot);
         let focused = Rc::new(move || {
-            surface.is_some_and(|surface| overlays.target() == Target::Surface(surface))
+            surface.is_some_and(|surface| {
+                crate::chrome::keyboard_target(&handle, &overlays) == Target::Surface(surface)
+            })
         });
         let host = Rc::new(RefCell::new(SlotView::new(slot, self.scale, focused)));
         compositor.add_host(Box::new(Held(Rc::clone(&host))));

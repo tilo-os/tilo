@@ -178,6 +178,7 @@ impl Slots {
         match surfaces::program_path(&binding.program()) {
             Ok(path) => Some(package_at(&path, binding).unwrap_or(View::Program(path))),
             Err(error) => {
+                // ignored-failure: a slot whose view is not installed shows nothing, and the next publication binds it
                 tracing::debug!(
                     slot,
                     app = %binding.app,

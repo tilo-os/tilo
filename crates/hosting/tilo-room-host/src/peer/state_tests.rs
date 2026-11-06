@@ -10,14 +10,11 @@
     clippy::too_many_lines,
     reason = "each test spells out one end-to-end scenario"
 )]
-mod keystroke;
-
 use super::private_transport_tests::certified_device;
 use super::*;
 use crate::workspace::{Membership, WorkspaceRuntime};
 use tilo_user_identity::{RevocationList, UserIdentity};
 
-mod presence_cost;
 mod replay_boundary;
 mod supersede;
 
@@ -2279,9 +2276,8 @@ async fn access_requests_reach_every_member() {
     for governed in [false, true] {
         let mut fixture = Fixture::new();
         if governed {
-            fixture.workspace.lock().await.workspace_authority = Some(
-                crate::workspaces::WorkspaceAuthority::governed_by("room", [9; 32]),
-            );
+            fixture.workspace.lock().await.workspace_authority =
+                Some(crate::workspaces::WorkspaceAuthority::governed_by("room"));
         }
         enqueue_state(
             &fixture.workspace,

@@ -133,10 +133,9 @@ pub enum HostError {
 pub type Protocols = Vec<(Vec<u8>, Box<dyn DynProtocolHandler>)>;
 
 /// The ALPNs a workspace host answers on.
-const HOST_ALPNS: [&[u8]; 4] = [
+const HOST_ALPNS: [&[u8]; 3] = [
     ALPN,
     tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-    tilo_relay_session::workspaces::private::PRIVATE_ALPN,
     tilo_peer_state::actions::ACTIONS_ALPN,
 ];
 
@@ -188,7 +187,7 @@ impl HostSessions {
         identity: HostIdentity,
         endpoint: Endpoint,
         governs: bool,
-        keys: Option<crate::workspaces::DeviceKeys>,
+        channels: Option<crate::workspaces::DeviceChannels>,
         wrap: impl FnOnce(
             &WorkspaceRegistry,
             Option<Arc<dyn AppServingPlane>>,
@@ -267,7 +266,7 @@ impl HostSessions {
             return Ok((sessions, None));
         };
         let workspaces = crate::workspaces::Workspaces::open(
-            sessions.room_services(&cfg, &identity, endpoint, revocations, keys),
+            sessions.room_services(&cfg, &identity, endpoint, revocations, channels),
             cfg.state_root.join("rooms"),
         )
         .await
@@ -295,10 +294,10 @@ impl HostSessions {
         identity: &HostIdentity,
         endpoint: Endpoint,
         revocations: Arc<std::sync::RwLock<RevocationList>>,
-        keys: Option<crate::workspaces::DeviceKeys>,
+        channels: Option<crate::workspaces::DeviceChannels>,
     ) -> crate::workspaces::WorkspaceServices {
         crate::workspaces::WorkspaceServices {
-            keys,
+            channels,
             workspaces: self.workspaces.clone(),
             access: self.access_writer(),
             records: self.workspace_records(),
@@ -430,7 +429,7 @@ impl HostSessions {
 /// keep their records in the clear in the workspace document instead of sealed
 /// channels.
 fn say_when_unsealed(governs: bool, cert: &DeviceCert) {
-    if governs && !cert.capabilities.takes_part_in_room_channels() {
+    if governs && !cert.capabilities.takes_part_in_workspace_channels() {
         tracing::error!(
             device = %cert.device_label,
             "this host's certificate cannot own workspaces, so the rooms it governs are not sealed; re-enroll it with the own capability"
@@ -456,10 +455,6 @@ fn host_handlers(
                     workspaces.join_service(),
                 ),
             ),
-        ),
-        (
-            tilo_relay_session::workspaces::private::PRIVATE_ALPN,
-            Arc::new(crate::workspaces::PrivateProtocol::new(workspaces.clone())),
         ),
         // The host's own device answers a workspace's member devices here, as
         // the members answer each other: an offer is answered by the host as
@@ -538,7 +533,7 @@ impl WorkspaceHost {
         cfg: HostConfig,
         identity: HostIdentity,
         endpoint: Endpoint,
-        keys: Option<crate::workspaces::DeviceKeys>,
+        channels: Option<crate::workspaces::DeviceChannels>,
     ) -> Result<Self, HostError> {
         if matches!(cfg.trust_policy, TrustPolicy::AllowAny) {
             return Err(HostError::Identity(
@@ -546,7 +541,7 @@ impl WorkspaceHost {
             ));
         }
         let (sessions, governed) =
-            HostSessions::open(cfg, identity, endpoint, true, keys, |_, plane| plane).await?;
+            HostSessions::open(cfg, identity, endpoint, true, channels, |_, plane| plane).await?;
         let Some(Governed {
             workspaces,
             actions,

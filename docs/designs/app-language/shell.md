@@ -6,7 +6,7 @@ components.md and layout.md.
 
 ## 1. Decisions
 
-- **A shell is a view** of the person's arrangement and the workspace: resources, tasks,
+- **A shell is a view** of the workspace's arrangement and resources: resources, tasks,
   presence, notifications. It is chosen per person and device class, and switching keeps the
   arrangement.
 - **Rust keeps the mechanics, tilolang the structure.** The compositor, input, rendering and
@@ -181,8 +181,8 @@ seams:
   has no place for gets one through the arranging action, never a well of its own.
 
 - **The canvas composes views; it opens nothing.** The four layers stay apart:
-  - *Resource:* a mailbox, a message, a channel page. The person's arrangement is a resource
-    too, theirs alone: which resources they look at, through which view, where.
+  - *Resource:* a mailbox, a message, a channel page. The workspace's arrangement is a resource
+    too: which resources are open, through which view, where.
   - *Action:* putting the mailbox on the canvas as its `inbox` view at a point is an action on
     the **arrangement** (`shell:arrangement`, `arranging.tl`), never on the mailbox. Archiving
     a message is an action on the message. A person, an agent and the REPL show things the same

@@ -75,6 +75,18 @@ pub struct WebArgs {
     /// `--web-plain` bind a non-loopback address.
     #[arg(long = "public-origin", value_name = "ORIGIN", requires = "web_plain")]
     pub public_origin: Option<String>,
+    /// The UDP address of the live plane (WebTransport), when a proxy forwards
+    /// to it: `0.0.0.0:9781` behind an ingress that publishes it. By default
+    /// the plane shares `--web`'s address and port where UDP allows it.
+    #[arg(long = "web-live", value_name = "ADDR", requires = "web")]
+    pub web_live: Option<SocketAddr>,
+    /// The `https://host[:port]` origin pages dial the live plane at, when a
+    /// proxy publishes it at another host or port than the host's own origin
+    /// on the port the plane bound (such as `https://live.example`, whose UDP
+    /// 443 the proxy forwards). The port it names is the one pages dial, 443
+    /// when it names none.
+    #[arg(long = "web-live-origin", value_name = "ORIGIN", requires = "web")]
+    pub web_live_origin: Option<String>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
     /// Tilo app opens this host's links: announced in catalogue locators,
     /// so `share-link` and bots mint links under it. Overrides the config's
@@ -366,6 +378,10 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                     .join("fetch-proxy.prom"),
             ),
         }),
+        live: tilo_relay::web::LiveConfig {
+            listen: args.web_live,
+            origin: args.web_live_origin.clone(),
+        },
     }
 }
 
@@ -931,7 +947,8 @@ pub(crate) fn operator_lines() -> anyhow::Result<tokio::sync::mpsc::Receiver<Ope
 
 /// [`OperatorCommand`]s from `input`, one per line. A line that does not
 /// decode is passed on as an error and ends the reading, so the room stops
-/// instead of skipping it; the end of `input` is a shutdown.
+/// instead of skipping it; the end of `input` closes the channel, which a
+/// short-lived workspace ends with and a persistent one keeps serving through.
 fn operator_lines_from(
     input: impl std::io::Read + Send + 'static,
 ) -> anyhow::Result<tokio::sync::mpsc::Receiver<OperatorLine>> {
@@ -951,7 +968,6 @@ fn operator_lines_from(
                     return;
                 }
             }
-            let _ = sender.blocking_send(Ok(OperatorCommand::Shutdown {}));
         })
         .context("spawn the operator reader")?;
     Ok(receiver)
@@ -1095,14 +1111,11 @@ async fn approve_admitted(
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
                 Some(Ok(
-                    OperatorCommand::PreAdmit { .. }
-                    | OperatorCommand::Spectate { .. }
-                    | OperatorCommand::WaitList { .. }
+                    OperatorCommand::WaitList { .. }
                     | OperatorCommand::Unlist { .. }
                     | OperatorCommand::Confirm { .. }
                     | OperatorCommand::Standing { .. }
-                    | OperatorCommand::InviteMailQueued { .. }
-                    | OperatorCommand::DiscordAuthorized { .. },
+                    | OperatorCommand::InviteMailQueued { .. },
                 )) => {
                     // Not the command itself: a wait-list command carries an
                     // email address, which no log keeps.
@@ -1503,8 +1516,8 @@ mod tests {
         let mut lines = operator_lines_from(std::io::Cursor::new(Vec::new())).unwrap();
         assert_eq!(
             lines.recv().await,
-            Some(Ok(OperatorCommand::Shutdown {})),
-            "the operator closing stdin ends the workspace"
+            None,
+            "the operator closing stdin closes the channel"
         );
     }
 

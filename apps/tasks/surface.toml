@@ -779,3 +779,28 @@ fields = [
   { name = "people", type = { collection = { named = "Person" } } },
 ]
 
+[[resources]]
+kind = "settings.offered-models"
+label = "Offered models"
+version = 1
+person = true
+fields = [
+  { path = "models", type = { list = "any" } },
+]
+
+[[resources.verbs]]
+id = "offer"
+kind = "undoable"
+params = [
+  { name = "models", type = { list = { named = "OfferedModel" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { label = { type = "string" }, model = { type = "string" }, profile = { type = "string" }, provider = { type = "string" } }, required = ["profile", "provider", "model", "label"] } } },
+]
+
+[[resources.types]]
+name = "OfferedModel"
+fields = [
+  { name = "profile", type = "text" },
+  { name = "provider", type = "text" },
+  { name = "model", type = "text" },
+  { name = "label", type = "text" },
+]
+

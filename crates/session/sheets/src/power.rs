@@ -128,7 +128,10 @@ impl PowerEffect {
         })
     }
 
-    const fn icon(self) -> Icon {
+    /// The glyph the power menu draws for it: the same one every other list
+    /// of the same effect wears.
+    #[must_use]
+    pub const fn icon(self) -> Icon {
         match self {
             Self::Lock => Icon::Lock,
             Self::LogOut => Icon::ArrowRight,

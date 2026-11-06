@@ -19,5 +19,8 @@ tilo-service = { path = "../service" }
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

@@ -21,8 +21,10 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
 use tilo_compositor::OutputConfig;
@@ -141,7 +143,10 @@ fn rows(session: &Session) -> Vec<ResourceSpec> {
         .unwrap_or_default()
 }
 
-/// Search for `query`, as the person does, and wait for its rows.
+/// Search for `query`, as the person does, and wait for its rows to be
+/// final: the open search says it is still searching until every source has
+/// answered and its rows are cut to the card, so a row read before that may
+/// be all a first source had to say.
 fn search(session: &mut Session, query: &str) {
     let arguments = serde_json::json!({"query": query})
         .as_object()
@@ -151,8 +156,26 @@ fn search(session: &mut Session, query: &str) {
         .invoke(DESK_RESOURCE, "search", &arguments)
         .expect("the desk opens search");
     until(session, "search's rows", |session| {
-        !rows(session).is_empty()
+        !rows(session).is_empty() && !searching(session)
     });
+}
+
+/// Whether the open search still says it is searching.
+fn searching(session: &Session) -> bool {
+    fn find(resources: &[ResourceSpec], id: &str) -> Option<ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource.clone())
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    let still = tilo_desktop::i18n::t("desktop-search-searching");
+    find(&session.resources(), SEARCH_RESOURCE)
+        .and_then(|search| search.presentation)
+        .and_then(|presentation| presentation.detail)
+        .is_some_and(|detail| detail == still)
 }
 
 /// Press the search row titled `title`, as the person does.
@@ -177,17 +200,8 @@ fn row(session: &Session, title: &str) -> Option<ResourceSpec> {
 
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
-fn until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    let deadline = Instant::now()
-        .checked_add(Duration::from_secs(60))
-        .expect("a deadline");
-    loop {
-        session.step(Duration::from_millis(10)).unwrap();
-        if done(session) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "{what}");
-    }
+fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bool) {
+    common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
 /// Press the question's `action`, as the person does.
@@ -254,6 +268,11 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
     });
     until(&mut session, "the app to leave their apps", |session| {
         !published(session, &desktop_id)
+    });
+    // What it did is said once the registry reads the app as gone, which is
+    // a pass after the app leaves their apps.
+    until(&mut session, "the notice saying where it went", |session| {
+        !notices(session).is_empty()
     });
     let trashed = home.data().join("Trash/files");
     assert!(
@@ -397,11 +416,12 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
     until(&mut session, "the question", |session| {
         publisher(session, "confirm").is_some()
     });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
-        "the question is the uninstall question: {labels:?}"
-    );
+    until(&mut session, "the question's title", |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Uninstall Tilo Imager?")
+    });
     assert!(file.is_file(), "nothing goes before the person answers");
 
     answer(&mut session, "confirm");
@@ -409,6 +429,11 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
         !published(session, &desktop_id)
     });
     assert!(!file.exists(), "its file went to the Trash");
+    // What it did is said once the registry reads the app as gone, which is
+    // a pass after the app leaves their apps.
+    until(&mut session, "the notice saying where it went", |session| {
+        !notices(session).is_empty()
+    });
     assert_eq!(
         notices(&session),
         [(
@@ -441,11 +466,12 @@ fn the_uninstall_question_takes_the_app_by_name() {
     until(&mut session, "the question", |session| {
         publisher(session, "confirm").is_some()
     });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
-        "the name finds the app: {labels:?}"
-    );
+    until(&mut session, "the question's title", |session| {
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label == "Uninstall Tilo Imager?")
+    });
     assert!(file.is_file(), "nothing goes before the person answers");
 }
 
@@ -490,4 +516,67 @@ fn an_uninstall_that_cannot_trash_the_file_says_so() {
         publisher(&session, "confirm").is_none(),
         "the question is taken down"
     );
+}
+
+/// A registry of the person's apps that publishes a reading this build does
+/// not read: what a registry a newer build wrote reads like here.
+struct NotReadBack;
+
+impl tilo_service::Service for NotReadBack {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        Vec::new()
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == tilo_app_launch::downloaded::RESOURCE)
+            .then(|| serde_json::json!({"apps": "kept by a newer build"}))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        Err(tilo_actions::DoorError::Unavailable {
+            code: "not-read-back".to_owned(),
+            reason: format!("{resource}:{action} is not read by this build"),
+        })
+    }
+}
+
+#[test]
+fn a_registry_that_does_not_read_back_says_nothing_was_removed() {
+    let _settled = ui::motion::testing::settled();
+    let _home = tilo_test_env::TestHome::new().expect("a home");
+    // A registry of theirs this build cannot read: their apps would simply
+    // be gone from the launcher, so they are told once instead.
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: false,
+            services: vec![Box::new(NotReadBack)],
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    until(&mut session, "the notice", |session| {
+        !notices(session).is_empty()
+    });
+    assert_eq!(
+        notices(&session),
+        [(
+            "Your downloaded apps could not be read".to_owned(),
+            "This computer could not read the list of programs you added to \
+             your apps, so they are not listed now. Nothing was removed: they \
+             are still on this computer."
+                .to_owned()
+        )]
+    );
+    // Told once: the registry is read again every pass of the session's loop.
+    for _ in 0..50 {
+        session.step(Duration::from_millis(10)).expect("a pass");
+    }
+    assert_eq!(notices(&session).len(), 1, "said once");
 }

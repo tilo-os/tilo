@@ -457,7 +457,7 @@ impl Session<'_> {
                     workspace
                         .lock()
                         .await
-                        .fanout_presence(&[0u8; 32], &envelope, None);
+                        .fanout_presence(&[0u8; 32], &envelope);
                 }
             }
             Envelope::NotAuthorised {

@@ -138,7 +138,10 @@ impl PasswordVerifier for GreetdVerifier {
             }) => Verdict::Wrong,
             // The socket is gone, the account is locked, or greetd cannot be
             // talked to: the check could not be made, and the lock stays.
-            Err(_) => Verdict::Unavailable,
+            Err(error) => {
+                tracing::warn!(error = ?error, user, "a password could not be checked; the lock stays");
+                Verdict::Unavailable
+            }
         }
     }
 }

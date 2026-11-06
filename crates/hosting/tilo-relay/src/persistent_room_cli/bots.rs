@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::DeviceCert;
 
-use super::{BotSpec, PersistentArgs, PersistentRoom, input_value};
+use super::{BotSpec, PersistentArgs, input_value};
 
 /// Connect the workspace to the Discord server a bridge's inputs name
 /// ([`discord::link_bridge`](tilo_relay::room_bots::discord::link_bridge)),
@@ -53,7 +53,7 @@ pub(super) async fn start_bots(
     Option<Arc<tilo_connector::ConnectorProcess>>,
 )> {
     use tilo_relay::room_bots::discord;
-    use tilo_relay::room_bots::installed::{self, BotRunner, InstalledBot};
+    use tilo_relay::room_bots::installed::{self, InstalledBot};
     if let Some(path) = &persistent.discord_token_file {
         let token = std::fs::read_to_string(path)
             .with_context(|| format!("read the Discord token file {}", path.display()))?;
@@ -129,36 +129,61 @@ pub(super) async fn start_bots(
     };
     let mut runners = Vec::new();
     for (dir, bot) in installed_bots {
-        let wanted =
-            InstalledBot::connectors(&bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?);
-        let own = started
-            .iter()
-            .filter(|(app, _)| wanted.contains(*app))
-            .map(|(app, process)| (app.clone(), Arc::clone(process)))
-            .collect::<BTreeMap<_, _>>();
-        let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
-        let runner = BotRunner::new(
+        runners.extend(run_bot(
+            workspaces,
+            workspace,
+            host_cert,
+            root,
+            (dir, bot),
+            &started,
+        )?);
+    }
+    Ok((runners, started.get(discord::APP).cloned()))
+}
+
+/// Run `bot` on this host, its connector `own` reaching the workspace and its
+/// delegation renewed with the workspace's root as it runs out.
+fn run_bot(
+    workspaces: &Workspaces,
+    workspace: &str,
+    host_cert: &DeviceCert,
+    root: &SigningKey,
+    (dir, bot): (
+        std::path::PathBuf,
+        tilo_relay::room_bots::installed::InstalledBot,
+    ),
+    started: &BTreeMap<String, Arc<tilo_connector::ConnectorProcess>>,
+) -> anyhow::Result<[tokio::task::JoinHandle<()>; 2]> {
+    use tilo_relay::room_bots::installed::BotRunner;
+    let wanted = tilo_relay::room_bots::installed::InstalledBot::connectors(
+        &bot.shortcut().map_err(|error| anyhow::anyhow!("{error}"))?,
+    );
+    let own = started
+        .iter()
+        .filter(|(app, _)| wanted.contains(*app))
+        .map(|(app, process)| (app.clone(), Arc::clone(process)))
+        .collect::<BTreeMap<_, _>>();
+    let certifier = tilo_relay::room_bots::membership::HostRootCertifier::new(root.clone());
+    let runner = BotRunner::new(
+        workspaces.clone(),
+        workspace.to_owned(),
+        host_cert.clone(),
+        certifier.device_key(&bot.installation),
+        bot.clone(),
+        own,
+        dir.join("progress.json"),
+    )
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok([
+        tokio::spawn(tilo_relay::room_bots::membership::keep_renewed(
             workspaces.clone(),
             workspace.to_owned(),
             host_cert.clone(),
-            certifier.device_key(&bot.installation),
-            bot.clone(),
-            own,
-            dir.join("progress.json"),
-        )
-        .map_err(|error| anyhow::anyhow!("{error}"))?;
-        runners.push(tokio::spawn(
-            tilo_relay::room_bots::membership::keep_renewed(
-                workspaces.clone(),
-                workspace.to_owned(),
-                host_cert.clone(),
-                certifier,
-                bot.clone(),
-            ),
-        ));
-        runners.push(tokio::spawn(runner.run()));
-    }
-    Ok((runners, started.get(discord::APP).cloned()))
+            certifier,
+            bot,
+        )),
+        tokio::spawn(runner.run()),
+    ])
 }
 
 /// A file name for directory entry or program path `entry`.
@@ -175,44 +200,43 @@ fn slug_of(entry: &str) -> String {
         .collect()
 }
 
-/// Hand a sign-in with Discord that came back to the service to the workspace's
+/// Hand a sign-in with Discord that came back to the host to the workspace's
 /// Discord bridge, as an event of its connector: the bridge offers the
 /// account to the person who started it. Nothing secret is in it: the
-/// state and the token arrive hashed.
+/// state and the token arrive hashed. Whether the bridge got it.
 pub(super) async fn hand_to_discord(
-    context: &PersistentRoom,
-    user_id: String,
-    user_name: String,
-    display_name: Option<String>,
-    avatar: Option<String>,
-    state_sha256: String,
-    link_check: String,
-) {
-    let Some(discord) = &context.discord else {
+    discord: Option<&Arc<tilo_connector::ConnectorProcess>>,
+    authorized: &super::discord_sign_in::Authorized,
+) -> bool {
+    let Some(discord) = discord else {
         tracing::warn!(
             "a sign-in with Discord came back, but the workspace runs no Discord bridge"
         );
-        return;
+        return false;
     };
     let event = discord::event::Authorized {
-        user_id,
+        user_id: authorized.user_id.clone(),
         user: Some(discord::event::UserName {
-            user_name,
-            display_name,
+            user_name: authorized.user_name.clone(),
+            display_name: authorized.display_name.clone(),
         }),
-        avatar,
-        state_sha256,
-        link_check,
+        avatar: authorized.avatar.clone(),
+        state_sha256: authorized.state_sha256.clone(),
+        link_check: authorized.link_check.clone(),
     };
     let id = discord::event::event_id::authorized(&event.link_check);
     let Ok(serde_json::Value::Object(payload)) = serde_json::to_value(&event) else {
-        return;
+        return false;
     };
-    if let Err(error) = discord
+    match discord
         .emit(discord::event::source::AUTHORIZED, &id, payload)
         .await
     {
-        tracing::error!(%error, "could not hand a sign-in with Discord to the bridge");
+        Ok(()) => true,
+        Err(error) => {
+            tracing::error!(%error, "could not hand a sign-in with Discord to the bridge");
+            false
+        }
     }
 }
 

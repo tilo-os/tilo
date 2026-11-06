@@ -210,15 +210,18 @@ export function initialRoute({link, location, mode, home = null}) {
   return link.parse(location.href);
 }
 
-/** Mount what `route` shows, then show its target. */
-export async function present({route, peer, surface, mountDesktop, diagnostics = {}, onStatus, onNavigation}) {
+/** Mount what `route` shows, then show its target. `directory` is what the
+ * desktop's workspace directory browses (`deps.directory`), handed to
+ * whichever mount draws the desk: the page's own, or a peer's. */
+export async function present({route, peer, surface, mountDesktop, directory = null, diagnostics = {}, onStatus, onNavigation}) {
   const {target, mode} = route;
   const mount = peer ? (element, options) => peer.mountDesktop(element, options) : mountDesktop;
+  const shown = {...(directory ? {directory} : {}), ...diagnostics};
   let navigation;
   if (mode === 'app') {
     if (!target.app) throw new Error('This link opens a whole workspace, so it opens on the desktop');
     if (peer && target.record !== undefined) await peer.whenRecord?.(target.app, target.record);
-    const mounted = await mount(surface, {...diagnostics, app: target.app, ...recordOption(target.record), onStatus});
+    const mounted = await mount(surface, {...shown, app: target.app, ...recordOption(target.record), onStatus});
     await openTarget({mount: mounted, target, mode});
     return {mount: mounted};
   }
@@ -227,7 +230,7 @@ export async function present({route, peer, surface, mountDesktop, diagnostics =
     // opens full tab, where the mount names the record.
     return {redirect: 'app'};
   }
-  const mounted = await mount(surface, {...diagnostics, onStatus, onNavigation: controller => {
+  const mounted = await mount(surface, {...shown, onStatus, onNavigation: controller => {
     navigation = controller;
     onNavigation?.(controller);
   }});
@@ -281,7 +284,7 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which workspace it is getting into, under which entry, before admission.
   deps.onScope?.({scope: route.target.scope, entry});
-  const {peer} = await admit({
+  const {peer, idle} = await admit({
     scope: route.target.scope, secrets, tickets: entry.tickets,
     home: entry.home ? workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home : null,
     deps: {...deps, workspaceAt: origin => workspaceAt(workspaces, origin)},
@@ -292,6 +295,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
         : event.phase === 'asking' ? 'Asking to join…' : event.phase === 'joining' ? 'Joining…' : 'Connecting…');
     },
   });
+  // Nothing to mount: an embed shows its site's fallback until the visitor
+  // does something (`entry-page.mjs`).
+  if (idle) return null;
   if (peer) deps.onAdmitted?.(peer);
   // A link that names no workspace is let in through its host's door: the workspace
   // the door admits to is that host's listed workspace.
@@ -330,11 +336,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // nothing admission needs waits on.
   const unsupported = await deps.rendererUnavailable?.();
   if (unsupported) return {peer, rendererUnavailable: unsupported};
-  const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop,
+  const shown = await present({route, peer, surface, mountDesktop: deps.mountDesktop, directory: deps.directory?.() ?? null,
     diagnostics: {...(listed?.name ? {workspaceName: listed.name} : {}), ...(host ? {host} : {}),
       ...(entry.about ? {about: entry.about} : {}),
       ...(linkOffer ? {linkOffer} : {}),
-      // The workspace service's spectator count, for the desktop's "watching".
+      // The workspace service's watching count, for the desktop's people panel.
       ...(listed?.admission ? {presenceUrl: new URL('presence', listed.admission).href} : {}),
       ...invite, ...diagnostics},
     onStatus: titled(window, diagnostics.onStatus)});

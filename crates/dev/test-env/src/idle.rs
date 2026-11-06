@@ -113,6 +113,17 @@ pub fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
 /// `/proc/self/task` cannot be listed, or not exactly one thread has that
 /// name.
 pub fn named_thread(comm: &str) -> String {
+    named_threads(comm).unwrap_or_else(|named| panic!("{named} live threads named {comm}, not one"))
+}
+
+/// The id of this process's one live thread named `comm`, if there is
+/// exactly one: a thread names itself once it runs, so a thread just
+/// spawned may not be there yet.
+pub fn live_named(comm: &str) -> Option<String> {
+    named_threads(comm).ok()
+}
+
+fn named_threads(comm: &str) -> Result<String, usize> {
     let named: Vec<_> = own_thread_ids()
         .into_iter()
         .filter(|tid| {
@@ -120,9 +131,10 @@ pub fn named_thread(comm: &str) -> String {
                 .is_ok_and(|name| name.trim() == comm)
         })
         .collect();
-    let [tid] = <[String; 1]>::try_from(named)
-        .unwrap_or_else(|named| panic!("{} live threads named {comm}, not one", named.len()));
-    tid
+    match <[String; 1]>::try_from(named) {
+        Ok([tid]) => Ok(tid),
+        Err(named) => Err(named.len()),
+    }
 }
 
 /// What `/proc` says about thread `tid` at one moment.

@@ -28,12 +28,12 @@ use channel_crypto::{ChannelGroup, MemberKey};
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_browser_peer::{ChannelContentKeys, Host, HttpClient, HttpFuture, PeerEvent, certify};
-use tilo_call_lane::{Sealer, Stream, TrackName};
-use tilo_live::admit::{Connected, OriginTask, origin_config};
-use tilo_live::live::Namespace;
+use tilo_live::live::{Namespace, Track};
+use tilo_live::plane::{Join, Plane};
 use tilo_live::relay::{
     Denied, Direction, LoopbackRelay, Peer, RelayAuthority, SessionAuthorization,
 };
+use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::web::{LIVE_INFO_PATH, LiveGrant, LiveInfo, LiveRequest};
@@ -173,97 +173,41 @@ impl HttpClient for LiveAt {
     }
 }
 
-/// A native device on the same relay: it seals its presence with the scope's
-/// keys and publishes it, as every device's own live session does.
+/// A native device on the same relay: it joins the workspace's plane with its
+/// own device key and publishes its presence, as every device's own live
+/// session does.
 struct Native {
-    presence: Sealer,
+    plane: Plane,
     sequence: Cell<u32>,
-    track: moq_net::track::Producer,
-    _broadcast: moq_net::broadcast::Producer,
-    _subscribe: moq_net::origin::Consumer,
-    _producers: (moq_net::origin::Producer, moq_net::origin::Producer),
-    _publishing: OriginTask,
-    _reading: OriginTask,
-    _connected: Connected,
 }
 
 impl Native {
     async fn join(relay: &LoopbackRelay, device: [u8; 32], keys: ChannelContentKeys) -> Self {
-        let scope = Scope::workspace(WORKSPACE);
-        let namespace = Namespace::new(&scope, device);
-        let (publishing, publishing_task) =
-            OriginTask::produce(origin_config(1 << 20, Duration::from_secs(30)));
-        let broadcast = publishing
-            .create_broadcast(namespace.path().as_str())
-            .unwrap();
-        let track = broadcast
-            .create_track(
-                "presence",
-                moq_net::track::Info::default().with_max_age(Duration::from_secs(30)),
-            )
-            .unwrap();
-        broadcast
-            .announce(moq_net::origin::Route::default())
-            .unwrap();
-        let publish = publishing
-            .consume()
-            .scope(
-                "",
-                &moq_net::Patterns::from(
-                    moq_net::Pattern::literal(namespace.path().as_str()).unwrap(),
-                ),
-            )
-            .unwrap();
-        let (reading, reading_task) =
-            OriginTask::produce(origin_config(1 << 20, Duration::from_secs(2)));
-        let subscribe = reading
-            .consume()
-            .scope(
-                "",
-                &moq_net::Patterns::from(
-                    moq_net::Pattern::subtree(namespace.scope_path().as_str()).unwrap(),
-                ),
-            )
-            .unwrap();
-        let url: url::Url = relay.endpoint.parse().unwrap();
-        let connected = tilo_live::carrier::connect(
-            &url,
-            &tilo_live::carrier::Trust::Fingerprints(relay.fingerprints.clone()),
+        let carrier =
+            tilo_live::carrier::WebTransport::new(&relay.endpoint, &relay.fingerprints).unwrap();
+        let plane = Plane::join(
+            &carrier,
             &device,
-            Some(publish),
-            Some(reading.clone()),
-            Duration::from_secs(5),
+            Join {
+                scope: Scope::workspace(WORKSPACE),
+                device,
+                keys,
+                roster: Roster::new([device]),
+                publish: true,
+            },
         )
         .await
         .unwrap();
         Self {
-            presence: Sealer::new(
-                &keys,
-                device,
-                Stream::Presence,
-                TrackName::new(&scope, "presence"),
-            )
-            .unwrap(),
+            plane,
             sequence: Cell::new(0),
-            track,
-            _broadcast: broadcast,
-            _subscribe: subscribe,
-            _producers: (publishing, reading),
-            _publishing: publishing_task,
-            _reading: reading_task,
-            _connected: connected,
         }
     }
 
     fn publish_presence(&self, body: &[u8]) {
         let sequence = self.sequence.get();
         self.sequence.set(sequence.wrapping_add(1));
-        let sealed = self.presence.seal(sequence, body).unwrap();
-        let mut group = self.track.append_group().unwrap();
-        group
-            .write_frame(moq_net::Timestamp::ZERO, bytes::Bytes::from(sealed))
-            .unwrap();
-        group.finish().unwrap();
+        self.plane.publish(Track::Presence, sequence, body).unwrap();
     }
 }
 

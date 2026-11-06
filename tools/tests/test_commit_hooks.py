@@ -19,7 +19,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg", ".githooks/merge-generated"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/commit-msg", ".githooks/merge-generated"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -300,6 +300,62 @@ class CommitHookTests(unittest.TestCase):
         self.assertNotEqual(self.git("commit", "-qm", "Merge branch 'fake'", check=False).returncode, 0)
         self.git("commit", "--no-verify", "-qm", "Merge branch 'fake'")
         self.assertNotEqual(self.ci().returncode, 0)
+
+    def test_ci_rejects_a_commit_that_removes_a_wire_variant(self):
+        def enum(*variants):
+            body = "".join(f"    {variant},\n" for variant in variants)
+            return ("#[derive(Clone, Serialize, Deserialize)]\n"
+                    f"pub enum Lifetime {{\n{body}}}\n").encode()
+
+        os.makedirs(self.root / "crates/x/src")
+        self.stage("crates/x/src/lib.rs", enum("Once", "Task", "Until"))
+        self.git("commit", "--no-verify", "-qm", "test: a stored enum")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.stage("crates/x/src/lib.rs", enum("Once", "Until"))
+        self.git("commit", "--no-verify", "-qm", "test: drop a variant")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("enum Lifetime no longer has Task", result.stderr)
+
+        # The same removal, named with its reason in the commit that makes it.
+        self.git("reset", "-q", "--hard", "HEAD^")
+        self.stage("crates/x/src/lib.rs", enum("Once", "Until"))
+        self.stage("tools/policy/wire_enum_breaks.toml",
+                   b'[[break]]\nfile = "crates/x/src/lib.rs"\nenum = "Lifetime"\n'
+                   b'reason = "never stored"\n')
+        self.git("commit", "--no-verify", "-qm", "test: drop a variant on purpose")
+        result = self.ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ci_charges_a_merge_only_with_its_wire_resolution(self):
+        def enum(*variants):
+            body = "".join(f"    {variant},\n" for variant in variants)
+            return ("#[derive(Clone, Serialize, Deserialize)]\n"
+                    f"pub enum Lifetime {{\n{body}}}\n").encode()
+
+        os.makedirs(self.root / "crates/x/src")
+        self.stage("crates/x/src/lib.rs", enum("Once", "Task"))
+        self.git("commit", "--no-verify", "-qm", "test: a stored enum")
+        self.git("switch", "-qc", "side")
+        self.stage("crates/x/src/lib.rs", enum("Once", "Task", "Until"))
+        self.git("commit", "--no-verify", "-qm", "test: side work checked on its own")
+        self.base = self.git("rev-parse", "HEAD").stdout.strip()
+        self.git("switch", "-q", "main")
+        self.stage("crates/x/src/other.rs", b"pub fn other() {}\n")
+        self.git("commit", "--no-verify", "-qm", "test: main work")
+        self.git("merge", "--no-commit", "side", check=False)
+        self.git("commit", "--no-verify", "-qm", "Merge branch 'side'")
+        result = self.ci()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        # A resolution that drops a variant the merged-in side added.
+        self.git("reset", "-q", "--hard", "HEAD^")
+        self.git("merge", "--no-commit", "side", check=False)
+        self.stage("crates/x/src/lib.rs", enum("Once", "Task"))
+        self.git("commit", "--no-verify", "-qm", "Merge branch 'side'")
+        result = self.ci()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("enum Lifetime no longer has Until", result.stderr)
 
     def test_installer_preserves_unrelated_hooks_and_is_idempotent(self):
         self.assertIn("verified", self.run_installer().stdout)

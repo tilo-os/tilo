@@ -30,6 +30,9 @@ pub fn seed_tree(minter: &mut IdMinter, workspace_name: &str, tabs: Vec<Tab>) ->
     workspace.strips = vec![strip];
     let mut tree = DesktopTree {
         active: workspace.slot,
+        // Every id above is the minter's, so the desk's own range is too:
+        // what a record of this desk shares is this device's to write.
+        salt: minter.salt(),
         ..DesktopTree::default()
     };
     tree.active_strip.insert(workspace.slot, strip_id);

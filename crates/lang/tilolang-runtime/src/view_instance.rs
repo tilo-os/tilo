@@ -1,8 +1,8 @@
 //! A live view: its tree, the fields and view state it depends on, and the events it can take.
 //!
-//! A view runs in a window (workspace-model.md, "Windows") for one person. The window's id is
-//! what its `window` state is kept under, shared by everyone who opens a view in the same
-//! window; `lens` state is kept per person and window.
+//! A view runs in a window (workspace-model.md, "Windows") for one person. Its `window` state
+//! is how that person's window shows the resource, `lens` state where they are in it; both are
+//! kept per person and window, so nobody else's view of the same window moves with them.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -23,7 +23,7 @@ use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 use crate::view::{BindTarget, Patch, UiNode};
-use crate::view_state::StateKey;
+use crate::view_state::{StateKey, StateLayer};
 
 /// Something a view asks of the host that the runtime does not do itself.
 #[derive(Clone, Debug, PartialEq)]
@@ -350,6 +350,23 @@ impl ViewInstance {
             RuntimeError::BadArgs(format!("event `{event}` of `{key}` carries no value"))
         })?;
         self.read_states(&mut aref)?;
+        // What an entry sends with its `submit` fills the `(entry)` parameter of the action it
+        // commits, and the parameters the words say: the text is the one typed at the press. An
+        // entry whose text is nothing but space and what other parameters take ("fri 10am
+        // @bo") makes nothing: it does not fire, and leaves what is typed where it is.
+        if let Some(Value::Text(text)) = value {
+            match self.core.entry_fill(&mut aref, text) {
+                Ok(true) => {}
+                Ok(false) => return Ok(InvokeOutcome::Done(Value::Unit)),
+                Err(fail) => {
+                    let fail = match fail {
+                        crate::engine::HostFail::Trap(message) => message,
+                        crate::engine::HostFail::Suspend => "the entry is suspended".to_owned(),
+                    };
+                    return Err(RuntimeError::BadArgs(fail));
+                }
+            }
+        }
         self.run(&aref)
     }
 
@@ -409,11 +426,11 @@ impl ViewInstance {
     }
 
     fn lens_key(&self, state: &str) -> StateKey {
-        StateKey {
-            window: self.live.window.clone(),
-            principal: Some(self.live.viewer.0.clone()),
-            state: state.to_owned(),
-        }
+        StateKey::lens(
+            self.live.window.clone(),
+            self.live.viewer.0.clone(),
+            state.to_owned(),
+        )
     }
 
     /// Evaluate the arguments of `aref` that read view state (`send(c, draft)`, `set(open, not
@@ -545,24 +562,28 @@ impl ViewInstance {
         }
     }
 
-    /// `set(name, value)`: change the view state slot the reference names. A lens slot belongs
-    /// to the person it was rendered for; nobody presses another's controls.
+    /// `set(name, value)`: change the view state slot the reference names, in this view's
+    /// person's window. A slot belongs to the person it was rendered for; nobody presses
+    /// another's controls.
     fn platform_set(&self, aref: &ActionRef) -> Result<InvokeOutcome, RuntimeError> {
-        let [window, principal, state, value] = aref.args.as_slice() else {
+        let [window, principal, layer, state, value] = aref.args.as_slice() else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
         let text = |v: &Value| v.as_text().map(str::to_owned);
-        let (Some(window), Some(principal), Some(state)) =
-            (text(window), text(principal), text(state))
+        let (Some(window), Some(principal), Some(layer), Some(state)) =
+            (text(window), text(principal), layer.as_int(), text(state))
         else {
             return Err(RuntimeError::BadArgs("a malformed `set`".into()));
         };
-        let key = StateKey {
-            window,
-            principal: (!principal.is_empty()).then_some(principal),
-            state,
+        let layer = i32::try_from(layer)
+            .ok()
+            .and_then(StateLayer::from_code)
+            .ok_or_else(|| RuntimeError::BadArgs(format!("unknown view state layer {layer}")))?;
+        let key = match layer {
+            StateLayer::Window => StateKey::window(window, principal, state),
+            StateLayer::Lens => StateKey::lens(window, principal, state),
         };
-        self.core.view_states.borrow_mut().set(key, value.clone());
+        self.core.view_states.borrow_mut().write(key, value.clone());
         Ok(InvokeOutcome::Done(Value::Unit))
     }
 
@@ -645,7 +666,10 @@ impl ViewInstance {
             }
             _ => return Err(bad()),
         };
-        self.core.view_states.borrow_mut().set(key.clone(), stored);
+        self.core
+            .view_states
+            .borrow_mut()
+            .write(key.clone(), stored);
         Ok(EditOutcome::Applied)
     }
 
@@ -722,12 +746,24 @@ impl ViewInstance {
             .field(&field_id)
             .cloned()
             .ok_or_else(|| RuntimeError::NotFound(format!("field {field_id}")))?;
+        // A control that picks a case hands over its name (the id the field holds it by): the
+        // field takes the case itself, so the name becomes that case before the field is
+        // written, as a case written in the language already is.
+        let value = match (&field.ty, value) {
+            (Ty::Enum(key), Value::Text(case)) => {
+                Value::Enum(reg.enum_value(key, case).map_err(RuntimeError::BadArgs)?)
+            }
+            _ => value.clone(),
+        };
+        let value = &value;
         drop(reg);
         let ctx = ExecCtx {
             invoker: self.live.viewer.clone(),
             chain: vec![view_module.clone()],
             approved_by: None,
+            suggested_by: None,
             origin: None,
+            from: None,
         };
         let decision = self.core.decide_with(
             &ctx,
@@ -784,6 +820,8 @@ impl ViewInstance {
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
             group: None,
+            from: None,
+            suggested_by: None,
         };
         let mut store = self.core.store.borrow_mut();
         let txn = store.begin()?;

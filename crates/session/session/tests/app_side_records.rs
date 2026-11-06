@@ -98,6 +98,10 @@ impl Binges {
 }
 
 /// The repository root: this test's manifest is `<root>/crates/session/session`.
+#[expect(
+    clippy::expect_used,
+    reason = "the manifest stands three levels under the root"
+)]
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -115,10 +119,11 @@ fn apps(root: &Path) -> Vec<(String, PathBuf)> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() && path.join("Cargo.toml").is_file() {
-            if let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) {
-                out.push((name.to_owned(), path));
-            }
+        if path.is_dir()
+            && path.join("Cargo.toml").is_file()
+            && let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str)
+        {
+            out.push((name.to_owned(), path));
         }
     }
     out.sort();

@@ -14,9 +14,10 @@
 //! The file is the bytes a package ships and a change names by hash, so it
 //! keeps only what deciding a change and checking storage need ([`filed`]):
 //! kinds, verb ids, kinds, footprints and parameters, field paths, layouts
-//! and types. Labels, descriptions, field titles and owners stay in the
-//! code; a field type's own operation vocabulary is kept as its digest. One
-//! line per field keeps the file small and its diffs readable.
+//! and types, and whether a record is the person's own. Labels,
+//! descriptions, field titles and owners stay in the code; a field type's
+//! own operation vocabulary is kept as its digest. One line per field keeps
+//! the file small and its diffs readable.
 //!
 //! Field and parameter types are the language-neutral
 //! `tilo_actions::surface::FieldType`, the records and enums they name
@@ -644,7 +645,7 @@ fn differences(kind: &str, before: &Value, now: &Value) -> Vec<String> {
             changes.push(format!("{kind}: {what} `{name}` is gone"));
         }
     }
-    for key in ["label", "version"] {
+    for key in ["label", "version", "person"] {
         if before.get(key) != now.get(key) {
             changes.push(format!("{kind}: {key} changed"));
         }
@@ -1217,6 +1218,21 @@ mod tests {
         book["fields"][1]["ops"]["title"] = "Other ops".into();
         assert_ne!(filed(&book)["fields"][1]["ops"], ops);
         assert_eq!(render(&[value["resources"][0].clone()]).unwrap(), text);
+    }
+
+    #[test]
+    fn a_record_that_stopped_being_the_persons_is_drift() {
+        let before = filed(&resource(1, "String", &["rename"]));
+        let mut now = before.clone();
+        now["person"] = Value::Bool(true);
+        assert_eq!(
+            differences("notes.book", &before, &now),
+            ["notes.book: person changed"]
+        );
+        assert_eq!(
+            differences("notes.book", &now, &before),
+            ["notes.book: person changed"]
+        );
     }
 
     #[test]

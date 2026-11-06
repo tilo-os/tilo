@@ -143,7 +143,7 @@ struct AuthenticatedForget {
 
 impl AuthenticatedForget {
     fn seal_receipt(self, root: &std::path::Path, id: &AccountId) -> Result<(), CustodyError> {
-        let mut vault = SecretVault::open_in(root);
+        let mut vault = SecretVault::open_person(Some(root));
         if vault.recovery_error().is_some() {
             return Err(CustodyError::NeedsAuthentication);
         }
@@ -202,7 +202,7 @@ impl Custodian {
             serde_json::from_slice(&bytes).map_err(|_| CustodyError::NeedsAuthentication)
         };
         let mut store = load()?;
-        let existing = SecretVault::open_read_only_in(&root);
+        let existing = SecretVault::open_person(Some(&root));
         if existing.recovery_error().is_some() {
             return Err(CustodyError::NeedsAuthentication);
         }
@@ -315,9 +315,7 @@ impl Custodian {
         {
             return Err(CustodyError::NeedsAuthentication);
         }
-        let vault = self
-            .config_root()
-            .map_or_else(SecretVault::open_read_only, SecretVault::open_read_only_in);
+        let vault = SecretVault::open_person(self.config_root());
         if vault.recovery_error().is_some() {
             return Err(CustodyError::NeedsAuthentication);
         }
@@ -396,6 +394,57 @@ mod tests {
         vault.try_save().unwrap();
         let custodian = Custodian::for_root(Some(root.path().to_owned()));
         (root, custodian, id)
+    }
+
+    /// A selection sealed before the person's vault had one custody: under
+    /// the owner-only key beside the ciphertext, as the local path wrote it.
+    #[cfg(unix)]
+    #[test]
+    fn a_selection_sealed_under_an_owner_only_key_is_read_and_its_key_migrates() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("config");
+        let person = config.join("tilo");
+        std::fs::create_dir_all(&person).unwrap();
+        std::fs::set_permissions(&person, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", &config)
+            .set("HOME", home.path())
+            .set(tilo_secrets::SECRETS_DIR_ENV, home.path().join("secrets"));
+
+        let session = selected();
+        let id = AccountId::from(session.session_id.clone());
+        let mut account = accounts::Account::new(id.clone(), SERVICE_SESSION_TYPE);
+        account.config = serde_json::json!({"service":"slack","setup_binding":"setup-operation"});
+        let mut store = accounts::AccountStore::new();
+        store.upsert(account.clone());
+        store.save_in(&person).unwrap();
+        let mut legacy = SecretVault::open_in(&person);
+        legacy.put(&id, &service_session_secret(&session).unwrap());
+        legacy.try_save().unwrap();
+        let key = accounts::vault_dir_in(&person).join("vault.key");
+        assert!(key.exists(), "the old path kept the vault key beside it");
+
+        let resolved = Custodian::live()
+            .service_session(&id, session.identity_public_key, &session.setup_binding)
+            .expect("a keyring that answers reads the selection the person kept");
+        assert_eq!(resolved, session, "byte for byte the selection they made");
+        assert!(
+            !key.exists(),
+            "the key moved into the keyring; nothing reads the vault beside it"
+        );
+        let vault = SecretVault::open_person(Some(&person));
+        assert_eq!(vault.custody(), accounts::SecretCustody::System);
+        assert!(
+            vault.get(&id).is_some(),
+            "the selection stayed in the vault"
+        );
+        let reloaded = accounts::AccountStore::load_in(&person);
+        assert_eq!(
+            reloaded.get(&id),
+            Some(&account),
+            "its entry is where it was, keyed as it was"
+        );
     }
 
     #[test]

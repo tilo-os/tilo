@@ -209,7 +209,7 @@ impl DesktopEntry {
 
 /// Parse the contents of a `.desktop` file. `id` and `path` are supplied by the scanner
 /// (which knows the `applications` directory the file came from); `locales` is the caller's
-/// preferred-locale list, most specific first (see [`crate::locale::locale_candidates`]).
+/// preferred-locale list, most specific first (see [`crate::locale::language_candidates`]).
 ///
 /// Returns `None` only when the file has no `[Desktop Entry]` group at all — not a desktop
 /// entry, rather than a broken one.

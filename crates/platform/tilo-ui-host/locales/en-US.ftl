@@ -12,27 +12,61 @@ tilolang-ask-by = Requested by { $invoker }
 tilolang-ask-action = { $action }
 tilolang-ask-confirm = Allow
 tilolang-ask-decline = Decline
+tilolang-suggestion-accept = Accept
+tilolang-suggestion-dismiss = Dismiss
+# What waits to be proposed of an item, said in a line ("Suggested: set the due date to Sat").
+tilolang-suggested = Suggested
+tilolang-suggested-by = suggested by { $name }
 tilolang-ask-always = Always allow
 tilolang-ask-denied = That change is not allowed here.
 tilolang-ask-needs-approval = That change needs approval first.
 tilolang-embed-source = Block
-tilolang-history-edit = Edited a field
-tilolang-history-edit-field = Edited { $field }
-tilolang-history-set-field = Changed { $field }
-tilolang-history-set = Changed a field
+# What a change reads as in history, worked out from the field it wrote and what it held before
+# and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
+# is the field's name in a sentence ("due", "priority").
+tilolang-did-renamed = renamed this to
+tilolang-did-edited = edited the { $field }
+tilolang-did-changed = changed { $field }
+tilolang-did-completed = completed this
+tilolang-did-reopened = reopened this
+tilolang-did-created = created this
+tilolang-did-removed = removed this
+tilolang-did-moved = moved this to
+tilolang-did-moved-under = moved this under
+tilolang-did-moved-top = moved this to the top level
+tilolang-did-taken-out = moved this out of
+tilolang-did-assigned = assigned this to
+tilolang-did-unassigned = unassigned this
+tilolang-did-set = set { $field } to
+tilolang-did-cleared = cleared { $field }
+tilolang-did-set-date = set the { $field } date to
+tilolang-did-cleared-date = cleared the { $field } date
+tilolang-did-set-time = set the { $field } time to
+tilolang-did-cleared-time = cleared the { $field } time
+# How one sentence goes on with the next field a change wrote ("… and set priority to High").
+tilolang-did-and = and
+
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
 tilolang-invocation-suggested = Waiting for approval
+tilolang-invocation-proposed = Suggested
 tilolang-invocation-declined = Declined
 tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed
 tilolang-embed-error = This block could not run
 tilolang-all = All { $kind }
+# The actor of a history line the person looking made.
+tilolang-you = You
 tilolang-empty = Nothing here yet
+# What a list's entry at its end says while it is empty.
+tilolang-add = Add an item
+
 # The title over the items of a list that are done with, folded away after the rest.
 tilolang-done = Done
 # The heading over the items of a list that name no group of their own.
 tilolang-no-date = No date
+# Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
+tilolang-all-done = All done
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
@@ -46,6 +80,9 @@ tilolang-thread-replies = { $count ->
     [one] 1 reply
    *[other] { $count } replies
 }
+tilolang-make = Make
+tilolang-from = From
+tilolang-linked = Made from this
 
 app-activate-window = Show this window
 app-activate-window-description = Ask the platform to reveal the existing window, keeping its document owner.
@@ -135,3 +172,6 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 week after
    *[other] { $count } weeks after
 }
+
+tilolang-reminder-late = Late
+tilolang-reminder-open = Open

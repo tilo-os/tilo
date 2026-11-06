@@ -695,11 +695,7 @@ impl Custodian {
     }
 
     fn credentials(&self) -> Result<AccountCredentials, CustodyError> {
-        match &self.config_root {
-            Some(root) => AccountCredentials::open_in(root),
-            None => AccountCredentials::open(),
-        }
-        .map_err(CustodyError::Storage)
+        AccountCredentials::open_person(self.config_root.as_deref()).map_err(CustodyError::Storage)
     }
 
     fn store(&self) -> accounts::AccountStore {
@@ -714,11 +710,8 @@ impl Custodian {
     /// # Errors
     /// [`CustodyError::Storage`] when no config directory resolves.
     pub fn handoff(&self) -> Result<HandoffStore, CustodyError> {
-        match &self.config_root {
-            Some(root) => Ok(HandoffStore::open_in(root)),
-            None => HandoffStore::open()
-                .ok_or_else(|| CustodyError::Storage("no config directory".into())),
-        }
+        HandoffStore::open_person(self.config_root.as_deref())
+            .ok_or_else(|| CustodyError::Storage("no config directory".into()))
     }
 
     fn reporter(&self, id: &AccountId) -> accounts::AccountSyncReporter {

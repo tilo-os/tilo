@@ -2,10 +2,8 @@
 //! on the device's own key, the peer actor served on it, and the commands the
 //! session hands it until it stops.
 //!
-//! The endpoint is also where a call's lane is served
-//! ([`tilo_call_lane::ALPN`]): from the first pass, so a peer reaching this
-//! device for a call finds someone to answer, and the call installed on it
-//! when there is one.
+//! The endpoint is what names this device on the workspaces' planes, and what
+//! carries every one of them.
 
 use std::sync::Arc;
 
@@ -14,7 +12,8 @@ use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
 use super::{
-    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, heard, redeem,
+    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, enter, heard,
+    redeem,
 };
 
 /// The runtime the collaboration plane's thread runs on: two workers of its
@@ -41,11 +40,33 @@ fn plane_runtime(
 /// runs, and this device's action plane, which answers the person's other
 /// devices on it.
 pub(crate) struct Serving {
-    /// This device's endpoint, once it has bound, and what answers a call's
-    /// lanes on it.
+    /// This device's endpoint, once it has bound.
     pub(crate) bound: Bound,
     /// What answers on that endpoint beside the workspaces' own traffic.
     pub(crate) beside: Beside,
+}
+
+impl Serving {
+    /// What the session serves on the endpoint it is about to bind: the
+    /// endpoint it fills in once bound, and what answers beside the
+    /// workspaces' traffic.
+    pub(crate) fn new(
+        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+        link: Option<Arc<ChannelLink>>,
+        actions: Arc<std::sync::OnceLock<DeviceActions>>,
+        protocols: tilo_network_actor::local_host::Protocols,
+        documents: Option<super::PeerDocuments>,
+    ) -> Self {
+        Self {
+            bound: Bound { endpoint },
+            beside: Beside {
+                link,
+                actions,
+                protocols,
+                documents,
+            },
+        }
+    }
 }
 
 /// What the session serves on this device's endpoint beside the workspaces'
@@ -59,14 +80,16 @@ pub(crate) struct Beside {
     /// the endpoint binds: an endpoint's protocols are fixed once it is
     /// bound, so whatever answers on it is here from the first pass.
     pub(crate) protocols: tilo_network_actor::local_host::Protocols,
+    /// Where what admission takes in from another device is handed to this
+    /// device's apps: `None` on a session that serves no apps.
+    pub(crate) documents: Option<super::PeerDocuments>,
 }
 
 /// This device's endpoint as the session binds it: the bound endpoint itself,
-/// once it is, and the call lane served on it from the first pass.
+/// once it is.
 #[derive(Clone, Default)]
 pub(crate) struct Bound {
     pub(crate) endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
-    pub(crate) lane: crate::calls::LaneSlot,
 }
 
 /// What this device answers on from the moment its endpoint is bound: the
@@ -120,44 +143,25 @@ pub(super) fn run(
         else {
             return;
         };
+        // What asks a workspace's host runs beside this loop, so what the
+        // session says meanwhile is still carried.
+        let asking = Asking {
+            landed: enrollments,
+            endpoint,
+            plane: actor.clone(),
+            events: events.clone(),
+            link,
+            engine,
+            identity,
+        };
         while let Some(command) = commands.recv().await {
             let command = match command {
-                // A redemption asks a host, waits for it and takes the workspace
-                // in: it runs beside this loop, which keeps carrying what the
-                // session says meanwhile.
                 Outgoing::Enroll(request) => {
-                    let slot = request.slot;
-                    let workspace_id = request.workspace_id;
-                    let landed = enrollments.clone();
-                    let (Some(engine), Some(identity)) = (engine.clone(), identity.clone()) else {
-                        let _ = landed.send(Enrolled {
-                            slot,
-                            workspace_id,
-                            result: Err("this session joins no workspaces".into()),
-                        });
-                        continue;
-                    };
-                    let endpoint = endpoint.clone();
-                    let plane = actor.clone();
-                    let events = events.clone();
-                    let channels = link.clone();
-                    tokio::spawn(async move {
-                        let result = redeem(
-                            endpoint,
-                            identity,
-                            engine,
-                            &plane,
-                            &events,
-                            request,
-                            channels.as_deref(),
-                        )
-                        .await;
-                        let _ = landed.send(Enrolled {
-                            slot,
-                            workspace_id,
-                            result,
-                        });
-                    });
+                    asking.ask(Ask::Invitation(request));
+                    continue;
+                }
+                Outgoing::Enter(request) => {
+                    asking.ask(Ask::Entry(Box::new(request)));
                     continue;
                 }
                 command => command,
@@ -179,6 +183,101 @@ pub(super) fn run(
     });
 }
 
+/// What asking a workspace's host needs, held for the plane's loop: the loop
+/// never waits on a host, so an ask runs on its own task and hands what became
+/// of it back as an [`Enrolled`].
+struct Asking {
+    landed: std::sync::mpsc::Sender<Enrolled>,
+    endpoint: iroh::Endpoint,
+    plane: tokio::sync::mpsc::Sender<NetCmd>,
+    events: tokio::sync::mpsc::Sender<NetEvent>,
+    link: Option<Arc<ChannelLink>>,
+    engine: Option<Arc<Engine>>,
+    identity: Option<HostIdentity>,
+}
+
+/// One thing the plane asks a workspace's host for: someone's invitation
+/// redeemed into their workspace, or one of the person's own workspaces
+/// entered at the device hosting it.
+enum Ask {
+    Invitation(super::Enrolling),
+    Entry(Box<super::Entering>),
+}
+
+impl Asking {
+    /// Ask `ask` beside the loop, and hand what became of it back. A session
+    /// built without a workspace engine answers at once that it takes nothing
+    /// in.
+    fn ask(&self, ask: Ask) {
+        let (slot, workspace_id, member, name, missing) = match &ask {
+            Ask::Invitation(request) => (
+                request.slot,
+                request.workspace_id,
+                false,
+                None,
+                "this session joins no workspaces",
+            ),
+            Ask::Entry(request) => (
+                request.slot,
+                request.workspace_id,
+                true,
+                Some(request.name.clone()),
+                "this session keeps no workspaces",
+            ),
+        };
+        let landed = self.landed.clone();
+        let (Some(engine), Some(identity)) = (self.engine.clone(), self.identity.clone()) else {
+            let _ = landed.send(Enrolled {
+                slot,
+                workspace_id,
+                member,
+                name,
+                result: Err(missing.to_owned()),
+            });
+            return;
+        };
+        let endpoint = self.endpoint.clone();
+        let plane = self.plane.clone();
+        let events = self.events.clone();
+        let channels = self.link.clone();
+        tokio::spawn(async move {
+            let result = match ask {
+                Ask::Invitation(request) => {
+                    redeem(
+                        endpoint,
+                        identity,
+                        engine,
+                        &plane,
+                        &events,
+                        request,
+                        channels.as_deref(),
+                    )
+                    .await
+                }
+                Ask::Entry(request) => {
+                    enter(
+                        endpoint,
+                        identity,
+                        engine,
+                        &plane,
+                        &events,
+                        *request,
+                        channels.as_deref(),
+                    )
+                    .await
+                }
+            };
+            let _ = landed.send(Enrolled {
+                slot,
+                workspace_id,
+                member,
+                name,
+                result,
+            });
+        });
+    }
+}
+
 /// Bind this device's endpoint, serve the peer actor and its action plane on
 /// it, and say where the session's apps reach this device — or say why it
 /// could not, and answer nothing.
@@ -192,6 +291,7 @@ async fn listening(
         link,
         actions,
         protocols,
+        documents,
     }: Beside,
     bound: &Bound,
 ) -> Option<Listening> {
@@ -230,13 +330,6 @@ async fn listening(
     // the person's devices reaches what this one publishes here, beside the
     // workspaces' own traffic.
     let mut served: tilo_network_actor::local_host::Protocols = Vec::new();
-    // A call's lane is served here too, from the first pass: it refuses every
-    // connection until a call installs its carrier, and answers those from
-    // then until the call ends.
-    served.push((
-        tilo_call_lane::ALPN.to_vec(),
-        Box::<dyn iroh::protocol::DynProtocolHandler>::from(bound.lane.handler()),
-    ));
     // What the session serves beside its own planes: this device's exit for
     // the person's other devices, when it offers one.
     served.extend(protocols);
@@ -259,7 +352,7 @@ async fn listening(
         reachability.clone(),
         served,
     );
-    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link);
+    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link, documents);
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }

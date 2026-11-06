@@ -76,8 +76,8 @@ the network learns the endpoint id. Invite addresses work without it.
 2. The `tilo-relay/1` ALPN, which never changes: the peer protocol version
    is the handshake's first field, and there is one framing per version
    (docs/architecture/compatibility.md). Device-signed private actions,
-   zero-signature deltas without the signature, presence coalesced, paced,
-   batched and slot-coded per connection (`src/presence_mailbox.rs`), and
+   zero-signature deltas without the signature, presence batched per
+   connection in the order it was posted (`src/presence_mailbox.rs`), and
    live deltas coded against the previous one from the same author;
    presence that may go early rides in the same write as a delta.
 3. Three-message auth handshake — mutual proof-of-possession of certified
@@ -109,27 +109,23 @@ the network learns the endpoint id. Invite addresses work without it.
 What a relay costs per active collaborator is measured, not estimated:
 
 - **Egress counters.** The daemon counts every byte it writes to a peer
-  session (`bytes_sent`), the live fan-out part of it (`bytes_sent_live`),
+  session (`bytes_sent`), the presence part of it (`bytes_sent_live`),
   both per room, and each connected session's total
   (`Metrics::session_egress`). `tilo-relay-admin status` prints them.
   They count framed bytes before QUIC; the load bench adds what the iroh
   endpoint actually put on UDP.
-- **Presence bytes** (`peer::state_tests::presence_cost`): a controlled
-  60-move ingress schedule exercises production presence routing and writing
-  on both `/5` and `/6`. The actual accepted bytes must cost at most 70 bytes
-  per delivered presence on `/6`, and under a third of `/5`; both streams
-  must decode to identical attributed final states and event order. The
-  network scenario in `tests/presence_coalescing.rs` separately covers protocol
-  negotiation and delivery without using its scheduler-dependent byte mix
-  as a budget gate.
+- **Presence delivery** (`tests/presence_batching.rs`): one member's presence
+  reaches another in the order it was posted, a keystroke's caret and typing
+  ride in the write its delta takes, and a pointer that comes to rest arrives
+  without another message.
 - **Bytes per keystroke** (`tests/hosting_cost.rs`, per change): one
   one-character edit on the production path, frame by frame, with byte
   budgets, and the live egress counter checked against the frames the
   subscribers read.
 - **Load bench** (`examples/relay_load`, run by
   `tools/ci/perf-scheduled.sh hosting`): 100 collaborators in rooms of four, each typing 30
-  characters, then pointing for four seconds at 30 Hz (which each client's
-  session writer paces to the relay's 20 Hz before it is sent), then idle, every
+  characters, then pointing for four seconds at 30 Hz (which the relay
+  forwards one frame per move, in the order it was posted), then idle, every
   minute, against one relay process. It records CPU-seconds, resident MiB and
   egress bytes per collaborator-hour; packets per collaborator-hour, from the
   collaborators' own QUIC connection counters (datagrams they sent and of

@@ -285,6 +285,13 @@ impl Decorator for Publishing {
         "Publishing"
     }
 
+    // Publishing adds no structure of its own: a change its content describes
+    // stays described, so a list mounting rows settles instead of rebuilding
+    // the window's tree around it.
+    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+        self.content.take_structure_change()
+    }
+
     // The latest query reaches the view before it syncs; what it says of
     // its answer is read after.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

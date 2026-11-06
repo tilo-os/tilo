@@ -347,6 +347,126 @@ fn frames_come_back_as_buffers_with_the_app_s_pixels() {
     assert_eq!(pixel(shown, 41, 31), [0, 255, 0, 255]);
 }
 
+/// A frame that lands in a buffer the app already showed is brought up to
+/// date with the regions that changed, each copied where the buffer shows
+/// it: a region that starts right of the buffer's left edge keeps its
+/// pixels, and a row's padding — zeros the readback leaves past the row —
+/// never reaches the buffer, where an opaque surface would show it as a
+/// black block.
+#[test]
+fn a_partial_frame_lands_where_the_buffer_shows_it_and_paints_no_black() {
+    let broker = start(Limits::default());
+    let mut app = connect(&broker, 1, "so.tilo.calculator");
+    let red = Color::from_rgba8(255, 0, 0, 255);
+    let blue = Color::from_rgba8(0, 0, 255, 255);
+    let green = Color::from_rgba8(0, 255, 0, 255);
+    let yellow = Color::from_rgba8(255, 255, 0, 255);
+    let magenta = Color::from_rgba8(255, 0, 255, 255);
+    let ground = KRect::new(0.0, 0.0, f64::from(W), f64::from(H));
+    let squares = [
+        (blue, KRect::new(8.0, 8.0, 16.0, 16.0)),
+        (green, KRect::new(40.0, 30.0, 48.0, 38.0)),
+        (yellow, KRect::new(56.0, 4.0, 60.0, 8.0)),
+        (magenta, KRect::new(20.0, 40.0, 24.0, 44.0)),
+    ];
+    // Every frame draws the whole page; only the square it adds is damage.
+    let page = |upto: usize| {
+        let mut scene = filled(red, ground);
+        for &(color, rect) in squares.iter().take(upto) {
+            scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+        }
+        scene
+    };
+    let damage = |(_, rect): (Color, KRect)| {
+        Some(Rect {
+            x0: rect.x0 as f32,
+            y0: rect.y0 as f32,
+            x1: rect.x1 as f32,
+            y1: rect.y1 as f32,
+        })
+    };
+
+    // Three frames fill the three buffers, each of them whole.
+    let first = app.frame(&page(1), None);
+    let Received { message, fds } = app.recv();
+    let ServiceMessage::Buffers {
+        generation, kind, ..
+    } = message
+    else {
+        panic!("buffers first, got {message:?}");
+    };
+    assert!(
+        matches!(kind, BufferKind::Shm { format: 1 }),
+        "an opaque surface gets XRGB8888"
+    );
+    let buffers: Vec<Mapping> = fds
+        .iter()
+        .map(|fd| {
+            Mapping::map_sealed(fd, false, (W * H * 4) as usize, (W * H * 4) as usize).unwrap()
+        })
+        .collect();
+    let ServiceMessage::FrameReady {
+        sequence,
+        buffer: shown,
+        ..
+    } = app.recv().message
+    else {
+        panic!("frame ready");
+    };
+    assert_eq!(sequence, first);
+    let mut shown = vec![shown];
+    for (index, &square) in squares
+        .iter()
+        .enumerate()
+        .skip(1)
+        .take(buffers.len().saturating_sub(1))
+    {
+        let sequence = app.frame(&page(index + 1), damage(square));
+        let ServiceMessage::FrameReady {
+            sequence: ready,
+            buffer,
+            ..
+        } = app.recv().message
+        else {
+            panic!("frame ready");
+        };
+        assert_eq!(ready, sequence);
+        shown.push(buffer);
+    }
+
+    // The buffers the app is done with go back, so the next frame lands in
+    // one that already showed a frame: only what changed since is copied.
+    for &buffer in &shown {
+        app.channel
+            .send(
+                &AppMessage::Released {
+                    surface: SurfaceId(1),
+                    generation,
+                    buffer,
+                },
+                &[],
+            )
+            .unwrap();
+    }
+    let sequence = app.frame(&page(squares.len()), damage(squares[3]));
+    let ServiceMessage::FrameReady {
+        sequence: ready,
+        buffer,
+        ..
+    } = app.recv().message
+    else {
+        panic!("frame ready");
+    };
+    assert_eq!(ready, sequence);
+    assert!(shown.contains(&buffer), "the released buffer comes back");
+    let now = &buffers[buffer as usize];
+    assert_eq!(pixel(now, 1, 1), [0, 0, 255, 255], "the ground");
+    assert_eq!(pixel(now, 12, 12), [255, 0, 0, 255], "the blue square");
+    assert_eq!(pixel(now, 41, 31), [0, 255, 0, 255], "the green square");
+    assert_eq!(pixel(now, 57, 5), [0, 255, 255, 255], "the yellow square");
+    assert_eq!(pixel(now, 21, 41), [255, 0, 255, 255], "the magenta square");
+}
+
 #[test]
 fn a_frame_that_breaks_the_protocol_is_dropped_and_the_service_carries_on() {
     let broker = start(Limits::default());

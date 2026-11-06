@@ -71,6 +71,34 @@ pub struct PageLayout {
     pub gutter: Effective<f32>,
 }
 
+/// The grid a list row lays its content out on, as the row paints it: where its title starts and
+/// ends, where the facts column stands and how wide the room for it is, and whether the title was
+/// cut short.
+///
+/// An audit reads this to compare rows with each other: the titles of one list must stand on one
+/// x for each depth, a nesting step must indent by the same gutter the toolkit nests by, and a
+/// title cut short while most of the row stands empty is a grid that gave its columns the wrong
+/// room.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct RowLayout {
+    /// How many rows over it the row stands: each step indents its content one disclosure gutter.
+    pub depth: u32,
+    /// Where the row's own content starts: its leading control stands here, or its title when it
+    /// has none. A nesting step indents it one disclosure gutter.
+    pub content_left: f32,
+    /// Where the title starts, after the row's leading control.
+    pub text_x: f32,
+    /// Where the title's room ends: the facts column narrows it.
+    pub text_right: f32,
+    /// The left edge of what stands in the facts column, or the row's content edge when nothing
+    /// does.
+    pub facts_left: f32,
+    /// The right edge of the row's content, where the facts end.
+    pub content_right: f32,
+    /// The left edge of the marks a row shows on its edge, when it shows any.
+    pub marks_left: Option<f32>,
+}
+
 /// Concrete layout policies. Manual layout information can extend this enum.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
@@ -80,6 +108,7 @@ pub enum LayoutInfo {
     Field(FieldLayout),
     Manual(ManualLayout),
     Scroll(ScrollLayout),
+    Row(RowLayout),
 }
 
 /// Which way a scroll view lets its content go on past its own box.

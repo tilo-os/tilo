@@ -25,7 +25,7 @@ use tilo_user_identity::{
 };
 
 use tilo_relay::{
-    RelayConfig,
+    Envelope, RelayClient, RelayConfig,
     daemon::{Relay, RelayIdentity},
 };
 
@@ -222,8 +222,19 @@ pub async fn client_endpoint() -> Endpoint {
     Endpoint::builder(presets::Minimal).bind().await.unwrap()
 }
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-pub const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+/// The next envelope from `client` that `want` accepts: the wait ends as soon
+/// as one arrives, and only a hang reaches the bound.
+pub async fn next(client: &RelayClient, mut want: impl FnMut(&Envelope) -> bool) -> Envelope {
+    tilo_test_env::within("the next envelope", async {
+        loop {
+            let env = client.recv().await.expect("session open");
+            if want(&env) {
+                return env;
+            }
+        }
+    })
+    .await
+}
 
 /// Wait until `relay` has accepted `peer`'s subscription to `workspace`.
 ///

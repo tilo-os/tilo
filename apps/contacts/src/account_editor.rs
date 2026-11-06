@@ -221,7 +221,7 @@ impl Editor {
         self.person(&person)?;
         if !selected.open
             || selected.person != person
-            || !["tilo", "whatsapp", "signal", "sms"].contains(&service.as_str())
+            || !["whatsapp", "signal", "sms"].contains(&service.as_str())
             || recipient.trim().is_empty()
             || recipient.len() > 512
             || recipient
@@ -517,7 +517,7 @@ fn panel_contents(
         selected
             .editing
             .as_ref()
-            .map_or_else(|| "tilo".to_owned(), |old| old.service.clone()),
+            .map_or_else(|| "signal".to_owned(), |old| old.service.clone()),
     );
     let recipient = LocalState::new(
         selected
@@ -530,7 +530,6 @@ fn panel_contents(
         .with_accessible_name(CATALOG.t("contacts-account-service"));
     services.set_value_options(
         [
-            ("tilo", "Tilo"),
             ("whatsapp", "WhatsApp"),
             ("signal", "Signal"),
             ("sms", "SMS"),
@@ -1155,7 +1154,7 @@ mod input_journey {
         assert_eq!(pending.person, contact.id.to_string());
         assert_eq!(pending.recipient, "stable-user-id");
         let directory = app.shared_person::<ContactDirectory>().unwrap();
-        assert!(directory.get().resolve("tilo", "stable-user-id").is_err());
+        assert!(directory.get().resolve("signal", "stable-user-id").is_err());
         let row = format!("contacts.account-review:{}", pending.token);
         app.effect_on_confirmed(
             &row,
@@ -1165,7 +1164,7 @@ mod input_journey {
         )
         .unwrap();
         assert_eq!(
-            directory.get().resolve("tilo", "stable-user-id"),
+            directory.get().resolve("signal", "stable-user-id"),
             Ok(Id::from_raw(contact.id.to_string()))
         );
     }

@@ -240,30 +240,56 @@ where
     ))
 }
 
-/// A hosted surface's layer, drawn with its top left corner at `location`:
-/// the whole frame, scaled to the rectangle the layer covers, so a layer the
-/// size of a display shows all of the frame on it.
+/// A hosted surface's layer, drawn at `scale` with the layer's top left
+/// corner at `location` (physical): the part of the frame it shows, at the
+/// pixel of the output the layer covers, so a layer the size of a display
+/// that paints a bar costs its bar rather than the display. `None` when the
+/// layer shows nothing there is to draw.
 fn hosted_layer<R>(
     renderer: &mut R,
     layer: &HostLayer,
     location: Point<f64, Physical>,
-) -> Result<MemoryRenderBufferRenderElement<R>, R::Error>
+    scale: f64,
+) -> Result<Option<MemoryRenderBufferRenderElement<R>>, R::Error>
 where
     R: ImportMem,
     R::TextureId: Send + Clone + 'static,
 {
     let (width, height) = layer.frame.size();
-    let whole: Rectangle<f64, Logical> =
-        Rectangle::from_size(Size::from((f64::from(width), f64::from(height))));
+    let Some(shown) = layer
+        .frame
+        .shown()
+        .filter(|shown| shown.width > 0 && shown.height > 0 && shown.x < width && shown.y < height)
+    else {
+        return Ok(None);
+    };
+    let (width, height) = (f64::from(width), f64::from(height));
+    // The frame scaled to the rectangle the layer covers, so a layer drawn at
+    // the output's scale is shown at the pixels it was drawn for.
+    let across = f64::from(layer.size.0) / width;
+    let down = f64::from(layer.size.1) / height;
+    let src = Rectangle::new(
+        Point::from((f64::from(shown.x), f64::from(shown.y))),
+        Size::from((f64::from(shown.width), f64::from(shown.height))),
+    );
+    let drawn = Size::<f64, Logical>::from((
+        f64::from(shown.width) * across,
+        f64::from(shown.height) * down,
+    ))
+    .to_i32_round::<i32>();
+    let dst = Size::from((drawn.w.max(1), drawn.h.max(1)));
+    let at = location
+        + Point::from((f64::from(shown.x) * across, f64::from(shown.y) * down)).to_physical(scale);
     MemoryRenderBufferRenderElement::from_buffer(
         renderer,
-        location,
+        at,
         layer.frame.buffer(),
         None,
-        Some(whole),
-        Some(Size::from(layer.size)),
+        Some(src),
+        Some(dst),
         Kind::Unspecified,
     )
+    .map(Some)
 }
 
 /// What lies below hosted surface `host`, front first: the hosts beneath
@@ -290,8 +316,9 @@ where
         for layer in below.layers().into_iter().rev() {
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
-            match hosted_layer(renderer, &layer, location) {
-                Ok(element) => elements.push(OutputRenderElement::Memory(element)),
+            match hosted_layer(renderer, &layer, location, scale) {
+                Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
+                Ok(None) => {}
                 Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
             }
         }
@@ -361,7 +388,7 @@ where
         let at = location.to_f64() - window.geometry().loc.to_f64() - origin;
         let hdr = crate::hdr::pieces(
             renderer,
-            &state.hdr,
+            state,
             window,
             at.to_physical_precise_round(scale),
             scale,
@@ -414,6 +441,7 @@ where
         images: &state.frame_images,
         snapshots: &state.snapshots,
         hdr: &state.hdr,
+        state,
     };
     // The frame the window last drew, kept before its surface went: the
     // desktop animates that away.
@@ -449,10 +477,10 @@ where
     let scale = Scale::from(output_scale);
     let bounds = Rectangle::from_size(geometry.size.to_physical_precise_round(output_scale));
     let window_of = |id: u64| {
-        state.space.elements().find(|window| {
-            crate::state::describe(&state.display, &state.icons, window)
-                .is_some_and(|info| info.id == id)
-        })
+        state
+            .space
+            .elements()
+            .find(|window| crate::state::describe(state, window).is_some_and(|info| info.id == id))
     };
     let locked = state.locked();
     let mut elements: Vec<OutputRenderElement<R>> = dim.into_iter().collect();
@@ -484,8 +512,9 @@ where
             for layer in host.layers().into_iter().rev() {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
-                match hosted_layer(renderer, &layer, location.to_f64()) {
-                    Ok(element) => elements.push(OutputRenderElement::Memory(element)),
+                match hosted_layer(renderer, &layer, location.to_f64(), output_scale) {
+                    Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
+                    Ok(None) => {}
                     Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
                 }
             }

@@ -283,7 +283,11 @@ pub fn declared_names(m: &Module) -> Vec<String> {
     let mut out = Vec::new();
     for item in &m.items {
         match item {
-            Item::Use(_) | Item::Root(_) | Item::DefaultView(_) | Item::RowView(_) => {}
+            Item::Use(_)
+            | Item::Root(_)
+            | Item::DefaultView(_)
+            | Item::RowView(_)
+            | Item::Views(_) => {}
             Item::Scenario(s) => out.push(scenario_key(&s.name)),
             Item::Alias(a) => {
                 out.push(a.name.name.clone());
@@ -296,6 +300,10 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                 out.push(t.name.name.clone());
                 for f in &t.fields {
                     out.push(format!("{}.{}", t.name.name, f.name.name));
+                }
+                // A derived key is a field of the type: its id is the lock's too.
+                for d in &t.derives {
+                    out.push(format!("{}.{}", t.name.name, d.name.name));
                 }
             }
             Item::Enum(e) => {
