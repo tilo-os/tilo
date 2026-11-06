@@ -22245,6 +22245,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-view"
+version = "0.1.0"
+dependencies = [
+ "inventory",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tilo-render-protocol",
+ "tilo-ui-graph",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-vision"
 version = "0.1.0"
 dependencies = [
