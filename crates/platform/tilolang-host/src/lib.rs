@@ -721,13 +721,16 @@ impl TilolangHost {
         }
         // An undo of an action that wrote several units takes every unit back through its own
         // instance, and the reverts go out as one action.
-        let across: Vec<collaboration::commit_log::CommitHistory> = self
+        let asks: Vec<(u64, tilo_actions::InvocationId)> = self
             .running
             .iter_mut()
-            .filter_map(|running| running.hosted.take_undo_across())
+            .filter_map(|running| {
+                let invocation = running.hosted.take_undo_ask()?;
+                Some((running.hosted.spec().instance, invocation))
+            })
             .collect();
-        for action in &across {
-            changed |= self.undo_across(action);
+        for (asked_in, invocation) in asks {
+            changed |= self.undo(asked_in, invocation);
         }
         let before = self.running.len();
         let ended = &mut self.ended;
@@ -770,11 +773,42 @@ impl TilolangHost {
         changed || self.running.len() != before || self.appliers.len() != applying
     }
 
-    /// Take the action `action` the person undid back in every unit of it this host runs, each
-    /// through that unit's own instance, and publish the reverts as one action: every part
-    /// carries the same commit, so a peer applies the whole undo or none of it. Whether anything
-    /// was taken back.
-    fn undo_across(&mut self, action: &collaboration::commit_log::CommitHistory) -> bool {
+    /// Take the step the person asked to undo in `asked_in` back: in that unit alone when no
+    /// other unit of the workspace this host runs holds a change of its action, and otherwise in
+    /// every unit that does, each through its own instance, the reverts published as one action.
+    ///
+    /// The units and their changes come from the records themselves, lazily, unit by unit: an
+    /// undo works after a restart that lost every log the transport kept, because the action's
+    /// invocation names its changes in every document it wrote. Whether anything was taken back.
+    fn undo(&mut self, asked_in: u64, invocation: tilo_actions::InvocationId) -> bool {
+        let mut parts: Vec<(String, String, Vec<[u8; 32]>)> = Vec::new();
+        let mut workspace = None;
+        for running in &self.running {
+            let route = running.hosted.record().route();
+            let changes = running.hosted.changes_of(invocation);
+            if changes.is_empty() {
+                continue;
+            }
+            if running.hosted.spec().instance == asked_in {
+                workspace = Some(route.cluster_id.to_string());
+            }
+            parts.push((
+                route.app_id.clone(),
+                route.record.clone().unwrap_or_default(),
+                changes,
+            ));
+        }
+        let Some(workspace) = workspace else {
+            return false;
+        };
+        if parts.len() <= 1 {
+            // The step is this unit's alone: its own instance takes it back.
+            return self
+                .running
+                .iter_mut()
+                .find(|running| running.hosted.spec().instance == asked_in)
+                .is_some_and(|running| running.hosted.undo_here());
+        }
         // The reverts are one new action of the person's: one fresh invocation names it in every
         // unit's change, which is what makes the parts one commit.
         let ambient = tilo_actions::ActionContext {
@@ -788,10 +822,13 @@ impl TilolangHost {
                 route.app_id.clone(),
                 route.record.clone().unwrap_or_default(),
             );
-            let Some(part) = action.parts.iter().find(|part| part.is(&app, &record)) else {
+            let Some((_, _, changes)) = parts
+                .iter()
+                .find(|(unit_app, unit_record, _)| unit_app == &app && unit_record == &record)
+            else {
                 continue;
             };
-            for change in &part.changes {
+            for change in changes {
                 if !running.hosted.can_revert(change) {
                     continue;
                 }
@@ -806,19 +843,11 @@ impl TilolangHost {
                 units.push((app, record, change));
             }
         }
-        for part in &action.parts {
-            if !units.iter().any(|(app, record, _)| part.is(app, record)) {
-                tracing::warn!(
-                    app = %part.app, record = %part.record,
-                    "no instance of this unit is open here: its step of the undone action stays"
-                );
-            }
-        }
         if units.is_empty() {
             return false;
         }
         let undo = collaboration::WorkspaceCommit::of_units(
-            &action.workspace,
+            &workspace,
             &collaboration::CommitAuthor {
                 principal: None,
                 device: [0; 32],

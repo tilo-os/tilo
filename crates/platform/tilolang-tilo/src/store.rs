@@ -312,6 +312,7 @@ mod index_build;
 use index_build::AppIndex;
 mod outbox;
 mod plan;
+mod run;
 pub(crate) use plan::rich_edit;
 mod unsaved;
 mod upgrade_fields;
@@ -370,6 +371,10 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
+    /// The runs that have not finished, as they began: where a run's first write stands in the
+    /// record's local changes and in what it queued, so that a run that fails anywhere takes all
+    /// it wrote back out ([`Store::abort_run`]).
+    runs: HashMap<String, run::RunBegin>,
     /// Handed to the host and not yet answered by the door.
     handed: BTreeMap<u64, DynAction>,
     next_ticket: u64,
@@ -841,6 +846,7 @@ impl TiloStore {
                 trials: 0,
                 held: Vec::new(),
                 committed: VecDeque::new(),
+                runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
                 journals: BTreeMap::new(),
@@ -2546,6 +2552,7 @@ impl Store for TiloStore {
                 from: note.from.clone(),
                 suggested_by: note.suggested_by.clone(),
                 count: note.count.max(1),
+                invocation: note.invocation.clone(),
             },
             edits: state.edits,
         };
@@ -2591,6 +2598,20 @@ impl Store for TiloStore {
             inner.rebuild_overlay();
             inner.changed();
         }
+    }
+
+    fn begin_run(&mut self, run: &str) {
+        if self.load_record().is_ok() {
+            self.mutate().begin_run(run);
+        }
+    }
+
+    fn end_run(&mut self, run: &str) {
+        self.mutate().end_run(run);
+    }
+
+    fn abort_run(&mut self, run: &str) {
+        self.mutate().abort_run(run);
     }
 
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {

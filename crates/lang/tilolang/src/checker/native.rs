@@ -1686,16 +1686,11 @@ pub(crate) fn offer_decided(r: &ast::Require, params: &[crate::resolve::ParamInf
     mentions(&r.cond, &others).is_none() && mentions(&r.reason, &others).is_none()
 }
 
-/// The first of `names` an expression reads as a variable, ignoring the inside of lambdas.
+/// The first of `names` an expression reads as a variable, as the caller wrote them: a lambda
+/// body counts, read without the names the lambda binds itself, since what it reads of the
+/// caller's it still reads when it runs.
 pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> {
-    let block = |b: &ast::Block| {
-        b.stmts.iter().find_map(|s| match &s.kind {
-            StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
-            StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
-            StmtKind::Assign { value, .. } => mentions(value, names),
-            StmtKind::For { iter, .. } => mentions(iter, names),
-        })
-    };
+    let block = |b: &ast::Block| mentions_block(b, names);
     match &e.kind {
         ExprKind::Ident(n) => names.iter().find(|x| **x == n).copied(),
         ExprKind::Field { base, .. } => mentions(base, names),
@@ -1736,6 +1731,14 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
             .into_iter()
             .flatten()
             .find_map(|end| mentions(end, names)),
+        ExprKind::Lambda { params, body } => {
+            let own: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|n| !params.iter().any(|p| p.name.as_str() == *n))
+                .collect();
+            mentions(body, &own)
+        }
         ExprKind::Int(_)
         | ExprKind::Float(_)
         | ExprKind::Length(..)
@@ -1743,7 +1746,24 @@ pub(super) fn mentions<'a>(e: &ast::Expr, names: &[&'a str]) -> Option<&'a str> 
         | ExprKind::Calendar(_)
         | ExprKind::Bool(_)
         | ExprKind::Ref(_)
-        | ExprKind::Lambda { .. }
         | ExprKind::Root(_) => None,
     }
+}
+
+/// [`mentions`] over the statements of a block, the names a `for` binds itself left out as a
+/// lambda's parameters are.
+fn mentions_block<'a>(b: &ast::Block, names: &[&'a str]) -> Option<&'a str> {
+    b.stmts.iter().find_map(|s| match &s.kind {
+        StmtKind::Expr(x) | StmtKind::Let { value: x, .. } => mentions(x, names),
+        StmtKind::Return(x) => x.as_ref().and_then(|x| mentions(x, names)),
+        StmtKind::Assign { value, .. } => mentions(value, names),
+        StmtKind::For { var, iter, body } => {
+            let own: Vec<&str> = names
+                .iter()
+                .copied()
+                .filter(|n| var.name.as_str() != *n)
+                .collect();
+            mentions(iter, names).or_else(|| mentions_block(body, &own))
+        }
+    })
 }

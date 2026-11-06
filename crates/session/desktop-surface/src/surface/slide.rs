@@ -304,11 +304,18 @@ impl super::DesktopSurface {
     ) {
         let (kind, toward, steps) = Self::change_of(before, after, tree);
         let motion = self.motion;
-        let started = self.navigation_source().map(|source| Started {
-            kind,
-            toward,
-            steps,
-            source,
+        // Across several displays a strip change happens on the display the
+        // person works on; the strip left behind stays where it was on the
+        // displays that keep showing it, so the change lands there instead
+        // of sliding the whole desk.
+        let started = self.navigation_source().and_then(|source| {
+            let started = Started {
+                kind,
+                toward,
+                steps,
+                source,
+            };
+            (!(kind == SlideKind::Strip && tree.is_partitioned())).then_some(started)
         });
         self.shown = after;
         self.structure_dirty = true;

@@ -118,6 +118,7 @@ qs-rotation-lock = Rotation lock
 qs-rotation-locked = Locked
 qs-rotation-unlocked = Rotates with device
 qs-sound-output = Sound output
+qs-sound-session-output = Session output
 qs-sound-settings = Sound settings
 qs-stream-level = { $app } volume
 qs-stream-mute = Mute { $app }

@@ -473,9 +473,6 @@ impl Core {
             .borrow()
             .action_package(&v.action)
             .and_then(|pkg| pkg.action(&v.action).cloned());
-        let description = declared
-            .as_ref()
-            .map_or_else(String::new, |a| a.doc.clone());
         // What it did, in the words a sentence goes on with after who did it: the app's own
         // words for the action (`did:`) where it declares them, else what the change itself
         // says (`self.changes_value`), and for one that made or removed the resource, that.
@@ -527,7 +524,6 @@ impl Core {
             Value::Opt(v.from.as_ref().map(|from| Box::new(Value::resource(from)))),
             Value::Bool(mine),
             Value::Text(actor),
-            Value::Text(description),
             Value::Text(did),
             Value::Opt(icon),
             Value::List(changes),
@@ -705,8 +701,6 @@ impl Core {
             };
             held.push((field, side(before)?, side(after)?));
         }
-        let mine = v.task.is_none() && self.looking_now().as_deref() == Some(v.who.as_str());
-        let actor = self.actor(&v.who, mine);
         let mut out = Vec::with_capacity(held.len());
         let mut first = true;
         for (field, before, after) in &held {
@@ -739,11 +733,12 @@ impl Core {
                 None => said.source.to_owned(),
             };
             let voices = self.words.borrow().word(said.key, &args, &source);
-            // One sentence for the whole version: who made it opens it, "and" goes on with it.
-            let leading = if first {
-                actor.clone()
+            // One sentence for the whole version: who made it stands once, in the version's own
+            // row, and "and" goes on with what a later change of the same version did.
+            let words = if first {
+                voices
             } else {
-                self.word("tilolang-did-and", "and")
+                format!("{} {voices}", self.word("tilolang-did-and", "and"))
             };
             first = false;
             out.push(Value::Tuple(vec![
@@ -751,7 +746,7 @@ impl Core {
                 Value::Text(sentence(&field.name)),
                 before.clone(),
                 after,
-                Value::Text(format!("{leading} {voices}")),
+                Value::Text(words),
                 Value::Text(said.shows.word().to_owned()),
             ]));
         }

@@ -24416,6 +24416,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "serde_core",
+ "sha1_smol",
  "uuid-rng-internal",
  "wasm-bindgen",
 ]

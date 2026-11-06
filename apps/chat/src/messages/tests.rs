@@ -434,6 +434,129 @@ fn read_messages_pages_through_a_channel_across_its_parts() {
     );
 }
 
+/// A direct conversation's unread count follows the chain, as the read mark
+/// does, though a message written elsewhere carries an earlier time than the
+/// message before it: a clock behind another device's does not make a message
+/// read.
+#[test]
+fn unread_messages_are_counted_in_the_order_the_part_holds_them() {
+    let channel = Id::from_raw("c_direct");
+    let mut part = ChatPart::default();
+    for (id, author, ts) in [
+        ("m_one", "ada", 100),
+        ("m_two", "bo", 50),
+        ("m_three", "bo", 200),
+    ] {
+        part.messages.push(
+            Id::from_raw(id),
+            crate::record::Message {
+                channel: channel.clone(),
+                author: ui::tilo_resource::Atom(author.to_owned()),
+                ts,
+                ..crate::record::Message::default()
+            },
+        );
+    }
+    let held = Messages::single(part);
+    assert_eq!(
+        held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 1 }, "ada"),
+        2,
+        "the two after the mark, though one was written earlier"
+    );
+    let first = held.first_unread(&channel, crate::parts::ReadMark { part: 0, seen: 1 });
+    assert_eq!(first.map(ToString::to_string).as_deref(), Some("m_two"));
+    assert_eq!(
+        held.unread_by_others(&channel, crate::parts::ReadMark { part: 0, seen: 3 }, "ada"),
+        0
+    );
+}
+
+/// Two devices write offline from the same part, take each other's changes
+/// in the opposite order, and write again: both read one timeline, in the
+/// same order. The order is the one the part records hold
+/// ([`Messages::iter`]), which every replica computes from the same records,
+/// so it stays the same whether a change arrives before or after another.
+#[test]
+fn replicas_taking_the_same_posts_in_opposite_orders_read_one_timeline() {
+    let chat = crate::demo::demo(crate::model::ME);
+    // A part holding one message written with a time after every post that
+    // follows: a read that ordered by a clock would show it last.
+    let mut seeded = ChatPart::default();
+    seeded.messages.push(
+        Id::from_raw("m_seeded"),
+        crate::record::Message {
+            channel: Id::from_raw("c_general"),
+            author: ui::tilo_resource::Atom("u_aria".to_owned()),
+            ts: 4_000_000_000,
+            text: "seeded".to_owned(),
+            ..crate::record::Message::default()
+        },
+    );
+    let mut workspace = Workspace::default();
+    workspace.write_part(0, &seeded).unwrap();
+    let base = workspace.part_bytes(0).unwrap();
+    let replica = |actor: u8| {
+        let mut doc = ui::automerge::AutoCommit::load(&base).unwrap();
+        doc.set_actor(ui::automerge::ActorId::from(vec![actor; 16]));
+        doc
+    };
+    let mut ada = replica(1);
+    let mut bob = replica(2);
+    let say = |doc: &mut ui::automerge::AutoCommit, author: &str, text: &str| {
+        crate::demo::apply_part_doc(
+            doc,
+            &chat,
+            author,
+            crate::demo::post("c_general", text, None),
+        )
+        .unwrap();
+    };
+    let take = |mine: &mut ui::automerge::AutoCommit, theirs: &mut ui::automerge::AutoCommit| {
+        let changes = theirs.get_changes(&mine.get_heads());
+        tilo_automerge::ApplyIncoming::apply_incoming(mine, changes).unwrap();
+    };
+    // The same second, so the wall clock cannot tell these apart.
+    say(&mut ada, "u_aria", "Ada one");
+    say(&mut bob, "u_milo", "Bob one");
+    // Each takes the other's change before writing again: what Ada has read
+    // first, Bob reads second.
+    take(&mut ada, &mut bob);
+    take(&mut bob, &mut ada);
+    say(&mut ada, "u_aria", "Ada two");
+    say(&mut bob, "u_milo", "Bob two");
+    take(&mut ada, &mut bob);
+    take(&mut bob, &mut ada);
+    let timeline = |doc: &ui::automerge::AutoCommit| -> Vec<String> {
+        chat.message_rows(&Messages::single(read_part(doc)), "c_general")
+            .into_iter()
+            .map(|message| message.id)
+            .collect()
+    };
+    let ours = timeline(&ada);
+    assert_eq!(timeline(&bob), ours, "both devices read one order");
+    let in_record: Vec<String> = read_part(&ada)
+        .messages
+        .ids()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(ours, in_record, "in the order the records hold them");
+    let unique: std::collections::BTreeSet<&String> = ours.iter().collect();
+    assert_eq!(unique.len(), ours.len(), "each message once: {ours:?}");
+    let texts: std::collections::BTreeSet<String> = chat
+        .message_rows(&Messages::single(read_part(&ada)), "c_general")
+        .into_iter()
+        .map(|message| message.text)
+        .collect();
+    for text in ["Ada one", "Ada two", "Bob one", "Bob two"] {
+        assert!(texts.contains(text), "{text} missing from {texts:?}");
+    }
+    // Writing over the converged part (which re-keys whatever two replicas
+    // wrote at the same place) keeps both devices' order the same.
+    say(&mut ada, "u_aria", "Ada three");
+    take(&mut bob, &mut ada);
+    assert_eq!(timeline(&ada), timeline(&bob), "and after a write over it");
+}
+
 /// A post's step says which channel it went to, as everyone sees it
 /// named: what the automatic status reads to say "Writing in #general".
 #[test]

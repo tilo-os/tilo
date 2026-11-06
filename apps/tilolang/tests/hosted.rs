@@ -2368,7 +2368,6 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         "Add subtask",
         "Move to",
         "Place in board",
-        "Copy below",
     ] {
         assert!(
             !labels.contains(&not_a_row),

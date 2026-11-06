@@ -185,4 +185,9 @@ fn a_brightness_key_on_a_machine_that_dims_nothing_says_so() {
             .iter()
             .any(|label| label == "No adjustable display")
     });
+    let said = session.accessible_labels().join("\n");
+    assert!(
+        !said.contains("0%"),
+        "a machine with nothing to dim reports no level, never zero percent: {said}"
+    );
 }

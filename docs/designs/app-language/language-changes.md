@@ -80,6 +80,9 @@ platform's format (relative times, avatar and name, localized money), never form
   with counters.
 - `index_of(item) -> Option<Int>`: where an item stands among the items, or none when it is not
   one of them — a sibling's place, a lane's first card.
+- `at(place) -> Option<T>`: the item at the place `index_of` answers for it, or none where the
+  list ends before that place — the pair of `index_of`, so a copy of a task is read where the
+  task it copies stands.
 - `descendants(t, x -> x.parent) -> List<T>` and `ancestors(t, x -> x.parent) -> List<T>`: the
   items under `t`, and the ones it is under, in the order the list keeps them and never `t`
   itself. An item names its parent, so the tree is the list's own: checking a task off takes

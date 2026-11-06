@@ -9,7 +9,9 @@ use crate::{PowerProfile, QsLevel};
 pub struct DisplayBrightness {
     /// DRM connector, e.g. `DP-2` — what the brightness service keys on.
     pub connector: String,
-    /// The monitor's EDID name, e.g. `Dell U2720Q`, else its connector.
+    /// What a person calls the display: its model, as its EDID names it, or
+    /// the part it plays — never the connector, which is how the machine
+    /// knows it. The row the panel shows it on carries this name.
     pub name: String,
     /// 0.0..=1.0.
     pub level: f32,

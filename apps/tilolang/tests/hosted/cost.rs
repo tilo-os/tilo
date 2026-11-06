@@ -782,3 +782,46 @@ fn a_change_reindexes_the_resources_it_touched() {
         "adding one task of {SEEDED} indexes one entry, not the workspace's"
     );
 }
+
+/// Checking tasks off one after another: every row the person checked stays where it stands,
+/// reading checked, the list goes on rendering, and checking one task runs a handful of
+/// boundaries rather than every row the window shows.
+#[test]
+fn checking_tasks_one_after_another_keeps_the_list_rendering() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(100);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    let mut checked = Vec::new();
+    let renders = |session: &Session| -> u64 {
+        let instance = session
+            .host
+            .instances()
+            .next()
+            .expect("the window's instance");
+        let view = instance
+            .instance()
+            .view(tilo_render_protocol::patch::Lane::Root)
+            .expect("the root view");
+        view.borrow().stats().renders
+    };
+    for _ in 0..4 {
+        let (title, x, y) = first_check(&mut session);
+        let before = renders(&session);
+        session.window.click_at(x, y);
+        session.settle();
+        let ran = renders(&session) - before;
+        assert!(
+            ran <= 10,
+            "checking {title} runs {ran} boundaries: the rows that read it and the window, \
+             not every row it shows"
+        );
+        checked.push(title);
+    }
+    for title in checked {
+        assert!(
+            checked_off(&mut session, &title),
+            "the row a person checked reads checked: {title}"
+        );
+    }
+}

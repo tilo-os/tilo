@@ -3,6 +3,7 @@ desktop:chrome desktop (Desktop)
   close-activity Close the workspace's history
   close-window Close a window
   equalize Equalize widths
+  fixed-shortcut Run a fixed desktop shortcut
   fullscreen Fill the display with a window
   history Move through a window's own history
   join-workspace Show the workspaces this computer may join

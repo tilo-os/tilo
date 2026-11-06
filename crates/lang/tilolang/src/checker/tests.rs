@@ -676,6 +676,36 @@ fn diagnostics(body: &str) -> Vec<crate::diag::Diagnostic> {
 }
 
 #[test]
+fn a_condition_reading_an_argument_inside_a_lambda_waits_for_it() {
+    const TYPES: &str = "type Task {\n    title: Text\n    parent: Option<Task>\n}\ntype Tasks {\n    items: Collection<Task>\n}\n";
+    // The condition reads `t` in the lambda's body: the offer cannot answer it, since it knows
+    // the tasks alone. Before, the lambda hid `t`, the condition was compiled into the applies
+    // guard, and the guard failed to name it.
+    let (m, ids) = lower(&format!(
+        "{TYPES}action duplicate(tasks: Tasks, t: Task) {{\n    applies tasks.items.filter(x -> x.parent == .some(t)).is_empty() \"It has tasks under it\"\n    t.title = \"copy\"\n}}"
+    ));
+    let id = ids.get("duplicate").expect("duplicate's id");
+    assert!(
+        !m.funcs
+            .iter()
+            .any(|f| f.export == crate::ir::applies_export(id)),
+        "a condition reading an argument waits for it, rather than being offered"
+    );
+    // A name the lambda binds itself is its own, not the caller's: the condition reads nothing
+    // beyond the tasks, so the offer decides it.
+    let (m, ids) = lower(&format!(
+        "{TYPES}action sweep(tasks: Tasks, t: Task) {{\n    applies tasks.items.any(t -> t.title == \"\") \"It has no title\"\n    t.title = \"x\"\n}}"
+    ));
+    let id = ids.get("sweep").expect("sweep's id");
+    assert!(
+        m.funcs
+            .iter()
+            .any(|f| f.export == crate::ir::applies_export(id)),
+        "a lambda's own name is not the argument it is named after"
+    );
+}
+
+#[test]
 fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
     const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
     let view = "view board(b: Board) {\n    state place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";

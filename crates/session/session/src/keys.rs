@@ -1189,96 +1189,65 @@ impl Shared {
         ran
     }
 
+    /// What a service publishes now, read back from `resource`, or `None`
+    /// while nothing publishes it or it does not read back.
+    fn published<T: serde::de::DeserializeOwned>(&self, resource: &str) -> Option<T> {
+        let reading = self.services.borrow().read(resource)?;
+        serde_json::from_value(reading)
+            .inspect_err(|error| {
+                tracing::warn!(%error, resource, "a service's reading does not read back");
+            })
+            .ok()
+    }
+
     /// The readout of `kind` as the device's own service publishes it now:
     /// naming the device it is about, so the pill says whose level it is.
     pub(crate) fn reading(&self, kind: OsdKind) -> Osd {
-        let services = self.services.borrow();
-        let read = |resource: &str| services.read(resource);
-        let sound = || {
-            read(SOUND).and_then(|reading| {
-                serde_json::from_value::<tilo_audio_service::sound::Sound>(reading)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "the sound service's reading does not read back");
-                    })
-                    .ok()
-            })
-        };
-        let displays = || {
-            read(displays::RESOURCE).and_then(|reading| {
-                serde_json::from_value::<displays::Reading>(reading)
-                    .inspect_err(|error| {
-                        tracing::warn!(%error, "the displays service's reading does not read back");
-                    })
-                    .ok()
-            })
-        };
         if !kind.has_level() {
-            let on = match kind {
-                OsdKind::Microphone => sound().is_none_or(|sound| !sound.input_muted),
-                OsdKind::AirplaneMode => read(NETWORK)
-                    .and_then(|reading| {
-                        serde_json::from_value::<tilo_connectivity_service::model::Network>(reading)
-                            .inspect_err(|error| {
-                                tracing::warn!(
-                                    %error,
-                                    "the connectivity service's reading does not read back"
-                                );
-                            })
-                            .ok()
-                    })
-                    .is_some_and(|network| network.airplane_mode),
-                _ => true,
-            };
-            // A transport readout names the song it is about, read from the one
-            // now-playing reading every surface shows. Going to the next or the
-            // previous song names no song: which one plays is not read yet.
-            let name = matches!(kind, OsdKind::Play | OsdKind::Pause)
-                .then(|| {
-                    self.readings
-                        .borrow()
-                        .playing()
-                        .map(|playing| playing.title)
-                })
-                .flatten();
+            return self.without_level(kind);
+        }
+        // A brightness key on a machine with no display it can dim: the
+        // readout says there is nothing to adjust rather than a level of its
+        // own, which would be a zero about no display.
+        if kind == OsdKind::Brightness
+            && self
+                .published::<displays::Reading>(displays::RESOURCE)
+                .is_none_or(|reading| Self::dimmable(&reading).is_none())
+        {
             return Osd::Hint(Hint {
-                kind,
-                on,
+                kind: OsdKind::NoBacklight,
+                on: true,
                 chord: None,
-                name,
+                name: None,
             });
         }
         let (level, on, device) = match kind {
-            OsdKind::Volume => sound().map_or((0.0, true, None), |sound| {
-                let device = sound
-                    .outputs
-                    .iter()
-                    .find(|output| output.chosen)
-                    .map(|output| {
-                        let name = if output.label.is_empty() {
-                            output.name.clone()
-                        } else {
-                            output.label.clone()
-                        };
-                        Device::new(name, DeviceGlyph::of_sink(&output.name))
-                    });
-                (sound.volume.unwrap_or(0.0), !sound.muted, device)
-            }),
-            OsdKind::Brightness => displays().map_or((0.0, true, None), |reading| {
-                let device = Self::dimmable(&reading)
-                    .map(|display| Device::new(display.name.clone(), DeviceGlyph::Display));
-                (reading.brightness().unwrap_or(0.0), true, device)
-            }),
-            OsdKind::KeyboardBacklight => read(KEYBOARD_BACKLIGHT)
-                .and_then(|reading| {
-                    serde_json::from_value::<tilo_system_service::model::KeyboardLight>(reading)
-                        .inspect_err(|error| {
-                            tracing::warn!(
-                                %error,
-                                "the system service's keyboard light does not read back"
-                            );
-                        })
-                        .ok()
-                })
+            OsdKind::Volume => self
+                .published::<tilo_audio_service::sound::Sound>(SOUND)
+                .map_or((0.0, true, None), |sound| {
+                    let device = sound
+                        .outputs
+                        .iter()
+                        .find(|output| output.chosen)
+                        .map(|output| {
+                            let name = if output.label.is_empty() {
+                                output.name.clone()
+                            } else {
+                                output.label.clone()
+                            };
+                            Device::new(name, DeviceGlyph::of_sink(&output.name))
+                        });
+                    (sound.volume.unwrap_or(0.0), !sound.muted, device)
+                }),
+            OsdKind::Brightness => self
+                .published::<displays::Reading>(displays::RESOURCE)
+                .map_or((0.0, true, None), |reading| {
+                    let device = Self::dimmable(&reading)
+                        .map(|display| Device::new(display.name.clone(), DeviceGlyph::Display));
+                    (reading.brightness().unwrap_or(0.0), true, device)
+                }),
+            OsdKind::KeyboardBacklight => self
+                .published::<tilo_system_service::model::KeyboardLight>(KEYBOARD_BACKLIGHT)
                 .map_or((0.0, true, None), |light| {
                     let level = light
                         .light()
@@ -1293,6 +1262,38 @@ impl Shared {
             level,
             on,
             device,
+        })
+    }
+
+    /// The readout of a key whose action is on or off, as the services
+    /// publish it now: the pill shows what the key turned on or off, not a
+    /// level.
+    fn without_level(&self, kind: OsdKind) -> Osd {
+        let on = match kind {
+            OsdKind::Microphone => self
+                .published::<tilo_audio_service::sound::Sound>(SOUND)
+                .is_none_or(|sound| !sound.input_muted),
+            OsdKind::AirplaneMode => self
+                .published::<tilo_connectivity_service::model::Network>(NETWORK)
+                .is_some_and(|network| network.airplane_mode),
+            _ => true,
+        };
+        // A transport readout names the song it is about, read from the one
+        // now-playing reading every surface shows. Going to the next or the
+        // previous song names no song: which one plays is not read yet.
+        let name = matches!(kind, OsdKind::Play | OsdKind::Pause)
+            .then(|| {
+                self.readings
+                    .borrow()
+                    .playing()
+                    .map(|playing| playing.title)
+            })
+            .flatten();
+        Osd::Hint(Hint {
+            kind,
+            on,
+            chord: None,
+            name,
         })
     }
 

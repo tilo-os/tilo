@@ -39,6 +39,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
 mod shortcut_actions;
+mod start_cards;
+
+use start_cards::{DisplayPad, EmptyWorkspace};
 
 use crate::about::{TiloMenu, TiloMenuAction};
 use crate::chrome::{ChromeIntent, TopBarPresence};
@@ -47,12 +50,12 @@ use crate::desk_widgets::music::MusicAction;
 use crate::display_identify::DisplayIdentify;
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::fullscreen_hint::FullscreenHint;
-use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction, LaunchpadPress};
+use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
 use crate::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
 use crate::search_overlay::SearchOverlay;
-use crate::shortcuts::{page_chord, page_shortcut_action};
+use crate::shortcuts::{page_fixed_action, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
 use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
@@ -168,112 +171,6 @@ pub fn desk_is_empty(tree: &DesktopTree) -> bool {
     })
 }
 
-/// The launchpad, shown while the desk shown has no windows. What a person
-/// chooses on it leaves as the host action its card declares
-/// ([`LaunchpadAction::host_id`]), the same door every other host action
-/// comes through.
-struct EmptyWorkspace {
-    launchpad: CollaborationLaunchpad,
-    shown: Rc<Cell<bool>>,
-    handle: DesktopHandle,
-    asks: Rc<RefCell<Vec<DesktopAsk>>>,
-}
-
-impl Widget for EmptyWorkspace {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // The launchpad keeps the node it is drawn in, so an action addressed
-        // to a control of it reaches the launchpad; this workspace is the
-        // node around it rather than a second claimant of the same one.
-        let launchpad = self.launchpad.build_layout(taffy, theme, map);
-        let style = Style {
-            display: taffy::Display::Flex,
-            size: taffy::Size::from_percent(1.0_f32, 1.0_f32),
-            ..Default::default()
-        };
-        taffy.widget_node(style, &[launchpad], map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if let Some(launchpad) = taffy.children(node).unwrap_or_default().first() {
-            self.launchpad.apply_layout(taffy, *launchpad, origin);
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if self.shown.get() {
-            self.launchpad.draw(scene, transform, text, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        if self.shown.get() {
-            self.launchpad.handle_event(event, ctx);
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        if self.shown.get() {
-            vec![&self.launchpad]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if self.shown.get() {
-            vec![&mut self.launchpad]
-        } else {
-            Vec::new()
-        }
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.shown.get()
-            && (self.launchpad.needs_redraw() || self.launchpad.needs_animation_frame())
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        false
-    }
-
-    fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &ui::automerge::ObjId) {
-        match self.launchpad.take_press() {
-            Some(LaunchpadPress::Card(card)) => self
-                .asks
-                .borrow_mut()
-                .push(DesktopAsk::HostAction(card.host_id())),
-            Some(LaunchpadPress::OpenApp) => {
-                self.handle.open_search(Scope::WindowGroup(None), None);
-            }
-            None => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "EmptyWorkspace"
-    }
-
-    fn get_rect(&self) -> Rect {
-        if self.shown.get() {
-            self.launchpad.get_rect()
-        } else {
-            Rect::ZERO
-        }
-    }
-}
-
 /// A node filling its parent, laid over its siblings.
 fn fill(taffy: &mut TaffyTree<()>, node: NodeId) {
     use taffy::{LengthPercentageAuto, Position, Size};
@@ -320,7 +217,6 @@ pub struct DeskLayer {
     band: BarSpace,
     area: Stack,
     handle: DesktopHandle,
-    empty: Rc<Cell<bool>>,
     /// The workspace whose picture the backdrop shows.
     workspace: Cell<Option<u64>>,
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
@@ -356,7 +252,6 @@ impl DeskLayer {
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
         beneath: Vec<Box<dyn Widget>>,
     ) -> Self {
-        let empty = Rc::new(Cell::new(handle.read(desk_is_empty)));
         let workspace =
             handle.read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0));
         // The room the bar takes above the strips, at the same height it
@@ -372,6 +267,7 @@ impl DeskLayer {
                 TopBarPresence::Docked
             }
         }));
+        let pads = handle.read(EmptyWorkspace::wants);
         let mut area = Stack::new();
         for layer in beneath {
             area = area.push(layer);
@@ -379,8 +275,17 @@ impl DeskLayer {
         // The surface stays the area's top layer.
         let area = area
             .push(Box::new(EmptyWorkspace {
-                launchpad,
-                shown: Rc::clone(&empty),
+                pads: pads
+                    .into_iter()
+                    .map(|want| DisplayPad {
+                        display: want.display,
+                        place: want.place,
+                        shown: want.shown,
+                        launchpad: launchpad.for_another_display(),
+                    })
+                    .collect(),
+                template: launchpad,
+                rebuilt: false,
                 handle: handle.clone(),
                 asks: Rc::clone(&asks),
             }))
@@ -390,7 +295,6 @@ impl DeskLayer {
             band,
             area,
             handle,
-            empty,
             workspace: Cell::new(workspace),
             asks,
             rect: Rect::ZERO,
@@ -584,10 +488,7 @@ impl Widget for DeskLayer {
     );
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let empty = self.handle.read(desk_is_empty);
-        let mut changed = self.empty.replace(empty) != empty;
-        changed |= self.area.update(state, path);
-        changed
+        self.area.update(state, path)
     }
 
     fn build_layout(
@@ -1825,10 +1726,22 @@ impl DesktopChrome {
 
     /// A desktop chord, applied; false when `event` is not one. The chord
     /// is looked up in the desktop's one shortcut table, with a host's
-    /// stand-in for Super counting as Super ([`page_shortcut_action`]).
+    /// stand-in for Super counting as Super
+    /// ([`page_shortcut_action`] and [`page_fixed_action`]).
     pub fn chord(&mut self, event: &winit::event::KeyEvent, modifiers: &Modifiers) -> bool {
         if event.state != ElementState::Pressed {
             return false;
+        }
+        // The chords Settings cannot rebind come before any program's, as on
+        // the native desktop: each runs the verb its menu row, its palette
+        // row and an agent's invocation name, and the ones the desk has no
+        // part in are asked of the page. The desk claims the press either
+        // way, so the browser's own key for it is not run too.
+        if let Some(action) =
+            page_fixed_action(&event.logical_key, event.physical_key, *modifiers, self.mac)
+        {
+            self.fixed_shortcut(action);
+            return true;
         }
         let action = page_shortcut_action(
             &self.shortcuts.borrow(),
@@ -1840,18 +1753,7 @@ impl DesktopChrome {
         if let Some(action) = action {
             return self.shortcut(action);
         }
-        // Super+S opens the strip switcher for the keyboard, fixed rather
-        // than rebindable.
-        let strips = page_chord(&event.logical_key, event.physical_key, *modifiers, self.mac)
-            .is_some_and(|(key, held)| {
-                held.state() == winit::keyboard::ModifiersState::SUPER
-                    && key == winit::keyboard::Key::Character("s".into())
-            });
-        if strips {
-            self.navigator
-                .toggle_from_keyboard(&self.navigator_frame, ui::time::now());
-        }
-        strips
+        false
     }
 
     /// Read where the person is into the navigator, when the tree, the
@@ -2250,6 +2152,20 @@ impl DesktopChrome {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return Ok(true);
             }
+            // The workspace edit path of the strip switcher's own button,
+            // so an agent or a page makes a strip the way the person does.
+            ChromeEffect::NewStrip { name } => {
+                let name = name.clone().unwrap_or_else(|| {
+                    crate::strip_switcher::default_strip_name(self.handle.read(|tree| {
+                        tree.active_workspace()
+                            .map_or(0, |workspace| workspace.strips.len())
+                    }))
+                });
+                if !self.add_strip(name) {
+                    return Err(crate::i18n::t("strip-switcher-refused"));
+                }
+                return Ok(true);
+            }
             ChromeEffect::NewWorkspace { workspace, name } => {
                 self.new_workspace(workspace.as_deref(), name.as_deref());
                 return Ok(true);
@@ -2297,7 +2213,6 @@ impl DesktopChrome {
                 | ChromeEffect::Maximize { .. }
                 | ChromeEffect::Fullscreen { .. }
                 | ChromeEffect::Rename { .. }
-                | ChromeEffect::NewStrip { .. }
                 | ChromeEffect::ReopenClosed
                 | ChromeEffect::ShareWindow { .. }
                 | ChromeEffect::StopDesktopControl { .. }
