@@ -6,23 +6,36 @@ native UI come from the system.
 
 ## The model
 
-- **Resources** are the data: a note, a mail, a video. Each is a typed record.
-- **Each resource has an origin:** the server with the authoritative copy. Notes: the workspace
-  host. Mail: the IMAP server. Videos: YouTube.
-- **Capabilities** are what can be done with resources: get them, search them, change them
-  through actions. A resource's capabilities reach its origin: for notes, the workspace host;
-  for mail, the IMAP server, through the mail app's connection.
-- **Actions** are the only way to change a resource. They're typed, attributed to who did
-  them, undoable, and checked against permissions.
-- **Views** show resources. They're plain functions of resources. Every resource type has a
-  default view, and anyone (you, an agent) can write others: a view someone writes is a real
-  `view` declaration, kept as that person's own code (agent-ux.md, "Answers as views").
-- **The system** decides when and where all of this runs: search across everything or within
-  one thing, windows, the canvas, agents' programs, automations.
-
-An "app" is a bundle of these: some types, their actions, default views, and connections to
-outside services. It isn't a boundary: an agent can compose a view from several apps'
-resources, and your search covers all of them.
+- **The workspace is a tree of resources**, versioned and changed only by actions: the same
+  tree that holds a person's home and a workspace's folders, code packages included.
+- **A resource** is a typed node: fields hold its values, child lists hold the resources nested
+  in it (`subtasks: List<Task>`, `items: List<Task | notes.Note>`). Every resource has an id,
+  links, presence and permissions. How resources are stored, synced and encrypted is the
+  platform's and never shows in the language.
+- **History, versions and authorship belong to every resource and every action alike.** Who
+  changed what, when, through which action and made from what is read from the log
+  (`history(r)`, `created(r)`, `updated(r)`, when a field last changed), never declared or
+  stored by a type.
+- **Packages** declare types, actions, views and functions. Packages are untrusted: a type's
+  resources change only through its own package's actions; other packages read what they are
+  allowed to and call those actions. A library is a package like any other; `std` is one, and so
+  is a connector to an outside service, written in tilolang or backed by Rust.
+- **Each app has a root:** one resource per workspace at the top of the tree, made when the app
+  is first used. Opening the app opens it; what is made without a more specific place goes in
+  it. Resources can live anywhere else in the tree too: a note inside a project.
+- **Queries**: `T.all` and the type's declared filters (`Task.today`) are lazy and answered by
+  the index; `in: r` narrows to a subtree. Nothing loads more than what is shown.
+- **Views** are functions of resources, plus each person's own view state, which shows as
+  presence. `default view v for T` is what opens a resource of `T`, `row view r for T` how it
+  appears anywhere else. Views decide which actions they show and where.
+- **Actions** are the only way to change anything, and every action is available to people,
+  agents, the palette and programs. They are typed, attributed, undoable and permission-checked,
+  declare their effects (`uses web`, `uses random`, `uses time`) and may carry metadata a view
+  can use. A program that runs several actions is just code calling them.
+- **Agents speak tilolang.** An agent or REPL session has default imports for what agents
+  often need (`grep`, `find`, `describe`).
+- **Nothing domain-specific is in the language:** no field roles, no task or chat words, no
+  hard-coded services or windows. What done, nested or due means is an app's own fields and code.
 
 ## A small example
 
