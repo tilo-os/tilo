@@ -799,6 +799,7 @@ inputs = [
   "apps/settings/surface.toml",
 ]
 readers = [
+  "crates/platform/tilolang-tilo/src/bench.rs",
   "crates/platform/tilolang-tilo/src/native.rs",
   "crates/platform/tilolang-tilo/src/platform_apps.rs",
   "crates/platform/tilolang-tilo/src/task.rs",
