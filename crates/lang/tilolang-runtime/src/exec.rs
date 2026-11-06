@@ -218,8 +218,21 @@ impl Core {
             .marshal(pkg, params, args)
             .map_err(RuntimeError::BadArgs)?;
         let host: std::rc::Rc<dyn Host> = self.rc().map_err(RuntimeError::Package)?;
-        let out = self.engine.call(&pkg.hash, export, &wasm_args, host)?;
-        self.unmarshal(&pkg.meta.app, result, out)
+        // What the call costs is charged to the unit that makes it, from here to its end: a
+        // function called while it runs is a unit of its own, and the call it costs counts in
+        // this one too.
+        let measured = self.costs.on();
+        if measured {
+            let unit = pkg.unit(export).unwrap_or_else(|| {
+                std::rc::Rc::new(crate::cost::Unit::unnamed(export, &pkg.meta.app))
+            });
+            self.costs.enter(unit, self.store.borrow().reads());
+        }
+        let out = self.engine.call(&pkg.hash, export, &wasm_args, host);
+        if measured {
+            self.costs.leave(self.store.borrow().reads());
+        }
+        self.unmarshal(&pkg.meta.app, result, out?)
             .map_err(RuntimeError::Package)
     }
 

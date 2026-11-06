@@ -116,6 +116,8 @@ impl Core {
             .into_iter()
             .filter(|action| flag(action, APPLIES))
             .collect();
+        self.costs
+            .publish(u64::try_from(acted.len()).unwrap_or(u64::MAX));
         let listed = self
             .props(shell)?
             .get("content_kind")
@@ -194,6 +196,9 @@ impl Core {
         if taken.is_empty() {
             return Ok(());
         }
+        // What publishing the item's offers costs a profile: the actions its menu shows.
+        self.costs
+            .publish(u64::try_from(taken.len()).unwrap_or(u64::MAX));
         let key = self.key(at)?;
         for (index, action) in taken.iter().enumerate() {
             let item = Self::menu_item(action, &format!("{key}~action-{index}"));
@@ -236,10 +241,13 @@ impl Core {
                 .into_iter()
                 .filter(|action| flag(action, APPLIES));
             let key = self.key(at)?;
+            let mut published = 0u64;
             for (index, action) in acted.enumerate() {
                 let item = Self::menu_item(&action, &format!("{key}~item-{index}"));
                 self.put_in_slot(at, ITEMS, item)?;
+                published = published.saturating_add(1);
             }
+            self.costs.publish(published);
         }
         self.each_child(at, |child| self.subject_menus(child))
     }

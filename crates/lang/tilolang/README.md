@@ -661,6 +661,9 @@ tilolang ids [dir] [--rename old new]     prints or edits the ids lock
 tilolang run [dir] [--peers N] [--headless]  runs the package as an app in a nested Tilo session
 tilolang describe [dir] [--search DIR]    prints what an app publishes as tilolang: a native app
                                           (its surface.toml) and a tilolang package alike
+tilolang profile [dir] [--seed N] [--then INTERACTION]...
+                                          counts what the app costs to open and to use, in the
+                                          language's own terms (see "Cost")
 ```
 
 `dir` defaults to the current directory. Errors print as `path:line:col: E0xx message`;
@@ -673,6 +676,44 @@ comments above the declaration, field, statement or match arm they were written 
 expression blocks and match arms as well; one written inside a declaration's head prints above
 the next statement. A blank line between two `///` lines is a paragraph break, kept as a `///`
 line.
+
+## Cost
+
+What an app costs is measured in the language's own terms, not in milliseconds: the fuel each
+call into its wasm spends, the calls it makes, and what it reads from the host — records,
+index pages and entries, evaluations — plus the offers it publishes. The runtime counts it
+(`tilolang_runtime::cost`, `crates/lang/tilolang-runtime/src/cost.rs`), off until asked, and the
+compiler writes each unit's export to the line it is written on (the `tilolang.lines` section of
+the module), so a table names a *unit* — a view, a row view, an action, a requirement, an
+`applies`, a filter, an at-event argument — by its source line:
+
+```
+tilolang profile apps/tl/tasks --seed 10000 --then click:300,150
+      fuel  unit                                  written                   calls    record     index
+    442511  Task.task_page view                                                1         0     10022
+    441276  Task.check action                    apps/tl/tasks/app.tl:200        1         0     10027
+      6302  Task.home row                        apps/tl/tasks/app.tl:567       23         0        69
+      1080  Task.check~present view              apps/tl/tasks/app.tl:200       24         0        46
+       504  Task.due_today requirement           apps/tl/tasks/app.tl:246       24         0        23
+...
+```
+
+`--seed N` opens a workspace of N items, seeded as `tilolang bench` seeds one; `--scenario`
+stages a scenario (the app's first otherwise); each `--then` runs after the app is open and is
+counted alone: `key:Tab`, `click:X,Y`, `type:TEXT`, `scroll:DX,DY` (points in logical pixels).
+The table is sorted by inclusive fuel, so a unit that calls others carries theirs; a row says
+how often the unit ran, so a requirement evaluated for every item shows the count grow with the
+workspace rather than with the rows a person can see.
+
+The counts do not depend on the machine or its load, so they gate: a test records the costs of
+an interaction (`Runtime::record_costs`, `::reset_costs`, `::costs`) and holds them
+(`tilolang_runtime::assert_costs("open", &costs, |c| c.calls("Task.due_today requirement") <= rows)`),
+failing with the whole table. Fuel is a function of the code run, in the engine's own units: a
+budget in fuel is a budget on the work, the same in debug and release, on any runner.
+`tests/budgets.rs` of `tilolang-tilo` holds some to what they may take.
+
+Instrumentation costs nothing while off: the engine reads the fuel of a call anyway, and only
+the recorder being on makes a call name its unit and read the store's counters.
 
 ## Packages are apps
 

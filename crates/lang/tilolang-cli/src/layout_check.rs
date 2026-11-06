@@ -9,7 +9,7 @@
 
 mod audit;
 mod source;
-mod stage;
+pub(crate) mod stage;
 mod ux;
 
 use std::collections::{BTreeMap, BTreeSet};

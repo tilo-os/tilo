@@ -9,8 +9,8 @@ use crate::hash::sha256_hex;
 use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
-    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, PackageMeta,
-    ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, Line,
+    PackageMeta, ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -236,9 +236,36 @@ pub fn compile_package_source_with(
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze_package(source, ids, imports, rng)?;
+    let lines = lines_of(&a.ir, &placed(source));
     let mut compiled = emit_package(a);
     crate::meta::append_locales(&mut compiled.wasm, &locales_of(source, &compiled.meta));
+    crate::meta::append_lines(&mut compiled.wasm, &lines);
     Ok(compiled)
+}
+
+/// Where each of `ir`'s functions is written, in the package source `files` placed in the shared
+/// span space; the functions no declaration is written for (a block) have no line.
+fn lines_of(ir: &ir::Module, files: &[Placed<'_>]) -> Vec<Line> {
+    ir.funcs
+        .iter()
+        .filter_map(|f| {
+            let at = f.at?;
+            let file = files.iter().rev().find(|file| {
+                at >= file.base && at < file.base.saturating_add(file.text.len() + 1)
+            })?;
+            let before = file.text.get(..at.saturating_sub(file.base))?;
+            Some(Line {
+                export: f.export.clone(),
+                file: file.path.to_owned(),
+                line: line_number(before),
+            })
+        })
+        .collect()
+}
+
+/// The line `offset` in `text` stands on, counted from 1.
+fn line_number(text: &str) -> u32 {
+    u32::try_from(text.bytes().filter(|b| *b == b'\n').count() + 1).unwrap_or(u32::MAX)
 }
 
 /// The catalogues a module built from `source` carries: the source language's written from the
@@ -300,7 +327,20 @@ pub fn compile_package_with(
     rng: &mut dyn Entropy,
 ) -> Result<Compiled, Vec<Diagnostic>> {
     let a = analyze(source, ids, imports, rng)?;
-    Ok(emit_package(a))
+    let lines: Vec<Line> =
+        a.ir.funcs
+            .iter()
+            .filter_map(|f| {
+                Some(Line {
+                    export: f.export.clone(),
+                    file: String::from("/"),
+                    line: line_number(source.get(..f.at?)?),
+                })
+            })
+            .collect();
+    let mut compiled = emit_package(a);
+    crate::meta::append_lines(&mut compiled.wasm, &lines);
+    Ok(compiled)
 }
 
 /// Reports every error of a package, or an empty list when it is fine.

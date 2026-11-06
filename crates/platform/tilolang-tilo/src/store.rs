@@ -2050,6 +2050,24 @@ fn sanitize_key(key: &str) -> String {
 }
 
 impl Store for TiloStore {
+    fn reads(&self) -> tilolang_runtime::Reads {
+        let stats = self.read_stats();
+        tilolang_runtime::Reads {
+            record: stats
+                .doc
+                .located
+                .saturating_add(stats.doc.fields)
+                .saturating_add(stats.doc.listings)
+                .saturating_add(stats.doc.entries),
+            index: stats
+                .index
+                .dirs
+                .saturating_add(stats.index.pages)
+                .saturating_add(stats.index.fields),
+            evaluated: stats.evaluated,
+        }
+    }
+
     /// The store holds only the records its reader was sent: a resource of a package here
     /// reads by what it is called now when the store holds it, as not shared when it does not.
     fn reading(

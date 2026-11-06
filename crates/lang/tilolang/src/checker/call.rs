@@ -436,6 +436,7 @@ impl Checker<'_> {
         self.emit(Stmt::Return(Some(value)));
         let name = format!("{} at the event", outer.view_id);
         let export = ir::at_event_export(&id);
+        self.at = self.outer_at;
         let mut f = self.end(ir::FuncKind::Fn, &name, &export);
         f.nparams = params.len();
         self.st = outer;

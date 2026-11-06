@@ -122,6 +122,22 @@ pub struct Staged {
 /// is: the rows a list shows, then the rows those rows show.
 const EXCHANGES: usize = 8;
 
+/// What a window is staged over and for, beyond its app, its packages and its size: the
+/// workspace it opens over, the layer it shows, the scenario staged into it, and whether what
+/// its units run is counted.
+#[derive(Default)]
+pub struct Staging {
+    /// The scenario to stage; none stages none.
+    pub scenario: Option<String>,
+    /// The layer a package with more than one root shows (`Desk`, `Arrangement`).
+    pub root: Option<String>,
+    /// The workspace record it opens over; an empty one when none.
+    pub record: Option<ui::automerge::AutoCommit>,
+    /// Whether what the app's units run is counted
+    /// ([`tilolang_tilo::runtime::cost`]).
+    pub costs: bool,
+}
+
 impl Staged {
     /// The app `app` of `packages` with `scenario` staged, its window laid out at `viewport`,
     /// showing the layer `root` names rather than the package's first root: a package with more
@@ -132,8 +148,31 @@ impl Staged {
         packages: &Rc<Packages>,
         scenario: &str,
         viewport: (u32, u32),
-        mut theme: ui::Theme,
+        theme: ui::Theme,
         root: Option<&str>,
+    ) -> Result<Self, String> {
+        Self::over_workspace(
+            app,
+            packages,
+            viewport,
+            theme,
+            Staging {
+                scenario: Some(scenario.to_owned()),
+                root: root.map(str::to_owned),
+                ..Staging::default()
+            },
+        )
+    }
+
+    /// As [`Self::over`], staged as `staging` says: its scenario, its layer, over the workspace
+    /// it brings (a seeded one, as a person with ten thousand items has it), counting what the
+    /// app's units run ([`tilolang_tilo::runtime::cost`]) when it says so.
+    pub fn over_workspace(
+        app: &str,
+        packages: &Rc<Packages>,
+        viewport: (u32, u32),
+        mut theme: ui::Theme,
+        staging: Staging,
     ) -> Result<Self, String> {
         // Layout at rest: what changes land at once rather than moving there.
         theme.reduce_motion = true;
@@ -147,7 +186,7 @@ impl Staged {
                 index_dir: None,
                 record_loader: None,
                 root: tilolang_tilo::host::RootView {
-                    root: root.map(str::to_owned),
+                    root: staging.root.clone(),
                     view: None,
                 },
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
@@ -158,9 +197,15 @@ impl Staged {
             Rc::new(tilolang_tilo::names::Unnamed),
             Box::new(app_end),
         );
-        let mut record = ui::automerge::AutoCommit::new();
+        let mut record = staging.record.unwrap_or_default();
 
         instance.sync(Some(&record));
+        // Counted from the first frame: a workspace's opening is what it costs to open.
+        if staging.costs
+            && let Some(host) = instance.host()
+        {
+            host.runtime().record_costs(true);
+        }
         // The package's own root resources — every layer it has (the shell's `Desk` beside its
         // arrangement) and a person's record kept beside them (`root shell: Shell`) — are made
         // and its migrations run, as the live session does when a window opens: a scenario
@@ -198,10 +243,13 @@ impl Staged {
             Ok::<(), String>(())
         };
         settle(&mut instance, &mut record)?;
-        instance.stage(Some(scenario));
+        instance.stage(staging.scenario.as_deref());
         settle(&mut instance, &mut record)?;
         if let Some(why) = instance.take_stage_failure() {
-            return Err(format!("the scenario \"{scenario}\" failed: {why}"));
+            return Err(format!(
+                "the scenario \"{}\" failed: {why}",
+                staging.scenario.as_deref().unwrap_or_default()
+            ));
         }
         instance.update();
         let mut window = AppWindow::new(Box::new(window_end), Vec::new());
@@ -264,6 +312,19 @@ impl Staged {
     /// window, as a person at the keyboard does.
     pub fn key(&mut self, key: &str) {
         self.harness.key(key);
+    }
+
+    /// What the app's units ran since the last [`Self::reset_costs`], by unit
+    /// ([`tilolang_tilo::runtime::cost`]), when the costs are being counted.
+    pub fn costs(&self) -> Option<tilolang_tilo::runtime::Costs> {
+        self.instance.host()?.runtime().costs()
+    }
+
+    /// Count from here, forgetting what was run before: one interaction's cost.
+    pub fn reset_costs(&self) {
+        if let Some(host) = self.instance.host() {
+            host.runtime().reset_costs();
+        }
     }
 
     pub fn harness(&self) -> &FrameHarness {

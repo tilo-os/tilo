@@ -432,6 +432,8 @@ impl Checker<'_> {
             }
         }
         body(self);
+        // Its line is the declaration it is written in: a loop body has none of its own.
+        self.at = self.outer_at;
         let mut f = self.end(FuncKind::View, &format!("{owner} row"), &format!("v_{id}"));
         f.nparams = params.len();
         self.st = outer;

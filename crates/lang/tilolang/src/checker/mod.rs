@@ -233,6 +233,13 @@ pub(crate) struct Checker<'a> {
     /// What the body checked last writes: `end` takes the state it was checked in, so the
     /// fields are kept here for the module to read.
     last_writes: Vec<FieldWritten>,
+    /// Where the declaration the next function is lowered from starts, in the package source's
+    /// span space: `end` takes it, so a function made in the middle of another's check (a row
+    /// view, an argument computed from view state) is named by its own declaration.
+    at: Option<usize>,
+    /// Where the declaration being checked starts: what a function it makes in passing (a row
+    /// view of its body, an argument computed from its view state) is named by.
+    outer_at: Option<usize>,
 }
 
 /// A field an offered action writes from a value it asks for: the action, the field, its type.
@@ -275,6 +282,8 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     let mut funcs = Vec::new();
     for item in &module.items {
@@ -282,6 +291,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
             continue;
         };
+        c.at = Some(item.span().start);
         let f = match item {
             Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
             Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
@@ -325,6 +335,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let Some(action) = env.own_callable(&a.name.name) else {
             continue;
         };
+        c.at = Some(a.name.span.start);
         funcs.push(c.run_present(&view, &a.opts, &action.params));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
@@ -339,6 +350,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let (Some(written), Some(action)) = (written, env.own_callable(&d.action)) else {
             break;
         };
+        c.at = Some(written.span.start);
         funcs.push(c.run_default(action, d.param, written));
     }
     c.check_proposals(module);
@@ -383,6 +395,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             if !decides(lines) {
                 continue;
             }
+            c.at = lines.first().map(|line| line.span.start);
             funcs.push(c.run_guard(action, lines, &action.params, kind, export));
         }
     }
@@ -414,6 +427,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     c.st.proposes = true;
@@ -461,6 +476,8 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -558,6 +575,7 @@ impl Checker<'_> {
             locals: st.locals,
             body,
             facts: st.facts,
+            at: self.at.take(),
         }
     }
 
@@ -588,6 +606,7 @@ impl Checker<'_> {
         guards: &[&ast::Require],
         body: &ast::Block,
     ) -> ir::Func {
+        self.outer_at = self.at.or(self.outer_at);
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
@@ -647,6 +666,7 @@ impl Checker<'_> {
     }
 
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
+        self.outer_at = self.at.or(self.outer_at);
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
         self.st.subject = c
             .params

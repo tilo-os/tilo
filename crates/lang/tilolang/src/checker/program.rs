@@ -52,6 +52,8 @@ pub fn check_program(
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     c.begin(Ctx::Flow, params, Ty::Unit, export);
     c.st.written = Written::Program;

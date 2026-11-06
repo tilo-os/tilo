@@ -145,6 +145,10 @@ pub struct Func {
     pub locals: Vec<Ty>,
     pub body: Vec<Stmt>,
     pub facts: Facts,
+    /// Where the declaration it was lowered from starts, in the package source's span space
+    /// (see [`crate::diag::Placed`]): the line a profile names it by. None for a function no
+    /// declaration is written for, and for a block.
+    pub at: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default)]

@@ -131,8 +131,9 @@ impl Runtime {
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
-        let pkg =
-            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
+        let lines = tilolang::meta::lines_from_wasm(wasm);
+        let pkg = crate::registry::Package::with_lines(hash.clone(), meta, &lines)
+            .map_err(RuntimeError::Package)?;
         self.core
             .registry
             .borrow_mut()
@@ -156,8 +157,9 @@ impl Runtime {
         // were translated reads them, not the ones it was loaded with before.
         self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
-        let pkg =
-            crate::registry::Package::new(hash.clone(), meta).map_err(RuntimeError::Package)?;
+        let lines = tilolang::meta::lines_from_wasm(wasm);
+        let pkg = crate::registry::Package::with_lines(hash.clone(), meta, &lines)
+            .map_err(RuntimeError::Package)?;
         self.core
             .registry
             .borrow_mut()
@@ -1266,6 +1268,34 @@ impl Runtime {
     /// This runtime's engine: its instances, its limits and its profile.
     pub fn engine(&self) -> &crate::engine::Engine {
         &self.core.engine
+    }
+
+    /// Count what each unit of the packages' code costs from here on: the fuel each call
+    /// spends, what it reads of the store, and the offers it publishes, by the unit that ran
+    /// ([`crate::cost`]). Cheap while off, which it is until asked: a window opened after this
+    /// is what [`Self::costs`] then reports.
+    pub fn record_costs(&self, on: bool) {
+        self.core.costs.record(on);
+        if on {
+            self.reset_costs();
+        }
+    }
+
+    /// Forget what the units cost, keeping [`Self::record_costs`] as it is: what separates one
+    /// interaction from the next.
+    pub fn reset_costs(&self) {
+        let reads = self.core.store.borrow().reads();
+        self.core.costs.reset(reads);
+    }
+
+    /// What the units cost since [`Self::record_costs`] turned it on or [`Self::reset_costs`]
+    /// last cleared it, the one that cost the most fuel first; `None` while nothing is counted.
+    #[must_use]
+    pub fn costs(&self) -> Option<crate::cost::Costs> {
+        self.core
+            .costs
+            .on()
+            .then(|| self.core.costs.costs(self.core.store.borrow().reads()))
     }
 
     /// How many references to collection items views and code built so far: what reading

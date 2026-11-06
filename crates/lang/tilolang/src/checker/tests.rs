@@ -363,6 +363,7 @@ fn a_prop_a_component_does_not_declare_fails_the_compile() {
         }
         Module {
             funcs: vec![Func {
+                at: None,
                 kind: crate::ir::FuncKind::View,
                 name: "task_row".into(),
                 export: "v_task_row".into(),

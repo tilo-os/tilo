@@ -144,6 +144,8 @@ pub struct Core {
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
+    /// What each unit costs while a profile is on, shared with the engine that measures fuel.
+    pub(crate) costs: Rc<crate::cost::Recorder>,
     /// The row being rendered, while a view renders one: the rows of the list it is a row
     /// of, and where in them it stands. A row reads the rows around it by that place, without
     /// walking the list.
@@ -229,6 +231,8 @@ impl Core {
         limits: EngineLimits,
     ) -> Result<Rc<Self>, String> {
         let engine = Engine::new(limits)?;
+        let costs = Rc::new(crate::cost::Recorder::default());
+        engine.watch_costs(Rc::clone(&costs));
         let core = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             engine,
@@ -259,6 +263,7 @@ impl Core {
             foreign: RefCell::new(crate::foreign::Foreign::default()),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
+            costs,
             row_place: RefCell::new(None),
         });
         // The types the host provides to every module, such as `Invocation`.

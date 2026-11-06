@@ -14,20 +14,61 @@ pub const META_SECTION: &str = "tilolang.meta";
 /// (i18n.md). Outside the module hash, as the metadata is.
 pub const LOCALES_SECTION: &str = "tilolang.locales";
 
+/// The custom section naming where each function's declaration is written: JSON
+/// `[{export, file, line}, …]`. Outside the module hash, as the metadata is: what a profile
+/// reads a unit's line from, not what the module runs.
+pub const LINES_SECTION: &str = "tilolang.lines";
+
+/// Where a function is written: the file of the package its declaration is in, and the line in
+/// it, counted from 1. A block, or a function made without a declaration, is written nowhere and
+/// has no entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Line {
+    /// The function's export (`a_<id>`, `v_<id>`, `q_<id>`, …).
+    pub export: String,
+    /// The file's path within the package (`/` when it was compiled from one source string).
+    pub file: String,
+    pub line: u32,
+}
+
+/// Appends `lines` to the compiled module `wasm` as its [`LINES_SECTION`]; nothing when there
+/// are none.
+pub fn append_lines(wasm: &mut Vec<u8>, lines: &[Line]) {
+    if lines.is_empty() {
+        return;
+    }
+    append_json_section(wasm, LINES_SECTION, lines);
+}
+
+/// Where the functions `wasm` was compiled from are written; none for a module compiled without
+/// them.
+#[must_use]
+pub fn lines_from_wasm(wasm: &[u8]) -> Vec<Line> {
+    custom_section(wasm, LINES_SECTION)
+        .and_then(|data| serde_json::from_slice(data).ok())
+        .unwrap_or_default()
+}
+
+/// Appends `value` as JSON in the custom section `name`. A custom section may follow every other
+/// section, so the module stays valid.
+fn append_json_section<T: Serialize + ?Sized>(wasm: &mut Vec<u8>, name: &str, value: &T) {
+    let data = serde_json::to_vec(value).unwrap_or_default();
+    let mut payload = Vec::new();
+    write_leb(&mut payload, name.len());
+    payload.extend_from_slice(name.as_bytes());
+    payload.extend_from_slice(&data);
+    wasm.push(0);
+    write_leb(wasm, payload.len());
+    wasm.extend_from_slice(&payload);
+}
+
 /// Appends `locales` to the compiled module `wasm` as its [`LOCALES_SECTION`]; nothing when
 /// there are none. A custom section may follow every other section, so the module stays valid.
 pub fn append_locales(wasm: &mut Vec<u8>, locales: &[(String, String)]) {
     if locales.is_empty() {
         return;
     }
-    let data = serde_json::to_vec(locales).unwrap_or_default();
-    let mut payload = Vec::new();
-    write_leb(&mut payload, LOCALES_SECTION.len());
-    payload.extend_from_slice(LOCALES_SECTION.as_bytes());
-    payload.extend_from_slice(&data);
-    wasm.push(0);
-    write_leb(wasm, payload.len());
-    wasm.extend_from_slice(&payload);
+    append_json_section(wasm, LOCALES_SECTION, locales);
 }
 
 /// The catalogues a compiled module carries, `(locale, Fluent text)`; none when it has none.

@@ -1050,6 +1050,13 @@ impl DeliveryState {
 }
 
 pub trait Store {
+    /// What the store has read so far, counted: work that does not depend on the machine or
+    /// its load, which a profile charges to the unit that read it. A store that counts none
+    /// reads 0.
+    fn reads(&self) -> crate::cost::Reads {
+        crate::cost::Reads::default()
+    }
+
     /// A fresh id, unique across replicas and restarts.
     fn fresh_id(&mut self, prefix: &str) -> String;
 

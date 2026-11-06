@@ -712,3 +712,14 @@ search.md, "What a type declares" and "Types, references and paths".
   map is its merge) and no role marker (`(title)` and the rest read one value of the record).
   This is not the window's state: `window` and `lens` are the person looking's arrangement of a
   window, and a personal field is a value about a record anyone sharing it may read.
+- **An app's costs are counted in the language's own terms, at the line it is written on.** A
+  profile attributes fuel, calls, host reads and published offers to the *unit* that ran — a
+  view, a row view, an action, a requirement, an `applies`, an at-event argument, a filter, a
+  standard library part — and names each by the line its declaration starts on, so an author
+  reads a table of their own source. Fuel is metered by the engine in each call's frame, with
+  nested calls counted into their caller as well (inclusive), and reads are the store's own
+  counters taken across the frame. The units are the exports the module already has, written by
+  the compiler into the module's `tilolang.lines` section beside its metadata, so naming costs
+  nothing until a run asks for it; what a package costs to open is what it costs to open
+  (`tilolang profile`, `Runtime::record_costs`, `assert_costs`), in counts that do not depend on
+  the machine, rather than in seconds, which measure the runner as much as the app.
