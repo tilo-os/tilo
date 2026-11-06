@@ -41,7 +41,8 @@ pub(crate) fn window_name(app_id: &str, title: &str) -> String {
 }
 
 /// The app's name as this device's app lists last read it: the installed
-/// package's manifest name, or the machine's desktop entry.
+/// package's name in the person's interface language, or the machine's
+/// desktop entry.
 pub(crate) fn listed_name(app_id: &str) -> Option<String> {
     let lists = crate::app_icons::app_lists()?;
     if let Some(app) = lists
