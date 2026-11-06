@@ -1308,7 +1308,7 @@ fn cleanup_call(workspace: &Workspace) -> String {
     let host = workspace.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.tasks").unwrap().id_string();
     let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
-    format!("today.morning_cleanup(@tasks.Tasks:{list}, @notes.Notes:{notebook})")
+    format!("today.morning_cleanup(@tasks.Tasks:{list}, @notes.Notebook:{notebook})")
 }
 
 /// The titles of the tasks the list holds, in the order they stand.
@@ -1397,7 +1397,7 @@ fn an_action_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() 
         .set_standing(Rc::new(move || Some(standing.clone())));
     let todos = workspace.items_of("so.tilo.lang.tasks", "items");
     let notes = workspace.items_of("so.tilo.lang.notes", "notes");
-    let args = cleanup_args(&workspace);
+    let source = cleanup_call(&workspace);
     let waiting = workspace
         .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
         .unwrap()

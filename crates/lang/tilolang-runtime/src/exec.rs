@@ -58,9 +58,6 @@ pub struct ExecCtx {
     /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
     /// its change, so history says who suggested it.
     pub suggested_by: Option<Principal>,
-    /// The moment the change is recorded at, when the invocation names one: a scenario's
-    /// `invoke(act(args), at: time)`, whose changes history reads at that time.
-    pub at: Option<String>,
 }
 
 /// How an action ended.
@@ -632,6 +629,11 @@ impl Core {
             Decision::Allow => match self.run_many(&ctx, &refs)? {
                 ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
                 ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
+                ActionOutcome::Suspended(_) => Err(RuntimeError::Trap(
+                    "`many` applies one action to many items as one change, and an action that \
+                     calls another action makes a change per call"
+                        .into(),
+                )),
             },
             Decision::Deny => Ok(InvokeOutcome::Denied),
             Decision::Ask => {
@@ -644,15 +646,19 @@ impl Core {
                     chain: ctx.chain.clone(),
                 };
                 let journal = Journal {
-                    flow: None,
+                    action: None,
                     args: aref.args.clone(),
                     invoker: ctx.invoker,
                     chain: ctx.chain,
                     from: ctx.from,
+                    at: ctx.at,
                     suggested_by: ctx.suggested_by.map(|who| who.0),
                     entries: Vec::new(),
-                    pending: Some(suggestion.clone()),
+                    pending: Some(Pending::Ask(suggestion.clone())),
                     finished: false,
+                    approved_by: None,
+                    origin: None,
+                    parent: None,
                 };
                 self.store.borrow_mut().save_journal(&run, &journal)?;
                 Ok(InvokeOutcome::Suggested(suggestion))
@@ -686,6 +692,31 @@ impl Core {
         });
         let mut note = Self::note(ctx, &pkg, first);
         note.count = u32::try_from(refs.len()).unwrap_or(u32::MAX);
+        let run = RunState {
+            run: self.store.borrow_mut().fresh_id("r"),
+            journal: Journal {
+                action: Some(first.action.clone()),
+                args: first.args.clone(),
+                invoker: ctx.invoker.clone(),
+                chain: ctx.chain.clone(),
+                from: ctx.from.clone(),
+                at: ctx.at.clone(),
+                suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
+                entries: Vec::new(),
+                pending: None,
+                finished: false,
+                approved_by: ctx.approved_by.clone(),
+                origin: ctx.origin.clone(),
+                parent: None,
+            },
+            cursor: 0,
+            invoker: ctx.invoker.clone(),
+            suggested_by: ctx.suggested_by.clone(),
+            clock: None,
+            // One change over many items is one attempt: an action that calls another action
+            // inside `many` has no one journal to replay it from, so it makes no call here.
+            journaled: false,
+        };
         self.frames.borrow_mut().push(
             pkg.hash.clone(),
             FrameKind::Action(ActionState {
@@ -701,7 +732,7 @@ impl Core {
                 invocations: Vec::new(),
                 note: Box::new(note),
                 touched: std::collections::BTreeSet::new(),
-                effects: crate::handles::EffectLog::default(),
+                run: Box::new(run),
             }),
         );
         let mut failure = None;
@@ -725,7 +756,14 @@ impl Core {
                 note.at = Some(at);
                 note.touched = a.touched.into_iter().collect();
                 // The one change records what the run over every item read, in order.
-                note.effects = a.effects.entries;
+                note.effects = a
+                    .run
+                    .journal
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.is_outside_effect())
+                    .cloned()
+                    .collect();
                 (a.queued, a.suggestions, a.txn, note)
             }
             _ => (Vec::new(), Vec::new(), txn, Self::note(ctx, &pkg, first)),
