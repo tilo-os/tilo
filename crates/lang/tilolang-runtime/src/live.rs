@@ -452,6 +452,41 @@ impl Live {
         self.bounds.get(id).and_then(Option::as_ref)
     }
 
+    /// Plant a boundary by hand, as a boundary whose branch has left the tree stands: rendered,
+    /// with the cached trail `path` of a call that is no longer placed. `target` is a call that
+    /// renders, so a run of it has content to write: without the guard that refuses a boundary
+    /// the tree does not hold, that content lands at `path`.
+    #[cfg(test)]
+    pub(crate) fn plant_orphan(
+        &mut self,
+        key: &str,
+        target: crate::render::ViewTarget,
+        args: Vec<Value>,
+        path: Vec<usize>,
+    ) -> BoundId {
+        let mut bound = Bound::new(
+            crate::render::Stub {
+                key,
+                target: Rc::new(target),
+                args,
+                lazy: false,
+                depth: 1,
+            },
+            false,
+        );
+        bound.path = path;
+        bound.rendered = true;
+        let id = self.add_bound(bound);
+        self.dirty.insert(id);
+        id
+    }
+
+    /// The keys of the tree's children, to say what a tree holds.
+    #[cfg(test)]
+    pub(crate) fn child_keys(&self) -> Vec<String> {
+        self.tree.children.iter().map(|n| n.key.clone()).collect()
+    }
+
     fn bound_mut(&mut self, id: BoundId) -> Option<&mut Bound> {
         self.bounds.get_mut(id).and_then(Option::as_mut)
     }
@@ -1567,7 +1602,12 @@ impl Live {
             }
             let path = self.bound(id).map(|b| b.path.clone()).unwrap_or_default();
             let keys = self.keys_at(&path);
-            if let Some(fragment) = self.node_at_mut(&path) {
+            // Only a row whose own `fragment` the tree still holds has rows to hide: a row kept
+            // behind by a list the view no longer draws has nowhere to write, and hiding it would
+            // empty whatever stands at its stale path.
+            if self.placed(id, &path)
+                && let Some(fragment) = self.node_at_mut(&path)
+            {
                 for child in std::mem::take(&mut fragment.children) {
                     patches.push(Patch::Remove {
                         parent: keys.clone(),

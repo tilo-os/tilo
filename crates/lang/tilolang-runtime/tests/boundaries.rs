@@ -1088,6 +1088,12 @@ view board(b: Board) {
     /// The shape that reaches it has the same call in both branches: the boundary the departing
     /// branch made is left behind when the other branch's call takes the key, and the change
     /// that follows asks it to run.
+    ///
+    /// Through the public interface a swap clears the departing boundary's dirtiness, so this
+    /// test passes with and without the guard: it states the behaviour, not the mechanism. The
+    /// mechanism — a planted orphan whose cached trail is the empty one — is
+    /// `view_instance::orphan_tests::a_boundary_the_tree_does_not_hold_writes_nowhere`, which
+    /// fails without the guard.
     #[test]
     fn a_boundary_the_tree_no_longer_holds_does_not_replace_the_whole_view() {
         let (rt, app, board, mut view) = swapping();
