@@ -745,11 +745,13 @@ fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
 }
 
 /// What a change to one task re-indexes: the entries of the resources it touched, whatever the
-/// workspace holds. The session's search index keeps an entry per resource; checking one task of
-/// ten thousand replaces that task's entry, and the whole set is published again only when the
+/// workspace holds. The session's search index keeps an entry per resource; adding one task of
+/// ten thousand adds that task's entry, and the whole set is published again only when the
 /// publication cannot say what moved.
 #[test]
 fn a_change_reindexes_the_resources_it_touched() {
+    use ui::winit::keyboard::NamedKey;
+
     let _motion = ui::motion::testing::settled();
     let doc = seeded_tasks(SEEDED);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
@@ -758,12 +760,15 @@ fn a_change_reindexes_the_resources_it_touched() {
     // Opening published every entry; what the change publishes is counted from here.
     session.forget_sent();
 
-    let (title, x, y) = first_check(&mut session);
-    session.window.click_at(x, y);
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Buy milk");
+    session.forget_sent();
+    session.window.press_key(NamedKey::Enter);
     session.settle();
     assert!(
-        checked_off(&mut session, &title),
-        "the row a person checked reads checked: {title}"
+        record_has_task(&session, "Buy milk"),
+        "the task the entry added is in the workspace"
     );
 
     let (upserted, dropped, whole) = session.index_published();
@@ -774,6 +779,6 @@ fn a_change_reindexes_the_resources_it_touched() {
     assert_eq!(
         (upserted, dropped),
         (1, 0),
-        "checking one task of {SEEDED} replaces one entry, not the workspace's"
+        "adding one task of {SEEDED} indexes one entry, not the workspace's"
     );
 }

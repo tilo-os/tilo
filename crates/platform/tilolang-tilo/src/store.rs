@@ -728,6 +728,22 @@ fn note_derived(docs: &mut BTreeMap<DocId, Vec<FieldKey>>, doc: &str, keys: Vec<
     }
 }
 
+/// The collections whose items joined, left or moved, by the document that holds them: what a
+/// reader of item text reads the steps of, or everything when there are none
+/// ([`tilolang_runtime::store::ChangeSummary::unsaid`]).
+fn collections_by_doc<'a>(
+    keys: impl IntoIterator<Item = &'a FieldKey>,
+) -> BTreeMap<DocId, Vec<FieldKey>> {
+    let mut collections: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
+    for key in keys {
+        collections
+            .entry(key.doc().to_owned())
+            .or_default()
+            .push(key.clone());
+    }
+    collections
+}
+
 /// Every record of `app` in `docs`, reached as a whole, with those of `before` that are gone:
 /// what derives a package's index anew where it stands.
 fn everything(
@@ -969,15 +985,7 @@ impl TiloStore {
             inner.changed_within(&docs);
         }
         let mut listings = inner.splices_since(&old_snapshots, &old_overlay, &items);
-        // The collections whose items joined, left or moved: what a reader of item text reads
-        // the steps of, or everything when there are none ([`ChangeSummary::unsaid`]).
-        let mut collections: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-        for key in items.keys() {
-            collections
-                .entry(key.doc().to_owned())
-                .or_default()
-                .push(key.clone());
-        }
+        let mut collections = collections_by_doc(items.keys());
         if changed.unplaced {
             inner.notify_all();
         } else {
@@ -2431,7 +2439,7 @@ impl Store for TiloStore {
         } = inner.plan(at, m)?;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let summary = touched.clone();
-        let collections: Vec<FieldKey> = items.keys().cloned().collect();
+        let collections = collections_by_doc(items.iter().map(|(key, _)| key));
         let listings = inner.write(&app, dyn_edit.clone(), seed, touched, (items, placed))?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
@@ -2457,11 +2465,9 @@ impl Store for TiloStore {
         }
         let touched = state.touched.entry(at.doc.clone()).or_default();
         touched.extend(summary);
-        state
-            .collections
-            .entry(at.doc.clone())
-            .or_default()
-            .extend(collections);
+        for (doc, keys) in collections {
+            state.collections.entry(doc).or_default().extend(keys);
+        }
         Ok(item.map_or(Applied::Done, Applied::Item))
     }
 
@@ -2565,10 +2571,11 @@ impl Store for TiloStore {
                 .into_iter()
                 .partition(|change| change.key.doc() == doc);
             listings = rest;
+            let collections = collections.remove(&doc).unwrap_or_default();
             inner.notify(&ChangeSummary {
                 doc,
                 fields: fields.into_iter().collect(),
-                collections: collections.remove(&doc).unwrap_or_default().into_iter().collect(),
+                collections: collections.into_iter().collect(),
                 listings: own,
                 by: Some(note.invoker.clone()),
             });

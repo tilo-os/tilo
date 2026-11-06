@@ -415,8 +415,7 @@ impl Session {
             "ada",
             automerge::AutoCommit::new(),
             None,
-            Box::new(()),
-            Rc::default(),
+            (Box::new(()), Rc::default()),
             |hosted| {
                 let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
                 app.init_layout();
@@ -455,8 +454,7 @@ impl Session {
             person,
             automerge::AutoCommit::new(),
             None,
-            Box::new(inbox),
-            sent,
+            (Box::new(inbox), sent),
             window,
         )
     }
@@ -483,8 +481,7 @@ impl Session {
             "ada",
             doc,
             storage,
-            Box::new(inbox),
-            sent,
+            (Box::new(inbox), sent),
             |hosted| {
                 Window::Harness(Box::new(FrameHarness::new(
                     ui::State::new(),
@@ -516,8 +513,7 @@ impl Session {
             "ada",
             doc,
             storage,
-            Box::new(inbox),
-            sent,
+            (Box::new(inbox), sent),
             |hosted| {
                 Window::Harness(Box::new(FrameHarness::new(
                     ui::State::new(),
@@ -530,9 +526,9 @@ impl Session {
 
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
-    /// `broker` is what the broker's end holds, `doc` the workspace record the instance runs
-    /// over, and `storage` where the package keeps what it keeps (nothing: in memory). The window
-    /// settles before it is handed over.
+    /// `wire` is what the broker's end holds and what the instance sends it, `doc` the
+    /// workspace record the instance runs over, and `storage` where the package keeps what it
+    /// keeps (nothing: in memory). The window settles before it is handed over.
     fn over(
         manager: CollaborationManager,
         route: &RouteSpec,
@@ -540,13 +536,10 @@ impl Session {
         person: &str,
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
-        broker: Box<dyn std::any::Any>,
-        sent: Sent,
+        wire: (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let mut session = Self::launch(
-            manager, route, app, person, doc, storage, broker, sent, window,
-        );
+        let mut session = Self::launch(manager, route, app, person, doc, storage, wire, window);
         session.settle();
         session
     }
@@ -559,8 +552,7 @@ impl Session {
         person: &str,
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
-        broker: Box<dyn std::any::Any>,
-        sent: Sent,
+        (broker, sent): (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
@@ -598,11 +590,6 @@ impl Session {
             sent,
             _broker: broker,
         }
-    }
-
-    /// The requests the instance sent its broker connection.
-    fn sent(&self) -> Sent {
-        Rc::clone(&self.sent)
     }
 
     /// Forget the requests the instance sent so far.

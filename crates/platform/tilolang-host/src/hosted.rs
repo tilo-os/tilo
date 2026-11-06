@@ -970,12 +970,15 @@ impl Hosted {
                 self.drop_entry(&id, &mut remove);
             }
         }
-        // A resource that holds no text any more is no entry, though it is still there.
+        // A resource that holds no text any more is no entry, though it is still there: only its
+        // own entry goes, as what it published under it is the entries of its own resources.
         for package in host.packages() {
+            let upserted: std::collections::BTreeSet<&str> =
+                upsert.iter().map(|entry| entry.resource.as_str()).collect();
             for path in texts {
                 let id = tilolang_tilo::publish::resource_id(&package.meta.app, path);
-                if !upsert.iter().any(|entry| entry.resource == id) {
-                    self.drop_entry(&id, &mut remove);
+                if !upserted.contains(id.as_str()) && self.search_entries.remove(&id).is_some() {
+                    remove.push(id);
                 }
             }
         }
