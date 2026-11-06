@@ -453,42 +453,20 @@ fn new_windows_open_on_the_display_with_focus() {
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
 }
 
-/// What the displays service publishes.
-#[track_caller]
-fn displays_reading(session: &Session) -> tilo_session::displays::Reading {
-    let published = session
-        .read(tilo_session::displays::RESOURCE)
-        .expect("the session's displays publish");
-    serde_json::from_value(published).expect("the reading reads back")
-}
-
+/// The displays' own arrangement action moves the pictures: mirrored, the
+/// display beside the one with the window shows that window too.
 #[test]
-fn the_reading_says_where_each_display_is() {
+fn an_arrangement_action_mirrors_the_other_display() {
     let _settled = ui::motion::testing::settled();
     let mut session = docked();
     let mut client = client(&mut session);
-    let placed = |session: &Session| {
-        displays_reading(session)
-            .displays
-            .into_iter()
-            .map(|display| (display.connector, display.rect, display.scale))
-            .collect::<Vec<_>>()
-    };
+    tab(&mut session, &mut client, "org.example.Left");
     assert_eq!(
-        placed(&session),
-        [
-            ("HEADLESS-1".to_owned(), Some((0, 0, WIDTH, HEIGHT)), 1.0),
-            (
-                "HEADLESS-2".to_owned(),
-                Some((WIDTH, 0, WIDTH, HEIGHT)),
-                1.0
-            ),
-        ],
-        "each display says where its picture is and how large it draws it"
+        painted(&mut session, "HEADLESS-2"),
+        0,
+        "the display beside the window shows nothing yet"
     );
 
-    // The displays' own arrangement actions move them: mirrored, both are
-    // in one place, and the reading says so.
     invoke(
         &mut session,
         &mut client,
@@ -497,10 +475,13 @@ fn the_reading_says_where_each_display_is() {
         serde_json::json!({"mode": "mirror"}),
     );
     pump(&mut session, &mut client, |session, _| {
-        placed(session)
-            .iter()
-            .all(|(_, rect, _)| *rect == Some((0, 0, WIDTH, HEIGHT)))
+        painted(session, "HEADLESS-2") > 0
     });
+    assert_eq!(
+        painted(&mut session, "HEADLESS-2"),
+        painted(&mut session, "HEADLESS-1"),
+        "a mirror shows both displays the same picture"
+    );
 }
 
 #[test]
