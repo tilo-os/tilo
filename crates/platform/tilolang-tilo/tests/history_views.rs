@@ -430,7 +430,7 @@ fn a_task_of(ada: &mut Replica, tasks: &Value, title: &str) -> Value {
         "ada",
         TASKS_APP,
         "new_task",
-        crate::tasks::create(&tasks, title),
+        crate::tasks::create(tasks, title),
     );
     ada.commit();
     task
