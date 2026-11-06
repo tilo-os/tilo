@@ -8,9 +8,9 @@ use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
-const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
-const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
-const APP: &str = "so.tilo.lang.tasks";
+pub(crate) const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+pub(crate) const APP: &str = "so.tilo.lang.tasks";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
     let meta = r.host.package(APP).unwrap().meta;
@@ -69,13 +69,13 @@ fn items(r: &Replica) -> Vec<Value> {
 
 /// A place as the sidebar draws it: its label, and the count it draws when its filter says
 /// `count: true` (the inbox's and today's).
-type ShownPlace = (String, Option<i64>);
+pub(crate) type ShownPlace = (String, Option<i64>);
 
 /// A heading of the sidebar with the places under it, in the order they stand.
 type ShownSection = (String, Vec<ShownPlace>);
 
 /// The sidebar's places as the window shows them.
-fn places(view: &ViewInstance) -> Vec<ShownPlace> {
+pub(crate) fn places(view: &ViewInstance) -> Vec<ShownPlace> {
     fn walk(node: &UiNode, out: &mut Vec<ShownPlace>) {
         if node.kind == "ui.NavItem"
             && let Some(Value::Text(label)) = node.props.get("label")
@@ -96,7 +96,7 @@ fn places(view: &ViewInstance) -> Vec<ShownPlace> {
 }
 
 /// What the sidebar counts at `place`: a count only where the place's filter asks for one.
-fn count(view: &ViewInstance, place: &str) -> Option<i64> {
+pub(crate) fn count(view: &ViewInstance, place: &str) -> Option<i64> {
     places(view)
         .into_iter()
         .find(|(label, _)| label == place)
@@ -835,7 +835,7 @@ fn launch_post() -> (Replica, Value) {
 }
 
 /// The page a task opens, drawn.
-fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
+pub(crate) fn task_page(ada: &Replica, task: &Value) -> ViewInstance {
     let Value::Ref(at) = task else {
         panic!("a task: {task:?}")
     };
@@ -1324,8 +1324,7 @@ fn bound_key(node: &UiNode, field: &str) -> Option<String> {
 }
 
 /// Every text the tree shows.
-#[cfg(feature = "record")]
-fn texts(node: &UiNode) -> Vec<String> {
+pub(crate) fn texts(node: &UiNode) -> Vec<String> {
     fn walk(node: &UiNode, out: &mut Vec<String>) {
         if let Some(Value::Text(text)) = node.props.get("label").or_else(|| node.props.get("value"))
         {
@@ -2076,13 +2075,13 @@ fn a_tasks_row_and_its_outline_count_what_is_done_alike() {
 
 /// One command a menu offers, as the person reads it.
 #[derive(Debug, PartialEq, Eq)]
-struct Command {
-    label: String,
-    key: Option<String>,
-    group: Option<String>,
-    reason: Option<String>,
-    enabled: bool,
-    destructive: bool,
+pub(crate) struct Command {
+    pub(crate) label: String,
+    pub(crate) key: Option<String>,
+    pub(crate) group: Option<String>,
+    pub(crate) reason: Option<String>,
+    pub(crate) enabled: bool,
+    pub(crate) destructive: bool,
 }
 
 fn flag(node: &UiNode, name: &str) -> bool {
@@ -2121,6 +2120,7 @@ fn spec_commands() -> Vec<&'static str> {
         "Complete",
         // It asks for the title it makes the task under: a task is never made unnamed.
         "Add subtask…",
+        "Pick for today",
         "Today",
         "Tomorrow",
         "Next week",
@@ -2216,7 +2216,7 @@ fn row_command_key(view: &mut ViewInstance, want: &Value, label: &str) -> String
 }
 
 /// The commands a page offers behind its `...` door.
-fn page_commands(view: &ViewInstance) -> Vec<Command> {
+pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
     let more = all(view.tree(), "ui.MenuButton")
         .into_iter()
         .find(|button| button.key.ends_with("~more"))
@@ -2253,24 +2253,24 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         "a command of no run stands on its own"
     );
     assert_eq!(
-        commands[2].group.as_deref(),
+        commands[3].group.as_deref(),
         Some("Due"),
         "the dates are one run"
     );
-    assert_eq!(commands[6].group.as_deref(), Some("Due"));
-    assert_eq!(commands[7].group.as_deref(), Some("Priority"));
+    assert_eq!(commands[7].group.as_deref(), Some("Due"));
+    assert_eq!(commands[8].group.as_deref(), Some("Priority"));
     assert!(
-        !commands[6].enabled && commands[6].reason.as_deref() == Some("It has no date"),
+        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no date"),
         "a command that cannot run stays listed and says why: {:?}",
-        commands[6]
-    );
-    assert!(
-        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no priority"),
-        "what it already is cannot be chosen: {:?}",
         commands[7]
     );
+    assert!(
+        !commands[8].enabled && commands[8].reason.as_deref() == Some("It has no priority"),
+        "what it already is cannot be chosen: {:?}",
+        commands[8]
+    );
     assert_eq!(
-        commands[15].key.as_deref(),
+        commands[16].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );

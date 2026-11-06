@@ -349,6 +349,27 @@ impl Runtime {
         self.core.foreign.borrow().take_waiting();
     }
 
+    /// The reading of `target`, a resource of an app this runtime does not run, whole, with the
+    /// generation it was read at: what a Rust app's view is handed of the resource it shows.
+    ///
+    /// `None` before a reading arrived (the host is asked to publish one, as a field read does),
+    /// and for a resource this runtime holds: its own records run from here.
+    #[must_use]
+    pub fn reading(&self, target: &ResourceRef) -> Option<(serde_json::Value, u64)> {
+        if !crate::foreign::is_foreign(target) {
+            return None;
+        }
+        self.core.foreign.borrow_mut().whole(target)
+    }
+
+    /// Tell the runtime the views of a Rust app: its registry, so a `show` of a resource of one of
+    /// its types draws that app's view inline, as it draws a tilolang package's view
+    /// ([`crate::rust_views`]). The host that runs the app calls this once.
+    pub fn set_rust_views(&self, views: std::rc::Rc<dyn crate::rust_views::RustViews>) {
+        let app = views.app().to_owned();
+        self.core.rust_views.borrow_mut().insert(app, views);
+    }
+
     /// The reading of `target`, a resource of an app this runtime does not run, as the
     /// session's watch last saw it: the JSON its service read. Views that read a field of it
     /// run again at the next poll. Whether it differs from the reading held before: `false`
@@ -665,6 +686,34 @@ impl Runtime {
         self.core.complete_args(action, given)
     }
 
+    /// Fills the parameters `given` leaves out of `action` from `text`, the one line a person
+    /// typed for it: the entry parameter with the words nothing else took, and the parameters
+    /// their types read (a day, a moment, a person, a record). A parameter given is kept.
+    /// [`crate::Runtime::complete_args`] then defaults the rest. Returns the arguments as the
+    /// call carries them — as long as the action's parameters, what the call left out
+    /// [`None`] — and `None` when the line names nothing, as an entry's text that is only
+    /// space and what other parameters take makes no item.
+    ///
+    /// # Errors
+    ///
+    /// A text naming something the action does not take, or a value that does not fit.
+    pub fn fill_entry(
+        &self,
+        action: &str,
+        given: Vec<Option<Value>>,
+        text: &str,
+    ) -> Result<Option<Vec<Option<Value>>>, RuntimeError> {
+        self.core
+            .entry_fill_given(action, given, text)
+            .map_err(|fail| match fail {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                // Filling arguments reads the text and the workspace, never asks a question.
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("reading what was typed asked for a decision".to_owned())
+                }
+            })
+    }
+
     /// The default of the parameter `at` of `action`, computed now over the arguments before
     /// it: what its form starts filled in with. `None` when it has none.
     ///
@@ -877,6 +926,12 @@ impl Runtime {
     /// How views show a principal's name. Until it is set, a principal is its id.
     pub fn set_name_host(&self, host: impl crate::core::NameHost + 'static) {
         *self.core.names.borrow_mut() = Some(Box::new(host));
+    }
+
+    /// How a day or a time of day reads in a sentence (a row's line, a notice) rather than in a
+    /// view node. Until it is set, its stored text.
+    pub fn set_shown_host(&self, host: impl crate::core::ShownHost + 'static) {
+        *self.core.shown.borrow_mut() = Some(Box::new(host));
     }
 
     /// What `now` reads: the current time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`. The

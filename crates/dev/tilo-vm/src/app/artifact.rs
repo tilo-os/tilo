@@ -51,6 +51,7 @@ fn activate(
         component: layer.receipt.component.clone(),
         layer: layer.receipt.layer_hash.clone(),
         info,
+        partner: None,
     })?;
     let installed = remote.call(SlotShow { name: slot.into() })?;
     if result.slot != slot

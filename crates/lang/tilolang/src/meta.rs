@@ -419,6 +419,10 @@ pub struct FieldMeta {
     pub ty: String,
     pub merge: MergeKind,
     pub doc: String,
+    /// `personal today: Bool = false`: one value per person, in a record everyone shares
+    /// ([`crate::personal`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub personal: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
     /// What the field is to the platform (`title: Text (title)`, `repeats:

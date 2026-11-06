@@ -365,6 +365,13 @@ impl Inner {
 
 /// The field a mutation writes.
 pub(super) fn field_of(m: &Mutation) -> String {
+    let field = written_field(m);
+    tilolang::personal::field_of(&field).to_owned()
+}
+
+/// The id a mutation writes: `field` for a field of the record, `field@person` for one person's
+/// value of a personal field.
+fn written_field(m: &Mutation) -> String {
     match m {
         Mutation::SetRegister { field, .. }
         | Mutation::AddCounter { field, .. }
@@ -383,6 +390,21 @@ pub(super) fn field_of(m: &Mutation) -> String {
 
 /// The edit a mutation of a field makes below the resource whose map `prefix` reaches.
 pub(super) fn edit_of(prefix: &[Segment], m: &Mutation) -> Result<Edit<DynRecord>, StoreError> {
+    // A person's value of a personal field is an entry of the map the record keeps them in: the
+    // edit writes it under the person's key, where everyone else's values are.
+    if let Some((field, person)) = tilolang::personal::split(written_field(m).as_str()) {
+        let Mutation::SetRegister { value, .. } = m else {
+            return Err(invalid("only a value is personal, not a field that merges"));
+        };
+        let mut path = path_to(prefix, field);
+        path.push(Segment::Key(person.to_owned()));
+        return Ok(Edit::new(
+            path,
+            EditOp::Set {
+                value: json_of_scalar(value),
+            },
+        ));
+    }
     let (field, op) = match m {
         Mutation::SetRegister { field, value } => (
             field,

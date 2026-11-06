@@ -82,6 +82,15 @@ pub trait Platform {
         0
     }
 
+    /// How the stored `value` of a day or a time of day (`kind` is `date` or `time`) reads in a
+    /// sentence — a row's line, a notice — where a view cannot stand: a day as the day fact
+    /// (`Today`, `Friday`, `Jun 29`), a time of day as a list shows when something came. Stored
+    /// text unless the platform formats, which a window's host does.
+    fn shown(&self, kind: &str, value: &str) -> String {
+        let _ = kind;
+        value.to_owned()
+    }
+
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 

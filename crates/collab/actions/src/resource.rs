@@ -1730,6 +1730,16 @@ impl ActionSpec {
         }
     }
 
+    /// The parameter one line of typed text fills, when the action is a
+    /// capture: it declares one ([`ActionParam::entry`]).
+    #[must_use]
+    pub fn entry_param(&self) -> Option<&str> {
+        self.params()
+            .iter()
+            .find(|param| param.entry)
+            .map(|param| param.name.as_ref())
+    }
+
     /// `text` as this action's typed arguments, when it is a prompted action.
     pub fn prompt_arguments(
         &self,
@@ -2687,12 +2697,13 @@ fn parse_argument(name: &str, ty: ParamType, text: &str) -> Vec<(String, ArgValu
         .unwrap_or_default()
 }
 
-/// The parameter one line of palette text binds to: the first required one,
-/// else the first.
+/// The parameter one line of palette text binds to: the one that takes an
+/// entry, else the first required one, else the first.
 fn primary_param(params: &[ActionParam]) -> Option<&ActionParam> {
     params
         .iter()
-        .find(|p| p.required)
+        .find(|p| p.entry)
+        .or_else(|| params.iter().find(|p| p.required))
         .or_else(|| params.first())
 }
 

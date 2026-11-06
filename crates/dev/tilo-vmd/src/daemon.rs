@@ -908,7 +908,7 @@ impl Daemon {
             }
             Request::Swap(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
-                to_value(&self.swap(&p.slot, &p.component, &p.layer, p.info)?)
+                to_value(&self.swap(&p.slot, &p.component, &p.layer, p.info, p.partner.as_ref())?)
             }
             Request::UserspaceApply(p) => {
                 let _locks = self.slot_locks(&p.slot)?;
@@ -1810,6 +1810,7 @@ impl Daemon {
         component: &str,
         layer: &str,
         info: Option<ComponentInfo>,
+        partner: Option<&tilo_vm_protocol::Partner>,
     ) -> Result<ApplyResult, DaemonError> {
         let mut record = self.load_slot(name)?;
         let layer_path = self.layers.require(layer)?;
@@ -1859,7 +1860,7 @@ impl Daemon {
                     .map(|cohort| cohort.ids().collect())
                     .unwrap_or_default();
                 self.check_cohort_users(&record, &from, &to, &reselected)?;
-                self.check_interfaces(&record, &to)?;
+                self.check_interfaces(&record, &to, partner)?;
                 self.transition(&mut record, &from, &to)?
             }
             None => unchanged(record),
@@ -1910,7 +1911,9 @@ impl Daemon {
     /// reading, or a VM-wide runtime service (fs) serves another runtime
     /// version. For the `vm` slot, refuse when its runtime services would
     /// leave any slot reading another runtime version
-    /// ([`crate::interfaces`]). Checked before anything is activated.
+    /// ([`crate::interfaces`]); `partner` names a slot whose next generation
+    /// moves together with this swap, which is judged instead of the
+    /// generation it runs. Checked before anything is activated.
     ///
     /// # Errors
     /// [`DaemonError::InvalidParams`] naming what to swap together; a
@@ -1919,6 +1922,7 @@ impl Daemon {
         &self,
         record: &SlotRecord,
         to: &Generation,
+        partner: Option<&tilo_vm_protocol::Partner>,
     ) -> Result<(), DaemonError> {
         let image = image::recorded_declaration(&self.root);
         let conflict = if record.name == VM_SLOT {
@@ -1942,8 +1946,13 @@ impl Daemon {
                 if slot.name == VM_SLOT || slot.current == 0 {
                     continue;
                 }
-                let current = self.slots.generation(&slot.name, slot.current)?;
-                slots.push((slot.name.clone(), self.interface_members(&current)?));
+                let members = match partner.filter(|partner| partner.slot == slot.name) {
+                    Some(partner) => self.interface_members_of(&partner.components)?,
+                    None => {
+                        self.interface_members(&self.slots.generation(&slot.name, slot.current)?)?
+                    }
+                };
+                slots.push((slot.name.clone(), members));
             }
             crate::interfaces::vm_conflict(image.as_ref(), &slots, &vm_services)
         } else {
@@ -1969,16 +1978,30 @@ impl Daemon {
         &self,
         generation: &Generation,
     ) -> Result<Vec<crate::interfaces::Member>, DaemonError> {
+        let components: BTreeMap<String, String> = generation
+            .components
+            .iter()
+            .map(|(component, entry)| (component.clone(), entry.layer.clone()))
+            .collect();
+        self.interface_members_of(&components)
+    }
+
+    /// `components` (name to layer) as the interface check sees them, for a
+    /// generation that is not stored yet.
+    fn interface_members_of(
+        &self,
+        components: &BTreeMap<String, String>,
+    ) -> Result<Vec<crate::interfaces::Member>, DaemonError> {
         let relative = tilo_vm_protocol::SYSTEM_INTERFACES
             .strip_prefix('/')
             .unwrap_or(tilo_vm_protocol::SYSTEM_INTERFACES);
         let mut members = Vec::new();
-        for (component, entry) in &generation.components {
-            let declaration = self.layers.require(&entry.layer)?.join(relative);
+        for (component, layer) in components {
+            let declaration = self.layers.require(layer)?.join(relative);
             members.push(crate::interfaces::Member {
                 component: component.clone(),
-                layer: entry.layer.clone(),
-                provenance: self.layers.provenance(&entry.layer),
+                layer: layer.clone(),
+                provenance: self.layers.provenance(layer),
                 ships: declaration
                     .exists()
                     .then(|| tilo_vm_protocol::Declaration::read(&declaration)),

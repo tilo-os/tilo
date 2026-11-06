@@ -599,7 +599,9 @@ impl BrowserShell {
             Box::new(surface),
             handle.clone(),
             launchpad,
-            Rc::clone(&asks),
+            // The page has no widget layer of its own under the desk, so the
+            // layer keeps the asks to itself; `follow_asks` reads them back.
+            Rc::default(),
             vec![Box::new(hints.announcer())],
         );
         // The desktop's shortcut table keeps the native defaults: the page

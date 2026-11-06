@@ -469,6 +469,16 @@ impl Core {
                 (name.clone(), r)
             })
             .collect();
+        // A `show` of a resource whose type a Rust app's views draw: that view's tree stands here,
+        // rendered inline as its own boundary (one-app-model.md §2). What the app's view built is
+        // kept as the runtime's nodes, wired to the runtime's actions, so the host draws it as it
+        // draws a tilolang view and a press goes through the same door.
+        if n.kind == SHOW
+            && let Some(node) =
+                self.rust_show(cx, n, &key, &events, walk, acc, hook.as_deref_mut())?
+        {
+            return Ok(node);
+        }
         // A call of another package's view: its boundary renders it where it stands, and this
         // node is the fragment the boundary's tree goes in.
         if let Some(boundaries) = hook.as_deref_mut()
@@ -871,6 +881,85 @@ impl Core {
             )));
         }
         Ok((vt, vec![Value::Ref(shown.clone())]))
+    }
+
+    /// A `show` of a resource whose type a Rust app draws: that view's tree, made the runtime's and
+    /// keyed where the `show` node stands, so the host builds it as it builds a tilolang view.
+    /// `None` when no Rust app draws the resource's type, so the node resolves as a package's view
+    /// does.
+    fn rust_show(
+        &self,
+        cx: &Build<'_>,
+        n: &NodeBuild,
+        key: &str,
+        events: &std::collections::BTreeMap<String, Retained>,
+        _walk: Walk<'_>,
+        acc: &mut Acc,
+        _hook: Option<&mut (dyn Boundaries + '_)>,
+    ) -> Result<Option<UiNode>, RuntimeError> {
+        let Some(Value::Ref(shown)) = n.props.get(SHOWN) else {
+            return Ok(None);
+        };
+        let views = crate::rust_views::app_of(&self.rust_views, &shown.target.ty);
+        let Some(app) = views else {
+            return Ok(None);
+        };
+        let named = match n.props.get(SHOWN_AS) {
+            Some(Value::Text(view)) if !view.is_empty() => view.clone(),
+            _ => String::new(),
+        };
+        let Some(decl) = crate::rust_views::view_for(&app, &shown.target.ty, &named) else {
+            return Ok(None);
+        };
+        let kind = crate::rust_views::kind_of(&app, &shown.target.ty);
+        let resource = crate::rust_views::RustResource {
+            id: shown.target.id_string(),
+            kind: kind.clone(),
+        };
+        // The reading, whole, and the slot that moves when it does, so the boundary runs again.
+        let reading = self.foreign.borrow_mut().whole(&shown.target);
+        if let Some((_, generation)) = &reading {
+            let state_key = crate::foreign::reading_key(&shown.target);
+            acc.state_reads.push((state_key.clone(), *generation));
+            if let Some(seen) = self.view_states.borrow().get(&state_key).cloned() {
+                acc.state_seen.push((state_key, seen));
+            }
+        }
+        let rendered = app.render(
+            &kind,
+            &decl.name,
+            &resource,
+            reading.as_ref().map(|(json, _)| json),
+            cx.offer.viewer,
+            cx.offer.window,
+        );
+        let author = crate::ids::ModuleHash::principal(app.app());
+        let root = {
+            let mut retained = Vec::new();
+            let mut retain = |value: Value| {
+                let r = self.frames.borrow_mut().retain(value);
+                retained.push(r);
+                r
+            };
+            let root = rendered
+                .tree
+                .into_ui(&rendered.events, &shown.target, &author, &mut retain)
+                .map_err(RuntimeError::Package)?;
+            acc.retained.extend(retained);
+            root
+        };
+        let mut node = UiNode {
+            kind: "fragment".to_owned(),
+            key: key.to_owned(),
+            props: std::collections::BTreeMap::new(),
+            binding: n.binding.clone(),
+            events: events.clone(),
+            anchor: n.anchor.clone(),
+            children: vec![scope(key, root)],
+        };
+        node.props
+            .retain(|name, _| !name.starts_with(ARG_PREFIX) && name != SHOWN);
+        Ok(Some(node))
     }
 
     /// The view a window's own boundary shows its resource through, and the state it read to
