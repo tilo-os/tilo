@@ -165,11 +165,18 @@ fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
 #[test]
 fn shift_and_the_print_key_take_the_whole_display_at_once() {
     let _settled = ui::motion::testing::settled();
+    // The desk is the frame the card's arrival must change: with the clock
+    // held, a minute turning over cannot pass for it.
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
     let print = print_key(&mut session);
     assert!(kept(pictures.path(), "png").is_empty(), "nothing yet");
+
+    // The desk as the press leaves it: with the bar down, anything the desk
+    // shows after the press is the shot's own card.
+    let desk = quiet_desk(&mut session, "HEADLESS-1");
 
     // Shift takes the whole display without the studio coming up to ask.
     key(&mut session, super::keys::LEFT_SHIFT, true);
@@ -177,6 +184,14 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
     key(&mut session, super::keys::LEFT_SHIFT, false);
     pump(&mut session, &mut [], |_, _| {
         !kept(pictures.path(), "png").is_empty()
+    });
+    // The shot answers at once: its card stands on the floating layer with
+    // the picture it caught, without the studio's bar coming up.
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .is_ok_and(|frame| frame.rgba != desk)
     });
     let kept = kept(pictures.path(), "png");
     assert_eq!(kept.len(), 1, "one press, one picture: {kept:?}");
