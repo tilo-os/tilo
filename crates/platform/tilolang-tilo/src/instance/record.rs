@@ -13,7 +13,6 @@ use std::rc::Rc;
 
 use app_state::DocWriter;
 use automerge::ChangeHash;
-use collaboration::commit_log::CommitHistory;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::authors::{
     HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, short_id, stable_hue,
@@ -28,7 +27,7 @@ use collaboration::{
 use durable_store::DurableStore;
 
 use serde_json::Value as Json;
-use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, EncodedAction};
+use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, EncodedAction, InvocationId};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::Doc;
 
@@ -338,19 +337,45 @@ impl InstanceRecord {
         )
     }
 
-    /// The action the person's last step in the record was part of, when the workspace's
-    /// transport knows it and it wrote more than this unit: what one undo has to take back
-    /// across the workspace, unit by unit. None when the step is this unit's alone, or when
-    /// nothing here knows the action it ran in.
+    /// The invocation the person's last step in the record ran in: the id every change of the
+    /// action that made it names, in this unit and in every other one the action wrote.
     #[must_use]
-    pub fn action_of_last_step(&mut self) -> Option<CommitHistory> {
+    pub fn last_step_invocation(&self) -> Option<InvocationId> {
         let scope = Scope::Invoker(self.person.clone());
         let step = steps::undo_preview(&self.doc, &scope, 1)
             .into_iter()
             .next()?;
-        let workspace = self.route.cluster_id.to_string();
-        let action = self.manager.action_of(&workspace, &step.hash.0)?;
-        (action.parts.len() > 1).then_some(action)
+        self.invocation_of(&step.hash.0)
+    }
+
+    /// The changes of this unit the invocation `invocation` made, oldest first: the unit's part
+    /// of that action, read from the document itself. An undo across the action needs nothing
+    /// else, so it works after a restart that lost every log the transport kept.
+    #[must_use]
+    pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
+        self.doc
+            .committed_document()
+            .get_changes(&[])
+            .iter()
+            .filter(|change| {
+                change
+                    .message()
+                    .and_then(ActionContext::from_change_message)
+                    .is_some_and(|context| context.source_invocation == Some(invocation))
+            })
+            .map(|change| change.hash().0)
+            .collect()
+    }
+
+    /// The invocation the change `change` of this document ran in.
+    fn invocation_of(&self, change: &[u8; 32]) -> Option<InvocationId> {
+        self.doc
+            .committed_document()
+            .get_changes(&[])
+            .into_iter()
+            .find(|known| known.hash().0 == *change)
+            .and_then(|known| known.message().and_then(ActionContext::from_change_message))
+            .and_then(|context| context.source_invocation)
     }
 
     /// Whether the step the change `change` is part of is still in effect for the person: what an

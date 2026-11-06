@@ -28,7 +28,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::action_directory::PublishedDirectory;
-use collaboration::commit_log::CommitHistory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{
     CollabEvent, CollabRequest, DocumentMutation, SurfacePublication, WorkspaceCommit,
@@ -515,9 +514,10 @@ pub struct Hosted {
     search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
     /// How many builds of the entries the index has been sent: the state's generation.
     search_index_build: u64,
-    /// The action the person's Undo asked for that wrote units beyond this one: the host takes
-    /// it back in every unit of the action, all under one commit.
-    undo_across: Option<CommitHistory>,
+    /// The invocation the person's last step ran in, when they asked to undo it: the host takes
+    /// the action back in every unit that holds a change of it, all under one commit, whether
+    /// this endpoint's logs still remember the action or only the records do.
+    undo_ask: Option<InvocationId>,
     /// The identity-service connection the instance's connection signs through, held for as
     /// long as the instance runs.
     #[allow(
@@ -625,7 +625,7 @@ impl Hosted {
             search_index_moved: None,
             search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
-            undo_across: None,
+            undo_ask: None,
             identity: None,
         }
     }
@@ -707,25 +707,14 @@ impl Hosted {
         // step, typing they did just before it included.
         for asked in self.instance.take_history() {
             if matches!(asked, tilolang_tilo::instance::HistoryAsk::Undo)
-                && let Some(action) = self.record.action_of_last_step()
+                && let Some(invocation) = self.record.last_step_invocation()
             {
-                // The action wrote units beyond this one: taking it back takes every unit
-                // back, so the host does it, once, and publishes the reverts as one action.
-                self.undo_across = Some(action);
+                // The units that hold a change of the step's action take it back together,
+                // so the host does it, once, and publishes the reverts as one action.
+                self.undo_ask = Some(invocation);
                 continue;
             }
-            let (resource, kind) = &self.resource;
-            let done = self
-                .record
-                .asked(&mut self.instance, &asked, resource, kind);
-            match done {
-                Ok(done) => changed |= done,
-                Err(error) => {
-                    tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
-                    self.instance.history_failed(error.to_string());
-                    changed = true;
-                }
-            }
+            changed |= self.take_step(&asked);
         }
         for event in events {
             changed |= self.delivered(event);
@@ -747,10 +736,37 @@ impl Hosted {
         }
     }
 
-    /// The action the person asked to undo that wrote units beyond this one, once: the host takes
-    /// it back in every unit it wrote.
-    pub fn take_undo_across(&mut self) -> Option<CommitHistory> {
-        self.undo_across.take()
+    /// One history ask run through the record: the person's step taken back, brought back, or
+    /// answered with why it cannot be. Whether what the instance holds changed.
+    fn take_step(&mut self, asked: &tilolang_tilo::instance::HistoryAsk) -> bool {
+        let (resource, kind) = &self.resource;
+        match self.record.asked(&mut self.instance, asked, resource, kind) {
+            Ok(done) => done,
+            Err(error) => {
+                tracing::warn!(app = self.spec.app, ?asked, %error, "an undo or redo failed");
+                self.instance.history_failed(error.to_string());
+                true
+            }
+        }
+    }
+
+    /// The invocation of the step the person asked to undo, once: the host takes the action back
+    /// in every unit of the workspace that holds a change of it.
+    pub fn take_undo_ask(&mut self) -> Option<InvocationId> {
+        self.undo_ask.take()
+    }
+
+    /// Take the step the person asked to undo back in this unit alone, when no other unit of
+    /// the workspace holds a change of its action.
+    pub fn undo_here(&mut self) -> bool {
+        self.take_step(&tilolang_tilo::instance::HistoryAsk::Undo)
+    }
+
+    /// The changes of this instance's unit the invocation `invocation` made: the unit's part of
+    /// the action, read from its record.
+    #[must_use]
+    pub fn changes_of(&self, invocation: InvocationId) -> Vec<[u8; 32]> {
+        self.record.changes_of(invocation)
     }
 
     /// Whether this instance holds the step the change `change` is part of, still to take back:

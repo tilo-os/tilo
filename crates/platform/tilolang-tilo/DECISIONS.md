@@ -38,6 +38,16 @@ Each entry is the closest working design to `docs/designs/app-language`.
   `Action::describe` (the verb is named by the action's id and the resource kind). A dedicated
   `ActionFacet` would need a hook in the executor's context; `Authorship::facets` builds the
   facets for when a host can attach them.
+- **A run's changes name its invocation.** Every change an action makes, and every change of an
+  action it calls, carries the run's invocation (`Authorship::invocation`, applied as the change's
+  `source_invocation`), which is what makes the workspace commit the run as one action. A run that
+  fails anywhere leaves nothing of itself queued or in the record (`Store::begin_run` /
+  `abort_run`). A call that waits for a person ends the run: what it does on from the answer is an
+  action of its own.
+- **An undo across units is read from the records.** The units an action wrote are the units whose
+  documents hold a change of its invocation (`InstanceRecord::changes_of`), asked unit by unit when
+  the undo needs them, so an undo works after a restart that left no transport log remembering the
+  action. The reverts go out as one action under an invocation of their own.
 
 ## Authority
 
