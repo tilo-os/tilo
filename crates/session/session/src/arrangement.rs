@@ -123,12 +123,19 @@ pub enum ArrangementAction {
         state: serde_json::Value,
     },
     /// Move the place `place` into the row `row`, before the place `before`
-    /// or last.
+    /// or last. A `strip` names a strip it becomes a tab of, in front, instead
+    /// of the place's own strip: how a person, an agent and the REPL open
+    /// something beside what they are in, and how a drag from a tab or a window
+    /// bar lands on another strip (shell.md §2). A strip already the place's
+    /// own is nothing to move.
     Move {
         place: u64,
         row: u64,
         #[serde(default)]
         before: Option<u64>,
+        /// The strip it becomes a tab of; its own when left out.
+        #[serde(default)]
+        strip: Option<u64>,
     },
     /// Resize the strip `strip` to `permille` of its row's width.
     Resize { strip: u64, permille: u32 },
@@ -164,12 +171,19 @@ pub enum ArrangementAction {
     /// Text typed on the canvas: the top result of the system's `find` stands
     /// there as its primary view (or `view`). The session resolves it into a
     /// [`Place`] when the action is invoked, so the record only ever holds
-    /// what was placed, never the words it was found by.
+    /// what was placed, never the words it was found by. A `strip` names the
+    /// strip the found resource joins as a tab, in front, instead of a strip of
+    /// its own: how a person opens a found thing beside what they are in
+    /// (shell.md §2, §3), as pressing a reference does.
     PlaceFound {
         text: String,
         #[serde(default)]
         view: String,
+        #[serde(default)]
+        strip: Option<u64>,
+        #[serde(default)]
         x: i64,
+        #[serde(default)]
         y: i64,
     },
 }
@@ -448,7 +462,38 @@ impl Arrangement {
     /// # Errors
     /// The desk has no workspace in front to put anything on.
     pub fn surface_at(&self) -> Result<Surface, String> {
+        self.surface_at_strip(None)
+    }
+
+    /// The surface a place made in `strip` stands on: the strip's own workspace
+    /// and row when it names one on the desk, so the place joins that strip as
+    /// a tab; the workspace and row in front otherwise. The place's id is
+    /// minted here, whatever the strip.
+    ///
+    /// # Errors
+    /// The desk has no workspace in front, or `strip` is not a strip on this
+    /// desk.
+    pub fn surface_at_strip(&self, strip: Option<u64>) -> Result<Surface, String> {
         let tree = self.handle.read(Clone::clone);
+        if let Some(strip) = strip {
+            let held = tree.workspaces.iter().find_map(|workspace| {
+                workspace.strips.iter().find_map(|row| {
+                    row.window_groups
+                        .iter()
+                        .any(|group| group.id == strip)
+                        .then_some((workspace.slot.0, row.id.0))
+                })
+            });
+            let Some((workspace, row)) = held else {
+                return Err("that strip is not in the arrangement".into());
+            };
+            return Ok(Surface {
+                workspace,
+                row,
+                strip,
+                place: self.handle.mint_id(),
+            });
+        }
         let workspace = tree
             .active_workspace()
             .ok_or("the desk has no workspace in front")?;
@@ -468,12 +513,14 @@ impl Arrangement {
         })
     }
 
-    /// Place the resource a text typed at `at` finds on the canvas, as `asked`'s:
-    /// the top result of the system's `find` (`find`) that a place can show,
-    /// resolved against what the session publishes now ([`Catalog`]), standing at
-    /// `at` through the arranging action [`ArrangementAction::Place`] — one
+    /// Place the resource a text typed at `at` finds, as `asked`'s: the top
+    /// result of the system's `find` (`find`) that a place can show, resolved
+    /// against what the session publishes now ([`Catalog`]), standing at `at`
+    /// through the arranging action [`ArrangementAction::Place`] — one
     /// attributed, undoable change of the person's record (shell.md §8). `view`
-    /// empty shows the resource's primary view.
+    /// empty shows the resource's primary view. `strip` names the strip the
+    /// found resource joins as a tab (a strip id on the desk), else it takes a
+    /// strip of its own.
     ///
     /// Returns the place's id, or `None` when nothing the text finds is a
     /// resource the arrangement can place.
@@ -485,6 +532,7 @@ impl Arrangement {
         asked: &str,
         text: &str,
         view: &str,
+        strip: Option<u64>,
         at: (i64, i64),
         find: &dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>,
         busy: Busy,
@@ -498,7 +546,7 @@ impl Arrangement {
         }) else {
             return Err(format!("nothing matches {text:?}"));
         };
-        let surface = self.surface_at()?;
+        let surface = self.surface_at_strip(strip)?;
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
             row: surface.row,
@@ -832,9 +880,12 @@ fn change(
         ArrangementAction::RetiredOpenInto { .. } => {
             Err("a place is made from the resource it shows, not opened as an app".into())
         }
-        ArrangementAction::Move { place, row, before } => {
-            move_place(tree, *place, StripId(*row), *before, by_the_person)
-        }
+        ArrangementAction::Move {
+            place,
+            row,
+            before,
+            strip,
+        } => move_place(tree, *place, StripId(*row), *before, *strip, by_the_person),
         ArrangementAction::Resize { strip, permille } => {
             let Some(group) = group_mut(tree, *strip) else {
                 return Ok(false);
@@ -956,13 +1007,16 @@ fn group_mut(tree: &mut DesktopTree, id: GroupId) -> Option<&mut WindowGroup> {
 /// Move the window `place` into the row `row` of its workspace, before the
 /// window `before` or last, as arranging does: into the group holding
 /// `before`, else the row's last, else one derived from the row so two devices
-/// making one at once agree. A window the person pinned stays where it is
-/// unless they moved it themselves.
+/// making one at once agree. When `strip` names a strip of that row, the window
+/// becomes a tab of it, in front (which is how a strip of several places is
+/// made: shell.md §2). A window the person pinned stays where it is unless
+/// they moved it themselves.
 fn move_place(
     tree: &mut DesktopTree,
     place: u64,
     row: StripId,
     before: Option<u64>,
+    strip: Option<u64>,
     by_the_person: bool,
 ) -> Result<bool, String> {
     let Some((workspace, from, group, at)) = locate(tree, place) else {
@@ -982,10 +1036,18 @@ fn move_place(
         return Err("the person pinned that place: it stays where it is".into());
     }
     // A place moves within its workspace: a row of another one is no row of
-    // its own.
-    let Some(row) = held.strips.iter().position(|strip| strip.id == row) else {
+    // its own. A strip names where the place lands, so a strip of another row
+    // names the row it stands in.
+    let Some(row) = held.strips.iter().position(|held| held.id == row) else {
         return Err("that row is not in the arrangement".into());
     };
+    let row = strip
+        .and_then(|strip| {
+            held.strips
+                .iter()
+                .position(|held| held.window_groups.iter().any(|group| group.id == strip))
+        })
+        .unwrap_or(row);
     let Some(from_strip) = held.strips.get_mut(from) else {
         return Err(taken.into());
     };
@@ -999,7 +1061,8 @@ fn move_place(
         held.arrangement.places.remove(&emptied);
     }
     let holds = |group: &WindowGroup| {
-        before.is_some_and(|before| group.tabs.iter().any(|tab| tab.id == before))
+        strip.is_some_and(|strip| group.id == strip)
+            || before.is_some_and(|before| group.tabs.iter().any(|tab| tab.id == before))
     };
     let Some(target) = held.strips.get_mut(row) else {
         return Err("that row is not in the arrangement".into());
@@ -1013,7 +1076,7 @@ fn move_place(
         into
     } else {
         groups.push(WindowGroup {
-            id: target.id.0.wrapping_mul(31).wrapping_add(1) & PEER_MASK,
+            id: strip.unwrap_or_else(|| target.id.0.wrapping_mul(31).wrapping_add(1) & PEER_MASK),
             tabs: Vec::new(),
             active_tab: tab.id,
             width: WindowWidth::Normal,
@@ -1080,8 +1143,10 @@ struct Placed<'a> {
 }
 
 /// Stand `asked` on the canvas as one of its published views: a window of the
-/// resource's app, alone in its own strip, at the place it asked for
-/// (shell.md §8). Whether the desk changed.
+/// resource's app, at the place it asked for (shell.md §8). A `strip` that
+/// names a strip already on the desk puts the place in it as a tab, in front,
+/// rather than in a strip of its own: how a person, an agent and the REPL open
+/// something as a tab of the strip they are in. Whether the desk changed.
 fn place_at(
     tree: &mut DesktopTree,
     catalog: &Rc<RefCell<Catalog>>,
@@ -1096,19 +1161,22 @@ fn place_at(
         .get(resource)
         .cloned()
         .ok_or_else(|| format!("nothing published is `{resource}`"))?;
-    let taken = "that workspace is not on this desk, or that place or strip is taken";
-    if locate(tree, asked.place).is_some()
-        || tree.workspaces.iter().any(|workspace| {
-            workspace.strips.iter().any(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .any(|group| group.id == asked.strip)
-            })
-        })
-    {
+    let taken = "that workspace is not on this desk, or that place is taken";
+    if locate(tree, asked.place).is_some() {
         return Err(taken.into());
     }
+    // The strip the place would take for its own is this workspace's, or a
+    // new one: a strip another workspace holds is no strip of this desk for
+    // this place. A strip on this desk is joined as a tab below, whichever
+    // workspace and row it stands in.
+    let on_desk = tree.workspaces.iter().any(|held| {
+        held.strips.iter().any(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == asked.strip)
+        })
+    });
     let Some(workspace) = tree
         .workspaces
         .iter_mut()
@@ -1116,16 +1184,16 @@ fn place_at(
     else {
         return Err(taken.into());
     };
-    let row = if let Some(row) = workspace
-        .strips
-        .iter()
-        .position(|strip| strip.id == StripId(asked.row))
+    if on_desk
+        && !workspace.strips.iter().any(|strip| {
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == asked.strip)
+        })
     {
-        row
-    } else {
-        workspace.strips.push(Strip::new(StripId(asked.row), ""));
-        workspace.strips.len().saturating_sub(1)
-    };
+        return Err(taken.into());
+    }
     let id = asked.place;
     let view = target.chosen_view(asked.view);
     let window = Tab {
@@ -1139,6 +1207,42 @@ fn place_at(
         app_title: None,
         view,
         pinned: false,
+    };
+    // A strip already on the desk takes the place as a tab, in front: the
+    // window it is stands in front showing the place just added. A strip the
+    // caller named is found wherever it stands, so a place named into another
+    // row's strip joins that strip rather than taking its id.
+    let held_elsewhere = workspace.strips.iter().enumerate().find_map(|(at, strip)| {
+        strip
+            .window_groups
+            .iter()
+            .any(|group| group.id == asked.strip)
+            .then_some(at)
+    });
+    if let Some(at) = held_elsewhere {
+        let Some(strip) = workspace.strips.get_mut(at) else {
+            return Err(taken.into());
+        };
+        let Some(held) = strip
+            .window_groups
+            .iter_mut()
+            .find(|group| group.id == asked.strip)
+        else {
+            return Err(taken.into());
+        };
+        held.tabs.push(window);
+        held.activate_tab(id);
+        return Ok(true);
+    }
+    let row = if let Some(row) = workspace
+        .strips
+        .iter()
+        .position(|strip| strip.id == StripId(asked.row))
+    {
+        row
+    } else {
+        workspace.strips.push(Strip::new(StripId(asked.row), ""));
+        workspace.strips.len().saturating_sub(1)
     };
     let Some(strip) = workspace.strips.get_mut(row) else {
         return Err(taken.into());
@@ -1289,15 +1393,28 @@ fn place_actions(key: &str) -> Vec<ActionSpec> {
         ),
         action(
             "move",
-            "Move a place into a row",
+            "Move a place into a row, or into a strip as a tab of it",
             vec![
                 required("row", ParamType::Resource, "The row it goes into")
                     .of_resource_kind(ROW_KIND),
+                optional(
+                    "strip",
+                    ParamType::Resource,
+                    "The strip it becomes a tab of, in that strip's row",
+                )
+                .of_resource_kind(STRIP_KIND),
+                optional(
+                    "before",
+                    ParamType::Resource,
+                    "The place it goes before in that strip",
+                )
+                .of_resource_kind(PLACE_KIND),
             ],
             move |args| ArrangementAction::Move {
                 place: count_of(&moved),
                 row: named(args, "row", Item::Row).unwrap_or_default(),
-                before: None,
+                before: named(args, "before", Item::Place),
+                strip: named(args, "strip", Item::Strip),
             },
         ),
     ]
@@ -1445,16 +1562,25 @@ fn placing_actions() -> Vec<ActionSpec> {
         ),
         action(
             "place-found",
-            "Put what a text finds on the canvas",
+            "Put what a text finds on the canvas, or into a strip as a tab",
             vec![
                 required("text", ParamType::Text, "What to find and place"),
                 optional("view", ParamType::Text, "The view it shows it through"),
+                optional(
+                    "strip",
+                    ParamType::Text,
+                    "The strip it joins as a tab, by its id; a strip of its own when left out",
+                ),
                 optional("x", ParamType::Integer, "Its canvas x"),
                 optional("y", ParamType::Integer, "Its canvas y"),
             ],
             |args| ArrangementAction::PlaceFound {
                 text: text(args, "text"),
                 view: args.text("view").unwrap_or_default().to_owned(),
+                strip: args
+                    .text("strip")
+                    .map(|_| id_text(args, "strip"))
+                    .filter(|strip| *strip != 0),
                 x: args.integer("x").unwrap_or_default(),
                 y: args.integer("y").unwrap_or_default(),
             },
@@ -1660,13 +1786,20 @@ impl Published for ArrangementDoor {
         };
         // A place found by text is resolved here, where the search and what
         // is published now are: the record only ever holds what was placed.
-        if let ArrangementAction::PlaceFound { text, view, x, y } = &action {
+        if let ArrangementAction::PlaceFound {
+            text,
+            view,
+            strip,
+            x,
+            y,
+        } = &action
+        {
             let spot = (*x, *y);
             let find = Rc::clone(&self.find);
             let placed = self
                 .arrangement
                 .borrow_mut()
-                .place_found(&asked, text, view, spot, &*find, busy);
+                .place_found(&asked, text, view, *strip, spot, &*find, busy);
             placed.map_err(|why| tilo_actions::DoorError::Unavailable {
                 code: "nothing_to_place".to_owned(),
                 reason: why,
@@ -1814,7 +1947,7 @@ impl ArrangementDoor {
         };
         self.arrangement
             .borrow_mut()
-            .place_found(asked, line, "", at, &*find, busy)
+            .place_found(asked, line, "", None, at, &*find, busy)
             .map(drop)
     }
 

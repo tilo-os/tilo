@@ -84,6 +84,14 @@ impl TabBar {
         self.inserted_at.retain(|_, started| {
             crate::time::now().saturating_duration_since(*started) < fade_window
         });
+        // A selection move that has arrived is forgotten: the pills it was between stand at
+        // rest, and the strip asks for no more frames for it.
+        if self.selection_move.is_some_and(|(_, _, started)| {
+            crate::time::now().saturating_duration_since(started) >= fade_window
+                || !theme.motion().moves()
+        }) {
+            self.selection_move = None;
+        }
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
         self.draw_rename(scene, transform, tr, theme, presence);

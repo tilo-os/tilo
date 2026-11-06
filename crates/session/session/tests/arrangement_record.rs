@@ -229,6 +229,7 @@ fn move_to(place: u64, row: u64) -> tilo_session::arrangement::ArrangementAction
         place,
         row,
         before: None,
+        strip: None,
     }
 }
 

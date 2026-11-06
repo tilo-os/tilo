@@ -558,6 +558,11 @@ required = false
 type = "text"
 
 [[resources.verbs.params]]
+name = "strip"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
 name = "x"
 required = false
 type = "int"
@@ -790,3 +795,17 @@ required = true
 
 [resources.verbs.params.type]
 resource = "arrangement.row"
+
+[[resources.verbs.params]]
+name = "strip"
+required = false
+
+[resources.verbs.params.type]
+resource = "arrangement.strip"
+
+[[resources.verbs.params]]
+name = "before"
+required = false
+
+[resources.verbs.params.type]
+resource = "arrangement.place"

@@ -412,6 +412,11 @@ pub struct TabBar {
     layout_anim_started: Option<Instant>,
     inserted_at: HashMap<u64, Instant>,
     closing_tabs: Vec<ClosingTab>,
+    /// The selection moving from one pill to another (`motion::ListChange`'s fade): the pill it
+    /// left and the one it went to, and since when. A strip whose `active` changes lifts the new
+    /// pill and rests the old over the frames between, rather than switching in one frame. `None`
+    /// at rest, and nothing on a still theme or under reduced motion.
+    selection_move: Option<(u64, u64, Instant)>,
     /// Sidecar rather than a `TabDescriptor` field so pin state never ripples into
     /// every tab constructor.
     pub(crate) pinned_ids: HashSet<u64>,
@@ -683,6 +688,7 @@ impl TabBar {
             layout_anim_started: None,
             inserted_at: HashMap::new(),
             closing_tabs: Vec::new(),
+            selection_move: None,
             reveal_anim: HashMap::new(),
             reveal_px: Vec::new(),
             reduce_motion: false,
@@ -2724,8 +2730,49 @@ impl TabBar {
     pub fn set_active(&mut self, id: u64) {
         self.touch();
         if self.tabs.iter().any(|t| t.id == id) {
+            if self.active_id != id {
+                // The selection moves from the pill it was on (`selection_move`): drawn over the
+                // frames between, or at once on a still theme or under reduced motion (decided
+                // where it draws, when the theme is known).
+                let from = self.selection_from();
+                self.selection_move = Some((from, id, crate::time::now()));
+            }
             self.active_id = id;
         }
+    }
+
+    /// The pill the selection is on now: the active one, or the one a selection move is
+    /// arriving at while it runs.
+    fn selection_from(&self) -> u64 {
+        self.selection_move.map_or(self.active_id, |(_, to, _)| to)
+    }
+
+    /// How far the selection has moved to the pill it is on, `0..=1` at `now`: `1.0` at rest,
+    /// the last pill's selection still fading out at the start of a move.
+    #[must_use]
+    fn selection_progress(&self, now: Instant, motion: crate::tokens::EffectiveMotion) -> f64 {
+        let Some((_, _, started)) = self.selection_move else {
+            return 1.0;
+        };
+        let elapsed = now.saturating_duration_since(started);
+        tab_progress(ListChange::FADE, Direction::Enter, elapsed)
+            .clamp(0.0, 1.0)
+            .max(if motion.moves() { 0.0 } else { 1.0 })
+    }
+
+    /// Whether the selection is still moving at `now`.
+    fn selection_moving(&self, now: Instant) -> bool {
+        self.selection_move
+            .is_some_and(|(_, _, started)| now.saturating_duration_since(started) < insert_fade())
+    }
+
+    /// The selection move between the pills it left and went to, at `now` as the fade it draws
+    /// with: `None` at rest.
+    #[cfg(test)]
+    pub(crate) fn selection_fade_for_tests(&self, now: Instant) -> Option<(u64, u64, f64)> {
+        let (from, to, _) = self.selection_move?;
+        let motion = crate::tokens::EffectiveMotion::default();
+        Some((from, to, self.selection_progress(now, motion)))
     }
 
     /// Drain the tab selected by pointer, keyboard, or accessibility input.
@@ -3558,6 +3605,36 @@ impl TabBar {
         let ground = self.ground(theme);
         let mut look =
             pill_appearance(theme, ground, is_active || is_carried, is_hover, is_pressed);
+        // The selection moving between pills (`selection_move`): the new pill's selector fades
+        // in while the old one's fades out, both on the list change's fade. A still theme and
+        // reduced motion read as done at once (the progress is `1.0` there), so the selection
+        // lands on the pill the person chose on the frame it happens.
+        if self.selection_move.is_some() {
+            let now = crate::motion::frame_now();
+            let progress = self.selection_progress(now, theme.motion());
+            let (from, to, _) = self.selection_move.unwrap_or((0, 0, now));
+            let id = self.tabs.get(idx).map(|t| t.id);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a progress in 0..=1 is exact enough as f32 alpha"
+            )]
+            let (lift, alpha) = if id == Some(to) {
+                (true, progress as f32)
+            } else if id == Some(from) {
+                (true, (1.0 - progress) as f32)
+            } else {
+                (false, 0.0)
+            };
+            if lift && alpha < 1.0 {
+                if alpha <= 0.0 {
+                    look.fill = vello::peniko::Color::TRANSPARENT;
+                    look.border = None;
+                } else {
+                    look.fill = look.fill.with_alpha_factor(alpha);
+                    look.border = look.border.map(|c| c.with_alpha_factor(alpha));
+                }
+            }
+        }
         // Inactive body rides the reveal curve instead of switching on/off with
         // the pointer, fading (fill + edge together, so the hairline can't flicker
         // off a frame late) over the same frames its chips slide back in.
@@ -4857,6 +4934,7 @@ impl TabBar {
         // spring back runs by itself.
         let resisting =
             self.resist.is_some_and(|r| r.released_at.is_some()) && self.resist_offset().is_some();
+        let selection = self.selection_moving(crate::time::now());
         layout
             || insert_fade
             || close_fade
@@ -4864,6 +4942,7 @@ impl TabBar {
             || reveal
             || drag_lift
             || resisting
+            || selection
             || self.tabbed_in_flight()
             || self.toolbar_row.needs_animation_frame()
     }
@@ -10419,6 +10498,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The selection moves between pills over the frames between, and rests asking for no
+    /// frames.
+    #[test]
+    fn the_selection_moves_between_pills_and_then_rests() {
+        let _frame = crate::motion::pin_frame();
+        let mut bar = bar();
+        let now = crate::motion::frame_now();
+        // Choosing another pill starts the move from the one in front.
+        bar.set_active(3);
+        let moving = bar.selection_fade_for_tests(now).expect("a move began");
+        assert_eq!(
+            (moving.0, moving.1),
+            (1, 3),
+            "from the pill it was on to the chosen one"
+        );
+        assert!(
+            moving.2 < 0.5,
+            "it starts at the pill it left: {}",
+            moving.2
+        );
+        assert!(
+            bar.needs_animation_frame(),
+            "a selection on its way asks for the frames it draws"
+        );
+        // A frame on it is still moving, and it is over within the motion's own time.
+        let later = now + crate::time::Duration::from_millis(80);
+        assert!(bar.selection_moving(later), "it is still moving");
+        assert!(
+            !bar.selection_moving(now + crate::time::Duration::from_secs(2)),
+            "it arrives and asks for no more frames"
+        );
     }
 }
 
