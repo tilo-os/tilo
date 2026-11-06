@@ -148,22 +148,25 @@ impl ListRowFace<'_> {
                         | RowLeading::AvatarSpace
                 )
             );
-        // A dense row is as tall as its own line and inset, never the list's row height.
-        let min = if self.dense {
-            0.0
-        } else {
-            RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
-        }
-        .max(m.min_height)
-        .max(self.min_target);
-        (self
+        let held = self
             .text_block(text, &m)
             .max(leading_h)
             .max(value)
-            .max(fact_avatar)
-            + 2.0 * m.pad_y)
-            .max(min)
-            .ceil()
+            .max(fact_avatar);
+        // A row given its own height stands at that token and insets what it holds by whatever
+        // the token leaves; a tree's rows are shorter than a list's rows of the same theme.
+        if let Some(height) = self.row_height {
+            return held.max(height).max(self.min_target).ceil();
+        }
+        // A dense row is as tall as its own line and inset, never the list's row height.
+        let min = if self.dense {
+            self.min_target
+        } else {
+            RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
+                .max(m.min_height)
+                .max(self.min_target)
+        };
+        (held + 2.0 * m.pad_y).max(min).ceil()
     }
 
     /// A card's height: its title's lines and what follows them, the facts on their own line

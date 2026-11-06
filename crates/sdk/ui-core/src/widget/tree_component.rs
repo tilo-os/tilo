@@ -22,7 +22,11 @@ use crate::widget::{
     VirtualList, Widget,
 };
 
-use crate::widget::virtual_list::{ROW_ESTIMATE, by_hand};
+use crate::widget::virtual_list::by_hand;
+
+/// The height of one row of a tree: an outline's rows are its own token, the compact row's
+/// height, shorter than a list's row of the same theme.
+pub const TREE_ROW_HEIGHT: f32 = crate::tokens::Density::Compact.rows().single;
 
 /// What one row of a tree shows besides its label: a leading glyph, the tone its title reads
 /// in, trailing text and what assistive technology says of it.
@@ -407,6 +411,9 @@ impl Nodes {
             });
             parents.insert(part.key.clone(), parent.clone());
             if part.branch {
+                // A branch shows its disclosure whether or not its nodes are in the list: a
+                // folder read when it opens.
+                branches.insert(part.key.clone());
                 open.insert(part.key.clone());
             }
             let under = parent.clone().unwrap_or_else(|| TOP_LEVEL.to_owned());
@@ -685,6 +692,7 @@ fn row_of(
     let folded = marks.is_folded(&key_owned);
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
+        .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
     if let Some(props) = &node.row {
         // The box leads, and the glyph after it: a task checks off and still says what it is.
@@ -776,11 +784,10 @@ impl DescribedTreeView {
         let row_marks = Rc::clone(&marks);
         let mut list = VirtualList::with_selection_delegate(
             nodes.clone(),
-            ROW_ESTIMATE,
+            TREE_ROW_HEIGHT,
             move |nodes, _, key, _| row_of(nodes, key, feel, &row_marks),
         )
         .with_tree(Rc::clone(&marks))
-        .with_indent_guides()
         .with_id(key)
         // A node's target is its resource: the same node keeps it while its row moves.
         .with_semantic_key(|key: &String| format!("node:{key}"));
@@ -1205,6 +1212,33 @@ mod tests {
             progress_of(nodes.node("b").expect("a node"), false),
             None,
             "a leaf says nothing of a count"
+        );
+    }
+
+    /// A folder says it is a branch before its files are known: its row shows the disclosure
+    /// that opens it, even when no node under it is in the list yet.
+    #[test]
+    fn a_folder_with_nothing_in_it_still_shows_its_disclosure() {
+        let queue = crate::Intents::default();
+        let tree = tree_of(
+            vec![
+                node("folder", None, true, &queue),
+                node("file", None, false, &queue),
+            ],
+            true,
+            Event::None,
+        );
+        let nodes = tree.nodes();
+        let of = |key: &str| nodes.index[key];
+        assert!(
+            nodes.has_subtasks(of("folder")),
+            "a branch shows its disclosure with nothing under it"
+        );
+        assert!(!nodes.has_subtasks(of("file")), "a leaf folds nothing");
+        assert_eq!(
+            nodes.folded_at_first(None),
+            Vec::<String>::new(),
+            "a folder a person just opened shows its files when they come"
         );
     }
 }

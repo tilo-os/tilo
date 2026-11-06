@@ -3202,7 +3202,6 @@ pub fn {module_name}<M: ListModel + 'static>(
         row_delegate(model, index, key, depth.depth(key))
     }})
     .with_tree(marks)
-    .with_indent_guides()
     .with_id(id)
     .with_accessible_name(&config.accessible_name)
     .with_semantic_key(encode_key)

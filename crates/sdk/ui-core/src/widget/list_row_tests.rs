@@ -1802,3 +1802,20 @@ fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_colum
         top.value_right
     );
 }
+
+/// A row given its own height stands at it instead of the list's row height for what it holds:
+/// a tree's rows are its own token, shorter than a list's row of the same theme, and its title
+/// reads at the row's size, not a dense row's caption.
+#[test]
+fn a_row_given_its_own_height_stands_at_it() {
+    let list_row = face_height(&ListRowFace::new("Project"), 1.0);
+    let tree_row = face_height(&ListRowFace::new("Project").row_height(28.0), 1.0);
+    assert!(
+        (tree_row - 28.0).abs() < 0.5,
+        "the tree's own row token: {tree_row}"
+    );
+    assert!(
+        tree_row < list_row,
+        "a tree's row stands under the list's row of the same theme"
+    );
+}

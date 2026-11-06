@@ -486,6 +486,9 @@ pub struct ListRowFace<'a> {
     /// The row as a dense row: one quiet line at the caption's size, for a reference that
     /// stands among content or a list that shows a lot at once.
     dense: bool,
+    /// The least tall the row stands, where it is not the list's own row height: an outline's
+    /// row token.
+    row_height: Option<f64>,
 }
 
 impl<'a> ListRowFace<'a> {
@@ -537,6 +540,7 @@ impl<'a> ListRowFace<'a> {
             check_pose: None,
             card: false,
             dense: false,
+            row_height: None,
         }
     }
 
@@ -554,6 +558,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.dense = true;
+        self
+    }
+
+    /// Stand the row at least `px` tall, rather than the list's row height for what it holds:
+    /// a tree's own row token, shorter than a list's.
+    #[must_use]
+    pub fn row_height(mut self, px: f32) -> Self {
+        self.row_height = Some(f64::from(px));
         self
     }
 
@@ -1314,6 +1326,9 @@ pub struct ListRow {
     card_lines: u8,
     /// The row is a dense row ([`ListRowFace::dense`]): one quiet line at the caption's size.
     dense: bool,
+    /// The least tall the row stands ([`ListRowFace::row_height`]), where it is not the list's
+    /// row height.
+    row_height: Option<f64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1398,6 +1413,7 @@ impl ListRow {
             card: false,
             card_lines: 1,
             dense: false,
+            row_height: None,
         }
     }
 
@@ -1417,6 +1433,14 @@ impl ListRow {
     #[must_use]
     pub fn dense(mut self) -> Self {
         self.set_dense();
+        self
+    }
+
+    /// Stand the row at least `px` tall, rather than the list's row height for what it holds.
+    #[must_use]
+    pub fn row_height(mut self, px: f32) -> Self {
+        self.row_height = Some(f64::from(px));
+        self.dirty = true;
         self
     }
 
@@ -2271,6 +2295,9 @@ impl ListRow {
         }
         if self.dense {
             face = face.dense();
+        }
+        if let Some(height) = self.row_height {
+            face.row_height = Some(height);
         }
         if let Some(family) = &self.title_family {
             face = face.title_family(family);
