@@ -290,20 +290,30 @@ fn both_people_writing_offline_converge_without_duplicates() {
         device.open("so.tilo.chat");
         device.wait_for_window("so.tilo.chat");
     }
+    // Every message reaches every device. The two written offline at the
+    // same time have no order of their own until the records give them one:
+    // each device waits for all of them, whichever order it reads them in.
     let wanted = ["Ada one", "Ada two", "Bob one", "Bob two"];
     studio.together(|| {
-        studio.ada_phone.chat().wait_for_texts(&bob_key, &wanted);
-        studio.bob_phone.chat().wait_for_texts(&ada_key, &wanted);
+        studio
+            .ada_phone
+            .chat()
+            .wait_for_texts_in_any_order(&bob_key, &wanted);
+        studio
+            .bob_phone
+            .chat()
+            .wait_for_texts_in_any_order(&ada_key, &wanted);
         for (device, peer) in [
             (&studio.ada_laptop, &bob_key),
             (&studio.ada_phone, &bob_key),
             (&studio.bob_laptop, &ada_key),
             (&studio.bob_phone, &ada_key),
         ] {
-            device.chat().wait_for_texts(peer, &wanted);
+            device.chat().wait_for_texts_in_any_order(peer, &wanted);
         }
     });
-    // Each message once, under one id, on every device.
+    // Each message once, under one id, on every device, in one order: the
+    // same one every device reads.
     let ids = message_ids(&studio.ada_laptop, &bob_key);
     assert_eq!(ids.len(), 4, "each message once: {ids:?}");
     let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
