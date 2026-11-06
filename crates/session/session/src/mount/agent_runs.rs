@@ -57,8 +57,15 @@ impl Shared {
             .collect();
         // Who keeps each workspace's agents, read from the workspace's own
         // record of them: an agent's session joins as its keeper's, and is
-        // delivered the turns of the conversations it takes part in.
-        self.agents.feed(&self.person, &governed);
+        // delivered the turns of the conversations it takes part in. The
+        // agents kept here are this device's to run: it starts each one's
+        // process, which answers the turns the broker delivers it.
+        let kept = self.agents.feed(&self.person, &governed);
+        if let Some(apps) = &self.launch {
+            for agent in &kept {
+                apps.start_agent(agent);
+            }
+        }
         self.conversations.feed(
             &self.person,
             governed
