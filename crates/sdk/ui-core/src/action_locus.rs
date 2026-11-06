@@ -187,6 +187,11 @@ pub(crate) fn interaction_bounds(
     bindings: &[crate::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
 ) -> Option<vello::kurbo::Rect> {
+    // An item an invocation names is found by the identity its row shows, not
+    // by which control the action is bound to.
+    if let tilo_actions::InteractionAnchor::ListItems { ids } = &interaction.anchor {
+        return item_bounds(tree, ids);
+    }
     let address = tilo_actions::ActionAddress::new(
         interaction.resource.id.clone(),
         interaction.action.id.clone(),
@@ -230,6 +235,39 @@ pub(crate) fn interaction_bounds(
         });
     let only = candidates.next()?;
     candidates.next().is_none().then_some(only)
+}
+
+/// The bounds of the one node that shows the item `ids` name, when exactly
+/// one does: an invocation naming a row lands on that row, whether or not the
+/// row's own controls are the ones the action is bound to.
+fn item_bounds(
+    tree: &crate::a11y_tree::SemanticTree,
+    ids: &[String],
+) -> Option<vello::kurbo::Rect> {
+    let [item] = ids else {
+        return None;
+    };
+    if item.is_empty() {
+        return None;
+    }
+    let mut only = None;
+    for node in tree.nodes_showing_item(item) {
+        let Some(bounds) = node.bounds else {
+            return None;
+        };
+        if only.is_some_and(|seen| seen != bounds) {
+            // Two nodes claim the same item: the view cannot say which.
+            return None;
+        }
+        only = Some(bounds);
+    }
+    let only = only?;
+    ([only.x0, only.y0, only.x1, only.y1]
+        .into_iter()
+        .all(f64::is_finite)
+        && only.width() > 0.0
+        && only.height() > 0.0)
+        .then_some(only)
 }
 
 /// Exact resource geometry after the host has translated a checked publication.

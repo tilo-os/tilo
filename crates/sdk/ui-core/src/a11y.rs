@@ -360,6 +360,12 @@ pub struct AccessNode {
     /// the reader's language. Always the app's own copy, never content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_description: Option<String>,
+    /// The item of its app's collection this node shows: a note's block id, a
+    /// task's issue. What an action naming that item is drawn on, so an
+    /// invocation's target is found in the view by identity rather than by
+    /// its label or its place among its siblings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 /// A widget's [`AccessNode`] with its synthetic children shared rather than
@@ -410,7 +416,15 @@ impl AccessNode {
             children: Vec::new(),
             interface_name: false,
             role_description: None,
+            item: None,
         }
+    }
+
+    /// Say which item of its collection this node shows
+    /// ([`Self::item`]).
+    pub fn with_item(mut self, item: impl Into<String>) -> Self {
+        self.item = Some(item.into()).filter(|item| !item.is_empty());
+        self
     }
 
     /// Mark the name as the app's own fixed, localized copy

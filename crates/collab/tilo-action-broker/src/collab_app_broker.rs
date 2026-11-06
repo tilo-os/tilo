@@ -6182,6 +6182,7 @@ impl AppBrokerState {
                 (actor, caller, context.as_ref()),
                 &offered.0,
                 &offered.1,
+                argument,
             ),
             owner,
             original: OriginalInvocationData::capture(
@@ -6438,7 +6439,7 @@ impl AppBrokerState {
             phase,
             action: shown.action.clone(),
             resource: shown.resource.clone(),
-            anchor: tilo_actions::InteractionAnchor::Resource,
+            anchor: shown.anchor.clone(),
             group: shown.group.clone(),
         };
         if interaction.validate().is_err() {

@@ -125,11 +125,126 @@ pub(super) struct ShownActor {
     pub(super) actor: tilo_actions::InteractionActor,
     pub(super) action: tilo_actions::InteractionAction,
     pub(super) resource: tilo_actions::ActionResource,
+    /// The narrowest target the invocation names, as far as its published
+    /// action and the caller's own argument say: the record or item it acts on,
+    /// or the characters of a text it writes.
+    pub(super) anchor: tilo_actions::InteractionAnchor,
     /// The run or task it works in, whose label names an actor the workspace's
     /// roster does not know (a Shortcut's run).
     pub(super) group: Option<tilo_actions::WorkGroup>,
     /// Last sequence published for this invocation.
     pub(super) sequence: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// The region name the ranges of a place inside a text sit in: the collection
+/// field the place names (`blocks`), or the resource's text when it names
+/// none.
+fn text_region(action: &PublishedAction) -> String {
+    action
+        .params
+        .iter()
+        .filter(|param| param.is_place())
+        .find_map(|param| param.place_field().map(str::to_owned))
+        .unwrap_or_else(|| "text".to_owned())
+}
+
+/// How many characters of a text an invocation writes: what its parameter of
+/// type [`Text`](tilo_actions::ParamType::Text) holds, counted as characters
+/// because a place counts them that way.
+fn written_chars(
+    action: &PublishedAction,
+    argument: &serde_json::Map<String, serde_json::Value>,
+) -> u64 {
+    action
+        .params
+        .iter()
+        .filter(|param| param.ty == tilo_actions::ParamType::Text)
+        .filter_map(|param| argument.get(param.name.as_ref())?.as_str())
+        .map(|text| text.chars().count() as u64)
+        .next()
+        .unwrap_or(0)
+}
+
+/// Where the invocation acts, from what its action publishes and the argument
+/// its caller passed: a place inside the resource names an item, or the
+/// characters of a text edit; a resource of an item's own names that item.
+/// Anything else is the resource.
+fn anchor_of(
+    action: &PublishedAction,
+    resource: &tilo_actions::ActionResource,
+    argument: Option<&str>,
+) -> tilo_actions::InteractionAnchor {
+    use tilo_actions::InteractionAnchor;
+    // An item published as its own resource (`<kind>/<field>/<item>`) is what
+    // its actions act on, and the view draws it as a row.
+    if let Some(item) = item_of_resource(&resource.id, &resource.kind)
+        && !action.params.iter().any(|param| param.is_place())
+    {
+        return InteractionAnchor::ListItems { ids: vec![item] };
+    }
+    let tilo_actions::remote::InvokeArgument::Json(argument) =
+        tilo_actions::remote::InvokeArgument::from_slot(argument)
+    else {
+        return InteractionAnchor::Resource;
+    };
+    let Some(place) = action
+        .params
+        .iter()
+        .filter(|param| param.is_place())
+        .find_map(|param| argument.get(param.name.as_ref())?.as_object())
+    else {
+        return InteractionAnchor::Resource;
+    };
+    let offset = |name: &str| place.get(name).and_then(serde_json::Value::as_u64);
+    let Some(item) = place
+        .get("item")
+        .and_then(serde_json::Value::as_str)
+        .filter(|item| !item.is_empty())
+    else {
+        return InteractionAnchor::Resource;
+    };
+    let written = written_chars(action, &argument);
+    match (offset("start"), offset("end"), offset("at")) {
+        // The range it writes: the characters it replaces, or the characters
+        // it inserts where a caret was.
+        (Some(start), end, _) => {
+            let end = if written == 0 {
+                end.unwrap_or(start)
+            } else {
+                start.saturating_add(written)
+            };
+            InteractionAnchor::Text {
+                region: text_region(action),
+                ranges: vec![tilo_actions::InteractionTextRange {
+                    block: item.to_owned(),
+                    start,
+                    end: end.max(start),
+                }],
+            }
+        }
+        (None, _, Some(at)) => InteractionAnchor::Text {
+            region: text_region(action),
+            ranges: vec![tilo_actions::InteractionTextRange {
+                block: item.to_owned(),
+                start: at,
+                end: at.saturating_add(written),
+            }],
+        },
+        (None, _, None) => InteractionAnchor::ListItems {
+            ids: vec![item.to_owned()],
+        },
+    }
+}
+
+/// The item a resource is, when it is one (`<kind>/<field>/<item>`, as apps
+/// publish the items of a collection).
+fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
+    let rest = resource
+        .strip_prefix(kind)?
+        .strip_prefix('/')?
+        .split_once('/')?;
+    let (field, item) = rest;
+    (!field.is_empty() && !item.is_empty() && !item.contains('/')).then(|| item.to_owned())
 }
 
 impl ShownActor {
@@ -142,6 +257,7 @@ impl ShownActor {
         context: Option<&tilo_actions::ActionContext>,
         surface: &PublishedSurface,
         action: &PublishedAction,
+        argument: Option<&str>,
     ) -> Option<Self> {
         let shown = caller.map_or_else(
             || {
@@ -160,6 +276,11 @@ impl ShownActor {
         if !shown.kind.acts_for_someone() && shown.for_person.is_none() && !remote {
             return None;
         }
+        let resource = tilo_actions::ActionResource {
+            id: action.resource.clone(),
+            kind: action.resource_kind.clone(),
+            label: action.resource_label.clone(),
+        };
         Some(Self {
             actor: shown,
             action: tilo_actions::InteractionAction {
@@ -170,11 +291,8 @@ impl ShownActor {
                     label: surface.app_id.clone(),
                 }),
             },
-            resource: tilo_actions::ActionResource {
-                id: action.resource.clone(),
-                kind: action.resource_kind.clone(),
-                label: action.resource_label.clone(),
-            },
+            anchor: anchor_of(action, &resource, argument),
+            resource,
             group: context.and_then(|context| context.group.clone()),
             sequence: Arc::default(),
         })
@@ -191,8 +309,9 @@ impl ActivityTarget {
         ),
         surface: &PublishedSurface,
         action: &PublishedAction,
+        argument: Option<&str>,
     ) -> Option<Self> {
-        let shown = ShownActor::of(caller, actor, context, surface, action);
+        let shown = ShownActor::of(caller, actor, context, surface, action, argument);
         if scope.is_none() && shown.is_none() {
             return None;
         }
