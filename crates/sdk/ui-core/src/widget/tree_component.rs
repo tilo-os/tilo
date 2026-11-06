@@ -1,4 +1,4 @@
-//! [`TreeView`] as a described component: a tree of nodes, each a part in a slot, with its
+//! `TreeView` as a described component: a tree of nodes, each a part in a slot, with its
 //! children named under it by key, and selecting or activating a node reported with the
 //! resource it stands for.
 //!
