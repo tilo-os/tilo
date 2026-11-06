@@ -71,6 +71,45 @@ As apps.md §8 decided:
 
 This design adds nothing there.
 
+### The runner's one source
+
+What a Rust app's runner needs of storage is two things, and it should not
+know which keeps them:
+
+- **the state of its resources**, as its model types read them;
+- **a way to submit actions** on them, with the arguments a control supplies.
+
+That pair is `tilo_app::framework::Source` (`framework/source.rs`). A root
+reads its state through it and its dispatcher submits through it, so a view
+syncs and edits the same way whichever keeps the record:
+
+| | `Source::Document` | `Source::Connection(Connection)` |
+|---|---|---|
+| The state a view reads | the `AutoCommit` the host lent the pass (`TypedRoot::sync`) | the session's published reading, rebuilt through the app's own model type (`TypedRoot::adopt`, `tilo_resource::state_from_reading`) |
+| Where an edit goes | the host's door, as today (`Edits::apply`, the document the pass lent) | the session's door, `Connection::submit`, attributed to the person's gesture (`Ask::in_person`) |
+| Who keeps the record | the app's own host: a device with no session (runtime compiled into the app, §3), a capture, a test | the session's document host (`tilo-model-host::ModelService`) |
+
+`Source::Connection` is used exactly when the session launched the app: the
+app's process opens no record, holds no key and reaches no transport, and the
+document it would have kept is the session's. It is not a second runner: the
+same `ResourceRoot`, `Dispatcher`, views and bindings run on both, and the
+model's `#[action]`s and `#[view]`s are the app's code unchanged.
+
+**What the person sees.** Nothing different. The window draws the same
+views; an edit shows at once in the window (the view keeps the state the
+reaction left, as it does for a collaborator's change) and the reading the
+session publishes follows it. What changes is who the edit is: the session
+records it as the person acting in this app's view, in the record's history
+and for undo, because the gesture and the record both arrived over a
+connection the session made.
+
+**A view syncs from state, not from a document.** `TypedRoot::sync` reads the
+state out of the document, and `TypedRoot::follow_change` wakes the bound
+readers; a source that keeps no document here hands over the state already
+read (`TypedRoot::adopt`) and reports the change as everything. So a view is
+a function of the state wherever the state came from, and only `Source`
+knows the difference.
+
 ## 5. What a Rust developer writes
 
 ```rust

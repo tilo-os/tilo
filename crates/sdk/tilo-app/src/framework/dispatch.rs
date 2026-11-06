@@ -278,6 +278,10 @@ pub(crate) struct DispatchState {
     /// The step the open undo step's changes record, decided before each
     /// change commits, so a coalesced step stays one step after a restart.
     gesture: Rc<Cell<Option<tilo_actions::ActionId>>>,
+    /// Where the resource's state comes from and where its actions go: the
+    /// document the host lends the pass, or the session over the app's one
+    /// connection ([`super::Source`]).
+    source: super::Source,
 }
 
 impl Clone for DispatchCore {
@@ -316,6 +320,7 @@ impl Clone for DispatchCore {
             past: self.past,
             continuable: self.continuable.clone(),
             gesture: self.gesture.clone(),
+            source: self.source.clone(),
         }))
     }
 }
@@ -401,6 +406,7 @@ impl DispatchCore {
             past: false,
             continuable: Rc::default(),
             gesture: Rc::default(),
+            source: super::Source::Document,
             applied_as: None,
         }))
     }
@@ -443,6 +449,9 @@ impl DispatchCore {
             past: self.past,
             continuable: Rc::default(),
             gesture: Rc::default(),
+            // Another record of an app in this process is the app's own,
+            // kept here: only the source of this one may be the session's.
+            source: super::Source::Document,
             applied_as: None,
         })
     }
@@ -482,6 +491,38 @@ impl DispatchCore {
             (ControlInvocation { address, arguments }, on_behalf_of),
             self.asking.get(),
         ));
+    }
+
+    /// Whether the session keeps this resource's record, so submissions go
+    /// over the app's connection rather than into a document the host lent
+    /// ([`super::Source::Connection`]).
+    fn submits_over_connection(&self) -> bool {
+        self.source.is_connection()
+    }
+
+    /// Submit `address` with `arguments` over the connection, as the person's
+    /// gesture when `in_person`; the refusal is told in
+    /// [`Self::refuse`] as an edit applied now is.
+    fn submit_remote(
+        &self,
+        address: ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        in_person: bool,
+    ) {
+        let ask = super::Ask::new(
+            address.resource.clone(),
+            address.action.clone(),
+            arguments,
+            in_person,
+        );
+        match self
+            .source
+            .submit(&ask)
+            .unwrap_or_else(|| Err("this resource is kept here; it has no connection".to_owned()))
+        {
+            Ok(()) => {}
+            Err(reason) => self.refuse(&address.action, reason),
+        }
     }
 
     pub(crate) fn note_continuation(
@@ -1024,6 +1065,14 @@ impl<R: Resource> Dispatcher<R> {
         self
     }
 
+    /// Submissions go over `source`, the session's document host, rather
+    /// than into the document a host lends the pass
+    /// ([`super::Source::Connection`]).
+    pub(crate) fn from_source(mut self, source: super::Source) -> Self {
+        self.core.source = source;
+        self
+    }
+
     /// Whether the view shows a past version in History mode, drawn from a
     /// frozen document. Such a view must start no work: no worker, no
     /// network, no files. A surface that would fetch or watch something
@@ -1262,6 +1311,17 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn queue(&self, invoke: Invoke<R>) {
+        if self.core.submits_over_connection() {
+            // The session keeps the record: the action is the person's
+            // gesture at this view, admitted and committed by its door
+            // (`one-app-model.md` §4).
+            self.core.submit_remote(
+                ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
+                invoke.arguments,
+                true,
+            );
+            return;
+        }
         self.core.queue_invocation(
             ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
             invoke.arguments,
@@ -1404,6 +1464,10 @@ impl<R: Resource> Dispatcher<R> {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) {
         if self.read_only() {
+            return;
+        }
+        if self.core.submits_over_connection() {
+            self.core.submit_remote(address, arguments, true);
             return;
         }
         self.core.queue_invocation(address, arguments);
@@ -1709,6 +1773,19 @@ impl<R: Resource> Dispatcher<R> {
         self.core.applies_now()?;
         if !self.may_apply(action) {
             return Err(self.not_allowed(action));
+        }
+        if self.core.submits_over_connection() {
+            // Nothing to apply to here: the session keeps the record, so the
+            // edit is the same typed action submitted over the connection
+            // (`one-app-model.md` §4). The view shows its own result until
+            // the session's reading follows it.
+            let invoke = Invoke::<R>::apply(action).map_err(ActionError::Encode)?;
+            self.core.submit_remote(
+                ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
+                invoke.arguments,
+                true,
+            );
+            return Ok(());
         }
         // Applying now never skips the person's consent: an action that
         // needs confirming goes to the door, which asks first.
