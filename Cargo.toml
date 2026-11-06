@@ -181,6 +181,7 @@ members = [
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-recurrence",
     "crates/sdk/ui-macros",
+    "crates/sdk/view-macros",
     "crates/sdk/tilo-rich-text",
     "crates/sdk/tilo-page-raster",
     "crates/sdk/ui-paint",

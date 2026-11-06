@@ -44,7 +44,10 @@ pub mod ui;
 
 pub use cx::{Effect, ViewCx};
 pub use node::{Binding, BuildError, Event, Node, Offered, Picture, Principal, ResourceRef, Value};
-pub use registry::{View, ViewRegistry};
+pub use registry::{View, ViewRegistry, ViewResource};
 
 /// The component-patch stream a view's tree travels on, as the runtime and the UI host read it.
 pub use tilo_render_protocol::patch;
+
+/// The registry a `#[view]` submits itself to, and the JSON a view's resource is read from.
+pub use {inventory, serde, serde_json};

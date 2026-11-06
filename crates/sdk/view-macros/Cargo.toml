@@ -1,0 +1,20 @@
+[package]
+name = "tilo-view-macros"
+description = "The `#[view]` attribute: a Rust app's view, declared as a function of a resource that returns described components, registered with the views its crate declares (one-app-model.md §2)."
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[lints]
+workspace = true
