@@ -1247,6 +1247,19 @@ impl Shared {
                 name,
             });
         }
+        // A brightness key on a machine with no display it can dim: the
+        // readout says there is nothing to adjust rather than a level of its
+        // own, which would be a zero about no display.
+        if kind == OsdKind::Brightness
+            && displays().is_none_or(|reading| Self::dimmable(&reading).is_none())
+        {
+            return Osd::Hint(Hint {
+                kind: OsdKind::NoBacklight,
+                on: true,
+                chord: None,
+                name: None,
+            });
+        }
         let (level, on, device) = match kind {
             OsdKind::Volume => sound().map_or((0.0, true, None), |sound| {
                 let device = sound

@@ -16,10 +16,15 @@
 use std::collections::HashMap;
 
 use tilo_desktop_model::{DesktopTree, Display, GroupId, Strip, StripId, TabId};
-use ui::kurbo::{Point, Rect};
-use ui::widget::{GroupRow, STRIP_EDGE_GUTTER_PX, StripLane, Widget as _};
+use ui::kurbo::{Affine, Point, Rect};
+use ui::presence::PresenceCtx;
+use ui::taffy::NodeId;
+use ui::vello::Scene;
+use ui::widget::{EventCtx, GroupRow, STRIP_EDGE_GUTTER_PX, StripLane, Widget as _};
+use ui::winit::event::WindowEvent;
+use ui::{TextRenderer, Theme};
 
-use super::{DesktopHandle, DesktopSurface, Shared};
+use super::{DesktopHandle, DesktopSurface, Shared, build_row_lazily};
 use crate::navigation::{self, Admitted, RouteIds};
 
 /// Where stepping focus along a strip spread over several displays goes.
@@ -339,17 +344,14 @@ impl DesktopSurface {
 
     /// The strip a pointer event belongs to: the row under the pointer, else
     /// the one the person works in. A key or a resize belongs to that one.
-    pub(super) fn strip_for_pointer(
-        &self,
-        event: &ui::winit::event::WindowEvent,
-    ) -> Option<StripId> {
+    pub(super) fn strip_for_pointer(&self, event: &WindowEvent) -> Option<StripId> {
         let pointer = matches!(
             event,
-            ui::winit::event::WindowEvent::CursorMoved { .. }
-                | ui::winit::event::WindowEvent::CursorLeft { .. }
-                | ui::winit::event::WindowEvent::MouseInput { .. }
-                | ui::winit::event::WindowEvent::MouseWheel { .. }
-                | ui::winit::event::WindowEvent::Touch(_)
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
         );
         pointer
             .then(|| self.strip_under_pointer())
@@ -361,11 +363,11 @@ impl DesktopSurface {
     /// the person works in.
     pub(super) fn draw_display_strips(
         &mut self,
-        scene: &mut ui::Scene,
-        transform: ui::kurbo::Affine,
-        text: &mut ui::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         for strip in self.behind.clone() {
             if let Some(row) = self.rows.get_mut(&strip) {
@@ -379,9 +381,9 @@ impl DesktopSurface {
     /// display, and with it which row stands in front.
     pub(super) fn route_pointer(
         &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-        children: &[ui::taffy::NodeId],
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        children: &[NodeId],
     ) {
         let Some((strip, node)) = self
             .strip_for_pointer(event)
