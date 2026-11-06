@@ -221,6 +221,35 @@ fn a_search_writes_its_channels_playlists_and_videos_where_the_client_reads_them
     assert_eq!(keys(&host, "channel"), ["UCmkbhd"], "the channel found");
     assert_eq!(keys(&host, "playlist"), ["pl-phones"], "the playlist found");
     assert_eq!(keys(&host, "video"), ["v-phone"], "the video found");
+    assert_eq!(
+        text_of(&host, "search_state"),
+        "done",
+        "the search the app set to `searching` settles, so its view stops saying it searches"
+    );
+}
+
+/// The root's text field `name`, as the app reads it.
+fn text_of(host: &tilolang_tilo::host::Host, name: &str) -> String {
+    let packages = host.packages();
+    let package = packages
+        .iter()
+        .find(|package| package.meta.app == TUBE)
+        .expect("the client");
+    let (_, root_ty) = package.main().expect("the client's root");
+    let field = package
+        .meta
+        .types
+        .iter()
+        .find(|t| t.id == root_ty)
+        .and_then(|root| root.fields.iter().find(|f| f.name == name))
+        .expect("the root's field")
+        .id
+        .clone();
+    let root = host.root_of(TUBE).expect("the root");
+    match host.runtime().read(&root, &field) {
+        Ok(tilolang_tilo::runtime::Value::Text(text)) => text,
+        _ => String::new(),
+    }
 }
 
 #[test]

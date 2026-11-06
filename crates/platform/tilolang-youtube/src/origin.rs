@@ -35,6 +35,19 @@ struct Types {
     video: OriginType,
     playlist: OriginType,
     root: ResourceRef,
+    /// The root's fields an answer settles, when the package declares them by name: how its
+    /// search and its feed stand, and why the last one failed. An app that names them another
+    /// way writes them itself.
+    status: StatusFields,
+}
+
+/// The root's fields that say how the last fetch stands, by their ids.
+#[derive(Default)]
+struct StatusFields {
+    search_state: Option<String>,
+    search_trouble: Option<String>,
+    feed_state: Option<String>,
+    feed_trouble: Option<String>,
 }
 
 /// A request handed to the service and not answered yet.
@@ -119,6 +132,13 @@ impl YouTubeOrigin {
                 .find(|f| f.ty == format!("Collection<{name}>"))
                 .map(|f| f.id.clone())
         };
+        let field_of = |name: &str| {
+            root_meta
+                .fields
+                .iter()
+                .find(|f| f.name == name && f.ty == "Text")
+                .map(|f| f.id.clone())
+        };
         Some(Types {
             channels_field: collection_of("Channel")?,
             videos_field: collection_of("Video")?,
@@ -126,6 +146,12 @@ impl YouTubeOrigin {
             channel,
             video,
             playlist,
+            status: StatusFields {
+                search_state: field_of("search_state"),
+                search_trouble: field_of("search_trouble"),
+                feed_state: field_of("feed_state"),
+                feed_trouble: field_of("feed_trouble"),
+            },
             // The root as the store made it: its id is the workspace's one resource of its
             // type, not the type's own id.
             root: host.root_of(app).ok()?,
@@ -310,10 +336,38 @@ impl YouTubeOrigin {
                 self.waiting.push_front(waiting);
                 break;
             };
+            // What the app reads back of its own fetch: an answer settles the state it set
+            // while asking, and a failure says why, so a search never reads "searching" for
+            // ever.
+            let (what, trouble) = match &waiting.pending {
+                Pending::Search { .. } => (
+                    types.status.search_state.as_deref(),
+                    types.status.search_trouble.as_deref(),
+                ),
+                Pending::Subscriptions { .. } => (
+                    types.status.feed_state.as_deref(),
+                    types.status.feed_trouble.as_deref(),
+                ),
+                // A channel's page and a video's stream write their own fields, and the
+                // trending list is what it is: none of them has a state to settle.
+                Pending::Channel { .. } | Pending::Trending | Pending::Stream { .. } => {
+                    (None, None)
+                }
+            };
             match answered {
-                Err(_) => {}
+                Err(error) => {
+                    let mut fields = Vec::new();
+                    if let Some(id) = what {
+                        fields.push((id.to_owned(), Value::text("failed")));
+                    }
+                    if let Some(id) = trouble {
+                        fields.push((id.to_owned(), Value::text(&error.0)));
+                    }
+                    wrote |= Self::write_fields(host, &types, fields);
+                }
                 Ok(Answered::Search(page)) => {
                     wrote |= Self::write_search(host, &types, &page);
+                    wrote |= Self::settle(host, &types, what, trouble);
                 }
                 Ok(Answered::Channel(page)) => {
                     wrote |= Self::write_channel(host, &types, &page);
@@ -325,6 +379,7 @@ impl YouTubeOrigin {
                     for page in pages {
                         wrote |= Self::write_channel(host, &types, &page);
                     }
+                    wrote |= Self::settle(host, &types, what, trouble);
                 }
                 Ok(Answered::Stream(url)) => {
                     wrote |= Self::write_stream(host, &types, stream_key(&waiting.pending), &url);
@@ -333,6 +388,35 @@ impl YouTubeOrigin {
         }
         self.types = Some(types);
         wrote
+    }
+
+    /// The root's state says its fetch went through, and its trouble field is cleared.
+    fn settle(host: &Host, t: &Types, what: Option<&str>, trouble: Option<&str>) -> bool {
+        let mut fields = Vec::new();
+        if let Some(id) = what {
+            fields.push((id.to_owned(), Value::text("done")));
+        }
+        if let Some(id) = trouble {
+            fields.push((id.to_owned(), Value::text("")));
+        }
+        Self::write_fields(host, t, fields)
+    }
+
+    /// Set `fields` on the root, as one change of the origin.
+    fn write_fields(host: &Host, t: &Types, fields: Vec<(String, Value)>) -> bool {
+        if fields.is_empty() {
+            return false;
+        }
+        host.runtime()
+            .apply_origin(
+                "youtube",
+                vec![OriginWrite::Set {
+                    target: t.root.clone(),
+                    fields,
+                }],
+                None,
+            )
+            .is_ok()
     }
 
     fn write_search(host: &Host, t: &Types, page: &SearchPage) -> bool {
