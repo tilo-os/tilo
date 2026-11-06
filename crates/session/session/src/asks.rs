@@ -180,7 +180,7 @@ impl Shared {
             Ok(()) => {
                 if let Some(sync) = &self.sync {
                     let mut own = sync.own();
-                    own.label = name.to_owned();
+                    name.clone_into(&mut own.label);
                     sync.set_own(own);
                 }
             }

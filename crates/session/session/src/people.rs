@@ -700,7 +700,7 @@ impl Panel {
         let (red, green, blue) = own_rgb(&identity);
         ProfileModel {
             name,
-            identity: identity.clone(),
+            identity,
             colour: Some(Color::from_rgb8(red, green, blue)),
             colour_id: settings_store::identity::COLOUR.get(),
             can_rename: true,
