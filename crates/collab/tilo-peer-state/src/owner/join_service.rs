@@ -59,17 +59,6 @@ fn join_binding(
     })
 }
 
-/// The workspace's own governance messages, as a joining device admits them.
-struct WorkspaceGovernance<'a>(&'a StatePeer);
-
-impl GovernanceMessages for WorkspaceGovernance<'_> {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
-        postcard::to_stdvec(&self.0.workspace_message())
-            .map(|bytes| vec![bytes])
-            .unwrap_or_default()
-    }
-}
-
 /// One workspace of this device's engine while a join is decided: a candidate the
 /// answer publishes once, so nothing of it is observable before it is
 /// durable, and the ledger staged by the exchange is kept with it.
@@ -104,8 +93,8 @@ impl OwnerWorkspace<'_> {
 }
 
 impl GovernanceMessages for OwnerWorkspace<'_> {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
-        WorkspaceGovernance(self.candidate.peer()).governance_messages()
+    fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String> {
+        self.candidate.peer().governance_messages()
     }
 }
 
@@ -149,13 +138,13 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
             .checked_add(1)
             .ok_or_else(|| JoinError::new("native join generation exhausted"))?;
         let answered = {
-            let messages = WorkspaceGovernance(&next.peer);
+            let messages = &next.peer;
             let governed = Governed {
                 peer: &next.peer,
                 host: next.device(),
                 workspace_id: self.workspace_id,
                 generation,
-                governance_messages: &messages,
+                governance_messages: messages,
             };
             decide(&governed)?
         };
@@ -307,14 +296,14 @@ impl NativeWorkspaceOwner {
         candidate.peer.require_member_writer(key, now)?;
         let mut ledger = candidate.record.join_ledger.clone();
         let issued = {
-            let messages = WorkspaceGovernance(&candidate.peer);
+            let messages = candidate.peer();
             let governed = Governed {
                 peer: &candidate.peer,
                 host: candidate.device(),
                 workspace_id: crate::join::room_workspace_id(&workspace.to_string())
                     .map_err(|error| error.to_string())?,
                 generation: candidate.generation(),
-                governance_messages: &messages,
+                governance_messages: messages,
             };
             ledger
                 .issue(

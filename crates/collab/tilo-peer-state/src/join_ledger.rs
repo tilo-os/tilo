@@ -129,25 +129,45 @@ pub struct Governed<'a> {
 /// Where a governor keeps the signed governance a joining member admits.
 pub trait GovernanceMessages {
     /// That governance, oldest first.
-    fn governance_messages(&self) -> Vec<Vec<u8>>;
+    ///
+    /// # Errors
+    /// The workspace's governance does not encode.
+    fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String>;
 }
 
-impl<F: Fn() -> Vec<Vec<u8>>> GovernanceMessages for F {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
+impl<F: Fn() -> Result<Vec<Vec<u8>>, String>> GovernanceMessages for F {
+    fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String> {
         self()
+    }
+}
+
+/// A workspace's governance is the workspace's own committed document, as one
+/// message: a joining device admits governance alone, and what a host retains
+/// of its record publications builds on a document the newcomer does not hold.
+impl GovernanceMessages for crate::StatePeer {
+    fn governance_messages(&self) -> Result<Vec<Vec<u8>>, String> {
+        postcard::to_stdvec(&self.workspace_message())
+            .map(|bytes| vec![bytes])
+            .map_err(|error| format!("workspace governance does not encode: {error}"))
     }
 }
 
 impl Governed<'_> {
     /// The bootstrap a device admitted as `role` with `invite_id` receives.
-    #[must_use]
+    ///
+    /// # Errors
+    /// The workspace's governance does not encode.
     pub fn bootstrap(
         &self,
         invite_id: [u8; 32],
         device_cert: DeviceCert,
         role: MemberRole,
-    ) -> JoinBootstrap {
-        JoinBootstrap {
+    ) -> Result<JoinBootstrap, JoinError> {
+        let messages = self
+            .governance_messages
+            .governance_messages()
+            .map_err(JoinError::new)?;
+        Ok(JoinBootstrap {
             version: 1,
             invite_id,
             device_cert,
@@ -158,9 +178,9 @@ impl Governed<'_> {
             certified_roster: self.peer.certificates(),
             revocations: self.peer.revocations(),
             records: self.peer.rows(),
-            governance_messages: self.governance_messages.governance_messages(),
+            governance_messages: messages,
             generation: self.generation,
-        }
+        })
     }
 
     fn revocations(&self) -> Result<RevocationList, JoinError> {
@@ -308,7 +328,10 @@ impl JoinCompletionRecord {
             certified_roster: workspace.peer.certificates(),
             revocations: workspace.peer.revocations(),
             records: workspace.peer.rows(),
-            governance_messages: workspace.governance_messages.governance_messages(),
+            governance_messages: workspace
+                .governance_messages
+                .governance_messages()
+                .map_err(JoinError::new)?,
             ..self.bootstrap.clone()
         };
         if bootstrap_digest(&rebuilt)?.as_slice() != delivered {
@@ -852,7 +875,7 @@ impl JoinLedger {
                 invite_id,
                 join.redemption.certificate().clone(),
                 join.redemption.join().grant().role,
-            );
+            )?;
             self.join_completions.push(JoinCompletionRecord::receipt(
                 join.remote_endpoint,
                 join.request_id,
@@ -994,7 +1017,7 @@ impl JoinLedger {
                 completion.bootstrap.device_cert.device_public_key == remote_endpoint
             })
             .map_or([0; 32], |completion| completion.bootstrap.invite_id);
-        Ok(workspace.bootstrap(invite_id, issued.device_cert.clone(), role))
+        workspace.bootstrap(invite_id, issued.device_cert.clone(), role)
     }
 
     /// Whether administration request `request_id` was committed before.

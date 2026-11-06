@@ -51,7 +51,7 @@ fn invitation(recipient: Option<[u8; 32]>, now: u64) -> IssueInvitationRequest {
 fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
-    let messages = || vec![b"governance".to_vec()];
+    let messages = || Ok(vec![b"governance".to_vec()]);
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: &peer,
@@ -181,7 +181,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         )
         .unwrap();
     assert_eq!(replayed, Some(bootstrap), "a retry hears the same answer");
-    let later = || vec![b"later governance".to_vec()];
+    let later = || Ok(vec![b"later governance".to_vec()]);
     let moved = Governed {
         generation: 3,
         governance_messages: &later,
@@ -214,7 +214,7 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
 fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing() {
     let (peer, authority_key, _, _, now) = seeded();
     let now_ns = ns(now);
-    let messages = Vec::<Vec<u8>>::new;
+    let messages = || Ok(Vec::<Vec<u8>>::new());
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: &peer,
@@ -277,7 +277,7 @@ fn an_administration_request_is_answered_once_and_refused_for_another_operation(
 #[test]
 fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unchanged() {
     let (peer, _, _, _, _) = seeded();
-    let messages = || vec![b"governance".to_vec()];
+    let messages = || Ok(vec![b"governance".to_vec()]);
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
         peer: &peer,
@@ -287,7 +287,9 @@ fn a_join_receipt_keeps_none_of_the_workspaces_state_and_replays_while_it_is_unc
         governance_messages: &messages,
     };
     let (_, cert) = guest();
-    let delivered = workspace.bootstrap([9; 32], cert, MemberRole::Editor);
+    let delivered = workspace
+        .bootstrap([9; 32], cert, MemberRole::Editor)
+        .unwrap();
     assert!(!delivered.certified_roster.is_empty());
     let receipt = JoinCompletionRecord::receipt([1; 32], [2; 32], [3; 32], &delivered).unwrap();
     assert!(receipt.bootstrap.certified_roster.is_empty());
