@@ -260,8 +260,10 @@ pub fn register_built_in_surface(app_id: &str, bytes: Option<&'static [u8]>) {
 /// `#[derive(Model)]` expansions resolve through `use ui::prelude::*`.
 pub use tilo_resource;
 
-/// The workspace's own emoji record, which every window opens: re-exported
-/// for the app that keeps it and for hosts that show it.
+/// The workspace's own emoji and its agents: records every window of the
+/// workspace opens, re-exported for the app that keeps them and for hosts
+/// that show them.
+pub use tilo_workspace_agent;
 pub use tilo_workspace_emoji;
 
 /// References to what apps keep ([`tilo_reference::ResourceRef`]), which

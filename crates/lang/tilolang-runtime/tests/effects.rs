@@ -25,7 +25,7 @@ mod cases {
     const NOTE: &str = r#"app so.tilo.stamp "Stamp"
 
 type Note {
-    text: Text (title)
+    text: Text
     at: Time = Time("2026-01-01T00:00:00Z")
 }
 

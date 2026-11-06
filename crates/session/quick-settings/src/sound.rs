@@ -91,6 +91,38 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
         .collect();
 }
 
+/// The output as the panel names it under its track: a screen's output says
+/// which screen it plays through and which port, "LG ULTRAGEAR+ · HDMI",
+/// rather than the whole card name the graph gives it ("AD106M High
+/// Definition Audio Controller Digitales Stereo (HDMI) [LG ULTRAGEAR+]"),
+/// which is a paragraph where the panel has a line. Every other output keeps
+/// the name its card has.
+pub(crate) fn short_output(name: &str) -> String {
+    let trimmed = name.trim();
+    let Some((card, bracketed)) = trimmed.rsplit_once('[') else {
+        return trimmed.to_owned();
+    };
+    let Some(monitor) = bracketed.strip_suffix(']') else {
+        return trimmed.to_owned();
+    };
+    // What the card calls the port it plays through, in the words the panel
+    // prints: the protocol's own name, which no language localises.
+    let card = card.to_ascii_lowercase();
+    let port = if card.contains("displayport") || card.contains("display port") {
+        Some("DisplayPort")
+    } else if card.contains("hdmi") {
+        Some("HDMI")
+    } else {
+        None
+    };
+    let monitor = monitor.trim();
+    match (monitor.is_empty(), port) {
+        (false, Some(port)) => format!("{monitor} · {port}"),
+        (false, None) => monitor.to_owned(),
+        _ => trimmed.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use audio::sound::{Device, Sound};
@@ -158,6 +190,36 @@ mod tests {
             pending: Vec::new(),
             problem: None,
         }
+    }
+
+    /// A screen's output is named by the screen it plays through and its
+    /// port; every other output keeps its own name, and a name that only
+    /// looks bracketed is left whole.
+    #[test]
+    fn a_screen_output_is_named_by_its_monitor_and_port() {
+        assert_eq!(
+            short_output(
+                "AD106M High Definition Audio Controller Digitales Stereo (HDMI) [LG ULTRAGEAR+]"
+            ),
+            "LG ULTRAGEAR+ · HDMI"
+        );
+        assert_eq!(
+            short_output(
+                "Ryzen HD Audio Controller Digitales Stereo (DisplayPort) [Studio Display]"
+            ),
+            "Studio Display · DisplayPort"
+        );
+        assert_eq!(
+            short_output("Ryzen HD Audio Controller Digitales Stereo [Studio Display]"),
+            "Studio Display"
+        );
+        assert_eq!(
+            short_output("Ryzen HD Audio Controller Analoges Stereo"),
+            "Ryzen HD Audio Controller Analoges Stereo"
+        );
+        assert_eq!(short_output("USB Headset"), "USB Headset");
+        assert_eq!(short_output("Not [closed"), "Not [closed");
+        assert_eq!(short_output("Empty []"), "Empty []");
     }
 
     #[test]

@@ -2278,13 +2278,19 @@ impl OffscreenRenderer {
     /// participates in the tolerance. Buffers of different lengths count as
     /// differing everywhere they don't overlap.
     pub fn pixels_differing_beyond_aa(a: &[u8], b: &[u8]) -> usize {
-        let overlapping = a
-            .chunks_exact(4)
-            .zip(b.chunks_exact(4))
-            .filter(|(x, y)| differs_beyond_aa(x, y))
-            .count();
-        let unmatched = a.len().abs_diff(b.len()).div_ceil(4);
-        overlapping.saturating_add(unmatched)
+        scan_differing(a, b, None).0
+    }
+
+    /// How many pixels differ, and the rectangle they fall in, for two frames
+    /// `width` pixels wide: `(left, top, right, bottom)`, the far edges
+    /// exclusive, or `None` where none differ. Frames of different lengths
+    /// are compared over the pixels both hold, and the rest is counted.
+    pub fn differing_beyond_aa(
+        a: &[u8],
+        b: &[u8],
+        width: usize,
+    ) -> (usize, Option<(usize, usize, usize, usize)>) {
+        scan_differing(a, b, Some(width))
     }
 
     /// Where [`Self::pixels_differing_beyond_aa`] finds two equally long
@@ -2297,6 +2303,40 @@ impl OffscreenRenderer {
             .map(|(index, _)| (index % width.max(1), index / width.max(1)))
             .collect()
     }
+}
+
+/// How two stored frames differ, with the ±1 the module docs describe, and —
+/// where `width` names a frame's width — the rectangle the differences fall
+/// in. Pixels past the shorter frame's end count as differing; nothing is
+/// located for them, as they have no place in the frame they are missing from.
+fn scan_differing(
+    a: &[u8],
+    b: &[u8],
+    width: Option<usize>,
+) -> (usize, Option<(usize, usize, usize, usize)>) {
+    let width = width.map(|width| width.max(1));
+    let mut count = 0;
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for (index, (x, y)) in a.chunks_exact(4).zip(b.chunks_exact(4)).enumerate() {
+        if !differs_beyond_aa(x, y) {
+            continue;
+        }
+        count += 1;
+        let Some(width) = width else {
+            continue;
+        };
+        let (at_x, at_y) = (index % width, index / width);
+        bounds = Some(match bounds {
+            None => (at_x, at_y, at_x + 1, at_y + 1),
+            Some((x0, y0, x1, y1)) => (
+                x0.min(at_x),
+                y0.min(at_y),
+                x1.max(at_x + 1),
+                y1.max(at_y + 1),
+            ),
+        });
+    }
+    (count + a.len().abs_diff(b.len()).div_ceil(4), bounds)
 }
 
 /// Whether two stored straight-alpha pixels differ beyond the ±1 the module
@@ -2810,6 +2850,32 @@ mod tests {
                 OffscreenRenderer::pixels_differing_beyond_aa(&base, &base[..4]),
                 1,
                 "a size mismatch must count the pixels that have no counterpart"
+            );
+        }
+
+        // Case `a_difference_is_located_on_the_frame`:
+        // A stale repaint is reported where it is, so the surface that left it
+        // can be found: the rectangle spans the pixels that differ and no
+        // others.
+        {
+            let (width, height) = (4_usize, 3_usize);
+            let mut frame = vec![0_u8; width * height * 4];
+            for (index, pixel) in frame.chunks_exact_mut(4).enumerate() {
+                pixel.copy_from_slice(&[index as u8, 0, 0, 255]);
+            }
+            assert_eq!(
+                OffscreenRenderer::differing_beyond_aa(&frame, &frame, width),
+                (0, None),
+                "one frame against itself differs nowhere"
+            );
+            let mut stale = frame.clone();
+            for (x, y) in [(1_usize, 2_usize), (3, 0)] {
+                stale[(y * width + x) * 4] = 200;
+            }
+            assert_eq!(
+                OffscreenRenderer::differing_beyond_aa(&frame, &stale, width),
+                (2, Some((1, 0, 4, 3))),
+                "the rectangle covers both differing pixels"
             );
         }
 

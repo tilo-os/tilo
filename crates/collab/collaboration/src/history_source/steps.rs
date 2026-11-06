@@ -493,21 +493,26 @@ struct Step {
 }
 
 /// What consecutive changes usually have in common: who ran them and in
-/// which run.
+/// which run or action.
 #[derive(PartialEq)]
 struct Shared {
     group: Option<tilo_actions::WorkGroup>,
     invoker: Option<tilo_actions::ActionInvoker>,
+    invocation: Option<tilo_actions::InvocationId>,
 }
 
 impl Step {
     fn of(version: &mut Version, actor: u32, last: Option<&std::rc::Rc<Shared>>) -> Self {
         let entry = version.context.is_some();
         let context = version.context.take().unwrap_or_default();
-        let shared = (context.group.is_some() || context.invoker.is_some()).then(|| {
+        let shared = (context.group.is_some()
+            || context.invoker.is_some()
+            || context.source_invocation.is_some())
+        .then(|| {
             let shared = Shared {
                 group: context.group,
                 invoker: context.invoker,
+                invocation: context.source_invocation,
             };
             match last {
                 Some(last) if **last == shared => std::rc::Rc::clone(last),
@@ -538,6 +543,7 @@ impl Step {
                 tilo_actions::ActionContext {
                     group: shared.and_then(|shared| shared.group.clone()),
                     invoker: shared.and_then(|shared| shared.invoker.clone()),
+                    source_invocation: shared.and_then(|shared| shared.invocation),
                     gesture: self.gesture,
                     kind: self.kind,
                     change: self.change,
@@ -745,22 +751,24 @@ impl StepIndex {
     }
 
     /// The steps in effect that `owns` claims, newest first, at most
-    /// `limit`: each step the consecutive changes `step_of` puts together
-    /// (one gesture), newest first. A step undone, or superseded by a redo
-    /// that stands for it, is not in effect. What one engine undoes,
-    /// whoever asks (Ctrl+Z, an agent's or a script's `undo`).
+    /// `limit`: the consecutive changes `same_step` puts together, newest
+    /// first. A step undone, or superseded by a redo that stands for it, is
+    /// not in effect. What one engine undoes, whoever asks (Ctrl+Z, an
+    /// agent's or a script's `undo`).
     pub fn steps(
         &mut self,
         doc: &AutoCommit,
         owns: &dyn Fn(&Version) -> bool,
-        step_of: &dyn Fn(&Version) -> Option<String>,
+        same_step: &dyn Fn(&Version, &Version) -> bool,
         limit: usize,
     ) -> Vec<Vec<Version>> {
         self.refresh(doc);
         let undone = undone(doc);
         let mut superseded: HashSet<String> = HashSet::new();
         let mut steps: Vec<Vec<Version>> = Vec::new();
-        let mut gesture = None;
+        // The newest change of the step being gathered: what the next one
+        // joins, or starts a step of its own beside.
+        let mut newest = None;
         for index in (0..self.steps.len()).rev() {
             let Some(version) = self.version_at(index) else {
                 continue;
@@ -784,15 +792,15 @@ impl StepIndex {
                 Kind::Edit => {}
             }
             if undone.contains(&hash) {
-                gesture = None;
+                newest = None;
                 continue;
             }
-            let of = step_of(&version);
             let Some(full) = self.full(doc, index) else {
                 continue;
             };
-            if of.is_some()
-                && of == gesture
+            if newest
+                .as_ref()
+                .is_some_and(|last| same_step(last, &version))
                 && let Some(step) = steps.last_mut()
             {
                 step.push(full);
@@ -801,7 +809,7 @@ impl StepIndex {
             if steps.len() >= limit {
                 break;
             }
-            gesture = of;
+            newest = Some(version);
             steps.push(vec![full]);
         }
         steps
@@ -854,16 +862,22 @@ pub fn steps_in_effect(
     owns: &dyn Fn(&Version) -> bool,
     limit: usize,
 ) -> Vec<Vec<Version>> {
-    StepIndex::default().steps(doc, owns, &gesture_of, limit)
+    StepIndex::default().steps(doc, owns, &same_step, limit)
 }
 
-/// The step a change recorded it belongs to.
-pub fn gesture_of(version: &Version) -> Option<String> {
-    version
-        .context
-        .as_ref()
-        .and_then(|context| context.gesture)
-        .map(|gesture| gesture.0.to_string())
+/// Whether `next`, the change after `last`, is a change of the same step: of
+/// the gesture `last` belongs to (the keystrokes of a word, the values one
+/// drag of a slider passes through), or of the invocation `last` ran in — one
+/// action and every action it called, which undo takes back together however
+/// many changes it made.
+pub fn same_step(last: &Version, next: &Version) -> bool {
+    let (Some(last), Some(next)) = (last.context.as_ref(), next.context.as_ref()) else {
+        return false;
+    };
+    let gesture = last.gesture.is_some() && last.gesture == next.gesture;
+    let invocation =
+        last.source_invocation.is_some() && last.source_invocation == next.source_invocation;
+    gesture || invocation
 }
 
 /// What `undo` would take back for `scope` now: its last `limit` steps in

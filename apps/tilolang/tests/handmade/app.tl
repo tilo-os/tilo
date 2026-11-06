@@ -2,7 +2,7 @@ app so.tilo.lang.handmade "Shelf" (icon: .bookmark, category: .office)
 
 /// A book on a shelf, and whether it was read.
 type Book {
-    title: Text (title)
+    title: Text
     read: Bool = false
 }
 

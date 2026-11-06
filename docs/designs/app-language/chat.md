@@ -18,7 +18,7 @@ root conversations: Conversations
 
 /// A named group of channels in the sidebar.
 type Category {
-    name: Text (title)
+    name: Text
     channels: Collection<Channel>
 }
 
@@ -26,20 +26,20 @@ type Channel = TextChannel | VoiceChannel
 
 /// Messages in one stream; any message can start a thread.
 type TextChannel {
-    name: Text (title)
+    name: Text
     topic: Text
     messages: Collection<Message>
 }
 
 /// Join to talk live. Who's in it is presence, never stored.
 type VoiceChannel {
-    name: Text (title)
+    name: Text
     limit: Option<Int>
 }
 
 /// A message. Who wrote it, when, and its edits come from the log.
 type Message {
-    body: RichText (body)
+    body: RichText
     reply_to: Option<Message>
     reactions: Map<Emoji, Set<Principal>>
     pinned: Bool = false
@@ -52,7 +52,7 @@ type Message {
 
 /// A side conversation branched off one message.
 type Thread {
-    name: Text (title)
+    name: Text
     messages: Collection<Message>
     archived: Bool = false
 }

@@ -1,6 +1,8 @@
 //! [`QuickTile`]: a Quick Settings control. Its glyph, name and state line
 //! sit on a tile that is filled with the on colour while the control is on;
-//! a press anywhere on it switches the control. A tile whose control has a
+//! a press anywhere on it switches the control. The name takes one line and
+//! the state line up to two, broken after a word and elided only past that.
+//! A tile whose control has a
 //! section of its own (the networks under Wi-Fi) gives that section a
 //! chevron half, set apart by a hairline, that turns as the section opens.
 //!
@@ -25,7 +27,6 @@
 
 use std::collections::HashMap;
 
-use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -68,7 +69,10 @@ struct TileMetrics {
     trailing: f64,
     rule_inset: f64,
     details: f64,
+    /// The tallest a tile gets: the name and the state line on two lines.
     height: f64,
+    /// The tile's height while its state line holds one line.
+    height_one: f64,
     label: TextStyle,
     detail: TextStyle,
 }
@@ -79,7 +83,14 @@ impl TileMetrics {
         let metrics = &theme.tokens.metrics;
         let label = theme.text(TextRole::Label).with_weight(TextWeight::Medium);
         let detail = theme.text(TextRole::Caption);
-        let lines = f64::from(label.line_height_px()) + f64::from(detail.line_height_px());
+        // The name on one line and the state line on up to two: a state
+        // read in words ("Not connected", a device's name) is the part of a
+        // tile that grows, and only a tile whose state does not fit its
+        // room grows for it.
+        let name = f64::from(label.line_height_px());
+        let line = f64::from(detail.line_height_px());
+        let padding = 2.0 * f64::from(spacing.s2);
+        let row = f64::from(metrics.row_double);
         Self {
             inset: f64::from(spacing.s3),
             glyph: f64::from(metrics.icon_md),
@@ -87,11 +98,68 @@ impl TileMetrics {
             trailing: f64::from(spacing.s1),
             rule_inset: f64::from(spacing.s2) + f64::from(spacing.s1),
             details: QuickTile::details_width(theme),
-            height: f64::from(metrics.row_double).max(2.0 * f64::from(spacing.s2) + lines),
+            height: row.max(padding + name + 2.0 * line).ceil(),
+            height_one: row.max(padding + name + line).ceil(),
             label,
             detail,
         }
     }
+
+    /// The height of a tile whose state line takes `lines` (one or two).
+    fn height_for(&self, lines: usize) -> f64 {
+        if lines > 1 {
+            self.height
+        } else {
+            self.height_one
+        }
+    }
+}
+
+/// Where a tile's name and state line stand in `rect`: the left edge of the
+/// text and the width it may run to, past the glyph on the left and the
+/// switch (and its chevron half, if it has one) on the right. The same room
+/// is measured before the tile is drawn and drawn in after.
+fn text_extent(rect: Rect, has_details: bool, metrics: &TileMetrics) -> (f64, f32) {
+    let switch = if has_details {
+        Rect::new(
+            rect.x0,
+            rect.y0,
+            (rect.x1 - metrics.details).max(rect.x0),
+            rect.y1,
+        )
+    } else {
+        rect
+    };
+    let x = switch.x0 + metrics.inset + metrics.glyph + metrics.gap;
+    let width = crate::num::f32_of_f64((switch.x1 - metrics.trailing - x).max(1.0));
+    (x, width)
+}
+
+/// The state line in the room it has: whole on one line when it fits,
+/// else broken after the last word that does and the rest elided on a
+/// second. `(first, second)`, the second `None` while one line holds it.
+fn detail_lines(
+    text: &mut TextRenderer,
+    detail: &str,
+    width: f32,
+    style: &TextStyle,
+) -> (String, Option<String>) {
+    if detail.is_empty() || width <= 0.0 {
+        return (String::new(), None);
+    }
+    if text.measure_style(detail, None, style).0 <= width {
+        return (detail.to_owned(), None);
+    }
+    let words: Vec<&str> = detail.split_whitespace().collect();
+    for cut in (1..words.len()).rev() {
+        let first = words.get(..cut).unwrap_or_default().join(" ");
+        if text.measure_style(&first, None, style).0 <= width {
+            let rest = words.get(cut..).unwrap_or_default().join(" ");
+            let second = text.elide_to_width_style(&rest, width, style);
+            return (first, Some(second));
+        }
+    }
+    (text.elide_to_width_style(detail, width, style), None)
 }
 
 /// A Quick Settings tile: a control's glyph, name and state line, on while
@@ -122,6 +190,10 @@ pub struct QuickTile {
     /// What a press on the chevron invokes, when bound to an action.
     details_action: Option<crate::widget::ActionEmitter<()>>,
     metrics: Option<TileMetrics>,
+    /// How much of the room the tile is offered it draws in: half while it
+    /// stands two to a row, so its state line breaks where it will when it
+    /// is drawn.
+    share: f32,
     dirty: bool,
 }
 
@@ -146,6 +218,7 @@ impl QuickTile {
             switch_action: None,
             details_action: None,
             metrics: None,
+            share: 1.0,
             dirty: true,
         }
     }
@@ -155,6 +228,15 @@ impl QuickTile {
     #[must_use]
     pub fn detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
+        self
+    }
+
+    /// How much of the room the tile is offered it draws in: half when it
+    /// stands two to a row, so its height follows the state line it will
+    /// have there ([`Self::height`] alone assumes the whole room).
+    #[must_use]
+    pub fn share(mut self, share: f32) -> Self {
+        self.share = share.clamp(0.0, 1.0);
         self
     }
 
@@ -426,13 +508,28 @@ impl QuickTile {
             face.glyph_ink(theme),
             LUCIDE_DEFAULT_STROKE_PX,
         );
-        let text_x = glyph.x1 + metrics.gap;
-        let width = crate::num::f32_of_f64((switch.x1 - metrics.trailing - text_x).max(1.0));
+        let (text_x, width) = text_extent(self.rect, details.is_some(), metrics);
         let label = text.elide_to_width_style(&self.label, width, &metrics.label);
-        let detail = text.elide_to_width_style(&self.detail, width, &metrics.detail);
+        // A tile measured for one line keeps one: the state line is drawn on
+        // two only when the tile holds them, so a narrow tile elides as
+        // before rather than running past its own edge.
+        let (detail, detail_second) = if self.rect.height() + 0.5 >= metrics.height_for(2) {
+            detail_lines(text, &self.detail, width, &metrics.detail)
+        } else {
+            (
+                text.elide_to_width_style(&self.detail, width, &metrics.detail),
+                None,
+            )
+        };
         let (_, label_h) = text.measure_style(&label, None, &metrics.label);
         let (_, detail_h) = text.measure_style(&detail, None, &metrics.detail);
-        let top = switch.center().y - (f64::from(label_h) + f64::from(detail_h)) / 2.0;
+        let line = f64::from(metrics.detail.line_height_px());
+        let detail_h = if detail_second.is_some() {
+            2.0 * line
+        } else {
+            f64::from(detail_h)
+        };
+        let top = switch.center().y - (f64::from(label_h) + detail_h) / 2.0;
         text.draw_style(
             scene,
             &label,
@@ -449,6 +546,16 @@ impl QuickTile {
             None,
             &metrics.detail,
         );
+        if let Some(second) = &detail_second {
+            text.draw_style(
+                scene,
+                second,
+                ink_dim,
+                transform.pre_translate((text_x, top + f64::from(label_h) + line).into()),
+                None,
+                &metrics.detail,
+            );
+        }
         if let Some(details) = details {
             face.paint_divider(scene, transform, theme, metrics.rule_inset);
             let chevron = Rect::from_center_size(details.center(), (metrics.glyph, metrics.glyph));
@@ -558,21 +665,56 @@ impl Widget for QuickTile {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let metrics = TileMetrics::of(theme);
-        let height = metrics.height as f32;
         self.metrics = Some(metrics);
+        // Two to a row, the tile claims its share of the row, so the layout
+        // knows the width it will draw in and the state line that takes.
+        let width = if self.share >= 1.0 {
+            taffy::Dimension::auto()
+        } else {
+            taffy::Dimension::percent(self.share)
+        };
         taffy.widget_leaf(
             Style {
                 flex_grow: 1.0,
                 flex_shrink: 1.0,
                 size: taffy::Size {
-                    width: taffy::Dimension::auto(),
-                    height: length(height),
+                    width,
+                    // As tall as the state line it needs in the room it
+                    // draws in: measured, see [`Widget::measure`].
+                    height: taffy::Dimension::auto(),
                 },
                 ..Default::default()
             },
             node_map,
             self,
         )
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text: &mut crate::text_render::TextRenderer,
+    ) -> taffy::Size<f32> {
+        let Some(metrics) = self.metrics.as_ref() else {
+            return taffy::Size::ZERO;
+        };
+        let offered = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(width) => width,
+            taffy::AvailableSpace::MinContent => 0.0,
+            taffy::AvailableSpace::MaxContent => return taffy::Size::ZERO,
+        });
+        // The width the layout settled on when it knows it (a share of the
+        // row resolves to pixels), else the share of what is offered.
+        let width = known.width.unwrap_or(offered * self.share).max(0.0);
+        let rect = Rect::new(0.0, 0.0, f64::from(width), metrics.height);
+        let (_, room) = text_extent(rect, self.details.is_some(), metrics);
+        let fits = self.detail.is_empty()
+            || text.measure_style(&self.detail, None, &metrics.detail).0 <= room;
+        taffy::Size {
+            width,
+            height: crate::num::f32_of_f64(metrics.height_for(if fits { 1 } else { 2 })),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

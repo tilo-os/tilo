@@ -165,10 +165,15 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
             let name = theme.name.clone();
             let focus = theme.tokens.colors.window_edge_focused();
+            assert_eq!(
+                focus.to_rgba8().to_u32(),
+                theme.tokens.colors.border_focus.to_rgba8().to_u32(),
+                "{name}: window focus is the accent, the mark a focus ring has"
+            );
             assert_ne!(
                 focus.to_rgba8().to_u32(),
-                theme.tokens.colors.intent.you.to_rgba8().to_u32(),
-                "{name}: window focus is neutral, not your colour"
+                theme.window_edge().to_rgba8().to_u32(),
+                "{name}: the focused window's edge is the resting hairline, so focus distinguishes nothing"
             );
             let (fr, fg, fb) = {
                 let rgba = focus.to_rgba8();
@@ -1332,12 +1337,13 @@ fn flush_focus_edge_leaves_rounded_corner_cutouts_clear() {
     }
 }
 
-/// Focus recolours a window's edge and never moves its outline: the
-/// focused window's top edge stands where its unfocused neighbour's
-/// does, at 1x and 2x, so the window the pointer is on never looks
-/// lifted above the others.
+/// Focus is the window's own edge, a pixel heavier on every side: the
+/// focused window's outline reaches exactly that much further out than its
+/// unfocused neighbour's, at 1x and 2x. The extra ring is drawn outside the
+/// card, so it is desktop and never the app's own pixels, and the window the
+/// pointer is on never looks lifted — its card stands where it did.
 #[test]
-fn focus_leaves_the_windows_outline_where_it_was() {
+fn focus_reaches_a_pixel_further_out_and_leaves_the_card_where_it_was() {
     use crate::offscreen::OffscreenRenderer;
     let theme = Theme::default();
     let ground = vello::peniko::Color::from_rgb8(0, 255, 0);
@@ -1375,11 +1381,30 @@ fn focus_leaves_the_windows_outline_where_it_was() {
             let left = (0..size).find(|&x| painted(x, middle));
             (top, left)
         };
+        let (top, left) = reach(&plain);
+        let ring = crate::num::u32_of_f64(scale);
         assert_eq!(
             reach(&lit),
-            reach(&plain),
+            (
+                top.and_then(|top| top.checked_sub(ring)),
+                left.and_then(|left| left.checked_sub(ring))
+            ),
             "at {scale}x the focused window's outline (top row, left column) \
-             differs from the unfocused one's: focus moved the window's edge"
+             does not reach one focused edge further out than the unfocused \
+             one's: the weight is what tells the window taking the keyboard"
+        );
+        // The card the app draws starts where it always did: the extra ring
+        // is desktop outside it, and the app's own pixel is the same focused
+        // or not.
+        let card = crate::num::u32_of_f64(rect.y0 * scale);
+        let card_pixel = |rgba: &[u8]| {
+            let (r, g, b, _) = OffscreenRenderer::sample(rgba, size, middle, card);
+            (r, g, b)
+        };
+        assert_eq!(
+            card_pixel(&lit),
+            card_pixel(&plain),
+            "at {scale}x focus changed the pixel the app owns at the card's top edge"
         );
     }
 }

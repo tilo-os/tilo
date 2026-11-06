@@ -155,7 +155,7 @@ mod cases {
     const HELD: &str = r#"app test.held "Held" (icon: .send, category: .office)
 
 type Draft {
-    to: Text (title)
+    to: Text
     sent: Bool = false
 }
 

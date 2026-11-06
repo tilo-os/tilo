@@ -1236,10 +1236,11 @@ these intents (`colors.intent`):
 | presence | `presence.of_rgb(user_color(id))`, `presence.get(slot)`, `presence.series(i)` | a participant's cursor, selection, avatar and attribution; chart and tag series |
 
 Links are primary ink with an underline. An "active" icon is primary ink, an
-inactive one secondary ink. Which window has keyboard input is state, not
-you: the focused window's edge (`window_edge_focused`) and its active tab's
-keyline are neutral ink, so your colour is not painted around a window all
-day. A resting readout's labels are ink too; a status hue is not a label.
+inactive one secondary ink. The focused window's edge
+(`window_edge_focused`) is the accent — the same mark a field's focus ring
+has — on the window's own silhouette, a pixel heavier than the resting
+hairline (`window_edge`), so the window holding the keyboard reads at a
+glance. A resting readout's labels are ink too; a status hue is not a label.
 
 **Your colour** is the local person's presence colour — one of the twelve
 presence hues (`PresenceHue`), the colour their cursor has for

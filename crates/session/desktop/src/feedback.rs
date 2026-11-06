@@ -14,9 +14,30 @@ use tilo_app::feedback_composer::{self, FeedbackServices};
 use ui::{application::AppComponent, launch::LaunchError};
 
 pub mod recorder;
-pub mod transport;
 
 pub const PACKAGE: &str = "so.tilo.feedback-composer";
+
+/// Install `startup` into the profile's feedback slot, the custody every
+/// composer window of the profile borrows. A profile holds one: a second
+/// startup is refused rather than replacing the authority reports go under.
+///
+/// # Errors
+///
+/// Refuses a second custody, changed authority and storage that cannot keep
+/// the approved outbox.
+pub fn install(
+    startup: tilo_feedback_transport::Startup,
+    store: Rc<dyn DurableStore>,
+    slot: &mut Option<PrivateFeedback>,
+) -> Result<(), Error> {
+    if slot.is_some() {
+        return Err(Error::Conflict);
+    }
+    let destination = startup.destination().clone();
+    let host = startup.host(store.clone())?;
+    *slot = Some(PrivateFeedback::new(store, destination, host)?);
+    Ok(())
+}
 
 /// One profile's pinned destination and durable approved outbox. The draft
 /// component uses its own ephemeral store and is never a workspace record.
@@ -223,6 +244,79 @@ fn subject(tile: &TileContent, name: impl Fn(&str) -> Option<String>) -> Option<
         control: None,
         record: None,
     })
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+    use std::cell::RefCell;
+    use tilo_actions::remote::Caller;
+    use tilo_app::feedback::MemoryStore;
+    use tilo_feedback_transport::{Enrollment, NoCapture, SessionTransport, Startup};
+    use ui::permissions::{PermissionContext, Role};
+
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    const REPORTER: [u8; 32] = [12; 32];
+
+    fn startup() -> Startup {
+        let enrollment = Enrollment {
+            destination: Destination {
+                room: WORKSPACE.into(),
+                provider: "record:so.tilo.chat:".into(),
+                channel: "feedback".into(),
+            },
+            owner: Caller::authenticated(
+                [11; 32],
+                SigningKey::from_bytes(&[41; 32]).verifying_key().to_bytes(),
+            )
+            .in_workspace(WORKSPACE),
+            reporter: Caller::authenticated(
+                REPORTER,
+                SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes(),
+            )
+            .in_workspace(WORKSPACE),
+            permissions: PermissionContext::member_of(
+                WORKSPACE,
+                hex::encode(REPORTER),
+                Role::Owner,
+            )
+            .at_unix_time(0),
+        };
+        let held = Rc::new(RefCell::new(enrollment.clone()));
+        let session = SessionTransport::new(
+            Box::new(move || Ok(held.borrow().clone())),
+            Box::new(|_, _| Ok(())),
+            Box::new(|_| Ok(None)),
+        );
+        Startup::new(enrollment, Box::new(session), Box::new(NoCapture)).unwrap()
+    }
+
+    /// The profile holds one custody: its composer mounts with the private
+    /// report controls, and a second startup cannot replace the authority
+    /// reports already go under.
+    #[test]
+    fn a_profile_keeps_one_custody_and_its_composer_mounts_protected() {
+        let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
+        let mut slot = None;
+        install(startup(), store.clone(), &mut slot).unwrap();
+        let component = slot
+            .as_ref()
+            .unwrap()
+            .prepare("device", &hex::encode(REPORTER), 42)
+            .unwrap();
+        let frame = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        assert!(frame.capture_protected());
+        assert!(matches!(
+            install(startup(), store, &mut slot),
+            Err(Error::Conflict)
+        ));
+    }
 }
 
 #[cfg(test)]

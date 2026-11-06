@@ -5,8 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    EffectClass, FieldKind, FieldMeta, FieldRole, Meta, ParamMeta, Ty, TypeMeta, element_record,
-    field_kind, parse_ty,
+    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, Ty, TypeMeta, element_record, field_kind,
+    parse_ty,
 };
 
 use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -99,7 +99,7 @@ fn names_a_resource(ty: &Ty) -> bool {
     }
 }
 
-fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
+fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
     // A loaded package's field types all parse (`unreadable_types`, checked where it is
     // loaded); a hand-built one that does not is kept whole, as a composite register.
     // ignored-failure: checked where the package is loaded
@@ -154,51 +154,6 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
     schema = schema.of_ty(ty_of_field);
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
-    }
-    // Only text names a record: a non-text field declared `title` says nothing, as the row
-    // it would name could not read it.
-    if schema.kind.holds_text() {
-        schema = match &field.role {
-            Some(FieldRole::Title) => schema.titled(),
-            Some(FieldRole::Body) => schema.bodied(),
-            _ => schema,
-        };
-    }
-    // A role names the type's own fields; the record stores its values under their ids.
-    let id_of = |name: &str| {
-        ty.fields
-            .iter()
-            .find(|named| named.name == name)
-            .map(|named| named.id.clone())
-    };
-    match &field.role {
-        Some(FieldRole::Done) => {
-            schema = schema.finished();
-        }
-        Some(FieldRole::Parent) => {
-            schema.role = crate::schema::FieldRole::Parent;
-        }
-        Some(FieldRole::Repeats { date }) => {
-            if let Some(date) = id_of(date) {
-                schema = schema.repeating(date);
-            }
-        }
-        Some(FieldRole::Reminds { date, time, who }) => {
-            // A field the type does not declare leaves its part of the reminder out, as the
-            // type has none.
-            if let Some(date) = id_of(date) {
-                schema = schema.reminding(
-                    date,
-                    time.as_deref().and_then(id_of),
-                    who.as_deref().and_then(id_of),
-                );
-            }
-        }
-        _ => {}
-    }
-    // A derived key's expression names the type's fields; the index reads and writes them by id.
-    if let Some(derived) = &field.derived {
-        schema.derived = Some(derived.map(&|name| id_of(name).unwrap_or_else(|| name.to_owned())));
     }
     schema
 }
@@ -342,7 +297,7 @@ impl MetaExt for Meta {
                 let mut schema = TypeSchema::new(&ty.id, &self.app, &ty.name);
                 schema.origin.clone_from(&ty.origin);
                 for field in &ty.fields {
-                    schema.fields.push(field_schema(self, ty, field));
+                    schema.fields.push(field_schema(self, field));
                 }
                 schema.columns = columns(self, ty, &schema.fields);
                 schema
@@ -383,26 +338,26 @@ impl MetaExt for Meta {
 mod tests {
     use super::*;
 
-    const REMINDING: &str = r#"app t.remind "Remind"
+    const TASKS: &str = r#"app t.tasks "Tasks"
 
 type Task {
-    title: Text (title)
+    title: Text
     due: Option<Date> = .none
     at: Option<Time> = .none
     who: Option<Principal> = .none
-    repeat: Option<std.Repeat> (repeats: due) = .none
-    remind: Option<std.Reminder> (reminds: due, at, who: who) = .none
+    repeat: Option<std.Repeat> = .none
+    remind: Option<std.Reminder> = .none
 }
 
 type Note {
-    title: Text (title)
-    body: Text (body)
+    title: Text
+    body: Text
 }
 "#;
 
     fn meta() -> Meta {
         let compiled = tilolang::compile_package_with(
-            REMINDING,
+            TASKS,
             &tilolang::IdsLock::new(),
             &[],
             &mut tilolang::SeededEntropy(7),
@@ -430,32 +385,24 @@ type Note {
     }
 
     #[test]
-    fn a_published_schema_names_the_fields_a_repeat_counts_from_and_a_reminder_reads() {
+    fn a_published_schema_names_every_field_the_type_declares() {
         let schemas = meta().schemas();
         let task = schemas
             .iter()
             .find(|schema| schema.name == "Task")
             .expect("Task");
-        let repeats = task.repeats().expect("Task repeats");
-        assert_eq!(repeats.rule, id_of(task, "repeat"));
-        assert_eq!(repeats.date, id_of(task, "due"));
-        let reminds = task.reminds().expect("Task reminds");
-        assert_eq!(reminds.trigger, id_of(task, "remind"));
-        assert_eq!(reminds.date, id_of(task, "due"));
-        assert_eq!(reminds.time, Some(id_of(task, "at").as_str()));
-        assert_eq!(reminds.who, Some(id_of(task, "who").as_str()));
-        let note = schemas
+        let declared = meta();
+        let declared = declared
+            .types
             .iter()
-            .find(|schema| schema.name == "Note")
-            .expect("Note");
-        assert_eq!(note.repeats(), None, "a type that declares none");
-        assert_eq!(note.reminds(), None);
-    }
-
-    #[test]
-    fn the_schema_an_index_is_built_for_carries_the_roles() {
-        let text = meta().schema_text();
-        assert!(text.contains("Repeats"), "{text}");
-        assert!(text.contains("Reminds"), "{text}");
+            .find(|ty| ty.name == "Task")
+            .expect("Task");
+        let fields: Vec<&str> = task.fields.iter().map(|f| f.id.as_str()).collect();
+        let expected: Vec<&str> = declared.fields.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(fields, expected);
+        assert_eq!(
+            task.field(&id_of(task, "due")).map(|f| f.kind),
+            Some(MergeKind::Register)
+        );
     }
 }

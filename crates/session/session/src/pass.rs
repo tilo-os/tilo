@@ -168,7 +168,6 @@ impl Session {
             );
         }
         self.follow_text_inputs();
-        self.shared.follow_reminders();
         self.follow_notifications();
         self.shared.open_notifications();
         self.settle()?;
@@ -355,7 +354,6 @@ impl Session {
             night_light,
             ambient,
             self.shared.notifications.borrow().next_deadline(),
-            self.shared.reminders.deadline(),
             self.shared
                 .sync
                 .as_ref()

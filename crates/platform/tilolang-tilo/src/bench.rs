@@ -2621,7 +2621,7 @@ fn parse(args: &[String]) -> Result<BenchConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{FieldRole, FieldSchema, TypeSchema};
+    use crate::schema::{FieldSchema, TypeSchema};
 
     fn record_of(field: &str) -> DynRecord {
         let schema: &'static TypeSchema = Box::leak(Box::new(TypeSchema {
@@ -2636,8 +2636,6 @@ mod tests {
                 composite: true,
                 refers: false,
                 ty: None,
-                role: FieldRole::Plain,
-                derived: None,
             }],
             columns: Vec::new(),
             origin: None,

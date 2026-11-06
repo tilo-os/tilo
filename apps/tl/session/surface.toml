@@ -63,6 +63,18 @@ required = false
 type = "text"
 within = "to"
 
+[[resources.verbs.params]]
+name = "before"
+required = false
+type = "text"
+within = "to"
+
+[[resources.verbs.params]]
+name = "group"
+required = false
+type = "text"
+within = "to"
+
 [[resources.verbs]]
 id = "close-window"
 kind = "outside"
@@ -413,6 +425,15 @@ type = "bool"
 id = "workspace-menu"
 kind = "read"
 params = []
+
+[[resources.verbs]]
+id = "fixed-shortcut"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "action"
+required = true
+type = "text"
 
 [[resources]]
 id = "desktop:desk"

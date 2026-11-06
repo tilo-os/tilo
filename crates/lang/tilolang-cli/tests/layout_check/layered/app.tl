@@ -1,7 +1,7 @@
 app so.tilo.lang.layoutlayered "Layered" (icon: .layout_grid, category: .utility)
 
 type Sample {
-    name: Text (title)
+    name: Text
 }
 
 root Sample

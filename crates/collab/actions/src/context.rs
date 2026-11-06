@@ -468,8 +468,8 @@ impl ActionContext {
     }
 
     /// Read only what an entry says about who made its change, in which run
-    /// and step, and what kind of change it is (its group, invoker, gesture,
-    /// kind and change kind; everything else left default): what an index
+    /// and step, and what kind of change it is (its group, invoker, invocation,
+    /// gesture, kind and change kind; everything else left default): what an index
     /// over a long history keeps of every change, read without decoding
     /// what the change did. `None` where [`from_change_message`](Self::from_change_message)
     /// reads no entry.
@@ -632,6 +632,8 @@ mod wire {
         group: Option<&'a serde_json::value::RawValue>,
         #[serde(rename = "by", borrow)]
         invoker: Option<&'a serde_json::value::RawValue>,
+        #[serde(rename = "s", borrow)]
+        invocation: Option<&'a serde_json::value::RawValue>,
         /// Only whether the entry carries an action: then it is undoable
         /// unless it says otherwise.
         #[serde(rename = "a", borrow)]
@@ -657,6 +659,7 @@ mod wire {
                 kind: field(self.kind).or_else(|| self.action.map(|_| ActionKind::Undoable)),
                 group: field(self.group),
                 invoker: field(self.invoker),
+                source_invocation: field(self.invocation),
                 gesture: field::<String>(self.gesture)
                     .and_then(|gesture| uuid::Uuid::try_parse(&gesture).ok())
                     .map(crate::ActionId),

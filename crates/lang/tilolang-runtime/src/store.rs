@@ -1232,10 +1232,9 @@ pub trait Store {
     /// `NotFound` for a missing target; `Invalid` when the stored shape does not fit the kind.
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError>;
 
-    /// The types every loaded package declares, as the runtime loads and reloads them. A store
-    /// that works a derived key out as it reads it ([`crate::derived`]) finds what a key reads
-    /// — the type's fields and the field an item stands under — in them; a store that keeps an
-    /// index is told them when its schema is registered.
+    /// The types every loaded package declares, as the runtime loads and reloads them: the
+    /// fields a record has, which a store that reads a record's links by its type finds in
+    /// them. A store that keeps an index is told them when its schema is registered.
     fn loaded_types(&mut self, types: &[Rc<TypeInfo>]) {
         let _ = types;
     }

@@ -1,6 +1,7 @@
 use super::{NativeTaskActionRequirement, TrackerRun};
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
+use tilo_action_policy::turn::Looked;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath, roles::AgentPreset};
 use tilo_automerge::ApplyIncoming;
 use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
@@ -203,6 +204,7 @@ fn approve_task(starter: &DeviceCert) -> NativeTaskActionRequirement {
             epoch: 1,
             revision: 0,
             starter: Some(hex::encode(starter.user_public_key)),
+            turn: None,
         },
         app: "so.tilo.notes".into(),
         resource_kind: "document".into(),
@@ -236,6 +238,25 @@ impl CheckRun for NativeTaskActionRequirement {
         workspace: &str,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
+        self.check_turn(peer, workspace, None, now)
+    }
+}
+
+impl NativeTaskActionRequirement {
+    /// [`CheckRun::check_run`] with what this device looked up about the run's
+    /// turn: `looked` is what the message that caused it says, or `None` when
+    /// its cause has not arrived here yet.
+    fn check_turn(
+        &self,
+        peer: &StatePeer,
+        workspace: &str,
+        looked: Option<&tilo_action_policy::turn::Looked>,
+        now: std::time::SystemTime,
+    ) -> Result<(), String> {
+        let doc = peer
+            .admitted_workspace()
+            .ok_or("tracker action policy unavailable")?;
+        let policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
         let binding = &self.binding;
         let run = TrackerRun {
             issue: binding.task_id.clone(),
@@ -251,10 +272,11 @@ impl CheckRun for NativeTaskActionRequirement {
             subject: None,
             model: None,
             directions: Vec::new(),
+            turn: binding.turn.clone(),
             question: None,
             delegation: None,
         };
-        self.check_tracker(peer, workspace, &run, now)
+        self.check_tracker_policy(&policy, workspace, &run, looked, now)
     }
 }
 
@@ -766,5 +788,106 @@ fn allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads() {
             "send-message"
         ),
         "an action whose contract confirms is answered alone"
+    );
+}
+
+/// A run asked inside a turn acts as the person whose message caused it: the
+/// same grants as them, the record's bound narrowing them, and no step once
+/// the turn has ended. A cause this device does not hold yet holds the step
+/// instead of refusing it; a cause someone else wrote, or one the agent takes
+/// no part in, refuses it.
+#[test]
+fn a_run_inside_a_turn_acts_as_the_person_whose_message_caused_it() {
+    let workspace = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+    let (mut peer, starter, key, now) = policy_fixture(workspace);
+    let mut requirement = approve_task(&starter);
+    let starter_id = requirement.binding.starter.clone().unwrap();
+    requirement.binding.turn = Some(tilo_action_policy::turn::Turn::new(
+        "chat/workspace/channels/1",
+        "m1",
+    ));
+
+    // The message that caused it reached this device: the step runs as its
+    // author.
+    requirement
+        .check_turn(&peer, workspace, Some(&Looked::by(&starter_id)), now)
+        .unwrap();
+
+    // Its cause has not arrived: the step waits rather than running unasked.
+    let held = requirement
+        .check_turn(&peer, workspace, None, now)
+        .unwrap_err();
+    assert!(NativeTaskActionRequirement::awaits_cause(&held), "{held}");
+
+    // A message someone else wrote, or one in a conversation the agent takes
+    // no part in, is not this run's cause.
+    let elsewhere = requirement
+        .check_turn(
+            &peer,
+            workspace,
+            Some(&Looked::by(hex::encode([9u8; 32]))),
+            now,
+        )
+        .unwrap_err();
+    assert!(
+        !NativeTaskActionRequirement::awaits_cause(&elsewhere),
+        "{elsewhere}"
+    );
+    let apart = requirement
+        .check_turn(
+            &peer,
+            workspace,
+            Some(&Looked::by(&starter_id).apart()),
+            now,
+        )
+        .unwrap_err();
+    assert!(
+        !NativeTaskActionRequirement::awaits_cause(&apart),
+        "{apart}"
+    );
+
+    // A turn that ended takes no further step.
+    let ended = requirement
+        .check_turn(
+            &peer,
+            workspace,
+            Some(&Looked::by(&starter_id).ended()),
+            now,
+        )
+        .unwrap_err();
+    assert!(ended.contains("ended"), "{ended}");
+
+    // The record's bound narrows what the turn allows.
+    let bound = Looked::by(&starter_id).bounded_by(vec![tilo_action_policy::Rule::new(
+        action_node(workspace, &requirement),
+        KindSet::UNDOABLE,
+        Answer::Deny,
+    )]);
+    let narrowed = requirement
+        .check_turn(&peer, workspace, Some(&bound), now)
+        .unwrap_err();
+    assert!(narrowed.contains("not allowed"), "{narrowed}");
+
+    // The person's own grants still hold: what they may not do, the run may
+    // not do for them.
+    peer.governance_mut()
+        .put_governed_grants(
+            &[Grant::new(
+                "starter-no-notes",
+                Subject::person(starter_id.clone()),
+                TreePath::workspace(workspace).app("so.tilo.notes"),
+                KindSet::ALL,
+                Answer::Deny,
+                Subject::person("governor"),
+            )],
+            &key,
+            now,
+        )
+        .unwrap();
+    assert!(
+        requirement
+            .check_turn(&peer, workspace, Some(&Looked::by(&starter_id)), now)
+            .is_err(),
+        "the starter's own refusal reaches the run"
     );
 }

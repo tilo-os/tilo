@@ -300,6 +300,21 @@ impl Launches {
         (start_time(launched) == Some(start)).then_some(workspace)
     }
 
+    /// The launch `pid` is or descends from, while that launch still runs:
+    /// the app window a process belongs to, so two windows of one app are
+    /// told apart rather than the app being asked about as a whole.
+    #[must_use]
+    pub fn launch_of(&self, pid: u32) -> Option<u32> {
+        let lineage = ancestry(pid);
+        let launched = self
+            .started
+            .lock_recover()
+            .iter()
+            .find(|(launched, _)| lineage.contains(launched))
+            .map(|(launched, launch)| (*launched, launch.start))?;
+        (start_time(launched.0) == Some(launched.1)).then_some(launched.0)
+    }
+
     /// The app this session launched that `pid` descends from, while that
     /// launch still runs: the app a program of the login is running in, such
     /// as the terminal that started it. `None` when no launch is an ancestor

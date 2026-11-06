@@ -121,9 +121,6 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     directory
         .add_workspace(workspace_id, "Shared browser workspace")
         .unwrap();
-    directory
-        .set_member_devices(workspace_id, &[a.device_pubkey(), b.device_pubkey()])
-        .unwrap();
     let checkpoint = directory.save();
     let body = tilo_relay::CoeditPayload::Checkpoint {
         channel: [9; 32],

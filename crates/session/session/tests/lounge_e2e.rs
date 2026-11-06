@@ -225,17 +225,28 @@ struct Ports {
 /// publishes: the first free one up from it, so two rooms on one machine are
 /// apart while each stands where the ingress expects.
 fn ports() -> Ports {
-    let free = |wanted: u16| -> u16 {
+    // A port that was free when it was looked at is held until every one is
+    // chosen: two listeners that both find the deployment's first port taken
+    // would otherwise be handed the same one, and the room fails to bind.
+    let mut held: Vec<(std::net::TcpListener, std::net::UdpSocket)> = Vec::new();
+    let mut free = |wanted: u16| -> u16 {
         (wanted..wanted.saturating_add(200))
             .find(|port| {
-                std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok()
-                    && std::net::UdpSocket::bind(("127.0.0.1", *port)).is_ok()
+                let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", *port)) else {
+                    return false;
+                };
+                let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", *port)) else {
+                    return false;
+                };
+                held.push((tcp, udp));
+                true
             })
             .expect("a free loopback port in the deployment's range")
     };
     let relay = free(9780);
     let live = free(9781);
     let http = free(8790);
+    drop(held);
     Ports {
         relay,
         live,

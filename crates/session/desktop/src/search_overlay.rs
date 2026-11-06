@@ -76,7 +76,7 @@ impl SearchOverlay {
     }
 
     /// Close the palette: the desk takes the search down on its next pass.
-    fn close(&self) {
+    pub fn close(&self) {
         self.handle.toggle_search();
         self.handle.note_search_activity();
     }

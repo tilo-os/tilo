@@ -1,7 +1,7 @@
 /// How things are going: badges and banners, progress and gauges, stats, the facts of a thing,
 /// a path, a toolbar, rows that open in place, and what is still loading.
 type Feedback {
-    title: Text (title)
+    title: Text
     /// Who is syncing the files.
     owner: Option<Principal>
 }

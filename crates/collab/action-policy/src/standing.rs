@@ -84,7 +84,7 @@ impl Standing {
     }
 
     /// The person acting through `bound`, such as
-    /// [`roles::agent_delegation`].
+    /// [`roles::agent_turn`].
     #[must_use]
     pub fn with_bound(mut self, bound: Bound) -> Self {
         self.bounds.push(bound);

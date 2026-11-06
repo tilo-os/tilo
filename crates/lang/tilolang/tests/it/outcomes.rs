@@ -3,7 +3,7 @@
 
 use crate::common::{compile, validate};
 
-const TODO: &str = "type Todo {\n    title: Text (title)\n    done: Bool = false\n}\n";
+const TODO: &str = "type Todo {\n    title: Text\n    done: Bool = false\n}\n";
 
 fn body(rest: &str) -> String {
     format!("app t.x \"X\"\n{TODO}{rest}\n")

@@ -6,13 +6,14 @@ use super::*;
 /// when admitted. Deliberately not a person's role.
 pub use tilo_action_policy::roles::AgentPreset;
 
-/// The preset's name, for the Agents pane.
-pub fn agent_preset_label(preset: AgentPreset) -> String {
-    t(match preset {
-        AgentPreset::Observer => "workspace-settings-preset-observer",
-        AgentPreset::Contributor => "workspace-settings-preset-contributor",
-        AgentPreset::Operator => "workspace-settings-preset-operator",
-        AgentPreset::Custom => "workspace-settings-preset-custom",
+/// What an agent may do, in one line a person reads without knowing the
+/// presets: the most it does on its own, and what waits for the person.
+pub fn agent_status(ws: &Workspace, agent: &str) -> String {
+    t(match agent_authority_preset(ws, agent) {
+        AgentPreset::Observer => "workspace-settings-agent-status-observer",
+        AgentPreset::Contributor => "workspace-settings-agent-status-contributor",
+        AgentPreset::Operator => "workspace-settings-agent-status-operator",
+        AgentPreset::Custom => "workspace-settings-agent-status-custom",
     })
 }
 
@@ -93,9 +94,10 @@ pub struct AgentSummary {
     pub agent: String,
     /// What the person reads: the service's purpose, or the agent's name.
     pub name: String,
-    /// "Agent" or "Service".
-    pub badge: String,
-    /// What it was admitted with and what it holds beside.
+    /// Whether the workspace admitted it as a service, which is no agent.
+    pub service: bool,
+    /// What it may do, as one plain line: for a service, what it reads and
+    /// until when.
     pub detail: String,
 }
 
@@ -106,70 +108,29 @@ pub fn agent_summaries(ws: &Workspace) -> Vec<AgentSummary> {
     members.compact_sort_by(|a, b| a.0.cmp(&b.0));
     members
         .into_iter()
-        .map(|(agent, kinds)| {
-            let (name, badge, detail) = agent_summary_parts(ws, &agent, kinds);
+        .map(|(agent, _)| {
+            let (name, service, detail) = agent_summary_parts(ws, &agent);
             AgentSummary {
                 agent,
                 name,
-                badge,
+                service,
                 detail,
             }
         })
         .collect()
 }
 
-/// The id prefix of the grant that admits `agent`: a named admission, or a
-/// service member's membership, which is its admission and not a permission
-/// it holds beside one.
-fn admission_prefix(agent: &str) -> String {
-    match agent.strip_prefix("service:") {
-        Some(device) if tilo_desktop_model::service_member::service_device(agent).is_some() => {
-            format!("service-member:{device}:")
-        }
-        _ => format!("agent-member:{agent}:"),
-    }
-}
-
-/// An agent's name, its badge and the line about what it may do: the one
-/// place the tab reads them.
-pub(super) fn agent_summary_parts(
-    ws: &Workspace,
-    agent: &str,
-    kinds: tilo_action_policy::KindSet,
-) -> (String, String, String) {
+/// An agent's name, whether it is a service, and the line about what it may
+/// do: the one place the tab reads them.
+pub(super) fn agent_summary_parts(ws: &Workspace, agent: &str) -> (String, bool, String) {
     let now = tilo_clock::unix_now();
     let service = service_purpose(ws, agent, now);
     let name = match &service {
         Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
         _ => short_id(agent),
     };
-    let badge = t(if service.is_some() {
-        "workspace-settings-badge-service"
-    } else {
-        "workspace-settings-badge-agent"
-    });
-    let detail = if let Some(service) = &service {
-        service_member_detail(service)
-    } else {
-        let admission = admission_prefix(agent);
-        let subject = tilo_action_policy::Subject::agent(agent);
-        let grant_count = ws
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| grant.subject == subject && !grant.id.as_str().starts_with(&admission))
-            .count();
-        t_args(
-            "workspace-settings-agent-detail",
-            &[
-                ("admission", agent_admission_label(kinds).into()),
-                (
-                    "profile",
-                    agent_preset_label(agent_authority_preset(ws, agent)).into(),
-                ),
-                ("count", grant_count.into()),
-            ],
-        )
-    };
-    (name, badge, detail)
+    let detail = service
+        .as_ref()
+        .map_or_else(|| agent_status(ws, agent), service_member_detail);
+    (name, service.is_some(), detail)
 }

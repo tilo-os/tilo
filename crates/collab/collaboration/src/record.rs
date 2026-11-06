@@ -218,15 +218,31 @@ impl RecordId {
     /// record.
     pub fn chain_part(&self) -> Option<(Self, u64)> {
         let (role, base) = self.0.strip_prefix("derived:")?.split_once('@')?;
-        let index = role.strip_prefix("part.")?;
-        let canonical = !index.is_empty()
-            && index.bytes().all(|byte| byte.is_ascii_digit())
-            && (index == "0" || !index.starts_with('0'));
-        canonical
-            // ignored-failure: a probe of the id's shape; digits only, so only an index past u64 fails, which is no part
-            .then(|| index.parse().ok())
-            .flatten()
-            .map(|index| (Self(base.to_owned()), index))
+        numbered(role.strip_prefix("part.")?).map(|index| (Self(base.to_owned()), index))
+    }
+
+    /// Chunk `number` of the record `self`: the platform keeps a large
+    /// record's resources in several documents, each a record of its own, so
+    /// that a write reaches only the chunk it changed. Chunk `0` is the
+    /// record itself — read in place, never copied — so `self.chunk(0)` is
+    /// `self`. Like a [`Self::part`], a workspace's host sends a joining
+    /// device only the chunks it opens, and two writers that start chunk
+    /// `n + 1` start the same record. The number says nothing about what a
+    /// chunk holds: the platform picks it by measured size, never the app.
+    #[must_use]
+    pub fn chunk(&self, number: u64) -> Self {
+        if number == 0 {
+            return self.clone();
+        }
+        Self::derived(&format!("chunk.{number}"), self)
+    }
+
+    /// The base record and number of a [`Self::chunk`], or `None` for the
+    /// record itself and for any other record.
+    pub fn chunk_of(&self) -> Option<(Self, u64)> {
+        let (role, base) = self.0.strip_prefix("derived:")?.split_once('@')?;
+        let number = numbered(role.strip_prefix("chunk.")?)?;
+        (number > 0).then(|| (Self(base.to_owned()), number))
     }
 
     /// The number of the part of the chain `self` whose document is kept
@@ -239,6 +255,18 @@ impl RecordId {
         let digits = index.bytes().take_while(u8::is_ascii_digit).count();
         let index: u64 = index.get(..digits)?.parse().ok()?;
         (self.part(index).storage_key() == storage_key).then_some(index)
+    }
+
+    /// The number of the chunk of the record `self` whose document is kept
+    /// under `storage_key` ([`Self::storage_key`]), or `None` for any other
+    /// record's: what a store lists of a record's chunks it holds without
+    /// having opened the record's manifest.
+    #[must_use]
+    pub fn chunk_of_storage_key(&self, storage_key: &str) -> Option<u64> {
+        let number = storage_key.strip_prefix("derived_chunk.")?;
+        let digits = number.bytes().take_while(u8::is_ascii_digit).count();
+        let number: u64 = number.get(..digits)?.parse().ok()?;
+        (self.chunk(number).storage_key() == storage_key).then_some(number)
     }
 
     /// The child record `id` of `self`: a resource kept as a record of its
@@ -272,6 +300,7 @@ impl RecordId {
     pub fn tree(&self) -> Option<Self> {
         self.chain_part()
             .map(|(chain, _)| chain)
+            .or_else(|| self.chunk_of().map(|(base, _)| base))
             .or_else(|| self.child_of().map(|(parent, _)| parent))
     }
 
@@ -343,6 +372,18 @@ impl RecordId {
         }
         format!("{prefix}-{:016x}", fnv1a64(self.0.as_bytes()))
     }
+}
+
+/// The number a derived role carries after its `part.`/`chunk.` prefix, when
+/// it is canonical: digits, no leading zero, and within `u64`.
+fn numbered(index: &str) -> Option<u64> {
+    let canonical = !index.is_empty()
+        && index.bytes().all(|byte| byte.is_ascii_digit())
+        && (index == "0" || !index.starts_with('0'));
+    canonical
+        // ignored-failure: a probe of the id's shape; digits only, so only an index past u64 fails, which is no number
+        .then(|| index.parse().ok())
+        .flatten()
 }
 
 fn valid_record_id(s: &str, depth: usize) -> bool {
@@ -627,5 +668,29 @@ impl Ord for RecordCheckout {
         self.id
             .cmp(&other.id)
             .then_with(|| self.kind.cmp(&other.kind))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Chunk `0` is the record itself and every other chunk is a numbered
+    /// record of its own, in the wire form a host reads the number by.
+    #[test]
+    fn a_chunk_is_numbered_from_the_record_itself() {
+        let app = RecordId::workspace_default();
+        assert_eq!(app.chunk(0), app);
+        let third = app.chunk(3);
+        assert_eq!(third.as_str(), format!("derived:chunk.3@{}", app.as_str()));
+        assert_eq!(RecordId::parse(third.as_str()), Some(third.clone()));
+        assert_eq!(third.chunk_of(), Some((app.clone(), 3)));
+        assert_eq!(app.chunk_of(), None);
+        assert_eq!(
+            app.chunk_of_storage_key(&third.storage_key()),
+            Some(3),
+            "a store lists a record's chunks by the keys it keeps them under"
+        );
+        assert_eq!(app.chunk_of_storage_key(&app.storage_key()), None);
     }
 }

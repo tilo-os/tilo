@@ -60,6 +60,8 @@ pub struct AnswerCell {
 /// One application's row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentAccessRow {
+    /// The app whose answers these are, for its mark.
+    pub app: String,
     pub scope: AnswerScope,
     pub label: String,
     pub cells: [AnswerCell; 3],
@@ -139,6 +141,7 @@ pub fn agent_access_rows(
                 cells: KINDS.map(|kind| answer_at(ws, agent, &scope, kind)),
                 label: app_display_name(apps, &app),
                 scope,
+                app,
             }
         })
         .collect();
@@ -168,7 +171,13 @@ pub fn agent_exceptions(
             let AnswerScope::Action { app, action, .. } = &scope else {
                 return None;
             };
-            let label = format!("{} · {}", app_display_name(apps, app), humanize(action));
+            let label = t_args(
+                "workspace-settings-agent-exception",
+                &[
+                    ("app", app_display_name(apps, app).into()),
+                    ("action", humanize(action).into()),
+                ],
+            );
             let kind = grant.kinds.iter().next()?;
             Some(AgentException { scope, kind, label })
         })
@@ -425,12 +434,14 @@ mod tests {
         let rows = agent_access_rows(&ws, AGENT, &super::super::NoAppDirectory);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].scope, AnswerScope::app(MAIL));
+        assert_eq!(rows[0].app, MAIL);
+        assert_eq!(rows[0].label, "Mail", "an app is named, not shown by id");
         assert!(!rows[0].customised(), "an action's answer is not the app's");
         let exceptions = agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory);
         assert_eq!(exceptions.len(), 1, "a Deny is no exception to list");
         assert_eq!(exceptions[0].scope, send);
         assert_eq!(exceptions[0].kind, ActionKind::Outside);
-        assert_eq!(exceptions[0].label, format!("{MAIL} · Send message"));
+        assert_eq!(exceptions[0].label, "Send message in Mail");
         let edit = set_agent_answers(
             &mut ws,
             &OWNER.to_string(),

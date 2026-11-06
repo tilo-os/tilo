@@ -1085,8 +1085,8 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
     assert_eq!(watch.take().listing(&key), Some(&steps[..]));
     assert_eq!(listed(), item_ids(&ada, &meta, &root));
 
-    // Added by the runtime here: told when the action commits, and not again when the record
-    // holds it.
+    // Added by the runtime here: told once, when the record holds the action's change and the
+    // indexes hold what it derives.
     let add_action = meta.actions.iter().find(|a| a.name == "add").unwrap();
     ada.host
         .runtime()
@@ -1098,14 +1098,21 @@ fn the_store_keeps_a_listing_by_the_items_a_change_touched() {
             ),
         )
         .unwrap();
-    let told = watch.take();
-    let [Splice::Insert { at: 4, item: jam }] = told.listing(&key).unwrap() else {
-        panic!("{told:?}");
-    };
-    let jam = jam.clone();
+    assert!(
+        watch.take().is_empty(),
+        "the action's change is told when the record holds it, not when it is written"
+    );
     ada.commit();
-    assert_eq!(watch.take().listing(&key), Some(&[][..]), "nothing moved");
+    let told = watch.take();
+    // The person's own insert was already in what they read (the write was the mirror's open
+    // transaction): the note names the collection, whose items the view reads again.
+    assert!(
+        told.docs.values().flatten().any(|named| *named == key),
+        "the note names the collection the item joined: {told:?}"
+    );
+    assert_eq!(told.listing(&key), Some(&[][..]), "nothing moved");
     let ids = item_ids(&ada, &meta, &root);
+    let jam = ids[4].clone();
     assert_eq!(ids[4], jam);
     assert_eq!(listed(), ids);
 

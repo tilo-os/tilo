@@ -46,8 +46,8 @@ From `apps/tl/notes/app.tl`:
 ```
 /// A note: a title, a body and the tags people gave it.
 type Note {
-    title: Text (title)
-    body: RichText (body)
+    title: Text
+    body: RichText
     pinned: Bool = false
     tags: Set<Text>
 
@@ -78,29 +78,9 @@ action pin(n: Note, pinned: Bool = not n.pinned) (icon: .pin, on: n.pinned) {
 Those lines give collaborative, synced, searchable, undoable notes with a native default UI,
 which people, agents and automations can find, read and pin.
 
-A field marked `(body)` is the resource's document body: the document's own view places the
-editor for it, `ui.BlockEditor(bind: note.body)`, whether the field holds `Text` (the body kept
-as Markdown) or `RichText` (its paragraphs, lists, quotes, tables and code kept as such).
-
-A field whose item comes round again says which day it counts from, and a field that reminds
-someone says when it does and whom it reminds:
-
-```
-type Task {
-    title: Text (title)
-    due: Option<Date> = .none
-    at: Option<Time> = .none
-    assignee: Option<Principal> = .none
-    repeats: Option<std.Repeat> (repeats: due) = .none
-    remind: Option<std.Reminder> (reminds: due, at, who: assignee) = .none
-}
-```
-
-The compiler refuses a `std.Repeat` field with no `(repeats: …)` and a `std.Reminder` with no
-`(reminds: …)`, and refuses a role naming a field the type does not have or one of the wrong
-type. The role is published with the type, so whatever holds the record — a desktop with the
-app closed, an agent, another device — finds what repeats and when it reminds without running
-the app's code. A record naming nobody is its creator's to be reminded of.
+A resource's document body is its `RichText` field, whether it is kept as `RichText` (its
+paragraphs, lists, quotes, tables and code kept as such) or as `Text` (the body kept as
+Markdown); the document's own view places the editor for it, `ui.BlockEditor(bind: note.body)`.
 
 ## Effects
 

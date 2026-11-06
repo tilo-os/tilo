@@ -2,7 +2,7 @@ app so.tilo.lang.interaction "Interaction" (icon: .message_circle, category: .ne
 
 /// A message: what it says and the reactions on it. Who wrote it and when come from the log.
 type Message {
-    body: Text (body)
+    body: Text
     /// What a message typed in the composer says, its references kept as references.
     said: RichText
     pinned: Bool = false
@@ -13,7 +13,7 @@ type Message {
 
 /// One conversation.
 type Channel {
-    name: Text (title)
+    name: Text
     messages: Collection<Message>
 }
 

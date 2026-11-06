@@ -342,6 +342,8 @@ struct Reach {
 pub struct LiveStats {
     /// Boundaries rendered (a view call run), since the view was opened.
     pub renders: u64,
+    /// Of those, the runs of the view's root: how many times a change reached the window.
+    pub root_runs: u64,
     /// Boundaries in the tree now.
     pub boundaries: usize,
     /// Of those, rows of lists not rendered because they were not shown.
@@ -362,6 +364,8 @@ pub(crate) struct Live {
     /// Whether rows of lists wait to be shown before they render.
     pub lazy_rows: bool,
     pub renders: u64,
+    /// Of those, the runs of the root: how many times a change reached the window.
+    pub root_runs: u64,
     /// View calls kept without running during the current re-render, by key.
     reused: HashSet<String>,
     /// Action references of trees replaced during the current re-render: released once the
@@ -428,6 +432,7 @@ impl Live {
             window,
             lazy_rows: true,
             renders: 0,
+            root_runs: 0,
             reused: HashSet::new(),
             to_release: Vec::new(),
             shown: HashMap::new(),
@@ -466,6 +471,7 @@ impl Live {
         let unrendered = self.bounds.iter().flatten().filter(|b| !b.rendered).count();
         LiveStats {
             renders: self.renders,
+            root_runs: self.root_runs,
             boundaries,
             unrendered,
         }
@@ -813,6 +819,9 @@ impl Live {
         }
         let rendered = rendered?;
         self.renders = self.renders.saturating_add(1);
+        if id == ROOT {
+            self.root_runs = self.root_runs.saturating_add(1);
+        }
         let Rendered {
             root,
             reads,

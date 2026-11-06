@@ -1,10 +1,7 @@
-//! What history says a change reads with, worked out from the change itself: the role and type
-//! the field declares, and what it held before and after.
+//! What history says a change reads with, worked out from the change itself: the type the field
+//! declares, and what it held before and after.
 //!
-//! One place decides it, so the index store and the Am store read a change the same way, as
-//! [`crate::derived`] keeps derived keys for both. A field's role says what it is of its type
-//! (`(done)`, `(title)`, `(time of: due)`), which reads better than its type alone: a flag that
-//! is a task's done reads "completed this", where another flag reads "set pinned to".
+//! One place decides it, so the index store and the Am store read a change the same way.
 //!
 //! The words are the platform's: [`crate::words::Words`] resolves each key to the reader's
 //! language, and the source words beside the key are what a host with no catalogue reads, as
@@ -13,7 +10,7 @@
 
 use crate::registry::FieldInfo;
 use crate::value::Value;
-use tilolang::types::{FieldRole, Ty};
+use tilolang::types::Ty;
 
 /// Which of a change's two values its words speak of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,7 +19,7 @@ pub enum Shows {
     Before,
     /// What it holds after: "moved this to" the day it is due.
     After,
-    /// Neither: "completed this".
+    /// Neither: "unassigned this".
     None,
 }
 
@@ -52,47 +49,12 @@ pub struct Said {
     pub shows: Shows,
 }
 
-/// What a change to `field` reads with, `named` being the field's name in a sentence (a time of
-/// day reads with the day it is of: "set the due time to").
+/// What a change to `field` reads with, `named` being the field's name in a sentence.
 #[must_use]
 pub fn said(field: &FieldInfo, named: &str, before: &Value, after: &Value) -> Said {
     let gone = kind(after) == "none";
     let was_gone = kind(before) == "none";
-    let mut said = match &field.role {
-        Some(FieldRole::Title) => plain("tilolang-did-renamed", "renamed this to", Shows::After),
-        Some(FieldRole::Body) => naming("tilolang-did-edited", "edited the { $field }", named),
-        Some(FieldRole::Done) => {
-            if flag(after) {
-                plain("tilolang-did-completed", "completed this", Shows::None)
-            } else {
-                plain("tilolang-did-reopened", "reopened this", Shows::None)
-            }
-        }
-        Some(FieldRole::Parent) => {
-            if gone {
-                plain(
-                    "tilolang-did-moved-top",
-                    "moved this to the top level",
-                    Shows::None,
-                )
-            } else {
-                plain("tilolang-did-moved-under", "moved this under", Shows::After)
-            }
-        }
-        Some(FieldRole::TimeOf { .. }) => {
-            if gone {
-                naming(
-                    "tilolang-did-cleared-time",
-                    "cleared the { $field } time",
-                    named,
-                )
-            } else {
-                after_naming("tilolang-did-set-time", "set the { $field } time to", named)
-            }
-        }
-        // Repeats, reminders and what a resource was before read by their type.
-        _ => by_type(&field.ty, named, gone, was_gone),
-    };
+    let mut said = by_type(&field.ty, named, gone, was_gone);
     if said.shows == Shows::Before && was_gone {
         // Nothing stood before the change: there is no value of its to speak of.
         said.shows = Shows::None;
@@ -100,7 +62,7 @@ pub fn said(field: &FieldInfo, named: &str, before: &Value, after: &Value) -> Sa
     said
 }
 
-/// What a change to a field of `ty` reads with, when its role says nothing more.
+/// What a change to a field of `ty` reads with.
 fn by_type(ty: &Ty, named: &str, gone: bool, was_gone: bool) -> Said {
     let mut ty = ty;
     while let Ty::Option(inner) = ty {
@@ -139,7 +101,7 @@ fn by_type(ty: &Ty, named: &str, gone: bool, was_gone: bool) -> Said {
     }
 }
 
-/// Words that name no value: "completed this".
+/// Words that name no value: "unassigned this".
 fn plain(key: &'static str, source: &'static str, shows: Shows) -> Said {
     Said {
         key,
@@ -149,7 +111,7 @@ fn plain(key: &'static str, source: &'static str, shows: Shows) -> Said {
     }
 }
 
-/// Words that name no value and the field they are of: "edited the notes".
+/// Words that name no value and the field they are of: "changed title".
 fn naming(key: &'static str, source: &'static str, named: &str) -> Said {
     Said {
         key,
@@ -177,26 +139,19 @@ fn kind(shown: &Value) -> &str {
     }
 }
 
-/// Whether a shown value is the flag true.
-fn flag(shown: &Value) -> bool {
-    matches!(shown, Value::Tuple(parts) if matches!(parts.get(1), Some(Value::Bool(true))))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::meta::FieldKind;
     use tilolang::types::TypeKey;
 
-    fn field(name: &str, ty: Ty, role: Option<FieldRole>) -> FieldInfo {
+    fn field(name: &str, ty: Ty) -> FieldInfo {
         FieldInfo {
             id: name.to_owned(),
             name: name.to_owned(),
             ty,
             kind: FieldKind::Register,
-            role,
             default: None,
-            derived: None,
         }
     }
 
@@ -221,55 +176,8 @@ mod tests {
     }
 
     #[test]
-    fn a_title_reads_as_a_rename_and_speaks_of_the_new_name() {
-        let title = field("title", Ty::Text, Some(FieldRole::Title));
-        assert_eq!(
-            reads(
-                &title,
-                &shown("text", Value::text("Milk")),
-                &shown("text", Value::text("Oat milk"))
-            ),
-            ("tilolang-did-renamed", "after", false)
-        );
-    }
-
-    #[test]
-    fn a_body_reads_as_an_edit_of_it_and_speaks_of_no_value() {
-        let body = field("notes", Ty::RichText, Some(FieldRole::Body));
-        assert_eq!(
-            reads(
-                &body,
-                &shown("rich", Value::Unit),
-                &shown("rich", Value::Unit)
-            ),
-            ("tilolang-did-edited", "", true)
-        );
-    }
-
-    #[test]
-    fn a_done_flag_reads_as_completed_or_reopened() {
-        let done = field("done", Ty::Bool, Some(FieldRole::Done));
-        assert_eq!(
-            reads(
-                &done,
-                &shown("bool", Value::Bool(false)),
-                &shown("bool", Value::Bool(true))
-            ),
-            ("tilolang-did-completed", "", false)
-        );
-        assert_eq!(
-            reads(
-                &done,
-                &shown("bool", Value::Bool(true)),
-                &shown("bool", Value::Bool(false))
-            ),
-            ("tilolang-did-reopened", "", false)
-        );
-    }
-
-    #[test]
     fn a_day_moved_to_reads_as_moved_and_a_new_one_as_set_and_a_cleared_one_as_cleared() {
-        let due = field("due", Ty::Option(Box::new(Ty::Date)), None);
+        let due = field("due", Ty::Option(Box::new(Ty::Date)));
         let none = shown("none", Value::Unit);
         let later = shown("date", Value::text("2026-11-02"));
         assert_eq!(
@@ -287,29 +195,8 @@ mod tests {
     }
 
     #[test]
-    fn a_time_of_day_reads_with_the_day_it_belongs_to() {
-        let at = field(
-            "at",
-            Ty::Option(Box::new(Ty::Time)),
-            Some(FieldRole::TimeOf {
-                date: "due".to_owned(),
-            }),
-        );
-        let none = shown("none", Value::Unit);
-        let at_nine = shown("time", Value::text("2026-11-02T09:00:00Z"));
-        assert_eq!(
-            reads(&at, &none, &at_nine),
-            ("tilolang-did-set-time", "after", true)
-        );
-        assert_eq!(
-            reads(&at, &at_nine, &none),
-            ("tilolang-did-cleared-time", "", true)
-        );
-    }
-
-    #[test]
     fn a_person_reads_as_assigned_to_and_unassigned() {
-        let assignee = field("assignee", Ty::Option(Box::new(Ty::Principal)), None);
+        let assignee = field("assignee", Ty::Option(Box::new(Ty::Principal)));
         let nobody = shown("none", Value::Unit);
         let ben = shown(
             "principal",
@@ -327,11 +214,7 @@ mod tests {
 
     #[test]
     fn a_resource_reads_as_moved_to_and_out_of_the_one_it_left() {
-        let project = field(
-            "project",
-            Ty::Option(Box::new(Ty::Record(kind("Project")))),
-            None,
-        );
+        let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))));
         let inbox = shown("none", Value::Unit);
         let flat = shown("resource", Value::text("Move flat"));
         assert_eq!(
@@ -345,31 +228,8 @@ mod tests {
     }
 
     #[test]
-    fn a_parent_reads_as_moved_under_or_to_the_top_level() {
-        let parent = field(
-            "parent",
-            Ty::Option(Box::new(Ty::Record(kind("Task")))),
-            Some(FieldRole::Parent),
-        );
-        let top = shown("none", Value::Unit);
-        let above = shown("resource", Value::text("Write the post"));
-        assert_eq!(
-            reads(&parent, &top, &above),
-            ("tilolang-did-moved-under", "after", false)
-        );
-        assert_eq!(
-            reads(&parent, &above, &top),
-            ("tilolang-did-moved-top", "", false)
-        );
-    }
-
-    #[test]
     fn an_enum_reads_as_set_to_or_cleared_and_so_does_another_flag() {
-        let priority = field(
-            "priority",
-            Ty::Option(Box::new(Ty::Enum(kind("Priority")))),
-            None,
-        );
+        let priority = field("priority", Ty::Option(Box::new(Ty::Enum(kind("Priority")))));
         let none = shown("none", Value::Unit);
         let high = shown("case", Value::text("High"));
         assert_eq!(
@@ -380,7 +240,7 @@ mod tests {
             reads(&priority, &high, &none),
             ("tilolang-did-cleared", "", true)
         );
-        let pinned = field("pinned", Ty::Bool, None);
+        let pinned = field("pinned", Ty::Bool);
         assert_eq!(
             reads(
                 &pinned,
@@ -392,8 +252,8 @@ mod tests {
     }
 
     #[test]
-    fn a_field_of_no_role_of_its_own_reads_as_a_change_of_it() {
-        let tags = field("tags", Ty::Set(Box::new(Ty::Text)), None);
+    fn a_field_of_no_shape_of_its_own_reads_as_a_change_of_it() {
+        let tags = field("tags", Ty::Set(Box::new(Ty::Text)));
         assert_eq!(
             reads(&tags, &Value::List(Vec::new()), &Value::List(Vec::new())),
             ("tilolang-did-changed", "", true)
@@ -403,11 +263,7 @@ mod tests {
     #[test]
     fn words_that_speak_of_a_value_that_stood_not_read_of_nothing() {
         // A resource that stood nowhere before cannot be a value "moved this out of".
-        let project = field(
-            "project",
-            Ty::Option(Box::new(Ty::Record(kind("Project")))),
-            None,
-        );
+        let project = field("project", Ty::Option(Box::new(Ty::Record(kind("Project")))));
         let none = shown("none", Value::Unit);
         assert_eq!(
             reads(&project, &none, &none),

@@ -1030,7 +1030,7 @@ impl BrowserShell {
         };
         if matches!(
             intent,
-            ChromeIntent::ToggleTiloMenu | ChromeIntent::ToggleWorkspaceMenu
+            ChromeIntent::ToggleTiloMenu | ChromeIntent::ToggleWorkspaceMenu { .. }
         ) {
             // One popover from the bar at a time.
             self.close_bar_popovers_except(BarPopover::Chrome);

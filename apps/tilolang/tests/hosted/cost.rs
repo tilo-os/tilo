@@ -783,6 +783,97 @@ fn a_change_reindexes_the_resources_it_touched() {
     );
 }
 
+/// The boundaries the window's views have rendered since it opened: every app instance the
+/// window runs, and both lanes it shows.
+fn renders(session: &Session) -> u64 {
+    session
+        .host
+        .instances()
+        .flat_map(|instance| {
+            let instance = instance.instance();
+            [
+                tilo_render_protocol::patch::Lane::Root,
+                tilo_render_protocol::patch::Lane::Detail,
+            ]
+            .into_iter()
+            .filter_map(|lane| instance.view(lane))
+            .collect::<Vec<_>>()
+        })
+        .map(|view| view.borrow().stats().renders)
+        .fold(0, u64::saturating_add)
+}
+
+/// Typing a task in the list's entry: a keystroke changes the entry's own view state and
+/// nothing else, so what runs again is the boundary that read it — the entry and the chips it
+/// shows — and the list around it, every row of it, stands as it is.
+#[test]
+fn typing_in_the_entry_renders_the_entry() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    for ch in "Buy #milk".chars() {
+        let before = renders(&session);
+        session.window.type_text(&ch.to_string());
+        session.settle();
+        let ran = renders(&session) - before;
+        assert!(
+            ran <= 2,
+            "typing {ch:?} runs {ran} boundaries: the entry and its chips, not the list it \
+             stands under"
+        );
+    }
+    assert_eq!(
+        entry(&mut session),
+        "Buy #milk",
+        "the entry shows what was typed"
+    );
+}
+
+/// Typing a task's title on its page: the keystroke edits one field of one task, so the page
+/// that shows it and the row behind it run again, and the rest of the window stands.
+#[test]
+fn typing_a_tasks_title_reruns_the_views_that_read_it() {
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    let title = session.titles().get(1).cloned().expect("a row");
+    let (x, y) = shown_at(&mut session, &title);
+    session.window.click_at(x, y);
+    session.settle();
+    let key = {
+        let view = session.hosted().view().expect("the window is connected");
+        let tree = view.detail_tree().expect("the page is shown");
+        let key = find(&tree, &|node| {
+            node.kind == "ui.TextInput"
+                && node.binding.as_ref().is_some_and(|b| b.field().is_some())
+        })
+        .unwrap_or_else(|| panic!("the page edits its title: {tree:?}"))
+        .key
+        .clone();
+        format!("{}{key}", tilo_ui_host::shell::DETAIL)
+    };
+    let rect = widget_by_id(session.window.root(), &key)
+        .unwrap_or_else(|| panic!("the title {key} is laid out"))
+        .get_rect();
+    session.window.click_at(rect.center().x, rect.center().y);
+    session.settle();
+    for ch in "Buy".chars() {
+        let before = renders(&session);
+        session.window.type_text(&ch.to_string());
+        session.settle();
+        let ran = renders(&session) - before;
+        assert!(
+            ran <= 20,
+            "typing {ch:?} on the page runs {ran} boundaries: the page and the row that shows \
+             the title, not every row the window holds"
+        );
+    }
+}
+
 /// Checking tasks off one after another: every row the person checked stays where it stands,
 /// reading checked, the list goes on rendering, and checking one task runs a handful of
 /// boundaries rather than every row the window shows.
@@ -793,18 +884,6 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_in(&route, doc, None);
     let mut checked = Vec::new();
-    let renders = |session: &Session| -> u64 {
-        let instance = session
-            .host
-            .instances()
-            .next()
-            .expect("the window's instance");
-        let view = instance
-            .instance()
-            .view(tilo_render_protocol::patch::Lane::Root)
-            .expect("the root view");
-        view.borrow().stats().renders
-    };
     for _ in 0..4 {
         let (title, x, y) = first_check(&mut session);
         let before = renders(&session);
@@ -822,6 +901,58 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
         assert!(
             checked_off(&mut session, &title),
             "the row a person checked reads checked: {title}"
+        );
+    }
+}
+
+/// A step of the person's reaches the window once: checking a task off runs the window's root
+/// once, on the change the record brought back with what its derivation added, and sends the
+/// tree once. The row then reads its title and its box checked off, in a workspace of a hundred
+/// tasks and of ten thousand.
+#[test]
+fn a_step_reaches_the_window_in_one_frame() {
+    let _motion = ui::motion::testing::settled();
+    for n in [100, SEEDED] {
+        let doc = seeded_tasks(n);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let mut session = Session::tasks_over_in(&route, doc, None);
+        let counted = |session: &Session| -> (u64, u64) {
+            let instance = session
+                .host
+                .instances()
+                .next()
+                .expect("the window's instance")
+                .instance();
+            let runs = instance
+                .view(tilo_render_protocol::patch::Lane::Root)
+                .expect("the root view")
+                .borrow()
+                .stats()
+                .root_runs;
+            (runs, instance.patches_sent())
+        };
+        let (title, x, y) = first_check(&mut session);
+        let (runs, sent) = counted(&session);
+        session.window.click_at(x, y);
+        session.settle();
+        let (ran, published) = counted(&session);
+        assert_eq!(
+            ran - runs,
+            1,
+            "checking {title} in a workspace of {n} tasks runs the window's root {} times, \
+             not once",
+            ran - runs
+        );
+        assert_eq!(
+            published - sent,
+            1,
+            "checking {title} in a workspace of {n} tasks sends the tree {} times, not once",
+            published - sent
+        );
+        assert!(
+            checked_off(&mut session, &title),
+            "the row a person checked in a workspace of {n} tasks reads its title and checked: \
+             {title}"
         );
     }
 }

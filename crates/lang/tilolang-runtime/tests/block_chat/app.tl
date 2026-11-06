@@ -23,7 +23,7 @@ type Message {
 
 /// A conversation: its messages, in the order they were posted.
 type Conversation {
-    title: Text (title)
+    title: Text
     messages: Collection<Message>
 }
 

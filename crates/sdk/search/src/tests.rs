@@ -778,3 +778,18 @@ fn a_highlight_marks_exactly_what_the_index_matched() {
         }
     }
 }
+
+#[test]
+fn a_word_ending_inside_the_query_does_not_find_it() {
+    // "hell" is the German word for light, a keyword of the light-mode
+    // setting: typing more than the whole word must not land on it.
+    let index = committed(
+        Matching::LOOSE,
+        [Document::new(1)
+            .field("Light mode", FieldWeight::TITLE)
+            .field("hell", FieldWeight::KEYWORD)],
+    );
+    assert!(keys(&index, "hello").is_empty());
+    assert_eq!(keys(&index, "hell"), [1]);
+    assert_eq!(keys(&index, "helo"), [1], "a swap is still a typo");
+}

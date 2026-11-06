@@ -127,6 +127,12 @@ type Answers = Rc<RefCell<BTreeMap<String, Outcome>>>;
 /// A launch id carries the app id alone, so its tab is named from here.
 type Titles = Rc<RefCell<BTreeMap<String, String>>>;
 
+/// What the session calls each app, shared with the surface's tile source:
+/// the installed package's localised name, else the machine's desktop entry,
+/// else the registry's. A desk told no names uses the ones every desktop
+/// carries ([`tilo_desktop_search::names::app_name`]).
+type AppNames = Rc<RefCell<Option<Rc<dyn Fn(&str) -> String>>>>;
+
 /// A tab held for a window of an app that is on its way: the tab it takes
 /// when it maps (`None` until the desktop makes it), and whether it takes
 /// focus there.
@@ -176,6 +182,8 @@ struct Windows {
     answers: Answers,
     /// The name each app is known by, for its notice.
     titles: Titles,
+    /// What the session calls the apps, for the name a tab opens with.
+    names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
     /// The tabs the person carried to another workspace, which only the
@@ -209,7 +217,7 @@ impl TileSource for Windows {
             .borrow()
             .get(&app)
             .cloned()
-            .unwrap_or_else(|| shown_name(&app));
+            .unwrap_or_else(|| app_name(&self.names, &app));
         let answer = self.answers.borrow().get(&app).cloned().unwrap_or_else(|| {
             Closed::default().outcome(&title, tilo_desktop_surface::i18n::t("answer-reopen"))
         });
@@ -263,7 +271,7 @@ impl TileSource for Windows {
             let app_id = window.app_id.unwrap_or_default();
             Some(Tab {
                 id,
-                title: window.title.unwrap_or_else(|| app_id.clone()),
+                title: tab_title(&self.names, &app_id, window.title.as_deref()),
                 tile: TileContent::Foreign {
                     app_id,
                     surface_id: window.id,
@@ -339,7 +347,7 @@ impl Windows {
             .borrow()
             .get(app)
             .cloned()
-            .unwrap_or_else(|| shown_name(app));
+            .unwrap_or_else(|| app_name(&self.names, app));
         Tab {
             id,
             title,
@@ -366,6 +374,8 @@ pub struct DesktopPolicy {
     answers: Answers,
     /// The name each app is known by, for its notice.
     titles: Titles,
+    /// What the session calls the apps, for the name a tab opens with.
+    names: AppNames,
     /// The tabs held for the apps' coming windows.
     held: Held,
     /// The tabs the person carried to another workspace, waiting for the
@@ -409,6 +419,7 @@ impl DesktopPolicy {
         let crashed = Crashed::default();
         let answers = Answers::default();
         let titles = Titles::default();
+        let names = AppNames::default();
         let held = Held::default();
         let carried = Carried::default();
         let notes = Notes::default();
@@ -421,6 +432,7 @@ impl DesktopPolicy {
                 crashed: Rc::clone(&crashed),
                 answers: Rc::clone(&answers),
                 titles: Rc::clone(&titles),
+                names: Rc::clone(&names),
                 held: Rc::clone(&held),
                 carried: Rc::clone(&carried),
                 notes: Rc::clone(&notes),
@@ -433,6 +445,7 @@ impl DesktopPolicy {
             crashed,
             answers,
             titles,
+            names,
             held,
             carried,
             notes,
@@ -458,6 +471,13 @@ impl DesktopPolicy {
     /// no record shows none.
     pub fn reads_window_records(&mut self, notes: Rc<dyn WindowNotes>) {
         *self.notes.borrow_mut() = Some(notes);
+    }
+
+    /// Name apps with `names`, the session's: the installed package's
+    /// localised name, else the machine's desktop entry, else the registry's.
+    /// A tab opens with the name of its app, never with the app's id.
+    pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
+        *self.names.borrow_mut() = Some(names);
     }
 
     /// Show that the app `asked` names stopped, for `closed`, in a tab of its
@@ -507,7 +527,7 @@ impl DesktopPolicy {
             .borrow()
             .get(asked)
             .cloned()
-            .unwrap_or_else(|| shown_name(asked))
+            .unwrap_or_else(|| app_name(&self.names, asked))
     }
 
     /// The answer `app` left on the desk goes, `tab` having shown its window
@@ -978,7 +998,7 @@ impl DesktopPolicy {
             return false;
         };
         let app_id = window.app_id.clone().unwrap_or_default();
-        let title = window.title.clone().unwrap_or_else(|| app_id.clone());
+        let title = tab_title(&self.names, &app_id, window.title.as_deref());
         let Some(tab) = tabs_mut(&mut tree).find(|tab| tab.id == held_tab) else {
             return false;
         };
@@ -1084,17 +1104,24 @@ impl DesktopPolicy {
     /// A window's title changed. A window is named by what it shows: while
     /// its app names that (a note's title, a folder's path, in its bar's
     /// location), that name stands and the window's own title is what shows
-    /// once it names nothing. The person's own name for the tab, when they
-    /// gave one, stands in front of both.
+    /// once it names nothing. A window's own title that is only its app's
+    /// name under another spelling — the toolkit labels a window with the
+    /// app's unlocalised name — shows the app's name as this desk says it.
+    /// The person's own name for the tab, when they gave one, stands in
+    /// front of both.
     pub fn retitle(&mut self, window: u64, title: &str) {
         let mut tree = self.handle.read(Clone::clone);
         let Some(tab) = tab_mut(&mut tree, window) else {
             return;
         };
+        let app_id = match &tab.tile {
+            TileContent::Foreign { app_id, .. } => app_id.clone(),
+            _ => String::new(),
+        };
         let name = self
             .handle
             .window_name(tab.id)
-            .unwrap_or_else(|| title.to_owned());
+            .unwrap_or_else(|| tab_title(&self.names, &app_id, Some(title)));
         if tab.set_window_title(&name) {
             self.handle.replace_tree(tree);
         }
@@ -1424,12 +1451,27 @@ fn ask_again(
     });
 }
 
-/// What a launch id is called when nothing named its app: the name every
-/// desktop carries for it, or its id written as words.
-fn shown_name(app: &str) -> String {
-    // The name every desktop carries, as the window bars and search name the
-    // same app: a tab never shows an app's id.
-    tilo_desktop_search::names::app_name(app)
+/// What the app `app_id` is called to the person. Never the id: an app no
+/// list names is written as words ([`tilo_desktop_search::names::app_name`]).
+fn app_name(names: &AppNames, app_id: &str) -> String {
+    let said = names.borrow().clone();
+    said.map_or_else(
+        || tilo_desktop_search::names::app_name(app_id),
+        |name| name(app_id),
+    )
+}
+
+/// What a tab showing a window of `app_id` is titled: the window's own
+/// title, unless that is only the app's name under another spelling — the
+/// toolkit labels a window with the app's unlocalised name — in which case
+/// it is the app's name as this desk says it.
+fn tab_title(names: &AppNames, app_id: &str, title: Option<&str>) -> String {
+    match title.map(str::trim).filter(|title| !title.is_empty()) {
+        Some(title) if !tilo_desktop_search::names::is_apps_own_name(app_id, title) => {
+            title.to_owned()
+        }
+        _ => app_name(names, app_id),
+    }
 }
 
 fn tabs(tree: &DesktopTree) -> impl Iterator<Item = &Tab> {
@@ -1496,7 +1538,8 @@ fn comes(tab: &Tab, held: &BTreeMap<String, Vec<HeldTab>>) -> bool {
 
 /// Whether the app a window announces is the app a request named: the id
 /// itself, or the short name it ends with (`so.tilo.notes` is `notes`).
-fn app_ids_match(announced: &str, asked: &str) -> bool {
+#[must_use]
+pub fn app_ids_match(announced: &str, asked: &str) -> bool {
     let announced = announced.to_ascii_lowercase();
     let asked = asked.to_ascii_lowercase();
     announced == asked || asked.rsplit('.').next() == Some(announced.as_str())

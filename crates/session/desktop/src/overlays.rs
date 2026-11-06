@@ -119,6 +119,15 @@ impl Slot {
         Owner::Shell
     }
 
+    /// Whether the surface stands over the desk beside others: a menu, a
+    /// popover, the strip labels, the search, quick settings — one at a time.
+    /// The overview is the desk itself, the surface everything else stands
+    /// over, so it is not one of them.
+    #[must_use]
+    pub const fn stands_beside(self) -> bool {
+        !matches!(self, Self::Overview)
+    }
+
     /// Where the surface hangs when the verb that opened it named no place.
     #[must_use]
     pub const fn anchor(self) -> Anchor {
@@ -138,7 +147,7 @@ impl Slot {
         match self {
             Self::QuickSettings => Size {
                 width: Some(POPOVER_WIDTH),
-                height: None,
+                height: Some(POPOVER_HEIGHT),
             },
             _ => Size {
                 width: None,
@@ -174,6 +183,10 @@ pub struct Size {
 
 /// The width of a popover hanging under the bar, logical pixels.
 pub const POPOVER_WIDTH: f64 = 380.0;
+
+/// The height of a popover hanging under the bar: its footprint, which no
+/// page it shows moves. What a page has beyond it scrolls inside it.
+pub const POPOVER_HEIGHT: f64 = 640.0;
 
 /// The gap between a popover and the edges of its display.
 pub const POPOVER_MARGIN: f64 = 8.0;
@@ -532,11 +545,19 @@ fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
         Anchor::TopTrailing(gap) => {
             let x1 = display.x1 - gap;
             let x0 = x1 - width;
-            Rect::new(x0, top, x1, display.y1 - gap)
+            // A surface that names its height keeps it, down to the margin;
+            // one that does not reaches to the bottom of its display.
+            let y1 = height.map_or(display.y1 - gap, |height| {
+                (top + height).min(display.y1 - gap)
+            });
+            Rect::new(x0, top, x1, y1)
         }
         Anchor::TopLeading(gap) => {
             let x0 = display.x0 + gap;
-            Rect::new(x0, top, x0 + width, display.y1 - gap)
+            let y1 = height.map_or(display.y1 - gap, |height| {
+                (top + height).min(display.y1 - gap)
+            });
+            Rect::new(x0, top, x0 + width, y1)
         }
         Anchor::Center => {
             let height = height?;
@@ -613,8 +634,22 @@ impl Overlays {
 
     /// Put `slot` up, standing at `anchor` or where the slot stands by
     /// itself.
+    ///
+    /// One anchored surface at a time: the person looks at the one they just
+    /// opened, so the others go down with it. Their widgets follow the stack
+    /// ([`Self::is_open`]), which is how the chrome learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
         let mut stack = self.0.borrow_mut();
+        if slot.stands_beside() {
+            for other in Slot::ALL {
+                if other != slot
+                    && other.stands_beside()
+                    && let Some(state) = stack.slots.get_mut(&other)
+                {
+                    state.open = false;
+                }
+            }
+        }
         let state = stack.slots.entry(slot).or_default();
         state.open = true;
         state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
@@ -828,6 +863,34 @@ mod tests {
     }
 
     #[test]
+    fn one_anchored_surface_stands_at_a_time() {
+        let overlays = overlays();
+        overlays.open(Slot::TiloMenu, None);
+        overlays.open(Slot::Strips, None);
+        assert!(
+            !overlays.is_open(Slot::TiloMenu),
+            "the strip labels came up, and the menu went down with them"
+        );
+        overlays.open(Slot::QuickSettings, None);
+        assert!(
+            !overlays.is_open(Slot::Strips),
+            "and quick settings after them"
+        );
+        assert!(overlays.is_open(Slot::QuickSettings));
+        // The overview is the desk the others stand over, not one of them.
+        overlays.open(Slot::Overview, None);
+        assert!(
+            overlays.is_open(Slot::QuickSettings),
+            "the overview keeps what stands over it"
+        );
+        overlays.open(Slot::Strips, None);
+        assert!(
+            overlays.is_open(Slot::Overview),
+            "and the strip labels leave the overview itself up"
+        );
+    }
+
+    #[test]
     fn a_popover_under_the_bars_right_end_leaves_the_margin_and_the_bar() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
@@ -836,8 +899,16 @@ mod tests {
         assert_eq!(place.x1, DISPLAY.x1 - POPOVER_MARGIN);
         assert_eq!(place.x0, DISPLAY.x1 - POPOVER_MARGIN - POPOVER_WIDTH);
         assert_eq!(place.y0, bar, "under the bar");
-        assert_eq!(place.y1, DISPLAY.y1 - POPOVER_MARGIN);
         assert_eq!(place.width(), POPOVER_WIDTH);
+        assert_eq!(
+            place.height(),
+            POPOVER_HEIGHT,
+            "its footprint, not the rest of the display"
+        );
+        assert!(
+            place.y1 < DISPLAY.y1 - POPOVER_MARGIN,
+            "with the desk it does not cover left below it"
+        );
     }
 
     #[test]
@@ -854,8 +925,16 @@ mod tests {
         let place = overlays.place(Slot::QuickSettings).expect("placed");
         assert_eq!(place.x0, caret.x1 + 4.0, "clear of the caret");
         assert!(place.x0 >= caret.x1, "and never over it");
-        assert_eq!(place.y0, caret.y0);
         assert_eq!(place.width(), POPOVER_WIDTH);
+        assert_eq!(
+            place.y1,
+            DISPLAY.y1 - POPOVER_MARGIN,
+            "its footprint reaches the display's margin"
+        );
+        assert!(
+            place.y0 <= caret.y0,
+            "raised only as far as its footprint needs to stay on the display"
+        );
 
         // With no room on the right of the caret, it opens on the left.
         let edge = Rect::new(1200.0, 300.0, 1202.0, 320.0);
@@ -883,7 +962,15 @@ mod tests {
         );
         let place = overlays.place(Slot::QuickSettings).expect("placed");
         assert_eq!(place.x0, caret.x1 + 6.0, "clear of the caret");
-        assert_eq!(place.y0, caret.y0, "level with it");
+        assert!(
+            place.y0 <= caret.y0,
+            "level with it, or raised only as far as its footprint needs"
+        );
+        assert_eq!(
+            place.height(),
+            POPOVER_HEIGHT,
+            "at the height the surface asks for"
+        );
     }
 
     #[test]
@@ -955,15 +1042,20 @@ mod tests {
             "and none from inside it"
         );
 
-        // The window menu stands where its own view draws it: nothing the
-        // session can judge, so nothing it closes.
+        // The window menu takes its place: one anchored surface at a time.
         overlays.open(Slot::WindowMenu, Some(Anchor::At(Point::new(40.0, 50.0))));
+        assert!(
+            !overlays.is_open(Slot::QuickSettings),
+            "the panel goes down for the menu the person just opened"
+        );
+        // And it stands where its own view draws it: nothing the session can
+        // judge, so nothing it closes.
         assert_eq!(overlays.place(Slot::WindowMenu), None);
         assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
         assert_eq!(
             overlays.press_outside(4.0, DISPLAY.y1 - 4.0),
-            Some(Slot::QuickSettings),
-            "the menu the session places, not the one its view does"
+            None,
+            "its view closes it, the session has no rect to judge"
         );
     }
 
@@ -1025,17 +1117,18 @@ mod tests {
         let overlays = overlays();
         assert!(overlays.entries().is_empty(), "nothing is up");
         overlays.open(Slot::QuickSettings, None);
-        overlays.open(Slot::WindowMenu, None);
+        overlays.open(Slot::Overview, None);
         let entries = overlays.entries();
         assert_eq!(
             entries.iter().map(|entry| entry.slot).collect::<Vec<_>>(),
-            vec![Slot::WindowMenu, Slot::QuickSettings]
+            vec![Slot::Overview, Slot::QuickSettings],
+            "the overview is the desk the panel stands over, not a second popup"
         );
-        let menu = &entries[0];
-        assert_eq!(menu.role, Role::Popup);
-        assert_eq!(menu.modality, Modality::WindowModal);
-        assert_eq!(menu.lifecycle, Lifecycle::Shown);
-        assert_eq!(menu.owner, Owner::Shell);
-        assert_eq!(overlays.target().as_str(), "overlay:window-menu");
+        let overview = &entries[0];
+        assert_eq!(overview.role, Role::Overlay);
+        assert_eq!(overview.modality, Modality::WindowModal);
+        assert_eq!(overview.lifecycle, Lifecycle::Shown);
+        assert_eq!(overview.owner, Owner::Shell);
+        assert_eq!(overlays.target().as_str(), "overlay:overview");
     }
 }

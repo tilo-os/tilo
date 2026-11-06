@@ -21,8 +21,8 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.tasks "Tasks"
 
 type Task {
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     due: Option<Date> = .none
     project: Option<Project> = .none
     /// Who is doing it.
@@ -39,7 +39,7 @@ type Task {
 }
 
 type Project {
-    name: Text (title)
+    name: Text
 }
 
 type Board {

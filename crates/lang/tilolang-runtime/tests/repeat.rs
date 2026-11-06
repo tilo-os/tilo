@@ -25,8 +25,8 @@ type Probe {
 
 type Every {
     due: Option<Date> = .none
-    weekly: std.Repeat (repeats: due) = std.Repeat("RRULE:FREQ=WEEKLY;INTERVAL=2")
-    lead: std.Reminder (reminds: due) = std.Reminder("PT9H")
+    weekly: std.Repeat = std.Repeat("RRULE:FREQ=WEEKLY;INTERVAL=2")
+    lead: std.Reminder = std.Reminder("PT9H")
 }
 
 root Probe

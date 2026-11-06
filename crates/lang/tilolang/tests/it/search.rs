@@ -8,8 +8,8 @@ use tilolang::{parse, print_module};
 
 const MAIL: &str = r#"/// A message in a mailbox.
 type Message {
-    subject: Text (title)
-    body: Text (body)
+    subject: Text
+    body: Text
     /// Who sent it.
     from: std.Identifier
     to: Set<std.Identifier>
@@ -31,12 +31,12 @@ type Message {
 
 /// A label a message can carry.
 type Label {
-    name: Text (title)
+    name: Text
 }
 
 /// A file attached to a message.
 type File {
-    name: Text (title)
+    name: Text
 }
 
 /// The messages of one account.
@@ -143,11 +143,11 @@ fn without_a_search_block_every_comparable_field_is_a_filter_and_the_first_time_
     let meta = compile_body(
         r"/// Something to do.
 type Todo {
-    title: Text (title)
+    title: Text
     done: Bool = false
     /// The day it is due by.
     due: Option<Date> = .none
-    notes: Text (body)
+    notes: Text
     tags: Set<Text>
     priority: Priority
     effort: Int
@@ -164,7 +164,7 @@ enum Priority {
 }
 
 type Person {
-    name: Text (title)
+    name: Text
 }",
     )
     .meta;
@@ -216,17 +216,17 @@ type Person {
 fn a_type_is_called_by_its_name() {
     let src = r"/// A mailbox.
 type Mailbox {
-    name: Text (title)
+    name: Text
 }
 
 /// A list of things to do.
 type TodoList {
-    name: Text (title)
+    name: Text
 }
 
 /// A box of entries.
 type Entry {
-    text: Text (title)
+    text: Text
 }";
     let meta = compile_body(src).meta;
     let nouns = |name: &str| {
@@ -237,9 +237,8 @@ type Entry {
     assert_eq!(nouns("TodoList"), ("todo list".into(), "todo lists".into()));
     assert_eq!(nouns("Entry"), ("entry".into(), "entries".into()));
     for line in ["noun \"person\" \"people\"", "primary name == \"Inbox\""] {
-        let body = format!(
-            "type Box {{\n    name: Text (title)\n\n    search {{\n        {line}\n    }}\n}}"
-        );
+        let body =
+            format!("type Box {{\n    name: Text\n\n    search {{\n        {line}\n    }}\n}}");
         let err = match compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]) {
             Ok(_) => String::new(),
             Err(diags) => diags
@@ -271,7 +270,7 @@ fn first_message(body: &str) -> String {
 fn a_bad_declaration_is_an_error_that_names_the_type_by_its_doc() {
     let ty = |search: &str| {
         format!(
-            "/// Something to do.\ntype Todo {{\n    title: Text (title)\n    done: Bool = false\n    due: Option<Date> = .none\n    tags: Set<Text>\n    owner: Option<Todo>\n\n    search {{\n{search}\n    }}\n}}"
+            "/// Something to do.\ntype Todo {{\n    title: Text\n    done: Bool = false\n    due: Option<Date> = .none\n    tags: Set<Text>\n    owner: Option<Todo>\n\n    search {{\n{search}\n    }}\n}}"
         )
     };
     let cases = [
@@ -389,7 +388,7 @@ fn an_identifier_is_held_as_its_uri_from_a_literal_checked_when_compiled() {
 
 const TODOS: &str = r#"/// Something to do.
 type Todo {
-    title: Text (title)
+    title: Text
     done: Bool = false
     due: Option<Date> = .none
     status: Status
@@ -540,7 +539,7 @@ fn a_named_filter_compares_a_field_with_the_time_it_is_asked_at() {
     let meta = compile_body(
         r#"/// Something to do.
 type Todo {
-    title: Text (title)
+    title: Text
     done: Bool = false
     due: Option<Date>
     seen: Option<Time>
@@ -623,8 +622,8 @@ type Todos {
 
 const PLACES: &str = r#"/// A thing to do.
 type Task {
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     due: Option<Date> = .none
     project: Option<Project> = .none
 
@@ -640,7 +639,7 @@ type Task {
 
 /// What tasks are filed under.
 type Project {
-    name: Text (title)
+    name: Text
     tasks: Collection<Task>
 }
 
@@ -726,7 +725,7 @@ fn a_filter_takes_the_option_icon() {
     let unknown = first_message(
         r"/// Something to do.
 type Todo {
-    title: Text (title)
+    title: Text
     done: Bool = false
 
     search {
@@ -746,7 +745,7 @@ fn a_field_is_read_as_the_field_it_is_whatever_it_is_called() {
     let meta = compile_body(
         r#"/// A thing to do.
 type Task {
-    title: Text (title)
+    title: Text
     inbox: Bool = false
 
     search {
@@ -774,8 +773,8 @@ type Task {
 const MEMBERS: &str = r"
 /// A task someone does.
 type Task {
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     /// Who is doing it.
     assignee: Option<Principal> = .none
 }
@@ -819,8 +818,8 @@ fn a_named_filter_reads_the_person_it_is_asked_for() {
         "{MEMBERS}
 /// What the people of a workspace hold between them.
 type Shared {{
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     /// Who is doing it.
     assignee: Option<Principal> = .none
 
@@ -876,7 +875,7 @@ fn the_member_filter_is_declared_once_or_hidden_away() {
     let meta = compile_body(&format!(
         "{MEMBERS}
 type Named {{
-    title: Text (title)
+    title: Text
     /// Who is doing it.
     assignee: Option<Principal> = .none
 
@@ -900,7 +899,7 @@ type Named {{
     let meta = compile_body(&format!(
         "{MEMBERS}
 type Quiet {{
-    title: Text (title)
+    title: Text
     /// Who is doing it.
     assignee: Option<Principal> = .none
 

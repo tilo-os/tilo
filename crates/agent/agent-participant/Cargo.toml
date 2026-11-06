@@ -23,13 +23,12 @@ chrono.workspace = true
 # (`{{…|match:INV-\d+}}`): matched in linear time, compiled size bounded.
 regex.workspace = true
 tilo-actions = { path = "../../collab/actions" }
+# A report's authenticated transport and the signed receipt an agent's
+# participant answers for.
+tilo-feedback-transport = { path = "../../collab/feedback-transport" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.
 tilo-automation = { path = "../../collab/automation" }
-# Purpose-specific receipt validation; app projection remains confined. An
-# agent's participant has no screen, so it links the desktop without the
-# surface's remote-window viewer.
-tilo-desktop = { path = "../../session/desktop", default-features = false }
 # `apps/agent`'s model planner: action discovery tools over a catalogue, and
 # the chooser that asks through tilo-model-gateway.
 agent = { path = "../../../apps/agent" }

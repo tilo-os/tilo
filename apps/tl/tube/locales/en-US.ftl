@@ -182,7 +182,7 @@ d-s334bmn6 = Resume
     .doc = Plays the video from where the person left off, when they did not finish it.
 
 d-jxokfijg = Progress
-    .doc = Records how far into the video the person is — and that they watched it now: it moves to the front of the history — and asks the service for the address its bytes play from when that is not known yet.
+    .doc = Records how far into the video the person is. It also says they watched it now, so it moves to the front of the history, and asks the service for the address its bytes play from when that is not known yet.
 
 d-oqumfxkj = Delete from history
     .doc = Takes one video out of the history.

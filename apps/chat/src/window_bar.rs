@@ -65,7 +65,8 @@ impl ChatApp {
             };
             actions.push(
                 self.bar_entries
-                    .entry(icon, crate::i18n::t(label), Hit::CallMute),
+                    .entry(icon, crate::i18n::t(label), Hit::CallMute)
+                    .on(self.call.muted),
             );
             // Hearing the call, beside speaking into it: in the menu, so
             // the row keeps the call, its microphone and Leave.

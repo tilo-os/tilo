@@ -299,7 +299,18 @@ fn switching_tabs_asks_the_shell() {
 #[test]
 fn the_agents_tab_lists_agents_and_bots_apart() {
     let mut app = staged("agents");
-    for text in ["2 agents", "claude", "Encrypted backup", "Bots", "Standup"] {
+    for text in [
+        "3 agents",
+        "Claude",
+        "Yours",
+        "Can read and change, asks before acting outside",
+        "Model: Sonnet from Anthropic",
+        "Reviewer",
+        "Encrypted backup",
+        "Reads encrypted content",
+        "Bots",
+        "Standup",
+    ] {
         assert!(says(&mut app, text), "{text:?} is shown");
     }
     let mut empty = staged("agents-empty");
@@ -310,15 +321,34 @@ fn the_agents_tab_lists_agents_and_bots_apart() {
 fn agent_and_bot_controls_name_what_they_act_on() {
     let (mut app, seat) = seated("agents");
     press(&mut app, "ws-agents-review-claude");
+    // A press with no name asks nothing: there is no agent to make.
+    press(&mut app, "ws-agents-add");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::ReviewAgent {
+            agent: "claude".to_owned()
+        }],
+        "only the review was asked"
+    );
+    app.harness()
+        .perform_named(
+            "ws-agents-name",
+            &A11yAction::SetValue("Analyst".to_owned()),
+        )
+        .unwrap();
+    app.settle();
+    assert!(
+        says(&mut app, "Name a new agent"),
+        "the field invites the agent's name"
+    );
     press(&mut app, "ws-agents-add");
     press(&mut app, "ws-bots-add");
     assert_eq!(
         seat.take_asked(),
         [
-            WorkspaceSettingsEffect::ReviewAgent {
-                agent: "claude".to_owned()
+            WorkspaceSettingsEffect::AddAgent {
+                name: "Analyst".to_owned()
             },
-            WorkspaceSettingsEffect::AddAgent,
             WorkspaceSettingsEffect::AddBot,
         ]
     );
@@ -349,34 +379,40 @@ fn a_requested_bot_is_removed_here_and_a_hosts_bot_is_not() {
 fn an_agent_review_shows_its_answers_model_and_exceptions() {
     let mut app = staged("agent-review");
     for text in [
+        "Can read and change, asks before acting outside",
         "Notes",
         "Calendar",
         "Ask first",
-        "Sonnet (Anthropic)",
+        "Set here",
+        "Sonnet from Anthropic",
         "Notes: Delete for good",
+        "Retire",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
     }
 }
 
+/// Every app shows its answers as choices, with no text to open them first.
 #[test]
-fn a_closed_app_lists_each_answer_as_its_own_fact() {
-    // Notes is open in this scenario; Calendar is the closed one.
+fn every_app_offers_each_answer_as_a_choice() {
     let mut app = staged("agent-review");
-    for text in [
-        "Reading: Allow",
-        "Changes: Allow",
-        "Outside effects: Ask first",
+    for name in [
+        "Notes Reading",
+        "Notes Changes",
+        "Notes Outside effects",
+        "Calendar Reading",
+        "Calendar Changes",
+        "Calendar Outside effects",
     ] {
         assert!(
-            app.harness()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.label() == Some(text)),
-            "{text:?} is a fact of its own"
+            app.harness().a11y_node_named(name).is_some(),
+            "{name:?} is offered without opening anything"
         );
     }
-    assert!(!says(&mut app, " · "), "no answers are joined with a glyph");
+    assert!(
+        !says(&mut app, "Reading:"),
+        "no answer is listed as text beside its control"
+    );
 }
 
 #[test]
@@ -391,14 +427,13 @@ fn in_a_review_escape_goes_back_to_the_agents() {
 #[test]
 fn a_review_asks_for_answers_models_and_resets_by_key() {
     let (mut app, seat) = seated("agent-review");
-    press(&mut app, "ws-agent-app-so.tilo.notes");
     press(&mut app, "ws-agent-reset-so.tilo.notes");
     press(
         &mut app,
         "ws-agent-stop-so.tilo.notes/notes.notebook/delete-outside",
     );
-    press(&mut app, "ws-agent-models");
     press(&mut app, "ws-agent-use-");
+    press(&mut app, "ws-agent-retire");
     assert_eq!(
         seat.take_asked(),
         [
@@ -416,8 +451,47 @@ fn a_review_asks_for_answers_models_and_resets_by_key() {
                 agent: "claude".to_owned(),
                 model: String::new(),
             },
+            WorkspaceSettingsEffect::RemoveAgent {
+                agent: "claude".to_owned(),
+            },
         ]
     );
+}
+
+/// The model an agent plans with is its keeper's to choose: a review someone
+/// else opens says who chooses and offers no Use.
+#[test]
+fn a_review_offers_the_model_to_the_agents_keeper_alone() {
+    let mut settings = staged_settings("agent-review");
+    let models = settings
+        .agents
+        .review
+        .as_mut()
+        .expect("a review")
+        .models
+        .as_mut()
+        .expect("the agent's models");
+    models.can_choose = false;
+    models.note = Some("Only Ada chooses the model it runs on".to_owned());
+    let seat = WorkspaceSettingsSeat::default();
+    seat.show(settings);
+    seat.presentation().open(false);
+    let mut app =
+        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat).unwrap();
+    app.harness().resize(VIEWPORT).unwrap();
+    app.settle();
+
+    assert!(
+        says(&mut app, "Only Ada chooses the model it runs on"),
+        "the review says who chooses"
+    );
+    let uses = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.label() == Some("Use"))
+        .count();
+    assert_eq!(uses, 0, "no model is offered to someone who is not keeper");
 }
 
 #[test]

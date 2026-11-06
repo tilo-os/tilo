@@ -2,16 +2,16 @@ app so.tilo.lang.board "Board" (icon: .layout_grid, category: .office)
 
 /// A card: one thing to get done, with notes, in one column of the board.
 type Card {
-    title: Text (title)
-    notes: Text (body)
+    title: Text
+    notes: Text
     /// The column it was in, before cards were kept in their columns.
-    column: Column (previously)
+    column: Column
 }
 
 /// A column of the board: a stage the cards go through, such as "Doing", with its cards in
 /// order.
 type Column {
-    title: Text (title)
+    title: Text
     cards: Collection<Card>
 }
 
@@ -19,7 +19,7 @@ type Column {
 type Board {
     columns: Collection<Column>
     /// Every card, before cards were kept in their columns.
-    cards: Collection<Card> (previously)
+    cards: Collection<Card>
 }
 
 root Board

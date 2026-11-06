@@ -303,10 +303,11 @@ impl Authority for TiloAuthority {
             (None, _, _) => Party::default().owning(TreePath::root()),
         };
         let delegation = match (agent, person) {
-            (Some(_), Some(person)) => Some(roles::agent_delegation(
+            (Some(_), Some(person)) => Some(roles::agent_turn(
                 workspace,
                 agent_id(&invoker.0),
                 person,
+                &[],
             )),
             _ => None,
         };

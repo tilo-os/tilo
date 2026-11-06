@@ -302,17 +302,17 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "said",
                 "Text",
                 "The change in words a sentence goes on with (`moved this to`, `assigned this \
-                 to`), decided by the field's role and type and by what it held before and \
-                 after, from the words the platform keeps; empty when the field reads as \
-                 nothing of its own. Who made it stands in the version, not in each change; a \
-                 change after the first of its version opens with `and`.",
+                 to`), decided by the field's type and by what it held before and after, from \
+                 the words the platform keeps; empty when the field reads as nothing of its \
+                 own. Who made it stands in the version, not in each change; a change after \
+                 the first of its version opens with `and`.",
             ),
             (
                 "shows",
                 "Text",
-                "Which of the two values the words speak of: `after` (`renamed this to`), \
+                "Which of the two values the words speak of: `after` (`assigned this to`), \
                  `before` (`moved this out of`), or empty when they speak of neither \
-                 (`completed this`).",
+                 (`unassigned this`).",
             ),
         ],
     },
@@ -402,7 +402,7 @@ pub const VALUE_TYPES: &[ValueType] = &[
             (
                 "title",
                 "Text",
-                "Its title: its field marked `title`; else the first line of its field marked `body`; else its app's title for a root, or its type's name.",
+                "Its title: the first line of its first text field; else its app's title for a root, or its type's name.",
             ),
             (
                 "type_name",
@@ -541,8 +541,6 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
         merge: MergeKind::Register,
         doc: doc.to_string(),
         default: None,
-        role: None,
-        derived: None,
     }
 }
 
@@ -609,8 +607,6 @@ pub fn host_meta() -> PackageMeta {
                         merge: MergeKind::Register,
                         doc: (*doc).to_string(),
                         default: None,
-                        role: None,
-                        derived: None,
                     })
                     .collect(),
                 search: crate::meta::SearchMeta::default(),

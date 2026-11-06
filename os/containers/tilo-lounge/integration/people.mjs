@@ -305,7 +305,7 @@ try {
   // A opens the Lounge's chat the way a person does — search, the app's name,
   // Enter — and writes in it: the hello lands in B's.
   await search(a.tab, a.command, 'chat', 'Chat');
-  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Chat')`,
+  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => (entry.label ?? '').toLowerCase() === 'chat')`,
     "A's own chat window", 120_000);
   await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer')`,
     "A's chat composer", 120_000);
@@ -356,9 +356,23 @@ try {
   console.log('ok: each desk shows the other person here');
 
   // Nothing failed in either page.
-  const errors = [...a.tab.log, ...b.tab.log].filter(line => /^EXC/.test(line) || /panic/i.test(line));
+  const both = [...a.tab.log, ...b.tab.log];
+  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
   report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10)};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
+
+  // The desk one person arranged is the desk the other shows: neither page's
+  // write of the shared desktop was refused.
+  const refused = both.filter(line => /the workspace refused a change/.test(line));
+  report.refused = refused;
+  if (refused.length) failed(`a page's change was refused: ${refused.slice(0, 5).join('; ')}`);
+  // A frame repainted in part must leave no stale pixel. A page built with the
+  // retained-frame check says so where it happens; the check also says when it
+  // could not read its two frames back. Both are reported: the pages' frames
+  // are compared here, so a run that sees them says what it saw rather than
+  // hiding it, and a check that cannot compare on the web is visible too.
+  report.mismatched = both.filter(line => /retained frame differs from a full render/.test(line));
+  report.unreadable = both.filter(line => /could not read a frame back/.test(line));
 
   writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

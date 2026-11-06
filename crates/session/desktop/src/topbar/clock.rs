@@ -23,12 +23,20 @@ impl TopBarChrome {
     /// release the reclaimed lane to the workspace identity below that
     /// point. The lower bound still leaves enough room for the clock and its
     /// three position dots at the large-text setting.
-    pub(super) fn center_band_width(&self, theme: &Theme) -> f64 {
+    pub(super) fn center_band_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
         if self.rect.width() < NARROW_MENU_BAR_PX {
             // A phone-wide bar keeps the time and gives the rest of the
-            // lane to the workspace name and the people beside it.
-            return 64.0 + text_headroom;
+            // lane to the workspace name and the people beside it. A live
+            // activity's pill stands on its own reading, so the lane grows
+            // around it and the name beside it yields: the selector's lift
+            // stays behind the text it belongs to.
+            let clock = 64.0 + text_headroom;
+            if self.center_pill().is_empty() {
+                return clock;
+            }
+            let reading = self.pill_reading_width(theme, text);
+            return reading.max(clock).min(self.rect.width() / 2.0);
         }
         let min_width = (220.0 + text_headroom).min(260.0);
         (self.rect.width() - 580.0).clamp(min_width, 360.0)
@@ -63,7 +71,7 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         center_y: f64,
     ) -> f64 {
-        let lane_w = self.center_band_width(theme);
+        let lane_w = self.center_band_width(theme, text_renderer);
         let target_w = self.center_pill_width(theme, text_renderer, lane_w);
         let now = ui::time::now();
         if (self.center_lane.width() - lane_w).abs() > 0.5 {
@@ -205,6 +213,15 @@ impl TopBarChrome {
         if self.activity_is_visible() {
             return lane_w;
         }
+        self.pill_reading_width(theme, text).min(lane_w)
+    }
+
+    /// The width a pill needs around its reading: the reading at the weight it
+    /// draws at, the dots of the activities waiting behind it, and the
+    /// selector's inset on either side. The reading is measured with every
+    /// digit set as the widest one, so the target does not change width second
+    /// to second.
+    pub(super) fn pill_reading_width(&self, theme: &Theme, text: &mut TextRenderer) -> f64 {
         let style = theme
             .tokens
             .typography
@@ -232,7 +249,7 @@ impl TopBarChrome {
         let pill = self.center_pill();
         let dots = ui::num::f64_of_usize(pill.more) * DOT_PITCH;
         let art = pill.artwork().map_or(0.0, |_| PILL_ART + PILL_ART_GAP);
-        (f64::from(width) + art + dots + 2.0 * CENTER_INSET_PX).min(lane_w)
+        f64::from(width) + art + dots + 2.0 * CENTER_INSET_PX
     }
 
     pub(super) fn draw_clock_widget(

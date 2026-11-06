@@ -131,12 +131,6 @@ fn fixtures_are_canonical() {
 }
 
 #[test]
-fn a_derived_key_prints_the_way_it_is_written() {
-    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n    done: Bool\n    parent: Option<Item> (parent) = .none\n    derive finished: Bool = children.all(finished) and (done or children.count > 0)\n    derive folded: Bool = finished and parent.all(folded)\n    derive subtasks: Int = children.count\n}\n\nroot Item\n";
-    assert_eq!(print_of(src), src);
-}
-
-#[test]
 fn precedence_and_parentheses_survive() {
     let src = "app t.x \"X\"\n\nfn f(a: Int, b: Int) -> Int {\n    return (a + b) * (a - b) / -(a % b)\n}\n";
     assert_eq!(print_of(src), src);
@@ -144,7 +138,7 @@ fn precedence_and_parentheses_survive() {
 
 #[test]
 fn a_parameter_marker_prints_as_it_is_written() {
-    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text (title)\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n";
+    let src = "app t.x \"X\"\n\ntype Item {\n    title: Text\n}\n\naction move(i: Item, above: Option<Item> (above)) {\n    i.title = \"x\"\n}\n";
     assert_eq!(print_of(src), src);
 }
 
@@ -194,8 +188,8 @@ fn every_declaration_and_ui_call_has_an_id_and_a_span() {
 const NATIVE: &str = r#"app so.tilo.notes "Notes" (icon: .file_text, category: .office)
 
 type Note {
-    title: Text (title)
-    body: Text merge text (body) = ""
+    title: Text
+    body: Text merge text = ""
     pinned: Bool = false
 }
 

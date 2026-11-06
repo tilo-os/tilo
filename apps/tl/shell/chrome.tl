@@ -133,7 +133,7 @@ type BarPart {
     /// What the part is; the bar draws it from this, so a part moved is a part the same.
     slot: Slot = .menu
     /// Its name on the bar, and in the settings.
-    title: Text (title)
+    title: Text
     /// Whether it shows on the bar; a part off keeps its place in the record.
     shown: Bool = true
 }
@@ -141,7 +141,7 @@ type BarPart {
 /// One thing on the dock: a pinned app or resource, the launcher, or an app running now.
 type DockItem {
     /// What the item stands for: an app id, or a resource's reference as text.
-    key: Text (title)
+    key: Text
     /// Its name on the dock, and what assistive technology reads.
     title: Text
     /// The glyph it shows, by the platform icon's kebab-case name.
