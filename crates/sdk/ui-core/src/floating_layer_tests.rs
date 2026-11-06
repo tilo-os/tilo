@@ -345,6 +345,24 @@ fn a_phone_keeps_its_cards_in_the_pill_until_the_person_expands_one() {
     assert_eq!(expanded.folded.len(), 1, "the rest wait in the pill");
 }
 
+/// A phone stands the card its app presents before that card's window is up:
+/// the place the layer gives it is what brings the window up, so waiting for
+/// the window first would leave the activity in the pill forever.
+#[test]
+fn a_phone_stands_the_card_its_app_presents_before_its_window_is_up() {
+    let placement = screen(420.0, 800.0);
+    let mut held = cards(&[activity(Kind::Call, "call"), activity(Kind::Timer, "tea")]);
+    held[0].size = Some(Size::new(376.0, 256.0));
+    let layer = place(&placement, Corner::BottomRight, &held, false);
+    let card = layer.cards.first().expect("the app's card stands");
+    assert_eq!(card.activity(), "call");
+    assert!(
+        (card.rect.width() - (placement.work.width() - 2.0 * EDGE_INSET)).abs() < 0.5,
+        "the card is as wide as the work area"
+    );
+    assert_eq!(layer.folded.len(), 1, "the rest wait in the pill");
+}
+
 /// A dragged card stays where the person left it, clamped inside the work
 /// area with a strip they can grab, and never under the bar.
 #[test]

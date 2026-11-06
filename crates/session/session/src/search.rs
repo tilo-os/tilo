@@ -51,8 +51,11 @@ use ui::search::Scope;
 /// The action host as the session's search reaches it: what open apps
 /// publish and run, and running what is chosen by address.
 pub trait AppActions {
-    /// What open apps publish through the action host, by app and workspace.
-    fn published(&self) -> Vec<PublishedActions>;
+    /// What the apps publish through the action host, by app and workspace:
+    /// those open now and those that closed after publishing, which a chosen
+    /// row starts again. `workspace` narrows it to one workspace, and the
+    /// empty string asks for every workspace's.
+    fn published(&self, workspace: &str) -> Vec<PublishedActions>;
     /// The invocations the action host follows for the person.
     fn jobs(&self) -> Vec<JobEntry>;
     /// Run the action `target` names with `arguments`; an app's own action
@@ -349,7 +352,7 @@ impl SessionSearch {
         }];
         if let Some(apps) = &self.apps {
             sources.push(Box::new(Jobs(apps.jobs())));
-            published.extend(apps.published());
+            published.extend(apps.published(""));
         }
         sources.push(Box::new(tilo_desktop_search::providers::Captures(
             published.clone(),
@@ -497,10 +500,8 @@ impl SessionSearch {
         workspace: &str,
         target: Target,
         own: &mut dyn FnMut(&InvokeTarget) -> Result<(), DoorError>,
-    ) {
-        if let Err(error) = self.perform_checked(workspace, target, own) {
-            tracing::warn!(%error, "search row not carried out");
-        }
+    ) -> Result<(), DoorError> {
+        self.perform_checked(workspace, target, own)
     }
 
     /// [`Self::perform`], saying whether it was carried out: a caller that
@@ -735,7 +736,9 @@ impl SearchHost for SessionSearch {
         }];
         if let Some(apps) = &self.apps {
             sources.push(Arc::new(Jobs(apps.jobs())));
-            published.extend(apps.published());
+            // A search over one workspace offers that workspace's actions;
+            // one that reaches everywhere offers every workspace's.
+            published.extend(apps.published(if scope.everywhere() { "" } else { workspace }));
         }
         SearchHostFeed {
             applications: kept.lists.applications.clone(),
@@ -940,7 +943,7 @@ mod tests {
     }
 
     impl AppActions for Opening {
-        fn published(&self) -> Vec<PublishedActions> {
+        fn published(&self, _: &str) -> Vec<PublishedActions> {
             Vec::new()
         }
 

@@ -198,8 +198,8 @@ impl View<'_> {
             return Ok(vec![(key, id.to_owned())]);
         };
         let schema = lookup(ty).ok_or(IndexError::Corrupt)?;
-        let spec = schema.column_for(column).ok_or(IndexError::Corrupt)?;
-        let mut values = self.column_values(&path, schema, &spec)?;
+        let spec = schema.column(column).ok_or(IndexError::Corrupt)?;
+        let mut values = self.column_values(&path, schema, spec)?;
         if let Some(held) = self.snapshot.text(&path, &column_field(column))? {
             values.extend(held.split(super::columns::SEP).map(str::to_owned));
         }
@@ -278,7 +278,7 @@ impl View<'_> {
         pred: &Pred,
     ) -> Result<bool, StoreError> {
         pred.eval(&mut |read: &FieldRead| -> Result<Lit, StoreError> {
-            let Some((spec, person)) = schema.field_of(&read.spec.id) else {
+            let Some(spec) = schema.field(&read.spec.id) else {
                 return read.lit(FieldValue::Absent);
             };
             let value = if spec.kind == MergeKind::Collection {
@@ -287,7 +287,7 @@ impl View<'_> {
             } else {
                 self.item_value(path, spec).map_err(index_error)?
             };
-            read.lit(crate::reads::for_person(spec, value, person))
+            read.lit(value)
         })
     }
 
@@ -419,7 +419,7 @@ impl View<'_> {
 
     /// The resource at `path` as [`Self::every_text`] lists it, read through the open writes:
     /// none when it is gone or holds no text.
-    fn texts_at(&self, path: &str) -> Result<Option<Texts>, IndexError> {
+    pub fn texts_at(&self, path: &str) -> Result<Option<Texts>, IndexError> {
         let Some(schema) = self.type_of(path)?.as_deref().and_then(lookup) else {
             return Ok(None);
         };

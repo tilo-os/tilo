@@ -215,35 +215,6 @@ pub enum TreeMove {
     Outdent,
 }
 
-impl TreeMove {
-    pub(crate) const ALL: [Self; 4] = [Self::Up, Self::Down, Self::Indent, Self::Outdent];
-
-    pub(crate) fn token(self) -> &'static str {
-        match self {
-            Self::Up => "up",
-            Self::Down => "down",
-            Self::Indent => "indent",
-            Self::Outdent => "outdent",
-        }
-    }
-
-    pub(crate) fn from_token(token: &str) -> Option<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|movement| movement.token() == token)
-    }
-
-    /// The FTL key naming this move for assistive technology.
-    pub(crate) fn label_key(self) -> &'static str {
-        match self {
-            Self::Up => "tree-move-up",
-            Self::Down => "tree-move-down",
-            Self::Indent => "tree-move-indent",
-            Self::Outdent => "tree-move-outdent",
-        }
-    }
-}
-
 impl<M: ListModel> VirtualList<M> {
     /// The rows stand as a tree: each under the row of the item it names as its parent, indented
     /// by the rows over it, with a disclosure on the rows that have subtasks, folding them away

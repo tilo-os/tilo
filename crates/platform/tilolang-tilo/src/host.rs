@@ -23,7 +23,7 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    InvokeOutcome, ModuleHash, PackageId, Principal, Reading, Runtime, RuntimeError, StoreError,
+    InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError, StoreError,
     ViewInstance,
 };
 
@@ -143,7 +143,7 @@ pub(crate) struct HostInner {
     authority: TiloAuthority,
     viewer: Principal,
     packages: RefCell<Vec<Package>>,
-    /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
+    /// Suggestions an agent's code raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
@@ -588,21 +588,16 @@ impl HostInner {
         };
     }
 
-    /// Whether the action `action` can run on the published resource `resource` now: the
-    /// requirements its subject alone decides, as its app says them, in the person at the
-    /// window's eyes. `None` when the app keeps none, or when one of them cannot be read.
+    /// Whether the action `action` can run on the published resource `resource` now: whether it
+    /// can apply to it where a view offers it at all, and the requirements its subject alone
+    /// decides, as its app says them, in the person at the window's eyes. `None` when the app
+    /// keeps neither, or when one cannot be read.
+    ///
+    /// Asked of the one resource a caller names, when it names it: an action directory answers
+    /// the rows it is asked for, an invoked action is refused before it runs, and a window
+    /// published the answer for what it shows, so no surface carries a condition's answer for
+    /// every item it holds.
     fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
-        self.availability_reading(resource, action)
-            .map(|(availability, _)| availability)
-    }
-
-    /// Whether the action `action` can run on `resource` now, and what reading that read of the
-    /// workspace: what a caller keeps to know when to ask again ([`Reading`]).
-    fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
         let package = self
             .packages
             .borrow()
@@ -610,7 +605,7 @@ impl HostInner {
             .find(|package| package.meta.actions.iter().any(|held| held.id == action))
             .cloned()?;
         let meta = package.meta.actions.iter().find(|held| held.id == action)?;
-        if !meta.guard {
+        if !meta.guard && !meta.applies {
             return None;
         }
         let declared = package.meta.subject_of(&meta.params)?;
@@ -618,17 +613,29 @@ impl HostInner {
             .strip_prefix(&crate::publish::resource_id(&package.meta.app, ""))
             .unwrap_or(resource);
         let target = ResourceRef::parse_id(id, declared.id.clone())?;
+        // Where the action cannot apply at all, the offer leaves it out: that reason is the
+        // answer, before what it needs to run.
+        let decided = |reason: Option<String>| match reason {
+            Some(reason) => Some(tilo_actions::Availability::Unavailable {
+                code: "unmet".to_owned(),
+                reason,
+            }),
+            None => Some(tilo_actions::Availability::Available),
+        };
+        if meta.applies {
+            match self.runtime.applies_reading(action, &target, &self.viewer) {
+                Ok((Some(reason), _)) => return decided(Some(reason)),
+                Ok((None, _)) => {}
+                // A condition that cannot be read says nothing of the action: it is offered,
+                // and refuses with its reason when it runs.
+                Err(_) => return None,
+            }
+        }
+        if !meta.guard {
+            return decided(None);
+        }
         match self.runtime.refusal_reading(action, &target, &self.viewer) {
-            Ok((Some(reason), read)) => Some((
-                tilo_actions::Availability::Unavailable {
-                    code: "unmet".to_owned(),
-                    reason,
-                },
-                read,
-            )),
-            Ok((None, read)) => Some((tilo_actions::Availability::Available, read)),
-            // A requirement that cannot be read says nothing of the action: it is offered, and
-            // refuses with its reason when it runs.
+            Ok((reason, _)) => decided(reason),
             Err(_) => None,
         }
     }
@@ -641,6 +648,15 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
+        // A requirement is the app's, and the app is what can read it: an action published
+        // while its rule held, or one an agent addresses by name, is refused here, before it
+        // runs, with its rule's reason.
+        if let Some(subject) = request.resource
+            && let Some(tilo_actions::Availability::Unavailable { reason, .. }) =
+                self.availability(subject, request.action_id)
+        {
+            return Err(reason);
+        }
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
@@ -704,6 +720,7 @@ impl HostInner {
                 at: None,
                 from: request.from.cloned(),
                 suggested_by: None,
+                count: 1,
             },
             edits: Vec::new(),
         };
@@ -949,7 +966,7 @@ impl Host {
         self.inner.admit_agent(caller);
     }
 
-    /// The next suggestion an agent's flow raised, for the window to ask a person about.
+    /// The next suggestion an agent's code raised, for the window to ask a person about.
     #[must_use]
     pub fn take_suspended(&self) -> Option<tilolang_runtime::Suggestion> {
         self.inner.suspended.borrow_mut().pop_front()
@@ -984,10 +1001,22 @@ impl Host {
             .map_err(|error| error.to_string())
     }
 
-    /// The runtime, for flows, blocks and the catalogue.
+    /// The runtime, for blocks, programs and the catalogue.
     #[must_use]
     pub fn runtime(&self) -> &Runtime {
         &self.inner.runtime
+    }
+
+    /// Tell the host the Rust views this process declares, so a place showing a resource of one
+    /// of their types draws that app's view, exactly as it draws a tilolang package's view
+    /// (one-app-model.md §2). Everything a `#[view]` linked into this process declared
+    /// ([`crate::views::DeclaredViews`]).
+    pub fn declare_rust_views(&self) {
+        if !tilo_view::ViewRegistry::is_empty() {
+            self.inner
+                .runtime
+                .set_rust_views(std::rc::Rc::new(crate::views::DeclaredViews));
+        }
     }
 
     #[must_use]
@@ -1007,17 +1036,6 @@ impl Host {
     #[must_use]
     pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
         self.inner.availability(resource, action)
-    }
-
-    /// As [`Host::availability`], with what reading the requirement read: the resources it read,
-    /// so a caller keeping the answer knows what has to move for it to be read again.
-    #[must_use]
-    pub fn availability_reading(
-        &self,
-        resource: &str,
-        action: &str,
-    ) -> Option<(tilo_actions::Availability, Reading)> {
-        self.inner.availability_reading(resource, action)
     }
 
     /// The resource `action` returned when the person last ran it here, once: a window opens
@@ -1390,21 +1408,29 @@ impl Host {
         ran
     }
 
+    /// Run what the packages declare comes due at `now` (seconds since the epoch): each
+    /// trigger, for each record of its type, as the app's own invocation
+    /// ([`crate::authority::trigger_principal`]), whose change records in the same edit what
+    /// the trigger last did for the record. Only the workspace's origin calls it
+    /// (`Instance::sync`), so a trigger runs once across the workspace's devices; a run the
+    /// devices missed while all were off runs once when one comes up. Returns how many ran.
+    pub fn run_triggers(&self, now: i64) -> usize {
+        crate::triggers::run(self, now)
+    }
+
+    /// The next instant strictly after `now` at which a trigger has something to run: what the
+    /// host waits for, so nothing polls for it. `None` when no trigger will come due again.
+    #[must_use]
+    pub fn next_trigger(&self, now: i64) -> Option<i64> {
+        crate::triggers::next(self, now)
+    }
+
     /// Whether the resource `doc` holds anything in the fields `previously` (none: whether it
     /// may hold what an earlier version wrote, which only the migration can tell).
     fn holds_previously(&self, doc: &str, previously: &[&str]) -> bool {
-        if previously.is_empty() {
-            return true;
-        }
-        let Ok(record) = self.inner.store.record(doc) else {
-            return false;
-        };
-        let Ok(empty) = crate::record::DynRecord::empty(record.schema()) else {
-            return false;
-        };
-        previously
-            .iter()
-            .any(|field| record.get(field) != empty.get(field))
+        // Read from the record's own map: a record of ten thousand items is not built to
+        // learn whether one field a migration replaces was ever written.
+        self.inner.store.holds_any(doc, previously)
     }
 
     /// Open the window of `app`'s root resource, through the default view of its type: its

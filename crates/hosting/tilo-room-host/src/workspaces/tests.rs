@@ -628,15 +628,34 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     assert!(GovernedWorkspace::open(workspace.path.clone(), &cert, None).is_err());
 }
 
+/// A workspace is restored by the device that governs it, which the record
+/// holds by its key, what its certificate lets it do and how long it lasts: a
+/// certificate's label is a name, so a host that renamed its own certificate
+/// starts on the workspaces it served, while another device — another key, or
+/// one the person granted more — is refused.
 #[test]
-fn a_room_is_only_restored_by_its_governor() {
+fn a_workspace_is_restored_by_its_governing_device_and_no_other() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let created =
         GovernedWorkspace::create(dir.path(), "Team", &cert, &key, None, SystemTime::now())
             .unwrap();
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let mut renamed = cert.clone();
+    renamed.device_label = "workspace host".into();
+    sign_device_cert(&mut renamed, &root).unwrap();
+    let restored = GovernedWorkspace::open(created.path.clone(), &renamed, None).unwrap();
+    assert_eq!(restored.record.name, "Team");
+
+    let mut granted_more = renamed.clone();
+    granted_more.capabilities = DeviceCapabilities::primary();
+    sign_device_cert(&mut granted_more, &root).unwrap();
+    assert!(GovernedWorkspace::open(created.path.clone(), &granted_more, None).is_err());
+
+    let other_key = SigningKey::from_bytes(&[3; 32]);
     let mut other = cert;
-    other.device_label = "someone else".into();
+    other.device_public_key = other_key.verifying_key().to_bytes();
+    sign_device_cert(&mut other, &root).unwrap();
     assert!(GovernedWorkspace::open(created.path, &other, None).is_err());
 }
 

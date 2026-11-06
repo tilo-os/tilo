@@ -604,6 +604,11 @@ export async function mountDesktop(target,options={}) {
       acknowledge:text=>{if(active()&&runtime.desktop_acknowledge)runtime.desktop_acknowledge(id,String(text));},
       // Who the desktop shows as here (`[{id, label, agent}]`, one row per person), or null for a single app.
       people:()=>{const shown=active()&&runtime.desktop_here_people?.(id);return shown?JSON.parse(shown):null;},
+      // What the workspace's live layer says of itself: whether it is live,
+      // this page's publisher in it, the members it reads, and the publisher's
+      // own counters and last publish error (`{state, publisher, members,
+      // stats}`), or null for a mount with no layer.
+      live:()=>{const layer=liveLayer();return layer?{state:layer.state,publisher:layer.publisherId,members:layer.members(),stats:layer.stats?.()}:null;},
       // The workspace's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
       pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.

@@ -218,8 +218,6 @@ pub fn values(
         return Ok(vec![String::new()]);
     };
     let held = value(field)?;
-    // A column of a personal field holds the value of one person: the column's name says which.
-    let held = crate::reads::for_person(field, held, person_of(column));
     let lit = if super::reflect::is_reflected(&field.id) {
         super::reflect::at_lit(&held)
     } else {
@@ -240,11 +238,6 @@ pub fn values(
         }
         one => vec![write(column.kind, &one).unwrap_or_default()],
     })
-}
-
-/// The person whose value of a personal field a column holds (`today@ada`), when it is one.
-fn person_of(column: &ColumnSchema) -> Option<&str> {
-    tilolang::personal::split(&column.name).map(|(_, person)| person)
 }
 
 /// Whether the index counts the entries of each value of the column (a toggle, an enum, one
@@ -344,35 +337,34 @@ pub fn access<F>(
     if let Some(named) = named(schema, pred, id) {
         return Some(vec![named]);
     }
-    // The column of a field, or of one person's value of a personal field, named for them.
-    let column_for = |f: &F| schema.column_for(&id(f));
+    let column_for = |f: &F| schema.column(&id(f));
     match pred {
         Pred::Cmp(op, Operand::Field(f), Operand::Lit(v)) => {
-            comparison(&column_for(f)?, *op, v).map(|a| vec![a])
+            comparison(column_for(f)?, *op, v).map(|a| vec![a])
         }
         Pred::Cmp(op, Operand::Lit(v), Operand::Field(f)) => {
-            comparison(&column_for(f)?, flip(*op), v).map(|a| vec![a])
+            comparison(column_for(f)?, flip(*op), v).map(|a| vec![a])
         }
         Pred::Not(inner) => match &**inner {
             Pred::Cmp(CmpOp::Eq, Operand::Field(f), Operand::Lit(Lit::Bool(b)))
             | Pred::Cmp(CmpOp::Eq, Operand::Lit(Lit::Bool(b)), Operand::Field(f)) => {
                 let column = column_for(f).filter(|c| c.kind == ColumnKind::Bool && !c.many)?;
                 Some(vec![run(
-                    &column,
+                    column,
                     one_value(if *b { "0" } else { "1" }),
                     true,
                 )])
             }
             Pred::Present(f) => {
                 let column = column_for(f)?;
-                Some(vec![run(&column, one_value(""), true)])
+                Some(vec![run(column, one_value(""), true)])
             }
             _ => None,
         },
         Pred::Present(f) => {
             let column = column_for(f)?;
             Some(vec![run(
-                &column,
+                column,
                 (AFTER.to_string(), LAST.to_string()),
                 true,
             )])
@@ -380,11 +372,11 @@ pub fn access<F>(
         Pred::Has(f, v) => {
             let column = column_for(f)?;
             let w = write(column.kind, v)?;
-            Some(vec![run(&column, one_value(&w), true)])
+            Some(vec![run(column, one_value(&w), true)])
         }
         Pred::Like(f, pattern) => {
             let column = column_for(f).filter(|c| c.kind == ColumnKind::Ident)?;
-            Some(vec![pattern_run(&column, pattern, whole_type)])
+            Some(vec![pattern_run(column, pattern, whole_type)])
         }
         Pred::Or(each) => {
             let mut out: Vec<Access> = Vec::new();

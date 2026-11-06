@@ -47,8 +47,8 @@ use ui::prelude::*;
 use ui::text_render::{NumericStyle, OpenTypeTag, TextWeight};
 use ui::tokens::{EffectiveMotion, MotionSource, Rhythm, Spacing};
 use ui::widget::{
-    AccessoryAction, Avatar, AvatarSize, ControlSize, IconSize, IconWidget, Manual,
-    MeasureConstraint, Spinner, Tone,
+    AccessoryAction, Avatar, AvatarSize, ControlSize, IconSize, IconWidget, Image, ImageFit,
+    Manual, MeasureConstraint, PictureSource, Spinner, Tone, TransportControl,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -170,6 +170,9 @@ pub struct Media {
     pub can_previous: bool,
     /// Whether the player has a song after this one.
     pub can_next: bool,
+    /// Its cover, by picture address: a small `data:` picture the screen
+    /// paints beside the song. Empty while there is none.
+    pub artwork: String,
 }
 
 /// The battery, as the screen says it.
@@ -610,6 +613,7 @@ fn staged_shown(name: &str) -> Shown {
                 can_toggle: true,
                 can_previous: true,
                 can_next: true,
+                artwork: ui::headless::FIXTURE_PICTURE.to_owned(),
             }),
             ..scene
         },
@@ -726,6 +730,10 @@ fn screen(
 /// song is behind, so a locked screen leaks no more of the session than its
 /// name.
 fn transport(cx: &ViewCx<LockScreen>, shown: &Shown) -> Option<Element> {
+    /// The cover's edge and corner: a tile at least the height of the two
+    /// lines beside it, rounded as a control is.
+    const ART_EDGE: f32 = 48.0;
+    const ART_RADIUS: f32 = 8.0;
     let media = shown.media.as_ref()?;
     let song = Column::new()
         .with_no_padding()
@@ -749,51 +757,70 @@ fn transport(cx: &ViewCx<LockScreen>, shown: &Shown) -> Option<Element> {
         .no_wrap()
         .with_rhythm(Rhythm::Tight)
         .with_align_items(ui::taffy::AlignItems::Center);
-    let toggle = if media.playing {
-        (Icon::Pause, "lock-pause")
-    } else {
-        (Icon::Play, "lock-play")
-    };
-    for (offered, effect, icon, id, name) in [
+    // The transport, painted as every media surface paints one: a round
+    // play/pause and plain skips beside it.
+    for (offered, effect, control, id) in [
         (
             media.can_previous,
             LockEffect::PreviousTrack,
-            Icon::SkipBack,
-            "lock-previous",
+            TransportControl::Previous,
             "lock-previous",
         ),
         (
             media.can_toggle,
             LockEffect::PlayPause,
-            toggle.0,
-            toggle.1,
-            toggle.1,
+            TransportControl::PlayPause {
+                playing: media.playing,
+            },
+            "lock-play",
         ),
         (
             media.can_next,
             LockEffect::NextTrack,
-            Icon::SkipForward,
-            "lock-next",
+            TransportControl::Next,
             "lock-next",
         ),
     ] {
         let Some(binding) = actions.effect(&effect).filter(|_| offered) else {
             continue;
         };
+        let name = match control {
+            TransportControl::PlayPause { playing: true } => t("lock-pause"),
+            TransportControl::PlayPause { playing: false } => t("lock-play"),
+            TransportControl::Previous => t("lock-previous"),
+            TransportControl::Next => t("lock-next"),
+        };
         controls = controls.push(Box::new(
-            Button::icon_only(id, icon, &t(name))
-                .control_size(ControlSize::Small)
+            Button::transport(id, control)
+                .with_accessible_name(&name)
+                .tooltip(name)
                 .on_action(binding),
         ));
     }
-    Some(Box::new(
-        Row::new()
-            .no_wrap()
-            .with_rhythm(Rhythm::Related)
-            .with_align_items(ui::taffy::AlignItems::Center)
-            .push(Box::new(song))
-            .push(Box::new(controls)),
-    ))
+    let mut row = Row::new()
+        .no_wrap()
+        .with_rhythm(Rhythm::Related)
+        .with_align_items(ui::taffy::AlignItems::Center);
+    if !media.artwork.is_empty() {
+        // The cover beside the song: a locked screen shows the song and its
+        // picture, and nothing further of the session.
+        row = row.push(Box::new(
+            Container::new()
+                .with_size(ART_EDGE, ART_EDGE)
+                .with_child(Box::new(
+                    Image::from_picture(
+                        ui::Pictures::window(),
+                        PictureSource {
+                            src: media.artwork.clone(),
+                        },
+                    )
+                    .with_fit(ImageFit::Cover)
+                    .with_corner_radius(ART_RADIUS)
+                    .filling(),
+                )),
+        ));
+    }
+    Some(Box::new(row.push(Box::new(song)).push(Box::new(controls))))
 }
 
 /// Whose session this is: their picture over their name, the second thing
@@ -829,7 +856,7 @@ fn field(shown: &Shown, seat: &LockSeat, shaken: &Rc<Cell<f64>>) -> Element {
     let mut field = TextInput::local()
         .with_id(PROMPT_ID)
         .with_secret(true)
-        .with_placeholder("lock-password")
+        .with_placeholder(t("lock-password"))
         .with_accessible_name(t("lock-password"))
         .control_size(ControlSize::Large)
         .with_enter_submits(true)

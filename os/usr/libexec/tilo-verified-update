@@ -8,6 +8,7 @@ GATE="${TILO_IMAGE_TRUST_GATE:-/usr/libexec/tilo-image-trust-staged}"
 UPDATE_LOCK="${TILO_IMAGE_TRUST_UPDATE_LOCK:-/run/tilo-verified-update.lock}"
 SUCCESSOR="${TILO_IMAGE_TRUST_SUCCESSOR:-/usr/libexec/tilo-board-successor}"
 CHANNEL="${TILO_IMAGE_TRUST_CHANNEL:-/usr/libexec/tilo-update-channel}"
+LOCAL_NOTICE="${TILO_IMAGE_TRUST_LOCAL_NOTICE:-/run/tilo-verified-update.local-image}"
 
 # One lock spans download, identity verification, rollback-floor publication,
 # and activation. It is taken even before owner trust is armed: `tilo-image-trust
@@ -27,6 +28,24 @@ expected_lock="$(id -u):600:1"
   exit 1
 }
 flock -x "$update_lock_fd"
+
+# A deployment installed from a local medium is a developer's own image,
+# verified where it was made. Its updater must not replace it with a registry
+# build nobody here chose: the channel helper names nothing for such a device,
+# so this never switches it (and so never fetches a channel reference its own
+# policy may refuse). That is reported once per image — the journal line, plus
+# one note to the person kept in /run, so a reboot or another image reports it
+# again — rather than as a failed unit at every run, and the image stays until
+# the person installs another.
+if [ "$("$CHANNEL" installed 2>/dev/null || echo registry)" != registry ]; then
+  echo 'tilo-verified-update: this developer-installed image keeps itself until another image is installed'
+  if [ ! -e "$LOCAL_NOTICE" ]; then
+    echo 'This image was installed locally, so automatic updates leave it in place. Install another image to follow a channel again.'
+    { install -d -m 0755 "$(dirname "$LOCAL_NOTICE")" && : >"$LOCAL_NOTICE"; } 2>/dev/null || true
+  fi
+  exit 0
+fi
+rm -f "$LOCAL_NOTICE" 2>/dev/null || true
 
 # The image the device's channel (or a developer's pinned build) names, when that is not the
 # one bootc follows already: switch to it instead of upgrading the one it follows. Nothing named:

@@ -49,6 +49,10 @@ pub(crate) struct Clipboard {
     reading: RefCell<Option<Reading>>,
     /// The selection change the history last looked at.
     seen: Cell<u64>,
+    /// When what the session itself put on the clipboard comes back off it,
+    /// when it does: an invitation's link is a credential, and stays there
+    /// only long enough to be pasted to the person it is for.
+    kept_until: Cell<Option<Instant>>,
     /// Copies quick settings chose, waiting for the loop that has the
     /// compositor.
     asks: RefCell<Vec<Ask>>,
@@ -86,6 +90,13 @@ struct Reading {
 pub(crate) enum Ask {
     /// Put a copy back on the clipboard and paste it into the app in front.
     Paste(String),
+    /// Put `bytes` on the clipboard for the person to paste somewhere else,
+    /// without keeping them, for as long as `kept_for` says.
+    Copy {
+        mime: String,
+        bytes: Vec<u8>,
+        kept_for: Duration,
+    },
 }
 
 impl Clipboard {
@@ -97,6 +108,7 @@ impl Clipboard {
             history: RefCell::new(history),
             reading: RefCell::new(None),
             seen: Cell::new(0),
+            kept_until: Cell::new(None),
             asks: RefCell::new(Vec::new()),
             generation: Cell::new(0),
             files: RefCell::new(None),
@@ -111,6 +123,7 @@ impl Clipboard {
     /// Take the selection as the apps set it: start reading what it offers,
     /// and keep a copy once its bytes are all here.
     pub(crate) fn follow(&self, compositor: &mut Compositor) {
+        self.take_back_when_due(compositor);
         self.finish_reading();
         if self.reading.borrow().is_some() {
             return;
@@ -378,12 +391,20 @@ impl Clipboard {
     }
 
     /// Carry out what quick settings asked: put a copy back on the clipboard
-    /// and paste it into the app in front.
+    /// and paste it into the app in front, or put what a surface hands the
+    /// person on it.
     pub(crate) fn serve_asks(&self, compositor: &mut Compositor) {
         for ask in std::mem::take(&mut *self.asks.borrow_mut()) {
             match ask {
                 Ask::Paste(key) => {
                     self.paste(compositor, &key);
+                }
+                Ask::Copy {
+                    mime,
+                    bytes,
+                    kept_for,
+                } => {
+                    self.copy_for_person(compositor, &mime, bytes, Some(kept_for));
                 }
             }
         }
@@ -413,12 +434,16 @@ impl Clipboard {
     /// Offer `mime` and `bytes` on the clipboard for the person to paste
     /// somewhere else, without keeping them: a dictated transcript lives in
     /// the dictation's private draft until they discard it, not in the
-    /// clipboard's history. False when the clipboard did not take it.
+    /// clipboard's history, and an invitation's link is a credential.
+    /// `kept_for` is how long a credential stays there before the session
+    /// takes it back, when nothing of the person's has copied since. False
+    /// when the clipboard did not take it.
     pub(crate) fn copy_for_person(
         &self,
         compositor: &mut Compositor,
         mime: &str,
         bytes: Vec<u8>,
+        kept_for: Option<Duration>,
     ) -> bool {
         if let Err(error) =
             compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)])
@@ -429,7 +454,31 @@ impl Clipboard {
         // The session's own offer is not a copy the person made.
         self.seen
             .set(compositor.selection_changes(Selection::Clipboard));
+        self.kept_until
+            .set(kept_for.and_then(|kept| Instant::now().checked_add(kept)));
         true
+    }
+
+    /// Take back what the session put on the clipboard, once the time it was
+    /// put there for is up and it is still what is there: a copy of the
+    /// person's own made since keeps its place.
+    fn take_back_when_due(&self, compositor: &mut Compositor) {
+        let Some(due) = self.kept_until.get() else {
+            return;
+        };
+        if Instant::now() < due {
+            return;
+        }
+        self.kept_until.set(None);
+        if compositor.selection_changes(Selection::Clipboard) != self.seen.get() {
+            return;
+        }
+        if let Err(error) = compositor.set_selection(Selection::Clipboard, Vec::new()) {
+            tracing::warn!(%error, "the link could not be taken off the clipboard");
+            return;
+        }
+        self.seen
+            .set(compositor.selection_changes(Selection::Clipboard));
     }
 
     /// Make the app in front paste, with the chord it pastes with. A hosted

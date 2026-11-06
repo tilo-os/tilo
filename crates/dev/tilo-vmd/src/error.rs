@@ -8,7 +8,7 @@ pub enum DaemonError {
     VersionMismatch { client: u32, daemon: u32 },
     #[error("the connection has not completed the hello handshake")]
     HelloRequired,
-    #[error("invalid request: {0}")]
+    #[error("{0}")]
     InvalidParams(String),
     #[error("no slot named '{0}'")]
     SlotNotFound(String),
@@ -188,7 +188,7 @@ impl DaemonError {
             }
             Self::HelloRequired => "connect through tilo-vm rather than speaking to tilo-vmd by hand".into(),
             Self::InvalidParams(_) => {
-                "tilo-vm and tilo-vmd disagree on the request shape: tilo-vm doctor".into()
+                "the daemon refused this request; its message names what to change, and tilo-vm doctor says whether the client and daemon builds agree".into()
             }
             Self::SlotNotFound(name) => {
                 format!("tilo-vm slot create {name} --headless   (list existing: tilo-vm slot list)")

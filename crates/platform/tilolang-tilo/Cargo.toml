@@ -26,6 +26,8 @@ tilo-service = { path = "../../session/service" }
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
+# A Rust app's views, drawn by the same host as a package's (one-app-model.md §2).
+tilo-view = { version = "0.1.0", path = "../tilo-view" }
 tilo-doc = { path = "../../doc/tilo-doc" }
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # A `RichText` field is the platform's rich-text field: tilo-doc's rich text, edited by its actions.
@@ -81,6 +83,15 @@ path = "tests/budgets.rs"
 [[test]]
 name = "words"
 path = "tests/words.rs"
+
+[[test]]
+name = "rust_types"
+path = "tests/rust_types.rs"
+
+[[bench]]
+name = "index_units"
+path = "benches/index_units.rs"
+harness = false
 
 [lints]
 workspace = true

@@ -26,9 +26,9 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
-    RemoteActionTarget, provider_workspace,
+    RemoteActionTarget, application_provider,
 };
-use tilo_actions::{DoorError, InvocationId};
+use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
 use tilo_app_launch::routing;
 use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
@@ -36,7 +36,7 @@ use tilo_app_launch::{
 };
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
-use tilo_desktop_surface::crashed_app::Closed;
+use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::search::AppActions;
@@ -401,6 +401,11 @@ impl Apps {
         for asked in asked {
             let Some(launch) = Launch::parse(&asked.app) else {
                 tracing::warn!(asked = %asked.app, "not a launch this session knows");
+                self.could_not_open(
+                    asked.tab,
+                    &asked.app,
+                    &tilo_desktop_surface::i18n::t("answer-why-unknown-app"),
+                );
                 continue;
             };
             // A window is on its way to its own tab, and a notice starts
@@ -411,18 +416,41 @@ impl Apps {
             let launch = as_this_machine_knows_it(launch);
             let workspace = self.active_workspace();
             let started = self.start_at(&launch, &workspace, asked.tab);
-            // The desk held a tab for a window this launch opens: one that
-            // raised the window its app already shows, and one that did not
-            // start, leave no window to fill it.
-            if let Some(tab) = asked.tab
-                && !matches!(started, Ok(true))
-            {
-                desktop.with_policy(|policy| policy.release_tab(tab));
-            }
-            if let Err(error) = started {
-                tracing::warn!(asked = %asked.app, %error, "an app did not start");
+            match &started {
+                // The window is coming, or the app's own window came forward
+                // in place of a second one: the tab it was held in takes it.
+                Ok(true) => {}
+                Ok(false) => {
+                    if let Some(tab) = asked.tab {
+                        desktop.with_policy(|policy| policy.release_tab(tab));
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(asked = %asked.app, %error, "an app did not start");
+                    self.could_not_open(asked.tab, &asked.app, &error.to_string());
+                }
             }
         }
+    }
+
+    /// What the person asked for in `tab` did not happen, `why` says why, as
+    /// the desk says such things: the tab keeps its place and shows the
+    /// answer, with the button that asks for the app again. A launch no tab
+    /// holds (a service's own) is answered by whoever asked for it, not
+    /// here.
+    fn could_not_open(&self, tab: Option<u64>, asked: &str, why: &str) {
+        use tilo_desktop_surface::i18n::{t, t_args};
+        let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) else {
+            return;
+        };
+        let name = desktop.with_policy(|policy| policy.name_of(asked));
+        let outcome = Outcome::new(t_args("answer-app-not-opened", &[("app", name.into())]))
+            .saying(why)
+            .retryable(t("answer-try-again"));
+        desktop.with_policy(|policy| policy.failed_at(tab, asked, outcome));
+        // The answer is a desktop command like any other: the desk carries it
+        // out, and lays its tab out, on its next pass.
+        desktop.with_widgets(WidgetHost::relayout);
     }
 
     /// Start `launch` on the workspace in front, which is where what the
@@ -480,9 +508,27 @@ impl Apps {
                 None => Closed::Crashed,
             };
             if let Some(desktop) = self.desktop.borrow().clone() {
-                let notice = desktop.with_policy(|policy| {
-                    policy.stopped(asked.as_deref().unwrap_or(&event.app), &event.title, closed)
+                let asked = asked.unwrap_or_else(|| event.app.clone());
+                // A launch that ended before its window came never opened,
+                // and says that in the tab the person asked for it in: what
+                // stopped in front of them is a window that did not arrive,
+                // not one that went.
+                let waited = desktop.with_policy(|policy| {
+                    policy
+                        .anchor_for(&asked)
+                        .filter(|(tab, ..)| policy.holds_a_place(*tab))
+                        .map(|(tab, ..)| tab)
                 });
+                if let Some(tab) = waited {
+                    self.could_not_open(
+                        Some(tab),
+                        &asked,
+                        &tilo_desktop_surface::i18n::t("answer-why-not-opened"),
+                    );
+                    continue;
+                }
+                let notice =
+                    desktop.with_policy(|policy| policy.stopped(&asked, &event.title, closed));
                 if let Err(error) = notice {
                     tracing::warn!(%error, app = %event.app, "no notice for the app");
                 }
@@ -677,8 +723,7 @@ impl Apps {
             };
             Planned::of(launch, &context)
         };
-        let mut planned =
-            planned.map_err(|error| DoorError::Failed(format!("{}: {error}", launch.id())))?;
+        let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
         // The tool this launch opens is told what to show: only a package is
         // given it.
         if let (Some(context), Kind::Package) =
@@ -793,12 +838,56 @@ impl Apps {
 }
 
 impl AppActions for Apps {
-    /// Nothing is published through this session yet: the action host an
-    /// app's resources and jobs arrive on is not mounted here.
-    fn published(&self) -> Vec<PublishedActions> {
-        Vec::new()
+    /// What the apps publish, read from the session's action broker: the one
+    /// host every app publishes on, whatever it is built with. A tilolang app
+    /// publishes through its host and an app on the SDK through its own
+    /// connection, both on the channel they joined the workspace with, and
+    /// the broker keeps the last surface an app published after it closes,
+    /// which is why a closed app's actions are offered too: choosing one
+    /// starts the app and delivers the call there. Read when a search opens.
+    fn published(&self, workspace: &str) -> Vec<PublishedActions> {
+        let state = self.state.borrow();
+        let Some(broker) = &state.broker else {
+            return Vec::new();
+        };
+        // By app, workspace and address: the broker holds a surface per
+        // record, and an action two of them carry is still the one action
+        // that workspace addresses.
+        let mut listed: BTreeMap<(String, String), BTreeMap<(String, String), ActionDescriptor>> =
+            BTreeMap::new();
+        for surface in broker.published_surfaces() {
+            let published_in = &surface.route.cluster_id;
+            if !workspace.is_empty() && published_in != workspace {
+                continue;
+            }
+            let actions = listed
+                .entry((surface.app_id.clone(), published_in.clone()))
+                .or_default();
+            for action in &surface.actions {
+                // A live surface is listed before the one retained from
+                // before the app closed, and is the one to keep.
+                actions
+                    .entry((action.resource.clone(), action.action.clone()))
+                    .or_insert_with(|| action.descriptor(ExecutionLocus::ClientLocal));
+            }
+        }
+        listed
+            .into_iter()
+            .map(|((app, workspace), actions)| PublishedActions {
+                app,
+                workspace,
+                actions: actions.into_values().collect(),
+                // An exported action names its resource's kind but not what
+                // the resource is to a person ([`PublishedActions::types`]):
+                // that stays with the app's own host.
+                types: BTreeMap::new(),
+            })
+            .collect()
     }
 
+    /// The broker follows each invocation it delivered, but offers no listing
+    /// that names the app, workspace and action label a job's row reads, so
+    /// there is nothing to list here yet.
     fn jobs(&self) -> Vec<JobEntry> {
         Vec::new()
     }
@@ -813,29 +902,30 @@ impl AppActions for Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError> {
-        let open = target.address.action == APPLICATION_OPEN_ACTION
-            && arguments.is_empty()
-            && target
-                .address
-                .resource
-                .starts_with(APPLICATION_RESOURCE_PREFIX);
-        let workspace = provider_workspace(&target.provider).map(str::to_owned);
+        // What a search row names: an app in the workspace it was published
+        // in, and the action to run there.
+        let Some((workspace, _)) = application_provider(&target.provider) else {
+            return Err(no_action_host());
+        };
+        let workspace = workspace.to_owned();
         let app = target
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
             .map(str::to_owned);
-        match (open, app, workspace) {
-            (true, Some(app), Some(workspace)) => {
+        let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
+        match (open, app) {
+            (true, Some(app)) => {
                 let workspace = self.workspace_named(&workspace);
                 self.start(&Launch::Package { app, open: None }, &workspace)
             }
-            (false, _, Some(workspace)) => self.deliver(target, arguments, &workspace),
-            _ => Err(no_action_host()),
+            _ => self.deliver(target, arguments, &workspace),
         }
     }
 
-    fn cancel(&self, _app: &str, _room: &str, _invocation: &str) -> Result<(), DoorError> {
+    fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {
+        // A job's row carries the invocation the broker follows, and no row
+        // is listed yet ([`Self::jobs`]), so nothing names one to stop.
         Err(no_action_host())
     }
 

@@ -28,7 +28,6 @@ pub mod hosted;
 mod i18n;
 mod live;
 mod media;
-mod now_playing;
 pub(crate) mod readings;
 pub mod resource;
 pub mod scenarios;
@@ -41,12 +40,14 @@ mod view;
 
 pub use effect::QsEffect;
 pub use faces::{available as control_available, subline};
-pub use now_playing::{MediaOffer, MediaOutput, MediaPlayer, NowPlaying};
+// The one reading of what plays, which the desk's widget, the lock
+// screen's card and the bar's pill show as this panel does.
 pub use resource::{Page, QuickSettings, QuickSettingsApp};
-
-pub use state::{
-    DisplayBrightness, PasteOrigin, QuickSettingsState, RadioChange, focused_display_first,
+pub use tilo_desktop_surface::now_playing::{
+    NowPlaying, Offer as MediaOffer, Output as MediaOutput, Player as MediaPlayer,
 };
+
+pub use state::{DisplayBrightness, QuickSettingsState, RadioChange, focused_display_first};
 pub use status::SystemStatus;
 
 /// The clipboard history as Quick Settings shows it: the Clipboard row's

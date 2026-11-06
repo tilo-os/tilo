@@ -12,17 +12,11 @@ d-oidkt4g5 = Title
 
 d-fgvmlm5n = Done
 
-d-kvqrynzm = Done at
-    .doc = When it was last checked off: Done stands it under the day it was finished on.
-
 d-g6kykjp2 = Due
     .doc = The day it is due by, if any.
 
 d-qadph346 = At
     .doc = The moment on that day it is due at, if it has one.
-
-d-gga7tyz2 = Picked
-    .doc = Whether the person looking picked it for their Today: their pick of a task everyone shares, so the same task can stand in two people's Today for reasons of their own.
 
 d-ftjnco6i = Notes
     .doc = Anything worth remembering about it.
@@ -51,20 +45,6 @@ d-rc3gzwpo = Subtasks
     .doc = How many tasks are under it, and how many of those are done ("1/3"): the two counts a row and the page's outline show.
 
 d-olnvvb3s = Subtasks done
-
-d-2ozuzhiq = Step
-    .doc = One step of a task's checklist, from before a task's steps were tasks of their own.
-    .noun = { $count ->
-        [one] step
-       *[other] steps
-    }
-
-d-3x2blhsz = Title
-
-d-qbfmff6k = Done
-
-d-idfd5vap = Task
-    .doc = The task it is a step of.
 
 d-bfqi332m = Project
     .doc = A project: tasks that work towards one outcome.
@@ -102,9 +82,6 @@ d-lg5gedbh = Items
 
 d-mdhllpbo = Projects
 
-d-exy7sakn = Steps
-    .doc = The steps of every task, before a task's steps were tasks of their own.
-
 d-nk5542m7 = Sections
     .doc = The sections of every project, each naming its project, in the order its board shows them.
 
@@ -133,14 +110,11 @@ d-u4wzi4k4 = The day it is grouped under, as a list of a day is
 d-ifftrju4 = Its project, as a project's list is of one
     .doc = Its project, as a project's list is of one.
 
-d-ymvliuk3 = Adopt steps
-    .doc = Gives each step of a task from before steps were tasks a task of its own, under the task it was a step of, in the order it was in.
-
-d-u7a3fue4 = Quick add
-    .doc = Adds what was typed in the entry at the end of a list as a task, to the inbox or to `p`, in the lane `s` of its board.
-
 d-rs3ubifz = New task
-    .doc = Adds a task under the title a program or an agent gives it: no task stands without one.
+    .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
+
+d-boggc6yt = Add a task
+    .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
 
 d-zjuy7y7f = New project
     .doc = Starts a project.
@@ -151,9 +125,6 @@ d-vwgro4iv = Complete
 d-fykojijd = Add subtask
     .doc = Adds a subtask under a task: a task of its own, in its project and section, under the title given.
     .did = added a subtask
-
-d-wfskl55q = Pick for today
-    .doc = Picks a task for the person looking's Today, or lets it go.
 
 d-tmwdrpev = Today
     .doc = Sets the day a task is due by, or clears it: the presets take the day, and one entry asks for any day.
@@ -238,8 +209,6 @@ d-m2xarbfd = Copy below
 
 d-qwizihx4 = Check~present
 
-d-zfdqnzdd = Pick~present
-
 d-mdzqe3gc = Due today~present
 
 d-rnagsir2 = Due tomorrow~present
@@ -267,9 +236,13 @@ d-tpvjqy5m = Clear done~present
 d-i2mhsb3h = Home
     .w-tasks = Tasks
     .w-projects = Projects
+    .w-no-tasks-here = No tasks here
     .w-no-task-selected = No task selected
 
+d-6a6pf4ok = Task list
+
 d-7froalwb = Project list
+    .w-no-tasks-yet = No tasks yet
     .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
@@ -285,6 +258,6 @@ d-rj4l44km = Task summary
 d-ypbiaiq3 = Task outline row
 
 d-mtmufg3w = Task page
+    .w-inbox = Inbox
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask
-    .w-inbox = Inbox

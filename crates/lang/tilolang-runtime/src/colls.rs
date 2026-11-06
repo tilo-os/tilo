@@ -193,12 +193,7 @@ pub(crate) fn field_reads(
     item: &crate::registry::TypeInfo,
 ) -> Option<crate::store::Pred> {
     pred.resolve(&mut |id: &String| {
-        let field = item
-            .fields
-            .iter()
-            .find(|f| f.id == tilolang::personal::field_of(id))?;
-        // A personal field's read names the person it is for (`today@ada`): the store reads
-        // their value under that id.
+        let field = item.fields.iter().find(|f| f.id == **id)?;
         FieldRead::of(id, field.kind, &field.ty, field.default.as_ref())
     })
 }
@@ -437,6 +432,20 @@ impl Core {
         let count = listing.count();
         self.saw(coll, Read::Count(count), listing.len());
         Ok(count)
+    }
+
+    /// Whether `coll` holds nothing: whether it shows no first item. A listing read page by
+    /// page answers that by reading the page its first item is on, never by reading its run to
+    /// the end, which is what counting it costs ([`Self::coll_count`]).
+    ///
+    /// What it depends on is where its first item is: the listing shows another one, or none,
+    /// when that changes.
+    pub(crate) fn coll_empty(&self, coll: &Rc<CollRef>) -> HResult<bool> {
+        let listing = self.coll_listing(coll)?;
+        let first = listing.first();
+        let empty = first.is_none();
+        self.saw(coll, Read::First(first), listing.len());
+        Ok(empty)
     }
 
     /// [`Core::coll_len`] or [`Core::coll_count`], as an import asks for one or the other.

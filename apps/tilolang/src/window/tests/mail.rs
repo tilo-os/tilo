@@ -169,16 +169,14 @@ impl Workspace {
         self.window.current_host().expect("the host started")
     }
 
-    /// Frames until `done` holds of the workspace, as the servers answer.
+    /// Frames until `done` holds of the workspace, as the servers answer. It waits against the
+    /// workspace's hang bound, so a busy runner makes the test slower rather than failing a
+    /// server that answered in time.
     fn until(&mut self, what: &str, done: impl Fn(&mut Self) -> bool) {
-        for _ in 0..400 {
+        tilo_test_env::wait_until(what, || {
             self.settle();
-            if done(self) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(15));
-        }
-        panic!("timed out waiting for {what}");
+            done(self)
+        });
     }
 
     fn read(&self, at: &ResourceRef, field: &str) -> RtValue {
@@ -228,7 +226,9 @@ impl Workspace {
             .unwrap_or_else(|| panic!("no conversation {subject}"))
     }
 
-    /// Invoke the package's action `name` as the person at the window, as a press does.
+    /// Invoke the package's action `name` as the person at the window, as a press does. A call
+    /// the action makes runs at its own door, so an action that sends asks first: the test
+    /// allows what the app's sheet would ask, as the person pressing does.
     fn press(&mut self, name: &str, args: Vec<RtValue>) -> RtValue {
         let meta = crate::app::builtin::package_named("mail").expect("the mail package");
         let action = meta
@@ -245,7 +245,26 @@ impl Workspace {
         self.settle();
         match out {
             tilolang_tilo::runtime::InvokeOutcome::Done(value) => value,
-            other => panic!("{name} did not run: {other:?}"),
+            tilolang_tilo::runtime::InvokeOutcome::Suggested(suggestion) => {
+                let allowed = self
+                    .host()
+                    .runtime()
+                    .resolve(
+                        &suggestion.run,
+                        &Principal::new("ada"),
+                        tilolang_tilo::runtime::Resolution::Approve,
+                    )
+                    .unwrap_or_else(|error| panic!("{name}: the ask: {error}"));
+                self.window.commit_planned();
+                self.settle();
+                match allowed {
+                    tilolang_tilo::runtime::RunOutcome::Done(value) => value,
+                    suspended @ tilolang_tilo::runtime::RunOutcome::Suspended(_) => {
+                        panic!("{name}: the allowed run waits again: {suspended:?}");
+                    }
+                }
+            }
+            tilolang_tilo::runtime::InvokeOutcome::Denied => panic!("{name} was denied"),
         }
     }
 }

@@ -791,7 +791,8 @@ struct JsPresence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     focus: Option<JsRecord>,
     /// Over a tab of the workspace: `{tile: {tab}, at: [x, y]}`, the way
-    /// every device's pointer travels.
+    /// every device's pointer travels, the tab's id a decimal string (it can
+    /// pass 2^53).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pointer: Option<crate::browser::pointers::JsPointer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1018,7 +1019,11 @@ fn presence_frames(value: &JsPresence, workspace: &str) -> Result<Vec<Presence>,
     }
     match &value.pointer {
         Some(crate::browser::pointers::JsPointer::Tile { tile, at }) => {
-            frames.push(Presence::pointing(workspace, tile.tab, at[0], at[1]));
+            let tab = tile
+                .tab
+                .parse()
+                .map_err(|_| js_error("a pointer's tab is a decimal u64"))?;
+            frames.push(Presence::pointing(workspace, tab, at[0], at[1]));
         }
         Some(_) => {
             return Err(js_error(
@@ -1118,10 +1123,11 @@ enum JsPresenceEvent {
         following: Option<String>,
     },
     /// A member's pointer over tab `tab` of the workspace, at `at` (its
-    /// tile's logical pixels), sent at their `sentAtMs`.
+    /// tile's logical pixels), sent at their `sentAtMs`. The tab's id is a
+    /// decimal string: it can pass 2^53.
     Pointer {
         publisher: String,
-        tab: u64,
+        tab: String,
         at: [f64; 2],
         #[serde(rename = "sentAtMs")]
         sent_at_ms: u64,
@@ -1177,7 +1183,7 @@ fn presence_event(from: [u8; 32], body: &[u8], now_ms: u64) -> Option<JsPresence
             PeerPresencePayload::Pointer { x, y },
         ) => Some(JsPresenceEvent::Pointer {
             publisher,
-            tab,
+            tab: tab.to_string(),
             at: [f64::from(x), f64::from(y)],
             sent_at_ms: now_ms,
             colour: None,

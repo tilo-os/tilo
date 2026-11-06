@@ -1,5 +1,6 @@
 //! `type X = ...`: unions of resource types matched by type, aliases, and roots that are named
-//! values of a type naming a container (`type Notes = Collection<Note>`, `root notes: Notes`).
+//! records holding a collection (`type Notebook { notes: Collection<Note> }`,
+//! `root notebook: Notebook`).
 
 use crate::common::{codes, codes_with, compile_with, validate};
 
@@ -61,31 +62,44 @@ fn an_alias_is_another_name_for_a_type() {
         "type Note {\n    title: Text\n}\ntype Notes = List<Note>\nfn first(ns: Notes) -> Option<Note> {\n    ns.first()\n}",
     );
     expect("E013", "type A = B\ntype B = A");
+    // A name for a container is no resource: a record type holds it.
+    expect(
+        "E013",
+        "type Note {\n    title: Text\n}\ntype Notes = Collection<Note>",
+    );
 }
 
-const NOTES: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\ntype Notes = Collection<Note>\nroot notes: Notes\ndefault view notebook for notes\nview notebook(ns: Notes) {\n    std.list(ns, ns, empty: \"No notes\") { n ->\n        row(n.title)\n    }\n}\n";
+const NOTES: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    std.list(nb.notes) { (n, at) ->\n        ui.ListItem(item: n, presence: at)\n    }\n}\n";
 
 #[test]
-fn a_root_is_a_named_resource_of_a_type_that_names_a_container() {
+fn a_root_is_a_named_record_holding_its_collection() {
     ok(&format!(
-        "{NOTES}primary action new_note(ns: Notes) -> Note (icon: .plus) {{\n    ns.insert(Note(title: \"Untitled\"))\n}}\naction clear(ns: Notes) -> Int {{\n    ns.remove_where(.pinned)\n}}\nfn count() -> Int {{\n    let n = 0\n    for x in notes {{\n        n += 1\n    }}\n    n + notes.count(.pinned) + notes.len()\n}}"
+        "{NOTES}primary action new_note(nb: Notebook) -> Note (icon: .plus) {{\n    nb.notes.insert(Note(title: \"Untitled\"))\n}}\naction clear(nb: Notebook) -> Int {{\n    nb.notes.remove_where(.pinned)\n}}\nfn count() -> Int {{\n    let n = 0\n    for x in notebook.notes {{\n        n += 1\n    }}\n    n + notebook.notes.count(.pinned) + notebook.notes.len()\n}}"
     ));
     let src = format!("app so.tilo.notes \"Notes\"\n{NOTES}");
     let notes = compile_with(&src, &[]).expect("notes").meta;
     assert_eq!(notes.named_roots.len(), 1);
-    assert!(notes.types.iter().any(|t| t.holder && t.name == "Notes"));
-    // Another package reaches it as `alias.name`.
-    let board = "use so.tilo.notes as notes\ntype Board {\n    n: Int\n}\nroot Board\ndefault view board for Board\nview board(b: Board) {\n    let ns = notes.notes\n    text(\"{ns.len()} notes\")\n}";
+    let notebook = notes
+        .types
+        .iter()
+        .find(|t| t.name == "Notebook")
+        .expect("Notebook");
+    assert!(notebook.fields.iter().any(|f| f.name == "notes"));
+    // Another package reaches it as `alias.name`, and its collection as that field.
+    let board = "use so.tilo.notes as notes\ntype Board {\n    n: Int\n}\nroot Board\ndefault view board for Board\nview board(b: Board) {\n    let ns = notes.notebook.notes\n    text(\"{ns.len()} notes\")\n}";
     let got = codes_with(board, std::slice::from_ref(&notes));
     assert!(got.is_empty(), "{got:?}");
 }
 
 #[test]
-fn a_holder_keeps_the_ids_of_the_type_it_replaces() {
-    // Renaming `Notebook` to `Notes` and its field to `Notes.items` in the ids lock keeps the
-    // records: the root `root-<id>` and the field's id are the same.
-    let lock =
+fn a_record_keeps_the_ids_of_the_collection_root_it_replaces() {
+    // A name for a container was one resource whose one field was `Notes.items`. Renaming the
+    // field and then the type in the ids lock (`tilolang ids --rename`) gives the record both
+    // ids: the root `root-<id>` and the field's id are the ones the stored records have.
+    let mut lock =
         tilolang::IdsLock::parse("Notes = v7cub7aw\nNotes.items = tmqqtkeb\n").expect("lock");
+    lock.rename("Notes.items", "Notebook.notes").expect("field");
+    lock.rename("Notes", "Notebook").expect("type");
     let src = format!("app so.tilo.notes \"Notes\"\n{NOTES}");
     let compiled =
         tilolang::compile_package_with(&src, &lock, &[], &mut tilolang::SeededEntropy(1))
@@ -94,9 +108,14 @@ fn a_holder_keeps_the_ids_of_the_type_it_replaces() {
         .meta
         .types
         .iter()
-        .find(|t| t.name == "Notes")
-        .expect("Notes");
+        .find(|t| t.name == "Notebook")
+        .expect("Notebook");
     assert_eq!(notes.id, "v7cub7aw");
-    assert_eq!(notes.fields[0].id, "tmqqtkeb");
+    let field = notes
+        .fields
+        .iter()
+        .find(|f| f.name == "notes")
+        .expect("notes");
+    assert_eq!(field.id, "tmqqtkeb");
     assert_eq!(compiled.meta.roots, ["v7cub7aw"]);
 }

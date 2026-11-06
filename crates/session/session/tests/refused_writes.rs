@@ -149,7 +149,8 @@ fn waited(what: &str, site: &Site, devices: &[&Device], mut condition: impl FnMu
                 })
                 .collect();
             panic!(
-                "gave up waiting for {what}; the site's desk: {}\nthe devices logged:\n{}",
+                "gave up waiting for {what}; the site's refusals: {}\nthe site's desk: {}\nthe devices logged:\n{}",
+                site.refusals_report(),
                 site.desk_report(),
                 logs.join("\n")
             );
@@ -181,10 +182,15 @@ fn titles_on(device: &Device, site: &Site) -> Vec<String> {
 
 /// Two people, one of whom hosts the workspace they share: Ada's site governs
 /// it, and both devices join it.
-fn two_people_at_a_site() -> (Site, Device, Device) {
+fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
     let ada = Person::new("Ada");
     let bob = Person::new("Bob");
     let site = Site::start(&ada, "Studio");
+    // The workspace's host lets its desk author its records, as the host of a
+    // workspace does before its people open windows there: a member's device
+    // cannot grant that for itself, and without it the desk a member opens
+    // founds nothing the site keeps.
+    site.author_apps(&[tilo_desktop_model::ownership::DESKTOP_APP]);
     let mut ada_laptop = ada.device("Ada's laptop");
     let mut bob_laptop = bob.device("Bob's laptop");
     let hers = site.invite(ada.public, WorkspaceRole::Editor);
@@ -194,7 +200,7 @@ fn two_people_at_a_site() -> (Site, Device, Device) {
     bob_laptop.join(&his);
     bob_laptop.wait_holding(&site.workspace);
     site.wait_for_member(bob.public);
-    (site, ada_laptop, bob_laptop)
+    (site, ada, bob, ada_laptop, bob_laptop)
 }
 
 /// What a device opens is a change of the workspace's shared desk, and the
@@ -204,7 +210,7 @@ fn two_people_at_a_site() -> (Site, Device, Device) {
 /// the site keeps it and the other member's device reads it.
 #[test]
 fn the_workspace_keeps_the_desk_its_device_writes() {
-    let (site, ada_laptop, bob_laptop) = two_people_at_a_site();
+    let (site, _ada, _bob, ada_laptop, bob_laptop) = two_people_at_a_site();
     show(&ada_laptop, &site);
     let _first = open(&ada_laptop, "Notes");
     waited(
@@ -254,24 +260,11 @@ fn the_workspace_keeps_the_desk_its_device_writes() {
             nothing of the refusal, so the member's feed shows no refusal of his \
             change and no reason for it"]
 fn a_member_reads_where_their_refused_change_is_not() {
-    let ada = Person::new("Ada");
-    let bob = Person::new("Bob");
     // Ada's site governs her workspace, hosts it, and keeps what its people
-    // record while they are away.
-    let site = Site::start(&ada, "Studio");
-    let mut ada_laptop = ada.device("Ada's laptop");
-    let mut bob_laptop = bob.device("Bob's laptop");
-
-    // Ada joins the workspace her site governs, and Bob by the invitation her
-    // site issues for him: an editor, who writes. The workspace shares its
-    // people's layout, so what either opens is on the workspace's desk.
-    let hers = site.invite(ada.public, WorkspaceRole::Editor);
-    ada_laptop.join(&hers);
-    ada_laptop.wait_holding(&site.workspace);
-    let his = site.invite(bob.public, WorkspaceRole::Editor);
-    bob_laptop.join(&his);
-    bob_laptop.wait_holding(&site.workspace);
-    site.wait_for_member(bob.public);
+    // record while they are away. Both are editors, who write, and the
+    // workspace shares its people's layout, so what either opens is on the
+    // workspace's desk.
+    let (site, _ada, bob, _ada_laptop, mut bob_laptop) = two_people_at_a_site();
     // Bob's desk shows the workspace, whose shared desk is the record his
     // apps' windows are written into.
     show(&bob_laptop, &site);
@@ -302,9 +295,16 @@ fn a_member_reads_where_their_refused_change_is_not() {
     let before = windows(&site);
     let refused_note = open(&bob_laptop, "Bob's notes");
     let refused_at = std::time::Instant::now();
-    let verdict = tilo_test_env::wait_for("Bob reads where his change is not", || {
-        refusals(&bob_laptop).into_iter().next()
-    });
+    waited(
+        "Bob reads where his change is not",
+        &site,
+        &[&bob_laptop],
+        || !refusals(&bob_laptop).is_empty(),
+    );
+    let verdict = refusals(&bob_laptop)
+        .into_iter()
+        .next()
+        .expect("the feed names the refused change");
     // The change is not on the site's device, and the site says why: no
     // permission, and nothing Bob can wait for changes that.
     assert_eq!(

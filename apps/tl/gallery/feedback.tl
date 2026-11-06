@@ -10,7 +10,7 @@ default view feedback for Feedback
 
 /// The feedback window: each kind in a section of its own page.
 view feedback(f: Feedback) {
-    lens last: Text = ""
+    state last: Text = ""
     std.page(f) {
         ui.Toolbar {
             ui.ToolbarButton("Bold", icon: .pencil, toggled: .some(true)) {

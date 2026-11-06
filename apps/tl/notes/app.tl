@@ -1,5 +1,7 @@
 app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 
+use so.tilo.lang.discussion as discussion
+
 /// A note: a title, a body and the tags people gave it.
 type Note {
     title: Text (title)
@@ -13,8 +15,10 @@ type Note {
     }
 }
 
-/// The workspace's notes.
-type Notes = Collection<Note>
+/// The workspace's notebook: its notes, in the order it lists them.
+type Notebook {
+    notes: Collection<Note>
+}
 
 /// The order a notebook lists its notes in.
 enum NoteOrder {
@@ -24,17 +28,17 @@ enum NoteOrder {
     title
 }
 
-root notes: Notes
+root notebook: Notebook
 
-default view notebook for notes
+default view notebook for Notebook
 
 default view note_editor for Note
 
 row view note_row for Note
 
 /// Starts a note. Its title starts empty: what is typed first names it.
-primary action new_note(notes: Notes) -> Note (icon: .plus, group: "Note", frequent: true) {
-    notes.insert(Note(title: ""))
+primary action new_note(nb: Notebook) -> Note (icon: .plus, group: "Note", frequent: true) {
+    nb.notes.insert(Note(title: ""))
 }
 
 /// Pins or unpins a note.
@@ -49,8 +53,8 @@ action pin(n: Note, pinned: Bool = not n.pinned) (
 }
 
 /// Deletes a note.
-destructive action delete(notes: Notes, n: Note) (icon: .trash, group: "Note") {
-    notes.remove(n)
+destructive action delete(nb: Notebook, n: Note) (icon: .trash, group: "Note") {
+    nb.notes.remove(n)
 }
 
 /// Renames a note.
@@ -68,19 +72,54 @@ action untag(n: Note, t: Text) (label: "Untag", group: "Tags") {
     n.tags.remove(t)
 }
 
-/// The notes in an order.
-fn listed(notes: Notes, order: NoteOrder) -> List<Note> {
+/// The notes of a notebook, in an order.
+fn listed(nb: Notebook, order: NoteOrder) -> List<Note> {
+    let notes: List<Note> = nb.notes
     match order {
         .created => notes,
         .title => notes.sort_by(.title),
     }
 }
 
-/// The notebook's window: its notes, each opening in a window of its own. The order is the
-/// window's, so everyone looking at it sees the same list.
-view notebook(notes: Notes) {
-    window order: NoteOrder = .created
-    std.list(notes, listed(notes, order), sort: order, empty: "No notes yet")
+/// The notebook's window: its notes, each opening in a window of its own, in the order the
+/// person looking chose, under the place they chose.
+view notebook(nb: Notebook) {
+    state query: Text = ""
+    state order: NoteOrder = .created
+    let places = [Note.pinned]
+    let everything = phrase("tilolang-all", kind: meta(Note).plural)
+    let title = places.find(f -> f.query == query)?.label ?? everything
+    let shown = listed(nb, order).matching(query)
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: .some(meta(nb).title),
+        overview_title: .some(title),
+        overview_count: .some(shown.len()),
+    ) {
+        sidebar: {
+            std.places(query, places, everything, icon: meta(Note).icon)
+        }
+        overview_actions: {
+            std.header(sort: order)
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No notes yet", icon: meta(Note).icon)
+            } else {
+                std.list(shown) { (n, at) ->
+                    ui.ListItem(item: n, presence: at) {
+                        note_row(n)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(
+                phrase("tilolang-none-selected", kind: meta(Note).noun),
+                icon: meta(Note).icon,
+            )
+        }
+    }
 }
 
 /// One note in a list: its title, the start of its body, and a pin when it is pinned.
@@ -107,13 +146,14 @@ view note_editor(n: Note) {
             }
         }
         ui.BlockEditor(bind: n.body, placeholder: "Write something")
+        discussion.thread(n)
         std.history(n)
     }
 }
 
 /// A notebook a week into a project: enough notes to scroll, a few of them pinned.
 scenario "a week of notes" -> Note {
-    let plan = notes.insert(
+    let plan = notebook.notes.insert(
         Note(
             title: "Q3 plan",
             body: RichText(
@@ -125,20 +165,20 @@ scenario "a week of notes" -> Note {
     plan.tags.add("planning")
     plan.tags.add("work")
     plan.tags.add("q3")
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Monday",
             body: RichText("Ada is on the sync bug. Bo pairs with Chen on the importer."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Groceries",
             body: RichText("Oat milk, eggs, sourdough, two lemons, coffee beans."),
             pinned: true,
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Interview questions",
             body: RichText(
@@ -146,19 +186,19 @@ scenario "a week of notes" -> Note {
             ),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Tuesday",
             body: RichText("Sync bug reproduced on two laptops. Importer handles tables now."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Book list",
             body: RichText("The Dispossessed, Piranesi, A Psalm for the Wild-Built."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Flat viewing",
             body: RichText(
@@ -166,38 +206,38 @@ scenario "a week of notes" -> Note {
             ),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Wednesday",
             body: RichText("Release candidate cut. Docs still need the new screenshots."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Gift ideas",
             body: RichText("A good kitchen knife for Sam, concert tickets for Mia."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Retro notes",
             body: RichText("Fewer meetings on Thursdays. Keep the demo at the end of each week."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Thursday",
-            body: RichText("Two blockers left. Chen is out on Friday."),
+            body: RichText("Two blockers left. Chen is out of office."),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Running plan",
             body: RichText("Three easy runs and one long run a week, up to fifteen kilometres."),
             pinned: true,
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Recipe: lentil soup",
             body: RichText(
@@ -205,7 +245,7 @@ scenario "a week of notes" -> Note {
             ),
         ),
     )
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Standup, Friday",
             body: RichText("Release went out at four. Nobody deploys over the weekend."),
@@ -216,7 +256,7 @@ scenario "a week of notes" -> Note {
 
 /// A notebook just started: one note, half written.
 scenario "a first note" {
-    notes.insert(
+    notebook.notes.insert(
         Note(
             title: "Ideas for the garden",
             body: RichText("Tomatoes along the south wall, herbs by the door."),

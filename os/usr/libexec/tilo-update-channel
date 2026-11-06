@@ -11,7 +11,10 @@
 #   tilo-update-channel next          the reference the next update follows: the pinned build
 #                                     while the channel has published nothing since it was
 #                                     pinned, else the channel's (dropping the pin); nothing
-#                                     when updates follow the installed origin
+#                                     when updates follow the installed origin, or when the
+#                                     booted deployment was installed from a local medium
+#   tilo-update-channel installed     the transport the booted deployment was installed from
+#                                     (registry for an image pulled from a registry)
 #   tilo-update-channel pin REF       follow REF, a dev image of this device, until the channel
 #                                     moves on (as root; `tilo device deploy` does this)
 #   tilo-update-channel unpin         follow the channel again
@@ -21,11 +24,19 @@
 # key, which only a dev image's own policy accepts (os/scripts/finalize-dev-image.py), so a
 # release image follows stable only. <target> is the board of a board image (its hardware
 # profile), else the architecture.
+#
+# A deployment installed from a local medium (oci-archive, docker-archive, dir, oci or
+# containers-storage: a developer's own image, verified where it was made) keeps the image it
+# was installed with. Nothing it follows names a registry reference until the person installs
+# one — `tilo device deploy` pins one, and the deployment booted after that switch is a
+# registry deployment again.
 set -euo pipefail
 
 POLICY="${TILO_UPDATE_POLICY:-/var/lib/tilo/update-policy}"
 ROOT="${TILO_UPDATE_CHANNEL_ROOT:-}"
 POLICY_SET="${TILO_UPDATE_POLICY_SET:-/usr/libexec/tilo-update-policy-set}"
+BOOTC="${TILO_UPDATE_CHANNEL_BOOTC:-/usr/bin/bootc}"
+FIELD="${TILO_UPDATE_CHANNEL_FIELD:-tilo-image-trust}"
 DEV_REPOSITORY=registry.tilo.so/tilo/tilo-vm
 
 die() { printf 'tilo-update-channel: %s\n' "$*" >&2; exit 1; }
@@ -85,11 +96,48 @@ digest() {  # $1 = reference; the manifest digest it names now
   skopeo inspect --raw "docker://$1" | sha256sum | sed 's/^\([0-9a-f]*\).*/sha256:\1/'
 }
 
+# The transport the booted deployment was installed from, through the image
+# trust parser: `bootc status` output is parsed field by field rather than
+# with a shell expression. Nothing when there is no booted deployment, or the
+# image cannot tell; an image that predates the selector, or a deployment
+# whose transport bootc did not record, reads as `registry`, which is what
+# bootc itself assumes.
+installed() {
+  local status transport
+  command -v "$BOOTC" >/dev/null 2>&1 || { echo registry; return 0; }
+  command -v "$FIELD" >/dev/null 2>&1 || { echo registry; return 0; }
+  status="$("$BOOTC" status --format json 2>/dev/null)" || { echo registry; return 0; }
+  [ -n "$status" ] || { echo registry; return 0; }
+  transport="$(printf '%s' "$status" | "$FIELD" bootc-status-field booted-transport 2>/dev/null || true)"
+  printf '%s\n' "${transport:-registry}"
+}
+# Whether the booted deployment came from a local medium rather than a
+# registry: a developer-installed image. The bootc transports that fetch
+# nothing remotely, as in the containers policy's own local-transport list.
+local_image() {
+  case "$(installed)" in
+    oci-archive|docker-archive|oci|dir|containers-storage) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 case "${1-}" in
   list) list ;;
   current) current ;;
   ref) ref "${2:-$(current)}" ;;
+  installed) installed ;;
   next)
+    # A developer-installed deployment keeps its image until the person
+    # installs another: no channel reference replaces it. Switching it to a
+    # registry channel could replace a locally verified image with whichever
+    # build that channel published last, which is how a device came to fetch a
+    # CI image its own policy refuses. `tilo-update-channel pin` is the one way
+    # to name a registry reference for it, and that is what installing another
+    # image does.
+    if local_image; then
+      [ -z "$(policy pin)" ] || printf '%s\n' "$(policy pin)"
+      exit 0
+    fi
     channel="$(ref "$(current)")"
     pin="$(policy pin)"
     if [ -n "$pin" ] && [ -n "$channel" ]; then
@@ -111,5 +159,5 @@ case "${1-}" in
     "$POLICY_SET" pin "$pin" "$base"
     ;;
   unpin) "$POLICY_SET" unpin ;;
-  *) die 'usage: tilo-update-channel list|current|ref [NAME]|next|pin REF|unpin' ;;
+  *) die 'usage: tilo-update-channel list|current|ref [NAME]|installed|next|pin REF|unpin' ;;
 esac

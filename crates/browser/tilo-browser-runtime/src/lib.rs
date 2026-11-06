@@ -91,6 +91,17 @@ mod clipboard;
 mod console_log;
 #[cfg(target_arch = "wasm32")]
 mod crash;
+// The record each window shows on the workspace's shared desk: its tests run
+// on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser page opens windows; the host runs its tests"
+    )
+)]
+mod desk_records;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]

@@ -17,3 +17,16 @@ screenshot-send-save-failed = Speichern in den Dateien dieses Arbeitsbereichs ni
 screenshot-send-too-many = In { $path } ist jeder Name vergeben
 screenshot-send-too-large = Ein Nearby-Versand trägt bis zu { $limit }; dieses Bildschirmfoto ist { $size } groß
 screenshot-send-refused = Das Bildschirmfoto wurde nicht angeboten: { $reason }
+
+# Why a capture the person took did not come out as they asked.
+capture-failed-recording-not-started = Eine Aufnahme wurde nicht gestartet: { $why }
+capture-failed-recording-stopped = Die Aufnahme wurde beendet: { $why }
+capture-failed-replay-not-started = Die letzte halbe Minute konnte nicht behalten werden: { $why }
+capture-failed-replay-stopped = Die letzte halbe Minute wird nicht mehr behalten: { $why }
+capture-failed-sound-lost = Die Aufnahme enthält keinen weiteren Ton: ihre Quelle endete
+capture-failed-not-taken = Ein Bildschirmfoto wurde nicht aufgenommen: { $why }
+capture-failed-not-written = Ein Bildschirmfoto wurde nicht geschrieben: { $why }
+capture-failed-not-copied = Ein Bildschirmfoto wurde gespeichert, aber nicht kopiert: { $why }
+capture-failed-not-read = Ein Bildschirmfoto wurde nicht kopiert: { $why }
+capture-failed-clip-not-saved = Ein Ausschnitt des gerade Geschehenen wurde nicht gespeichert: { $why }
+capture-failed-not-opened = { $path } konnte nicht geöffnet werden: { $why }

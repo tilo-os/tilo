@@ -205,7 +205,12 @@ impl Dictation {
                 Answer::Copy(id) => {
                     let id = SessionId::new(id);
                     let copied = self.link.recovery(id).is_some_and(|text| {
-                        clipboard.copy_for_person(compositor, TEXT_MIME, text.as_bytes().to_vec())
+                        clipboard.copy_for_person(
+                            compositor,
+                            TEXT_MIME,
+                            text.as_bytes().to_vec(),
+                            None,
+                        )
                     });
                     self.link.copied(id, copied);
                 }

@@ -391,6 +391,26 @@ impl Joined {
         )
     }
 
+    /// The scope `route`'s record seals under, as `workspace`'s governance
+    /// decides it at `now` (Unix seconds), or `None` while governance cannot
+    /// be read: a guessed scope could hand a device keys its record's policy
+    /// withholds.
+    pub(super) fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &collab_types::ChannelRoute,
+        now: u64,
+    ) -> Option<collab_types::ChannelId> {
+        let at = std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(now))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        self.owner
+            .with_current(workspace, |view| {
+                view.peer().governance().unit_scope(at, route)
+            })
+            .ok()
+    }
+
     fn invited_workspace(&self, invitation: &str) -> Result<WorkspaceId, String> {
         let now = tilo_clock::try_unix_now_ns().ok_or("the clock is before the Unix epoch")?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(

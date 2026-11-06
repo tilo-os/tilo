@@ -15,6 +15,10 @@ description = "The imports a Rust app's model module calls and the exports it an
 name = "tilo_model_abi"
 path = "src/lib.rs"
 
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
 

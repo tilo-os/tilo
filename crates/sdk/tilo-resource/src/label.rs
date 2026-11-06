@@ -18,7 +18,12 @@ use std::sync::RwLock;
 /// `None` when none of their catalogues holds it.
 pub type Resolver = fn(&str) -> Option<String>;
 
+/// How a host resolves [`noun_key`] with the count `1` (one of it) or `2`
+/// (several); `None` when none of their catalogues holds it.
+pub type NounResolver = fn(&str, u32) -> Option<String>;
+
 static RESOLVER: RwLock<Option<Resolver>> = RwLock::new(None);
+static NOUN_RESOLVER: RwLock<Option<NounResolver>> = RwLock::new(None);
 
 /// Let every kind published from now on be named through `resolver`.
 ///
@@ -30,6 +35,18 @@ static RESOLVER: RwLock<Option<Resolver>> = RwLock::new(None);
 /// a state any caller can be handed.
 pub fn install(resolver: Resolver) {
     *RESOLVER
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
+}
+
+/// Let every kind published from now on read its noun through `resolver`:
+/// one message with `$count`, one for a count of `1` and one for several
+/// ([`noun_key`]). A later call replaces an earlier one.
+///
+/// # Panics
+/// Only if the lock was poisoned by a panic while installing.
+pub fn install_noun(resolver: NounResolver) {
+    *NOUN_RESOLVER
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(resolver);
 }
@@ -70,6 +87,34 @@ pub fn published(kind: &str, label: &str, declared: &str) -> String {
     }
 }
 
+/// The catalogue key a kind's noun is stored under: [`message_key`] and
+/// `-noun`, one message with `$count` (`{ $count -> [one] person *[other]
+/// people }`). A type whose name English cannot pluralise writes it; a
+/// catalogue that does not hold it leaves the derived noun.
+#[must_use]
+pub fn noun_key(kind: &str) -> String {
+    format!("{}-noun", message_key(kind))
+}
+
+/// The noun `derived` for the type of `kind`, in the person's language: the
+/// catalogue's message for it, one and several, where one of theirs holds
+/// it, `derived` otherwise. A kind's noun is code's to derive and the
+/// catalogue's to refine, never a list of irregulars in code.
+#[must_use]
+pub fn localized_noun(kind: &str, derived: tilo_actions::Noun) -> tilo_actions::Noun {
+    let resolver = *NOUN_RESOLVER
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(resolve) = resolver else {
+        return derived;
+    };
+    let key = noun_key(kind);
+    tilo_actions::Noun {
+        one: resolve(&key, 1).unwrap_or(derived.one),
+        many: resolve(&key, 2).unwrap_or(derived.many),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +152,26 @@ mod tests {
         assert_eq!(
             published("add-app.question", "Frogs, by name", "Add to apps"),
             "Frogs, by name"
+        );
+    }
+
+    #[test]
+    fn a_kind_refines_its_noun_from_its_entry_and_keeps_the_derived_one_without_it() {
+        install_noun(|key, count| match (key, count) {
+            ("people-person-noun", 1) => Some("person".to_owned()),
+            ("people-person-noun", 2) => Some("people".to_owned()),
+            _ => None,
+        });
+        assert_eq!(noun_key("people.person"), "people-person-noun");
+        assert_eq!(
+            localized_noun("people.person", tilo_actions::Noun::of_type("Person")),
+            tilo_actions::Noun::new("person", "people"),
+            "the catalogue says what several are"
+        );
+        assert_eq!(
+            localized_noun("lock.screen", tilo_actions::Noun::of_type("Screen")),
+            tilo_actions::Noun::new("screen", "screens"),
+            "a noun no catalogue holds is the derived one"
         );
     }
 }

@@ -37,6 +37,7 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             serde_json::Number::from_f64(*f).map_or_else(|| json!(f.to_string()), Json::Number)
         }
         Value::Bool(b) => json!(b),
+        Value::Json(json) => (**json).clone(),
         Value::Text(s) => project_text(s, opts),
         // As the person the agent acts for reads it: never a title they cannot read.
         Value::Rich(r) => project_text(&core.read_rich(r, false), opts),
@@ -82,6 +83,12 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
         ),
         Value::Offered(offered) => json!({ "action": offered.label }),
         Value::Picture(src) => json!({ "picture": src }),
+        Value::Bytes(bytes) => json!({ "bytes": bytes.len() }),
+        Value::Response(response) => json!({
+            "status": response.status,
+            "status_text": response.status_text,
+            "ok": response.ok(),
+        }),
         Value::Node(_)
         | Value::Rec(_)
         | Value::Event

@@ -34,8 +34,8 @@ use std::time::{Duration, Instant};
 
 use tilo_capture_studio::audio::{Availability, Track as AudioTrack};
 use tilo_capture_studio::{
-    Ask, Finished, Frame, Kept, REPLAY_FPS, Recording, Refusal, Scene, Selection, Sent, Studio,
-    Take,
+    Ask, Failed, Failure, Finished, Frame, Kept, REPLAY_FPS, Recording, Refusal, Scene, Selection,
+    Sent, Studio, Take,
 };
 use tilo_compositor::capture::Target;
 use tilo_compositor::{Compositor, Screenshot};
@@ -91,6 +91,15 @@ pub(crate) struct CaptureStudio {
     /// What became of sending the last screenshot, while its receipt shows
     /// that.
     sent: Option<Sent>,
+    /// Why the last capture the person took did not come out, while the bar
+    /// says so.
+    failed: Option<Failed>,
+    /// How many of the person's captures did not come out: what tells two
+    /// alike failures apart, so taking the same capture again says it again.
+    failures: u64,
+    /// The run whose unread frames were already said: a capture that reads no
+    /// frame says it once, not on every frame.
+    unread_said: Option<u64>,
     /// An app's screenshot of what only the person can name, while it waits
     /// for them: the studio is up choosing exactly that.
     asking: Option<Asked>,
@@ -156,6 +165,9 @@ struct Feeding {
     path: Option<PathBuf>,
     last: Option<Instant>,
     paused: bool,
+    /// A source of its sound stopped: the bar says the recording carries no
+    /// more of it, once.
+    sound_lost: bool,
 }
 
 /// Mount the capture studio over the desktop, and hand back the session's end
@@ -199,6 +211,9 @@ pub(crate) fn mount(
                 ),
                 nearby: nearby.cloned(),
                 sent: None,
+                failed: None,
+                failures: 0,
+                unread_said: None,
                 asking: None,
                 feeding: None,
                 run: 0,
@@ -231,14 +246,7 @@ impl CaptureStudio {
     /// Open the studio on what an app asked for, as the person's own shortcut
     /// opens it: the bar comes up choosing that kind of capture.
     pub(crate) fn open_asked(&self, mode: ui::floating_surface::CaptureStudioProtocolMode) {
-        use ui::floating_surface::CaptureStudioProtocolMode as Mode;
-        use ui::widget::CaptureMode;
-        let mode = match mode {
-            Mode::Screenshot => CaptureMode::Screenshot,
-            Mode::Recording => CaptureMode::Recording,
-            Mode::PictureInPicture => CaptureMode::Pip,
-        };
-        self.seat.link().open_on(mode);
+        self.seat.link().open_on(mode.into());
         self.presentation().open(false);
     }
 
@@ -261,6 +269,7 @@ impl CaptureStudio {
         // app's request is an answer rather than a selection left closed.
         self.cancel_asking();
         self.feed(compositor);
+        self.tell_sound_lost();
         self.publish(compositor);
     }
 
@@ -280,10 +289,22 @@ impl CaptureStudio {
                     result: Err(error), ..
                 } => {
                     tracing::warn!(%error, "a capture was not started");
+                    let keeping = self.replay_buffer_runs();
+                    self.failed(if keeping {
+                        Failure::ReplayNotStarted(error)
+                    } else {
+                        Failure::RecordingNotStarted(error)
+                    });
                     self.end_feeding();
                 }
                 Note::Frame { error, .. } => {
                     tracing::warn!(%error, "a frame of the recording was not encoded");
+                    let keeping = self.replay_buffer_runs();
+                    self.failed(if keeping {
+                        Failure::ReplayStopped(error)
+                    } else {
+                        Failure::RecordingStopped(error)
+                    });
                     // Whatever was written stays in a file that is finished
                     // rather than left behind.
                     self.end_feeding();
@@ -292,6 +313,7 @@ impl CaptureStudio {
                 Note::SoundLost { track, .. } => {
                     if let Some(feeding) = &mut self.feeding {
                         feeding.audio.retain(|audio| audio.mux() != track);
+                        feeding.sound_lost = true;
                     }
                 }
                 Note::Stopped { ended, dropped, .. } => match ended {
@@ -353,15 +375,14 @@ impl CaptureStudio {
                         continue;
                     };
                     if receipt.copy {
-                        match written.png {
-                            Some(png) => {
-                                if let Err(error) = clipboard(png, compositor) {
-                                    tracing::warn!(%error, "a screenshot was not copied");
-                                }
+                        if let Some(png) = written.png {
+                            if let Err(error) = clipboard(png, compositor) {
+                                tracing::warn!(%error, "a screenshot was not copied");
+                                self.failed(Failure::NotCopied(error));
                             }
-                            None => {
-                                tracing::warn!("a screenshot was written without its picture");
-                            }
+                        } else {
+                            tracing::warn!("a screenshot was written without its picture");
+                            self.failed(Failure::NotCopied("its picture was not kept".to_owned()));
                         }
                     }
                     self.last = Some(Kept {
@@ -379,8 +400,13 @@ impl CaptureStudio {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "a screenshot was not written");
-                    if let Some(reply) = shot.reply {
-                        let _ = reply.send(Err(CaptureError::Failed(error)));
+                    match shot.reply {
+                        // An app asked for this one: it is answered, not the
+                        // person, who never saw the capture.
+                        Some(reply) => {
+                            let _ = reply.send(Err(CaptureError::Failed(error)));
+                        }
+                        None => self.failed(Failure::NotWritten(error)),
                     }
                 }
             }
@@ -394,9 +420,13 @@ impl CaptureStudio {
                 Ok(png) => {
                     if let Err(error) = clipboard(png, compositor) {
                         tracing::warn!(%error, "a screenshot was not copied again");
+                        self.failed(Failure::NotCopied(error));
                     }
                 }
-                Err(error) => tracing::warn!(%error, "a screenshot was not read again"),
+                Err(error) => {
+                    tracing::warn!(%error, "a screenshot was not read again");
+                    self.failed(Failure::NotRead(error));
+                }
             }
         }
     }
@@ -411,6 +441,7 @@ impl CaptureStudio {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "a clip of what just happened was not saved");
+                    self.failed(Failure::ClipNotSaved(error));
                 }
             }
         }
@@ -421,6 +452,35 @@ impl CaptureStudio {
         self.feeding = None;
         self.recording = None;
         self.replay = None;
+    }
+
+    /// Whether what runs feeds the replay buffer rather than a recording.
+    fn replay_buffer_runs(&self) -> bool {
+        self.feeding
+            .as_ref()
+            .is_some_and(|feeding| feeding.path.is_none())
+    }
+
+    /// Say on the bar what went wrong with the capture the person took: the
+    /// reason stays on the thing they touched, and a capture taken again says
+    /// itself again.
+    fn failed(&mut self, failure: Failure) {
+        self.failures = self.failures.wrapping_add(1);
+        self.failed = Some(Failed {
+            number: self.failures,
+            failure,
+        });
+    }
+
+    /// Say that what runs carries no more of a sound that stopped, once.
+    fn tell_sound_lost(&mut self) {
+        let lost = self
+            .feeding
+            .as_mut()
+            .is_some_and(|feeding| std::mem::take(&mut feeding.sound_lost));
+        if lost {
+            self.failed(Failure::SoundLost);
+        }
     }
 
     /// Ask the person for what an app's screenshot of `target` needs: the
@@ -497,8 +557,8 @@ impl CaptureStudio {
                 }
                 self.replay = None;
             }
-            Ask::Open(path) => Self::open(&path, false),
-            Ask::Reveal(path) => Self::open(&path, true),
+            Ask::Open(path) => self.open(&path, false),
+            Ask::Reveal(path) => self.open(&path, true),
             Ask::CopyLast => {
                 if let Some(kept) = &self.last {
                     let read = self.io.read(kept.path.clone());
@@ -556,6 +616,7 @@ impl CaptureStudio {
             Ok(audio) => audio,
             Err(error) => {
                 tracing::warn!(%error, "a recording's sound was not started");
+                self.failed(Failure::RecordingNotStarted(error));
                 return;
             }
         };
@@ -573,12 +634,14 @@ impl CaptureStudio {
         let run = self.run;
         let names = audio.iter().map(|track| track.name().to_owned()).collect();
         self.io.open(run, Some(path.clone()), names);
+        self.unread_said = None;
         self.feeding = Some(Feeding {
             take,
             audio,
             path: Some(path.clone()),
             last: None,
             paused: false,
+            sound_lost: false,
         });
         self.recording = Some(Recording {
             path,
@@ -615,6 +678,7 @@ impl CaptureStudio {
             Ok(audio) => audio,
             Err(error) => {
                 tracing::warn!(%error, "the replay buffer's sound was not started");
+                self.failed(Failure::ReplayNotStarted(error));
                 return;
             }
         };
@@ -622,12 +686,14 @@ impl CaptureStudio {
         let run = self.run;
         let names = audio.iter().map(|track| track.name().to_owned()).collect();
         self.io.open(run, None, names);
+        self.unread_said = None;
         self.feeding = Some(Feeding {
             take,
             audio,
             path: None,
             last: None,
             paused: false,
+            sound_lost: false,
         });
         self.finished = None;
         self.replay = Some(0);
@@ -680,6 +746,15 @@ impl CaptureStudio {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "a frame of the recording was not read");
+                if self.unread_said != Some(self.run) {
+                    self.unread_said = Some(self.run);
+                    let keeping = feeding.path.is_none();
+                    self.failed(if keeping {
+                        Failure::ReplayStopped(error)
+                    } else {
+                        Failure::RecordingStopped(error)
+                    });
+                }
                 return;
             }
         };
@@ -739,6 +814,7 @@ impl CaptureStudio {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "a screenshot was not taken");
+                self.failed(Failure::NotTaken(error));
                 return;
             }
         };
@@ -746,6 +822,7 @@ impl CaptureStudio {
             image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())
         else {
             tracing::warn!("a screenshot was not taken: a frame of the wrong size");
+            self.failed(Failure::NotTaken("the frame was the wrong size".to_owned()));
             return;
         };
         let receipt = Receipt {
@@ -764,7 +841,7 @@ impl CaptureStudio {
 
     /// Open the capture at `path` in the person's app for it, or show it in
     /// Files.
-    fn open(path: &Path, reveal: bool) {
+    fn open(&mut self, path: &Path, reveal: bool) {
         let path = if reveal {
             path.parent().unwrap_or_else(|| Path::new("."))
         } else {
@@ -772,6 +849,10 @@ impl CaptureStudio {
         };
         if let Err(error) = std::process::Command::new("xdg-open").arg(path).spawn() {
             tracing::warn!(%error, path = %path.display(), "a capture was not opened");
+            self.failed(Failure::NotOpened {
+                path: path.to_path_buf(),
+                error: error.to_string(),
+            });
         }
     }
 
@@ -812,6 +893,7 @@ impl CaptureStudio {
             kept: self.last.clone(),
             devices,
             sent: self.sent.clone(),
+            failed: self.failed.clone(),
             // Frames the encoder was too far behind to take so far: the
             // studio says them while the recording runs and on its receipt.
             recording: self.recording.as_ref().map(|recording| Recording {
@@ -847,6 +929,7 @@ impl Feeding {
                         source = track.name(),
                         "a recording's sound stopped"
                     );
+                    self.sound_lost = true;
                     ended.push(index);
                 }
             }

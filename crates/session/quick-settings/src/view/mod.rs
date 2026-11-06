@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::framework::{Effected, Upkeep, ViewCx};
+use ui::framework::{Effected, ViewCx};
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
@@ -146,7 +146,6 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);
-    let synced = parts.now_playing.clone();
     let told = Rc::clone(&host);
     let page = cx.switch(&showing, move |cx, showing| {
         told.showing(showing);
@@ -170,22 +169,12 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     let card = FloatingPanel::new(Box::new(body))
         .footer(root::footer(cx))
         .fill_width();
-    let panel = Box::new(
+    Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_label(crate::i18n::t("qs-title"))
             .with_child(Box::new(card)),
-    ) as Element;
-    // The readings arrive on the worker; the transport band is this
-    // process's own, so it is shown what plays here, before the widgets
-    // sync.
-    cx.upkeep(
-        Upkeep::new().syncing(move || {
-            let playing = readings.read(|state| state.now_playing.clone());
-            synced.show(playing.as_ref());
-        }),
-        panel,
-    )
+    ) as Element
 }
 
 /// `page`, told why the last press did not reach the device when it did not:

@@ -13,6 +13,7 @@ use serde_json::Value as Json;
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i32, ret_i64, ret_void, trap};
 use crate::engine::Wasm;
+use crate::error::RuntimeError;
 use crate::handles::FrameKind;
 use crate::ids::{ModuleHash, Principal};
 use crate::meta::{FieldKind, Ty};
@@ -41,48 +42,10 @@ fn field_in<'a>(info: &'a TypeInfo, field: &str) -> HResult<&'a FieldInfo> {
 }
 
 fn spec(f: &FieldInfo) -> FieldSpec {
-    spec_for(f, None)
-}
-
-/// A field as the record holds it whole: a personal one holds every person's value, read as
-/// [`FieldValue::Entries`] of the person to their value.
-pub(crate) fn spec_all(f: &FieldInfo) -> FieldSpec {
-    // The map under the field's own key is what holds them.
-    let kind = if f.personal {
-        crate::meta::FieldKind::Map
-    } else {
-        f.kind
-    };
     FieldSpec {
         id: f.id.clone(),
-        kind,
+        kind: f.kind,
     }
-}
-
-/// `whole`, the value of `field` as the record holds it, as it reads for `person`: their entry
-/// of a personal field, and absent when they set none. Any other field, or any other person,
-/// reads it whole.
-pub(crate) fn for_person(field: &FieldInfo, whole: FieldValue, person: Option<&str>) -> FieldValue {
-    let (Some(person), true) = (person, field.personal) else {
-        return whole;
-    };
-    match whole {
-        FieldValue::Entries(entries) => entries
-            .into_iter()
-            .find(|(of, _)| of == person)
-            .map_or(FieldValue::Absent, |(_, value)| FieldValue::Scalar(value)),
-        _ => FieldValue::Absent,
-    }
-}
-
-/// The field a personal one reads or writes for `person`: `id@person`, the id the store keeps
-/// a person's value under. Any other field reads under its own id.
-fn spec_for(f: &FieldInfo, person: Option<&str>) -> FieldSpec {
-    let id = match person {
-        Some(person) if f.personal => tilolang::personal::id(&f.id, person),
-        _ => f.id.clone(),
-    };
-    FieldSpec { id, kind: f.kind }
 }
 
 fn type_default(ty: &Ty) -> Result<Value, String> {
@@ -112,6 +75,9 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Enum(_)
         | Ty::Filter(_)
         | Ty::Result(..)
+        | Ty::Bytes
+        | Ty::Response
+        | Ty::Json
         | Ty::Error => {
             return Err("the field has no value yet and no default".to_owned());
         }
@@ -312,6 +278,24 @@ impl Core {
         why
     }
 
+    /// Why a call of the view `view` of `app` failed — no loaded package declares it — and, for
+    /// a view of an app whose package this runtime does not hold, the ask that loads that app's
+    /// package ([`crate::Runtime::take_wanted_packages`]): the call draws its waiting state
+    /// where it stands and runs again when the package arrives
+    /// ([`crate::foreign::packages_key`]). A view of an app this runtime runs that declares
+    /// none is a fault.
+    pub(crate) fn missing_view(&self, app: &str, view: &str) -> RuntimeError {
+        let why = format!("view {view} of `{app}` is not declared by any loaded package");
+        // A view of an app whose package this runtime does not hold may come: ask for it, and
+        // the call waits rather than faults. One of an app loaded here is a mistake in the
+        // view, and stays a fault.
+        if !self.registry.borrow().holds_app(app) {
+            self.wanted_packages.borrow_mut().want_app(app);
+            self.foreign.borrow().remember_waiting(&why);
+        }
+        RuntimeError::NotFound(why)
+    }
+
     pub(crate) fn ref_arg(&self, h: i32) -> HResult<RefValue> {
         self.with_val(h, |v| match v {
             Value::Ref(r) => Ok(r.clone()),
@@ -445,21 +429,7 @@ impl Core {
                 .borrow_mut()
                 .field(target, field, author, &registry);
         }
-        // A personal field reads the value of the person looking; nobody looking reads the
-        // value a person who never set it has.
-        let person = if field.personal {
-            match self.looking_now() {
-                Some(person) => Some(person),
-                None => return declared_default(&field.ty, field.default.as_ref()),
-            }
-        } else {
-            None
-        };
-        let fv = match self
-            .store
-            .borrow()
-            .read(target, &spec_for(field, person.as_deref()))
-        {
+        let fv = match self.store.borrow().read(target, &spec(field)) {
             Ok(fv) => fv,
             // A root nobody opened yet reads as it would start (`root T` names it anywhere).
             Err(crate::store::StoreError::NotFound(_)) if target.is_unmade_root() => {
@@ -612,9 +582,35 @@ impl Core {
     }
 
     fn res_get(&self, rh: i32, fh: i32) -> HResult<Value> {
-        let in_flow = self.frames.borrow().flow().is_some();
-        if in_flow {
-            // A flow's reads go through its journal, which takes the frames to record them.
+        // A record value (one `json.decode` read) has its fields where it was built, not in the
+        // store: a read of one is that value, or what the type declares for a field text left
+        // out. Its id comes when it is put in a collection.
+        if self.with_val(rh, |v| Ok(matches!(v, Value::Rec(_))))? {
+            let field = self.text(fh)?;
+            return self.with_val(rh, |v| {
+                let Value::Rec(rec) = v else {
+                    return trap("expected a record");
+                };
+                let registry = self.registry.borrow();
+                let Some((_, info)) = registry.type_info(&rec.ty) else {
+                    return trap(format!(
+                        "`{}` is not declared by any loaded package",
+                        rec.ty
+                    ));
+                };
+                let f = field_in(&info, &field)?.clone();
+                match rec.fields.get(&f.id) {
+                    Some(held) => Ok(whole_map(f.kind, held.clone())),
+                    None => match declared_default(&f.ty, f.default.as_ref()) {
+                        Ok(v) => Ok(whole_map(f.kind, v)),
+                        Err(why) => trap(why),
+                    },
+                }
+            });
+        }
+        let in_run = self.frames.borrow().run().is_some();
+        if in_run {
+            // A run's reads go through its journal, which takes the frames to record them.
             let target = Rc::unwrap_or_clone(self.ref_arg(rh)?.target);
             let field = self.text(fh)?;
             let (_, f) = self.lookup_field(&target, &field)?;
@@ -725,11 +721,7 @@ impl Core {
     }
 
     fn apply_mut(&self, ctx: &MutCtx, m: &Mutation) -> HResult<Applied> {
-        let applied = self
-            .store
-            .borrow_mut()
-            .apply(ctx.txn, &ctx.target, m)
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let applied = self.journaled_apply(ctx.txn, &ctx.target, m)?;
         self.touched(ctx.target.id_string());
         Ok(applied)
     }
@@ -745,12 +737,7 @@ impl Core {
 
     fn res_set(&self, rh: i32, fh: i32, v: &Value) -> HResult<Option<Wasm>> {
         let ctx = self.mut_ctx(rh, fh)?;
-        // A personal field writes the value of the person the action runs as: everyone's own.
-        let id = if ctx.field.personal {
-            tilolang::personal::id(&ctx.field.id, &self.looking()?)
-        } else {
-            ctx.field.id.clone()
-        };
+        let id = ctx.field.id.clone();
         let m = match ctx.field.kind {
             FieldKind::Register => Mutation::SetRegister {
                 field: id,
@@ -903,12 +890,20 @@ impl Core {
             app: String::new(),
             fields: item_ty.specs(),
         };
+        // The id it is given is a read like any other: a run that is run again after it waited
+        // gives the item the id it gave it before.
+        let id =
+            match self.journaled_read(|| Ok(Value::Text(self.store.borrow_mut().fresh_id("i"))))? {
+                Value::Text(id) => id,
+                other => return trap(format!("expected an id, got {}", other.kind_name())),
+            };
         let applied = self.apply_mut(
             &ctx,
             &Mutation::CollInsert {
                 field: ctx.field.id.clone(),
                 item: new,
                 index: None,
+                id: Some(id),
             },
         )?;
         let Applied::Item(id) = applied else {
@@ -962,10 +957,7 @@ impl Core {
                     ));
                 }
             };
-            self.store
-                .borrow_mut()
-                .apply(ctx.txn, target, &m)
-                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+            self.journaled_apply(ctx.txn, target, &m)?;
         }
         Ok(())
     }
@@ -1106,6 +1098,7 @@ impl Core {
             | Imp::MapSetAdd
             | Imp::MapSetRemove => self.set_map_import(imp, a),
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
+            Imp::MapGetValue | Imp::MapKeysValue => self.map_value_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {

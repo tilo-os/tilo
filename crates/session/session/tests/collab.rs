@@ -225,7 +225,7 @@ struct Host {
 }
 
 impl AppActions for Host {
-    fn published(&self) -> Vec<PublishedActions> {
+    fn published(&self, _: &str) -> Vec<PublishedActions> {
         Vec::new()
     }
 
@@ -809,6 +809,89 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
     assert!(
         control(&session, &["profile-message", "Message"]).is_none(),
         "the card closed: {:?}",
+        session.controls()
+    );
+}
+
+/// Your own avatar opens your card, from the surface another person's does:
+/// your name and picture as everyone here sees them, and your identity, its
+/// backup and pairing another device, each in one place.
+#[test]
+fn your_own_avatar_opens_your_card() {
+    let _settled = ui::motion::testing::settled();
+    let mine = OwnPresence {
+        label: "Quinten".to_owned(),
+        user: Some(person(QUINTEN)),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), mine));
+    let mut session = session_over(&sync, None);
+    // The pointer comes up to the bar, as the person's does to press it.
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
+        .expect("the pointer");
+    let mut avatar = None;
+    let mut named = None;
+    until(&mut session, "the bar shows whose it is", |session| {
+        let found = session
+            .controls()
+            .into_iter()
+            .find(|(name, _)| name.ends_with("(you): your profile"));
+        named = found.as_ref().map(|(name, _)| name.clone());
+        avatar = found.map(|(_, rect)| rect);
+        avatar.is_some()
+    });
+    // The bar's face and the card's are one: the name they gave, not the
+    // account they happen to log in with, and one initial drawn in one
+    // colour.
+    assert_eq!(
+        named.as_deref(),
+        Some("Quinten (you): your profile"),
+        "the bar names the person as they gave themselves"
+    );
+    press(&mut session, avatar.expect("the bar's own avatar"));
+    until(&mut session, "your card opens", |session| {
+        control(session, &["profile-name", "Your name"]).is_some()
+    });
+    let labels = session.accessible_labels();
+    for said in [
+        "How everyone here sees you",
+        "Your identities",
+        "Back up your identity",
+        "Pair another device",
+        // The device the card is drawn on is named by which one it is, and
+        // its key is kept for the copy affordance beside it.
+        "This computer",
+        "this device",
+        "Copy this device’s key",
+    ] {
+        assert!(
+            labels.iter().any(|label| label == said),
+            "your own card says {said:?}: {labels:?}"
+        );
+    }
+    assert!(
+        !labels.iter().any(|label| label == "Message"),
+        "your own card has nothing to message: {labels:?}"
+    );
+    // Their id says who they are, so it sits quiet under their identity; the
+    // card opens on what they came to change.
+    let at = |said: &str| labels.iter().position(|label| label == said);
+    let (identity, key, devices) = (
+        at("Your identities").expect("the identity actions"),
+        at("Person ID").expect("the person's own id"),
+        at("Devices").expect("the devices they are here on"),
+    );
+    assert!(
+        identity < key && key < devices,
+        "the id sits under your identity, not at the top of the card: {labels:?}"
+    );
+    capture(&mut session, "own-card");
+
+    assert!(
+        control(&session, &["profile-card", "Your profile"]).is_some(),
+        "one card, the same surface another person's opens in: {:?}",
         session.controls()
     );
 }

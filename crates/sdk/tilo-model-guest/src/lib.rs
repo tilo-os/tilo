@@ -12,9 +12,11 @@
 //! The host loads the module, finds the export [`abi::export`] names for a record's kind, and
 //! calls it with no arguments. The module pulls its [`Request`] with the `request` import,
 //! runs the model against the document the request carried, and publishes its [`Answer`] — or
-//! its [`Refused`] — with `answer` or `fail`. Everything crosses as JSON in the module's own
+//! its [`Refusal`] — with `answer` or `fail`. Everything crosses as JSON in the module's own
 //! memory: the host never sees a Rust type of the model's, and the model never sees a key, a
 //! transport or a file.
+//!
+//! # Determinism
 //!
 //! The clock, the invoker and entropy are the host's too. Entropy matters most: the
 //! document's actor id and the `uuid` crate both draw it through `getrandom`, whose custom
@@ -26,154 +28,38 @@
 //!
 //! [`serve_record!`] names the resource type the module serves at one export, and the export's
 //! symbol is [`abi::export`] of its kind. Nothing else has to be kept in step with it.
+//!
+//! ```ignore
+//! tilo_model_guest::serve_record!(Tracker, record_tasks_tracker);
+//! ```
 
 use base64::Engine as _;
-use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
 use tilo_actions::{
-    ActionAddress, ActionContext, ActionInvoker, ActionRegistry, DoorError, ResourceSpec,
+    ActionAddress, ActionContext, ActionInvoker, ActionRegistry, ActionSpec, Availability,
+    DoorError, ParamType, ResourceSpec,
 };
-use tilo_resource::{Doc, ModelError, Resource, ResourceKind};
+use tilo_model_abi::{
+    ActionNode, Answer, Asked, BUFFER_START, NounNode, Op, ParamNode, Refusal, RefusalKind,
+    Request, ResourceNode, StateNode, TypeNode,
+};
+use tilo_resource::{Doc, Resource, ResourceKind};
 
 pub use tilo_model_abi as abi;
 
-/// What the host asks the module to do.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Request {
-    /// Which operation this is.
-    pub op: Op,
-    /// The record's kind (`tasks.tracker`).
-    pub kind: String,
-    /// The resource address the record is published at.
-    pub address: String,
-    /// The record's document, saved, as base64: `None` for one that does not exist yet.
-    #[serde(default)]
-    pub document: Option<String>,
-    /// The action the host admits, for [`Op::Invoke`].
-    #[serde(default)]
-    pub action: Option<Asked>,
-    /// What the reading is of: nothing for the record itself, or the id of one of its items.
-    #[serde(default)]
-    pub item: Option<String>,
-    /// Whether `address` names the record itself, rather than one of its items.
-    #[serde(default)]
-    pub record: bool,
-    /// Who invokes, as the session decided it: the person, an agent acting for them, or the
-    /// app. The module never chooses it.
-    #[serde(default)]
-    pub invoker: Option<ActionInvoker>,
-    /// The time the change is made at, in milliseconds since the Unix epoch, as the session
-    /// read it once for this invocation.
-    #[serde(default)]
-    pub now_ms: i64,
-}
-
-/// What the host asks the model to do with the record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Op {
-    /// Open the record, or write its genesis when it holds none, and answer its document.
-    Open,
-    /// Bring the record up to the model's version ([`ResourceKind::migrate`]).
-    Migrate,
-    /// Answer what the record offers: its tree of actions and items.
-    Offers,
-    /// Answer a reading of the record, or of one of its items.
-    Read,
-    /// Run an action of the record and answer its document and reading.
-    Invoke,
-}
-
-/// An action the host admits, as the door named it.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Asked {
-    /// The action's name (`create`).
-    pub action: String,
-    /// Its arguments, by parameter name.
-    #[serde(default)]
-    pub arguments: serde_json::Map<String, Json>,
-}
-
-/// What the module answers.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub struct Answer {
-    /// The record's document, saved, as base64: the host keeps it as it is now.
-    #[serde(default)]
-    pub document: Option<String>,
-    /// Whether the record was made by this call, having held nothing before.
-    #[serde(default)]
-    pub created: bool,
-    /// What the record offers, for [`Op::Offers`].
-    #[serde(default)]
-    pub offers: Option<Json>,
-    /// The reading, for [`Op::Read`] and after [`Op::Invoke`].
-    #[serde(default)]
-    pub reading: Option<Json>,
-}
-
-/// Why the module refused a call: what the host reports as the door's answer.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Refused {
-    /// What kind of refusal it is.
-    pub kind: RefusalKind,
-    /// What it says, in words a person reads.
-    pub message: String,
-}
-
-/// The kinds of refusal a model answers with, as the door names them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RefusalKind {
-    /// The record does not read as the model.
-    Model,
-    /// The door refused the action: no such action, bad arguments, or the verb's own refusal.
-    Door,
-    /// The call named an operation or a record the module does not serve.
-    Unknown,
-}
-
-impl From<ModelError> for Refused {
-    fn from(error: ModelError) -> Self {
-        Self {
-            kind: RefusalKind::Model,
-            message: error.to_string(),
-        }
+/// `error` as the refusal the host reports.
+fn refused_model(error: impl std::fmt::Display) -> Refusal {
+    Refusal {
+        kind: RefusalKind::Model,
+        message: error.to_string(),
     }
 }
 
-impl From<DoorError> for Refused {
-    fn from(error: DoorError) -> Self {
-        Self {
-            kind: RefusalKind::Door,
-            message: error.to_string(),
-        }
-    }
-}
-
-impl From<tilo_actions::ActionError> for Refused {
-    fn from(error: tilo_actions::ActionError) -> Self {
-        Self {
-            kind: RefusalKind::Door,
-            message: error.to_string(),
-        }
-    }
-}
-
-impl From<automerge::AutomergeError> for Refused {
-    fn from(error: automerge::AutomergeError) -> Self {
-        Self {
-            kind: RefusalKind::Model,
-            message: error.to_string(),
-        }
-    }
-}
-
-impl From<serde_json::Error> for Refused {
-    fn from(error: serde_json::Error) -> Self {
-        Self {
-            kind: RefusalKind::Model,
-            message: error.to_string(),
-        }
+/// `error` as the door's refusal the host reports.
+fn refused_door(error: impl std::fmt::Display) -> Refusal {
+    Refusal {
+        kind: RefusalKind::Door,
+        message: error.to_string(),
     }
 }
 
@@ -181,41 +67,57 @@ impl From<serde_json::Error> for Refused {
 ///
 /// # Errors
 ///
-/// A [`Refused`] when the model or the door refused; the host reports it as the call's
-/// failure, and keeps no change.
-pub fn serve<R: Resource>(request: &Request) -> Result<Answer, Refused> {
+/// A [`Refusal`] when the model or the door refused; the host reports it as the call's
+/// failure and keeps no change.
+pub fn serve<R: Resource>(request: &Request) -> Result<Answer, Refusal> {
+    // The module has no clock: the time a change is made at is the host's, read once for the
+    // invocation and carried by the request. Both readings are pinned to it — the resource
+    // layer's origin clock, which stamps what a verb builds, and the wall clock itself, which
+    // stamps the change the envelope records — so nothing here asks the machine what time it
+    // is. A bare wasm module has no clock to ask, and the answer has to be the host's anyway
+    // for a replay to reproduce the change.
+    tilo_resource::with_origin_clock(request.now_ms, || {
+        tilo_clock::with_wall_ms(u64::try_from(request.now_ms).unwrap_or(0), || {
+            serve_at::<R>(request)
+        })
+    })
+}
+
+fn serve_at<R: Resource>(request: &Request) -> Result<Answer, Refusal> {
     let kind = ResourceKind::of::<R>();
     if kind.kind() != request.kind {
-        return Err(Refused {
+        return Err(Refusal {
             kind: RefusalKind::Unknown,
             message: format!("this module serves {}, not {}", kind.kind(), request.kind),
         });
     }
     let mut doc = match &request.document {
-        Some(text) => Doc::load(&decode(text)?)?,
+        Some(text) => Doc::load(&decode(text)?).map_err(refused_model)?,
         None => Doc::new(),
     };
     let mut answer = Answer::default();
     match request.op {
-        Op::Open => answer.created = open(&kind, &mut doc)?,
+        Op::Open => {
+            answer.created = open(&kind, &mut doc)?;
+            answer.offers = Some(tree(&kind, &request.address, &doc)?);
+            answer.reading = Some(reading(&kind, request, &doc)?);
+        }
         Op::Migrate => {
             if kind.needs_migrate(&doc) {
-                kind.migrate(&mut doc)?;
+                kind.migrate(&mut doc).map_err(refused_model)?;
                 doc.commit();
             }
-        }
-        Op::Offers => {
-            answer.offers = Some(serde_json::to_value(kind.publish(&request.address, &doc)?)?);
         }
         Op::Read => {
             answer.reading = Some(reading(&kind, request, &doc)?);
         }
         Op::Invoke => {
-            let asked = request.action.as_ref().ok_or_else(|| Refused {
+            let asked = request.action.as_ref().ok_or_else(|| Refusal {
                 kind: RefusalKind::Unknown,
                 message: "an invocation names no action".to_owned(),
             })?;
             invoke(&kind, request, &mut doc, asked)?;
+            answer.offers = Some(tree(&kind, &request.address, &doc)?);
             answer.reading = Some(reading(&kind, request, &doc)?);
         }
     }
@@ -225,43 +127,111 @@ pub fn serve<R: Resource>(request: &Request) -> Result<Answer, Refused> {
 
 /// Open the record `kind` keeps in `doc`, writing its genesis when it holds none and
 /// migrating one from before the model as the model asks. Answers whether it was made.
-fn open(kind: &ResourceKind, doc: &mut Doc) -> Result<bool, Refused> {
+fn open(kind: &ResourceKind, doc: &mut Doc) -> Result<bool, Refusal> {
     if !kind.holds_or_older(doc) {
-        kind.initialize(doc)?;
+        kind.initialize(doc).map_err(refused_model)?;
         doc.commit();
         return Ok(true);
     }
     if kind.needs_migrate(doc) {
-        kind.migrate(doc)?;
+        kind.migrate(doc).map_err(refused_model)?;
         doc.commit();
     }
     // A record the model cannot read even after its migration is refused here, rather than
     // answered as current state.
-    kind.read(doc)?;
+    kind.read(doc).map_err(refused_model)?;
     Ok(false)
+}
+
+/// What the record `address` offers, as the tree the host publishes: the resource, its
+/// actions, and each item it collects with its own.
+fn tree(kind: &ResourceKind, address: &str, doc: &Doc) -> Result<ResourceNode, Refusal> {
+    let spec = kind.publish(address, doc).map_err(refused_model)?;
+    Ok(node(&spec))
+}
+
+/// `spec` as data, with each item's tree beneath it.
+fn node(spec: &ResourceSpec) -> ResourceNode {
+    ResourceNode {
+        id: spec.id.as_str().to_owned(),
+        kind: spec.kind.clone(),
+        label: spec.label.clone(),
+        actions: spec.actions.iter().map(action_node).collect(),
+        children: spec.children.iter().map(node).collect(),
+        resource_type: spec.resource_type.as_ref().map(|what| TypeNode {
+            noun: NounNode {
+                one: what.noun.one.clone(),
+                many: what.noun.many.clone(),
+            },
+            app: NounNode {
+                one: what.app.one.clone(),
+                many: what.app.many.clone(),
+            },
+            root: what.root,
+        }),
+    }
+}
+
+/// `spec` as data: what a caller may invoke, and nothing it can run.
+fn action_node(spec: &ActionSpec) -> ActionNode {
+    ActionNode {
+        id: spec.id.clone(),
+        label: spec.label.clone(),
+        keywords: spec.keywords.clone(),
+        icon: spec.icon.clone(),
+        description: spec.description.clone(),
+        params: spec.params().iter().map(param_node).collect(),
+        state: (!spec.state.is_empty()).then(|| StateNode {
+            badge: spec.state.badge.clone(),
+            toggles: spec.state.toggles,
+        }),
+        unavailable: match &spec.contract.availability {
+            Availability::Available => None,
+            Availability::Unavailable { code, reason } => Some(format!("{code}: {reason}")),
+        },
+        // What the door says taking it away is: what the action declared.
+        destructive: !matches!(
+            spec.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::None
+        ),
+        audience: None,
+    }
+}
+
+/// One parameter as data.
+fn param_node(param: &tilo_actions::ActionParam) -> ParamNode {
+    ParamNode {
+        name: param.name.to_string(),
+        kind: param_type(param.ty).to_owned(),
+        description: Some(param.description.to_string()).filter(|text| !text.is_empty()),
+        optional: !param.required,
+    }
+}
+
+/// The wire name of `ty`.
+fn param_type(ty: ParamType) -> &'static str {
+    ty.label()
 }
 
 /// The reading of the record, or of the item `request.item` names: the record is never handed
 /// over.
-fn reading(kind: &ResourceKind, request: &Request, doc: &Doc) -> Result<Json, Refused> {
-    match &request.item {
-        Some(item) => kind.content(doc, Some(item)).map_err(|error| Refused {
+fn reading(kind: &ResourceKind, request: &Request, doc: &Doc) -> Result<Json, Refusal> {
+    if let Some(item) = &request.item {
+        return kind.content(doc, Some(item)).map_err(|error| Refusal {
             kind: RefusalKind::Model,
             message: error.to_string(),
-        }),
-        None => {
-            let state = kind.read(doc)?;
-            let mut reading = kind.to_json(state.as_ref())?;
-            let spec = kind.publish(&request.address, doc)?;
-            if let Some(object) = reading.as_object_mut() {
-                let parts = parts_of(&spec);
-                if !parts.is_empty() {
-                    object.insert("parts".to_owned(), Json::Array(parts));
-                }
-            }
-            Ok(reading)
+        });
+    }
+    let state = kind.read(doc).map_err(refused_model)?;
+    let mut reading = kind.to_json(state.as_ref()).map_err(refused_model)?;
+    let spec = kind.publish(&request.address, doc).map_err(refused_model)?;
+    if let Some(object) = reading.as_object_mut() {
+        let parts = parts_of(&spec);
+        if !parts.is_empty() {
+            object.insert("parts".to_owned(), Json::Array(parts));
         }
     }
+    Ok(reading)
 }
 
 /// Run `asked`'s action against `doc`, committed as the request's invoker.
@@ -270,52 +240,59 @@ fn invoke(
     request: &Request,
     doc: &mut Doc,
     asked: &Asked,
-) -> Result<(), Refused> {
-    let tree = kind.publish(&request.address, doc)?;
+) -> Result<(), Refusal> {
+    let tree_spec = kind.publish(&request.address, doc).map_err(refused_model)?;
     let address = ActionAddress::new(request.address.as_str(), asked.action.as_str());
-    // An action about one of the record's items is offered by the item's own tree, the way
-    // a view of that item is offered the item's actions; one about the record is the
-    // record's.
+    // An action about one of the record's items is offered by the item's own tree; one about
+    // the record is the record's.
     let known = if request.record {
-        tree
+        tree_spec
     } else {
-        kind.child(doc, &request.address)?
-            .ok_or_else(|| Refused::from(DoorError::Unknown(address.clone())))?
+        kind.child(doc, &request.address)
+            .map_err(refused_model)?
+            .ok_or_else(|| refused_door(DoorError::Unknown(address.clone())))?
     };
-    let encoded =
-        tilo_actions::door::encode_json(std::slice::from_ref(&known), &address, &asked.arguments)?;
-    let invoker = request.invoker.clone().unwrap_or_else(app_invoker);
+    let encoded = tilo_actions::door::encode_json(&[known], &address, &asked.arguments)
+        .map_err(refused_door)?;
+    let invoker = request_invoker(request);
     let context = ActionContext::for_resource(&request.address, &asked.action, &asked.action)
         .with_invoker(invoker.clone());
     let mut registry = ActionRegistry::new();
     kind.register(&mut registry);
-    let action = registry.decode(&encoded)?;
+    let action = registry.decode(&encoded).map_err(refused_door)?;
     tilo_actions::apply_local_with_context(
         doc,
         action.as_ref(),
         encoded,
-        writer(&invoker),
+        Some(writer(&invoker)),
         context,
-    )?;
+    )
+    .map_err(refused_door)?;
     doc.commit();
     Ok(())
 }
 
-/// Who the change is committed under, as Automerge names the actor: the person the invoker
-/// acts for, else the invoker itself.
-fn writer(invoker: &ActionInvoker) -> Option<&[u8]> {
-    Some(
-        invoker
-            .on_behalf_of
-            .as_deref()
-            .unwrap_or(&invoker.actor)
-            .as_bytes(),
-    )
+/// The invoker the host says is making this call: the person, an agent acting for them, or
+/// the app. The module never chooses it.
+fn request_invoker(request: &Request) -> ActionInvoker {
+    let actor = request
+        .invoker
+        .clone()
+        .unwrap_or_else(|| "the app".to_owned());
+    match &request.on_behalf_of {
+        Some(person) => ActionInvoker::actor(actor).acting_for(person.clone()),
+        None => ActionInvoker::actor(actor),
+    }
 }
 
-/// The invoker of a call the request named none for: the app, acting on its own.
-fn app_invoker() -> ActionInvoker {
-    ActionInvoker::actor("the app")
+/// Who the change is committed under, as Automerge names the actor: the person the invoker
+/// acts for, else the invoker itself.
+fn writer(invoker: &ActionInvoker) -> &[u8] {
+    invoker
+        .on_behalf_of
+        .as_deref()
+        .unwrap_or(&invoker.actor)
+        .as_bytes()
 }
 
 /// The addresses of the items `spec` publishes.
@@ -337,10 +314,10 @@ fn encode(bytes: &[u8]) -> String {
 }
 
 /// `text`'s bytes, base64 as JSON carries them.
-fn decode(text: &str) -> Result<Vec<u8>, Refused> {
+fn decode(text: &str) -> Result<Vec<u8>, Refusal> {
     base64::engine::general_purpose::STANDARD
         .decode(text)
-        .map_err(|error| Refused {
+        .map_err(|error| Refusal {
             kind: RefusalKind::Model,
             message: format!("the record's document is not base64: {error}"),
         })
@@ -349,6 +326,11 @@ fn decode(text: &str) -> Result<Vec<u8>, Refused> {
 /// Serve `R`'s records for the call the host made: pull the request, run the model, publish
 /// the answer.
 pub fn serve_export<R: Resource>() {
+    // A panic in the model would trap the module with no word of why; the host's log has one.
+    std::panic::set_hook(Box::new(|panic| {
+        let message = format!("the model panicked: {panic}");
+        unsafe { host::log(message.as_ptr(), message.len()) };
+    }));
     let bytes = pull(|pointer, capacity| unsafe { host::request(pointer, capacity) });
     let request: Request = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
@@ -369,10 +351,10 @@ pub fn serve_export<R: Resource>() {
 /// Pull bytes from the host into a buffer this module owns, growing it until the host's
 /// answer fits.
 ///
-/// `ask` is given a pointer and a capacity, and answers how many bytes it wrote, or the
+/// `ask` is given a pointer and a capacity and answers how many bytes it wrote, or the
 /// negated size it needs when the capacity was too small.
 pub fn pull(mut ask: impl FnMut(*mut u8, usize) -> i32) -> Vec<u8> {
-    let mut buffer = vec![0_u8; 8192];
+    let mut buffer = vec![0_u8; BUFFER_START];
     loop {
         let wrote = ask(buffer.as_mut_ptr(), buffer.len());
         if wrote >= 0 {
@@ -397,6 +379,17 @@ pub fn fail(message: &str) -> ! {
     #[cfg(target_arch = "wasm32")]
     core::arch::wasm32::unreachable();
     #[cfg(not(target_arch = "wasm32"))]
+    native_fail(message)
+}
+
+/// A failed call in a host that links the model rather than running it as a module: it cannot
+/// return, and the host reads the refusal recorded before this.
+#[cfg(not(target_arch = "wasm32"))]
+#[expect(
+    clippy::panic,
+    reason = "a failed call never returns; the host reads the refusal recorded before this"
+)]
+fn native_fail(message: &str) -> ! {
     panic!("{message}");
 }
 
@@ -449,10 +442,7 @@ mod entropy_source {
         if usize::try_from(filled) == Ok(len) {
             Ok(())
         } else {
-            Err(getrandom::Error::new_custom(
-                1,
-                "the document host supplied no entropy",
-            ))
+            Err(getrandom::Error::new_custom(1))
         }
     }
 }

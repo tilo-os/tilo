@@ -91,6 +91,17 @@ impl ChannelDirectory for Directory {
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
         self.joined.channel_readers(workspace, channel, route, now)
     }
+
+    /// The scope the record on `route` seals under, as its governance decides
+    /// it: the workspace's, or the record's own when its readers are narrowed.
+    fn unit_scope(
+        &self,
+        workspace: WorkspaceId,
+        route: &collab_types::ChannelRoute,
+        now: u64,
+    ) -> Option<collab_types::ChannelId> {
+        self.joined.unit_scope(workspace, route, now)
+    }
 }
 
 /// The workspace host this runtime runs holds no channel keys of its own: it

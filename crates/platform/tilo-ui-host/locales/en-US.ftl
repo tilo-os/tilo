@@ -44,6 +44,9 @@ tilolang-did-set-date = set the { $field } date to
 tilolang-did-cleared-date = cleared the { $field } date
 tilolang-did-set-time = set the { $field } time to
 tilolang-did-cleared-time = cleared the { $field } time
+# What a change made over many items at once says: the action's own words are written for one
+# item ("moved this to"), so the sentence counts what it changed.
+tilolang-did-many = changed { $count } { $kind }
 # How one sentence goes on with the next field a change wrote ("… and set priority to High").
 tilolang-did-and = and
 
@@ -70,6 +73,12 @@ tilolang-all-done = All done
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
+# How many items a person chose, in the bar that acts on them.
+tilolang-selected = { $count ->
+    [one] 1 selected
+   *[other] { $count } selected
+}
+tilolang-clear-selection = Clear selection
 tilolang-sort = Sort
 tilolang-undo = Undo
 # Typed while the window was busy with a press that opened no field, and no field had the keyboard.
@@ -172,6 +181,3 @@ tilolang-remind-weeks-after = { $count ->
     [one] 1 week after
    *[other] { $count } weeks after
 }
-
-tilolang-reminder-late = Late
-tilolang-reminder-open = Open

@@ -186,6 +186,29 @@ impl Foreign {
         std::mem::take(&mut self.wanted).into_values().collect()
     }
 
+    /// The reading of `target` whole, as JSON, with the generation it was read at, when one
+    /// arrived: what a Rust app's view is handed of the resource it shows (its own model type
+    /// reads its fields from it).
+    ///
+    /// The caller records the generation against [`reading_key`] as what the boundary read, so a
+    /// boundary that built a Rust view runs again when a newer reading comes in, as one that
+    /// read a field of it does.
+    pub(crate) fn whole(&mut self, target: &ResourceRef) -> Option<(Json, u64)> {
+        let key = Self::key(target);
+        if !self.readings.contains_key(&key) {
+            // The host is asked for the resource's reading, as a field read of one yet to arrive
+            // asks for it; the boundary runs again when it comes.
+            if self.asked.insert(key.clone()) {
+                self.wanted
+                    .insert(key, (target.id_string(), target.ty.clone()));
+            }
+            return None;
+        }
+        let generation = self.generation(target);
+        self.source(&key)
+            .map(|(json, _)| (json.clone(), generation))
+    }
+
     /// Forget every reading of the app `app`'s resources, and what was asked of them: nothing
     /// here shows that app any more.
     pub(crate) fn forget_app(&mut self, app: &str) {
@@ -454,16 +477,19 @@ pub fn packages_key() -> StateKey {
     StateKey::runtime(crate::platform::LENS_WINDOW, None, "$packages-arrived")
 }
 
-/// The apps whose package a view read a resource of before the package was loaded: the types
-/// it named, by app. The host loads each app's package ([`crate::Runtime::load_foreign_package`]),
-/// and the view that read it runs again then ([`packages_key`]).
+/// The apps whose package a view read a resource of, or called a view of, before the package
+/// was loaded: what it named, by app. The host loads each app's package
+/// ([`crate::Runtime::load_foreign_package`]), and the view that read it runs again then
+/// ([`packages_key`]).
 ///
-/// Each app is asked for once: a package that never declares the type it was asked for, or one
-/// no host can serve, leaves the view call its waiting state instead of asking again every
-/// frame. Unloading the app forgets the ask, so a package that comes again is loaded again.
+/// Each app is asked for once: a package that never declares the type or the view it was asked
+/// for, or one no host can serve, leaves the view call its waiting state instead of asking
+/// again every frame. Unloading the app forgets the ask, so a package that comes again is
+/// loaded again.
 #[derive(Debug, Default)]
 pub struct WantedPackages {
-    /// The types read of each app, by app, since the host last took them.
+    /// What a view read of each app, by app, since the host last took them: the type it read a
+    /// resource of (`app#Type`), or the app itself for a view call (`view:<app>:<view id>`).
     wanted: BTreeMap<String, String>,
     /// Every app asked for, by app: an app is asked for once until it is unloaded.
     asked: std::collections::BTreeSet<String>,
@@ -483,6 +509,14 @@ impl WantedPackages {
             self.wanted.insert(key.app, ty.to_owned());
         }
         true
+    }
+
+    /// Ask for the package of `app`, whose view a view call composes (`view:<app>:<view id>`):
+    /// a view of another app is that app's code, as a resource of its type is its app's record.
+    pub(crate) fn want_app(&mut self, app: &str) {
+        if self.asked.insert(app.to_owned()) {
+            self.wanted.insert(app.to_owned(), app.to_owned());
+        }
     }
 
     /// The apps asked for since the last call, each with the type as the view named it: what
@@ -607,7 +641,13 @@ impl Decoder<'_> {
                 encoded => crate::value::from_json(encoded),
             },
             Ty::Result(..) | Ty::RichText | Ty::Map(_) => crate::value::from_json(json),
-            Ty::Action | Ty::View | Ty::Choice(_) | Ty::Error => Err(format!(
+            Ty::Action
+            | Ty::View
+            | Ty::Choice(_)
+            | Ty::Bytes
+            | Ty::Response
+            | Ty::Json
+            | Ty::Error => Err(format!(
                 "a value of type `{}` is not read from another app's reading",
                 ty.meta_text("")
             )),

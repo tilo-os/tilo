@@ -131,6 +131,10 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
     );
     let record = ui::automerge::AutoCommit::new();
     instance.sync(Some(&record));
+    // Shown as a still picture: nothing wakes a frame to take in an index built off it.
+    if let Some(host) = instance.host() {
+        host.wait_index();
+    }
     if scenario.is_some() {
         instance.stage(scenario);
         instance.sync(Some(&record));

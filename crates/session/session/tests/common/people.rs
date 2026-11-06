@@ -368,6 +368,23 @@ impl Site {
         tilo_desktop_model::shared_record::read(&document, None).map(|desk| desk.tree)
     }
 
+    /// The verdicts the workspace holds on writes, as the site keeps them
+    /// now, described for a step that waited for one: what the site refused,
+    /// of whose write, and why.
+    pub fn refusals_report(&self) -> String {
+        let held = self.runtime.block_on(async {
+            self.workspaces
+                .state(&self.workspace)
+                .await
+                .map(|state| state.workspace().write_refusals())
+        });
+        match held {
+            Some(refusals) if refusals.is_empty() => "no refusal of any write".to_owned(),
+            Some(refusals) => format!("{refusals:#?}"),
+            None => "the site holds no copy of the workspace".to_owned(),
+        }
+    }
+
     /// The workspace's shared desktop as the site keeps it, described for a
     /// step that waited for it: how many bytes and changes it holds, and how
     /// many windows read out of it.
@@ -508,6 +525,14 @@ fn door_responder(
                         Reply::status(403)
                             .header("content-type", "application/json")
                             .body(json!({ "error": refusal.to_string() }).to_string()),
+                    ),
+                    Err(tilo_relay::workspaces::DoorRefusal::InvitationOnly) => Some(
+                        Reply::status(403)
+                            .header("content-type", "application/json")
+                            .body(
+                                json!({ "error": "this workspace is joined by invitation" })
+                                    .to_string(),
+                            ),
                     ),
                 }
             }
@@ -950,9 +975,18 @@ impl Device {
             .write_all(format!("{request}\n").as_bytes())
             .expect("the socket reads");
         let mut line = String::new();
-        BufReader::new(stream)
-            .read_line(&mut line)
-            .expect("an answer");
+        if let Err(error) = BufReader::new(stream).read_line(&mut line) {
+            let log = self.log();
+            let last = log
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default();
+            panic!(
+                "{} did not answer {request}: {error}; its session last said: {last}",
+                self.label,
+            );
+        }
         serde_json::from_str(&line).unwrap_or_else(|error| {
             panic!(
                 "{}'s answer {line:?}: {error}\n{}",

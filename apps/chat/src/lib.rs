@@ -69,6 +69,7 @@ pub mod i18n;
 pub mod identity;
 mod image_arrival;
 pub mod images;
+mod live;
 mod live_context;
 mod live_share;
 mod live_share_panel;

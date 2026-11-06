@@ -22,8 +22,8 @@ action picture_from(first: Int) {
 
 /// The media window: each kind in a section of its own page.
 view media(m: Media) {
-    lens last: Text = ""
-    lens ask: Bool = false
+    state last: Text = ""
+    state ask: Bool = false
     std.page(m) {
         ui.Section("Pictures") {
             ui.Image(m.photo, alt: "A blue tile")

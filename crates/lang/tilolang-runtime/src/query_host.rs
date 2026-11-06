@@ -315,23 +315,15 @@ impl Core {
 }
 
 /// One entry of a type's catalogue: a filter as the value `Filter<T>` holds it — what a query
-/// names it by, what a control shows it as, its icon, the query choosing it asks, whether it
-/// is a toggle, and whether its count is one to show.
-fn filter_value(
-    key: &str,
-    label: &str,
-    icon: Option<&str>,
-    query: String,
-    toggle: bool,
-    counts: bool,
-) -> Value {
+/// names it by, what a control shows it as, its icon, the query choosing it asks, and whether
+/// it is a toggle.
+fn filter_value(key: &str, label: &str, icon: Option<&str>, query: String, toggle: bool) -> Value {
     Value::Tuple(vec![
         Value::text(key),
         Value::text(label),
         icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
         Value::Text(query),
         Value::Bool(toggle),
-        Value::Bool(counts),
     ])
 }
 
@@ -349,7 +341,6 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                     f.icon.as_deref(),
                     format!("is:{}", f.key),
                     true,
-                    f.count,
                 ));
             }
             FilterKind::Enum => match enum_of(f, enums) {
@@ -366,27 +357,12 @@ pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Valu
                             v.icon.as_deref(),
                             format!("{}:{}", f.key, v.name),
                             true,
-                            false,
                         ));
                     }
                 }
-                None => out.push(filter_value(
-                    &f.key,
-                    &f.label,
-                    None,
-                    String::new(),
-                    false,
-                    false,
-                )),
+                None => out.push(filter_value(&f.key, &f.label, None, String::new(), false)),
             },
-            _ => out.push(filter_value(
-                &f.key,
-                &f.label,
-                None,
-                String::new(),
-                false,
-                false,
-            )),
+            _ => out.push(filter_value(&f.key, &f.label, None, String::new(), false)),
         }
     }
     out
@@ -443,6 +419,5 @@ fn valued_filter(f: &FilterMeta, enums: &[EnumMeta], v: &Value) -> Result<Value,
         f.icon.as_deref(),
         query,
         toggle,
-        f.count,
     ))
 }

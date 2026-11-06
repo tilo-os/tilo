@@ -304,6 +304,34 @@ fn a_peer_here_is_a_collaborator_of_the_active_workspace() {
     assert_eq!(collaborators[0].role_id, None);
 }
 
+/// The person came to a workspace where people already are: the bar says who
+/// is here, once, not on every roster change while they stay.
+#[test]
+fn who_is_here_is_said_when_the_person_arrives() {
+    let (sync, _said) = session("Quinten", Some(0x04));
+    assert!(sync.arrival_notice().is_none(), "nobody here yet");
+    sync.hear(hello(1, 0xaa, "Framework 16"));
+    named(&sync, 1, "Ada");
+    let arrival = sync.arrival_notice().expect("the bar says who is here");
+    assert_eq!(arrival.names, ["Ada"]);
+
+    // What Ada says of herself after is not the person arriving again.
+    heard(
+        &sync,
+        1,
+        WORKSPACE,
+        PeerPresencePayload::Status {
+            text: "Shipping the roster".to_owned(),
+            automatic: false,
+        },
+    );
+    assert_eq!(
+        sync.arrival_notice().map(|again| again.at),
+        Some(arrival.at),
+        "the arrival is said once"
+    );
+}
+
 #[test]
 fn what_a_peer_says_they_are_doing_is_the_roster_line() {
     let (sync, _said) = session("Quinten", Some(0x04));

@@ -361,7 +361,7 @@ fn with_report() -> Value {
         "messages": [{"id": "m_feedback_r1", "value": {
             "channel": "c1", "author": "u_ada",
             "text": "Saving does nothing\n1. Files: Save (button)",
-            "attachment": {"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200},
+            "attachments": [{"$variant": "image", "name": "report.png", "blob": "ab", "w": 320, "h": 200}],
             "reactions": [{"emoji": "👍", "by": "u_bo", "at": 1}]
         }}],
         "people": [{"id": "u_ada", "name": "Ada", "agent": false}]

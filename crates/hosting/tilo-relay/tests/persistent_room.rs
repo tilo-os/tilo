@@ -196,6 +196,53 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts() {
     assert!(!missing.child.wait().unwrap().success());
 }
 
+/// A host that keeps its workspace id but none of its state starts the same
+/// workspace again: the id is the workspace's address, which its door and the
+/// links to it name, so a host whose state was kept aside comes back under it
+/// rather than minting a new one.
+#[test]
+fn a_room_whose_state_is_gone_starts_again_under_its_id() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+
+    let room = start(&state, &root_file, &secrets).unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(id),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    else {
+        panic!("no governed room announced")
+    };
+    room.stop();
+
+    // The state kept for the workspace went away; its id file and the sealed
+    // root it keeps stay, as a host that keeps them aside leaves them.
+    std::fs::remove_dir_all(state.join("relay")).unwrap();
+
+    let room = start(&state, &root_file, &secrets).unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(again),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    else {
+        panic!("no governed room announced")
+    };
+    assert_eq!(
+        again, id,
+        "the workspace keeps the id its door is addressed by"
+    );
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
+    else {
+        panic!("no presence announced")
+    };
+    assert_eq!(members, 1, "the fresh workspace has its owner alone");
+    room.stop();
+}
+
 /// The room as the image's entrypoint starts it on the state volume a room
 /// service leaves: the relay's own state in `relay/`, the workspace id beside
 /// it, and the avatars and sealed secrets the image mounts.

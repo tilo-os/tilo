@@ -1,5 +1,5 @@
-//! A person's own state of an app's workspace: the window and lens state they set in views, and
-//! what they have seen.
+//! A person's own state of an app's workspace: the view state they set in views, and what they
+//! have seen.
 //!
 //! The runtime holds those slots while a window is open ([`tilolang_runtime::view_state`]); this
 //! resource is the record they are kept in, so what a person picked is still theirs after a
@@ -11,11 +11,15 @@
 //! Each person's entries are theirs, under `$personal/<person>`:
 //!
 //! ```text
-//! $personal/<person>/views/<window>/<window|lens>/<state>  the value, as JSON
+//! $personal/<person>/views/<window>/<state>                the value, as JSON
 //! $personal/<person>/seen/<resource>/{change,at}           the newest version they saw, and when
 //! $personal/<person>/runs/<run>                            a task run they reviewed
 //! $personal/<person>/reminded/<reminder>                   a reminder they were already told
 //! ```
+//!
+//! A record kept while a view's state was still split into two kinds holds each value one map
+//! deeper, under `<window>/<window|lens>/<state>`; it reads as the same state, and the place
+//! this build keeps wins where it holds one ([`Keep::View`]).
 //!
 //! A reminder's mark is what keeps every device of one person from telling them the same
 //! reminder twice: whichever device rings it first writes the mark, and the others read it
@@ -36,7 +40,7 @@ use tilo_actions::{Action, ActionError, ActionKey, ChangeKind, Described, Did};
 use tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use tilolang_runtime::seen::SeenMark;
 use tilolang_runtime::value::Value;
-use tilolang_runtime::view_state::{StateKey, StateLayer};
+use tilolang_runtime::view_state::StateKey;
 
 /// The record kind of the workspace's record of each person's own state. The spelling is what
 /// records on disk carry, so it stays.
@@ -46,7 +50,7 @@ pub const KIND: &str = tilolang::PERSONAL_RECORD_KIND;
 /// runs rather than of one package, and every package of a workspace shares the one record.
 pub const OWNER: &str = tilolang::HOST_APP;
 
-/// The verb keeping one slot of window or lens state.
+/// The verb keeping one slot of view state.
 pub const VIEW_STATE: &str = "view-state";
 /// The verb keeping one seen mark.
 pub const SEEN: &str = "seen";
@@ -62,16 +66,13 @@ const SEEN_MARKS: &str = "seen";
 const REVIEWED: &str = "runs";
 const REMINDER_MARKS: &str = "reminded";
 
-/// One slot of the person's window or lens state, as the runtime keys it and as their record
-/// keeps it.
+/// One slot of the person's view state, as the runtime keys it and as their record keeps it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Slot {
     /// Whose state it is.
     pub person: String,
     /// The id of the window that declared the state.
     pub window: String,
-    /// Which of the two layers the state is in.
-    pub layer: StateLayer,
     /// The declaration's id.
     pub state: String,
     /// What the person set it to.
@@ -82,14 +83,7 @@ impl Slot {
     /// The runtime's key for the slot.
     #[must_use]
     pub fn key(&self) -> StateKey {
-        match self.layer {
-            StateLayer::Window => {
-                StateKey::window(self.window.clone(), self.person.clone(), self.state.clone())
-            }
-            StateLayer::Lens => {
-                StateKey::lens(self.window.clone(), self.person.clone(), self.state.clone())
-            }
-        }
+        StateKey::view(self.window.clone(), self.person.clone(), self.state.clone())
     }
 }
 
@@ -122,8 +116,8 @@ pub struct Reminded {
     pub reminder: String,
 }
 
-/// What the workspace's record of each person's own state holds: the window and lens state they
-/// set, what they have seen, the task runs they reviewed, and the reminders they were told of.
+/// What the workspace's record of each person's own state holds: the view state they set, what
+/// they have seen, the task runs they reviewed, and the reminders they were told of.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonalState {
     /// How their windows show their resources, and where they are in them.
@@ -192,7 +186,7 @@ impl Resource for Personal {
 
     fn read(doc: &Doc) -> Result<Self::State, ModelError> {
         Ok(PersonalState {
-            slots: slots(doc)?,
+            slots: slots(doc),
             seen: marks(doc)?,
             runs: reviewed(doc),
             told: told(doc),
@@ -240,12 +234,11 @@ const KEEP: &str = "keep";
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "keep", rename_all = "kebab-case")]
 pub enum Keep {
-    /// `state` of the window `window` (`StateKey::window`'s id), in `layer`, is `value`:
-    /// [`Value`]'s JSON form, kept as `person`'s.
+    /// `state` of the window `window` (`StateKey::view`'s id) is `value`: [`Value`]'s JSON
+    /// form, kept as `person`'s.
     View {
         person: String,
         window: String,
-        layer: StateLayer,
         state: String,
         value: Json,
     },
@@ -289,9 +282,11 @@ impl Keep {
     /// # Errors
     /// The slot is nobody's, or its value is not one the runtime keeps as JSON.
     pub fn view(key: &StateKey, value: &Value) -> Result<Self, String> {
-        let layer = key.layer.ok_or_else(|| {
-            "a reading the runtime keeps for the platform is nobody's state".to_owned()
-        })?;
+        if !key.declared {
+            return Err(
+                "a reading the runtime keeps for the platform is nobody's state".to_owned(),
+            );
+        }
         let person = key
             .principal
             .clone()
@@ -300,7 +295,6 @@ impl Keep {
         Ok(Self::View {
             person,
             window: key.window.clone(),
-            layer,
             state: key.state.clone(),
             value,
         })
@@ -328,15 +322,13 @@ impl Action for Keep {
         match self {
             Self::View {
                 window,
-                layer,
                 state,
                 value,
                 ..
             } => {
                 let views = ensure_map(doc, &person, VIEWS)?;
                 let place = ensure_map(doc, &views, window)?;
-                let slots = ensure_map(doc, &place, layer_key(*layer))?;
-                doc.put(&slots, state.as_str(), value.to_string())?;
+                doc.put(&place, state.as_str(), value.to_string())?;
             }
             Self::Seen { resource, mark, .. } => {
                 let seen = ensure_map(doc, &person, SEEN_MARKS)?;
@@ -382,13 +374,10 @@ impl Action for Keep {
     }
 }
 
-/// The layer a slot is kept under.
-const fn layer_key(layer: StateLayer) -> &'static str {
-    match layer {
-        StateLayer::Window => "window",
-        StateLayer::Lens => "lens",
-    }
-}
+/// The maps a record kept a window's state in while a view's state was still split into two
+/// kinds: how its window showed the resource, and where its person was in it. The names are
+/// what those records carry, so they stay.
+const SPLIT: [&str; 2] = ["window", "lens"];
 
 /// The map under `key` of `parent`, made when absent.
 fn ensure_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
@@ -444,8 +433,10 @@ fn people(doc: &Doc) -> Vec<(String, ObjId)> {
         .collect()
 }
 
-/// Every slot of window and lens state the record keeps, of everyone.
-fn slots(doc: &Doc) -> Result<Vec<Slot>, ModelError> {
+/// Every slot of view state the record keeps, of everyone: the place this build keeps a
+/// window's state at, then the two maps a record kept before it did, each state once and the
+/// newer place first.
+fn slots(doc: &Doc) -> Vec<Slot> {
     let mut found = Vec::new();
     for (person, held) in people(doc) {
         let Some(views) = map_at(doc, &held, VIEWS) else {
@@ -455,29 +446,33 @@ fn slots(doc: &Doc) -> Result<Vec<Slot>, ModelError> {
             let Some(place) = map_at(doc, &views, &window) else {
                 continue;
             };
-            for layer in [StateLayer::Window, StateLayer::Lens] {
-                let Some(slots_of) = map_at(doc, &place, layer_key(layer)) else {
-                    continue;
-                };
-                for state in doc.keys(&slots_of) {
-                    let Some(value) = text_at(doc, &slots_of, &state)?
-                        .as_deref()
-                        .and_then(view_slot)
-                    else {
+            let mut kept: Vec<Slot> = Vec::new();
+            let collect = |slots_of: &ObjId, kept: &mut Vec<Slot>| {
+                for state in doc.keys(slots_of) {
+                    if kept.iter().any(|slot| slot.state == state) {
                         continue;
-                    };
-                    found.push(Slot {
-                        person: person.clone(),
-                        window: window.clone(),
-                        layer,
-                        state,
-                        value,
-                    });
+                    }
+                    let text = text_at(doc, slots_of, &state).ok().flatten();
+                    if let Some(value) = text.as_deref().and_then(view_slot) {
+                        kept.push(Slot {
+                            person: person.clone(),
+                            window: window.clone(),
+                            state,
+                            value,
+                        });
+                    }
+                }
+            };
+            collect(&place, &mut kept);
+            for split in SPLIT {
+                if let Some(slots_of) = map_at(doc, &place, split) {
+                    collect(&slots_of, &mut kept);
                 }
             }
+            found.extend(kept);
         }
     }
-    Ok(found)
+    found
 }
 
 /// The seen marks the record keeps, of everyone, per resource.
@@ -558,11 +553,10 @@ mod tests {
         doc
     }
 
-    fn view(person: &str, window: &str, layer: StateLayer, state: &str, value: Json) -> Keep {
+    fn view(person: &str, window: &str, state: &str, value: Json) -> Keep {
         Keep::View {
             person: person.to_owned(),
             window: window.to_owned(),
-            layer,
             state: state.to_owned(),
             value,
         }
@@ -577,22 +571,13 @@ mod tests {
     }
 
     #[test]
-    fn a_persons_window_and_lens_state_and_seen_marks_read_back_as_they_were_kept() {
+    fn a_persons_view_state_and_seen_marks_read_back_as_they_were_kept() {
         let doc = kept(&[
             (
                 "ada",
-                view(
-                    "ada",
-                    "tasks",
-                    StateLayer::Window,
-                    "place",
-                    Json::String("today".to_owned()),
-                ),
+                view("ada", "tasks", "place", Json::String("today".to_owned())),
             ),
-            (
-                "ada",
-                view("ada", "tasks", StateLayer::Lens, "scroll", Json::from(120)),
-            ),
+            ("ada", view("ada", "tasks", "scroll", Json::from(120))),
             (
                 "ada",
                 seen(
@@ -617,12 +602,12 @@ mod tests {
         assert_eq!(theirs.slots.len(), 2);
         assert_eq!(
             theirs.slots[0].key(),
-            StateKey::window("tasks", "ada", "place")
+            StateKey::view("tasks", "ada", "place")
         );
         assert_eq!(theirs.slots[0].value, Value::text("today"));
         assert_eq!(
             theirs.slots[1].key(),
-            StateKey::lens("tasks", "ada", "scroll")
+            StateKey::view("tasks", "ada", "scroll")
         );
         assert_eq!(theirs.seen.len(), 1);
         assert_eq!(theirs.seen[0].resource, "tl:so.tilo.lang.tasks:inbox");
@@ -630,29 +615,66 @@ mod tests {
         assert_eq!(theirs.runs[0].run, "run-7");
     }
 
+    /// The maps a record kept a window's state in before a view's state was one kind.
+    fn kept_under_the_split(
+        doc: &mut Doc,
+        person: &str,
+        window: &str,
+        which: &str,
+        state: &str,
+        value: &str,
+    ) {
+        let personal = ensure_map(doc, &ROOT, PERSONAL).expect("the map opens");
+        let theirs = ensure_map(doc, &personal, person).expect("the map opens");
+        let views = ensure_map(doc, &theirs, VIEWS).expect("the map opens");
+        let place = ensure_map(doc, &views, window).expect("the map opens");
+        let slots = ensure_map(doc, &place, which).expect("the map opens");
+        doc.put(&slots, state, value).expect("the value keeps");
+    }
+
+    #[test]
+    fn state_a_record_kept_under_the_two_old_maps_still_reads() {
+        let mut doc = Doc::new();
+        kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
+        kept_under_the_split(&mut doc, "ada", "tasks", "lens", "draft", "\"hi\"");
+        let state = Personal::read(&doc).expect("the record reads");
+        let theirs = state.of("ada");
+        assert_eq!(theirs.slots.len(), 2);
+        let value = |name: &str| {
+            theirs
+                .slots
+                .iter()
+                .find(|slot| slot.state == name)
+                .map(|slot| slot.value.clone())
+        };
+        assert_eq!(value("order"), Some(Value::text("due")));
+        assert_eq!(value("draft"), Some(Value::text("hi")));
+        assert_eq!(
+            theirs.slots[0].key(),
+            StateKey::view("tasks", "ada", theirs.slots[0].state.clone())
+        );
+    }
+
+    #[test]
+    fn the_place_this_build_keeps_a_state_at_wins_over_the_old_maps() {
+        let mut doc = Doc::new();
+        kept_under_the_split(&mut doc, "ada", "tasks", "window", "order", "\"due\"");
+        apply_as(
+            &mut doc,
+            "ada",
+            &view("ada", "tasks", "order", Json::from("created")),
+        )
+        .expect("the change applies");
+        let state = Personal::read(&doc).expect("the record reads");
+        assert_eq!(state.slots.len(), 1, "one state, read once");
+        assert_eq!(state.slots[0].value, Value::text("created"));
+    }
+
     #[test]
     fn one_persons_state_is_nobodys_else_and_two_people_keep_theirs_side_by_side() {
         let doc = kept(&[
-            (
-                "ada",
-                view(
-                    "ada",
-                    "tasks",
-                    StateLayer::Window,
-                    "place",
-                    Json::from("today"),
-                ),
-            ),
-            (
-                "bo",
-                view(
-                    "bo",
-                    "tasks",
-                    StateLayer::Window,
-                    "place",
-                    Json::from("inbox"),
-                ),
-            ),
+            ("ada", view("ada", "tasks", "place", Json::from("today"))),
+            ("bo", view("bo", "tasks", "place", Json::from("inbox"))),
         ]);
         let state = Personal::read(&doc).expect("the record reads");
         assert_eq!(state.slots.len(), 2, "one record holds both");
@@ -671,13 +693,7 @@ mod tests {
         let error = apply_as(
             &mut doc,
             "bo",
-            &view(
-                "ada",
-                "tasks",
-                StateLayer::Window,
-                "place",
-                Json::from("today"),
-            ),
+            &view("ada", "tasks", "place", Json::from("today")),
         )
         .expect_err("bo keeps no state of ada's");
         assert!(error.contains("their own state"), "{error}");
@@ -690,13 +706,7 @@ mod tests {
     #[test]
     fn a_change_no_person_invoked_is_refused() {
         let mut doc = Doc::new();
-        let keep = view(
-            "ada",
-            "tasks",
-            StateLayer::Window,
-            "place",
-            Json::from("today"),
-        );
+        let keep = view("ada", "tasks", "place", Json::from("today"));
         let mut plain = Doc::new();
         assert!(keep.apply(&mut plain).is_err(), "nobody's action");
         let encoded = tilo_resource::encode::<Personal>(&keep).expect("the change encodes");
@@ -724,14 +734,8 @@ mod tests {
         )
         .expect("the argument binds");
         assert_eq!(decl.build_action(&args, 0), Ok(seen("ada", "tl:x", None)));
-        let other = serde_json::to_value(view(
-            "ada",
-            "tasks",
-            StateLayer::Window,
-            "place",
-            Json::from("today"),
-        ))
-        .expect("the change serializes");
+        let other = serde_json::to_value(view("ada", "tasks", "place", Json::from("today")))
+            .expect("the change serializes");
         let args = tilo_actions::ActionArgs::bind(
             &decl.params,
             [(
@@ -749,26 +753,8 @@ mod tests {
     #[test]
     fn a_slot_kept_twice_reads_back_once_as_it_is_now() {
         let doc = kept(&[
-            (
-                "ada",
-                view(
-                    "ada",
-                    "tasks",
-                    StateLayer::Window,
-                    "place",
-                    Json::from("inbox"),
-                ),
-            ),
-            (
-                "ada",
-                view(
-                    "ada",
-                    "tasks",
-                    StateLayer::Window,
-                    "place",
-                    Json::from("today"),
-                ),
-            ),
+            ("ada", view("ada", "tasks", "place", Json::from("inbox"))),
+            ("ada", view("ada", "tasks", "place", Json::from("today"))),
         ]);
         let state = Personal::read(&doc).expect("the record reads");
         assert_eq!(state.of("ada").slots.len(), 1);

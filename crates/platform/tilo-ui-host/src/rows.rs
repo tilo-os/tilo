@@ -223,14 +223,26 @@ impl RemoteRows {
         self.rows.get(key)
     }
 
-    /// Show again what each rendered row's bound controls hold.
-    pub fn refresh_bound(&self) {
+    /// Show again what each rendered row's bound controls hold. A row a control of which was
+    /// given a value other than the one it showed is a row that changed: the list builds it
+    /// again, so it reads what it is bound to now.
+    pub fn refresh_bound(&mut self) {
         let Ok(reconciler) = self.reconciler.try_borrow() else {
             return;
         };
         let bound = self.bound.borrow();
-        for row in self.rows.values() {
-            crate::window::show_bound(row, &self.prefix, &bound, &reconciler);
+        let mut changed = Vec::new();
+        for (key, row) in &self.rows {
+            if crate::window::show_bound(row, &self.prefix, &bound, &reconciler) {
+                changed.push(key.clone());
+            }
+        }
+        drop(bound);
+        drop(reconciler);
+        if !changed.is_empty() {
+            changed.sort();
+            self.changes
+                .push(ListModelChange::RowsChanged { keys: changed });
         }
     }
 
@@ -346,6 +358,7 @@ impl RowSource for RemoteRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Binding, Value};
 
     fn rows() -> RemoteRows {
         let reconciler = Rc::new(RefCell::new(Reconciler::new(Rc::default())));
@@ -383,6 +396,49 @@ mod tests {
             changes.last(),
             Some(ListModelChange::RowsMoved { from: 2, to: 1, .. })
         ));
+    }
+
+    /// A row whose bound control changed is the row the list reads again; a row whose controls
+    /// show what they did is left alone, so a change of a row costs a row.
+    #[test]
+    fn a_bound_control_that_changed_reads_its_row_again() {
+        let reconciler = Rc::new(RefCell::new(Reconciler::new(Rc::default())));
+        let bound = BoundValues::default();
+        let mut rows = RemoteRows::new(
+            Lane::Root,
+            "list",
+            "",
+            Rc::clone(&reconciler),
+            Rc::clone(&bound),
+        );
+        let mut row = UiNode::empty(&kind("ListItem"), "list/v/a");
+        let mut checked = UiNode::empty(&kind("ListRow"), "list/v/a/row");
+        checked.binding = Some(Binding {
+            field: Some(("v/a".into(), "done".into())),
+            name: "done".into(),
+        });
+        row.children.push(checked);
+        reconciler.borrow_mut().flag_state("list/v/a/row");
+        rows.rows(1, 0, vec!["list/v/a".into()], vec![row]);
+        rows.take_changes();
+
+        rows.refresh_bound();
+        assert!(rows.take_changes().is_empty(), "nothing changed yet");
+
+        bound
+            .borrow_mut()
+            .insert("list/v/a/row".to_owned(), Value::Bool(true));
+        rows.refresh_bound();
+        let changes = rows.take_changes();
+        assert!(
+            matches!(
+                changes.as_slice(),
+                [ListModelChange::RowsChanged { keys }] if keys == &["list/v/a".to_owned()]
+            ),
+            "the row that reads checked is read again: {changes:?}"
+        );
+        rows.refresh_bound();
+        assert!(rows.take_changes().is_empty(), "read once");
     }
 
     #[test]

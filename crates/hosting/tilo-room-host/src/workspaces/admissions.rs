@@ -130,6 +130,13 @@ impl Admissions {
         Ok(())
     }
 
+    /// Whether `invite_id` already carries a grant, spent or not: a door
+    /// handing back an invitation a member pre-admitted keeps that grant,
+    /// whose own token admits them.
+    pub(super) fn carries(&self, invite_id: [u8; 32]) -> bool {
+        self.grants.iter().any(|known| known.invite_id == invite_id)
+    }
+
     /// The unspent, unexpired grant of `invite_id` whose token is `token`.
     pub(super) fn grant_for(
         &self,
@@ -206,6 +213,7 @@ fn constant_time_eq(left: &[u8; 32], right: &[u8; 32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_files::native::migration::assert_golden_bytes;
     use tilo_relay_protocol::workspaces::WorkspaceRole;
 
     fn grant(token: &[u8], expires_at_ns: u64) -> PreAdmission {
@@ -218,6 +226,49 @@ mod tests {
             owner_user_public_key: [1; 32],
             signature: [0; 64],
         }
+    }
+
+    /// The admissions file this build writes: a grant the owner made, spent,
+    /// and the notice of who it admitted. Kept so the file a workspace holds
+    /// goes on reading the same way; a field added, removed or reordered
+    /// changes these bytes.
+    const KEPT: &str = "0107070707070707070707070707070707070707070707070707070707070707072436663164336135322d316337652d346238652d396432612d306634613863336535623731023c469e9d6c5875d37a43f353d4f88e61fcf812c66eee3457465a40b0da4153e00e6379406578616d706c652e636f6d8080a8b1e39fe7cb170101010101010101010101010101010101010101010101010101010101010101400000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001010002020202020202020202020202020202020202020202020202020202020202020243790e6379406578616d706c652e636f6d0209";
+
+    fn kept() -> Admissions {
+        Admissions {
+            grants: vec![Granted {
+                invite_id: [7; 32],
+                grant: grant(b"token", 1_700_000_000_000_000_000),
+                spent: true,
+            }],
+            notices: vec![WorkspaceNotice::PreAdmitted {
+                user_public_key: [2; 32],
+                name: "Cy".into(),
+                label: "cy@example.com".into(),
+                role: WorkspaceRole::Editor,
+                at_ns: 9,
+            }],
+            path: PathBuf::new(),
+        }
+    }
+
+    #[test]
+    fn the_admissions_file_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "a workspace's admissions",
+            &hex::decode(KEPT).unwrap(),
+            |bytes| {
+                let stored: Admissions = postcard::from_bytes(bytes).unwrap();
+                assert_eq!(stored.grants.len(), 1);
+                assert!(stored.grants[0].spent);
+                assert_eq!(stored.grants[0].grant.label, "cy@example.com");
+                assert!(matches!(
+                    &stored.notices[0],
+                    WorkspaceNotice::PreAdmitted { name, .. } if name == "Cy"
+                ));
+            },
+            || postcard::to_stdvec(&kept()).unwrap(),
+        );
     }
 
     #[test]

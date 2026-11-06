@@ -647,7 +647,7 @@ impl Backend for HeadlessBackend {
         region: (usize, usize),
         request: &crate::BackdropRequest,
     ) -> Result<Option<crate::BackdropImage>, BackendError> {
-        crate::backdrop::draw::<_, GlesTexture>(&mut self.renderer, state, region, request)
+        crate::backdrop::draw(&mut self.renderer, state, region, request)
     }
 
     fn capture(

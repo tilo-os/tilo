@@ -11,6 +11,10 @@ use super::{
 /// How far apart the dots after an activity's reading stand: one dot per
 /// activity waiting behind the pill's own, measured into the pill's width.
 const DOT_PITCH: f64 = 5.0;
+/// The thumbnail a song's pill heads its title with, square.
+const PILL_ART: f64 = 14.0;
+/// Between the thumbnail and the song's title.
+const PILL_ART_GAP: f64 = 6.0;
 
 impl TopBarChrome {
     /// The centre selector is visually anchored at the viewport centre, but
@@ -223,9 +227,12 @@ impl TopBarChrome {
             .map(|c| if c.is_ascii_digit() { widest_digit } else { c })
             .collect();
         let (width, _) = text.measure_style(&reading, None, &style);
-        // The dots behind the reading are part of the pill too.
-        let dots = ui::num::f64_of_usize(self.center_pill().more) * DOT_PITCH;
-        (f64::from(width) + dots + 2.0 * CENTER_INSET_PX).min(lane_w)
+        // The dots behind the reading and a song's thumbnail in front of it
+        // are part of the pill too.
+        let pill = self.center_pill();
+        let dots = ui::num::f64_of_usize(pill.more) * DOT_PITCH;
+        let art = pill.artwork().map_or(0.0, |_| PILL_ART + PILL_ART_GAP);
+        (f64::from(width) + art + dots + 2.0 * CENTER_INSET_PX).min(lane_w)
     }
 
     pub(super) fn draw_clock_widget(
@@ -257,9 +264,17 @@ impl TopBarChrome {
             tone_ink(&pill, theme)
         };
         // Extra activities stand behind the reading as dots, so a person
-        // reads at a glance that more than one is running.
+        // reads at a glance that more than one is running, and a song shows
+        // its cover in front of its title.
         let dots = ui::num::f64_of_usize(pill.more) * DOT_PITCH;
-        let tx = content_cx - f64::midpoint(tw, dots);
+        let art = pill.artwork().map_or(0.0, |_| PILL_ART + PILL_ART_GAP);
+        let tx = content_cx - f64::midpoint(tw + art, dots);
+        if let Some(picture) = pill.artwork() {
+            let rect =
+                Rect::from_center_size((tx + PILL_ART / 2.0, center_y), (PILL_ART, PILL_ART));
+            paint_pill_art(scene, transform, theme, rect, &picture);
+        }
+        let tx = tx + art;
         let ty = center_y - th / 2.0;
         let rect = Rect::new(tx, ty, tx + tw, ty + th);
         line.paint(
@@ -484,8 +499,29 @@ impl TopBarChrome {
     }
 }
 
-/// Seconds the centre band's time reading stays the same for: the clock
-/// paints `HH:MM`, a live activity counts seconds.
+/// The thumbnail a song's pill heads its title with: its cover, drawn by the
+/// image store's own tile so the bar's picture is cut and rounded as every
+/// other cover is. A cover the store has not read yet leaves the slot it
+/// keeps, so the title never jumps once it lands.
+fn paint_pill_art(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    rect: Rect,
+    picture: &ui::widget::PictureSource,
+) {
+    let Some(image) = ui::pictures::Pictures::window().get(picture) else {
+        return;
+    };
+    ui::image_store::paint_image_cover(
+        scene,
+        transform,
+        rect,
+        &image,
+        f64::from(theme.tokens.radii.control),
+    );
+}
+
 /// The ink the bar's pill reads in: its leading activity's tone.
 fn tone_ink(pill: &ui::floating_layer::Pill, theme: &Theme) -> vello::peniko::Color {
     match pill
@@ -499,6 +535,8 @@ fn tone_ink(pill: &ui::floating_layer::Pill, theme: &Theme) -> vello::peniko::Co
     }
 }
 
+/// Seconds the centre band's time reading stays the same for: the clock
+/// paints `HH:MM`, a live activity counts seconds.
 pub(super) fn time_bucket_secs(activity_visible: bool) -> u64 {
     if activity_visible { 1 } else { 60 }
 }

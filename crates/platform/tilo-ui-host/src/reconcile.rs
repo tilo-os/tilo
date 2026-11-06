@@ -305,7 +305,7 @@ fn page_once(node: &UiNode) -> UiNode {
 }
 
 /// How a child is sized in its container: `fill`, `min:`, `max:` bound its inline size.
-fn fit_of(node: &UiNode) -> Fit {
+pub(crate) fn fit_of(node: &UiNode) -> Fit {
     let mut fit = number(node, "fill").map_or_else(Fit::hug, Fit::fill);
     // A grid's `min` is its columns' least width, not its own: it takes the width it is given
     // and holds as many such columns as fit, one where none does.
@@ -607,22 +607,26 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `number` in the control `key`.
-    pub fn set_count(&self, key: &str, number: i64) {
+    /// Show `number` in the control `key`, reporting whether that changed what it shows.
+    pub fn set_count(&self, key: &str, number: i64) -> bool {
         if let Some(state) = self.counts.get(key)
             && state.get() != number
         {
             state.set(number);
+            return true;
         }
+        false
     }
 
-    /// Show `number` in the control `key`.
-    pub fn set_number(&self, key: &str, number: f64) {
+    /// Show `number` in the control `key`, reporting whether that changed what it shows.
+    pub fn set_number(&self, key: &str, number: f64) -> bool {
         if let Some(state) = self.numbers.get(key)
             && state.get().total_cmp(&number).is_ne()
         {
             state.set(number);
+            return true;
         }
+        false
     }
 
     /// The rich text the rich input `key` shows, kept in step with what it is bound to.
@@ -638,13 +642,15 @@ impl Reconciler {
             .clone()
     }
 
-    /// Show `rich` in the rich input `key`.
-    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) {
+    /// Show `rich` in the rich input `key`, reporting whether that changed what it shows.
+    pub fn set_rich(&self, key: &str, rich: &tilo_render_protocol::patch::rich::RichText) -> bool {
         if let Some(state) = self.riches.get(key)
             && state.with(|shown| shown != rich)
         {
             state.set(rich.clone());
+            return true;
         }
+        false
     }
 
     /// The handle on the split of the view that collapses to one pane at a time, when it has one.
@@ -658,22 +664,27 @@ impl Reconciler {
         self.navigation = None;
     }
 
-    /// Show `text` in the input or text node `key`, whatever widget shows it.
-    pub fn set_text(&self, key: &str, text: &str) {
+    /// Show `text` in the input or text node `key`, whatever widget shows it, reporting whether
+    /// that changed what it shows.
+    pub fn set_text(&self, key: &str, text: &str) -> bool {
         if let Some(state) = self.texts.get(key)
             && state.with(|shown| shown != text)
         {
             state.set(text.to_owned());
+            return true;
         }
+        false
     }
 
-    /// Show `checked` in the checkbox `key`.
-    pub fn set_flag(&self, key: &str, checked: bool) {
+    /// Show `checked` in the checkbox `key`, reporting whether that changed what it shows.
+    pub fn set_flag(&self, key: &str, checked: bool) -> bool {
         if let Some(state) = self.flags.get(key)
             && state.get() != checked
         {
             state.set(checked);
+            return true;
         }
+        false
     }
 
     /// The widgets of the tree under `node`.
@@ -808,12 +819,7 @@ impl Reconciler {
         }
         for (index, &child) in new.iter().enumerate() {
             let Some(at) = held.iter().position(|old| old.key == child.key) else {
-                let built = self.build(child);
-                let view = if crate::adapter::description_of(child).is_some() {
-                    built
-                } else {
-                    Box::new(Pane::new(built)) as Element
-                };
+                let view = self.slot_view(child);
                 views.insert(index, view);
                 held.insert(index, child);
                 continue;
@@ -829,6 +835,33 @@ impl Reconciler {
             let Some(view) = views.view_mut(index) else {
                 continue;
             };
+            // The view carries the fit its node asks for, so a view that comes to say `fill`
+            // asks for the room the component gives it from the next build on (the slot keeps
+            // the fit it was placed with, as a rule a view's own arguments do not change under
+            // its key). A [`Fitted`] asking for nothing sizes as a bare view does.
+            if let Some(fitted) = view
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<ui::widget::Fitted>())
+            {
+                fitted.set_fit(fit_of(child));
+                let replaced = match fitted
+                    .content_mut()
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Pane>())
+                {
+                    Some(pane) => {
+                        if let Some(replaced) = self.update_in(pane.content_mut(), before, child) {
+                            pane.replace(replaced);
+                        }
+                        None
+                    }
+                    None => self.update_in(fitted.content_mut(), before, child),
+                };
+                if let Some(replaced) = replaced {
+                    *fitted.content_mut() = replaced;
+                }
+                continue;
+            }
             let replaced = match view.as_any_mut().and_then(|any| any.downcast_mut::<Pane>()) {
                 Some(pane) => {
                     if let Some(replaced) = self.update_in(pane.content_mut(), before, child) {
@@ -842,6 +875,24 @@ impl Reconciler {
                 views.replace(index, replaced);
             }
         }
+    }
+
+    /// `node`, built, as the view a described component's slot holds: a component as its
+    /// widget, a view of another kind in a pane the reconciler reaches again, each in a
+    /// [`ui::widget::Fitted`] carrying the fit its node wrote, so a view that says `fill` fills
+    /// the slot the component puts it in ([`ui::widget::arrange::Slot::new`] takes the fit).
+    pub(crate) fn slot_view(&mut self, node: &UiNode) -> Element {
+        let built = self.build(node);
+        let pane: Element = if crate::adapter::description_of(node).is_some() {
+            built
+        } else {
+            Box::new(Pane::new(built))
+        };
+        let fit = fit_of(node);
+        if fit == Fit::hug() {
+            return pane;
+        }
+        Box::new(ui::widget::Fitted::new(pane, fit))
     }
 
     fn slots(&mut self, node: &UiNode) -> Vec<Slot> {

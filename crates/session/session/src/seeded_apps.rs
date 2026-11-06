@@ -1,7 +1,7 @@
 //! The tilolang apps a development session starts with (`tilo-session --seed-apps`, honoured by
-//! development builds only): notes, tasks, chat and mail, loaded from `apps/tl` into one
-//! workspace record, each filled by its first scenario (the seed data its shots and tests start
-//! from), and published as the session publishes a room's records
+//! development builds only): notes, tasks, chat, mail and the YouTube client, loaded from
+//! `apps/tl` into one workspace record, each filled by its first scenario (the seed data its
+//! shots and tests start from), and published as the session publishes a room's records
 //! ([`tilolang_tilo::records_service::RecordService`]): every note, task, channel and mailbox is
 //! a resource the session's `find` finds, an arrangement places and an agent reads and changes
 //! through its actions.
@@ -25,7 +25,16 @@ struct Seed {
     locales: &'static [(&'static str, &'static str)],
 }
 
-const APPS: [Seed; 4] = [
+const APPS: [Seed; 6] = [
+    Seed {
+        app: "so.tilo.lang.discussion",
+        source: include_str!("../../../../apps/tl/discussion/app.tl"),
+        ids: include_str!("../../../../apps/tl/discussion/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/discussion/locales/en-US.ftl"),
+        )],
+    },
     Seed {
         app: "so.tilo.lang.notes",
         source: include_str!("../../../../apps/tl/notes/app.tl"),
@@ -68,10 +77,19 @@ const APPS: [Seed; 4] = [
             include_str!("../../../../apps/tl/mail/locales/en-US.ftl"),
         )],
     },
+    Seed {
+        app: "so.tilo.lang.tube",
+        source: include_str!("../../../../apps/tl/tube/app.tl"),
+        ids: include_str!("../../../../apps/tl/tube/app.ids"),
+        locales: &[(
+            "en-US",
+            include_str!("../../../../apps/tl/tube/locales/en-US.ftl"),
+        )],
+    },
 ];
 
-/// Notes, tasks, chat and mail in one workspace record of `person`'s, each app's root made and
-/// filled by its first scenario as `person`'s steps, published for them.
+/// Discussion, notes, tasks, chat and mail in one workspace record of `person`'s, each app's
+/// root made and filled by its first scenario as `person`'s steps, published for them.
 ///
 /// # Errors
 /// An app does not compile or load, or its scenario does not run.
@@ -80,6 +98,7 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
     let host = Host::new(&record, Principal::new(person), || None).map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::PackageWords);
     let mut scenarios = Vec::new();
+    let mut imports = Vec::new();
     for seed in &APPS {
         let source = PackageSource::single(seed.source).with_locales(
             seed.locales
@@ -87,11 +106,12 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
                 .map(|(locale, text)| ((*locale).to_owned(), (*text).to_owned())),
         );
         let ids = IdsLock::parse(seed.ids).map_err(|error| format!("{}: {error}", seed.app))?;
-        let compiled = compile_package_source(&source, &ids, &[])
+        let compiled = compile_package_source(&source, &ids, &imports)
             .map_err(|diagnostics| format!("{}: {diagnostics:?}", seed.app))?;
         let package = host
             .load_compiled(&compiled)
             .map_err(|error| format!("{}: {error}", seed.app))?;
+        imports.push(package.meta.clone());
         scenarios.push((seed.app, package.meta.scenarios.first().cloned()));
     }
     for (app, scenario) in scenarios {

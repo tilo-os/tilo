@@ -132,6 +132,28 @@ impl Planes {
         self.joined.remove(&workspace_id)
     }
 
+    /// One line per joined plane for diagnostics: whose objects it reads, and
+    /// what it heard and could not open.
+    pub(crate) fn describe(&self) -> String {
+        use std::fmt::Write as _;
+        self.joined
+            .iter()
+            .map(|(workspace_id, joined)| {
+                let mut line = format!(
+                    "plane {workspace_id}: epoch {}, reads {} device(s), heard {} object(s)",
+                    joined.epoch,
+                    joined.members.len(),
+                    joined.plane.heard_total()
+                );
+                for (reason, count) in joined.plane.refusals() {
+                    let _ = write!(line, "\n  refused {count}: {reason}");
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Drop the planes of workspaces this page is no longer in, and the asks
     /// for them.
     pub(crate) fn keep_only(&mut self, workspaces: &BTreeSet<u64>) {

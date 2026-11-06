@@ -88,6 +88,9 @@ pub enum SessionCommand {
     /// `Ctrl+Alt+F1..F12` asks: the way out to a text console when the
     /// desktop cannot give the machine back.
     SwitchVt { vt: i32 },
+    /// Stop a remote person driving this machine's seat, as `Super+Escape`
+    /// asks: everything stays as it is, and their input stops.
+    CutRemoteInput,
 }
 
 /// A step of the magnifier.
@@ -362,6 +365,10 @@ impl crate::Session {
         match command {
             SessionCommand::Lock => self.lock_by_person(),
             SessionCommand::SwitchVt { vt } => self.switch_vt(vt),
+            SessionCommand::CutRemoteInput => {
+                self.compositor.cut_remote_input();
+                Ok(())
+            }
             SessionCommand::OpenPowerMenu => {
                 if let Some(power) = &self.shared.power {
                     power.presentation().open(false);

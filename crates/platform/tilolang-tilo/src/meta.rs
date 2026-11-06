@@ -152,9 +152,6 @@ fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
         }
     };
     schema = schema.of_ty(ty_of_field);
-    if field.personal {
-        schema = schema.personal();
-    }
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
     }
@@ -234,27 +231,18 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
     })
 }
 
-/// Whether `pred` reads a value a person has of their own: one whose column is kept per person.
-fn reads_personal(pred: &tilolang::pred::Pred<String>, fields: &[FieldSchema]) -> bool {
-    pred.fields().iter().any(|id| {
-        fields
-            .iter()
-            .any(|field| field.personal && field.id == **id)
-    })
-}
-
 /// The filter columns of the type `ty`, whose fields' schemas are `fields`: one per filter,
 /// then one per other field a `filter` compares (a register of a scalar, a counter).
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
     for f in &ty.search.filters {
-        // A filter on the time it is asked at, on the person it is asked for, or on a value a
-        // person has of their own, holds of different items as time passes or for each of them:
-        // it is answered from the columns of the fields it reads, never kept as a column of its
-        // own.
-        if f.pred.as_ref().is_some_and(|pred| {
-            pred.reads_clock() || pred.reads_viewer() || reads_personal(pred, fields)
-        }) {
+        // A filter on the time it is asked at or on the person it is asked for holds of
+        // different items as time passes or for each of them: it is answered from the columns of
+        // the fields it reads, never kept as a column of its own.
+        if f.pred
+            .as_ref()
+            .is_some_and(|pred| pred.reads_clock() || pred.reads_viewer())
+        {
             continue;
         }
         // ignored-failure: a loaded package's filter types all parse (`unreadable_types`).
@@ -283,22 +271,18 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         {
             continue;
         }
-        // A personal field holds a value of its declared type for each person, a register's
-        // value per person: its column holds one person's value, the one its name says
-        // (`columns::person_of`), and the store derives one per person who has one.
-        let columned = schema.personal
-            || match schema.kind {
-                MergeKind::Register => !matches!(
-                    parse_ty(&field.ty, &meta.app),
-                    Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
-                ),
-                // A counter is a column of its value. A set's members are one run per member
-                // (`columns::values`), so membership and presence are runs of its column
-                // without any `filter` naming it: `boxes.contains("inbox")` finds the
-                // conversations in one box by one run, not one by one.
-                MergeKind::Counter | MergeKind::Set => true,
-                _ => false,
-            };
+        let columned = match schema.kind {
+            MergeKind::Register => !matches!(
+                parse_ty(&field.ty, &meta.app),
+                Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
+            ),
+            // A counter is a column of its value. A set's members are one run per member
+            // (`columns::values`), so membership and presence are runs of its column
+            // without any `filter` naming it: `boxes.contains("inbox")` finds the
+            // conversations in one box by one run, not one by one.
+            MergeKind::Counter | MergeKind::Set => true,
+            _ => false,
+        };
         // ignored-failure: a loaded package's field types all parse (`unreadable_types`).
         let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
             .ok()

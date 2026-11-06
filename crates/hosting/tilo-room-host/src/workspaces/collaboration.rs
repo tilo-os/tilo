@@ -53,12 +53,6 @@ pub(super) struct Written {
     answer: tokio::sync::oneshot::Sender<Result<(), CollaborationError>>,
 }
 
-impl tilo_peer_state::join_ledger::GovernanceMessages for WorkspaceRecord {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
-        WorkspaceRecord::governance_messages(self)
-    }
-}
-
 impl GovernedWorkspace {
     /// The workspace as its join ledger reads it: committed now.
     pub(super) fn governed(&self) -> Governed<'_> {
@@ -91,7 +85,11 @@ fn governed<'a>(record: &'a WorkspaceRecord, peer: &'a tilo_peer_state::StatePee
         host: &record.authority,
         workspace_id: record.workspace_id,
         generation: record.generation,
-        governance_messages: record,
+        // A newcomer admits the workspace's governance alone: one message
+        // holding its complete committed document. What the record retains of
+        // its own publications builds on that document, so it reaches the
+        // newcomer through the workspace's sync, not through this answer.
+        governance_messages: peer,
     }
 }
 

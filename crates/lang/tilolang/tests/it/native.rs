@@ -75,7 +75,11 @@ view note_row(n: Note) {
 }
 
 view notebook(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet")
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at) {
+            note_row(n)
+        }
+    }
 }
 
 scenario "a week of notes" {
@@ -356,8 +360,8 @@ type Notebook {
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet") { n ->
-        row(n.title)
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
     }
 }
 
@@ -394,8 +398,8 @@ type Notebook {
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet") { n ->
-        row(n.title)
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
     }
 }
 
@@ -413,7 +417,7 @@ fn a_views_declaration_names_the_types_own_views_and_its_default_one() {
     // A view of another type is no view of this one.
     expect(
         "E018",
-        r#"type Note {
+        r"type Note {
     title: Text (title)
 }
 
@@ -426,7 +430,9 @@ type Notebook {
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet")
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
+    }
 }
 
 view note_page(n: Note) {
@@ -435,7 +441,7 @@ view note_page(n: Note) {
     }
 }
 
-views note_cards, note_page for Notebook"#,
+views note_cards, note_page for Notebook",
     );
     // The default view is the one a window opens on, so the switch names it.
     expect(
@@ -453,8 +459,8 @@ type Notebook {
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet") { n ->
-        row(n.title)
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
     }
 }
 
@@ -479,8 +485,8 @@ type Notebook {
 default view note_cards for Notebook
 
 view note_cards(nb: Notebook) {
-    std.list(nb, nb.notes, empty: "No notes yet") { n ->
-        row(n.title)
+    std.list(nb.notes) { (n, at) ->
+        ui.ListItem(item: n, presence: at)
     }
 }
 
@@ -525,6 +531,39 @@ fn a_scenario_is_a_hidden_action_listed_with_its_name() {
     );
     assert!(c.ids.to_text().contains(key));
     crate::common::validate(&c.wasm);
+}
+
+#[test]
+fn an_action_that_calls_another_says_so_in_its_metadata() {
+    let c = compile_body(
+        r#"type T {
+    t: Text
+}
+
+action mark(t: T) {
+    t.t = "done"
+}
+
+action twice(t: T) {
+    mark(t)
+    mark(t)
+}
+
+action once(t: T) {
+    t.t = "one"
+}"#,
+    );
+    let invokes = |name: &str| {
+        c.meta
+            .actions
+            .iter()
+            .find(|a| a.name == name)
+            .unwrap_or_else(|| panic!("the action {name}"))
+            .invokes
+    };
+    assert!(invokes("twice"), "a body that calls an action is run again");
+    assert!(!invokes("once"), "a body that calls none is one change");
+    assert!(!invokes("mark"), "and so is what `twice` calls");
 }
 
 #[test]
@@ -582,7 +621,7 @@ fn e090_action_modifiers_and_options() {
         "primary action a(x: T) {\n    x.n = 1\n}\ndestructive action b(x: T) {\n    x.n = 2\n}",
     ));
     assert_eq!(
-        codes(&with_t("primary flow f(x: T) {\n    return\n}")),
+        codes(&with_t("primary fn f() -> Int {\n    return 1\n}")),
         vec!["E003"],
         "modifiers mark actions only"
     );
@@ -714,14 +753,14 @@ fn e094_scenarios_and_root() {
     );
 }
 
-/// Only a scenario names people and acts as them: elsewhere a principal comes from `invoker`.
+/// Only a scenario runs an action as a named person: elsewhere a principal comes from `invoker`.
 #[test]
-fn a_scenario_acts_as_named_people() {
+fn a_scenario_runs_actions_as_named_people() {
     let base = with_t(
         "root T\ndefault view v for T\nview v(x: T) {\n    page {\n        text(x.t)\n    }\n}\naction bump(x: T) {\n    x.n = 1\n}\n",
     );
     ok(&format!(
-        "{base}scenario \"two\" {{\n    let r = root T\n    let mia = person(\"Mia\")\n    as mia {{\n        bump(r)\n    }}\n    as person(\"Leo\") {{\n        bump(r)\n    }}\n}}"
+        "{base}scenario \"two\" {{\n    let r = root T\n    let mia = person(\"Mia\")\n    invoke(bump(r), by: mia)\n    invoke(bump(r), by: person(\"Leo\"))\n}}"
     ));
     expect(
         "E094",
@@ -729,12 +768,12 @@ fn a_scenario_acts_as_named_people() {
     );
     expect(
         "E094",
-        &format!("{base}action a(x: T) {{\n    as invoker {{\n        x.n = 2\n    }}\n}}"),
+        &format!("{base}action a(x: T) {{\n    invoke(bump(x), by: invoker)\n}}"),
     );
     expect(
         "E020",
         &format!(
-            "{base}scenario \"s\" {{\n    let r = root T\n    as \"Mia\" {{\n        bump(r)\n    }}\n}}"
+            "{base}scenario \"s\" {{\n    let r = root T\n    invoke(bump(r), by: \"Mia\")\n}}"
         ),
     );
     expect(
@@ -810,10 +849,10 @@ fn a_window_is_what_its_view_builds_and_std_frames_check_their_parts() {
         "{head}view v(x: T) {{\n    stack {{\n        text(x.t)\n    }}\n}}"
     ));
     ok(&format!(
-        "{head}view v(x: T) {{\n    window n: Int = 0\n    let s = x.t\n    std.page(x, canvas: true) {{\n        text(s)\n    }}\n}}"
+        "{head}view v(x: T) {{\n    state n: Int = 0\n    let s = x.t\n    std.page(x, canvas: true) {{\n        text(s)\n    }}\n}}"
     ));
     ok(&format!(
-        "{head}view v(x: T) {{\n    std.list(x, x.items) {{ i ->\n        row(i.t)\n    }}\n}}"
+        "{head}view v(x: T) {{\n    std.list(x.items) {{ (i, at) ->\n        ui.ListItem(item: i, presence: at)\n    }}\n}}"
     ));
     ok(&format!(
         "{head}view v(x: T) {{\n    page(full) {{\n        text(x.t)\n    }}\n}}"
@@ -826,14 +865,9 @@ fn a_window_is_what_its_view_builds_and_std_frames_check_their_parts() {
     );
     expect(
         "E066",
-        &with_t(
-            "view v(x: T) {\n    std.list(x, x.items, sort: x.n) { i ->\n        row(i.t)\n    }\n}",
-        ),
+        &with_t("view v(x: T) {\n    std.places(x.t, filters(T), \"All\", icon: .none)\n}"),
     );
-    expect(
-        "E097",
-        &with_t("view v(x: T) {\n    std.list(x, x.items)\n}"),
-    );
+    expect("E097", &with_t("view v(x: T) {\n    std.list(x.items)\n}"));
 }
 
 #[test]
@@ -867,7 +901,7 @@ fn e097_lists_and_rows() {
     expect(
         "E096",
         &with_t(
-            "view v(x: T) {\n    window s: Int = 0\n    list(x.items, sort: s) { i ->\n        row(i.t)\n    }\n}",
+            "view v(x: T) {\n    state s: Int = 0\n    list(x.items, sort: s) { i ->\n        row(i.t)\n    }\n}",
         ),
     );
     expect(
@@ -907,7 +941,7 @@ fn e098_controls_and_facts_misused() {
         ),
     );
     ok(&with_t(
-        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    lens k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
+        "enum K {\n    a\n    b\n}\naction go(x: T) {\n    x.n = 1\n}\nview v(x: T) {\n    state k: K = .a\n    stack {\n        choice(bind: k)\n        facts(x)\n        toggle(bind: x.b)\n        button(go(x), enabled: x.b)\n        button(\"Pick b\", on: set(k, .b))\n    }\n}",
     ));
 }
 
@@ -917,7 +951,7 @@ fn e098_controls_and_facts_misused() {
 fn a_date_field_binds_a_date() {
     let head = "type Task {\n    due: Option<Date> = .none\n    on: Date = Date(\"2026-10-24\")\n    t: Text\n}\n";
     ok(&format!(
-        "{head}view v(x: Task) {{\n    window d: Date = Date(\"2026-01-01\")\n    lens o: Option<Date> = .none\n    stack {{\n        ui.DateField(bind: x.due, optional: true)\n        ui.DateField(bind: x.on)\n        ui.DateField(bind: d)\n        ui.DateField(bind: o, optional: true)\n    }}\n}}"
+        "{head}view v(x: Task) {{\n    state d: Date = Date(\"2026-01-01\")\n    state o: Option<Date> = .none\n    stack {{\n        ui.DateField(bind: x.due, optional: true)\n        ui.DateField(bind: x.on)\n        ui.DateField(bind: d)\n        ui.DateField(bind: o, optional: true)\n    }}\n}}"
     ));
     expect(
         "E062",
@@ -934,7 +968,7 @@ const DATED: &str = "type Task {\n    title: Text (title)\n    due: Option<Date>
 #[test]
 fn dates_and_times_are_nominal_iso_text() {
     let c = compile_body(&format!(
-        "{DATED}action finish(t: Task) {{\n    t.done_at = now\n    if t.start < Date(\"2027-01-01\") and now >= Time(\"2026-10-21T09:30:00Z\") {{\n        t.title = \"{{t.start}} at {{now}}\"\n    }}\n    t.due = .some(Date(\"2028-02-29\"))\n}}"
+        "{DATED}action finish(t: Task) uses time {{\n    t.done_at = now\n    if t.start < Date(\"2027-01-01\") and now >= Time(\"2026-10-21T09:30:00Z\") {{\n        t.title = \"{{t.start}} at {{now}}\"\n    }}\n    t.due = .some(Date(\"2028-02-29\"))\n}}"
     ));
     let task = &c.meta.types[0];
     let ty = |f: &str| {
@@ -1100,7 +1134,11 @@ view thread_row(t: Thread) {{
     row(t.subject)
 }}
 view thread_list(threads: Threads) {{
-    std.list(threads, threads.threads, empty: "No thread yet")
+    std.list(threads.threads) {{ (t, at) ->
+        ui.ListItem(item: t, presence: at) {{
+            thread_row(t)
+        }}
+    }}
 }}
 primary action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
 action tidy(threads: Threads) (key: "Ctrl+N") {{ threads.threads.remove_where(s -> s.subject == "") }}"#
@@ -1118,7 +1156,11 @@ view thread_row(t: Thread) {{
     row(t.subject)
 }}
 view thread_list(threads: Threads) {{
-    std.list(threads, threads.threads, empty: "No thread yet")
+    std.list(threads.threads) {{ (t, at) ->
+        ui.ListItem(item: t, presence: at) {{
+            thread_row(t)
+        }}
+    }}
 }}
 action new_thread(threads: Threads) -> Thread (key: "Ctrl+N") {{ return threads.threads.insert(Thread(subject: "")) }}
 action archive(t: Thread) (key: "Ctrl+N") {{}}"#

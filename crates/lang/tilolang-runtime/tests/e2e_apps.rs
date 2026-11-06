@@ -1,6 +1,7 @@
 //! Every app under `apps/tl`, compiled with its committed ids and run end to end: a chat with
-//! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and flow, lists that open their
-//! items in windows of their own, window and lens state, and every root's window at a compact
+//! embedded agent blocks (the fixture `tests/block_chat`), letters, Today's foreign views and its
+//! cleanup action, lists that open their items in windows of their own, view state, and every
+//! root's window at a compact
 //! and a wide space.
 
 #[cfg(test)]
@@ -13,9 +14,9 @@ mod cases {
     use serde_json::json;
     use tilolang::IdsLock;
     use tilolang_runtime::{
-        AmStore, EditOutcome, FlowOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
-        Principal, Resolution, ResourceRef, Runtime, RuntimeError, Space, UiNode, Value, ViewEvent,
-        ViewInstance,
+        AmStore, EditOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
+        Principal, Resolution, ResourceRef, RunOutcome, Runtime, RuntimeError, Space, UiNode, Value,
+        ViewEvent, ViewInstance,
     };
 
     /// An app's directory (for messages), source and committed lock, all from one path.
@@ -45,6 +46,7 @@ mod cases {
     }
 
     struct Apps {
+        discussion: App,
         notes: App,
         todo: App,
         /// The chat of messages with blocks, a fixture.
@@ -59,8 +61,9 @@ mod cases {
     }
 
     fn apps() -> Apps {
-        let notes = build(app_source!("notes"), &[]);
-        let todo = build(app_source!("tasks"), &[]);
+        let discussion = build(app_source!("discussion"), &[]);
+        let notes = build(app_source!("notes"), &[&discussion]);
+        let todo = build(app_source!("tasks"), &[&discussion]);
         let chat = build(
             (
                 "crates/lang/tilolang-runtime/tests/block_chat",
@@ -79,10 +82,14 @@ mod cases {
         );
         let counter = build(app_source!("counter"), &[]);
         let channels = build(app_source!("chat"), &[]);
-        let today = build(app_source!("today"), &[&notes, &todo, &channels]);
+        let today = build(
+            app_source!("today"),
+            &[&discussion, &notes, &todo, &channels],
+        );
         let board = build(app_source!("board"), &[]);
         let views = build(app_source!("views"), &[&channels]);
         Apps {
+            discussion,
             notes,
             todo,
             chat,
@@ -99,7 +106,8 @@ mod cases {
         rt: Runtime,
         auth: TestAuthority,
         sink: MemorySink,
-        ids: Vec<PackageId>,
+        /// Each loaded package by the name it declares, so a test that names an app reads its id.
+        ids: Vec<(String, PackageId)>,
     }
 
     fn world(apps: &Apps, store: &AmStore) -> World {
@@ -108,6 +116,7 @@ mod cases {
         let sink = MemorySink::new();
         rt.set_sink(sink.clone());
         let ids = [
+            &apps.discussion,
             &apps.notes,
             &apps.todo,
             &apps.chat,
@@ -119,7 +128,7 @@ mod cases {
             &apps.views,
         ]
         .iter()
-        .map(|a| a.load(&rt))
+        .map(|a| (a.meta().app.clone(), a.load(&rt)))
         .collect();
         World {
             rt,
@@ -151,8 +160,14 @@ mod cases {
             self.rt.create(ty).unwrap()
         }
 
-        fn id_of(&self, which: usize) -> &PackageId {
-            &self.ids[which]
+        fn id_of(&self, app: &App) -> &PackageId {
+            let name = &app.meta().app;
+            &self
+                .ids
+                .iter()
+                .find(|(loaded, _)| loaded == name)
+                .unwrap_or_else(|| panic!("{name} is loaded"))
+                .1
         }
     }
 
@@ -209,7 +224,7 @@ mod cases {
     }
 
     fn start_chat(w: &World, apps: &Apps) -> (ResourceRef, ResourceRef) {
-        let chat = w.create("Conversations");
+        let chat = w.create("BlockChat");
         let conv =
             returned_ref(w.call(&apps.chat, "start", vec![res(&chat), Value::text("Plans")]));
         (chat, conv)
@@ -353,8 +368,9 @@ mod cases {
     fn every_app_compiles_with_its_committed_ids_and_loads_together() {
         let a = apps();
         let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 9);
+        assert_eq!(w.ids.len(), 10);
         for app in [
+            &a.discussion,
             &a.notes,
             &a.todo,
             &a.chat,
@@ -490,7 +506,7 @@ mod cases {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let (_, conv) = start_chat(&w, &apps);
-        let notebook = w.create("Notes");
+        let notebook = w.create("Notebook");
         let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&notebook)]));
         w.call(
             &apps.notes,
@@ -513,7 +529,7 @@ mod cases {
         );
         assert_eq!(
             &binding.author,
-            w.id_of(0),
+            w.id_of(&apps.notes),
             "the nested view is the notes package's code, not the agent's"
         );
         // A new note's title starts empty: "Untitled" is only what the field prompts with.
@@ -745,12 +761,28 @@ mod cases {
         let first = returned_ref(w.call(
             &apps.todo,
             "new_task",
-            vec![res(&list), Value::text("milk")],
+            vec![
+                res(&list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text("milk"),
+            ],
         ));
         let second = returned_ref(w.call(
             &apps.todo,
             "new_task",
-            vec![res(&list), Value::text("eggs")],
+            vec![
+                res(&list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text("eggs"),
+            ],
         ));
         let remove = |item: &ResourceRef| {
             format!(
@@ -784,7 +816,15 @@ mod cases {
         let third = returned_ref(w.call(
             &apps.todo,
             "new_task",
-            vec![res(&list), Value::text("bread")],
+            vec![
+                res(&list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text("bread"),
+            ],
         ));
         post(&w, &apps, &conv, "person:stranger", "", &remove(&third));
         let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
@@ -815,7 +855,7 @@ mod cases {
         let list = wa.create("Tasks");
         wa.auth.trust_principal("agent:helper");
         let src = format!(
-            "tasks.new_task(@tasks.Tasks:{}, \"bread\")",
+            "tasks.new_task(@tasks.Tasks:{}, title: \"bread\")",
             list.id_string()
         );
         let message = post(&wa, &apps, &conv, "agent:helper", "", &src);
@@ -865,7 +905,7 @@ mod cases {
         let list = w.create("Tasks");
         w.auth.trust_principal("agent:helper");
         let src = format!(
-            "tasks.new_task(@tasks.Tasks:{}, \"spam\")",
+            "tasks.new_task(@tasks.Tasks:{}, title: \"spam\")",
             list.id_string()
         );
 
@@ -1025,7 +1065,7 @@ mod cases {
         assert_eq!(thread(&w, &conv)[0].0, "person:ada");
     }
 
-    // ----- windows: open(r), window state and lenses ------------------------------------------
+    // ----- windows: open(r), view state ------------------------------------------
 
     // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, list rows
     // that `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
@@ -1035,7 +1075,7 @@ mod cases {
     fn a_notebook_row_opens_its_note_in_a_window_of_its_own() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notes");
+        let nb = w.create("Notebook");
         let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
         w.call(
             &apps.notes,
@@ -1077,14 +1117,14 @@ mod cases {
         );
     }
 
-    // Window state is how one person's window shows its resource (workspace-model.md, "The
+    // View state is how one person's window shows its resource (workspace-model.md, "The
     // pieces"): two people with the same window open sort it for themselves, and neither
     // moves the other's view.
     #[test]
     fn two_people_in_one_window_sort_it_for_themselves() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notes");
+        let nb = w.create("Notebook");
         for title in ["b", "a"] {
             let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
             w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
@@ -1145,13 +1185,24 @@ mod cases {
     }
 
     #[test]
-    fn a_lists_filter_is_window_state_and_changes_nothing_in_the_list() {
+    fn a_lists_filter_is_view_state_and_changes_nothing_in_the_list() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false)] {
-            let item =
-                returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]));
+            let item = returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(t),
+                ],
+            ));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }
@@ -1240,7 +1291,19 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.rt.create_root("Tasks").unwrap();
         let add = |title: &str| {
-            returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(title)]))
+            returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(title),
+                ],
+            ))
         };
         add("Record the demo video");
         add("Update the changelog");
@@ -1317,9 +1380,9 @@ mod cases {
         let w = world(apps, &AmStore::new());
         // Today reads the other apps' roots: the workspace's one of each.
         let today = w.create("Today");
-        let notebook = w.rt.create_root("Notes").unwrap();
+        let notebook = w.rt.create_root("Notebook").unwrap();
         let list = w.rt.create_root("Tasks").unwrap();
-        let chat = w.rt.create_root("Channels").unwrap();
+        let chat = w.rt.create_root("Conversations").unwrap();
         Morning {
             w,
             today,
@@ -1333,7 +1396,15 @@ mod cases {
         let item = returned_ref(m.w.call(
             &apps.todo,
             "new_task",
-            vec![res(&m.list), Value::text(title)],
+            vec![
+                res(&m.list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text(title),
+            ],
         ));
         if done {
             m.w.call(&apps.todo, "check", vec![res(&item)]);
@@ -1398,20 +1469,24 @@ mod cases {
 
         let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
-        let mut out = FlowOutcome::Suspended(suggested(view.press(&button).unwrap()));
+        let mut out = match view.press(&button).unwrap() {
+            InvokeOutcome::Suggested(s) => RunOutcome::Suspended(s),
+            InvokeOutcome::Done(v) => RunOutcome::Done(v),
+            InvokeOutcome::Denied => panic!("the press was denied"),
+        };
         let mut asked = Vec::new();
         let finished = loop {
             match out {
-                FlowOutcome::Suspended(s) => {
+                RunOutcome::Suspended(s) => {
                     assert_eq!(
                         s.chain,
-                        vec![m.w.id_of(5).clone()],
+                        vec![m.w.id_of(&apps.today).clone()],
                         "Today wrote these invocations"
                     );
                     asked.push(s.action.clone());
                     out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
                 }
-                FlowOutcome::Done(v) => break v,
+                RunOutcome::Done(v) => break v,
             }
         };
         assert_eq!(finished, Value::Int(2));
@@ -1423,10 +1498,10 @@ mod cases {
                 apps.notes.action("retitle"),
                 apps.notes.action("tag"),
             ],
-            "one question for the clear, then one per note action, in flow order"
+            "one question for the clear, then one per note action, in the order Today wrote them"
         );
         assert_eq!(items(&m.w, &m.list, "items").len(), 1);
-        let notes = items(&m.w, &m.notebook, "items");
+        let notes = items(&m.w, &m.notebook, "notes");
         assert_eq!(notes.len(), 1, "replays did not file a second note");
         assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 2 done");
         assert_eq!(
@@ -1450,8 +1525,19 @@ mod cases {
         add_todo(&m, &apps, "a", false);
         add_todo(&m, &apps, "b", false);
         // A step put under a done task opens it again: there is work under it now.
-        let parent =
-            returned_ref(m.w.call(&apps.todo, "new_task", vec![res(&m.list), Value::text("c")]));
+        let parent = returned_ref(m.w.call(
+            &apps.todo,
+            "new_task",
+            vec![
+                res(&m.list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text("c"),
+            ],
+        ));
         m.w.call(&apps.todo, "check", vec![res(&parent)]);
         m.w.call(
             &apps.todo,
@@ -1464,19 +1550,25 @@ mod cases {
             "the task opened again for its step"
         );
 
-        let flow = apps.today.flow("morning_cleanup");
-        let mut out =
-            m.w.rt
-                .run_flow(&me(), &flow, vec![res(&m.list), res(&m.notebook)])
-                .unwrap();
+        let cleanup = apps.today.action("morning_cleanup");
+        let mut out = match m
+            .w
+            .rt
+            .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+            .unwrap()
+        {
+            InvokeOutcome::Suggested(s) => RunOutcome::Suspended(s),
+            InvokeOutcome::Done(v) => RunOutcome::Done(v),
+            InvokeOutcome::Denied => panic!("the cleanup was denied"),
+        };
         let mut asked = Vec::new();
         let finished = loop {
             match out {
-                FlowOutcome::Suspended(s) => {
+                RunOutcome::Suspended(s) => {
                     asked.push(s.action.clone());
                     out = m.w.rt.resolve(&s.run, &me(), Resolution::Approve).unwrap();
                 }
-                FlowOutcome::Done(v) => break v,
+                RunOutcome::Done(v) => break v,
             }
         };
         assert_eq!(finished, Value::Int(0), "nothing was finished");
@@ -1494,7 +1586,7 @@ mod cases {
             4,
             "nothing went: the task opened again for its step"
         );
-        let notes = items(&m.w, &m.notebook, "items");
+        let notes = items(&m.w, &m.notebook, "notes");
         assert_eq!(notes.len(), 1, "the note still says how the morning went");
         assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 0 done");
     }
@@ -1504,13 +1596,14 @@ mod cases {
         let apps = apps();
         let m = morning(&apps);
         add_todo(&m, &apps, "a", true);
-        m.w.auth.trust(m.w.id_of(5));
-        let flow = apps.today.flow("morning_cleanup");
-        let out =
-            m.w.rt
-                .run_flow(&me(), &flow, vec![res(&m.list), res(&m.notebook)])
-                .unwrap();
-        assert_eq!(out, FlowOutcome::Done(Value::Int(1)));
+        m.w.auth.trust(m.w.id_of(&apps.today));
+        let cleanup = apps.today.action("morning_cleanup");
+        let out = m
+            .w
+            .rt
+            .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+            .unwrap();
+        assert_eq!(out, InvokeOutcome::Done(Value::Int(1)));
         assert!(items(&m.w, &m.list, "items").is_empty());
     }
 
@@ -1563,7 +1656,19 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for t in ["a", "b"] {
-            w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]);
+            w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(t),
+                ],
+            );
         }
         let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
@@ -1776,12 +1881,11 @@ mod cases {
         let list = w.create("Tasks");
         let made = returned_ref(w.call(
             &apps.todo,
-            "quick_add",
+            "new_task",
             vec![
                 res(&list),
                 Value::none(),
                 Value::none(),
-                Value::Bool(false),
                 Value::none(),
                 Value::none(),
                 Value::none(),
@@ -1955,7 +2059,15 @@ mod cases {
         let item = returned_ref(w.call(
             &apps.todo,
             "new_task",
-            vec![res(&list), Value::text("milk")],
+            vec![
+                res(&list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::text("milk"),
+            ],
         ));
         // Delete finished tasks stands in the header's one menu, as every command that is
         // not the window's main thing does: a control that names it, and says whether it can
@@ -2044,8 +2156,19 @@ mod cases {
         let w = world(&apps, &AmStore::new());
         let list = w.create("Tasks");
         for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
-            let item =
-                returned_ref(w.call(&apps.todo, "new_task", vec![res(&list), Value::text(t)]));
+            let item = returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text(t),
+                ],
+            ));
             if done {
                 w.call(&apps.todo, "check", vec![res(&item)]);
             }
@@ -2063,7 +2186,7 @@ mod cases {
     fn notes_list_rows_carry_the_title_and_a_preview() {
         let apps = apps();
         let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notes");
+        let nb = w.create("Notebook");
         w.call(&apps.notes, "new_note", vec![res(&nb)]);
         let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
         let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));

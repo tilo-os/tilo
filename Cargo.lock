@@ -2134,6 +2134,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom 0.2.17",
  "hex",
+ "iai-callgrind",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
@@ -3995,6 +3996,7 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-net",
+ "tilo-reference",
  "workspace-hack",
 ]
 
@@ -4042,6 +4044,7 @@ dependencies = [
  "tilo-connector",
  "tilo-lock",
  "tilo-net",
+ "tilo-reference",
  "tilo-relay",
  "tilo-seal",
  "tilo-secrets",
@@ -16715,8 +16718,11 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tilo-app",
- "tilo-rich-text",
+ "tilo-actions",
+ "tilo-document",
+ "tilo-model-guest",
+ "tilo-reference",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -18418,6 +18424,7 @@ dependencies = [
  "serde_json",
  "tilo-clock",
  "tilo-desktop-model",
+ "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-ui",
  "workspace-hack",
@@ -18462,6 +18469,7 @@ dependencies = [
  "taffy",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-audio-service",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-callstream",
@@ -19301,6 +19309,7 @@ version = "0.1.0"
 dependencies = [
  "rustypipe",
  "serde_json",
+ "time",
  "workspace-hack",
 ]
 
@@ -19636,6 +19645,8 @@ dependencies = [
 name = "tilo-model-abi"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "workspace-hack",
 ]
 
@@ -19709,6 +19720,7 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-model-abi",
  "tilo-resource",
  "workspace-hack",
@@ -19718,7 +19730,9 @@ dependencies = [
 name = "tilo-model-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "durable-store",
+ "getrandom 0.4.3",
  "serde",
  "serde_json",
  "tasks-model",
@@ -19727,8 +19741,10 @@ dependencies = [
  "tilo-app-state",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-model-abi",
  "tilo-resource",
  "tilo-service",
+ "tilolang-runtime",
  "tracing",
  "workspace-hack",
 ]
@@ -20546,6 +20562,7 @@ dependencies = [
  "tilo-audio-service",
  "tilo-compositor",
  "tilo-connectivity-service",
+ "tilo-desktop-surface",
  "tilo-media",
  "tilo-power-mgmt",
  "tilo-quick-settings",
@@ -20577,6 +20594,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-actions",
+ "tilo-automerge",
+ "tilo-automerge-fork",
  "tilo-resource",
  "uuid",
  "workspace-hack",
@@ -21343,6 +21362,7 @@ dependencies = [
  "tilo-content",
  "tilo-copy-lint",
  "tilo-crash-records",
+ "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-entry",
  "tilo-desktop-model",
@@ -21365,7 +21385,9 @@ dependencies = [
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
+ "tilo-model-abi",
  "tilo-model-client",
+ "tilo-model-host",
  "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",
@@ -21416,11 +21438,13 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilolang-host",
+ "tilolang-runtime",
  "tilolang-tilo",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "tube",
  "url",
  "uuid",
  "wayland-client",
@@ -22705,11 +22729,13 @@ dependencies = [
  "tilo-files",
  "tilo-render-protocol",
  "tilo-startup-metrics",
+ "tilo-test-env",
  "tilo-ui-host",
  "tilolang",
  "tilolang-host",
  "tilolang-mail",
  "tilolang-tilo",
+ "tilolang-youtube",
  "tracing",
  "uuid",
  "workspace-hack",
@@ -22766,6 +22792,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-desktop-search",
  "tilo-history",
+ "tilo-net",
  "tilo-render-protocol",
  "tilo-resource",
  "tilo-startup-metrics",
@@ -22803,10 +22830,12 @@ dependencies = [
 name = "tilolang-runtime"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "chrono-tz",
  "foldhash 0.1.5",
+ "getrandom 0.4.3",
  "regex",
  "serde",
  "serde_json",
@@ -22853,11 +22882,28 @@ dependencies = [
  "tilo-service",
  "tilo-ui",
  "tilo-ui-host",
+ "tilo-view",
  "tilolang",
  "tilolang-runtime",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-youtube"
+version = "0.1.0"
+dependencies = [
+ "rustypipe",
+ "serde_json",
+ "tilo-app",
+ "tilo-innertube",
+ "tilo-net",
+ "tilo-resource",
+ "tilolang-runtime",
+ "tilolang-tilo",
+ "tracing",
  "workspace-hack",
 ]
 
@@ -23481,6 +23527,8 @@ dependencies = [
  "tilo-test-env",
  "tilo-vello",
  "tilo-vello-encoding",
+ "tilo-view",
+ "tilo-view-macros",
  "tilo-winit",
  "tilo-youtube-engine",
  "tracing",
@@ -25016,7 +25064,6 @@ dependencies = [
  "once_cell",
  "postcard",
  "pulley-interpreter",
- "rayon",
  "rustix 1.1.4",
  "serde",
  "serde_derive",

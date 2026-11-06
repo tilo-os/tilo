@@ -43,10 +43,28 @@ const CARD_HERO: f64 = 36.0;
 const CARD_SUBTITLE: f64 = 18.0;
 /// Between a card's hero and the line under it.
 const CARD_LINE_GAP: f64 = 2.0;
+/// The artwork that heads a song's card, square: as tall as its title and
+/// artist together, so the song reads as one block.
+const CARD_ART: f64 = 56.0;
+/// Between a song's artwork and its title.
+const CARD_ART_GAP: f64 = 12.0;
+/// A progress bar's time label, one at each end of it.
+const CARD_TIME_LABEL: f64 = 40.0;
+/// The least the bar keeps between a time label and itself.
+const CARD_TIME_GAP: f64 = 8.0;
+/// The row a song's progress stands in: its time labels' line.
+const CARD_PROGRESS_ROW: f64 = 14.0;
 /// Its progress bar.
 const CARD_PROGRESS: f64 = 6.0;
 /// Its row of controls.
 const CARD_CONTROLS: f64 = 30.0;
+/// A media transport's row: the side of its play/pause circle, and of the
+/// smaller previous and next marks beside it, which are the toolkit's
+/// [`crate::widget::TransportFace`] sizes.
+const CARD_TRANSPORT: f64 = 40.0;
+const CARD_TRANSPORT_MARK: f64 = 32.0;
+/// The space between a transport's controls.
+const CARD_TRANSPORT_GAP: f64 = 12.0;
 /// The space between the rows of a card.
 const CARD_ROW_GAP: f64 = 10.0;
 /// A header control: the collapse and the close, square.
@@ -101,6 +119,14 @@ pub struct Card {
     /// The rect the person dragged it to: `None` docks it in the corner
     /// column.
     pub loose: Option<Rect>,
+    /// The app draws this card itself, in a window of its own
+    /// ([`crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX`]): the
+    /// layer reserves the card's place and draws nothing of it.
+    pub rich: bool,
+    /// The size the card's app asked for; `None` is the size the summary's
+    /// rows take. A card with a size is one its app draws, whether or not
+    /// its window is up yet.
+    pub size: Option<Size>,
 }
 
 impl Card {
@@ -110,6 +136,8 @@ impl Card {
             app: app.into(),
             summary,
             loose: None,
+            rich: false,
+            size: None,
         }
     }
 
@@ -128,6 +156,8 @@ pub struct Placed {
     pub rect: Rect,
     /// The person dragged it loose: it stays where they left it.
     pub loose: bool,
+    /// The app draws it: the layer keeps its place and paints nothing.
+    pub rich: bool,
 }
 
 impl Placed {
@@ -169,17 +199,47 @@ pub struct Layer {
 pub fn card_size(work: Rect, summary: &Summary) -> Size {
     let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
     let width = f64::from(Metrics::BASE.panel_width_utility).min(widest);
-    let mut height = 2.0 * CARD_PADDING + CARD_HEADER + CARD_ROW_GAP + CARD_HERO;
-    if !summary.subtitle.is_empty() {
-        height += CARD_LINE_GAP + CARD_SUBTITLE;
-    }
+    let lines = CARD_HERO
+        + if summary.subtitle.is_empty() {
+            0.0
+        } else {
+            CARD_LINE_GAP + CARD_SUBTITLE
+        };
+    let mut height = 2.0 * CARD_PADDING + CARD_HEADER + CARD_ROW_GAP;
+    // A song heads its card with artwork as tall as its title and artist.
+    height += if summary.artwork.is_empty() {
+        lines
+    } else {
+        CARD_ART.max(lines)
+    };
     if summary.progress.is_some() {
-        height += CARD_ROW_GAP + CARD_PROGRESS;
+        height += CARD_ROW_GAP
+            + if summary.length.is_some() {
+                CARD_PROGRESS_ROW
+            } else {
+                CARD_PROGRESS
+            };
     }
     if summary.has_actions() {
-        height += CARD_ROW_GAP + CARD_CONTROLS;
+        height += CARD_ROW_GAP
+            + if summary.transport().is_some() {
+                CARD_TRANSPORT
+            } else {
+                CARD_CONTROLS
+            };
     }
     Size::new(width, height)
+}
+
+/// How big `card` stands on `work`: a card its app draws keeps the size its
+/// app asked for, and every other card the size its summary's rows take.
+#[must_use]
+pub fn card_extent(work: Rect, card: &Card) -> Size {
+    let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
+    match card.size {
+        Some(size) => Size::new(size.width.min(widest).max(1.0), size.height.max(1.0)),
+        None => card_size(work, &card.summary),
+    }
 }
 
 /// Whether `work` is a phone-width display.
@@ -193,7 +253,8 @@ pub fn narrow(work: Rect) -> bool {
 pub struct Parts {
     /// The app's glyph at the header's leading edge, tinted by the tone.
     pub icon: Rect,
-    /// The title on the header line, when the hero is the card's reading.
+    /// The line on the header beside the app's glyph: the title, when the
+    /// hero is the card's reading, else the app the activity belongs to.
     pub title: Option<Rect>,
     /// The header's two controls, right-aligned.
     pub collapse: Rect,
@@ -202,11 +263,19 @@ pub struct Parts {
     pub hero: Rect,
     /// The line under the hero, where the summary has one.
     pub subtitle: Option<Rect>,
+    /// The artwork beside the song's lines, where the summary has any.
+    pub artwork: Option<Rect>,
+    /// Where it is in the song, and what is left of it, at the ends of the
+    /// progress bar, where the summary has a length.
+    pub elapsed: Option<Rect>,
+    pub remaining: Option<Rect>,
     /// The card's progress bar, where the summary has one, and the row of
     /// controls it offers, in the order they stand below the header.
     pub progress: Option<Rect>,
-    /// The well the offered controls stand in, where the summary has any.
+    /// The row the offered controls stand in, where the summary has any.
     pub controls_row: Option<Rect>,
+    /// Each control's place: its square on a media transport (a circle of its
+    /// own size), its slot on any other card.
     pub controls: Vec<(String, Rect)>,
 }
 
@@ -241,7 +310,7 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         ),
         Size::new(CARD_ICON, CARD_ICON),
     );
-    let title = summary.header_title().map(|_| {
+    let title = (!summary.header_line().is_empty()).then(|| {
         Rect::new(
             icon.x1 + CARD_TITLE_GAP,
             header.y0,
@@ -256,28 +325,106 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         cursor += height;
         rect
     };
-    let hero = row(CARD_HERO, CARD_ROW_GAP);
-    let subtitle = (!summary.subtitle.is_empty()).then(|| row(CARD_SUBTITLE, CARD_LINE_GAP));
-    let progress = summary
-        .progress
-        .is_some()
-        .then(|| row(CARD_PROGRESS, CARD_ROW_GAP));
-    let controls_row = summary
-        .has_actions()
-        .then(|| row(CARD_CONTROLS, CARD_ROW_GAP));
+    // A song's lines stand beside its artwork, centred on it; everything
+    // else's use the card's whole width.
+    let lines = CARD_HERO
+        + if summary.subtitle.is_empty() {
+            0.0
+        } else {
+            CARD_LINE_GAP + CARD_SUBTITLE
+        };
+    let (artwork, lines_x0, lines_top) = if summary.artwork.is_empty() {
+        (None, inside.x0, None)
+    } else {
+        let block = row(CARD_ART.max(lines), CARD_ROW_GAP);
+        let art = Rect::from_origin_size(block.origin(), Size::new(CARD_ART, CARD_ART));
+        let top = block.y0 + (block.height() - lines) / 2.0;
+        (Some(art), art.x1 + CARD_ART_GAP, Some(top))
+    };
+    let hero = match lines_top {
+        Some(top) => Rect::new(
+            lines_x0,
+            top,
+            inside.x1,
+            top + CARD_HERO.min(inside.height()),
+        ),
+        None => row(CARD_HERO, CARD_ROW_GAP),
+    };
+    let subtitle = (!summary.subtitle.is_empty()).then(|| {
+        let top = hero.y1 + CARD_LINE_GAP;
+        Rect::new(lines_x0, top, inside.x1, top + CARD_SUBTITLE)
+    });
+    let (progress, elapsed, remaining) = match summary.progress {
+        None => (None, None, None),
+        Some(_) if summary.length.is_some() => {
+            let row = row(CARD_PROGRESS_ROW, CARD_ROW_GAP);
+            let bar = Rect::new(
+                row.x0 + CARD_TIME_LABEL + CARD_TIME_GAP,
+                row.y0 + (row.height() - CARD_PROGRESS) / 2.0,
+                row.x1 - CARD_TIME_LABEL - CARD_TIME_GAP,
+                row.y0 + (row.height() + CARD_PROGRESS) / 2.0,
+            );
+            (
+                Some(bar),
+                Some(Rect::new(row.x0, row.y0, row.x0 + CARD_TIME_LABEL, row.y1)),
+                Some(Rect::new(row.x1 - CARD_TIME_LABEL, row.y0, row.x1, row.y1)),
+            )
+        }
+        Some(_) => (Some(row(CARD_PROGRESS, CARD_ROW_GAP)), None, None),
+    };
+    let transport = summary.transport();
+    let controls_row = summary.has_actions().then(|| {
+        row(
+            if transport.is_some() {
+                CARD_TRANSPORT
+            } else {
+                CARD_CONTROLS
+            },
+            CARD_ROW_GAP,
+        )
+    });
     let shown = summary.action_controls();
     let mut controls = Vec::with_capacity(shown.len());
     if let Some(controls_row) = controls_row {
-        let gap = 6.0;
-        let count = f64::from(u32::try_from(shown.len()).unwrap_or(u32::MAX));
-        let width = (controls_row.width() - gap * (count - 1.0)) / count;
-        for (at, control) in shown.into_iter().enumerate() {
-            let left =
-                controls_row.x0 + f64::from(u32::try_from(at).unwrap_or(u32::MAX)) * (width + gap);
-            controls.push((
-                control.id.clone(),
-                Rect::new(left, controls_row.y0, left + width, controls_row.y1),
-            ));
+        if let Some(steps) = &transport {
+            // A transport's controls are circles of their own sizes, centred
+            // as one row: play/pause stands a size up from its neighbours.
+            let side = |step: &crate::widget::TransportControl| {
+                if step.is_play() {
+                    CARD_TRANSPORT
+                } else {
+                    CARD_TRANSPORT_MARK
+                }
+            };
+            let count = steps.len();
+            let rows = f64::from(u32::try_from(count).unwrap_or(u32::MAX));
+            let marked = steps.iter().filter(|(_, step)| !step.is_play()).count();
+            let marks = f64::from(u32::try_from(marked).unwrap_or(u32::MAX));
+            let total = marks * CARD_TRANSPORT_MARK
+                + (rows - marks) * CARD_TRANSPORT
+                + CARD_TRANSPORT_GAP * (rows - 1.0);
+            let mut left = controls_row.x0 + (controls_row.width() - total) / 2.0;
+            for (id, step) in steps {
+                let width = side(step);
+                let at = Rect::from_center_size(
+                    Point::new(left + width / 2.0, controls_row.center().y),
+                    Size::new(width, width),
+                );
+                controls.push(((*id).to_owned(), at));
+                left += width + CARD_TRANSPORT_GAP;
+            }
+        } else {
+            let gap = 6.0;
+            let count = f64::from(u32::try_from(shown.len()).unwrap_or(u32::MAX));
+            let width = (controls_row.width() - gap * (count - 1.0)) / count;
+            for (at, control) in shown.into_iter().enumerate() {
+                let left = controls_row.x0
+                    + f64::from(u32::try_from(at).unwrap_or(u32::MAX)) * (width + gap);
+                controls.push((
+                    control.id.clone(),
+                    Rect::new(left, controls_row.y0, left + width, controls_row.y1),
+                ));
+            }
         }
     }
     Parts {
@@ -287,6 +434,9 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         close,
         hero,
         subtitle,
+        artwork,
+        elapsed,
+        remaining,
         progress,
         controls_row,
         controls,
@@ -312,38 +462,49 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
     let mut layer = Layer::default();
     let mut docked: Vec<&Card> = Vec::new();
     for card in order {
-        match card.loose {
+        match card.loose.filter(|_| !card.rich) {
             Some(left) => layer.cards.push(Placed {
                 app: card.app.clone(),
                 summary: card.summary.clone(),
-                rect: clamp_into(card_size(work, &card.summary), left, work),
+                rect: clamp_into(card_extent(work, card), left, work),
                 loose: true,
+                rich: false,
             }),
             None => docked.push(card),
         }
     }
     if narrow(work) {
-        // The pill is the only resting form on a phone; expanding drops the
-        // first card full-width from the bar.
-        match docked.split_first() {
-            Some((first, rest)) if expanded => {
-                layer.cards.push(Placed {
-                    app: first.app.clone(),
-                    summary: first.summary.clone(),
-                    rect: drop_from_the_bar(placement, first),
-                    loose: false,
-                });
-                layer.folded.extend(rest.iter().map(|card| Folded {
-                    app: card.app.clone(),
-                    activity: card.summary.id.clone(),
-                    reason: FoldReason::NoRoom,
-                }));
-            }
-            _ => layer.folded.extend(docked.iter().map(|card| Folded {
+        // The pill is the only resting form on a phone, but a card its app
+        // presents is the activity's own surface: it stands, full width,
+        // whether or not the person pulled anything out of the bar — and
+        // whether or not its window has come up yet, which the place this
+        // gives it is what brings about. Anything else drops only when the
+        // person expands it.
+        let dropped = docked
+            .iter()
+            .position(|card| card.size.is_some())
+            .or_else(|| (!docked.is_empty() && expanded).then_some(0));
+        let mut rest = docked.clone();
+        if let Some(at) = dropped {
+            let first = rest.remove(at);
+            layer.cards.push(Placed {
+                app: first.app.clone(),
+                summary: first.summary.clone(),
+                rect: drop_from_the_bar(placement, first),
+                loose: false,
+                rich: first.rich,
+            });
+            layer.folded.extend(rest.iter().map(|card| Folded {
+                app: card.app.clone(),
+                activity: card.summary.id.clone(),
+                reason: FoldReason::NoRoom,
+            }));
+        } else {
+            layer.folded.extend(docked.iter().map(|card| Folded {
                 app: card.app.clone(),
                 activity: card.summary.id.clone(),
                 reason: FoldReason::Phone,
-            })),
+            }));
         }
         return layer;
     }
@@ -354,7 +515,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
         column.bottom
     };
     for card in docked {
-        let size = card_size(work, &card.summary);
+        let size = card_extent(work, card);
         let rect = if corner.from_top() {
             Rect::from_origin_size((column.x, cursor), size)
         } else {
@@ -371,6 +532,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
                 summary: card.summary.clone(),
                 rect,
                 loose: false,
+                rich: card.rich,
             });
             cursor = if corner.from_top() {
                 rect.y1 + CARD_GAP
@@ -401,7 +563,7 @@ fn column(placement: &Placement, corner: Corner, docked: &[&Card]) -> Column {
     let work = placement.work;
     let width = docked
         .iter()
-        .map(|card| card_size(work, &card.summary).width)
+        .map(|card| card_extent(work, card).width)
         .fold(0.0_f64, f64::max);
     let x = if corner.from_left() {
         work.x0 + EDGE_INSET
@@ -441,7 +603,7 @@ fn overlaps_lane(lane: &Rect, band: Rect) -> bool {
 fn drop_from_the_bar(placement: &Placement, card: &Card) -> Rect {
     let work = placement.work;
     let width = (work.width() - 2.0 * EDGE_INSET).max(0.0);
-    let height = card_size(work, &card.summary).height;
+    let height = card_extent(work, card).height;
     let mut top = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
     if let Some(banners) = placement.banners
         && banners.y1 + CARD_GAP > top
@@ -500,6 +662,16 @@ impl Pill {
             .as_ref()
             .map(Summary::reading)
             .unwrap_or_default()
+    }
+
+    /// The picture the pill shows beside its words, when the activity that
+    /// heads it has artwork: a song reads as its cover and its title.
+    #[must_use]
+    pub fn artwork(&self) -> Option<crate::widget::PictureSource> {
+        let heading = self.heading.as_ref()?;
+        (!heading.artwork.is_empty()).then(|| crate::widget::PictureSource {
+            src: heading.artwork.clone(),
+        })
     }
 }
 

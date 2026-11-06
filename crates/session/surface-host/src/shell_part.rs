@@ -47,7 +47,8 @@ pub const ORIGIN: &str = "session";
 pub const DESK_RESOURCE: &str = "session:desk";
 /// The resource the session's chrome actions are published on.
 pub const CHROME_RESOURCE: &str = "desktop:chrome";
-/// The resource the person's arrangement is published on.
+/// The resource the person's arrangement is published on: what a composed view's open becomes a
+/// place on (`place`).
 pub const ARRANGEMENT_RESOURCE: &str = "shell:arrangement";
 
 /// The shell's own record: the package's named root `shell` (`root shell: Shell`), reached in
@@ -2086,6 +2087,15 @@ impl ShellPart {
             part.seed();
         }
         part.turn();
+        // The Rust apps' views linked into this process: a place showing a resource of one of
+        // their types draws that app's own view, exactly as it draws a tilolang package's
+        // (one-app-model.md §2). The runtime is up after the first turn, when the host is made.
+        if let Some(host) = part.instance.host() {
+            host.declare_rust_views();
+        }
+        // What a composed view opens is a place on the canvas, never a lane of the shell's own
+        // window.
+        part.instance.place_opens(true);
         part
     }
 
@@ -2496,6 +2506,13 @@ impl ShellPart {
             if let Some(window) = self.window() {
                 window.flush();
             }
+            // An index built off the frame is taken in here, as a window's turn takes it in: the
+            // shell's own views read what it holds, so the turn that takes it in draws them. A
+            // shell whose indexes are all read from (every frame after the open) asks nothing.
+            if self.index_building() {
+                let record = self.record.borrow();
+                self.instance.sync(Some(&record));
+            }
             let updated = self.instance.update();
             self.work.updating = self.work.updating.saturating_add(lap(&mut at));
             let committed = self.commit();
@@ -2562,6 +2579,10 @@ impl ShellPart {
                 self.origin.borrow().link.want_packages(packages);
             }
         }
+        // What a composed view opened (a video row pressed on a channel's page): a place the
+        // session arranges on the canvas, one step of the person's, never a detail lane of the
+        // shell's own window (one-app-model.md §2, shell.md §8).
+        self.place_opens();
         // The exchanges ran until neither side had more to say, unless they ran out first:
         // then the next frame goes on.
         self.again = !quiet;
@@ -2611,7 +2632,20 @@ impl ShellPart {
     }
 
     fn due(&self) -> bool {
-        self.input || self.again || self.owes() || self.origin.borrow().due() || self.record_moved()
+        self.input
+            || self.again
+            || self.owes()
+            || self.origin.borrow().due()
+            || self.record_moved()
+            || self.index_building()
+    }
+
+    /// Whether the shell's instance still waits for the index its packages' load builds off the
+    /// frame: until a frame takes it in the views read nothing, and nothing else wakes the part
+    /// for it — a hosted app's window is asked for its index's frame, and the shell, which draws
+    /// its own, asks for the frames itself.
+    fn index_building(&self) -> bool {
+        self.instance.host().is_some_and(|host| !host.index_ready())
     }
 
     /// Whether the shell's record holds changes this part has not drawn: another part of the
@@ -2744,6 +2778,29 @@ impl ShellPart {
             arguments,
             from: None,
         });
+    }
+
+    /// What a composed view opened since the last turn, each placed on the canvas through the
+    /// arrangement's own `place`, one arranging step of the person's: a video row pressed on a
+    /// channel's page stands the video beside it (one-app-model.md §2, shell.md §8).
+    fn place_opens(&mut self) {
+        let opened = self.instance.take_opens_to_place();
+        if opened.is_empty() {
+            return;
+        }
+        for (target, view, _front) in opened {
+            let mut arguments = BTreeMap::new();
+            arguments.insert("resource".to_owned(), target.id_string());
+            if let Some(view) = view {
+                arguments.insert("view".to_owned(), view);
+            }
+            self.origin.borrow().link.ask(Ask {
+                resource: ARRANGEMENT_RESOURCE.to_owned(),
+                action: "place".to_owned(),
+                arguments,
+                from: None,
+            });
+        }
     }
 
     /// Draw a frame of the part's widget tree when it owes one, and say whether it drew or

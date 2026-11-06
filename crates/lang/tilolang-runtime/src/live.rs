@@ -471,6 +471,37 @@ impl Live {
         }
     }
 
+    /// The resources the window shows now, by [`ResourceRef::id_string`]: the views' own
+    /// subjects, the items of the rows rendered, and the items the virtual lists built (the
+    /// visible rows and the overscan). What an app publishes for the window to act on: a
+    /// surface bounded by what a person can reach, whatever the workspace holds.
+    pub fn shown_refs(&self, core: &Core) -> Vec<String> {
+        let mut out = BTreeSet::new();
+        let collect = |out: &mut BTreeSet<String>, args: &[Value]| {
+            for arg in args {
+                if let Value::Ref(held) = arg {
+                    out.insert(held.target.id_string());
+                }
+            }
+        };
+        if let Some(root) = self.bound(ROOT) {
+            collect(&mut out, &root.args);
+        }
+        for id in self.shown.values().flatten() {
+            if let Some(bound) = self.bound(*id) {
+                collect(&mut out, &bound.args);
+            }
+        }
+        for list in self.lists.values() {
+            for item in list.shown_items(core) {
+                if let Value::Ref(held) = &item {
+                    out.insert(held.target.id_string());
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
     // ----- invalidation ----------------------------------------------------------------------
 
     /// What a change reaches: the boundaries that read a field it changed, those that saw
@@ -633,10 +664,6 @@ impl Live {
         }
         self.state_clock = clock;
         let mut hit = Vec::new();
-        // The window state a view shows is what the rows stand in: moving it leaves that view,
-        // and the rows the person kept for looking at it settle. A lens is the person's own
-        // input (a draft they are typing), not where the view is ([`crate::live::virtual_rows`]).
-        let mut left = Vec::new();
         for (key, ids) in &self.index.states {
             let now = states.generation(key);
             for id in ids {
@@ -647,14 +674,14 @@ impl Live {
                 });
                 if moved {
                     hit.push(*id);
-                    if key.is_window() {
-                        left.push(*id);
-                    }
                 }
             }
         }
         drop(states);
-        self.settle_kept(&left);
+        // The state a view declares is what its rows stand in: moving it leaves that view, and
+        // the rows the person kept for looking at it settle
+        // ([`crate::live::virtual_rows`]).
+        self.settle_kept(&hit);
         self.dirty.extend(hit);
     }
 

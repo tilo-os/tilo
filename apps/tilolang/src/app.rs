@@ -196,14 +196,6 @@ impl ResourceApp for TlApp {
         // the workspace's record of it, and given back to the window when it opens.
         let personal_record = cx.shared_workspace::<Personal>(personal::OWNER);
         let window = window.keeping_personal(personal_record);
-        // A live window tells the person what the workspace's records remind them of, as the
-        // platform's notifications; the word it keeps in the person's own record is what stops
-        // their other devices from telling them again.
-        let window = if cx.mode() == ui::framework::RunMode::Live {
-            window.ringing(ui::host::current().notifications, cx.waker())
-        } else {
-            window
-        };
         // What its runtime invokes is decided by the person's standing as the host keeps it.
         let mut window = window.with_standing(cx.standing());
         // Types whose origin is a mail server are kept in step with the servers of the
@@ -217,6 +209,19 @@ impl ResourceApp for TlApp {
                 std::sync::Arc::new(move || wake.wake()),
             );
             window = window.with_origin(origin);
+        }
+        // Types whose origin is YouTube are kept in step with it, in a live window: the client
+        // asks, and this origin, in native code with the network, writes what YouTube answers.
+        if cx.mode() == ui::framework::RunMode::Live
+            && tilolang_tilo::origin::uses_origin(meta, "youtube")
+        {
+            let wake = ui::wake::WakeHandle::new();
+            let origin = tilolang_youtube::origin(
+                std::sync::Arc::new(tilolang_youtube::service::Live::new()),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            let waker = std::sync::Arc::new(move || wake.wake());
+            window = window.with_origin(tilolang_youtube::waking(origin, waker));
         }
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();

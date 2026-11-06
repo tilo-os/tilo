@@ -1,5 +1,5 @@
 //! Agents' programs (agents.md, "One language, one tool"): a session that compiles each program
-//! against every loaded app, runs it as a flow the agent wrote, and keeps its top-level `let`s for
+//! against every loaded app, runs it as a run the agent wrote, and keeps its top-level `let`s for
 //! the next.
 //!
 //! A program is code by its agent: its module's frames carry the agent's principal identity
@@ -13,11 +13,11 @@ use std::rc::Rc;
 use tilolang::{Binding, CompiledProgram, PackageMeta};
 
 use crate::core::{Core, HResult, trap};
-use crate::flow::{FlowOutcome, Suggestion};
 use crate::ids::Principal;
 use crate::meta::{FieldKind, Ty};
 use crate::query::{Query, find, resolve};
 use crate::registry::FieldInfo;
+use crate::run::{RunOutcome, Suggestion};
 use crate::runtime::Runtime;
 use crate::value::{RefValue, ResourceRef, Value};
 
@@ -208,9 +208,9 @@ impl Runtime {
             self.core.load_block(&program.wasm, &program.meta)?;
             let params = program
                 .meta
-                .flows
+                .actions
                 .first()
-                .map(|f| f.params.clone())
+                .map(|a| a.params.clone())
                 .unwrap_or_default();
             let mut args = Vec::with_capacity(params.len());
             for p in &params {
@@ -228,15 +228,17 @@ impl Runtime {
             inputs,
             ..ProgramIo::default()
         }));
-        let ran = self.core.start_flow(agent, &program.flow, args, Vec::new());
+        let ran = self
+            .core
+            .start_run(agent, &program.action, args, Vec::new());
         let io = self.core.program.replace(outer).unwrap_or_default();
         if !io.missing.is_empty() {
             let missing = io.missing.clone();
             return (io, ProgramOutcome::NeedsReads(missing));
         }
         let outcome = match ran {
-            Ok(FlowOutcome::Done(_)) => ProgramOutcome::Done,
-            Ok(FlowOutcome::Suspended(s)) => ProgramOutcome::Suspended(s),
+            Ok(RunOutcome::Done(_)) => ProgramOutcome::Done,
+            Ok(RunOutcome::Suspended(s)) => ProgramOutcome::Suspended(s),
             Err(e) => ProgramOutcome::Failed(e.to_string()),
         };
         (io, outcome)

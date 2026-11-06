@@ -915,14 +915,11 @@ async fn what_ada_does_to_her_messages_in_chat_follows_in_discord() {
                     text: "the notes".into(),
                     parent: None,
                     body: None,
-                    attachment: Some(chat::record::AttachmentUpdate {
-                        kind: "file".into(),
+                    attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),
                         blob,
-                        width: 0,
-                        height: 0,
                         size: bytes.len() as u64,
-                    }),
+                    }],
                     mentions: None,
                     written: None,
                 },
@@ -976,14 +973,11 @@ async fn a_deleted_webhook_is_replaced_and_the_message_still_arrives() {
                     text: "after".into(),
                     parent: None,
                     body: None,
-                    attachment: Some(chat::record::AttachmentUpdate {
-                        kind: "file".into(),
+                    attachments: vec![tilo_reference::Attached::File {
                         name: "notes.txt".into(),
                         blob,
-                        width: 0,
-                        height: 0,
                         size: bytes.len() as u64,
-                    }),
+                    }],
                     mentions: None,
                     written: None,
                 },
@@ -1102,7 +1096,7 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
         bridge.chat_message("Bo's notes").await
     })
     .await;
-    let attachment = format!("{:?}", file.attachment);
+    let attachment = format!("{:?}", file.attachments);
     assert!(attachment.contains("notes.txt"), "{attachment}");
 
     // A picture lands as an image of its size: the bot queues fetching it,
@@ -1122,11 +1116,11 @@ async fn what_bo_does_to_his_messages_in_discord_follows_in_chat() {
     .await;
     assert!(
         matches!(
-            &photo.attachment,
-            Some(chat::model::Attachment::Image { name, w: 640, h: 480, .. }) if name == "photo.png"
+            photo.attachments.first(),
+            Some(tilo_reference::Attached::Image { name, w: 640, h: 480, .. }) if name == "photo.png"
         ),
         "{:?}",
-        photo.attachment
+        photo.attachments
     );
 
     bridge.fake.delete(&posted, None);

@@ -7,11 +7,10 @@
 //! * a `fn` computes and calls `fn`s; it changes nothing and calls no action;
 //! * a `view` reads resources, calls `fn`s and views and builds UI. Writing `act(args)` in a view
 //!   makes an `Action` value; it doesn't run the action;
-//! * an `action` reads and changes resources of its own package's types, and may call its own
-//!   package's actions, which run in the same change. It can't call another package's action
-//!   (one change can't span apps), a flow, or wait;
-//! * a `flow` invokes any action, its own or another package's, and reads resources, but
-//!   changes fields only through actions.
+//! * an `action` reads and changes resources of its own package's types, and may call any action,
+//!   its own or another package's: the call runs at its door, as a change of its own
+//!   ([`docs/designs/app-language/action-system.md`]);
+//! * an agent's program does what an action does, over every app it can see.
 //!
 //! Lambdas appear only as arguments of the built-in list methods and are inlined as loops, so
 //! there are no closures at run time. Every error found is reported, not only the first
@@ -23,7 +22,6 @@ mod call;
 mod component;
 mod enums;
 mod expr;
-mod holder;
 mod methods;
 mod native;
 mod optional;
@@ -62,7 +60,9 @@ pub(crate) enum Ctx {
     #[default]
     Fn,
     Action,
-    Flow,
+    /// An agent's program: statements over every app, which apply actions as their own steps
+    /// and send field edits to the app that holds them.
+    Program,
     View,
     /// An agent's block: reads and builds values, never changes anything.
     Block,
@@ -76,7 +76,7 @@ pub(crate) enum Written {
     Declared,
     /// A scenario, where `root T` names a root resource.
     Scenario,
-    /// An agent's program: a flow that may `print`, `find` and `read`.
+    /// An agent's program, which may `print`, `find` and `read`.
     Program,
 }
 
@@ -95,16 +95,32 @@ impl Ctx {
         match self {
             Self::Fn => "a fn",
             Self::Action => "an action",
-            Self::Flow => "a flow",
+            Self::Program => "an agent's program",
             Self::View => "a view",
             Self::Block => "a block",
         }
     }
 }
 
+/// What the `invoke` call being checked is, if it is one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Invoked {
+    /// Any other call.
+    #[default]
+    Plain,
+    /// The operand of `try`: it reports failure rather than trapping.
+    Try,
+}
+
 #[derive(Default)]
 struct FnState {
     ctx: Ctx,
+    /// The declaration's name, as a message says it.
+    decl: String,
+    /// `uses web, time`: the effects the declaration says its body reads.
+    uses: std::collections::BTreeSet<crate::effects::Effect>,
+    /// The effects already reported as undeclared here: one message per missing word.
+    reported: std::collections::BTreeSet<crate::effects::Effect>,
     locals: Vec<Ty>,
     scopes: Vec<HashMap<String, LocalId>>,
     sinks: Vec<Vec<Stmt>>,
@@ -115,8 +131,9 @@ struct FnState {
     shown: std::collections::HashSet<Span>,
     /// Locals holding the key suffix of each enclosing UI loop, innermost last.
     keys: Vec<LocalId>,
-    /// Set while checking the operand of `try`: the next `invoke` reports failure.
-    try_invoke: bool,
+    /// What the `invoke` call being checked is: the operand of `try`, which reports failure
+    /// rather than trapping.
+    invoked: Invoked,
     /// Set while checking the operand of `suggest`: `Some(true)` when the call is the value an
     /// agent block proposes, `Some(false)` when it is a statement recording a proposal.
     suggest: Option<bool>,
@@ -170,8 +187,9 @@ struct FnState {
     types: HashMap<String, Ty>,
     /// What node keys start with after the view's id: the templates being expanded, by call.
     prefix: String,
-    /// The templates being expanded, outermost first.
-    expanding: Vec<String>,
+    /// The templates being expanded, outermost first, each by the package whose names its body
+    /// sees and its name: two packages' views of the same name are not the same view.
+    expanding: Vec<(Option<String>, String)>,
     /// The resource the view being lowered shows: its first parameter, when that is one. What
     /// the system's parts of its controls are about (a rich input's `@` drawer).
     subject: Option<(LocalId, Ty)>,
@@ -203,10 +221,9 @@ pub(crate) struct UiPlace {
     composer: bool,
 }
 
-/// A `window` or `lens` declaration in scope, for `bind:` and `set(...)`.
+/// A `state` declaration in scope, for `bind:` and `set(...)`.
 #[derive(Clone, Debug)]
 pub(crate) struct StateRef {
-    pub layer: ast::StateLayer,
     pub id: String,
     pub ty: Ty,
     pub local: LocalId,
@@ -233,6 +250,13 @@ pub(crate) struct Checker<'a> {
     /// What the body checked last writes: `end` takes the state it was checked in, so the
     /// fields are kept here for the module to read.
     last_writes: Vec<FieldWritten>,
+    /// Where the declaration the next function is lowered from starts, in the package source's
+    /// span space: `end` takes it, so a function made in the middle of another's check (a row
+    /// view, an argument computed from view state) is named by its own declaration.
+    at: Option<usize>,
+    /// Where the declaration being checked starts: what a function it makes in passing (a row
+    /// view of its body, an argument computed from its view state) is named by.
+    outer_at: Option<usize>,
 }
 
 /// A field an offered action writes from a value it asks for: the action, the field, its type.
@@ -275,20 +299,29 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     let mut funcs = Vec::new();
+    // The actions, which declare what they read, and where their name is.
+    let mut declaring: Vec<(usize, Span)> = Vec::new();
     for item in &module.items {
         let idx = funcs.len();
         let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)).cloned() else {
             continue;
         };
+        c.at = Some(item.span().start);
+        if let Item::Action(a) = item {
+            declaring.push((idx, a.name.span));
+        }
         let f = match item {
             Item::Action(a) => c.run_action(&callable, &a.requires, &a.applies, &a.body),
-            Item::Flow(f) => c.run_body(&callable, FuncKind::Flow, Ctx::Flow, &f.body),
             Item::Fn(f) => c.run_body(&callable, FuncKind::Fn, Ctx::Fn, &f.body),
             Item::Scenario(s) => c.run_body(&callable, FuncKind::Action, Ctx::Action, &s.body),
             Item::View(v) if is_template(v) => continue,
             Item::View(v) => c.run_view(&callable, v),
+            // A trigger declares no body: what it runs is the action it names.
+            Item::Trigger(_) => continue,
             Item::Use(_)
             | Item::Type(_)
             | Item::Alias(_)
@@ -325,6 +358,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let Some(action) = env.own_callable(&a.name.name) else {
             continue;
         };
+        c.at = Some(a.name.span.start);
         funcs.push(c.run_present(&view, &a.opts, &action.params));
     }
     // The defaults of action parameters, in the order the resolver numbered them.
@@ -339,6 +373,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         let (Some(written), Some(action)) = (written, env.own_callable(&d.action)) else {
             break;
         };
+        c.at = Some(written.span.start);
         funcs.push(c.run_default(action, d.param, written));
     }
     c.check_proposals(module);
@@ -383,7 +418,41 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
             if !decides(lines) {
                 continue;
             }
+            c.at = lines.first().map(|line| line.span.start);
             funcs.push(c.run_guard(action, lines, &action.params, kind, export));
+        }
+    }
+    // What each action reads, including through the fns and actions its body calls,
+    // against what its `uses` clause declares. Its own reads are reported where they are
+    // written; this reports the ones it reaches through a callee, at its name.
+    let reached = crate::effects::reached(&funcs);
+    for (idx, span) in declaring {
+        let Some(callable) = env.callables.iter().find(|x| x.func == Some(idx)) else {
+            continue;
+        };
+        let declared = &callable.uses;
+        let own = funcs.get(idx).map(|f| &f.facts.effects);
+        let word = match callable.kind {
+            CKind::Action => "an action",
+            _ => "a declaration",
+        };
+        for e in reached
+            .get(idx)
+            .into_iter()
+            .flatten()
+            .filter(|e| !declared.contains(e))
+            .filter(|e| !own.is_some_and(|o| o.contains(e)))
+        {
+            c.err(
+                "E121",
+                span,
+                format!(
+                    "{word} `{}` reads {}, which a replay cannot compute again: declare `uses {}`",
+                    callable.name,
+                    e.what(),
+                    e.word()
+                ),
+            );
         }
     }
     let module = ir::Module {
@@ -414,6 +483,8 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     c.begin(Ctx::Block, &[], Ty::Unit, "b_main");
     c.st.proposes = true;
@@ -423,7 +494,7 @@ pub fn check_block_expr(env: &Env, e: &ast::Expr, diags: &mut Vec<Diagnostic>) -
         c.err(
             "E044",
             at,
-            "`suggest` must be the whole expression of a block, or stand where an action or a flow runs",
+            "`suggest` must be the whole expression of a block, or stand where an action runs",
         );
     }
     let ty = ex.ty.clone();
@@ -461,6 +532,8 @@ pub fn check_block_ui(env: &Env, body: &[ast::UiStmt], diags: &mut Vec<Diagnosti
         words: Vec::new(),
         offers: Vec::new(),
         last_writes: Vec::new(),
+        at: None,
+        outer_at: None,
     };
     c.begin(Ctx::Block, &[], Ty::View, "block");
     c.view_body(body);
@@ -523,6 +596,48 @@ impl Checker<'_> {
         ty.display(&self.env.app)
     }
 
+    /// Records that the code reads `effect`, written as `what` (`now`, `day_of(t)`, a time of no
+    /// zone, `random.int`), and refuses it where it cannot be read: an action, and an agent's
+    /// program, read only what its `uses` clause names (convergence.md, "Actions"); a view reads
+    /// none but the zone it is drawn in; a `fn` and a block read what they are given and pass
+    /// their reads to their caller.
+    fn reads(&mut self, effect: crate::effects::Effect, span: Span, what: &str) {
+        let refused = match self.st.ctx {
+            Ctx::Action | Ctx::Program => !self.st.uses.contains(&effect),
+            Ctx::View => effect != crate::effects::Effect::Time,
+            _ => false,
+        };
+        if !refused {
+            // A read that is allowed is the invocation's: what a `fn` reads is its caller's too.
+            self.st.facts.effects.insert(effect);
+            return;
+        }
+        if !self.st.reported.insert(effect) {
+            return;
+        }
+        let what_it_reads = effect.what();
+        let message = match self.st.ctx {
+            Ctx::View => format!(
+                "{what} reads {what_it_reads}, which a view cannot: a view is drawn again from what it is shown, where an action records it and is replayed from the record"
+            ),
+            Ctx::Block => format!(
+                "{what} reads {what_it_reads}, which a block cannot: a block answers a question as it is asked, where an action records it and is replayed from the record"
+            ),
+            Ctx::Fn => format!(
+                "{what} reads {what_it_reads}, which a fn cannot: a fn computes from the values it is given, so the read is written in the action that makes the invocation"
+            ),
+            _ => {
+                let decl = self.st.decl.clone();
+                format!(
+                    "{what} reads {what_it_reads}, which a replay cannot compute again: {} `{decl}` declares it with `uses {}`",
+                    self.st.ctx.word(),
+                    effect.word()
+                )
+            }
+        };
+        self.err("E121", span, message);
+    }
+
     // ---- function state -------------------------------------------------------------------
 
     fn begin(&mut self, ctx: Ctx, params: &[ParamInfo], result: Ty, view_id: &str) {
@@ -558,6 +673,7 @@ impl Checker<'_> {
             locals: st.locals,
             body,
             facts: st.facts,
+            at: self.at.take(),
         }
     }
 
@@ -588,7 +704,10 @@ impl Checker<'_> {
         guards: &[&ast::Require],
         body: &ast::Block,
     ) -> ir::Func {
+        self.outer_at = self.at.or(self.outer_at);
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
+        self.st.decl.clone_from(&c.name);
+        self.st.uses.clone_from(&c.uses);
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             let reason = self.expr_as(&r.reason, &Ty::Text);
@@ -632,7 +751,6 @@ impl Checker<'_> {
         }
         let prefix = match kind {
             FuncKind::Action => "a_",
-            FuncKind::Flow => "f_",
             FuncKind::Fn => "n_",
             FuncKind::View => "v_",
             FuncKind::Block => "b_",
@@ -647,6 +765,7 @@ impl Checker<'_> {
     }
 
     fn run_view(&mut self, c: &Callable, v: &ast::ViewDecl) -> ir::Func {
+        self.outer_at = self.at.or(self.outer_at);
         self.begin(Ctx::View, &c.params, Ty::View, &c.id);
         self.st.subject = c
             .params
@@ -753,7 +872,6 @@ impl Checker<'_> {
             StmtKind::Assign { place, op, value } => self.assign(place, *op, value, s.span),
             StmtKind::For { var, iter, body } => {
                 let list = self.expr(iter, None);
-                let list = self.unhold(list, iter.span);
                 let Some(elem) = self.element_of(&list.ty, iter.span) else {
                     return;
                 };
@@ -767,179 +885,116 @@ impl Checker<'_> {
                 self.emit(Stmt::ForList(Box::new(fl)));
             }
             StmtKind::Return(value) => self.return_stmt(value.as_ref(), s.span),
-            StmtKind::As { who, at, body } => self.act_as(who, at.as_ref(), body, s.span),
-            StmtKind::SeedState {
-                layer,
-                view,
-                name,
-                value,
-            } => self.seed_state(*layer, view.as_ref(), name, value, s.span),
             StmtKind::Expr(e) => self.expr_stmt(e),
         }
     }
 
-    /// `as who { ... }` in a scenario: the block's action calls run with `invoker` = `who`.
-    /// `as who at time { ... }` also records the block's changes at `time`, which `now` reads.
-    /// Each block is a change of its own, so history and reflection show it as `who` made it.
-    fn act_as(&mut self, who: &ast::Expr, at: Option<&ast::Expr>, body: &ast::Block, span: Span) {
+    /// `invoke(act(args), by: mia, at: 2026-06-29T07:02Z, from: msg)` in a scenario: runs what
+    /// it names with `invoker` = `by` (the enclosing invoker where none is named), `now` = `at`
+    /// where one is named, and what it creates recorded as made from `from` where one is given.
+    /// The value is the expression's. Each invocation is a change of its own, so history and
+    /// reflection show it as that person's at that time.
+    fn builtin_invoke(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         if self.st.written != Written::Scenario {
-            self.err("E094", span, "`as who { ... }` runs actions as a named person, which only a scenario does; elsewhere an action runs as whoever invokes it");
-            let _ = self.expr(who, None);
-            let _ = self.block_stmts(body);
-            return;
-        }
-        let who = self.expr_as(who, &Ty::Principal);
-        let opt = Ty::Option(Box::new(Ty::Time));
-        let at = match at {
-            Some(t) => {
-                let v = self.expr_as(t, &Ty::Time);
-                Self::some(v, &opt)
+            for a in args {
+                let _ = self.expr(&a.value, None);
             }
-            None => Ex::host(Imp::NoneV, Vec::new(), opt),
-        };
-        self.emit(Stmt::Eval(Ex::host(
-            Imp::InvokerPush,
-            vec![who, at],
-            Ty::Unit,
-        )));
-        for s in self.block_stmts(body) {
-            self.emit(s);
-        }
-        self.emit(Stmt::Eval(Ex::host(Imp::InvokerPop, vec![], Ty::Unit)));
-    }
-
-    /// `made from r { ... }` in a scenario: the block's changes are recorded as made from `r`, as
-    /// an action invoked from it is (`created(r)?.from`, `std.origin(r)`); the value is the
-    /// block's. Each block is a change of its own, as `as who { ... }` is, so the resources it
-    /// makes record what they were made from.
-    fn made_from(&mut self, of: &ast::Expr, body: &ast::Block, span: Span, exp: Option<&Ty>) -> Ex {
-        if self.st.written != Written::Scenario {
-            self.err("E094", span, "`made from r { ... }` seeds resources made from another, which only a scenario does; a resource a person makes is made by the action its menu offers, and records what it was opened on");
-            let _ = self.expr(of, None);
-            let _ = self.block_value(body, exp);
+            self.err("E094", span, "`invoke(...)` runs an action as a person at a time, which only a scenario does; elsewhere an action runs as whoever invokes it, now");
             return Ex::error();
         }
-        let source = self.expr(of, None);
-        match &source.ty {
-            Ty::Record(_) => {}
-            Ty::Error => return Ex::error(),
-            other => {
-                let t = self.show(other);
-                self.err(
-                    "E020",
-                    of.span,
-                    format!("`made from` takes the resource the block makes its resources from, a value of a record type; this is {t}"),
-                );
-                return Ex::error();
-            }
-        }
-        let value = self.block_value(body, exp);
-        let ty = value.ty.clone();
-        let Ek::Seq(inner, last) = value.kind else {
-            return Ex::error();
-        };
-        let made = self.fresh(ty.clone());
-        let mut stmts = Vec::with_capacity(inner.len().saturating_add(3));
-        stmts.push(Stmt::Eval(Ex::host(Imp::FromPush, vec![source], Ty::Unit)));
-        stmts.extend(inner);
-        stmts.push(Stmt::Set(made, *last));
-        stmts.push(Stmt::Eval(Ex::host(Imp::FromPop, vec![], Ty::Unit)));
-        Ex::new(Ek::Seq(stmts, Box::new(Ex::local(made, ty.clone()))), ty)
-    }
-
-    /// `window place = Task.done` (or `lens place = x`) in a scenario: the value the window
-    /// state `place` starts from, as a person picking it in the window leaves it. The state is
-    /// a `window` or `lens` declaration of a view of this package, named with its view when
-    /// more than one view declares it; the value is checked against the type it declares.
-    fn seed_state(
-        &mut self,
-        layer: ast::StateLayer,
-        view: Option<&ast::Ident>,
-        name: &ast::Ident,
-        value: &ast::Expr,
-        span: Span,
-    ) {
-        let word = layer.word();
-        if self.st.written != Written::Scenario {
+        let Some((first, rest)) = args.split_first() else {
             self.err(
-                "E094",
+                "E022",
                 span,
-                format!("`{word} {} = ...` stages the value a window state starts from, which only a scenario does; a person sets a window's state in the window, and a declaration gives its default", name.name),
+                "`invoke` takes the action it runs: `invoke(send(t, \"Hi\"), by: mia)`",
             );
-            let _ = self.expr(value, None);
-            return;
+            return Ex::error();
+        };
+        if first.name.is_some() {
+            self.err(
+                "E022",
+                first.value.span,
+                "`invoke` takes the action it runs by position: `invoke(send(t, \"Hi\"), by: mia)`",
+            );
+            return Ex::error();
         }
-        let names_it = |s: &crate::resolve::StateInfo| {
-            s.name == name.name && view.is_none_or(|v| s.view == v.name)
-        };
-        let same: Vec<crate::resolve::StateInfo> = self
-            .env
-            .states
-            .iter()
-            .filter(|s| names_it(s) && s.layer == layer)
-            .cloned()
-            .collect();
-        let state = match same.as_slice() {
-            [one] => one.clone(),
-            [] => {
-                match self.env.states.iter().find(|s| names_it(s)) {
-                    Some(other) => {
-                        let is = other.layer.word();
-                        self.err(
-                            "E094",
-                            span,
-                            format!("`{}` is a `{is}` state, of the view `{}`: write `{is} {} = ...`, as it is declared", name.name, other.view, name.name),
-                        );
-                    }
-                    None if view.is_some() => {
-                        let named = view.map(|v| v.name.clone()).unwrap_or_default();
-                        let declared = self.declared_states(&named);
-                        let what = if declared.is_empty() {
-                            "no state".to_owned()
-                        } else {
-                            format!("only {}", declared.join(", "))
-                        };
-                        self.err(
-                            "E094",
-                            span,
-                            format!("the view `{named}` declares {what}: a scenario stages a state a view declares with a `window` or `lens` line at the top of its body"),
-                        );
-                    }
-                    None => self.err(
-                        "E094",
-                        span,
-                        format!("no view declares the state `{}`: a scenario stages a state a view declares with a `window` or `lens` line at the top of its body, naming the view (`home.{}`) where more than one does", name.name, name.name),
-                    ),
-                }
-                let _ = self.expr(value, None);
-                return;
-            }
-            many => {
-                let views: Vec<String> = many.iter().map(|s| s.view.clone()).collect();
-                let first = views.first().cloned().unwrap_or_default();
+        let mut by = None;
+        let mut at = None;
+        let mut from = None;
+        for a in rest {
+            let Some(name) = &a.name else {
                 self.err(
-                    "E094",
-                    span,
-                    format!("`{}` is a {word} state of {}: say which view's, as `{word} {first}.{} = ...`", name.name, views.join(", "), name.name),
+                    "E022",
+                    a.value.span,
+                    "`invoke`'s context is named: `invoke(act(args), by: mia, at: 2026-06-29T07:02Z, from: r)`",
                 );
-                let _ = self.expr(value, None);
-                return;
+                continue;
+            };
+            match name.name.as_str() {
+                "by" => by = Some(self.expr_as(&a.value, &Ty::Principal)),
+                "at" => at = Some(self.expr_as(&a.value, &Ty::Time)),
+                "from" => {
+                    let source = self.expr(&a.value, None);
+                    match &source.ty {
+                        Ty::Record(_) | Ty::Error => {}
+                        other => {
+                            let t = self.show(other);
+                            self.err(
+                                "E020",
+                                a.value.span,
+                                format!("`from` takes the resource what it runs was made from, a value of a record type; this is {t}"),
+                            );
+                        }
+                    }
+                    from = Some(source);
+                }
+                other => {
+                    let _ = self.expr(&a.value, None);
+                    self.err(
+                        "E022",
+                        name.span,
+                        format!("`invoke` takes `by`, `at` and `from`; `{other}` is no part of an invocation"),
+                    );
+                }
             }
+        }
+        let value = self.expr(&first.value, None);
+        let ty = value.ty.clone();
+        let (mut stmts, last) = match value.kind {
+            Ek::Seq(inner, last) => (inner, last),
+            _ => (Vec::new(), Box::new(value)),
         };
-        let seeded = self.expr_as(value, &state.ty);
-        let layer_arg = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
-        let args = vec![layer_arg, Ex::str(&state.id), Self::handle_of(seeded)];
-        self.emit(Stmt::Eval(Ex::host(Imp::SeedState, args, Ty::Unit)));
-    }
-
-    /// The names of the states the view `view` declares, in the order it declares them.
-    fn declared_states(&self, view: &str) -> Vec<String> {
-        self.env
-            .states
-            .iter()
-            .filter(|s| s.view == view)
-            .map(|s| format!("`{}`", s.name))
-            .collect()
+        let opt_at = Ty::Option(Box::new(Ty::Time));
+        let at = match at {
+            Some(t) => Self::some(t, &opt_at),
+            None => Ex::host(Imp::NoneV, Vec::new(), opt_at),
+        };
+        let by = by.unwrap_or_else(|| Ex::host(Imp::Invoker, Vec::new(), Ty::Principal));
+        let opt_from = Ty::Option(Box::new(from.as_ref().map_or(Ty::Error, |f| f.ty.clone())));
+        let from = match from {
+            Some(f) => Self::some(f, &opt_from),
+            None => Ex::host(Imp::NoneV, Vec::new(), opt_from),
+        };
+        let pop = Stmt::Eval(Ex::host(Imp::InvocationPop, Vec::new(), Ty::Unit));
+        let mut out = vec![Stmt::Eval(Ex::host(
+            Imp::InvocationPush,
+            vec![by, at, from],
+            Ty::Unit,
+        ))];
+        out.append(&mut stmts);
+        let value = if ty.repr().is_some() {
+            // What the call gave is held while the invocation is left, then handed back.
+            let made = self.fresh(ty.clone());
+            out.push(Stmt::Set(made, *last));
+            out.push(pop);
+            Ex::local(made, ty.clone())
+        } else {
+            // A call that gives nothing has nothing to hold.
+            out.push(Stmt::Eval(*last));
+            out.push(pop);
+            Ex::new(Ek::Unit, Ty::Unit)
+        };
+        Ex::new(Ek::Seq(out, Box::new(value)), ty)
     }
 
     /// An expression whose value is not used: an `if`, `match` or block runs its branches as
@@ -1311,7 +1366,7 @@ impl Checker<'_> {
             return;
         }
         if key.app != self.env.app {
-            self.err("E045", span, format!("`{}` is declared by another app ({}); an action may only change its own module's types. Invoke that app's action from a flow instead", key.name, key.app));
+            self.err("E045", span, format!("`{}` is declared by another app ({}); an action may only change its own module's types. Call that app's action instead", key.name, key.app));
             let _ = self.expr(value, None);
             return;
         }

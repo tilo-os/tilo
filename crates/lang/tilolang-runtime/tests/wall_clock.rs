@@ -18,7 +18,7 @@ type Task {
     due: Time = Time("1970-01-01T00:00:00Z")
 }
 
-action seed(t: Task) {
+action seed(t: Task) uses time {
     t.due = 2026-06-30T09:00
 }
 

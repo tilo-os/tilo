@@ -1,6 +1,6 @@
 //! The ids lock file `app.ids`.
 //!
-//! Every declaration (type, field, enum variant, action, flow, view, fn, anchor) has a stable
+//! Every declaration (type, field, enum variant, action, view, fn, anchor) has a stable
 //! id: 8 base32 characters, drawn when the compiler first sees it. Storage keys, action
 //! addresses and grants use ids; names appear only in source, errors and display. The lock is a
 //! sorted text file of `qualified.name = id` lines. Declarations that disappear move to a
@@ -266,6 +266,12 @@ pub fn scenario_key(name: &str) -> String {
     format!("scenario \"{name}\"")
 }
 
+/// The ids-lock name of the trigger `name`: a trigger's id names what it last ran, so it is the
+/// lock's like any declaration's, and apart from the action it runs.
+pub fn trigger_key(name: &str) -> String {
+    format!("trigger {name}")
+}
+
 /// The ids-lock name (and the view name) of the hidden view that presents the action
 /// `action`'s state: a name source cannot write.
 pub fn present_key(action: &str) -> String {
@@ -276,7 +282,7 @@ pub fn present_key(action: &str) -> String {
 pub const PRESENT_SUFFIX: &str = "~present";
 
 /// The qualified name of every declaration that gets an id: types (`Album`), fields
-/// (`Album.title`), actions, flows, views and fns (`play`), anchors (`album_page#play`),
+/// (`Album.title`), actions, views and fns (`play`), anchors (`album_page#play`),
 /// scenarios (`scenario "a week of notes"`), and the presentation view of an action whose label,
 /// icon or state follow its subject (`pin~present`).
 pub fn declared_names(m: &Module) -> Vec<String> {
@@ -289,13 +295,8 @@ pub fn declared_names(m: &Module) -> Vec<String> {
             | Item::RowView(_)
             | Item::Views(_) => {}
             Item::Scenario(s) => out.push(scenario_key(&s.name)),
-            Item::Alias(a) => {
-                out.push(a.name.name.clone());
-                let container = matches!(&a.ty.kind, crate::ast::TypeExprKind::Generic(g, _) if matches!(g.name.as_str(), "Collection" | "Set" | "Map"));
-                if container {
-                    out.push(format!("{}.{}", a.name.name, crate::resolve::HOLDER_FIELD));
-                }
-            }
+            Item::Trigger(t) => out.push(trigger_key(&t.name.name)),
+            Item::Alias(a) => out.push(a.name.name.clone()),
             Item::Type(t) => {
                 out.push(t.name.name.clone());
                 for f in &t.fields {
@@ -321,7 +322,6 @@ pub fn declared_names(m: &Module) -> Vec<String> {
                     out.push(present_key(&a.name.name));
                 }
             }
-            Item::Flow(f) => out.push(f.name.name.clone()),
             Item::Fn(f) => out.push(f.name.name.clone()),
             Item::View(v) => {
                 out.push(v.name.name.clone());

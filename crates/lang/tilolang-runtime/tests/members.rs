@@ -37,7 +37,7 @@ fn kind_of(p: Principal) -> Text {
 }
 
 view workspace(r: Workspace) {
-    lens draft: RichText = RichText("")
+    state draft: RichText = RichText("")
     page {
         for p in workspace.members {
             text("in {p.name()} {kind_of(p)} {p.role() ?? "no role"}")

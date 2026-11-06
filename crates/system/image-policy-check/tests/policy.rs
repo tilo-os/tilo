@@ -17,7 +17,7 @@ use std::process::Command;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use serde_json::{Value, json};
-use tilo_image_policy_check::{Failure, Trust, check};
+use tilo_image_policy_check::{DEV_KEY, DeveloperOverride, Failure, Trust, check, check_developer};
 
 const SHIPPED: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -565,10 +565,156 @@ fn the_command_line_reports_as_the_audit_reads_it() {
         (
             Some(2),
             "",
-            "usage: tilo-image-policy-check [POLICY [TRUST_DIR]]\n"
+            "usage: tilo-image-policy-check [--developer] [POLICY [TRUST_DIR]]\n"
         )
     );
 }
+
+/// A dev image: `os/scripts/finalize-dev-image.py` rewrites exactly the two
+/// dev repositories to the development key and leaves every release scope as
+/// the generator wrote it.
+fn dev_policy() -> Value {
+    let mut policy = key_policy();
+    for repository in [
+        "registry.tilo.so/tilo/tilo-vm",
+        "registry.tilo.so/tilo/tilo-vm-ref",
+    ] {
+        policy["transports"]["docker"][repository] = json!([{
+            "type": "sigstoreSigned",
+            "keyPath": DEV_KEY,
+            "signedIdentity": {"type": "matchRepository"},
+        }]);
+    }
+    policy
+}
+
+#[test]
+fn a_developer_image_reports_its_dev_key_scope_instead_of_failing() {
+    let text = dev_policy().to_string();
+    // A release reading fails on it: that is what a production device must
+    // keep doing, and the dev key must never satisfy a release image.
+    assert_eq!(
+        policy_failure(&text, &key_trust()),
+        format!(
+            "registry.tilo.so/tilo/tilo-vm: keyPath is '{DEV_KEY}', not '/usr/share/tilo/cosign.pub'"
+        )
+    );
+    // The developer reading holds every other invariant and names what it
+    // accepted instead.
+    let overrides = check_developer(&text, &key_trust()).unwrap();
+    assert_eq!(
+        overrides,
+        [
+            DeveloperOverride {
+                repository: "registry.tilo.so/tilo/tilo-vm".into(),
+                key: DEV_KEY.into(),
+            },
+            DeveloperOverride {
+                repository: "registry.tilo.so/tilo/tilo-vm-ref".into(),
+                key: DEV_KEY.into(),
+            },
+        ]
+    );
+    // A release image's own policy has nothing to override, even when asked.
+    assert!(
+        check_developer(&key_policy().to_string(), &key_trust())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone() {
+    // The dev key on a release scope is a downgrade, developer mode or not.
+    for scope in [TILO, CODE, GUEST] {
+        let mut policy = dev_policy();
+        policy["transports"]["docker"][scope] = json!([{
+            "type": "sigstoreSigned",
+            "keyPath": DEV_KEY,
+            "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+            "signedIdentity": {"type": "matchRepository"},
+        }]);
+        let text = policy.to_string();
+        let message = match check_developer(&text, &key_trust()) {
+            Err(Failure::Policy(message)) => message,
+            other => panic!("{scope} with the dev key: {other:?}"),
+        };
+        assert!(message.contains(DEV_KEY), "{scope}: {message}");
+        assert!(message.contains(PINNED), "{scope}: {message}");
+    }
+    // Nor on another Tilo repository under the same namespace.
+    let mut policy = dev_policy();
+    policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-dev"] = json!([{
+        "type": "sigstoreSigned",
+        "keyPath": DEV_KEY,
+        "signedIdentity": {"type": "matchRepository"},
+    }]);
+    assert!(check_developer(&policy.to_string(), &key_trust()).is_err());
+    // The dev repositories with anything but that exact requirement still
+    // fail: the developer override has one shape, not a weaker bar.
+    for weaken in [
+        json!([{"type": "insecureAcceptAnything"}]),
+        json!([{
+            "type": "sigstoreSigned",
+            "keyPath": DEV_KEY,
+            "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",
+            "signedIdentity": {"type": "matchRepository"},
+        }]),
+        json!([{
+            "type": "sigstoreSigned",
+            "keyPath": "/etc/pki/other.pub",
+            "signedIdentity": {"type": "matchRepository"},
+        }]),
+        json!([{
+            "type": "sigstoreSigned",
+            "keyPath": DEV_KEY,
+            "signedIdentity": {"type": "matchRepository"},
+            "keyData": "a2V5",
+        }]),
+    ] {
+        let mut policy = dev_policy();
+        policy["transports"]["docker"]["registry.tilo.so/tilo/tilo-vm"] = weaken.clone();
+        if check_developer(&policy.to_string(), &key_trust()).is_ok() {
+            panic!("developer mode accepted {weaken}");
+        }
+    }
+}
+
+#[test]
+fn the_developer_flag_is_the_callers_statement_and_the_audit_is_the_only_caller() {
+    let work = tempfile::tempdir().unwrap();
+    let trust = work.path().join("release");
+    fs::create_dir(&trust).unwrap();
+    fs::write(trust.join("trust.env"), TRUST_ENV).unwrap();
+    let trust_dir = trust.to_str().unwrap();
+    let dev = work.path().join("dev.json");
+    fs::write(&dev, dev_policy().to_string()).unwrap();
+
+    // Without the flag, a dev image's policy fails exactly as before.
+    let (code, out, _) = run(&[dev.to_str().unwrap(), trust_dir]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains(DEV_KEY), "{out}");
+
+    // With it, the same policy passes and the report names the dev key.
+    let (code, out, err) = run(&["--developer", dev.to_str().unwrap(), trust_dir]);
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(out.contains(DEV_KEY), "{out}");
+    assert!(out.contains("Tilo image scopes require"), "{out}");
+    // And in either position.
+    let (code, _, _) = run(&[dev.to_str().unwrap(), trust_dir, "--developer"]);
+    assert_eq!(code, Some(0));
+
+    // A weakened release scope still fails with the flag, so the flag cannot
+    // be used to admit anything but the two dev repositories.
+    let mut weak = dev_policy();
+    weak["transports"]["docker"][TILO][0]["keyPath"] = json!("/etc/pki/other.pub");
+    let weak_path = work.path().join("weak.json");
+    fs::write(&weak_path, weak.to_string()).unwrap();
+    let (code, out, _) = run(&["--developer", weak_path.to_str().unwrap(), trust_dir]);
+    assert_eq!(code, Some(1), "{out}");
+}
+
+const PINNED: &str = "/usr/share/tilo/cosign.pub";
 
 #[test]
 fn the_audit_runs_the_compiled_check() {
@@ -577,8 +723,12 @@ fn the_audit_runs_the_compiled_check() {
         "/../../../os/usr/libexec/tilo-security-audit"
     ))
     .unwrap();
-    assert!(audit.contains("image_policy_check=/usr/libexec/tilo-image-policy-check\n"));
-    assert!(
-        audit.contains(r#"if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then"#)
-    );
+    assert!(audit.contains(
+        "image_policy_check=\"${TILO_AUDIT_POLICY_CHECK:-/usr/libexec/tilo-image-policy-check}\"\n"
+    ));
+    assert!(audit.contains(r#"if ! report="$("$image_policy_check" "$policy" 2>&1)"; then"#));
+    // A dev image is the one deliberate exception, read from the image's own
+    // flavour file, and the developer form is asked for only there.
+    assert!(audit.contains(r#"[ "$(cat "$image_flavour_file" 2>/dev/null || true)" = dev ]"#));
+    assert!(audit.contains(r#"report="$("$image_policy_check" --developer "$policy" 2>&1)""#));
 }

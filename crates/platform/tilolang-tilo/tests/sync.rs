@@ -103,13 +103,23 @@ fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
     ada.sync_with(&mut grace);
     let heard = heard.borrow();
     assert_eq!(heard.len(), 1, "{heard:?}");
-    assert_eq!(
-        heard[0].fields,
-        vec![FieldKey {
+    // The item's text, and the version the edit made of it, which marks and history read.
+    let mut fields = heard[0].fields.clone();
+    fields.sort_by(|left, right| left.field.cmp(&right.field));
+    let mut expected = vec![
+        FieldKey {
             resource: format!("{root}/{}", ids[1]),
             field: field_id(&meta, "Item", "text"),
-        }],
-        "only the retyped item's text, not the whole record"
+        },
+        FieldKey {
+            resource: format!("{root}/{}", ids[1]),
+            field: tilolang_runtime::DOC_VERSIONS.to_owned(),
+        },
+    ];
+    expected.sort_by(|left, right| left.field.cmp(&right.field));
+    assert_eq!(
+        fields, expected,
+        "only the retyped item, not the whole record"
     );
 }
 

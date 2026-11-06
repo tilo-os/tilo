@@ -13,6 +13,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+use ui::tilo_resource::{self, Model};
+
 pub type VideoId = String;
 pub type ChannelId = String;
 
@@ -26,8 +28,12 @@ pub fn norm_channel_name(name: &str) -> String {
 /// `SponsorBlock` segment categories. These map 1:1 onto the official
 /// `SponsorBlock` API category strings (`api_key`), so the same enum is
 /// used both for the on-screen seek-bar markers and for the live query.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(
+    Model, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord,
+)]
 pub enum Category {
+    /// An absent category reads as one nothing else matches.
+    #[default]
     Sponsor,
     SelfPromo,
     Interaction,
@@ -117,9 +123,11 @@ impl Category {
 /// How Tube treats a `SponsorBlock` category, per-category. This is the
 /// Grayjay-style three-way mode (not a plain on/off): each category can be
 /// auto-skipped, merely marked with a manual skip button, or ignored entirely.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Model, Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkipMode {
+    /// An absent mode reads as the one most videos want.
     /// Seek past the segment automatically as the playhead enters it.
+    #[default]
     Skip,
     /// Mark it on the timeline and offer a manual "Skip" button, but never
     /// skip on its own.
@@ -171,7 +179,7 @@ impl SkipMode {
 }
 
 /// One `SponsorBlock` segment within a video, in seconds.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Segment {
     pub category: Category,
     pub start: f64,
@@ -188,7 +196,7 @@ impl Segment {
 }
 
 /// A single comment on the watch page.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Comment {
     pub author: String,
     pub initials: String,
@@ -208,7 +216,7 @@ pub type PlaylistId = String;
 /// A playlist result / page: an ordered collection of videos with its own
 /// title, creator and thumbnail. Populated from the live backend; empty on the
 /// hermetic sample.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Playlist {
     pub id: PlaylistId,
     pub title: String,
@@ -322,7 +330,11 @@ impl SearchTypeFilter {
 }
 
 /// A channel / uploader.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// A declared resource type: a channel the catalogue publishes is an item
+/// resource of this type, found by "youtube channels of …" with nothing Tube
+/// writes for it ([`resource`](ui::tilo_resource::resource)).
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
     pub id: ChannelId,
     pub name: String,
@@ -345,7 +357,11 @@ pub struct Channel {
 }
 
 /// A video and everything the watch page needs about it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+///
+/// A declared resource type: a video the catalogue publishes is an item
+/// resource of this type, found by "youtube videos of …" with nothing Tube
+/// writes for it ([`resource`](ui::tilo_resource::resource)).
+#[derive(Model, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Video {
     pub id: VideoId,
     pub title: String,

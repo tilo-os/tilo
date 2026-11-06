@@ -605,8 +605,56 @@ fn push_capped(list: &mut Vec<[u8; 32]>, item: [u8; 32], max: usize) {
 #[allow(clippy::unwrap_used, reason = "in a test these are the assertion")]
 mod tests {
     use super::*;
+    use tilo_files::native::migration::assert_golden_bytes;
 
     const HOUR: u64 = 3600 * 1_000_000_000;
+
+    /// The wait list file this build writes: an address confirmed beside the
+    /// mail sent to it and the invitation sent for it, and an address whose
+    /// entry is gone within the mail window. Kept so a workspace's list goes
+    /// on reading the same way; a field added, removed or reordered changes
+    /// these bytes.
+    const KEPT: &str = "020103030303030303030303030303030303030303030303030303030303030303030f616461406578616d706c652e6f72670501010101010101010101010101010101010101010101010101010101010101010101020202020202020202020202020202020202020202020202020202020202020201060564652d44450105010404040404040404040404040404040404040404040404040404040404040404010701080109090909090909090909090909090909090909090909090909090909090909090a010505050505050505050505050505050505050505050505050505050505050505";
+
+    fn kept() -> Stored {
+        Stored {
+            version: FORMAT.version,
+            entries: vec![Entry {
+                request_id: [3; 32],
+                contact: "ada@example.org".into(),
+                at_ns: 5,
+                removals: vec![[1; 32]],
+                confirms: vec![[2; 32]],
+                confirmed_at_ns: Some(6),
+                language: "de-DE".into(),
+                mailed_at_ns: Some(5),
+                invites: vec![[4; 32]],
+                invited_at_ns: Some(7),
+                invite_mailed_at_ns: Some(8),
+            }],
+            mailed: vec![Mailed {
+                key_sha256: [9; 32],
+                at_ns: 10,
+                confirms: vec![[5; 32]],
+            }],
+        }
+    }
+
+    #[test]
+    fn the_wait_list_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "a workspace's wait list",
+            &hex::decode(KEPT).unwrap(),
+            |bytes| {
+                let stored: Stored = postcard::from_bytes(bytes).unwrap();
+                assert_eq!(stored.version, FORMAT.version);
+                assert_eq!(stored.entries[0].contact, "ada@example.org");
+                assert_eq!(stored.entries[0].confirmed_at_ns, Some(6));
+                assert_eq!(stored.mailed[0].key_sha256, [9; 32]);
+            },
+            || postcard::to_stdvec(&kept()).unwrap(),
+        );
+    }
 
     /// Secrets for a door that sends no mail.
     fn listed(removal: u8) -> Secrets {

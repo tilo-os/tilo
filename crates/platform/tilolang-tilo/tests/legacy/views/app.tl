@@ -58,7 +58,35 @@ destructive action discard(all: Answers, v: Answer) (icon: .trash, label: "Disca
 
 /// Every view, the kept ones a place of their own, each opening in a window of its own.
 view answers_list(all: Answers) {
-    std.list(all, all.items, everything: "All views", empty: "No views yet")
+    state query: Text = ""
+    let places = [Answer.kept]
+    let everything = "All views"
+    let title = places.find(f -> f.query == query)?.label ?? everything
+    let shown = all.items.matching(query)
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: .some(meta(all).title),
+        overview_title: .some(title),
+        overview_count: .some(shown.len()),
+    ) {
+        sidebar: {
+            std.places(query, places, everything, icon: meta(Answer).icon)
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No views yet", icon: meta(Answer).icon)
+            } else {
+                std.list(shown) { (v, at) ->
+                    ui.ListItem(item: v, presence: at) {
+                        answer_row(v)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState("No view selected", icon: meta(Answer).icon)
+        }
+    }
 }
 
 /// One view in a list: its title, and what was asked.

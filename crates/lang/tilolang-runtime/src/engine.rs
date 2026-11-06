@@ -4,7 +4,7 @@
 //!   compiles into it, and a module is compiled once per process, cached by the content hash of
 //!   its bytes. Each runtime keeps its own instances (and so its own stores and limits).
 //! * Each module normally has one instance. A call that arrives while the module's
-//!   instance is already running (a flow in a module invoking an action of the same module)
+//!   instance is already running (an action in a module invoking an action of the same module)
 //!   gets a second instance from the same compiled module, which costs microseconds; guests
 //!   keep no state between calls, so instances are interchangeable.
 //! * Runaway code is stopped by fuel, a fixed budget per call. Memory growth beyond the
@@ -55,7 +55,7 @@ pub enum Wasm {
 pub enum HostFail {
     /// Trap the guest with this message.
     Trap(String),
-    /// Unwind the guest because a flow is waiting for a decision.
+    /// Unwind the guest because a run stopped at an action it invokes.
     Suspend,
 }
 
@@ -82,13 +82,13 @@ pub trait Host {
     /// A [`HostFail`] traps or suspends the guest.
     fn guest_import(
         &self,
-        _module: &str,
-        _name: &str,
+        module: &str,
+        name: &str,
         _memory: &[u8],
         _args: &[Wasm],
     ) -> Result<GuestAnswer, HostFail> {
         Err(HostFail::Trap(format!(
-            "this host imports no {_module}::{_name}"
+            "this host imports no {module}::{name}"
         )))
     }
 
@@ -118,27 +118,12 @@ pub enum GuestAnswer {
     },
 }
 
-/// A signature [`Host::guest_abi`] writes, as the parameters and the result each one's signs.
-pub(crate) fn signs(signature: &'static str) -> (Vec<u8>, Vec<u8>) {
-    let bytes = signature.as_bytes();
-    let split = bytes
-        .iter()
-        .position(|sign| !sign.is_ascii_alphabetic())
-        .unwrap_or(bytes.len());
-    let (params, _) = bytes.split_at(split);
-    // The result names the sign it is, and nothing after it.
-    (
-        params.to_vec(),
-        bytes.get(split).copied().into_iter().collect(),
-    )
-}
-
 /// Why a call into a module failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CallError {
     #[error("trap: {0}")]
     Trap(String),
-    #[error("the flow is suspended")]
+    #[error("the run is suspended")]
     Suspended,
     #[error("out of fuel: {0}")]
     OutOfFuel(String),
@@ -356,6 +341,9 @@ pub struct EngineProfile {
 struct Cx {
     host: Rc<dyn Host>,
     profile: Option<Rc<Cell<EngineProfile>>>,
+    /// What each unit costs, while a profile is on: the fuel a call spends is charged to the
+    /// unit that made it.
+    costs: Option<Rc<crate::cost::Recorder>>,
 }
 
 /// An engine, as the rest of this module uses it. Everything above it is written once.
@@ -464,7 +452,7 @@ impl std::fmt::Display for Unwind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
             HostFail::Trap(message) => f.write_str(message),
-            HostFail::Suspend => f.write_str("flow suspended"),
+            HostFail::Suspend => f.write_str("run suspended"),
         }
     }
 }
@@ -754,15 +742,13 @@ impl<B: Backend> Pools<B> {
                 .ok_or_else(|| CallError::Link(format!("module {module} is not compiled")))?;
             (c.module.clone(), c.idle.pop())
         };
-        match idle {
-            Some(instance) => Ok(instance),
-            None => {
-                let linker = self.linker()?;
-                self.compiler
-                    .backend
-                    .instantiate(&linker, &compiled, limits)
-            }
+        if let Some(instance) = idle {
+            return Ok(instance);
         }
+        let linker = self.linker()?;
+        self.compiler
+            .backend
+            .instantiate(&linker, &compiled, limits)
     }
 
     fn call(
@@ -920,6 +906,8 @@ pub struct Engine {
     pooled: Pooled,
     limits: EngineLimits,
     profile: RefCell<Option<Rc<Cell<EngineProfile>>>>,
+    /// What each unit costs, while a profile is on.
+    costs: RefCell<Option<Rc<crate::cost::Recorder>>>,
 }
 
 impl Engine {
@@ -946,6 +934,7 @@ impl Engine {
             pooled,
             limits,
             profile: RefCell::new(None),
+            costs: RefCell::new(None),
         })
     }
 
@@ -1003,6 +992,12 @@ impl Engine {
     /// What the profile counted since it started.
     pub fn profiled(&self) -> Option<EngineProfile> {
         self.profile.borrow().as_ref().map(|p| p.get())
+    }
+
+    /// Charge the fuel of every call to the unit that made it, as `costs` counts them; cheap
+    /// while its profile is off.
+    pub(crate) fn watch_costs(&self, costs: Rc<crate::cost::Recorder>) {
+        *self.costs.borrow_mut() = Some(costs);
     }
 
     fn count(&self, f: impl FnOnce(&mut EngineProfile)) {
@@ -1063,7 +1058,17 @@ impl Engine {
     ) -> Result<Option<Wasm>, CallError> {
         let profile = self.profile.borrow().clone();
         let started = profile.as_ref().map(|_| Instant::now());
-        let cx = Cx { host, profile };
+        let costs = self
+            .costs
+            .borrow()
+            .as_ref()
+            .filter(|costs| costs.on())
+            .map(Rc::clone);
+        let cx = Cx {
+            host,
+            profile,
+            costs,
+        };
         let outcome =
             on_engine!(&self.pooled, pools => pools.call(module, export, args, &self.limits, cx));
         if let Some(started) = started {

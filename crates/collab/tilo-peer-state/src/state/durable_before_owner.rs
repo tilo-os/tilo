@@ -194,6 +194,80 @@ mod tests {
         hex::decode(hex).unwrap()
     }
 
+    /// The durable state this build writes with an exact index and a sealed
+    /// history, hex, kept so the layout cannot change under the version
+    /// devices already hold. It is [`kept_v6`] as `postcard` wrote it.
+    const KEPT_SEALED: &str = "0604042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c7d00012433303264353965302d663538362d343265312d613539652d3361613631336630663836360c736f2e74696c6f2e63686174066c6f756e6765030303030303030303030303030303030303030303030303030303030303030304050505050505050505050505050505050505050505050505050505050505050500010c736f2e74696c6f2e63686174066c6f756e676501067365616c6564100000000000000000000000000000000703030303030303030303030303030303030303030303030303030303030303031000000000000000000000000000000008000000040000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+
+    /// One admission the peer settled exactly.
+    fn kept_exact() -> Vec<u8> {
+        let mut index = crate::admission::ExactAdmissions::default();
+        index
+            .insert(&crate::admission::DocumentAdmission {
+                key: crate::admission::AdmissionKey {
+                    workspace: KEPT_WORKSPACE.into(),
+                    app: "so.tilo.chat".into(),
+                    record: "lounge".into(),
+                    author: [3; 32],
+                    sequence: 4,
+                },
+                operation_id: [5; 32],
+            })
+            .unwrap();
+        index.encode().unwrap()
+    }
+
+    /// One sealed write of one record.
+    fn kept_sealed() -> SealedHistory {
+        vec![(
+            super::super::Route {
+                app: "so.tilo.chat".into(),
+                record: "lounge".into(),
+            },
+            vec![collab_types::SignedOp::new_unsigned(
+                b"sealed".to_vec(),
+                collab_types::ArtifactId(uuid::Uuid::from_u128(7)),
+                collab_types::Ed25519PublicKey([3; 32]),
+                collab_types::AttestationId(uuid::Uuid::from_u128(8)),
+                collab_types::OpKind::Change,
+                std::time::SystemTime::UNIX_EPOCH,
+                4,
+            )],
+        )]
+    }
+
+    fn kept_v6(exact: &[u8]) -> Vec<u8> {
+        postcard::to_stdvec(&DurableV6 {
+            version: 6,
+            base: kept_state(),
+            exact,
+            sealed: kept_sealed(),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_durable_state_with_a_sealed_history_kept_here_reads_and_writes_as_it_is() {
+        let exact = kept_exact();
+        assert_golden_bytes(
+            "a peer's durable state with a sealed history",
+            &kept(KEPT_SEALED),
+            |bytes| {
+                let (value, tail): (DurableV6<'_>, _) =
+                    postcard::take_from_bytes(bytes).expect("the kept state reads");
+                assert!(tail.is_empty(), "the kept state is all of the file");
+                assert_eq!(value.version, 6);
+                assert_eq!(value.base.base.workspace, KEPT_WORKSPACE);
+                let index = crate::admission::ExactAdmissions::decode(value.exact).unwrap();
+                assert_eq!(index.len(), 1);
+                assert_eq!(value.sealed.len(), 1);
+                assert_eq!(value.sealed[0].0.app, "so.tilo.chat");
+                assert_eq!(value.sealed[0].1.len(), 1);
+            },
+            || kept_v6(&exact),
+        );
+    }
+
     /// One write waiting to be sent, in both kept states.
     fn kept_pending() -> VecDeque<([u8; 32], NeighbourMsg, bool)> {
         VecDeque::from([(

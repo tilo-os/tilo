@@ -5,12 +5,14 @@
 //! through the record's history verb.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{ResourceRef, UiNode, UndoAsk, Value, ViewEvent, ViewInstance};
+use tilolang_runtime::{ResourceRef, Store, UiNode, UndoAsk, Value, ViewEvent, ViewInstance};
 use tilolang_tilo::instance::HistoryAsk;
 
 use crate::fixtures::Replica;
 use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
@@ -138,7 +140,11 @@ fn two_people() -> (Replica, Value, Value) {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (NOTES, NOTES_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     ada.host
         .runtime()
@@ -175,7 +181,7 @@ fn a_change_shows_what_the_title_and_the_due_day_held_before_and_after() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks, Value::text("Call the landlord")],
+        crate::tasks::create(&tasks, "Call the landlord"),
     );
     let day = |d: &str| Value::some(Value::text(d));
     call(
@@ -424,7 +430,7 @@ fn a_task_of(ada: &mut Replica, tasks: &Value, title: &str) -> Value {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text(title)],
+        crate::tasks::create(tasks, title),
     );
     ada.commit();
     task
@@ -556,7 +562,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Write the launch post")],
+        crate::tasks::create(&tasks, "Write the launch post"),
     );
     ada.commit();
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
@@ -579,14 +585,14 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Plan the week")],
+        crate::tasks::create(&tasks, "Plan the week"),
     );
     let under = call(
         &ada,
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks, Value::text("Outline")],
+        crate::tasks::create(&tasks, "Outline"),
     );
     ada.commit();
     call(
@@ -1045,7 +1051,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks, Value::text("Buy oat milk")],
+        crate::tasks::create(&tasks, "Buy oat milk"),
     );
     ada.commit();
     let at = target(&task);
@@ -1087,7 +1093,7 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         "ada",
         TASKS_APP,
         "new_task",
-        vec![tasks.clone(), Value::text("Write the launch post")],
+        crate::tasks::create(&tasks, "Write the launch post"),
     );
     call(
         &ada,
@@ -1125,4 +1131,112 @@ fn checking_a_task_off_is_one_entry_saying_what_it_did() {
         .next()
         .expect("the check's change is shown");
     assert_eq!(label, "Done");
+}
+
+/// The Undo button beside the version that says `said`.
+fn undo_saying(section: &UiNode, said: &str) -> String {
+    nodes(section)
+        .into_iter()
+        .filter(|node| node.kind == "row")
+        .find(|row| {
+            let held = nodes(row);
+            held.iter()
+                .any(|child| text(child).is_some_and(|t| t.contains(said)))
+                && held
+                    .iter()
+                    .any(|child| child.kind == "ui.Button" && text(child) == Some("tilolang-undo"))
+        })
+        .and_then(|row| {
+            nodes(row)
+                .into_iter()
+                .find(|child| child.kind == "ui.Button" && text(child) == Some("tilolang-undo"))
+        })
+        .map_or_else(
+            || panic!("a change saying {said}, with its Undo: {section:#?}"),
+            |button| button.key.clone(),
+        )
+}
+
+/// One command over six chosen tasks is one change: each task stands in it, the entry says how
+/// many it changed, and its Undo takes all six back together.
+#[test]
+fn a_command_over_many_chosen_tasks_is_one_change_its_undo_takes_back() {
+    const SAID: &str = "tilolang-did-many";
+    let (mut ada, _, tasks) = two_people();
+    let root = target(&tasks);
+    let six: Vec<ResourceRef> = (1..=6)
+        .map(|n| {
+            target(&call(
+                &ada,
+                "ada",
+                TASKS_APP,
+                "new_task",
+                crate::tasks::create(&tasks, &format!("Task {n}")),
+            ))
+        })
+        .collect();
+    ada.commit();
+    let before = field(&ada, TASKS_APP, &six[0], "Task", "due");
+    let mut window = ada.host.open_resource(&root, None).unwrap();
+    let list = nodes(window.tree())
+        .into_iter()
+        .find(|node| node.kind == "ui.VirtualList")
+        .expect("the window shows its tasks in a list")
+        .key
+        .clone();
+    let items: Vec<Value> = six.iter().map(Value::resource).collect();
+    window
+        .fire_with(&list, "selected", Some(&Value::List(items)))
+        .unwrap();
+    window.poll_patches().unwrap();
+    // The bar offers what every chosen task takes, once over all of them.
+    let today = button(window.tree(), "Today");
+    window.press(&today).unwrap();
+    window.poll_patches().unwrap();
+    ada.commit();
+
+    // Each of the six stands in the same change, which was made over six items.
+    let mut changes = Vec::new();
+    for task in &six {
+        let versions = ada.host.store().versions(task).unwrap();
+        let newest = versions.last().expect("the task's change");
+        assert_eq!(newest.count, 6, "the change says it was made over six");
+        changes.push(newest.change.clone());
+        assert_ne!(
+            field(&ada, TASKS_APP, task, "Task", "due"),
+            before,
+            "the command reached every chosen task"
+        );
+    }
+    assert!(
+        changes.windows(2).all(|pair| pair[0] == pair[1]),
+        "the six are one change: {changes:?}"
+    );
+
+    // The task's page says what happened in one entry: the words for a change over many
+    // items, which the platform's catalogue reads with the count (this session holds no
+    // words, so they stand as their key), not the words of what it did to this one task.
+    let mut page = ada.host.open_resource(&six[0], None).unwrap();
+    let section = history(&mut page);
+    assert!(
+        says(&section).iter().any(|said| said.contains(SAID)),
+        "the entry says it changed many, counting them: {:?}",
+        says(&section)
+    );
+    page.press(&button(&section, "tilolang-history-show"))
+        .unwrap();
+    let section = history(&mut page);
+    // Its own Undo takes back the one change, and with it every task it changed.
+    let asked = press_undo(&mut ada, &mut page, &undo_saying(&section, SAID));
+    assert!(
+        matches!(asked, UndoAsk::Step { .. }),
+        "one change is one step: {asked:?}"
+    );
+    for task in &six {
+        assert_eq!(
+            field(&ada, TASKS_APP, task, "Task", "due"),
+            before,
+            "Undo takes every task the change reached back with it"
+        );
+    }
 }

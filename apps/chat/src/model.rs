@@ -215,66 +215,6 @@ pub struct User {
     pub is_agent: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::Model)]
-pub enum Attachment {
-    /// An image addressed by its content hash. `w`/`h` are the real pixel
-    /// dimensions read at import time; bytes live in the content store, never as a path meaningful only on the sending peer.
-    Image {
-        name: String,
-        blob: String,
-        w: u32,
-        h: u32,
-    },
-    /// A video addressed by its content hash. Rendered inline as a
-    /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes are read from the content store on demand, never copied into
-    /// the CRDT.
-    /// `w`/`h` are the pixel dimensions when known (0 when the container header
-    /// wasn't probed).
-    Video {
-        name: String,
-        blob: String,
-        w: u32,
-        h: u32,
-        size: u64,
-    },
-    /// A non-image file share (chip with name + size).
-    File {
-        name: String,
-        blob: String,
-        size: u64,
-    },
-}
-
-impl Attachment {
-    /// The portable content hash backing this
-    /// attachment. It is safe to replicate and cannot expose a peer-local
-    /// filesystem layout.
-    pub fn blob(&self) -> &str {
-        match self {
-            Attachment::Image { blob, .. }
-            | Attachment::Video { blob, .. }
-            | Attachment::File { blob, .. } => blob,
-        }
-    }
-    pub fn name(&self) -> &str {
-        match self {
-            Attachment::Image { name, .. }
-            | Attachment::Video { name, .. }
-            | Attachment::File { name, .. } => name,
-        }
-    }
-
-    /// Its size in bytes, when the sender's import measured one: an image's
-    /// size is the store's, and an older one carries none rather than a guess.
-    pub fn size(&self) -> Option<u64> {
-        match self {
-            Attachment::Image { .. } => None,
-            Attachment::Video { size, .. } | Attachment::File { size, .. } => Some(*size),
-        }
-    }
-}
-
 /// Everyone who reacted to a message with one emoji: the framework's
 /// reactions, grouped as a reaction strip shows them.
 pub type Reaction = ui::tilo_resource::ReactionGroup;
@@ -307,16 +247,10 @@ pub struct Message {
     /// prose: a consumer asks the message who it mentions instead of scanning
     /// `text` for `@`. See [`crate::mention`].
     pub mentions: Vec<crate::mention::Mention>,
-    /// What this message is *about*, when it was written by selecting
-    /// something rather than by typing into the composer.
-    ///
-    /// The address, not a description of it: a reader resolves the block or
-    /// the file the author had selected without reading `text` and without
-    /// ever needing a screen position. `None` for an ordinary message.
-    pub reference: Option<tilo_reference::ResourceRef>,
-    /// Host-resolved existing record provider for this reference.
-    pub source_provider: Option<String>,
-    pub attachment: Option<Attachment>,
+    /// What it carries besides its words: the records and parts of records
+    /// it was written by sharing, the words it quotes, and the files it
+    /// posts, each in the terms of the app that keeps it.
+    pub attachments: Vec<tilo_reference::Attached>,
     /// Pinned messages are flagged in the shared document so every peer sees the
     /// same pins. A plain scalar flag toggled by an action.
     pub pinned: bool,
@@ -347,6 +281,32 @@ impl Message {
 
     pub fn is_top_level(&self) -> bool {
         self.parent.is_none()
+    }
+
+    /// The first thing it carries that lives in an app: the record and the
+    /// part of it. What its share card names and its chip opens.
+    pub fn resource(&self) -> Option<&tilo_reference::ResourceAt> {
+        self.attachments.iter().find_map(|attached| match attached {
+            tilo_reference::Attached::Resource { at, .. } => Some(at),
+            tilo_reference::Attached::Text { .. }
+            | tilo_reference::Attached::Image { .. }
+            | tilo_reference::Attached::Video { .. }
+            | tilo_reference::Attached::File { .. } => None,
+        })
+    }
+
+    /// The files it posts, in the order it posts them.
+    pub fn files(&self) -> impl Iterator<Item = &tilo_reference::Attached> {
+        self.attachments
+            .iter()
+            .filter(|attached| attached.blob().is_some())
+    }
+
+    /// Whether any of it shows as a chip: a record, or words quoted from one.
+    pub fn carries_a_chip(&self) -> bool {
+        self.attachments
+            .iter()
+            .any(tilo_reference::Attached::is_chip)
     }
 }
 
@@ -790,9 +750,7 @@ mod tests {
             parent: parent.map(std::string::ToString::to_string),
             reactions: vec![],
             mentions: vec![],
-            reference: None,
-            source_provider: None,
-            attachment: None,
+            attachments: Vec::new(),
             pinned: false,
             work: None,
             appearance: None,

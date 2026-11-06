@@ -140,10 +140,14 @@ impl Line {
 /// One device a person is here on, as their face lists them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PersonDevice {
-    /// The device's live publisher, hex.
+    /// The device's live publisher, hex: what a copy affordance keeps, never
+    /// the device's name.
     pub id: String,
-    /// What the device calls itself, from its certificate.
+    /// What the device calls itself, from its certificate; empty on a device
+    /// that named itself none, which a card names by which one it is.
     pub label: String,
+    /// This is the device the desk is drawn on.
+    pub this: bool,
     /// How available that device said it was.
     pub availability: ui::Availability,
 }
@@ -557,22 +561,19 @@ impl HereState {
     #[must_use]
     pub fn devices_of(&self, publisher: &str) -> Vec<PersonDevice> {
         let person = self.person_of(publisher);
+        let here = self.own_id();
         self.members
             .iter()
             .flatten()
             .chain(self.own.as_ref())
             .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
-            .map(|member| {
-                let named = member.device.trim();
-                PersonDevice {
-                    id: member.publisher.clone(),
-                    label: if named.is_empty() {
-                        crate::profile_card::short_key(&member.publisher)
-                    } else {
-                        named.to_owned()
-                    },
-                    availability: availability_of(member),
-                }
+            .map(|member| PersonDevice {
+                id: member.publisher.clone(),
+                // A device that named itself none keeps it empty: its key is
+                // an id, and never stands in for the name it did not give.
+                label: member.device.trim().to_owned(),
+                this: here == Some(member.publisher.as_str()),
+                availability: availability_of(member),
             })
             .collect()
     }

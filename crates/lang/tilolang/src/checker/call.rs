@@ -1,7 +1,7 @@
-//! Calls: functions, actions, flows, record construction, built-ins and methods.
+//! Calls: functions, actions, record construction, built-ins and methods.
 
 use super::expr::dotted;
-use super::{Checker, Ctx, Ex, Written, conv, store_op};
+use super::{Checker, Ctx, Ex, Invoked, Written, conv, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, ExprKind};
 use crate::diag::Span;
@@ -10,8 +10,24 @@ use crate::prims;
 use crate::resolve::{CKind, Callable, FieldInfo, Import};
 use crate::types::{Ty, TypeKey};
 
+/// The module a draw is asked of: `random.int(lo, hi)`.
+const RANDOM: &str = "random";
+
 impl Checker<'_> {
-    pub(super) fn call(&mut self, callee: &ast::Expr, args: &[ast::Arg], span: Span) -> Ex {
+    pub(super) fn call(
+        &mut self,
+        callee: &ast::Expr,
+        types: &[ast::TypeExpr],
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        if !types.is_empty() && !names_json(callee) {
+            self.err(
+                "E022",
+                span,
+                "only `json.decode<T>(text)` takes a type between `<` and `>`",
+            );
+        }
         match &callee.kind {
             ExprKind::Ident(name) => self.call_named(name, callee.span, args, span),
             ExprKind::Field { base, name } => {
@@ -20,9 +36,6 @@ impl Checker<'_> {
                 {
                     if name.name == "RichText" {
                         return self.builtin_rich_text(args, span);
-                    }
-                    if name.name == "complete" {
-                        return self.builtin_complete(args, span);
                     }
                     if let Some(held) =
                         crate::resolve::std_text_ty(&[crate::stdlib::NS, name.name.as_str()])
@@ -35,6 +48,29 @@ impl Checker<'_> {
                             }
                         };
                     }
+                }
+                // `random.int(lo, hi)`: a draw, which the invocation records (effects.md).
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == RANDOM)
+                    && self.lookup(RANDOM).is_none()
+                    && self.env.find_import(RANDOM).is_none()
+                {
+                    return self.builtin_random(name, args, span);
+                }
+                // `web.get` and `web.post`: a request to a service outside Tilo, which the
+                // invocation makes once and records (effects.md).
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == "web")
+                    && self.lookup("web").is_none()
+                    && self.env.find_import("web").is_none()
+                {
+                    return self.builtin_web(name, args, span);
+                }
+                // `json.parse`, `json.decode<T>` and `json.encode`: reading and writing JSON
+                // text, which is no effect: it reaches nothing outside the values it is given.
+                if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json")
+                    && self.lookup("json").is_none()
+                    && self.env.find_import("json").is_none()
+                {
+                    return self.builtin_json(name, types, args, span);
                 }
                 if let Some(key) = self.enum_path(base) {
                     let ty = Ty::Enum(key);
@@ -121,7 +157,10 @@ impl Checker<'_> {
             }
             return self.expr_as(&n.value, &Ty::Int).typed(Ty::Duration);
         }
-        if let Some(ex) = self.program_builtin(name, args, span) {
+        // A session's code has the agent library's words in scope, its default import.
+        if env.session
+            && let Some(ex) = self.agent_call(name, args, span)
+        {
             return ex;
         }
         match name {
@@ -141,8 +180,8 @@ impl Checker<'_> {
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
+            "changed" => return self.builtin_changed(args, span),
             "unseen" => return self.builtin_unseen(args, span),
-            "others" => return self.builtin_others(args, span),
             "linked" => return self.builtin_links(args, span),
             "proposal_note" => return self.builtin_proposal_note(args, span),
             "first_unseen" => return self.builtin_first_unseen(args, span),
@@ -154,6 +193,7 @@ impl Checker<'_> {
             "cases" => return self.builtin_cases(args, span),
             "phrase" => return self.builtin_phrase(args, span),
             "entry_parts" => return self.builtin_entry_parts(args, span),
+            "invoke" => return self.builtin_invoke(args, span),
             "query" => return self.builtin_query(args, span),
             "filters" => return self.builtin_filters(args, span),
             _ => {}
@@ -169,13 +209,12 @@ impl Checker<'_> {
             .map(|c| c.name.as_str())
             .collect();
         names.sort_unstable();
-        let mut known = names.clone();
-        for word in prims::BUILTINS
-            .iter()
-            .copied()
-            .chain(self.program_builtins())
-        {
-            known.push(word);
+        let mut known: Vec<&str> = names.clone();
+        known.extend(prims::BUILTINS.iter().copied());
+        if self.env.session {
+            for word in crate::agent::FUNCTIONS {
+                known.push(word.name);
+            }
         }
         let hint = crate::diag::suggestion(name, known);
         self.err(
@@ -196,6 +235,13 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // The agent library's words are host imports the checker lowers rather than calls into
+        // a module: `agent.grep(...)` in a package is the code a session's `grep` is.
+        if import.app == crate::agent::APP
+            && let Some(ex) = self.agent_call(&name.name, args, span)
+        {
+            return ex;
+        }
         let env = self.env;
         if let Some(c) = env.foreign_callable(&import.app, &name.name) {
             let c = c.clone();
@@ -436,6 +482,7 @@ impl Checker<'_> {
         self.emit(Stmt::Return(Some(value)));
         let name = format!("{} at the event", outer.view_id);
         let export = ir::at_event_export(&id);
+        self.at = self.outer_at;
         let mut f = self.end(ir::FuncKind::Fn, &name, &export);
         f.nparams = params.len();
         self.st = outer;
@@ -463,14 +510,13 @@ impl Checker<'_> {
     /// until then, a scalar's boxed as its slot holds it.
     pub(super) fn state_at(state: &super::StateRef) -> Ex {
         let scalar = state.ty.is_scalar();
-        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
         let boxed = Ex::new(Ek::I32(i32::from(scalar)), Ty::Bool);
         let ty = if scalar {
             Ty::Option(Box::new(state.ty.clone()))
         } else {
             state.ty.clone()
         };
-        Ex::host(Imp::StateAt, vec![layer, Ex::str(&state.id), boxed], ty)
+        Ex::host(Imp::StateAt, vec![Ex::str(&state.id), boxed], ty)
     }
 
     fn action_ref(c: &Callable) -> ActionRef {
@@ -488,7 +534,7 @@ impl Checker<'_> {
         let sig = c.signature(&self.env.app);
         // An action a view applies runs when its event fires: the view state it takes is read
         // then, not when the view drew.
-        let at_press = matches!(c.kind, CKind::Action | CKind::Flow) && self.st.ctx == Ctx::View;
+        let at_press = c.kind == CKind::Action && self.st.ctx == Ctx::View;
         let bound = self.bind_args_or_default(&c.name, &c.params, args, span, &sig, at_press);
         let ctx = self.st.ctx;
         match (c.kind, ctx) {
@@ -500,44 +546,20 @@ impl Checker<'_> {
                 self.call_fn(c, bound, span)
             }
             (CKind::Action, Ctx::Fn) => {
-                self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action or a flow", c.name));
+                self.err("E043", span, format!("a fn computes values and cannot use actions; `{}` is an action. Move this into an action", c.name));
                 Ex::error()
             }
-            (CKind::Action, Ctx::Action) => {
-                // `suggest act(args)` records the action as a proposal, so it is not applied
-                // here: nothing of it runs inside this action's own change.
-                if self.st.suggest.is_some() {
-                    let bound = self.applied_args(c, bound, span);
-                    return self.invoke(c, bound);
-                }
-                if !c.own {
-                    self.err("E041", span, format!("an action cannot call the foreign action `{}`: one change cannot span apps. Call it from a flow with `{}(...)`", c.name, c.name));
-                    return Ex::error();
-                }
-                if let Some(f) = c.func {
-                    self.st.facts.inline_actions.insert(f);
-                }
-                let (stmts, bound) = self.inline_args(c, bound);
-                let call = self.call_own(c, bound, span, "action");
-                if stmts.is_empty() {
-                    call
-                } else {
-                    let ty = call.ty.clone();
-                    Ex::new(Ek::Seq(stmts, Box::new(call)), ty)
-                }
-            }
-            (CKind::Action, Ctx::Flow) => {
+            (CKind::Action, Ctx::Action | Ctx::Program) => {
+                // A call runs the action at its own door, as a change of its own: the
+                // authority decides it, and the caller suspends around it and goes on from
+                // its journaled result. `suggest act(args)` is the same call, recorded as a
+                // proposal instead of applied.
                 let bound = self.applied_args(c, bound, span);
                 self.invoke(c, bound)
             }
-            (CKind::Action | CKind::Flow, Ctx::View | Ctx::Block) => {
+            (CKind::Action, Ctx::View | Ctx::Block) => {
                 let bound = self.applied_args(c, bound, span);
                 self.action_value(c, bound)
-            }
-            (CKind::Flow, other) => {
-                let who = other.word();
-                self.err("E046", span, format!("{who} cannot call the flow `{}`; flows run on their own and are applied from a view or a block as an action", c.name));
-                Ex::error()
             }
             (CKind::View, _) => {
                 self.err(
@@ -553,16 +575,6 @@ impl Checker<'_> {
         }
     }
 
-    fn call_own(&mut self, c: &Callable, bound: Vec<Ex>, span: Span, what: &str) -> Ex {
-        match c.func {
-            Some(f) if c.own => Ex::new(Ek::Call(f, bound), c.result.clone()),
-            _ => {
-                self.err("E081", span, format!("calling the {what} `{}` of another package is not supported in v1: the host ABI has no cross-module call. Only actions of other packages can be applied", c.name));
-                Ex::error()
-            }
-        }
-    }
-
     /// A `fn`: the module's own is a call, another package's one runs there, as that package's
     /// own code, over the values it is given. A fn changes nothing — it cannot use actions
     /// (E043) or change fields (E040) — so a call of one asks nobody, as reading that
@@ -571,7 +583,10 @@ impl Checker<'_> {
     fn call_fn(&mut self, c: &Callable, bound: Vec<Ex>, span: Span) -> Ex {
         if c.own {
             return match c.func {
-                Some(f) => Ex::new(Ek::Call(f, bound), c.result.clone()),
+                Some(f) => {
+                    self.st.facts.calls.insert(f);
+                    Ex::new(Ek::Call(f, bound), c.result.clone())
+                }
                 None => {
                     self.err("E081", span, format!("`{}` has no code to call", c.name));
                     Ex::error()
@@ -626,7 +641,7 @@ impl Checker<'_> {
             }
             return Ex::host(Imp::Suggest, vec![act], Ty::Unit);
         }
-        if std::mem::take(&mut self.st.try_invoke) {
+        if std::mem::replace(&mut self.st.invoked, Invoked::Plain) == Invoked::Try {
             // The host builds the `Result`: `.ok(result)`, or `.err(reason)`.
             let ty = Ty::Result(Box::new(c.result.clone()), Box::new(Ty::Text));
             return Ex::host(Imp::TryInvoke, vec![act], ty);
@@ -659,7 +674,7 @@ impl Checker<'_> {
                 let ExprKind::Ident(name) = &callee.kind else {
                     return false;
                 };
-                !self.in_std() && self.env.own_type(name).is_some_and(|t| !t.holder)
+                !self.in_std() && self.env.own_type(name).is_some()
             }
             ast::ExprKind::If { then, els, .. } => {
                 let last = then.stmts.last();
@@ -1100,9 +1115,7 @@ impl Checker<'_> {
             self.err(
                 "E066",
                 span,
-                format!(
-                    "`set(name, value)` changes a view's `window` or `lens` state; {who} has none"
-                ),
+                format!("`set(name, value)` changes a view's state; {who} has none"),
             );
             return Ex::error();
         }
@@ -1120,7 +1133,7 @@ impl Checker<'_> {
         };
         let Some(state) = state else {
             let known = self.state_names();
-            self.err("E066", target.value.span, format!("the first argument of `set` names a `window` or `lens` declaration of this view; this view declares: {known}"));
+            self.err("E066", target.value.span, format!("the first argument of `set` names a `state` declaration of this view; this view declares: {known}"));
             let _ = self.expr(&value.value, None);
             return Ex::error();
         };
@@ -1128,251 +1141,11 @@ impl Checker<'_> {
         Self::set_action(&state, v)
     }
 
-    /// `std.complete(item, done) -> Bool`: completing a repeating item, in place. When `done` is
-    /// true and the item says how it repeats, this adds the day to the item's `completed` set and
-    /// moves its due day (and its time of day, where it has one) to the next occurrence — on the
-    /// same item, so what it has been stays in one place — and answers `true`: the item comes
-    /// round again. Otherwise it changes nothing and answers `false`.
-    ///
-    /// The fields are the item type's, found by their types: its `std.Repeat` (an
-    /// `Option<std.Repeat>` says it repeats only when it is `.some`), the `Set<Date>` of the days
-    /// it was completed, the day it is due, and, where the type has one, its `Time`. An action
-    /// then needs two lines:
-    ///
-    /// ```text
-    /// action check(t: Task, done: Bool = not t.done) {
-    ///   let again = std.complete(t, done)
-    ///   t.done = done and not again
-    /// }
-    /// ```
-    fn builtin_complete(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
-            self.err(
-                "E022",
-                span,
-                "`std.complete` takes the item and whether it is now done: `let again = std.complete(t, done)`",
-            );
-            for a in args {
-                let _ = self.expr(&a.value, None);
-            }
-            return Ex::error();
-        }
-        let (Some(item), Some(done)) = (args.first(), args.get(1)) else {
-            return Ex::error();
-        };
-        let item = self.expr(&item.value, None);
-        let done = self.expr_as(&done.value, &Ty::Bool);
-        let Ty::Record(key) = item.ty.clone() else {
-            if !item.ty.is_error() {
-                let t = self.show(&item.ty);
-                self.err("E118", span, format!("`std.complete` completes an item that repeats, so it takes a record; {t} is not one"));
-            }
-            return Ex::error();
-        };
-        if self.st.ctx != Ctx::Action {
-            let who = self.st.ctx.word();
-            self.err("E040", span, format!("{who} cannot complete `{}`: only an action mutates fields. Write an action and apply it", key.name));
-            return Ex::error();
-        }
-        if key.app != self.env.app {
-            self.err("E045", span, format!("`{}` is declared by another app ({}); an action may only change its own module's types. Invoke that app's action from a flow instead", key.name, key.app));
-            return Ex::error();
-        }
-        let Some(info) = self.env.type_info(&key) else {
-            return Ex::error();
-        };
-        let fields = info.fields.clone();
-        let names = info.field_names();
-        let of_ty = |want: &Ty| -> Vec<FieldInfo> {
-            fields
-                .iter()
-                .filter(|f| held_as(&f.ty, want).is_some())
-                .cloned()
-                .collect()
-        };
-        let repeats = of_ty(&Ty::Repeat);
-        let completed = of_ty(&Ty::Set(Box::new(Ty::Date)));
-        let due = of_ty(&Ty::Date);
-        let at = of_ty(&Ty::Time);
-        let mut shape = true;
-        let complain = |self_: &mut Self, found: &[FieldInfo], want: &str, declare: &str| {
-            let named: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
-            let what = if named.is_empty() {
-                format!("has no {want} field")
-            } else {
-                format!("has more than one {want} field (`{}`)", named.join("`, `"))
-            };
-            self_.err("E118", span, format!("`{}` {what}, which `std.complete` needs: declare {declare}; its fields: {names}", key.name));
-        };
-        if repeats.len() != 1 {
-            complain(
-                self,
-                &repeats,
-                "`std.Repeat`",
-                "`repeats: Option<std.Repeat>`",
-            );
-            shape = false;
-        }
-        if completed.len() != 1 {
-            complain(
-                self,
-                &completed,
-                "`Set<Date>`",
-                "`completed: Set<Date>` for the days it was completed",
-            );
-            shape = false;
-        }
-        if due.len() != 1 {
-            complain(
-                self,
-                &due,
-                "`Date`",
-                "`due: Option<Date>` for the day it is due",
-            );
-            shape = false;
-        }
-        if at.len() > 1 {
-            complain(self, &at, "`Time`", "one `Option<Time>` of the time of day");
-            shape = false;
-        }
-        if !shape {
-            return Ex::error();
-        }
-        let (rf, cf, df) = (repeats[0].clone(), completed[0].clone(), due[0].clone());
-        let af = at.first().cloned();
-        self.st.facts.mutates = true;
-        let read = |f: &FieldInfo| {
-            Ex::host(
-                Imp::ResGetH,
-                vec![item.clone(), Ex::str(&f.id)],
-                f.ty.clone(),
-            )
-        };
-        let false_ = Ex::new(Ek::Bool(false), Ty::Bool);
-        let again = self.fresh(Ty::Bool);
-        let today = self.fresh(Ty::Date);
-        let rep = self.fresh(Ty::Repeat);
-        let from = self.fresh(Ty::Date);
-        let next = self.fresh(Ty::Date);
-        let today_ex = Ex::local(today, Ty::Date);
-        // Whether it was completed: `done`, and the item repeating at all.
-        let repeats_value = read(&rf);
-        let mut go = done;
-        if held_as(&rf.ty, &Ty::Repeat) == Some(true) {
-            let some = Ex::host(Imp::IsSome, vec![repeats_value.clone()], Ty::Bool);
-            go = Ex::new(
-                Ek::If(Box::new(some), Box::new(go), Box::new(false_.clone())),
-                Ty::Bool,
-            );
-        }
-        let mut body = Vec::new();
-        body.push(Stmt::Set(
-            rep,
-            if held_as(&rf.ty, &Ty::Repeat) == Some(true) {
-                Self::unwrap_opt(repeats_value, &Ty::Repeat)
-            } else {
-                repeats_value
-            },
-        ));
-        body.push(Stmt::Eval(Ex::host(
-            Imp::SetAdd,
-            vec![
-                item.clone(),
-                Ex::str(&cf.id),
-                Self::handle_of(today_ex.clone()),
-            ],
-            Ty::Unit,
-        )));
-        // The day it is due now: from the day it was due, or today when it named none.
-        let due_value = read(&df);
-        let due_now = if held_as(&df.ty, &Ty::Date) == Some(true) {
-            let some = Ex::host(Imp::IsSome, vec![due_value.clone()], Ty::Bool);
-            let held = Self::unwrap_opt(due_value, &Ty::Date);
-            Ex::new(
-                Ek::If(Box::new(some), Box::new(held), Box::new(today_ex.clone())),
-                Ty::Date,
-            )
-        } else {
-            due_value
-        };
-        body.push(Stmt::Set(from, due_now));
-        let next_value = Ex::host(
-            Imp::RepeatNext,
-            vec![
-                Ex::local(rep, Ty::Repeat),
-                Ex::local(from, Ty::Date),
-                today_ex,
-            ],
-            Ty::Date,
-        );
-        body.push(Stmt::Set(next, next_value));
-        // The next occurrence is due (and at its time of day) from now on.
-        let next_ex = Ex::local(next, Ty::Date);
-        let due_next = if held_as(&df.ty, &Ty::Date) == Some(true) {
-            Self::some(next_ex, &df.ty)
-        } else {
-            next_ex
-        };
-        body.push(Stmt::Eval(Ex::host(
-            Imp::ResSetH,
-            vec![item.clone(), Ex::str(&df.id), due_next],
-            Ty::Unit,
-        )));
-        if let Some(af) = &af {
-            let fid = Ex::str(&af.id);
-            let at_value = read(af);
-            // The same local time of day on the day it is next due.
-            let moved = |at: Ex| {
-                Ex::host(
-                    Imp::RepeatNextAt,
-                    vec![Ex::local(rep, Ty::Repeat), at, Ex::local(next, Ty::Date)],
-                    Ty::Time,
-                )
-            };
-            if held_as(&af.ty, &Ty::Time) == Some(true) {
-                let at_now = self.fresh(Ty::Time);
-                let some = Ex::host(Imp::IsSome, vec![at_value.clone()], Ty::Bool);
-                let held = Self::unwrap_opt(at_value, &Ty::Time);
-                let stored = Self::some(moved(Ex::local(at_now, Ty::Time)), &af.ty);
-                body.push(Stmt::If(
-                    some,
-                    vec![
-                        Stmt::Set(at_now, held),
-                        Stmt::Eval(Ex::host(
-                            Imp::ResSetH,
-                            vec![item.clone(), fid, stored],
-                            Ty::Unit,
-                        )),
-                    ],
-                    Vec::new(),
-                ));
-            } else {
-                let stored = moved(at_value);
-                body.push(Stmt::Eval(Ex::host(
-                    Imp::ResSetH,
-                    vec![item.clone(), fid, stored],
-                    Ty::Unit,
-                )));
-            }
-        }
-        body.push(Stmt::Set(again, Ex::new(Ek::Bool(true), Ty::Bool)));
-        let stmts = vec![
-            Stmt::Set(again, false_),
-            Stmt::Set(today, Ex::host(Imp::Today, Vec::new(), Ty::Date)),
-            Stmt::If(go, body, Vec::new()),
-        ];
-        Ex::new(
-            Ek::Seq(stmts, Box::new(Ex::local(again, Ty::Bool))),
-            Ty::Bool,
-        )
-    }
-
     /// The action that sets the view state `state` to `v`.
     pub(super) fn set_action(state: &super::StateRef, v: Ex) -> Ex {
-        let layer = Ex::new(Ek::I32(state.layer.code()), Ty::Bool);
         Ex::host(
             Imp::ActSet,
-            vec![layer, Ex::str(&state.id), Self::handle_of(v)],
+            vec![Ex::str(&state.id), Self::handle_of(v)],
             Ty::Action,
         )
     }
@@ -1463,11 +1236,11 @@ impl Checker<'_> {
     }
 
     fn builtin_model(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        if self.st.ctx != Ctx::Flow {
+        if !matches!(self.st.ctx, Ctx::Action | Ctx::Program) {
             self.err(
                 "E047",
                 span,
-                "`model_call(kind, input)` is nondeterministic and only a flow may use it",
+                "`model_call(kind, input)` is nondeterministic and only an action may use it",
             );
             return Ex::error();
         }
@@ -1515,10 +1288,6 @@ impl Checker<'_> {
             return self.value_method(r, name, args, span);
         }
         let r = self.expr(recv, None);
-        // `notes.insert(n)` of a resource that names a container: that container's method.
-        if let Some((key, f)) = self.held_of(&r.ty) {
-            return self.container_method(r, &key, &f, name, args, span);
-        }
         self.value_method(r, name, args, span)
     }
 
@@ -1860,6 +1629,393 @@ impl Checker<'_> {
         Ex::host(Imp::MapGetH, vec![b, fid, key], ty)
     }
 
+    /// `m.keys()` and `m.get(key)` of a map held as a value, not a field's.
+    fn map_value_method(
+        &mut self,
+        m: Ex,
+        value: &Ty,
+        name: &ast::Ident,
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        if name.name == "keys" {
+            if !self.arity(name, args, 0, span) {
+                return Ex::error();
+            }
+            return Ex::host(Imp::MapKeysValue, vec![m], Ty::List(Box::new(Ty::Text)));
+        }
+        if !self.arity(name, args, 1, span) {
+            return Ex::error();
+        }
+        let Some(k) = args.first() else {
+            return Ex::error();
+        };
+        let key = self.expr_as(&k.value, &Ty::Text);
+        let value = match value {
+            Ty::Set(element) => Ty::List(element.clone()),
+            other => other.clone(),
+        };
+        Ex::host(Imp::MapGetValue, vec![m, key], Ty::Option(Box::new(value)))
+    }
+
+    /// The words of `random`, for a message that names them.
+    const DRAWS: &'static str = "`random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and `random.id()`";
+
+    /// `random.int(lo, hi)`, `random.float()`, `random.choice(xs)`, `random.shuffle(xs)` and
+    /// `random.id()`: a draw. Only an action makes one, declaring `uses random`, and
+    /// its invocation keeps each value drawn, so a replay reads the same values (effects.md).
+    fn builtin_random(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let word = name.name.as_str();
+        let what = format!("`random.{word}`");
+        match word {
+            "int" => {
+                if args.len() != 2 || args.iter().any(|a| a.name.is_some()) {
+                    self.err(
+                        "E022",
+                        span,
+                        "`random.int` takes the lowest and highest number to draw, by position: `random.int(1, 6)`",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                }
+                let (Some(lo), Some(hi)) = (args.first(), args.get(1)) else {
+                    return Ex::error();
+                };
+                let lo = self.expr_as(&lo.value, &Ty::Int);
+                let hi = self.expr_as(&hi.value, &Ty::Int);
+                self.reads(crate::effects::Effect::Random, span, "`random.int`");
+                Ex::host(Imp::RandomInt, vec![lo, hi], Ty::Int)
+            }
+            "float" | "id" => {
+                if !args.is_empty() {
+                    self.err(
+                        "E022",
+                        span,
+                        format!("{what} takes no arguments: it draws one value"),
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                }
+                self.reads(crate::effects::Effect::Random, span, &what);
+                if word == "float" {
+                    Ex::host(Imp::RandomFloat, vec![], Ty::Float)
+                } else {
+                    Ex::host(Imp::RandomId, vec![], Ty::Text)
+                }
+            }
+            "choice" | "shuffle" => {
+                let [xs] = args else {
+                    self.err(
+                        "E022",
+                        span,
+                        format!(
+                            "{what} takes the list to draw from, by position: `random.{word}(items)`"
+                        ),
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                if xs.name.is_some() {
+                    self.err(
+                        "E022",
+                        xs.value.span,
+                        format!("{what} takes its list by position: `random.{word}(items)`"),
+                    );
+                }
+                let got = self.expr(&xs.value, None);
+                // A collection or a set reads as the list of what it holds.
+                let element = match &got.ty {
+                    Ty::List(t) | Ty::Collection(t) | Ty::Set(t) => (**t).clone(),
+                    Ty::Error => return Ex::error(),
+                    other => {
+                        let found = self.show(other);
+                        self.err(
+                            "E020",
+                            xs.value.span,
+                            format!("{what} draws from a list; this is {found}"),
+                        );
+                        return Ex::error();
+                    }
+                };
+                let list = self.coerce(got, &Ty::List(Box::new(element.clone())), xs.value.span);
+                self.reads(crate::effects::Effect::Random, span, &what);
+                if word == "choice" {
+                    Ex::host(Imp::RandomChoice, vec![list], Ty::Option(Box::new(element)))
+                } else {
+                    Ex::host(Imp::RandomShuffle, vec![list], Ty::List(Box::new(element)))
+                }
+            }
+            _ => {
+                self.err(
+                    "E014",
+                    name.span,
+                    format!("`random` has no `{word}`; it draws {}", Self::DRAWS),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Ex::error()
+            }
+        }
+    }
+
+    /// `web.get(url, headers:, if_none_match:)` and `web.post(url, body:, headers:)`: a request
+    /// to a service outside Tilo, which the invocation makes once, records, and replays from the
+    /// record (effects.md).
+    fn builtin_web(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        let get = match name.name.as_str() {
+            "get" => true,
+            "post" => false,
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`web` has `get` and `post`; not `{other}`. `web.get(url, headers:, if_none_match:)` fetches, `web.post(url, body:, headers:)` sends"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+        };
+        let what = if get { "`web.get`" } else { "`web.post`" };
+        let Some(url) = args.first().filter(|a| a.name.is_none()) else {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "{what} takes the url first: `web.get(\"{}\")`",
+                    "https://example.com/"
+                ),
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        };
+        let url = self.expr_as(&url.value, &Ty::Text);
+        let headers = Ty::List(Box::new(Ty::Text));
+        let mut headers_arg = None;
+        let mut if_none_match = None;
+        let mut body = None;
+        for arg in &args[1..] {
+            let Some(named) = &arg.name else {
+                self.err(
+                    "E022",
+                    arg.value.span,
+                    format!(
+                        "{what} takes the url by position; the rest by name: {}",
+                        if get {
+                            "`headers:`, `if_none_match:`"
+                        } else {
+                            "`body:`, `headers:`"
+                        }
+                    ),
+                );
+                let _ = self.expr(&arg.value, None);
+                continue;
+            };
+            match (get, named.name.as_str()) {
+                (_, "headers") => {
+                    headers_arg = Some(self.expr_as(&arg.value, &headers));
+                }
+                (true, "if_none_match") => {
+                    let value = self.expr(&arg.value, None);
+                    if_none_match = Some(if matches!(value.ty, Ty::Text) {
+                        Ex::host(Imp::SomeH, vec![value], Ty::Option(Box::new(Ty::Text)))
+                    } else if matches!(&value.ty, Ty::Option(inner) if **inner == Ty::Text)
+                        || value.ty.is_error()
+                    {
+                        value
+                    } else {
+                        let t = self.show(&value.ty);
+                        self.err(
+                            "E022",
+                            arg.value.span,
+                            format!("`if_none_match:` takes the ETag a service gave, as Text or an `Option<Text>`; this is {t}"),
+                        );
+                        Ex::error()
+                    });
+                }
+                (false, "body") => {
+                    body = Some(self.expr_as(&arg.value, &Ty::Text));
+                }
+                (_, other) => {
+                    self.err(
+                        "E022",
+                        named.span,
+                        format!(
+                            "`{other}:` is no argument of {}",
+                            if get { "`web.get`" } else { "`web.post`" }
+                        ),
+                    );
+                    let _ = self.expr(&arg.value, None);
+                }
+            }
+        }
+        let headers_arg = headers_arg.unwrap_or_else(|| Ex::host(Imp::ListNew, vec![], headers));
+        self.reads(crate::effects::Effect::Web, span, what);
+        if get {
+            let if_none_match = if_none_match
+                .unwrap_or_else(|| Ex::host(Imp::NoneV, vec![], Ty::Option(Box::new(Ty::Text))));
+            Ex::host(
+                Imp::WebGet,
+                vec![url, headers_arg, if_none_match],
+                Ty::Response,
+            )
+        } else {
+            let Some(body) = body else {
+                self.err(
+                    "E022",
+                    span,
+                    "`web.post` sends a body, named `body:`: `web.post(\"https://example.com/\", body: text)`",
+                );
+                return Ex::error();
+            };
+            Ex::host(Imp::WebPost, vec![url, body, headers_arg], Ty::Response)
+        }
+    }
+
+    /// `json.parse(text)`, `json.decode<T>(text)` and `json.encode(value)`: JSON text read into
+    /// a value of a type the caller names, and a value written as text. No effect: it reads no
+    /// clock, draws nothing and reaches no service, so an action that only reads text it was
+    /// given needs no `uses`.
+    fn builtin_json(
+        &mut self,
+        name: &ast::Ident,
+        types: &[ast::TypeExpr],
+        args: &[ast::Arg],
+        span: Span,
+    ) -> Ex {
+        let result = |held: Ty| Ty::Result(Box::new(held), Box::new(Ty::Text));
+        match name.name.as_str() {
+            "parse" => {
+                if let Some(written) = types.first() {
+                    self.err(
+                        "E022",
+                        written.span,
+                        "`json.parse` decides nothing about the shape: it answers a `json.Value`, and `json.decode<T>(text)` reads text into a `T`",
+                    );
+                }
+                let Some(text) = self.json_text_arg("json.parse(text)", args, span) else {
+                    return Ex::error();
+                };
+                Ex::host(Imp::JsonParse, vec![text], result(Ty::Json))
+            }
+            "decode" => {
+                let Some(written) = types.first() else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`json.decode` says what it reads: `json.decode<Item>(text)`, with a record, an enum, a list, an option, a day or a moment",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let mut diags = Vec::new();
+                let held = crate::resolve::resolve_type_expr(self.env, written, &mut diags);
+                for diagnostic in diags {
+                    self.err(&diagnostic.code, diagnostic.span, diagnostic.message);
+                }
+                if !held.is_error() && !held.reads_json() {
+                    let t = self.show(&held);
+                    self.err(
+                        "E020",
+                        written.span,
+                        format!(
+                            "`json.decode` reads a value text can make: Int, Float, Bool, Text, Date, Time, a list, an option, an enum or a record; `{t}` is none of them"
+                        ),
+                    );
+                    return Ex::error();
+                }
+                let Some(text) = self.json_text_arg("json.decode<T>(text)", args, span) else {
+                    return Ex::error();
+                };
+                let app = self.env.app.clone();
+                Ex::host(
+                    Imp::JsonDecode,
+                    vec![text, Ex::str(&held.meta_text(&app)), Ex::str(&app)],
+                    result(held),
+                )
+            }
+            "encode" => {
+                if let Some(written) = types.first() {
+                    self.err(
+                        "E022",
+                        written.span,
+                        "`json.encode` writes what its value is; it takes no type",
+                    );
+                }
+                let Some(arg) = args.first().filter(|a| a.name.is_none()) else {
+                    self.err(
+                        "E022",
+                        span,
+                        "`json.encode` writes one value: `json.encode(item)`",
+                    );
+                    for a in args {
+                        let _ = self.expr(&a.value, None);
+                    }
+                    return Ex::error();
+                };
+                let value = self.expr(&arg.value, None);
+                if args.len() > 1 {
+                    for a in &args[1..] {
+                        self.err("E022", a.value.span, "`json.encode` writes one value");
+                        let _ = self.expr(&a.value, None);
+                    }
+                }
+                if !value.ty.is_error() && !value.ty.writes_json() {
+                    let t = self.show(&value.ty);
+                    self.err(
+                        "E020",
+                        arg.value.span,
+                        format!(
+                            "`json.encode` writes a value JSON has: Int, Float, Bool, Text, Date, Time, a list, an option, a map, an enum, a record or a `json.Value`; `{t}` is none of them"
+                        ),
+                    );
+                    return Ex::error();
+                }
+                Ex::host(Imp::JsonEncode, vec![value], Ty::Text)
+            }
+            other => {
+                self.err(
+                    "E022",
+                    name.span,
+                    format!(
+                        "`json` has `parse`, `decode` and `encode`; not `{other}`. `json.parse(text)` reads any shape, `json.decode<T>(text)` reads a `T`, `json.encode(value)` writes text"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                Ex::error()
+            }
+        }
+    }
+
+    /// The one text argument of `json.parse` and `json.decode<T>`.
+    fn json_text_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
+        if args.len() != 1 || args.first().is_some_and(|a| a.name.is_some()) {
+            self.err("E022", span, format!("{what} takes one text: `{what}`"));
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return None;
+        }
+        let text = self.expr_as(&args[0].value, &Ty::Text);
+        Some(text)
+    }
+
     /// A method that stands on a type instead of a value: `Date.parse(text, near: now)` and
     /// `Time.parse(text, near: now)`, the day or the moment a text names when people type it
     /// ("tomorrow", "fri 10am", "in 2 weeks"), read at a moment in the person's zone.
@@ -1911,6 +2067,7 @@ impl Checker<'_> {
         }
         let text = self.expr_as(&text.value, &Ty::Text);
         let near = self.expr_as(&near.value, &Ty::Time);
+        self.reads(crate::effects::Effect::Time, span, "`parse`");
         let imp = if ty == Ty::Date {
             Imp::DayParse
         } else {
@@ -1944,6 +2101,17 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // The body of a response, and bytes, read as the text they decode as; bytes counted.
+            (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {
+                Ex::host(Imp::WebText, vec![r], Ty::Text)
+            }
+            (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
+            // A map read as a value (a `json.Value`'s object, or one `json.decode` read): its
+            // keys, and the value one key holds.
+            (Ty::Map(t), "get" | "keys") => {
+                let value = t.clone();
+                self.map_value_method(r, &value, name, args, span)
+            }
             // A day read as people read it: the day of the week it is, the day, month and year
             // it names, and the first day of the week it stands in.
             (Ty::Date, "weekday") if args.is_empty() => {
@@ -1963,8 +2131,12 @@ impl Checker<'_> {
             }
             // A moment read as people read it: the day it falls on for the person, in their
             // zone, and the time of day it is then.
-            (Ty::Time, "day") if args.is_empty() => Ex::host(Imp::TimeDay, vec![r], Ty::Date),
+            (Ty::Time, "day") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Time, span, "`day`");
+                Ex::host(Imp::TimeDay, vec![r], Ty::Date)
+            }
             (Ty::Time, "time_of_day") if args.is_empty() => {
+                self.reads(crate::effects::Effect::Time, span, "`time_of_day`");
                 Ex::host(Imp::TimeOfDay, vec![r], Ty::Duration)
             }
             // A length of time as the seconds it is, which is how a record keeps one.
@@ -1994,6 +2166,7 @@ impl Checker<'_> {
                 };
                 let at = self.expr_as(&at.value, &Ty::Time);
                 let day = self.expr_as(&day.value, &Ty::Date);
+                self.reads(crate::effects::Effect::Time, span, "`next_at`");
                 Ex::host(Imp::RepeatNextAt, vec![r, at, day], Ty::Time)
             }
             (Ty::Repeat, "label") if args.is_empty() => {
@@ -2010,6 +2183,7 @@ impl Checker<'_> {
                 };
                 let due = self.expr_as(&due.value, &Ty::Date);
                 let at = self.expr_as(&at.value, &Ty::Option(Box::new(Ty::Time)));
+                self.reads(crate::effects::Effect::Time, span, "`at`");
                 Ex::host(Imp::ReminderAt, vec![r, due, at], Ty::Time)
             }
             (Ty::Reminder, "label") if args.is_empty() => {
@@ -2025,6 +2199,11 @@ impl Checker<'_> {
                 Ex::host(Imp::PrincipalRole, vec![r], Ty::Option(Box::new(Ty::Text)))
             }
             (Ty::Record(_), "id") if args.is_empty() => Ex::host(Imp::RefId, vec![r], Ty::Text),
+            // `as.many()`: an action that applies each of `as` to its own item, all at once:
+            // one change, one undo.
+            (Ty::List(inner), "many") if args.is_empty() && matches!(**inner, Ty::Action) => {
+                Ex::host(Imp::ActMany, vec![r], Ty::Action)
+            }
             // `a.then(b)`: an action that applies `a`, then `b` once `a` is done.
             (Ty::Action, "then") => {
                 let [next] = args else {
@@ -2034,6 +2213,23 @@ impl Checker<'_> {
                 let next = self.expr_as(&next.value, &Ty::Action);
                 Ex::host(Imp::ActThen, vec![r, next], Ty::Action)
             }
+            // `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the
+            // resources it makes record as what they were made from (`created(r)?.from`).
+            (Ty::Action, "made_from") => {
+                let [from] = args else {
+                    self.err("E022", span, "`.made_from` takes the resource the action is made from: `comment(comments).made_from(t)`");
+                    return Ex::error();
+                };
+                if let Some(name) = &from.name {
+                    self.err(
+                        "E022",
+                        name.span,
+                        "`.made_from` takes its resource by position: `comment(comments).made_from(t)`",
+                    );
+                }
+                let from = self.expr_as(&from.value, &Ty::Record(super::resource_key()));
+                Ex::host(Imp::ActMadeFrom, vec![r, from], Ty::Action)
+            }
             (Ty::Enum(key), "label" | "icon" | "tone" | "name") if args.is_empty() => {
                 let key = key.clone();
                 self.enum_method(r, &key, m).unwrap_or_else(Ex::error)
@@ -2042,11 +2238,10 @@ impl Checker<'_> {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "is_empty") if args.is_empty() => {
-                let len = Ex::host(Imp::ListLen, vec![r], Ty::Int);
-                Ex::new(
-                    Ek::Bin(ir::BinOp::Eq, Box::new(len), Box::new(Ex::int(0))),
-                    Ty::Bool,
-                )
+                // Whether it holds nothing reads whether it shows a first item: a filtered
+                // collection's length is only the most it can hold, so measuring it said an
+                // empty one held something ([`Imp::CollEmpty`]), and counting it read the run.
+                Ex::host(Imp::CollEmpty, vec![r], Ty::Bool)
             }
             (
                 Ty::List(t) | Ty::Set(t) | Ty::Collection(t),
@@ -2126,7 +2321,7 @@ impl Checker<'_> {
                     Ty::Repeat => "next, next_at, label".to_owned(),
                     Ty::Reminder => "at, label".to_owned(),
                     Ty::Principal => "name, kind, role".to_owned(),
-                    Ty::Action => "then".to_owned(),
+                    Ty::Action => "then, made_from".to_owned(),
                     // Every other type's methods are in one table, whose names the check of a
                     // container field reads too.
                     other => super::methods::described(other),
@@ -2615,20 +2810,6 @@ impl Checker<'_> {
     }
 }
 
-/// Whether a value of type `ty` is a `want`, and whether it holds one as an `Option`:
-/// `Some(true)` for `Option<want>`, `Some(false)` for `want` itself, `None` for anything else.
-fn held_as(ty: &Ty, want: &Ty) -> Option<bool> {
-    if ty.same(want) {
-        Some(false)
-    } else if let Ty::Option(inner) = ty
-        && inner.same(want)
-    {
-        Some(true)
-    } else {
-        None
-    }
-}
-
 /// The type a text names, where it is written before a method instead of a value:
 /// `Date.parse(...)`, `Time.parse(...)`.
 fn parse_ty(name: &str) -> Option<Ty> {
@@ -2637,4 +2818,9 @@ fn parse_ty(name: &str) -> Option<Ty> {
         "Time" => Some(Ty::Time),
         _ => None,
     }
+}
+
+/// Whether the callee is `json.X`: the one module whose calls take a type argument.
+fn names_json(callee: &ast::Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Field { base, .. } if matches!(&base.kind, ExprKind::Ident(ns) if ns == "json"))
 }

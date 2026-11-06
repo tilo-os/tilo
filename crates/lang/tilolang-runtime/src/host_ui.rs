@@ -10,11 +10,15 @@ use crate::handles::{FrameKind, ViewState};
 use crate::space::Space;
 use crate::value::{ActionRef, Value};
 use crate::view::{BindTarget, Binding, NodeBuild, UiNode};
-use crate::view_state::{StateKey, StateLayer};
+use crate::view_state::StateKey;
 
 /// The action id of `set(name, value)`: changes a view state slot. Its arguments are the
-/// window, the person, the layer (`window` or `lens`), the declaration id and the value.
+/// window, the person, the declaration id and the value.
 pub const SET_ACTION: &str = "$set";
+/// The action the host wires to the selection of a list it keeps: what the list reports of it
+/// goes in the window's own slot, the runtime's reading rather than a state the person declared.
+/// Its arguments are the slot's id and the value reported.
+pub const KEEP_ACTION: &str = "$keep";
 /// The action id of `open(r, view: v, front: f)`: its arguments are the resource, the view id
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
 pub const OPEN_ACTION: &str = "$open";
@@ -22,7 +26,7 @@ pub const OPEN_ACTION: &str = "$open";
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
 
-/// The prefix of the window state slot that names the view a window shows a resource through,
+/// The prefix of the view state slot that names the view a window shows a resource through,
 /// the resource's id after it: what the bar's view switch sets. Empty until a person picks a
 /// view, so the resource's type's default view shows until then.
 pub const VIEW_STATE: &str = "$view:";
@@ -121,24 +125,21 @@ impl Core {
         ret_void()
     }
 
-    /// The slot a `window` or `lens` declaration of the running view names.
-    fn state_key(&self, layer: i32, id: i32) -> HResult<StateKey> {
-        let layer = StateLayer::from_code(layer)
-            .map_or_else(|| trap(format!("unknown view state layer {layer}")), Ok)?;
+    /// The slot a `state` declaration of the running view names.
+    fn state_key(&self, id: i32) -> HResult<StateKey> {
         let state = self.text(id)?;
         self.with_view(|vs| {
-            Ok(match layer {
-                StateLayer::Window => {
-                    StateKey::window(vs.window.clone(), vs.viewer.0.clone(), state)
-                }
-                StateLayer::Lens => StateKey::lens(vs.window.clone(), vs.viewer.0.clone(), state),
-            })
+            Ok(StateKey::view(
+                vs.window.clone(),
+                vs.viewer.0.clone(),
+                state,
+            ))
         })
     }
 
     fn state_get(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let key = self.state_key(a.h(0)?, a.h(1)?)?;
-        let fallback = self.val_whole(a.h(2)?)?;
+        let key = self.state_key(a.h(0)?)?;
+        let fallback = self.val_whole(a.h(1)?)?;
         let (value, generation) = {
             let states = self.view_states.borrow();
             // What the person set, else what a scenario staged the declaration at, else what
@@ -162,8 +163,8 @@ impl Core {
     /// The view state slot itself, as an argument of an action reference: it is read when the
     /// event fires ([`Value::State`]).
     fn state_at(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let key = self.state_key(a.h(0)?, a.h(1)?)?;
-        let scalar = a.h(2)? != 0;
+        let key = self.state_key(a.h(0)?)?;
+        let scalar = a.h(1)? != 0;
         self.ret_h(Value::State { key, scalar })
     }
 
@@ -186,7 +187,7 @@ impl Core {
 
     fn bind_state(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         let node = self.node_index(a.h(0)?)?;
-        let key = self.state_key(a.h(1)?, a.h(2)?)?;
+        let key = self.state_key(a.h(1)?)?;
         let (name, ty) = self
             .registry
             .borrow()
@@ -208,18 +209,14 @@ impl Core {
     }
 
     fn act_set(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
-        let key = self.state_key(a.h(0)?, a.h(1)?)?;
-        let value = self.val_whole(a.h(2)?)?;
+        let key = self.state_key(a.h(0)?)?;
+        let value = self.val_whole(a.h(1)?)?;
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
             action: SET_ACTION.to_owned(),
             args: vec![
                 Value::Text(key.window),
                 Value::Text(key.principal.unwrap_or_default()),
-                Value::Int(i64::from(
-                    key.layer
-                        .map_or(StateLayer::Window.code(), StateLayer::code),
-                )),
                 Value::Text(key.state),
                 value,
             ],
@@ -241,6 +238,46 @@ impl Core {
         self.ret_h(Value::Action(ActionRef {
             action: THEN_ACTION.to_owned(),
             args: vec![first, next],
+            author,
+            from: None,
+        }))
+    }
+
+    /// `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the resources
+    /// it makes record as what they were made from (`created(r)?.from`), as a block a scenario
+    /// runs `made from r { ... }` says of its changes.
+    fn act_made_from(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let action = self.val(a.h(0)?)?;
+        let Value::Action(action) = action else {
+            return trap(format!(
+                "`made_from` takes an action, not {}",
+                action.kind_name()
+            ));
+        };
+        let from = self.ref_arg(a.h(1)?)?;
+        self.ret_h(Value::Action(action.made_from(Some(&from.target))))
+    }
+
+    /// `as.many()`: one action that applies each of `as` to its own item, all at once. The
+    /// runtime runs them in one transaction, so they are one change: one undo takes them all
+    /// back, and history says how many items it changed.
+    fn act_many(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let list = self.val(a.h(0)?)?;
+        let Value::List(items) = &list else {
+            return trap(format!(
+                "`.many` takes a list of actions, not {}",
+                list.kind_name()
+            ));
+        };
+        for item in items {
+            if !matches!(item, Value::Action(_)) {
+                return trap(format!("`.many` takes actions, not {}", item.kind_name()));
+            }
+        }
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: crate::exec::MANY_ACTION.to_owned(),
+            args: vec![list],
             author,
             from: None,
         }))
@@ -446,6 +483,8 @@ impl Core {
             Imp::UiBindState => self.bind_state(a),
             Imp::ActSet => self.act_set(a),
             Imp::ActThen => self.act_then(a),
+            Imp::ActMadeFrom => self.act_made_from(a),
+            Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),
             Imp::ActUndo => self.act_undo(a),
             Imp::ChangeView => self.change_view(a),

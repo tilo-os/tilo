@@ -13,7 +13,7 @@
 /// are waiting and holds the way to clear them all, and each sender's group opens as one on the
 /// toolkit's disclosure motion when it arrives.
 view notices(d: Desk) {
-    lens query: Text = ""
+    state query: Text = ""
     let all = d.notices.sort_by(n -> n.key)
     let shown = all.matching(query)
     row(fill, distribute: .end, padding: .related) {

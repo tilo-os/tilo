@@ -660,6 +660,84 @@ pub(super) struct Published {
     pub(super) status_changed: bool,
 }
 
+/// One unit's part of a publication pass: what changed in it, and the route
+/// it travels on.
+struct Part {
+    route: crate::collaboration::RouteSpec,
+    mutation: collab_types::DocumentMutation,
+    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
+    heads: Vec<automerge::ChangeHash>,
+}
+
+/// The commit each part of the pass travels under: the units one action
+/// wrote share one, so a peer applies all of it or none. `None` for a part
+/// that carries no commit of its own — a whole document, or a change the
+/// record's own custody carries.
+///
+/// A commit names one workspace, so the parts of another workspace's route
+/// are committed to apart. The author's device is left as zeros: the
+/// transport signs the frame and stamps the device it signs with.
+fn publication_commits(parts: &[Part]) -> Vec<Option<collab_types::WorkspaceCommit>> {
+    let mut commits = vec![None; parts.len()];
+    let mut groups: Vec<(uuid::Uuid, Vec<usize>)> = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if part.authorization.is_some() {
+            continue;
+        }
+        let workspace = part.route.cluster_id;
+        match groups.iter_mut().find(|(known, _)| *known == workspace) {
+            Some((_, group)) => group.push(index),
+            None => groups.push((workspace, vec![index])),
+        }
+    }
+    for (workspace, group) in groups {
+        let units: Vec<collab_types::UnitMutation> = group
+            .iter()
+            .filter_map(|index| parts.get(*index))
+            .map(|part| collab_types::UnitMutation {
+                app: &part.route.app_id,
+                record: part.route.record.as_deref().unwrap_or(""),
+                mutation: &part.mutation,
+            })
+            .collect();
+        let author = collab_types::CommitAuthor {
+            principal: None,
+            device: [0; 32],
+        };
+        match collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, &units) {
+            Ok(group_commits) => {
+                for (index, commit) in group.iter().zip(group_commits) {
+                    if let Some(slot) = commits.get_mut(*index) {
+                        *slot = commit;
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "collab: a published change commits to no action");
+            }
+        }
+    }
+    commits
+}
+
+/// What one part of the pass sends: its changes under the commit of the
+/// action that made them, or as the transport carries them when the part is
+/// no action's.
+fn part_request(
+    mutation: collab_types::DocumentMutation,
+    authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
+    commit: Option<collab_types::WorkspaceCommit>,
+) -> CollabRequest {
+    match commit {
+        Some(commit) => CollabRequest::document_action(mutation, commit),
+        None => CollabRequest::Document {
+            mutation,
+            authorization,
+            commit: None,
+        },
+    }
+}
+
 impl crate::history_mode::routes::OwnerDocumentRoutes {
     /// Publish what changed in every held record through `manager`: a
     /// route's whole document once it opens or a peer asks, its changes
@@ -672,7 +750,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
     ) -> Published {
         let mut blocked = None;
         let mut status_changed = false;
-        let mut sends = vec![];
+        let mut parts = vec![];
         for entry in &mut self.owners {
             if !entry.publishes {
                 // A record this app only reads: what changes in it here —
@@ -724,16 +802,21 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     continue;
                 }
             };
-            let request = CollabRequest::Document {
+            parts.push(Part {
+                route: entry.route.clone(),
                 mutation,
                 authorization: authorization.map(|authorization| {
                     std::sync::Arc::new(authorization)
                         as std::sync::Arc<dyn crate::collaboration::DocumentCustody>
                 }),
-            };
-            sends.push((entry.route.clone(), request, heads));
+                heads,
+            });
         }
-        for (route, request, heads) in sends {
+        let commits = publication_commits(&parts);
+        for (part, commit) in parts.into_iter().zip(commits) {
+            let route = part.route;
+            let heads = part.heads;
+            let request = part_request(part.mutation, part.authorization, commit);
             #[cfg(test)]
             let result = if let Some(refusal) = self.refuse_for_test.clone() {
                 Err(refusal)
@@ -867,5 +950,132 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
             tracing::warn!(status = ?entry.pending.failure, "collab: routed document deferred queue refused update; resynchronization required");
         }
         Some(refused)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What one action made in a unit: `field` set to `value`, invoked under
+    /// `invocation`.
+    fn action_mutation(
+        field: &str,
+        value: &str,
+        invocation: uuid::Uuid,
+    ) -> collab_types::DocumentMutation {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, field, value).unwrap();
+        let context = tilo_actions::ActionContext {
+            what: Some(tilo_actions::Did::Edit(tilo_actions::FieldEdit {
+                ty: "so.tilo.test-tasks".to_owned(),
+                field: field.to_owned(),
+                path: vec![tilo_actions::PathStep::Field(field.to_owned())],
+                op: tilo_actions::EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })),
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            source_invocation: Some(tilo_actions::InvocationId(invocation)),
+            ..tilo_actions::ActionContext::for_resource("tasks", "tasks", field)
+        };
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
+        options.set_message(context.change_message().unwrap());
+        doc.commit_with(options).unwrap();
+        collab_types::DocumentMutation::Incremental(doc.save_after(&[]))
+    }
+
+    fn part(
+        route: crate::collaboration::RouteSpec,
+        mutation: collab_types::DocumentMutation,
+    ) -> Part {
+        Part {
+            route,
+            mutation,
+            authorization: None,
+            heads: Vec::new(),
+        }
+    }
+
+    /// One action that changed resources two apps keep: a task's field in the
+    /// tasks app, and a thread in the discussion app. A peer that gets one of
+    /// them has neither change, and gets both together.
+    #[test]
+    fn one_actions_units_publish_under_one_commit() {
+        let workspace = uuid::Uuid::new_v4();
+        let invocation = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let parts = vec![
+            part(
+                crate::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
+                action_mutation("title", "a", invocation),
+            ),
+            part(
+                crate::collaboration::RouteSpec::record(
+                    "so.tilo.test-discussion",
+                    workspace,
+                    "thread",
+                ),
+                action_mutation("body", "b", invocation),
+            ),
+            part(
+                crate::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
+                action_mutation("title", "c", other),
+            ),
+            part(
+                crate::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
+                collab_types::DocumentMutation::Snapshot(Vec::new()),
+            ),
+        ];
+        let commits = publication_commits(&parts);
+
+        let action = commits[0]
+            .as_ref()
+            .expect("a unit that changed travels under its action's commit");
+        assert_eq!(
+            commits[1].as_ref(),
+            Some(action),
+            "both units of the action carry the one commit"
+        );
+        assert_eq!(action.parts.len(), 2, "the commit names both of its units");
+        assert!(action.covers("so.tilo.test-tasks", ""));
+        assert!(action.covers("so.tilo.test-discussion", "thread"));
+        assert_eq!(action.invocation, Some(invocation));
+        assert_eq!(action.author.principal.as_deref(), Some("alice"));
+        assert_eq!(action.at_ms, 1_700_000_000_000, "the action's own time");
+        assert_eq!(
+            action.author.device, [0; 32],
+            "the transport stamps the device"
+        );
+
+        let single = commits[2]
+            .as_ref()
+            .expect("another action travels under a commit of its own");
+        assert_ne!(single.id(), action.id());
+        assert_eq!(single.parts.len(), 1);
+        assert_eq!(commits[3], None, "a whole document is part of no action");
+
+        // Every unit the action wrote goes out as a part of it.
+        for (part, commit) in parts.into_iter().zip(commits) {
+            let request = part_request(part.mutation, part.authorization, commit.clone());
+            match commit {
+                Some(commit) => assert!(
+                    matches!(
+                        request,
+                        CollabRequest::Document {
+                            commit: Some(carried),
+                            ..
+                        } if carried == commit
+                    ),
+                    "a unit of an action travels as a part of it"
+                ),
+                None => assert!(matches!(
+                    request,
+                    CollabRequest::Document { commit: None, .. }
+                )),
+            }
+        }
     }
 }

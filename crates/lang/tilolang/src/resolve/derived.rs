@@ -188,7 +188,6 @@ impl Resolver<'_> {
                 id: id_of(lock, &format!("{owner}.{name}")),
                 ty,
                 merge: MergeKind::Register,
-                personal: false,
                 doc: d.doc.join("\n"),
                 default: Some(default),
                 role: None,
@@ -298,7 +297,7 @@ impl Resolver<'_> {
                 }
                 Derived::Children
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, .. } => {
                 let ExprKind::Field { base, name } = &callee.kind else {
                     self.err("E119", e.span, format!("{at} computes {}. A derived key reads a field, or the items under or above it: `children.count`, `children.count(x)`, `children.all(x)`, `children.any(x)` or `parent.all(x)`", "a call it has no way to work out"));
                     return None;

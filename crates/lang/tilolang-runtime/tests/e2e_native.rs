@@ -52,10 +52,42 @@ view note_row(n: Note) {
     row(n.title, mark: if n.pinned { .pin })
 }
 
+view note_line(n: Note) {
+    row(n.title, checkbox: n.pinned)
+}
+
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created
-    std.list(nb, nb.notes, sort: order, empty: "No notes yet") { n ->
-        row(n.title, checkbox: n.pinned)
+    state order: NoteOrder = .created
+    state place: Text = ""
+    let notes: List<Note> = nb.notes
+    let sorted = if order == .title { notes.sort_by(.title) } else { notes }
+    let shown = sorted.matching(place)
+    ui.NavShell(
+        content_kind: .document,
+        sidebar_title: .some(meta(Notebook).title),
+        overview_title: .some(meta(Notebook).title),
+        overview_count: .some(shown.len()),
+    ) {
+        sidebar: {
+            std.places(place, of: filters(Note).filter(f -> f.toggle), everything: "All notes", icon: meta(Note).icon)
+        }
+        overview_actions: {
+            std.header(sort: order)
+        }
+        overview: {
+            if shown.is_empty() {
+                ui.EmptyState("No notes yet", icon: meta(Note).icon)
+            } else {
+                std.list(shown) { (n, at) ->
+                    ui.ListItem(item: n, presence: at) {
+                        note_line(n)
+                    }
+                }
+            }
+        }
+        content: {
+            ui.EmptyState(phrase("tilolang-none-selected", kind: meta(Note).noun), icon: meta(Note).icon)
+        }
     }
 }
 
@@ -64,7 +96,7 @@ view rows(nb: Notebook) {
 }
 
 view detail(n: Note) {
-    lens shown: NoteFilter = .pinned
+    state shown: NoteFilter = .pinned
     std.document(n) {
         choice(bind: shown)
         facts(n)
@@ -144,10 +176,7 @@ view detail(n: Note) {
             let row_key = view.row_key(&key, i).expect("a row");
             let row = view.row(&key, i).unwrap().expect("shown").clone();
             assert_eq!(row.key, row_key);
-            let [item] = row.children.as_slice() else {
-                panic!("a shown row holds its item: {}", dump(&row));
-            };
-            assert_eq!(item.kind, "ui.ListItem");
+            let item = of_kind(&row, "ui.ListItem")[0];
             let Value::Ref(r) = &item.props["item"] else {
                 panic!("an item carries its resource: {}", dump(item));
             };

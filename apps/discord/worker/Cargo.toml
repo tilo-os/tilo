@@ -57,6 +57,7 @@ tilo-automation = { path = "../../../crates/collab/automation" }
 tilo-user-identity = { path = "../../../crates/collab/tilo-user-identity" }
 ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
 chat = { path = "../../chat", features = ["samples"] }
+tilo-reference = { path = "../../../crates/collab/reference" }
 discord = { path = ".." }
 automerge.workspace = true
 ed25519-dalek.workspace = true

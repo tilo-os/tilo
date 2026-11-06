@@ -40,9 +40,24 @@ impl Planner for Unasked {
     }
 }
 
+/// A package of `apps/tl`, as it ships, compiled on its own: what a package that imports it
+/// compiles against and loads with.
+fn app(name: &str) -> tilolang::Compiled {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/tl")
+        .join(name);
+    let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
+    let ids = tilolang::IdsLock::parse(
+        &std::fs::read_to_string(dir.join("app.ids")).expect("the package's ids"),
+    )
+    .expect("its ids parse");
+    tilolang::compile_package_source(&source, &ids, &[]).expect("the package compiles")
+}
+
 /// The notes app as it ships: its source, its ids and the catalogues beside it, compiled into
 /// its module and loaded into a host that reads in `locale`.
 fn notes(locale: &str) -> (Host, Package) {
+    let discussion = app("discussion");
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/notes");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the notes package reads");
     let ids = tilolang::IdsLock::parse(
@@ -50,11 +65,14 @@ fn notes(locale: &str) -> (Host, Package) {
     )
     .expect("its ids parse");
     let compiled =
-        tilolang::compile_package_source(&source, &ids, &[]).expect("the notes package compiles");
+        tilolang::compile_package_source(&source, &ids, std::slice::from_ref(&discussion.meta))
+            .expect("the notes package compiles");
     ui::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
     let record = automerge::AutoCommit::new();
     let host = Host::new(&record, Principal::new("ada"), || None).expect("a host");
     host.set_words(Toolkit);
+    host.load_compiled(&discussion)
+        .expect("the discussion package loads");
     host.load_compiled(&compiled)
         .expect("the notes package loads");
     let package = host.package(NOTES).expect("it is loaded");
@@ -69,7 +87,12 @@ fn types_of(host: &Host, package: &Package) -> ActionTypes {
 
 /// The notes package's one notebook, as it publishes it to the workspace's search.
 fn notebook(host: &Host, package: &Package) -> tilo_actions::ResourceSpec {
-    publish_record(&types_of(host, package), "Notes", "tl.notes/root", "Notes")
+    publish_record(
+        &types_of(host, package),
+        "Notebook",
+        "tl.notes/root",
+        "Notes",
+    )
 }
 
 /// Whether a search for `needle` finds the notebook by what it is, as the session's search asks
@@ -210,8 +233,8 @@ fn a_packages_catalogues_load_under_a_millisecond() {
         &std::fs::read_to_string(dir.join("app.ids")).expect("the notes package's ids"),
     )
     .expect("its ids parse");
-    let compiled =
-        tilolang::compile_package_source(&source, &ids, &[]).expect("the notes package compiles");
+    let compiled = tilolang::compile_package_source(&source, &ids, &[app("discussion").meta])
+        .expect("the notes package compiles");
     let mut best = std::time::Duration::MAX;
     let (mut read, mut parsed) = (best, best);
     let mut loaded = 0;

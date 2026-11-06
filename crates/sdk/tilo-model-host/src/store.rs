@@ -12,7 +12,7 @@
 /// The document store of one record, opened under the key a record is kept
 /// at.
 pub struct Kept {
-    store: tilo_app_state::DocStore,
+    store: app_state::DocStore,
 }
 
 impl Kept {
@@ -21,7 +21,7 @@ impl Kept {
     /// # Errors
     /// The store refuses the identifiers, or cannot lock the record.
     pub fn open(app: &str, workspace: &str, record: &str) -> Result<Self, String> {
-        tilo_app_state::DocStore::open_workspace_record(app, workspace, record)
+        app_state::DocStore::open_workspace_record(app, workspace, record)
             .map(|store| Self { store })
             .map_err(|error| error.to_string())
     }

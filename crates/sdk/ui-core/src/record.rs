@@ -1338,6 +1338,17 @@ impl RecordSet {
         ))
     }
 
+    /// Whether `id` is a record of the workspace rather than of one window:
+    /// the workspace's own document, and the records its people share
+    /// ([`collab_types::WORKSPACE_RECORDS`], such as a person's own state of
+    /// an app). Every window and host of the workspace writes such a record
+    /// — the app's windows, the session's own parts — so each joins it as a
+    /// shared writer. Any other record has one owner.
+    fn shared_in_workspace(&self, id: &RecordId) -> bool {
+        id.is_package_primary()
+            || collab_types::workspace_record(&self.package_id, id.as_str()).is_some()
+    }
+
     fn try_open_record(
         &mut self,
         want: &RecordCheckout,
@@ -1390,7 +1401,7 @@ impl RecordSet {
             .transpose()?
             .flatten()
         {
-            let store = if want.id.is_package_primary() {
+            let store = if self.shared_in_workspace(&want.id) {
                 app_state::DocStore::shared(backend, key)?
             } else {
                 app_state::DocStore::exclusive(backend, key)?
@@ -1442,12 +1453,13 @@ impl RecordSet {
         {
             return Err(RecordOpenError::MissingRecord);
         }
-        // The workspace's own document is the one every window of a workspace-record
-        // app opens, each in its own process, and a relaunch overlaps the
-        // instance still exiting: it joins the document's shared writers
-        // (appends interleave and every load merges them) instead of
-        // refusing the second opener. Other records have one owner.
-        let owner = if want.id.is_package_primary() {
+        // The workspace's own documents — its index, and the records its people
+        // share — are held by every window and host of the workspace, each in
+        // its own process, and a relaunch overlaps the instance still exiting:
+        // they join the document's shared writers (appends interleave and every
+        // load merges them) instead of refusing the second opener. Other
+        // records have one owner.
+        let owner = if self.shared_in_workspace(&want.id) {
             app_state::DocOwner::acquire_shared(Rc::clone(&backend), key)?
         } else {
             app_state::DocOwner::acquire(Rc::clone(&backend), key)?
@@ -2911,7 +2923,9 @@ impl RecordStore {
             .try_open_record(want)
     }
 
-    /// Reserve a New identity with its exclusive gate and no document/history/writer yet.
+    /// Reserve a New identity with its gate and no document/history/writer yet:
+    /// the workspace's own records are reserved as shared writers, any other as
+    /// its only writer.
     ///
     /// # Errors
     /// Refuses collisions, malformed existing data and unavailable storage.
@@ -2942,9 +2956,9 @@ impl RecordStore {
         if set.pending.contains_key(&want.id) || set.open.contains_key(&want.id) {
             return Err(RecordOpenError::Busy);
         }
-        // The reservation becomes the live writer, so the workspace's own document
-        // is joined as a shared writer here too; see `try_open_record`.
-        let owner = if want.id.is_package_primary() {
+        // The reservation becomes the live writer, so the workspace's own documents
+        // are joined as shared writers here too; see `try_open_record`.
+        let owner = if set.shared_in_workspace(&want.id) {
             app_state::DocOwner::acquire_shared(backend, key)?
         } else {
             app_state::DocOwner::acquire(backend, key)?

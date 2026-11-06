@@ -17,13 +17,14 @@
 )]
 
 pub mod activity;
-pub mod crashed_app;
 pub mod drill_in;
 pub mod floating_layer;
 pub mod history_log;
 pub mod i18n;
 pub mod navigation;
 pub mod notifications;
+pub mod now_playing;
+pub mod outcome;
 pub mod person_cursor;
 pub mod session;
 mod shared_tree;

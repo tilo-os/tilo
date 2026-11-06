@@ -51,6 +51,13 @@ impl Process {
             .args([ARG, "--nocapture", "--test-threads=1", "--quiet"])
             .env_clear()
             .env(ENV, mode.as_str())
+            // The parent the worker watches for: the host may be its process
+            // namespace's init (a container runs one program), which the
+            // worker would otherwise read as a parent that had exited.
+            .env(
+                tilo_sandbox::confine::PARENT_ENV,
+                std::process::id().to_string(),
+            )
             .stdin(Stdio::from(OwnedFd::from(theirs)))
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());

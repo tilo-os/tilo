@@ -77,6 +77,9 @@ pub struct ListRowProps {
     /// The row was activated (a click, Enter, an assistive technology): open what it shows.
     #[component(event)]
     pub activate: Event,
+    /// The row reads as subordinate to the rows around it: its title in the weaker ink, as an
+    /// outline's quieter branch does.
+    pub quiet: bool,
 }
 
 impl ListRowProps {
@@ -109,6 +112,7 @@ impl ListRowProps {
             motion: self.motion,
             dense: self.dense,
             activate: self.activate.clone(),
+            quiet: self.quiet,
         })
     }
 }
@@ -204,6 +208,7 @@ impl ListRow {
             motion,
             dense,
             activate,
+            quiet,
         } = props;
         // An empty line is no line: a row of a note without a body is one line high.
         let shown = |text: Option<String>| text.filter(|text| !text.is_empty());
@@ -231,6 +236,7 @@ impl ListRow {
             }
         });
         self.selected = selected;
+        self.quiet = quiet;
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.dense = dense;
         self.check_binding = None;
@@ -248,7 +254,11 @@ impl ListRow {
                 // The app says what a press means; the box shows what it did on the next frame.
                 Box::new(move |_| check.fire(None))
             };
-            Some(Leading::Checkbox { checked, on_toggle })
+            Some(Leading::Checkbox {
+                checked,
+                on_toggle,
+                icon,
+            })
         } else if let Some(badge) = badge {
             Some(Leading::Badge(badge))
         } else {

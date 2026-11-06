@@ -10,7 +10,7 @@ use tilo_action_policy::Role;
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
     AppTrayIcon, AppTrayItem, AppTrayStatus, AvatarAsk, ChromeIntent, ClockSnapshot,
-    DesktopChromeSnapshot, DesktopChromeSource, OwnChip, SystemStatus,
+    DesktopChromeSnapshot, DesktopChromeSource, Invite, OwnChip, SystemStatus,
 };
 use tilo_desktop::desktop_host::DesktopRules;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome};
@@ -44,6 +44,8 @@ pub(crate) const CLOCKS_APP: &str = "so.tilo.clocks";
 /// left a card loose, and which card they touched last.
 pub(crate) struct Activities {
     board: Arc<runtime_collab::LiveActivities>,
+    /// The cards the apps draw themselves, and where the layer gives them.
+    cards: crate::cards::Cards,
     /// Per activity, the identity (its id and title) the person put away:
     /// it stays away until the app shows something with another identity.
     hidden: RefCell<std::collections::BTreeMap<String, (String, String)>>,
@@ -60,9 +62,13 @@ pub(crate) struct Activities {
 }
 
 impl Activities {
-    pub(crate) fn new(board: Arc<runtime_collab::LiveActivities>) -> Self {
+    pub(crate) fn new(
+        board: Arc<runtime_collab::LiveActivities>,
+        cards: crate::cards::Cards,
+    ) -> Self {
         Self {
             board,
+            cards,
             hidden: RefCell::default(),
             collapsed: RefCell::default(),
             pulled: RefCell::default(),
@@ -115,10 +121,18 @@ impl Activities {
                 if collapsed || !(published.overlay || pulled) {
                     return None;
                 }
-                Some((
-                    self.recently_touched(&key).unwrap_or(usize::MAX),
-                    Card::new(app, summary),
-                ))
+                let mut card = Card::new(app, summary);
+                // A call or a route is drawn by its app: the layer keeps its
+                // place, and its body comes from the app's own window while
+                // that app has no window of its own on the desk.
+                if let Some(size) = self.cards.size(&card.app, &card.summary.id) {
+                    if self.cards.in_view(&card.app, &card.summary.id) {
+                        return None;
+                    }
+                    card.size = Some(size);
+                    card.rich = self.cards.live(&card.app, &card.summary.id);
+                }
+                Some((self.recently_touched(&key).unwrap_or(usize::MAX), card))
             })
             .collect();
         cards.sort_by_key(|(order, _)| *order);
@@ -261,7 +275,17 @@ impl Activities {
                         tracing::warn!(%error, app, "a live activity does not read back");
                     })
                     .ok()
-                    .map(|published| (app, published))
+                    .map(|mut published: Published| {
+                        // A card's header names the app that shows the
+                        // activity, in the person's language: the app knows
+                        // its own copy, never the name this device calls it.
+                        if let Some(summary) = &mut published.summary
+                            && summary.source.is_empty()
+                        {
+                            summary.source = crate::app_names::app_name(&app);
+                        }
+                        (app, published)
+                    })
             })
             .collect()
     }
@@ -328,6 +352,10 @@ pub(crate) struct BarFeeds {
     /// the name Settings gives it, which the chrome says on that display for
     /// a moment.
     pub(crate) identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
+    /// Whether the person may invite someone into the workspace in front, as
+    /// the session's loop last answered it: the bar offers its invite button
+    /// on it.
+    pub(crate) invitable: Rc<Cell<bool>>,
 }
 
 /// What the chrome hands the session while it runs: the intents and asks its
@@ -335,15 +363,18 @@ pub(crate) struct BarFeeds {
 pub(crate) struct ChromeWiring {
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    /// The desktop's one shortcut table, shared with the session: what the
+    /// chrome matches a press against and what it shows beside its rows.
+    pub(crate) shortcuts: crate::mount::panels::Shortcuts,
     pub(crate) feeds: BarFeeds,
 }
 
 /// What the snapshot revision was last bumped for: the tree's revision, who
 /// is here, the minute, the last wave heard, the ask on the person's avatar,
 /// the tray's revision, the displays a fullscreen window owns, who views the
-/// windows this session shares, the notification count and silence the bell
-/// shows, and the Identify request the chrome answers.
-/// What the snapshot revision was last bumped for (see [`SessionChrome::seen`]).
+/// windows this session shares, the notification count, whether the bell is
+/// silenced beside whether the person may invite someone here, and the
+/// Identify request the chrome answers.
 #[derive(PartialEq)]
 struct Seen {
     tree: u64,
@@ -356,9 +387,16 @@ struct Seen {
     exposures: Vec<(u64, u64, bool)>,
     unread: u32,
     quiet: bool,
+    invitable: bool,
     identify: Option<u64>,
     activities: u64,
     words: u64,
+    /// The name and colour this person wears: renaming themselves or
+    /// choosing a colour relabels and repaints their chip in the bar.
+    own_name: Option<String>,
+    own_colour: Option<String>,
+    /// The name and identity the bar's own avatar is drawn from.
+    own_face: (String, String),
 }
 
 /// The bar's view of the session: the desktop's tree, the wall clock, and
@@ -396,6 +434,8 @@ pub(crate) struct SessionChrome {
     shares: Rc<RefCell<crate::window_share::WindowShares>>,
     /// Settings' Identify as the session read it.
     identify: Rc<RefCell<Option<tilo_desktop::display_identify::Ask>>>,
+    /// Whether the person may invite someone into the workspace in front.
+    invitable: Rc<Cell<bool>>,
     /// The [`Seen`] the snapshot revision was last bumped for.
     seen: RefCell<Seen>,
     revision: Cell<u64>,
@@ -419,6 +459,7 @@ impl SessionChrome {
             fullscreen,
             shares,
             identify,
+            invitable,
             ..
         } = feeds;
         Self {
@@ -435,6 +476,7 @@ impl SessionChrome {
             fullscreen,
             shares,
             identify,
+            invitable,
             seen: RefCell::new(Seen {
                 tree: u64::MAX,
                 people: u64::MAX,
@@ -446,9 +488,13 @@ impl SessionChrome {
                 exposures: Vec::new(),
                 unread: 0,
                 quiet: false,
+                invitable: false,
                 identify: None,
                 activities: u64::MAX,
                 words: u64::MAX,
+                own_name: None,
+                own_colour: None,
+                own_face: (String::new(), String::new()),
             }),
             revision: Cell::new(0),
         }
@@ -480,6 +526,16 @@ impl DesktopChromeSource for SessionChrome {
         // it does for the tree.
         let exposures = self.shares.borrow().exposures();
         let identify = self.identify.borrow().clone();
+        let own_name = ui::local_identity::load().map(|identity| identity.display_name);
+        let own_colour = settings_store::identity::COLOUR.get();
+        // The bar's own avatar is the same face their card shows: one name,
+        // one identity, one colour, read where the card reads it.
+        let own = self
+            .sync
+            .as_ref()
+            .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+        let (own_chip_name, own_chip_identity) = crate::people::own_face(&own, &self.person);
+        let (red, green, blue) = crate::people::own_rgb(&own_chip_identity);
         let seen = Seen {
             tree: self.handle.revision(),
             // Who is here, the window they are in and the call they are in
@@ -498,11 +554,18 @@ impl DesktopChromeSource for SessionChrome {
                 .collect(),
             unread: self.signals.unread(),
             quiet: self.signals.quiet(),
+            invitable: self.invitable.get(),
             identify: identify.as_ref().map(|ask| ask.id),
             activities: self.activities.board().revision(),
             // The bar says its words in the person's language: another one
             // relabels it as any other change to what it shows does.
             words: ui::I18nManager::revision(),
+            own_name,
+            own_colour,
+            // The name and identity their own avatar is drawn from: the
+            // presence label they gave themselves moves the bar as their
+            // display name does.
+            own_face: (own_chip_name.clone(), own_chip_identity.clone()),
         };
         if *self.seen.borrow() != seen {
             self.seen.replace(seen);
@@ -517,15 +580,13 @@ impl DesktopChromeSource for SessionChrome {
             clock,
             activities,
             waved,
+            arrived: self.sync.as_ref().and_then(|sync| sync.arrival_notice()),
             own: Some(OwnChip {
                 // The name they go by, and the root key the picture they
                 // chose hangs on: the id is never shown as their name.
-                name: crate::directory::desk_person_name(
-                    ui::local_identity::load().map(|it| it.display_name),
-                    &self.person,
-                ),
-                rgb: ui::presence::user_color(&self.person),
-                identity: self.person.clone(),
+                name: own_chip_name,
+                rgb: (red, green, blue),
+                identity: own_chip_identity,
             }),
             notification_badge: self.signals.unread(),
             notifications_quiet: self.signals.quiet(),
@@ -534,6 +595,7 @@ impl DesktopChromeSource for SessionChrome {
             // share is live while anyone does.
             active_exposures: exposures,
             identify,
+            invite: Invite::when(self.invitable.get()),
             ..DesktopChromeSnapshot::default()
         }
     }
@@ -732,6 +794,7 @@ pub(crate) fn host(
     let ChromeWiring {
         intents,
         asks,
+        shortcuts,
         feeds,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
@@ -768,7 +831,7 @@ pub(crate) fn host(
     chrome.set_overlays(overlays.clone());
     chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
-    chrome.set_shortcuts(options.config.shortcuts.clone());
+    chrome.set_shortcuts(shortcuts);
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon
     // as the top surface closes.
@@ -823,8 +886,9 @@ impl crate::Shared {
             return self.invoke_app_action(app_action);
         }
         match action {
-            // Bringing people in happens in this workspace's settings.
-            LaunchpadAction::Invite => self.open_workspace_settings(),
+            // Bringing people in: the link into this workspace is made in
+            // the invite sheet.
+            LaunchpadAction::Invite => self.open_invite(),
             LaunchpadAction::Activity => self
                 .intents
                 .borrow_mut()
@@ -874,7 +938,7 @@ mod tests {
     #[test]
     fn a_floating_timer_is_the_bars_pill_and_its_card() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let mut published = Published::of(timer("timer-1", "Tea", 90));
         published.overlay = true;
         publish(&board, CLOCKS_APP, published);
@@ -896,13 +960,77 @@ mod tests {
         assert!(activities.cards().is_empty());
     }
 
+    /// A call's card stands where its app's presentation put it, and the
+    /// layer paints the summary there until the app's own window is up: a
+    /// card appears, and the screen never shows a blank card or two of them.
+    #[test]
+    fn a_call_card_is_the_layers_until_the_apps_own_window_is_up() {
+        const CHAT_APP: &str = "so.tilo.chat";
+        let board = Arc::new(runtime_collab::LiveActivities::default());
+        let cards = crate::cards::Cards::new();
+        let activities = Activities::new(Arc::clone(&board), cards.clone());
+        let mut published = Published::of(
+            Summary::new(Kind::Call, "Ada", "0:12")
+                .with_id("chat-call:voice")
+                .with_icon("phone"),
+        );
+        published.overlay = true;
+        publish(&board, CHAT_APP, published);
+
+        // The call is the layer's own card until its app presents one.
+        let layer_drawn = activities.cards();
+        assert_eq!(layer_drawn.len(), 1);
+        assert!(layer_drawn[0].size.is_none() && !layer_drawn[0].rich);
+
+        let request = ui::floating_surface::FloatingSurfaceProtocolRequest {
+            id: "chat-call:voice".into(),
+            title: "Ada".into(),
+            role: ui::floating_surface::FloatingSurfaceProtocolRole::ActiveCall,
+            source: ui::floating_surface::FloatingSurfaceProtocolSource::AppRegion {
+                app_id: CHAT_APP.into(),
+                region: [0.0, 0.0, 360.0, 240.0],
+            },
+            preferred_size: [360.0, 240.0],
+            aspect_ratio: None,
+            initial_rect: Some([40.0, 60.0, 400.0, 300.0]),
+            presentation_rect: Some([32.0, 52.0, 408.0, 308.0]),
+        };
+        cards.present(CHAT_APP, 1, &request).expect("a card");
+        let card = cards.presented().remove(0);
+
+        // Its place is held for the app's body, and the summary stands in
+        // until that body's window is up.
+        let waiting = activities.cards();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(
+            waiting[0].size,
+            Some(ui::vello::kurbo::Size::new(376.0, 256.0))
+        );
+        assert!(!waiting[0].rich, "the summary is the card until then");
+
+        cards.placements().place(
+            &card.token,
+            (376, 256),
+            Some(Rect::new(100.0, 100.0, 476.0, 356.0)),
+        );
+        cards.placements().mapped(&card.token, 3);
+        assert!(activities.cards()[0].rich, "the app draws it now");
+
+        // Chat's own window comes on screen: the call is drawn there, and no
+        // card stands on the desk at all.
+        cards.see(CHAT_APP, "chat-call:voice", true);
+        assert!(activities.cards().is_empty());
+        cards.see(CHAT_APP, "chat-call:voice", false);
+        assert_eq!(activities.cards().len(), 1, "and it comes back");
+    }
+
     /// Ending an activity that offers a close asks its app to end it; one
     /// that cannot be stopped from outside is put away until the app shows
     /// another one, and comes back the moment it does.
     #[tokio::test]
     async fn an_activity_is_ended_by_its_app_or_put_away() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let clocks = runtime_collab::live_activity::LiveActivityServer::new(
             CLOCKS_APP,
             Arc::clone(&board),
@@ -951,7 +1079,7 @@ mod tests {
     #[tokio::test]
     async fn a_pressed_control_reaches_its_app() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let clocks = runtime_collab::live_activity::LiveActivityServer::new(
             CLOCKS_APP,
             Arc::clone(&board),
@@ -971,7 +1099,7 @@ mod tests {
     #[test]
     fn at_most_three_cards_keep_the_most_recently_touched() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         for (app, id) in [
             ("so.tilo.maps", "route-1"),
             ("so.tilo.music", "track-1"),
@@ -1005,7 +1133,7 @@ mod tests {
     #[test]
     fn collapse_and_expand_move_an_activity_between_the_bar_and_a_card() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let mut published = Published::of(timer("timer-1", "Tea", 90));
         published.overlay = true;
         publish(&board, CLOCKS_APP, published);
@@ -1024,7 +1152,7 @@ mod tests {
     #[test]
     fn a_due_event_is_announced_once() {
         let board = Arc::new(runtime_collab::LiveActivities::default());
-        let activities = Activities::new(Arc::clone(&board));
+        let activities = Activities::new(Arc::clone(&board), crate::cards::Cards::new());
         let notices = DesktopNotifications::default();
         let announced = || {
             notices

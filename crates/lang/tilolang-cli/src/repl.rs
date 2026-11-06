@@ -233,9 +233,9 @@ impl Session {
 
 const HELP: &str = "\
 tilolang, run by the session as you:
-  notes.notes                  a value: printed, each resource by a reference (n3)
+  notes.notebook.notes         a value: printed, each resource by a reference (n3)
   notes.pin(n3)                an action of the app, applied as the REPL's agent
-  let pinned = notes.notes.filter(.pinned)
+  let pinned = notes.notebook.notes.filter(.pinned)
                                kept for the entries after it
   for n in pinned { notes.pin(n) }
                                one step: applied whole or not at all; one that changes many
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn a_let_line_names_what_it_binds() {
         assert_eq!(
-            bound_name("let pinned: List<notes.Note> = notes.notes.filter(.pinned)"),
+            bound_name("let pinned: List<notes.Note> = notes.notebook.notes.filter(.pinned)"),
             Some("pinned")
         );
         assert_eq!(bound_name("a == b"), None);
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn an_entry_continues_while_a_bracket_is_open() {
-        assert_eq!(open_brackets("notes.notes.filter(n -> {"), 2);
+        assert_eq!(open_brackets("notes.notebook.notes.filter(n -> {"), 2);
         assert_eq!(open_brackets("\"(\""), 0);
     }
 

@@ -182,15 +182,6 @@ pub(crate) struct Joined {
     touched: BTreeSet<(String, String)>,
 }
 
-/// The record a checkout is on the collaboration wire.
-fn wire_record(id: &RecordId) -> &str {
-    if id.is_package_primary() {
-        ""
-    } else {
-        id.as_str()
-    }
-}
-
 /// The page's storage key of wire record `record` of `app` in `workspace`.
 fn storage_key(app: &str, workspace: &str, record: &str) -> Result<StorageKey, &'static str> {
     if record.is_empty() {
@@ -326,7 +317,7 @@ pub(crate) fn record_document(id: u32, app: &str, record: &str) -> Option<AutoCo
             let Some(checkout) = store
                 .open_records()
                 .into_iter()
-                .find(|checkout| wire_record(&checkout.id) == record)
+                .find(|checkout| crate::desk_records::wire_record(&checkout.id) == record)
             else {
                 continue;
             };
@@ -802,10 +793,12 @@ impl Joined {
                 .filter(|store| store.package_and_home().1 == self.uuid)
                 .flat_map(|store| {
                     let app = store.package_and_home().0;
-                    store
-                        .open_records()
-                        .into_iter()
-                        .map(move |checkout| (app.clone(), wire_record(&checkout.id).to_owned()))
+                    store.open_records().into_iter().map(move |checkout| {
+                        (
+                            app.clone(),
+                            crate::desk_records::wire_record(&checkout.id).to_owned(),
+                        )
+                    })
                 })
                 .collect::<Vec<_>>()
         })
@@ -1048,11 +1041,9 @@ impl Joined {
                 if store.package_and_home().0 != route.app_id {
                     continue;
                 }
-                let Some(checkout) = store
-                    .open_records()
-                    .into_iter()
-                    .find(|checkout| wire_record(&checkout.id) == route.record)
-                else {
+                let Some(checkout) = store.open_records().into_iter().find(|checkout| {
+                    crate::desk_records::wire_record(&checkout.id) == route.record
+                }) else {
                     continue;
                 };
                 match store.withdraw_refused(&checkout.id, &refused, plain) {
@@ -1113,7 +1104,7 @@ impl Joined {
                 if let Some(checkout) = store
                     .open_records()
                     .into_iter()
-                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == route.record)
                 {
                     store.note_workspace_answered(checkout.id);
                     woken.insert(id);
@@ -1160,7 +1151,7 @@ impl Joined {
                 if let Some(checkout) = store
                     .open_records()
                     .into_iter()
-                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == route.record)
                 {
                     store.workspace_settled(&checkout.id);
                     woken.insert(id);
@@ -1188,7 +1179,7 @@ impl Joined {
                 if let Some(checkout) = store
                     .open_records()
                     .into_iter()
-                    .find(|checkout| wire_record(&checkout.id) == route.record)
+                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == route.record)
                 {
                     return store
                         .replication_snapshot(&checkout.id)
@@ -1248,7 +1239,7 @@ impl Joined {
                 let Some(checkout) = store
                     .open_records()
                     .into_iter()
-                    .find(|checkout| wire_record(&checkout.id) == record)
+                    .find(|checkout| crate::desk_records::wire_record(&checkout.id) == record)
                 else {
                     continue;
                 };
@@ -1456,7 +1447,10 @@ impl Joined {
                     continue;
                 }
                 for checkout in store.open_records() {
-                    let key = (app.clone(), wire_record(&checkout.id).to_owned());
+                    let key = (
+                        app.clone(),
+                        crate::desk_records::wire_record(&checkout.id).to_owned(),
+                    );
                     // A record a join does not replay is asked for when a
                     // mount first opens it.
                     if !mounted.records.contains_key(&key)

@@ -17,6 +17,9 @@
 //! - [`event`] — `ChannelEvent`, the append-only governance log.
 //! - [`op`] — `SignedOp`, the per-op envelope wrapping every CRDT
 //!   mutation crossing a process or network boundary.
+//! - [`commit`] — `WorkspaceCommit`, the one signed record of every unit
+//!   change one action made, carried inside the signed payload of the
+//!   document frame of each of its parts.
 //! - [`canonical`] — deterministic `postcard` serialisation; every
 //!   signed payload bottoms out here so signatures are stable across
 //!   machines and Rust versions.
@@ -49,6 +52,7 @@ pub mod canonical;
 pub mod caps;
 pub mod channel;
 pub mod claim;
+pub mod commit;
 pub mod compaction;
 pub mod crypto;
 pub mod direct;
@@ -59,6 +63,7 @@ pub mod handoff;
 pub mod history;
 pub mod identity;
 pub mod inbound;
+pub mod key_scope;
 pub mod mls_governance;
 pub mod op;
 pub mod peer;
@@ -100,6 +105,10 @@ pub use claim::{
     ChangeClaim, ClaimError, ClaimedAction, CommitNamed, FrameworkChange, UnitPath, check_claimed,
     claims_of, field_edit_mutation, mutation_claims, parse_changes, record_unit,
 };
+pub use commit::{
+    COMMIT_RECORD_KIND, COMMIT_VERSION, COMMIT_VERSION_NAMED_ACTION, CommitAuthor, CommitError,
+    CommitGroup, CommitPart, MAX_COMMIT_BYTES, UnitMutation, WorkspaceCommit,
+};
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,
     encode_compaction_payload, hash_op_prefix, hash_sealed_prefix, parse_compaction_payload,
@@ -116,6 +125,7 @@ pub use document_transfer::{
 };
 pub use event::{ChannelEvent, RoleAttestation};
 pub use identity::{Attestation, AttestationId, Claim, Clearance, Identity};
+pub use key_scope::{WORKSPACE_READERS, workspace_scope};
 pub use mls_governance::{
     ChannelRoute, JoinMaterial, Joining, MAX_CHANNEL_ROUTE_ID_BYTES, MAX_COMMIT_DEVICES,
     MLS_ACCESS_VERSION, MLS_GOVERNANCE_VERSION, MlsAccessRequestV1, MlsGovernanceAction,

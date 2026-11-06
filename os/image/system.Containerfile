@@ -213,6 +213,7 @@ COPY os/etc/profile.d/tilo-apps.sh /etc/profile.d/tilo-apps.sh
 COPY \
     os/usr/lib/systemd/system/fs.service \
     os/usr/lib/systemd/system/tilo-store-volume.service \
+    os/usr/lib/systemd/system/tilo-store-volume-after-signin.path \
     os/usr/lib/systemd/system/tilo-store-loop.service \
     os/usr/lib/systemd/system/tilo-fs-start.timer \
     os/usr/lib/systemd/system/fs-identity.path \
@@ -732,7 +733,7 @@ RUN --mount=type=bind,source=os/usr/lib/systemd/system/authselect-apply-changes.
     systemctl --global enable tilo-runtime-resident.service tilo-runtime-resident.path && \
     systemctl set-default graphical.target && \
     systemctl enable tilo-growfs-sysroot.timer && \
-    systemctl enable tilo-fs-start.timer fs-identity.path && \
+    systemctl enable tilo-fs-start.timer fs-identity.path tilo-store-volume-after-signin.path && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-ntfs-mount.socket tilo-ntfs-boot-disks.service && \
     systemctl enable tilo-device-vpn.socket tilo-device-vpn-reset.service && \

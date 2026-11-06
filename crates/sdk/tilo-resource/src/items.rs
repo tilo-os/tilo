@@ -316,6 +316,10 @@ fn build_item(
         format!("{}.{field}", vocabulary.kind),
         label,
     );
+    // What it is, as people name it: an item of the collection's type
+    // (`video` for a `videos` field) of the app's kind, so search finds a
+    // Rust app's item by its type exactly as a tilolang item's.
+    child = child.with_type(crate::words::item_words(vocabulary.kind, field));
     for (action, decl) in scoped {
         child = child.with_action(item_spec(decl, action.param, id));
     }

@@ -66,18 +66,24 @@ fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
     }
 }
 
-/// The rows the list shows, by the name each says, and where each is.
+/// The rows the list shows, by the name each says, and where each is. A tree draws rows of its
+/// own for the branches it holds, which the list does not list.
 fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
+    fn collect(node: &InspectionNode, in_tree: bool, out: &mut Vec<(String, [f64; 4])>) {
+        let in_tree = in_tree || node.widget == "TreeView";
+        if !in_tree && (node.widget == "SwipeRow" || node.widget == "ListRow") {
+            if let Some(name) = node.semantics.as_ref().and_then(|it| it.name.clone()) {
+                out.push((name, node.rect));
+            }
+        }
+        for child in &node.children {
+            collect(child, in_tree, out);
+        }
+    }
     let snapshot = app.harness().inspection();
-    let mut all = Vec::new();
-    walk(&snapshot.root, &mut all);
-    all.into_iter()
-        .filter(|node| node.widget == "SwipeRow" || node.widget == "ListRow")
-        .filter_map(|node| {
-            let name = node.semantics.as_ref()?.name.clone()?;
-            Some((name, node.rect))
-        })
-        .collect()
+    let mut found = Vec::new();
+    collect(&snapshot.root, false, &mut found);
+    found
 }
 
 /// Chooses the sidebar's place `label`, as a person does: what is due before today waits in

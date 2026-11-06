@@ -146,6 +146,38 @@ pub fn read_field(
     field_of_slot(doc, slot, field)
 }
 
+/// Whether `field` of the located resource holds anything: a value other than what a record
+/// that never wrote it reads. What a migration asks of the fields an earlier version wrote,
+/// one field at a time.
+#[must_use]
+pub fn holds_something(doc: &Doc, located: &Located, field: &FieldSchema) -> bool {
+    read_field(doc, located, field).is_ok_and(|value| value != default_value(field))
+}
+
+/// Whether the collection `field` of the record whose map is `root` holds an item: an item of a
+/// record written before items were flat, nested in the field's map, or one of the record's own
+/// items placed in it. Read from the placements, never from the items' values.
+#[must_use]
+pub fn collection_holds(doc: &Doc, root: &ObjId, field: &FieldSchema) -> bool {
+    if map_at(doc, root, &field.id).is_some_and(|coll| doc.length(&coll) > 0) {
+        return true;
+    }
+    let Some(items) = map_at(doc, root, tilolang_runtime::place::ITEMS_KEY) else {
+        return false;
+    };
+    doc.keys(&items).any(|id| {
+        let Some(obj) = map_at(doc, &items, &id) else {
+            return false;
+        };
+        tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| match held.placement {
+            tilolang_runtime::place::Placement::At { place, .. } => {
+                place.parent.is_none() && place.field.as_str() == field.id
+            }
+            tilolang_runtime::place::Placement::Removed => false,
+        })
+    })
+}
+
 /// The value of `field` from what its key holds (`None` when nothing): [`read_field`] once
 /// the field's key is read, or a walk of the resource's map has read it with the others.
 ///
@@ -157,11 +189,6 @@ pub fn field_of_slot(
     field: &FieldSchema,
 ) -> Result<FieldValue, StoreError> {
     let id = field.id.as_str();
-    // A personal field's key holds a map from each person's id to their value.
-    if field.personal {
-        let map: Map<Json> = load_slot(doc, slot, id).map_err(backend)?;
-        return Ok(FieldValue::Entries(personal_entries(&map, field)));
-    }
     Ok(match field.kind {
         MergeKind::Register => {
             let value: Json = load_slot(doc, slot, id).map_err(backend)?;
@@ -213,53 +240,12 @@ pub fn field_of_slot(
     })
 }
 
-/// What the map a personal field keeps of each person's value holds, as the store reads it: one
-/// entry per person, sorted by who they are.
-fn personal_entries(map: &Map<Json>, field: &FieldSchema) -> Vec<(String, Scalar)> {
-    map.iter()
-        .map(|(person, value)| (person.clone(), scalar_of_json(value, field.composite)))
-        .collect()
-}
-
-/// `whole`, the value of `field` as the record holds it, as it reads for `person`: their entry
-/// of a personal field, and the declared value when they set none. Any other field, or any
-/// other person, reads it whole.
-#[must_use]
-pub fn for_person(field: &FieldSchema, whole: FieldValue, person: Option<&str>) -> FieldValue {
-    let (Some(person), true) = (person, field.personal) else {
-        return whole;
-    };
-    match whole {
-        FieldValue::Entries(entries) => entries
-            .into_iter()
-            .find(|(of, _)| of == person)
-            .map_or(FieldValue::Absent, |(_, value)| FieldValue::Scalar(value)),
-        _ => FieldValue::Absent,
-    }
-}
-
 /// The value of `field` from `json`, what its key held as JSON at some version
 /// ([`tilo_resource::history::held_at`]): [`field_of_slot`] of a value read from history.
 ///
 /// # Errors
 /// `Backend` when the value does not have the field's shape.
 pub fn field_of_json(json: &Json, field: &FieldSchema) -> Result<FieldValue, StoreError> {
-    if field.personal {
-        let entries = match json {
-            Json::Null => Map::new(),
-            Json::Object(entries) => entries
-                .iter()
-                .map(|(person, value)| (person.clone(), value.clone()))
-                .collect(),
-            _ => {
-                return Err(StoreError::Backend(format!(
-                    "field `{}` held {json} where it holds everyone's values",
-                    field.id
-                )));
-            }
-        };
-        return Ok(FieldValue::Entries(personal_entries(&entries, field)));
-    }
     let shape = |what: &str| {
         StoreError::Backend(format!(
             "field `{}` held {json} where it holds {what}",
@@ -347,9 +333,6 @@ pub fn is_empty(value: &FieldValue) -> bool {
 /// What `field` of an item stored as its order key alone reads as.
 #[must_use]
 pub fn default_value(field: &FieldSchema) -> FieldValue {
-    if field.personal {
-        return FieldValue::Entries(Vec::new());
-    }
     match field.kind {
         MergeKind::Register if field.default.is_null() => FieldValue::Absent,
         MergeKind::Register => FieldValue::Scalar(scalar_of_json(&field.default, field.composite)),

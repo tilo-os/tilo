@@ -60,7 +60,7 @@ use std::future::Future;
 
 pub use app::{AppRuntime, app, try_app};
 pub use caps::{Availability, Feature, availability, available};
-pub use cpu::{CpuTask, cpu, cpu_pool};
+pub use cpu::{CpuTask, bound_parallel_pool, cpu, cpu_pool};
 #[cfg(not(target_family = "wasm"))]
 pub use daemon::{Daemon, daemon};
 pub use timer::sleep;

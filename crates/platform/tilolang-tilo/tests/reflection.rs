@@ -1,9 +1,11 @@
 //! Reflection over the log: `created(r)`, `updated(r)` and `history(r)` read who made each
 //! version of a resource, when and by which action, from the workspace record's changes, on every
-//! replica. A scenario's `as who at time` blocks are recorded as that person's, at that time.
+//! replica. A scenario's `invoke(..., by: who, at: time)` calls are recorded as that person's,
+//! at that time.
 
 use automerge::AutoCommit;
 use tilolang_runtime::{InvokeOutcome, Principal, Value};
+use tilolang_tilo::host::RootView;
 
 use crate::fixtures::Replica;
 
@@ -38,8 +40,17 @@ action describe(l: Line) -> Text {
     }
 }
 
+/// The version that last changed what a line says: who, when and by which action.
+action changed_by(l: Line) -> Text {
+    if let v = changed(l, .said) {
+        "{v.who} {v.at} {v.what}"
+    } else {
+        "never"
+    }
+}
+
 /// The time an action runs at.
-action stamp(t: Talk) -> Text {
+action stamp(t: Talk) -> Text uses time {
     "{now}"
 }
 
@@ -55,13 +66,9 @@ view talk(t: Talk) {
 
 scenario "a morning" {
     let t = root Talk
-    as person("Mia") at 2026-06-29T07:02Z {
-        say(t, "Morning!")
-    }
-    as person("Leo") at 2026-06-29T07:20Z {
-        say(t, "Hi Mia")
-        stamp(t)
-    }
+    invoke(say(t, "Morning!"), by: person("Mia"), at: 2026-06-29T07:02Z)
+    invoke(say(t, "Hi Mia"), by: person("Leo"), at: 2026-06-29T07:20Z)
+    invoke(stamp(t), by: person("Leo"), at: 2026-06-29T07:20Z)
 }
 "#;
 
@@ -166,9 +173,10 @@ fn a_scenario_records_each_block_as_its_person_at_its_time() {
     assert_eq!(
         described,
         [
-            // Seed data is the scenario's doing, so history names it as the action.
-            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z a morning 1",
-            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z a morning 1",
+            // Each row names the action the call ran, as every change does, and the person and
+            // moment the scenario's `invoke` gave it.
+            "scenario:Mia 2026-06-29T07:02:00Z scenario:Mia 2026-06-29T07:02:00Z Say 1",
+            "scenario:Leo 2026-06-29T07:20:00Z scenario:Leo 2026-06-29T07:20:00Z Say 1",
         ]
     );
     // The window shows them as the log has them.
@@ -301,10 +309,26 @@ action post(t: Topic, said: Text) -> Note {
     t.notes.insert(Note(said: said))
 }
 
+action retitle(t: Topic, title: Text) {
+    t.title = title
+}
+
 row view topic_row for Topic
 
 view board(b: Topics) {
-    std.list(b, b.topics.sort_by(t -> updated(t), desc))
+    std.list(b.topics.sort_by(t -> updated(t), desc)) { (t, at) ->
+        ui.ListItem(item: t, presence: at) {
+            topic_row(t)
+        }
+    }
+}
+
+view lately(b: Topics) {
+    std.list(b.topics.sort_by(t -> changed(t, .title)?.at, desc)) { (t, at) ->
+        ui.ListItem(item: t, presence: at) {
+            topic_row(t)
+        }
+    }
 }
 
 view topic_row(t: Topic) {
@@ -405,6 +429,213 @@ fn a_list_sorted_by_when_each_last_changed_reads_its_order_from_the_index() {
     ada.commit();
     view.poll_patches().unwrap();
     assert_eq!(rows(&mut view, 3), ["topic 0", "topic 2", "topic 1"]);
+}
+
+/// `r`'s person takes their last step back, as their window's Undo does.
+#[cfg(feature = "record")]
+fn undo(r: &mut Replica) {
+    use collaboration::history_source::verbs::{EDIT_TYPE, HistoryEdit};
+    use tilo_actions::{ActionContext, ActionInvoker, EncodedAction};
+    use tilolang_tilo::instance::record::HostHistoryEdit;
+
+    let edit = HistoryEdit::Undo {
+        steps: None,
+        run: None,
+        by: None,
+        to: None,
+        step: None,
+    };
+    let payload = serde_json::to_vec(&edit).unwrap();
+    let action: HostHistoryEdit = serde_json::from_slice(&payload).unwrap();
+    let context = ActionContext::for_resource("workspace", "history", "history")
+        .with_invoker(ActionInvoker::actor(r.name.clone()));
+    tilo_actions::apply_local_with_context(
+        &mut r.doc,
+        &action,
+        EncodedAction {
+            type_id: EDIT_TYPE.to_owned(),
+            payload,
+        },
+        Some(r.name.as_bytes()),
+        context,
+    )
+    .expect("undo is never refused");
+    r.doc.commit();
+    r.host.sync_from(&r.doc);
+}
+
+#[test]
+fn a_field_names_the_version_that_last_changed_it() {
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+    let line = call(
+        &ada,
+        "ada",
+        "say",
+        vec![Value::resource(&talk), Value::text("hello")],
+    );
+    ada.commit();
+    assert_eq!(
+        text(call(&ada, "ada", "changed_by", vec![line.clone()])),
+        "ada 2026-10-28T09:00:00Z Say",
+        "the version that made it set every field it was made with"
+    );
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:05:00Z".to_owned());
+    call(
+        &ada,
+        "ada",
+        "reword",
+        vec![line.clone(), Value::text("hello there")],
+    );
+    ada.commit();
+    assert_eq!(
+        text(call(&ada, "ada", "changed_by", vec![line.clone()])),
+        "ada 2026-10-28T09:05:00Z Reword"
+    );
+    // Somebody else's change of it names them, on every replica.
+    let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+    ben.host.sync_from(&ben.doc);
+    ben.host
+        .runtime()
+        .set_clock(|| "2026-10-28T10:00:00Z".to_owned());
+    call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+    ben.commit();
+    let want = "ben 2026-10-28T10:00:00Z Reword";
+    assert_eq!(
+        text(call(&ben, "ben", "changed_by", vec![line.clone()])),
+        want
+    );
+    ada.sync_with(&mut ben);
+    assert_eq!(text(call(&ada, "ada", "changed_by", vec![line])), want);
+}
+
+/// A change taken back is no change of the field: what last changed it is the version still in
+/// effect, so the day a task was finished goes back with the box.
+#[cfg(feature = "record")]
+#[test]
+fn undo_puts_a_field_back_to_the_version_that_last_changed_it() {
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+    let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+    let line = call(
+        &ada,
+        "ada",
+        "say",
+        vec![Value::resource(&talk), Value::text("hello")],
+    );
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:05:00Z".to_owned());
+    call(
+        &ada,
+        "ada",
+        "reword",
+        vec![line.clone(), Value::text("hello there")],
+    );
+    ada.commit();
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T09:10:00Z".to_owned());
+    undo(&mut ada);
+    assert_eq!(
+        text(call(&ada, "ada", "changed_by", vec![line.clone()])),
+        "ada 2026-10-28T09:00:00Z Say",
+        "the reword was taken back: what last changed the line is the version that made it"
+    );
+    let described = text(call(&ada, "ada", "describe", vec![line]));
+    assert!(
+        described.starts_with("ada 2026-10-28T09:00:00Z ada ") && described.ends_with(" History 3"),
+        "while the line has a version for the undo itself: {described}"
+    );
+}
+
+#[test]
+fn a_list_sorted_by_when_a_field_last_changed_reads_that_field_from_the_index() {
+    let (mut ada, _, made) = topics(3);
+    let mut view = lately(&ada);
+    assert_eq!(
+        rows(&mut view, 3),
+        ["topic 2", "topic 1", "topic 0"],
+        "made one a minute apart"
+    );
+    // A note posted in the oldest topic changes the topic, its title no more than any other.
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T12:00:00Z".to_owned());
+    call_in(
+        &ada,
+        "so.tilo.lang.topics",
+        "post",
+        vec![made[0].clone(), Value::text("news")],
+    );
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(rows(&mut view, 3), ["topic 2", "topic 1", "topic 0"]);
+    // Retitling it makes its title the latest change of the three.
+    ada.host
+        .runtime()
+        .set_clock(|| "2026-10-28T13:00:00Z".to_owned());
+    call_in(
+        &ada,
+        "so.tilo.lang.topics",
+        "retitle",
+        vec![made[0].clone(), Value::text("topic 0 again")],
+    );
+    ada.commit();
+    view.poll_patches().unwrap();
+    assert_eq!(rows(&mut view, 3), ["topic 0 again", "topic 2", "topic 1"]);
+}
+
+/// The topics' board, through its view of when each title last changed.
+fn lately(ada: &Replica) -> tilolang_runtime::ViewInstance {
+    ada.host
+        .open_layer(
+            "so.tilo.lang.topics",
+            &RootView {
+                root: None,
+                view: Some("lately".to_owned()),
+            },
+        )
+        .expect("the lately view opens")
+}
+
+#[test]
+fn opening_a_list_sorted_by_when_a_field_last_changed_reads_the_index_whatever_the_size() {
+    let work = |n: usize| {
+        let (ada, _, _) = topics(n);
+        let before = ada.host.store().read_stats();
+        let mut view = lately(&ada);
+        let first = rows(&mut view, 10).first().cloned();
+        let after = ada.host.store().read_stats();
+        (
+            first,
+            after.doc.entries - before.doc.entries,
+            after.evaluated - before.evaluated,
+            after.index.pages - before.index.pages,
+        )
+    };
+    let (small_first, small_entries, small_evaluated, small_pages) = work(40);
+    let (large_first, large_entries, large_evaluated, large_pages) = work(400);
+    assert_eq!(small_first.as_deref(), Some("topic 39"));
+    assert_eq!(large_first.as_deref(), Some("topic 399"));
+    // Nothing of the record, no item checked one by one, and the pages of the rows shown: a
+    // field's last change is one value a row, kept as the log is applied.
+    assert_eq!((small_entries, large_entries), (0, 0));
+    assert_eq!((small_evaluated, large_evaluated), (0, 0));
+    assert!(
+        large_pages <= small_pages + 2,
+        "{large_pages} pages at 400, {small_pages} at 40"
+    );
 }
 
 #[test]

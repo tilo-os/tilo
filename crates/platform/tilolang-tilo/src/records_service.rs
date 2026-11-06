@@ -563,3 +563,16 @@ pub fn reading_type(kind: &str) -> Option<String> {
     let (app, ty) = kind.strip_prefix("tl.")?.rsplit_once('.')?;
     Some(format!("{app}#{ty}"))
 }
+
+/// The type the shell's runtime names a resource of `spec` by (`<app>#<Type>`): a tilolang
+/// record's (`tl.<app>.<Type>`), or a Rust app's resource, whose kind is the app's own
+/// (`tube.Channel`) and whose app the catalogue names. `None` for a resource no app draws.
+#[must_use]
+pub fn reading_type_of(spec: &ResourceSpec) -> Option<String> {
+    if let Some(ty) = reading_type(&spec.kind) {
+        return Some(ty);
+    }
+    let app = spec.app()?;
+    let ty = spec.kind.rsplit('.').next()?;
+    Some(format!("{app}#{ty}"))
+}

@@ -152,7 +152,7 @@ struct WorkspaceRecord {
     peer: Vec<peer_parts::PeerPart>,
     generation: u64,
     /// The complete committed publication: the last full checkpoint and every
-    /// change after it. A joining member's bootstrap carries all of it.
+    /// change after it. Members receive it over the workspace's sync.
     outgoing: Vec<Publication>,
     /// How much of `outgoing` the relay has retained, as of the workspace's last
     /// write. Publishing does not write the workspace again: after a crash the
@@ -244,15 +244,6 @@ struct GovernedWorkspace {
     /// The session each of those hosts last opened here that this host
     /// answered ([`Workspaces::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
-}
-
-impl WorkspaceRecord {
-    fn governance_messages(&self) -> Vec<Vec<u8>> {
-        self.outgoing
-            .iter()
-            .map(|publication| publication.bytes.clone())
-            .collect()
-    }
 }
 
 /// The people `peer`'s governance admits now.
@@ -613,6 +604,13 @@ impl GovernedWorkspace {
 
     fn collaboration(&self) -> &collaboration::CollaborationState {
         &self.record.collaboration
+    }
+
+    /// The signed invitation the workspace issued `person` that is still
+    /// redeemable at `now_ns`: the door of a workspace that takes people by
+    /// invitation hands that one back rather than minting one.
+    fn invitation_for(&self, person: [u8; 32], now_ns: u64) -> Option<IssuedInvitation> {
+        self.collaboration().invitation_for(person, now_ns)
     }
 
     /// Take off the wait list everyone who joined with an invitation sent

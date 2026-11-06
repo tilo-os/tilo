@@ -217,6 +217,18 @@ pub enum Ty {
     /// task), held as tilo-doc's rich text, the one rich-text model of the platform. A field of
     /// it merges by splices and marks.
     RichText,
+    /// `Bytes`: the answer of a service, as it came; `.text()` reads it as text. A value code
+    /// holds while an invocation runs, not a stored field's type.
+    Bytes,
+    /// `Response`: what `web.get` and `web.post` answer: `ok`, `status`, `status_text`,
+    /// `headers`, `body: Bytes`, and `.text()`. A value code holds while an invocation runs,
+    /// not a stored field's type.
+    Response,
+    /// `json.Value`: a JSON document as it was read, before code says what its shape is
+    /// (`json.parse`). Its cases are the six kinds JSON has (`.object`, `.array`, `.string`,
+    /// `.number`, `.bool`, `.null`). A value code holds while an invocation runs, not a
+    /// stored field's type.
+    Json,
     /// No value.
     #[default]
     Unit,
@@ -360,6 +372,34 @@ impl Ty {
         }
     }
 
+    /// Whether a value of this type is JSON's to make: a scalar, Text (and the types that hold
+    /// text), a list, an option, a map, an enum, or a record.
+    #[must_use]
+    pub fn reads_json(&self) -> bool {
+        match self {
+            Self::Int
+            | Self::Float
+            | Self::Bool
+            | Self::Text
+            | Self::Date
+            | Self::Time
+            | Self::Identifier
+            | Self::Repeat
+            | Self::Reminder
+            | Self::Unit
+            | Self::Enum(_)
+            | Self::Record(_) => true,
+            Self::Option(t) | Self::List(t) | Self::Map(t) => t.reads_json(),
+            _ => false,
+        }
+    }
+
+    /// Whether `json.encode` writes a value of this type: everything JSON can make, and a
+    /// `json.Value`, which is a document already.
+    pub fn writes_json(&self) -> bool {
+        self.reads_json() || matches!(self, Self::Json)
+    }
+
     /// The type as written in source: local records and enums by name, foreign ones qualified
     /// by their app id.
     pub fn display(&self, own_app: &str) -> String {
@@ -376,6 +416,9 @@ impl Ty {
             Self::Repeat => "std.Repeat".into(),
             Self::Reminder => "std.Reminder".into(),
             Self::RichText => "RichText".into(),
+            Self::Bytes => "Bytes".into(),
+            Self::Response => "Response".into(),
+            Self::Json => "json.Value".into(),
             Self::Unit => "()".into(),
             Self::Action => "Action".into(),
             Self::View => "View".into(),
@@ -441,6 +484,30 @@ impl Ty {
         p.skip_ws();
         (p.pos >= p.chars.len()).then_some(ty)
     }
+}
+
+/// The type a path names that the language itself declares, with no package behind it: `std`'s
+/// text-held types, `std.RichText`, and a `json.Value` as `json.parse` reads one.
+#[must_use]
+pub fn named(dotted: &[&str]) -> Option<Ty> {
+    match dotted {
+        ["std", "Identifier"] => Some(Ty::Identifier),
+        ["std", "Repeat"] => Some(Ty::Repeat),
+        ["std", "Reminder"] => Some(Ty::Reminder),
+        ["std", "RichText"] => Some(Ty::RichText),
+        ["json", "Value"] => Some(Ty::Json),
+        _ => None,
+    }
+}
+
+/// Whether a value of this type is one only a run holds, or a part of a package: never stored
+/// state, so never what a field holds.
+#[must_use]
+pub fn is_transient(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Action | Ty::View | Ty::Bytes | Ty::Response | Ty::Json
+    )
 }
 
 /// Whether `key` is the host's `Resource`: the type that stands for any resource, of whichever
@@ -664,6 +731,9 @@ impl MetaTy<'_> {
             "std.Repeat" => Some(Ty::Repeat),
             "std.Reminder" => Some(Ty::Reminder),
             "RichText" | "std.RichText" => Some(Ty::RichText),
+            "Bytes" => Some(Ty::Bytes),
+            "Response" => Some(Ty::Response),
+            "json.Value" => Some(Ty::Json),
             "Action" => Some(Ty::Action),
             "View" => Some(Ty::View),
             "Result" => {

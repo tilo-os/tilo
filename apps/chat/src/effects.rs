@@ -749,8 +749,7 @@ impl ChatApp {
             "edited": message.edited,
             "text": message.text,
             "work": message.work,
-            "reference": message.reference,
-            "sourceProvider": message.source_provider,
+            "attachments": message.attachments,
             "share": message.share,
         }))
     }
@@ -1176,9 +1175,9 @@ impl ChatApp {
         };
         let said = if message.text.is_empty() {
             message
-                .attachment
-                .as_ref()
-                .map_or_else(String::new, |attachment| attachment.name().to_owned())
+                .files()
+                .next()
+                .map_or_else(String::new, |file| file.label().to_owned())
         } else {
             message.text.chars().take(80).collect()
         };

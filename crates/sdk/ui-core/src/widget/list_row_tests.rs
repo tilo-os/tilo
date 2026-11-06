@@ -328,7 +328,10 @@ fn a_cards_facts_stand_under_its_title_from_where_its_text_begins() {
     let outer = Rect::new(0.0, 0.0, 264.0, 57.0);
     let face = ListRowFace::new("Order boxes and tape")
         .card()
-        .leading(RowLeading::Checkbox { checked: false })
+        .leading(RowLeading::Checkbox {
+            checked: false,
+            icon: None,
+        })
         .meta("Thursday")
         .mark(Icon::Flag)
         .mark_tone(Tone::Warning);
@@ -394,7 +397,10 @@ fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
     // A leading checkbox hangs on the centred line, as it hangs on the title's line.
     let boxed = ListRowFace::new("Screenshots for the docs")
         .card()
-        .leading(RowLeading::Checkbox { checked: false });
+        .leading(RowLeading::Checkbox {
+            checked: false,
+            icon: None,
+        });
     let geo = boxed.geometry(grown, &m, &mut text, &theme);
     assert!(
         (geo.leading.center().y - grown.center().y).abs() < 0.5,
@@ -829,7 +835,10 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         RowLeading::Avatar(AvatarFace::new("Ada", "ada").square()),
         RowLeading::Thumbnail(&image),
         RowLeading::Media(MediaArt::Placeholder, MediaAspect::Wide),
-        RowLeading::Checkbox { checked: true },
+        RowLeading::Checkbox {
+            checked: true,
+            icon: None,
+        },
         RowLeading::Swatch(theme.tokens.colors.semantic.info),
         RowLeading::Signal(crate::widget::SignalLevel::Good),
         RowLeading::Paint(&painter),
@@ -1791,5 +1800,22 @@ fn a_nested_row_indents_its_content_a_gutter_a_step_and_keeps_its_trailing_colum
         "depth never moves the row's trailing facts: {} and {}",
         nested.value_right,
         top.value_right
+    );
+}
+
+/// A row given its own height stands at it instead of the list's row height for what it holds:
+/// a tree's rows are its own token, shorter than a list's row of the same theme, and its title
+/// reads at the row's size, not a dense row's caption.
+#[test]
+fn a_row_given_its_own_height_stands_at_it() {
+    let list_row = face_height(&ListRowFace::new("Project"), 1.0);
+    let tree_row = face_height(&ListRowFace::new("Project").row_height(28.0), 1.0);
+    assert!(
+        (tree_row - 28.0).abs() < 0.5,
+        "the tree's own row token: {tree_row}"
+    );
+    assert!(
+        tree_row < list_row,
+        "a tree's row stands under the list's row of the same theme"
     );
 }

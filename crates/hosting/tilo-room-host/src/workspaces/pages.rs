@@ -233,11 +233,12 @@ impl Workspaces {
                 expires_at_ns,
                 inviter_name,
                 wait_list_entry,
+                recipient,
             } => {
                 let request = IssueInvitationRequest {
                     request_id,
                     role: member_role(role),
-                    recipient_user_public_key: None,
+                    recipient_user_public_key: recipient,
                     invitee_name: None,
                     expires_at_ns,
                     inviter_name,

@@ -333,11 +333,23 @@ impl Session {
     /// the person for a restart of the machine. Called once per pass of the
     /// loop.
     pub(super) fn follow_update(&mut self) {
-        let wanted = self
+        // A collaborator's device at another protocol version is the person's
+        // to know: this device updates when theirs is the newer one, and
+        // otherwise theirs is the one that must.
+        let mismatched = self
             .shared
             .sync
             .as_ref()
-            .is_some_and(|sync| sync.take_update_request());
+            .map(|sync| sync.take_version_mismatches())
+            .unwrap_or_default();
+        let mut wanted = false;
+        for mismatch in mismatched {
+            wanted |= mismatch.theirs_is_newer();
+            self.shared
+                .notifications
+                .borrow()
+                .tell(crate::notices::version_mismatch_notice(&mismatch));
+        }
         let now = Instant::now();
         let presence = Presence {
             idle: self.compositor.input_idle(),

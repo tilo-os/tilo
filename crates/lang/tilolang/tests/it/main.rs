@@ -7,12 +7,15 @@
 )]
 
 mod abi_additions;
+mod agent;
 mod blocks;
 mod common;
 mod components;
 mod coverage;
+mod effects;
 mod errors;
 mod ids_lock;
+mod json;
 mod language;
 mod layout;
 mod multifile;
@@ -26,6 +29,7 @@ mod roundtrip;
 mod search;
 mod semantics;
 mod text_math;
+mod triggers;
 mod unions;
 mod wasm;
 mod width;

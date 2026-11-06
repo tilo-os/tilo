@@ -1244,7 +1244,7 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     );
 }
 
-/// A page whose overview is one list over the rows the app renders, as `std.rows` builds it:
+/// A page whose overview is one list over the rows the app renders, as `std.list` builds it:
 /// the list inside the page an app docks its composer or bar under.
 fn list_page() -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
@@ -1449,4 +1449,282 @@ fn the_list_a_window_moves_to_brings_its_actions_placed_into_the_one_bar() {
         section.width() > 0.0 && section.y0 < 56.0,
         "the project's other action stands in the bar, placed: {section:?}"
     );
+}
+/// The node of `kind` in `tree`, to change.
+fn node_of<'a>(tree: &'a mut UiNode, kind: &str) -> Option<&'a mut UiNode> {
+    if tree.kind == kind {
+        return Some(tree);
+    }
+    tree.children
+        .iter_mut()
+        .find_map(|child| node_of(child, kind))
+}
+
+/// The rows of a list the app renders, each showing the item `id` under `title`, as a loop
+/// over the items of a resource sends them.
+fn listed_rows(items: &[(&str, &str)]) -> Vec<ToUi> {
+    let mut keys = Vec::new();
+    let mut rows = Vec::new();
+    for (id, title) in items {
+        let mut row = UiNode::empty(&kind("ListRow"), &format!("rows/{id}#row"));
+        row.props.insert("title".to_owned(), Value::text(*title));
+        let mut item = UiNode::empty(&kind("ListItem"), &format!("rows/{id}"));
+        item.props.insert(
+            "item".to_owned(),
+            Value::Ref(ResourceRef {
+                id: (*id).to_owned(),
+                ty: "tasks.Task".to_owned(),
+            }),
+        );
+        item.children.push(row);
+        keys.push(format!("rows/{id}"));
+        rows.push(item);
+    }
+    vec![ToUi::Rows {
+        lane: Lane::Root,
+        list: "list".to_owned(),
+        len: u32::try_from(keys.len()).expect("a few rows"),
+        start: 0,
+        keys,
+        rows,
+    }]
+}
+
+/// A choice of several rows is the person's own while it holds: the rows the app sends again
+/// after a press leave it as it is, and only the host's own putting away of the choice ends it.
+#[test]
+fn a_choice_of_several_rows_outlasts_the_rows_the_app_sends_again() {
+    use ui::widget::ListModel;
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    let mut page = list_page();
+    let Some(ToUi::Open { tree, .. }) = page.first_mut() else {
+        panic!("the page opens the window");
+    };
+    node_of(tree, &kind("VirtualList"))
+        .expect("the page's list")
+        .props
+        .insert("multi_select".to_owned(), Value::Bool(true));
+    send(&mut app, &page);
+    window.receive();
+    let items = [
+        ("root/tasks:t1", "Call the landlord"),
+        ("root/tasks:t2", "Pay rent"),
+    ];
+    send(&mut app, &listed_rows(&items));
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the rows were taken: {:?}",
+        window.failed()
+    );
+    let list = overview_list(&mut window)
+        .list_mut()
+        .expect("the overview's list");
+    let (first, second) = (
+        "rows/root/tasks:t1".to_owned(),
+        "rows/root/tasks:t2".to_owned(),
+    );
+    assert!(
+        list.model().index_of(&first).is_some() && list.model().index_of(&second).is_some(),
+        "the list holds the rows the app sent"
+    );
+    list.selection_mut().select_only(first.clone());
+    list.selection_mut().toggle(second.clone());
+    assert_eq!(
+        list.selection().len(list.model().len()),
+        2,
+        "both rows are chosen"
+    );
+
+    // The app sends its rows again, as it does after every press: the choice stays.
+    send(&mut app, &listed_rows(&items));
+    window.receive();
+    let list = overview_list(&mut window)
+        .list()
+        .expect("the overview's list");
+    let mut kept: Vec<String> = list.selection().stored_keys().cloned().collect();
+    kept.sort();
+    let mut want = vec![first, second];
+    want.sort();
+    assert_eq!(
+        kept, want,
+        "the choice of several rows outlasts the rows the app sends again"
+    );
+
+    // What the host kept of the choice gone — an action over the rows ran — the list puts its
+    // own away with it.
+    send(
+        &mut app,
+        &[ToUi::Patch {
+            lane: Lane::Root,
+            patches: vec![wire::Patch::SetProp {
+                path: vec![
+                    "overview".to_owned(),
+                    "docked".to_owned(),
+                    "list".to_owned(),
+                ],
+                name: "chosen".to_owned(),
+                value: Some(Value::List(Vec::new())),
+            }],
+        }],
+    );
+    window.receive();
+    assert!(
+        window.failed().is_none(),
+        "the choice was put away: {:?}",
+        window.failed()
+    );
+    assert_eq!(
+        overview_list(&mut window)
+            .list()
+            .expect("the overview's list")
+            .selection()
+            .len(2),
+        0,
+        "the choice the host put away is put away in the list"
+    );
+}
+
+/// A page whose overview list lets a person choose several rows, as `std.list` declares
+/// it, reporting every change of the choice to the app.
+fn choose_several_page() -> Vec<ToUi> {
+    let mut page = list_page();
+    if let Some(ToUi::Open { tree, .. }) = page.first_mut() {
+        let list = node_of(tree, &kind("VirtualList")).expect("the page's list");
+        list.props
+            .insert("multi_select".to_owned(), Value::Bool(true));
+        list.events
+            .insert("selected".to_owned(), wire::Event::default());
+    }
+    page
+}
+
+/// The choices the app was told of, in order: what each report of the list's selection held.
+fn choices(app: &mut tilo_render_protocol::patch::local::End) -> Vec<Option<Value>> {
+    sent(app)
+        .into_iter()
+        .filter_map(|message| match message {
+            ToApp::Fire { event, value, .. } if event == "selected" => Some(value),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The rows a report of the list's choice holds, as the keys of the rows it names.
+fn chosen_rows(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::List(items)) => items
+            .iter()
+            .map(|item| match item {
+                Value::Ref(reference) => reference.id.clone(),
+                other => panic!("a chosen row is a reference, not {other:?}"),
+            })
+            .collect(),
+        other => panic!("a choice is a list of rows, not {other:?}"),
+    }
+}
+
+/// Where the row `key` stands once the frames so far have laid it out.
+fn centre_of(harness: &mut ui::headless::FrameHarness, key: &str) -> Option<(f64, f64)> {
+    let centre = drawn_window(harness)
+        .shell_mut()
+        .and_then(|shell| shell.overview_list_mut())
+        .and_then(|list| list.list())
+        .and_then(|list| list.row_rect(&key.to_owned()))?
+        .center();
+    Some((centre.x, centre.y))
+}
+
+/// A row clicked plainly, another added with Control held, then Shift and the arrow: the walk
+/// extends the choice the person gathered and the window reports it, so the bar standing for
+/// the choice grows with it.
+#[test]
+fn a_ctrl_click_then_shift_down_extends_the_choice() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(&mut app, &choose_several_page());
+    window.receive();
+    let items = [
+        ("root/tasks:t1", "Call the landlord"),
+        ("root/tasks:t2", "Pay rent"),
+        ("root/tasks:t3", "Plan the trip"),
+    ];
+    let mut harness =
+        ui::headless::FrameHarness::new(ui::State::new(), Box::new(window), (1280, 800));
+    // The window asks its app for the rows it shows, as it does over a socket: the app reads
+    // the list's children anew (`RowsChanged` with a `Reset`), then renders the rows.
+    for _ in 0..8 {
+        harness.recompose().expect("a frame");
+        drawn_window(&mut harness).flush();
+        if !answer_rows(&mut app, &items) {
+            continue;
+        }
+        drawn_window(&mut harness).receive();
+        harness.recompose().expect("a frame");
+        if centre_of(&mut harness, "rows/root/tasks:t1").is_some() {
+            break;
+        }
+    }
+
+    let (first, second, third) = (
+        "rows/root/tasks:t1",
+        "rows/root/tasks:t2",
+        "rows/root/tasks:t3",
+    );
+    // A plain click puts the keyboard in the window and chooses the row it lands on.
+    let (x, y) = centre_of(&mut harness, first).expect("the first row is laid out");
+    harness.click_at(x, y);
+    drawn_window(&mut harness).flush();
+    let choice = choices(&mut app).pop().expect("the click reports");
+    assert_eq!(
+        chosen_rows(choice.as_ref()),
+        ["root/tasks:t1"],
+        "the click begins the choice at its row"
+    );
+    // Control held for the next press, as the person holds it, adds the row it lands on.
+    let (x, y) = centre_of(&mut harness, second).expect("the second row is laid out");
+    harness.set_modifiers(&["ctrl".to_owned()]);
+    harness.click_at(x, y);
+    harness.set_modifiers(&[]);
+    drawn_window(&mut harness).flush();
+    let choice = choices(&mut app).pop().expect("the modified click reports");
+    assert_eq!(
+        chosen_rows(choice.as_ref()),
+        ["root/tasks:t1", "root/tasks:t2"],
+        "the modified click adds to the choice"
+    );
+    // Shift and the arrow below: the walk extends the choice the person gathered.
+    press(&mut harness, &["shift"], "ArrowDown");
+    let named = |key: &str| key.trim_start_matches("rows/").to_owned();
+    let choice = choices(&mut app).pop().expect("the walk reports");
+    assert_eq!(
+        chosen_rows(choice.as_ref()),
+        [named(first), named(second), named(third)],
+        "the walk extends the choice instead of replacing it"
+    );
+}
+
+/// Answer what the window asked its app for with `items`, as an app renders them: whether it
+/// asked for rows at all.
+fn answer_rows(app: &mut tilo_render_protocol::patch::local::End, items: &[(&str, &str)]) -> bool {
+    let mut asked = false;
+    for message in sent(app) {
+        if matches!(message, ToApp::Rows { .. }) {
+            asked = true;
+        }
+    }
+    if asked {
+        send(
+            app,
+            &[ToUi::RowsChanged {
+                lane: Lane::Root,
+                list: "list".to_owned(),
+                len: u32::try_from(items.len()).expect("a few rows"),
+                changes: vec![wire::RowChange::Reset],
+            }],
+        );
+        send(app, &listed_rows(items));
+    }
+    asked
 }

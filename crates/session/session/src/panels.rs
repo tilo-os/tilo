@@ -299,6 +299,9 @@ pub(crate) struct ActivityLayer {
     /// The session's reading of every app's activity, and its rules about
     /// what shows.
     reader: Rc<crate::chrome::Activities>,
+    /// The cards the apps draw themselves: where the layer puts each of
+    /// their windows this pass.
+    cards: crate::cards::Cards,
     /// The corner docked cards gather in, on this device.
     corner: ui::floating_layer::Corner,
     /// The outputs the compositor last said it has: the cards stand on the
@@ -316,6 +319,7 @@ impl ActivityLayer {
         app: ui::App,
         link: tilo_activities::Link,
         reader: Rc<crate::chrome::Activities>,
+        cards: crate::cards::Cards,
         banners: Reserved,
         readout: Reserved,
         scale: f64,
@@ -324,6 +328,7 @@ impl ActivityLayer {
             host: AppHost::new(app, placement(0, 0, 1, 1, scale)).named("Activities"),
             link,
             reader,
+            cards,
             corner: ui::floating_layer::Corner::default(),
             outputs: Vec::new(),
             banners,
@@ -357,16 +362,37 @@ impl ActivityLayer {
         };
         let bar = f64::from(bar_height());
         let work = Rect::new(0.0, bar, f64::from(width), f64::from(height));
+        let placement = ui::floating_layer::Placement {
+            work,
+            bar: Rect::new(0.0, 0.0, f64::from(width), bar),
+            banners: self.banners.now(),
+            readout: self.readout.now().map(local),
+        };
+        let cards = self.reader.cards();
+        let expanded = self.reader.expanded();
+        // Where the layer puts the cards their apps draw, this pass: the
+        // app's gesture is a request, and this is the sign the desk places
+        // its window by. The layer lays them out with the same arithmetic
+        // it draws with.
+        let layer = ui::floating_layer::place(&placement, self.corner, &cards, expanded);
+        self.cards.begin_slots();
+        for placed in &layer.cards {
+            if self.cards.size(&placed.app, placed.activity()).is_none() {
+                continue;
+            }
+            let at = Rect::new(
+                placed.rect.x0 + f64::from(x),
+                placed.rect.y0 + f64::from(y),
+                placed.rect.x1 + f64::from(x),
+                placed.rect.y1 + f64::from(y),
+            );
+            self.cards.slot_at(&placed.app, placed.activity(), at);
+        }
         let feed = tilo_activities::Feed {
-            placement: ui::floating_layer::Placement {
-                work,
-                bar: Rect::new(0.0, 0.0, f64::from(width), bar),
-                banners: self.banners.now(),
-                readout: self.readout.now().map(local),
-            },
+            placement,
             corner: self.corner,
-            cards: self.reader.cards(),
-            expanded: self.reader.expanded(),
+            cards,
+            expanded,
         };
         if self.published.as_ref() != Some(&feed) {
             self.link.publish(feed.clone());
@@ -535,7 +561,7 @@ impl ReadoutPlace {
     }
 
     /// The caret the person types at, when there is one.
-    fn caret(&self) -> Option<Rect> {
+    pub(crate) fn caret(&self) -> Option<Rect> {
         self.caret
     }
 

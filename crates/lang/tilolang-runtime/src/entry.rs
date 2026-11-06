@@ -1,8 +1,8 @@
 //! The entry at the end of a list: what the text typed in it will make (`entry_parts`), and the
 //! action it commits, its parameters filled from that text ([`Core::entry_fill`]).
 //!
-//! The action is one a view built but for its `(entry)` parameter: a call of a create action
-//! (`quick_add(tasks, p: project)`). Its parameters are the action's, and their types say what
+//! The action is one a view built but for its `Text` parameter: a call of a create action
+//! (`new_task(tasks, p: project)`). Its parameters are the action's, and their types say what
 //! the words before the text typed take: a `Date` or `Time` from a phrase, a `Principal` from
 //! `@name` among the workspace's members, a record from `#title` among the records the subject's
 //! collection of its type holds. The reader is [`tilolang::entry`], which knows nothing of
@@ -64,11 +64,11 @@ impl Core {
         }
     }
 
-    /// Fills the `(entry)` parameter of the action `aref` runs, and the parameters the text
-    /// says, with what `text` says ("Call the landlord fri 10am @bo"): the words nothing else
-    /// takes title the item, and the rest are its day, its moment, who it is for and what it is
-    /// of. An action with no entry parameter, or whose call gave it, is left as it is, as is
-    /// every action `then` joins to one that is filled.
+    /// Fills the action's one `Text` parameter of the action `aref` runs, and the parameters
+    /// the text says, with what `text` says ("Call the landlord fri 10am @bo"): the words
+    /// nothing else takes title the item, and the rest are its day, its moment, who it is for
+    /// and what it is of. An action with no one `Text` parameter, or whose call gave it, is left
+    /// as it is, as is every action `then` joins to one that is filled.
     ///
     /// Whether the entry makes anything: text that is nothing but space and what the other
     /// parameters take ("fri 10am @bo") names no item, so the action does not run.

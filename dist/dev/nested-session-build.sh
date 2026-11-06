@@ -101,7 +101,8 @@ host_profile=nested
 # (`tilo-runtime-mcp --connect`), so a check that drives the session as an
 # admitted agent runs against the staged build without building its own.
 host_bins=(tilo-session tilo-runtime-mcp tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle
-           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus)
+           tilo-model-gateway tilo-ush tilo-control tilolang-host tilolang nested-session-bus
+           tilo-quick-settings)
 build_host() {
     local args
     mapfile -t args < <(profile_args "$host_profile")
@@ -121,6 +122,7 @@ build_host() {
         -p runtime-bundle --bin tilo-runtime-bundle \
         -p ush --bin tilo-ush \
         -p tilo-control --bin tilo-control \
+        -p tilo-quick-settings --bin tilo-quick-settings \
         -p nested-session-bus --bin nested-session-bus || return 1
     # The gateway, on a build of its own: its binary needs `server`, which no
     # longer comes from building beside the session, and the session's gateway
@@ -128,6 +130,22 @@ build_host() {
     cargo build --locked --timings "${args[@]}" \
         -p tilo-model-gateway --bin tilo-model-gateway \
         --features server,host-backend,local-models,runtime-client
+}
+# The session's surfaces: the lock screen, the quick settings panel and the on-screen keyboard
+# are programs of their own, which the session starts from beside its own executable, and the
+# audio service is the helper it starts the same way. A session without them is a desktop with
+# no panel, no keyboard and no sound, so the dev session installs all of them.
+#
+# In a build of their own: the panel is an app whose features the session's build must not
+# unify (and vice versa), and `dev-overrides` belongs to the session alone.
+build_surfaces() {
+    local args
+    mapfile -t args < <(profile_args "$host_profile")
+    cargo build --locked --timings "${args[@]}" \
+        -p tilo-lock-screen --bin tilo-lock-screen \
+        -p tilo-quick-settings --bin tilo-quick-settings \
+        -p osk --bin osk \
+        -p tilo-audio-service --bin tilo-audio
 }
 # The tilolang host, in a build of its own: built with the session, the features the session
 # turns on in the crates both use (media, the toolkit's services) would unify into it, and its
@@ -252,6 +270,7 @@ build_host_then_tilolang() {
 pids=()
 build_host_then_tilolang & pids+=($!)
 (build_thin 2>&1 | label thin) & pids+=($!)
+(build_surfaces 2>&1 | label surfaces) & pids+=($!)
 if [[ " $apps " == *" browser "* ]]; then
     (build_chromium_engine 2>&1 | label chromium) & pids+=($!)
 fi
@@ -266,6 +285,12 @@ unset MAKEFLAGS
 rm -rf "$out"
 mkdir -p "$out/bin" "$out/thin-app"
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
+# The session's surfaces, which it starts from beside its own executable under
+# the names the OS image installs them as (`osk` ships as `/usr/bin/tilo-osk`).
+for name in tilo-lock-screen tilo-quick-settings tilo-audio; do
+    cp -p "$target/$host_profile/$name" "$out/bin/"
+done
+cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"
 # Cargo writes the timings where it ran; a build forwarded to a builder leaves none here.
 [[ ! -d $timings ]] || cp -rp "$timings" "$out/timings"
 cp -p "$target/$thin_profile/libruntime_dylib.so" "$target/$thin_profile/runtime-engines" "$out/thin-app/"

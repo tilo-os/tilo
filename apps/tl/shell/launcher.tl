@@ -13,7 +13,7 @@
 /// the desk fills with the person's work rather than a second strip for every result.
 /// The launcher, with the person's last query in the field.
 view launcher(d: Desk) {
-    lens query: Text = d.spotlight
+    state query: Text = d.spotlight
     let typed = query != ""
     let front = front_strip()
     let windows = if typed {

@@ -1,9 +1,8 @@
 //! Filters (search.md, "What a type declares"): a type's filters are values the compiler knows
 //! (`Task.today`), what `filters(T)` lists and what a query takes; a list's places are the ones
-//! that are on or off, each holding the items its predicate says and saying how many it holds
-//! where its filter declares `count: true`. A filter is its predicate and nothing else — no
-//! membership, grouping, order or count of its own, and none the type does not declare. What a
-//! window shows beside them (the projects its root holds) is the app's own.
+//! that are on or off, each holding the items its predicate says. A filter is its predicate and
+//! nothing else — no membership, grouping, order or count of its own. What a window shows beside
+//! them (a place's badge, the projects its root holds) is the app's own.
 
 #[cfg(test)]
 #[path = "common/mod.rs"]
@@ -30,11 +29,11 @@ type Task {
     assignee: Option<Principal> = .none
 
     search {
-        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox, count: true)
-        filter "Today" = due <= today and not done (icon: .star, count: true)
+        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox)
+        filter "Today" = due <= today and not done (icon: .star)
         filter "Upcoming" = due > today and not done (icon: .calendar)
-        filter "Done" = done (icon: .circle_check, count: true)
-        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user, count: true)
+        filter "Done" = done (icon: .circle_check)
+        filter "Assigned to me" = assignee == workspace.me and not done (icon: .user)
         filter project
     }
 }
@@ -73,11 +72,12 @@ view titles(b: Board, q: Text) {
 }
 
 view sidebar(b: Board) {
-    window place: Filter<Task> = Task.inbox
-    // A count of zero shows nothing: the badge says what waits.
+    state place: Filter<Task> = Task.inbox
+    // The places whose badge says how many wait there, by key.
+    let counted: List<Text> = ["inbox", "today", "done", "assigned_to_me"]
     ui.NavList(selected: place) {
         for f in filters(Task).filter(f -> f.toggle) {
-            let held = if f.counts { b.tasks.matching(f).len() } else { 0 }
+            let held = if counted.any(k -> k == f.key) { b.tasks.matching(f).len() } else { 0 }
             ui.NavItem(
                 f,
                 f.label,
@@ -327,7 +327,7 @@ view sidebar(b: Board) {
     }
 
     #[test]
-    fn only_the_places_whose_filter_counts_show_a_count() {
+    fn only_the_places_the_sidebar_counts_show_a_count() {
         let t = Tasks::new();
         let places = t.places_of();
         let keys: Vec<&str> = places.iter().map(|(key, _)| key.as_str()).collect();
@@ -339,17 +339,17 @@ view sidebar(b: Board) {
         // What waits in the inbox, and what is due: the two a person counts.
         assert_eq!(places[0].1, Some(1), "the inbox's one unsorted task");
         assert_eq!(places[1].1, Some(2), "today's, the overdue one included");
-        // A filter that says nothing about a count shows none.
+        // A place the sidebar does not count shows none.
         assert_eq!(places[2].1, None, "what is due later counts nothing");
-        // A place holds what its filter says, so a filter saying what is done with counts it:
-        // the app's own `all_done` reads that zero, not a place's idea of what it holds.
+        // A place holds what its filter says, so a counted place says it: the app's own
+        // `all_done` reads that zero, not a place's idea of what it holds.
         assert_eq!(places[3].1, Some(1), "what is done is counted as it is");
         assert_eq!(
             places[4],
             ("is:assigned_to_me".to_owned(), None),
             "nothing is assigned to the person looking, so its badge says nothing: {places:?}"
         );
-        // The sidebar draws those counts and no others.
+        // The sidebar draws the counts of the places it counts, and no others.
         let view =
             t.rt.open_view(
                 &me(),
@@ -377,7 +377,7 @@ view sidebar(b: Board) {
         assert_eq!(
             nav("is:done").props.get("count"),
             Some(&Value::Int(1)),
-            "the place whose filter says it counts what is done with shows one"
+            "a place the sidebar counts shows how many it holds"
         );
     }
 
@@ -387,7 +387,11 @@ view sidebar(b: Board) {
         let project = t.project("Work");
         let key = format!("project:{}", project.id_string());
         let mut view = t.sidebar_by(&me());
-        assert_eq!(titles_of(view.tree()), ["undated"], "the inbox it starts in");
+        assert_eq!(
+            titles_of(view.tree()),
+            ["undated"],
+            "the inbox it starts in"
+        );
         let item = nav_items(view.tree())
             .into_iter()
             .find(|node| node.props.get("key") == Some(&Value::text(&key)))
@@ -396,7 +400,7 @@ view sidebar(b: Board) {
             .clone();
         view.fire(&item, "select").unwrap();
         view.poll_patches().unwrap();
-        // `Task.project(p)` asks the project's tasks, and the window state holds the value: the
+        // `Task.project(p)` asks the project's tasks, and the view state holds the value: the
         // list's chosen place is its query, which the platform writes from the value.
         assert_eq!(
             titles_of(view.tree()),

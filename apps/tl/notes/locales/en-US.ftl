@@ -24,7 +24,7 @@ d-v7cub7aw = Notes
        *[other] notebooks
     }
 
-d-tmqqtkeb = Items
+d-tmqqtkeb = Notes
 
 d-qef5yqkq = Note order
     .doc = The order a notebook lists its notes in.
@@ -54,6 +54,7 @@ d-3u3bevec = Untag
 d-m6rqg3kf = Pin~present
 
 d-akcqjax3 = Notebook
+    .w-no-notes-yet = No notes yet
 
 d-xqxkoqbj = Note row
     .w-untitled = Untitled

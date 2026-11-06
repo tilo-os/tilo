@@ -157,3 +157,8 @@ reason = "one JSON line per command between the workspace service and the room p
 file = "crates/hosting/tilo-relay-protocol/src/operator.rs"
 enum = "OperatorEvent"
 reason = "one JSON line per event on the same one-image operator pipe, tagged by name (`tag = \"event\"`); the pre-admission and spectator events went with the commands that asked for them, and the protocol version is bumped from 4 to 5 in the same commit, so no reader of either version decodes the other's streams"
+
+[[break]]
+file = "crates/lang/tilolang-runtime/src/value.rs"
+enum = "Value"
+reason = "`Picture` is a picture in a component's prop, made while a view is built and never stored or sent (like `Node` and `Rec` beside it); it was added in the middle of the enum, which moved `AtEvent` and every variant after it. Moving it back to the end restores the places every journal value and every stored value had before it existed: no release carries it, so no kept byte names a place it wrote (the enums it moved read as they always did)"

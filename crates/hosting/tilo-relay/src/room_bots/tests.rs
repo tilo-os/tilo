@@ -192,7 +192,7 @@ async fn post_with(
         let before = message_ids(&page);
         let mut arguments = serde_json::json!({ "channel": channel, "text": text });
         if let Some(attachment) = attachment {
-            arguments["attachment"] = attachment;
+            arguments["attachments"] = serde_json::json!([attachment]);
         }
         page.invoke(
             &tilo_actions::door::ActionAddress::new(

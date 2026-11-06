@@ -74,12 +74,6 @@ path = "tests/hosted.rs"
 name = "history_undo"
 path = "tests/history_undo.rs"
 
-# Reminders as a person meets them: the workspace's own record of when an item is due, shown as
-# a platform notification, opened and acted on in the window.
-[[test]]
-name = "reminders"
-path = "tests/reminders.rs"
-
 [features]
 thin = ["dep:runtime-dylib"]
 
@@ -98,6 +92,9 @@ mail = { path = "../mail" }
 # The mail origin: in the window's process outside a host, and the connector process the
 # system runs for a hosted Mail.
 tilolang-mail = { path = "../../crates/platform/tilolang-mail" }
+# YouTube as an outside origin: a live window of an app whose types hold YouTube's resources
+# keeps them in step with it, in native code with the network.
+tilolang-youtube = { path = "../../crates/platform/tilolang-youtube" }
 tilo-content = { path = "../../crates/system/content" }
 # The UI host's half of the window, and the patch protocol between it and the instance.
 tilo-ui-host = { path = "../../crates/platform/tilo-ui-host" }
@@ -110,6 +107,8 @@ tracing.workspace = true
 
 [dev-dependencies]
 tilolang = { path = "../../crates/lang/tilolang" }
+# Waiting for a server's answer without a fixed budget that a busy runner overruns.
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # The test IMAP and SMTP servers the mail origin's tests run against.
 mail = { path = "../mail", features = ["fake-servers"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

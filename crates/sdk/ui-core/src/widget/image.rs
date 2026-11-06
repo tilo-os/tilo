@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use crate::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, ImageBrush, ImageData as PenikoImage};
 
 use crate::presence::PresenceCtx;
@@ -144,6 +144,10 @@ pub struct Image {
     /// an explicitly sized viewport or card.
     fill_parent: bool,
     icon_size: Option<super::IconSize>,
+    /// The radius its corners are cut to, in the pixels of the rect it is
+    /// drawn in, when it shows as a tile (a cover, a thumbnail) rather than as
+    /// a bare picture.
+    corner_radius: Option<f32>,
     layout_scale: f32,
 }
 
@@ -162,6 +166,7 @@ impl Image {
             alt: None,
             fill_parent: false,
             icon_size: None,
+            corner_radius: None,
             layout_scale: 1.0,
         }
     }
@@ -183,6 +188,7 @@ impl Image {
             alt: None,
             fill_parent: false,
             icon_size: None,
+            corner_radius: None,
             layout_scale: 1.0,
         }
     }
@@ -244,6 +250,7 @@ impl Image {
             alt: None,
             fill_parent: false,
             icon_size: None,
+            corner_radius: None,
             layout_scale: 1.0,
         })
     }
@@ -261,6 +268,7 @@ impl Image {
             alt: None,
             fill_parent: false,
             icon_size: None,
+            corner_radius: None,
             layout_scale: 1.0,
         }
     }
@@ -360,6 +368,20 @@ impl Image {
     pub fn filling(mut self) -> Self {
         self.fill_parent = true;
         self
+    }
+
+    /// Cut the picture's corners to `radius` pixels of its own rect, so a
+    /// cover or a thumbnail sits in a rounded tile instead of a square one. It
+    /// clips the picture, never resizes it.
+    #[must_use]
+    pub fn with_corner_radius(mut self, radius: f32) -> Self {
+        self.corner_radius = Some(radius.max(0.0));
+        self
+    }
+
+    /// [`Self::with_corner_radius`] after construction.
+    pub fn set_corner_radius(&mut self, radius: Option<f32>) {
+        self.corner_radius = radius.map(|radius| radius.max(0.0));
     }
 
     /// Set the alternative text describing the image; `None` leaves it decorative.
@@ -529,18 +551,28 @@ impl Image {
             }
         };
 
-        // For Cover, push a clip so the oversized image is cropped to
-        // the widget rect. Fill/Contain don't overflow, so no clip is
-        // needed.
-        let needs_clip = matches!(self.fit, ImageFit::Cover);
-        if needs_clip {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
+        // Cover overflows its rect and is cropped to it; a rounded tile crops
+        // to its corners. Fill and Contain stay inside either way.
+        let clip = self
+            .corner_radius
+            .map(|radius| RoundedRect::from_rect(self.rect, f64::from(radius)));
+        let needs_clip = matches!(self.fit, ImageFit::Cover) || clip.is_some();
+        match &clip {
+            Some(rounded) => scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                rounded,
+            ),
+            None if needs_clip => scene.push_layer(
+                Fill::NonZero,
                 vello::peniko::BlendMode::default(),
                 1.0,
                 transform,
                 &self.rect,
-            );
+            ),
+            None => {}
         }
 
         if let Source::Vector(vector) = &self.source {
