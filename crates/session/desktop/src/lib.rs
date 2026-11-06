@@ -55,6 +55,7 @@ pub mod topbar;
 pub mod window_flight;
 pub mod window_switcher;
 pub mod workspace_menu;
+mod workspace_names;
 pub mod workspace_settings;
 
 // The workspace history pane, the notification stack and centre, the
