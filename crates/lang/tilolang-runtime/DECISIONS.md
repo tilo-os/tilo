@@ -205,27 +205,6 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   per-workspace resource of that type (`tilolang_tilo::host::Package::main`), replacing the old
   `view main` convention.
 
-## Seen marks
-
-- **Every change someone else made is marked** (task-legibility.md §4), a person's and an
-  agent's alike, for every type: `seen::is_marked` is `version.who != person`. A type declares
-  nothing for it, so the earlier `mark others` line is gone from the language; a workspace is
-  shared by default, and a reader who is told what a colleague changed can deal with it as they
-  deal with an agent's. What the person made themselves is never marked: their own change is
-  the newest they have seen of it.
-- **What the person made or looked at is what can be marked**: a resource they created or
-  changed, or looked at, and someone else changed after (`seen::unseen`). A resource they
-  neither made nor looked at is new to them, not changed under their hands; a row of one says
-  it was made (`kind: created`) and the open count already says it is there. "Since you last
-  looked" needs a look, or a hand.
-- **A place shows how many of what it lists changed under the person's hands**
-  (`unseen(items)`): the items of a collection or of a list that carry a change after their
-  mark, counted from the store's index of the resources each person made that someone else
-  changed last, and from the person's marks. It is never answered by checking the place's items
-  one by one: a place's count costs what the person has made and seen, not what the place
-  holds, so a place of any size counts in the same time, and a reader who made and looked at
-  nothing counts nothing however much it holds.
-
 ## Performance by default
 
 What a host relies on. A tilolang app that misses a budget is a bug in the runtime.

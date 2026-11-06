@@ -58,7 +58,6 @@ mod tasks;
 mod undo_own;
 mod unions;
 mod unsaved;
-mod unseen;
 mod upgrade;
 mod views_migration;
 mod words;

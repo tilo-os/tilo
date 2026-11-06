@@ -152,6 +152,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             component: "shell".into(),
             layer: layer.into(),
             info: Some(session.clone()),
+            partner: None,
         };
         let applied = client.call(swap(&v1)).unwrap();
         assert_eq!(
@@ -211,6 +212,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
             component: "fs".into(),
             layer: fs_layer.clone(),
             info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
+            partner: None,
         }));
         assert_eq!(error.code, code::SCOPE);
         assert!(
@@ -225,6 +227,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 component: "fs".into(),
                 layer: fs_layer,
                 info: Some(ComponentInfo::new(Scope::Vm, vec!["fs.service".into()])),
+                partner: None,
             })
             .unwrap();
         assert_eq!(vm.policy, Policy::VmRefresh);
@@ -406,6 +409,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 component: "kernel".into(),
                 layer: layer.clone(),
                 info: Some(kernel.clone()),
+                partner: None,
             })
             .unwrap();
         assert!(swapped.changed);
@@ -438,6 +442,7 @@ fn slot_and_kernel_lifecycles_over_stdio() {
                 component: "kernel".into(),
                 layer,
                 info: Some(kernel),
+                partner: None,
             })
             .unwrap();
         assert!(!again.changed && again.boot.is_none());
@@ -598,6 +603,7 @@ fn the_device_slot_is_the_machines_own_session() {
             component: "shell".into(),
             layer,
             info: Some(ComponentInfo::new(Scope::Session, vec![])),
+            partner: None,
         }));
         assert_eq!(error.code, code::NOT_FOUND);
         assert!(error.hint.contains("board"), "{}", error.hint);
@@ -628,6 +634,7 @@ fn the_device_slot_is_the_machines_own_session() {
             component: "shell".into(),
             layer: layer.into(),
             info: Some(ComponentInfo::new(Scope::Session, vec![])),
+            partner: None,
         };
         let applied = client.call(swap(&v1)).unwrap();
         assert_eq!(
@@ -955,6 +962,7 @@ fn booting_another_image_keeps_slots_and_layers_over_stdio() {
                 component: "shell".into(),
                 layer: shell.clone(),
                 info: Some(ComponentInfo::new(Scope::Session, vec![])),
+                partner: None,
             })
             .unwrap();
         assert_eq!(applied.generation, 1);

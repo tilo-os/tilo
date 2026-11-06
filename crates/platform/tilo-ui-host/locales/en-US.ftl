@@ -92,7 +92,6 @@ tilolang-empty-value = Empty
 tilolang-yes = Yes
 tilolang-no = No
 tilolang-history = History
-tilolang-since-looked = Since you last looked
 tilolang-history-changes = { $count ->
     [one] 1 change
    *[other] { $count } changes

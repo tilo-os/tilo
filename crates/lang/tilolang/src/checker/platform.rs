@@ -161,51 +161,15 @@ impl Checker<'_> {
         Ex::host(Imp::Steps, vec![r], Ty::List(Box::new(host_ty("Step"))))
     }
 
-    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those
-    /// someone else made after the person's seen mark of `r` and after their own last change of
-    /// it (task-legibility.md §2, §4). A view that reads it runs again when either moves.
-    ///
-    /// `unseen(items)`: how many of a collection's items, or of a list's, are unseen in that
-    /// way: what a place of the sidebar says beside what it holds.
+    /// `unseen(r)`: the versions of `r` the person looking has not seen, oldest first: those a
+    /// task run or an agent made after the person's seen mark of `r` and after their own last
+    /// change of it (task-legibility.md §2, §4). A view that reads it runs again when either
+    /// moves.
     pub(super) fn builtin_unseen(&mut self, args: &[ast::Arg], span: Span) -> Ex {
-        let [a] = args else {
-            self.err(
-                "E022",
-                span,
-                "`unseen` takes one resource, or a collection or list of them: `unseen(r)`, `unseen(items)`",
-            );
+        let Some(r) = self.resource_arg("unseen", args, span) else {
             return Ex::error();
         };
-        if a.name.is_some() {
-            self.err(
-                "E022",
-                a.value.span,
-                "`unseen` takes what it counts by position: `unseen(items)`",
-            );
-        }
-        let items = self.expr(&a.value, None);
-        match &items.ty {
-            Ty::Record(_) => Ex::host(
-                Imp::Unseen,
-                vec![items],
-                Ty::List(Box::new(host_ty("Version"))),
-            ),
-            Ty::List(item) | Ty::Collection(item) if matches!(**item, Ty::Record(_)) => {
-                Ex::host(Imp::UnseenCount, vec![items], Ty::Int)
-            }
-            Ty::Error => Ex::error(),
-            other => {
-                let t = self.show(other);
-                self.err(
-                    "E020",
-                    a.value.span,
-                    format!(
-                        "`unseen` takes a resource, or a collection or list of resources; this is {t}"
-                    ),
-                );
-                Ex::error()
-            }
-        }
+        Ex::host(Imp::Unseen, vec![r], Ty::List(Box::new(host_ty("Version"))))
     }
 
     /// `changes(of: run)`: every version the task run made, of every resource, oldest first.

@@ -136,16 +136,6 @@ impl ViewStates {
         self.slots.get(key).map(|(v, _)| v)
     }
 
-    /// The slots `person` holds under `window`, each with its generation: what a reading made
-    /// of them depends on.
-    pub fn slots_of(&self, window: &str, principal: &str) -> Vec<(StateKey, Value, u64)> {
-        self.slots
-            .iter()
-            .filter(|(key, _)| key.window == window && key.principal.as_deref() == Some(principal))
-            .map(|(key, (value, generation))| (key.clone(), value.clone(), *generation))
-            .collect()
-    }
-
     /// The slot's generation: 0 until it is first set, then larger after every change.
     pub fn generation(&self, key: &StateKey) -> u64 {
         let slot = self.slots.get(key).map_or(0, |(_, g)| *g);

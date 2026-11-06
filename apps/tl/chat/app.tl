@@ -16,7 +16,7 @@ type Category {
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
-/// so it is unseen to everyone but its author: the sidebar counts the new ones.
+/// so `mark others` makes it unseen to everyone but its author: the sidebar counts the new ones.
 type TextChannel {
     name: Text (title)
     topic: Text
@@ -24,6 +24,10 @@ type TextChannel {
     /// The threads its messages started, each the one a message's `thread` names.
     /// TODO(language): an owned `Option<Thread>` on the message; a reference needs a home.
     threads: Collection<Thread>
+
+    search {
+        mark others
+    }
 }
 
 /// A message. Who wrote it, when, and its edits come from the log.
@@ -46,6 +50,7 @@ type Message {
 
     search {
         filter pinned (icon: .pin)
+        mark others
     }
 }
 
@@ -67,6 +72,10 @@ type Direct {
     person: Principal
     messages: Collection<Message>
     threads: Collection<Thread>
+
+    search {
+        mark others
+    }
 }
 
 /// A piece of a message from before messages were rich text: its text, or a block's source.

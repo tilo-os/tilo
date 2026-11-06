@@ -3,7 +3,7 @@
 //! resource it made, changed or removed; each other step on the record (an undo, a revert) a
 //! version of each resource it wrote.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ANY_FIELD, Left, Version, VersionKind};
@@ -37,40 +37,11 @@ pub(super) fn note_versions<'c>(
             if version.kind == VersionKind::Removed {
                 version.left = index.placed.get(&version.resource).cloned();
             }
-            let resource = version.resource.clone();
-            let who = version.who.clone();
             index
                 .by_resource
-                .entry(resource.clone())
+                .entry(version.resource.clone())
                 .or_default()
                 .push(version);
-            // Whose hands it stands under: the persons who made a version of it, each told
-            // when someone else's version is the newest. A resource only one person made has
-            // nobody to count it for.
-            let Versions {
-                by_resource: _,
-                placed: _,
-                authors,
-                changed_since,
-            } = index;
-            if !who.is_empty() {
-                authors
-                    .entry(resource.clone())
-                    .or_default()
-                    .insert(who.clone());
-                for author in authors.entry(resource.clone()).or_default().iter() {
-                    if *author == who {
-                        if let Some(resources) = changed_since.get_mut(author) {
-                            resources.remove(&resource);
-                        }
-                    } else {
-                        changed_since
-                            .entry(author.clone())
-                            .or_default()
-                            .insert(resource.clone());
-                    }
-                }
-            }
         }
         for (item, holder, field, ty) in idx::reflect::placed_of(change) {
             let ty = ty.or_else(|| index.placed.get(&item).and_then(|left| left.ty.clone()));
@@ -79,20 +50,11 @@ pub(super) fn note_versions<'c>(
     }
 }
 
-/// The versions of every resource, where each item was last placed, and under whose hands each
-/// resource stands.
+/// The versions of every resource, and where each item was last placed.
 #[derive(Default)]
 pub(crate) struct Versions {
     pub(crate) by_resource: HashMap<String, Vec<Version>>,
     placed: HashMap<String, Left>,
-    /// Who made a version of each resource, so a change by someone else lands under the hands
-    /// of everyone who made it before.
-    authors: HashMap<String, BTreeSet<String>>,
-    /// Per person, the resources they made a version of that someone else changed last: what a
-    /// place counts as changed under their hands since they last looked. A resource nobody else
-    /// changed stands under nobody's hands, so the set costs what a person has seen, not what
-    /// the workspace holds.
-    pub(crate) changed_since: HashMap<String, BTreeSet<String>>,
 }
 
 /// The versions a step on the record that is no action of a package made (an undo, a revert):

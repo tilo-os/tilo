@@ -1211,6 +1211,7 @@ impl Printer<'_> {
                     format!("sort {} {}", field.name, order.name)
                 }
                 SearchEntryKind::Hide { field } => format!("hide {}", field.name),
+                SearchEntryKind::MarkOthers => "mark others".to_owned(),
             };
             self.line(&text);
         }

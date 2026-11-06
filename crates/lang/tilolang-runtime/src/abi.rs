@@ -216,7 +216,6 @@ imports! {
     (VersionEnd, "version_end", "ii", "i"),
     (RunChanges, "run_changes", "i", "i"),
     (Unseen, "unseen", "i", "i"),
-    (UnseenCount, "unseen_count", "i", "l"),
     (FirstUnseen, "first_unseen", "iii", "i"),
     (Mentions, "mentions", "iii", "l"),
     (Steps, "steps", "i", "i"),

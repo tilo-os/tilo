@@ -43,10 +43,10 @@ pub struct Member {
 /// session set: their components are `vm`-scope, swapped into the `vm` slot
 /// and shared by every slot. Each speaks the runtime interface alone, so it
 /// is judged by the [`RUNTIME`] version of the declaration a slot reads.
-pub const VM_RUNTIME_SERVICES: &[&str] = &["fs"];
+pub use tilo_vm_protocol::VM_RUNTIME_SERVICES;
 
 /// The interface every runtime service speaks to apps.
-pub const RUNTIME: &str = "runtime";
+pub use tilo_vm_protocol::RUNTIME;
 
 /// The declaration a slot of `members` reads and whose it is: the one layer
 /// that ships it, else the image's. `Err` when two layers ship it.

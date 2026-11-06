@@ -77,10 +77,6 @@ pub struct NavItemProps {
     pub icon: Option<Icon>,
     /// How many things it holds: a quiet count in tertiary ink.
     pub count: Option<i64>,
-    /// How many of what it holds changed since the person last looked (`unseen(items)`): a
-    /// figure in the person's own colour beside the count, so a place says what is new to
-    /// them apart from what it holds. Zero shows nothing.
-    pub unseen: Option<i64>,
     /// How many things wait for attention (unread, mentions): the list's one filled badge,
     /// in the person's colour; zero shows nothing.
     pub live: Option<i64>,
@@ -124,9 +120,6 @@ impl From<NavItemProps> for NavItem {
             item = item.live_count(u32::try_from(live.max(0)).unwrap_or(u32::MAX));
         } else if let Some(count) = props.count {
             item = item.count(u32::try_from(count.max(0)).unwrap_or(u32::MAX));
-        }
-        if let Some(unseen) = props.unseen {
-            item = item.changed(u32::try_from(unseen.max(0)).unwrap_or(u32::MAX));
         }
         if props.unread {
             item = item.unread(true);

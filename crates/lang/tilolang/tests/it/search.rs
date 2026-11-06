@@ -249,7 +249,7 @@ type Entry {
                 .join("\n"),
         };
         assert!(
-            err.contains("a search block holds `filter`, `sort` and `hide` lines"),
+            err.contains("a search block holds `filter`, `sort`, `hide` and `mark` lines"),
             "`{line}` is not a search line: {err}"
         );
     }

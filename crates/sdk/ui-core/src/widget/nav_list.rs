@@ -270,10 +270,6 @@ pub struct NavItem {
     pub label: String,
     pub icon: Option<Icon>,
     pub count: Option<NavCount>,
-    /// How many of what it holds changed since the person last looked: figures in
-    /// the person's own colour beside the count, so what is new to them reads apart
-    /// from what the place holds.
-    pub changed: Option<u32>,
     /// Show the list's item actions ([`NavList::item_actions`]) on this row
     /// on hover and focus.
     pub actions: bool,
@@ -364,7 +360,6 @@ impl NavItem {
             label,
             icon: None,
             count: None,
-            changed: None,
             actions: true,
             children: Vec::new(),
             expanded: false,
@@ -415,14 +410,6 @@ impl NavItem {
     #[must_use]
     pub fn live_count(mut self, count: u32) -> Self {
         self.count = (count > 0).then_some(NavCount::Live(count));
-        self
-    }
-
-    /// How many of what it holds changed since the person last looked. Zero shows
-    /// nothing.
-    #[must_use]
-    pub fn changed(mut self, changed: u32) -> Self {
-        self.changed = (changed > 0).then_some(changed);
         self
     }
 
