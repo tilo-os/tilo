@@ -107,7 +107,7 @@ pub use claim::{
 };
 pub use commit::{
     COMMIT_RECORD_KIND, COMMIT_VERSION, CommitAction, CommitAuthor, CommitError, CommitPart,
-    MAX_COMMIT_BYTES, WorkspaceCommit,
+    MAX_COMMIT_BYTES, UnitMutation, WorkspaceCommit,
 };
 pub use compaction::{
     CompactionCheckpoint, CompactionError, SEALED_COMPACTION_VERSION, SealedCompaction,

@@ -89,6 +89,17 @@ impl CommitPart {
     }
 }
 
+/// One unit and what changed in it, as the publisher of a pass holds it.
+#[derive(Clone, Copy)]
+pub struct UnitMutation<'a> {
+    /// The app whose record the unit belongs to.
+    pub app: &'a str,
+    /// The record the unit belongs to.
+    pub record: &'a str,
+    /// What changed in the unit during the pass.
+    pub mutation: &'a DocumentMutation,
+}
+
 /// One signed action across every unit it wrote.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -186,67 +197,99 @@ impl WorkspaceCommit {
         author: &CommitAuthor,
         mutation: &DocumentMutation,
     ) -> Result<Option<Self>, CommitError> {
-        let DocumentMutation::Incremental(bytes) = mutation else {
-            return Ok(None);
+        let unit = UnitMutation {
+            app,
+            record,
+            mutation,
         };
-        let changes =
-            claim::parse_changes(bytes).map_err(|error| CommitError::Unnamed(error.to_string()))?;
-        if changes.is_empty() {
-            return Ok(None);
-        }
-        let mut names = Vec::new();
-        let mut item = None;
-        let mut invocation = None;
-        let mut principal = author.principal.clone();
-        let mut hashes = Vec::with_capacity(changes.len());
-        for change in &changes {
-            let claim = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
-                .map_err(|error| CommitError::Unnamed(error.to_string()))?;
-            hashes.push(change.hash().0);
-            if names.is_empty() {
-                names = claim
-                    .action
-                    .named()
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .filter(|name| !name.is_empty())
-                    .collect();
-            }
-            if item.is_none() {
-                item = claim.action.named().into_iter().find_map(|(_, item)| item);
-            }
-            // The first change that says who invoked it speaks for the
-            // action: every change of one action shares that context.
-            if (principal.is_none() || invocation.is_none())
-                && let Some(context) = change
-                    .message()
-                    .and_then(tilo_actions::ActionContext::from_change_message)
+        Ok(
+            Self::of_units(workspace, author, std::slice::from_ref(&unit))?
+                .into_iter()
+                .next()
+                .flatten(),
+        )
+    }
+
+    /// The commit each unit of one publication pass travels under: one entry
+    /// per entry of `units`, in that order. `None` for a unit that carries no
+    /// change (a snapshot, or an empty set).
+    ///
+    /// The units one action wrote share one commit, which names every one of
+    /// them as a part, so a peer applies all of the action or none. Units
+    /// belong to one action when every change of each ran under the same
+    /// invocation; a unit whose changes ran under several invocations, or
+    /// none, travels under a commit of its own.
+    ///
+    /// `author` names who publishes. Its `device` may be left as zeros by a
+    /// caller that holds no signing key: the transport signs the frame and
+    /// stamps the device it signs with.
+    ///
+    /// # Errors
+    /// [`CommitError::Unnamed`] for a change that names no action.
+    pub fn of_units(
+        workspace: &str,
+        author: &CommitAuthor,
+        units: &[UnitMutation<'_>],
+    ) -> Result<Vec<Option<Self>>, CommitError> {
+        let read: Vec<Option<Read>> = units.iter().map(Read::of).collect::<Result<Vec<_>, _>>()?;
+        // The units of one action, by the invocation they ran under: the
+        // change each of them made names it, so two units a person's one
+        // action wrote are one action here. A unit that ran under none, or
+        // under several, is an action of its own.
+        let mut groups: Vec<(Option<uuid::Uuid>, Vec<usize>)> = Vec::new();
+        for (index, unit) in read.iter().enumerate() {
+            let Some(signature) = unit.as_ref().and_then(|unit| unit.signature) else {
+                if unit.is_some() {
+                    groups.push((None, vec![index]));
+                }
+                continue;
+            };
+            match groups
+                .iter_mut()
+                .find(|(known, _)| *known == Some(signature))
             {
-                if principal.is_none() {
-                    principal = context
-                        .invoker
-                        .as_ref()
-                        .map(|invoker| invoker.actor.clone());
-                }
-                if invocation.is_none() {
-                    invocation = context.source_invocation.map(|id| id.0);
+                Some((_, group)) => group.push(index),
+                None => groups.push((Some(signature), vec![index])),
+            }
+        }
+        let mut commits: Vec<Option<Self>> = vec![None; read.len()];
+        for (_, group) in groups {
+            let action = group
+                .first()
+                .and_then(|index| read.get(*index))
+                .and_then(Option::as_ref);
+            let Some(action) = action else {
+                continue;
+            };
+            let parts: Vec<&Read> = group
+                .iter()
+                .filter_map(|index| read.get(*index).and_then(Option::as_ref))
+                .collect();
+            let commit = Self::of_parts(workspace, author, action, &parts);
+            for index in group {
+                if let Some(slot) = commits.get_mut(index) {
+                    *slot = Some(commit.clone());
                 }
             }
         }
+        Ok(commits)
+    }
+
+    /// The commit that names `parts` as the action the first of them names.
+    fn of_parts(workspace: &str, author: &CommitAuthor, first: &Read, parts: &[&Read]) -> Self {
         let action = CommitAction {
-            name: names.join(", "),
-            item,
-            invocation,
+            name: first.names.join(", "),
+            item: parts.iter().find_map(|part| part.item.clone()),
+            invocation: first.invocation,
         };
+        let principal = parts
+            .iter()
+            .find_map(|part| part.principal.clone())
+            .or_else(|| author.principal.clone());
         // The author's own change times, so every peer reads one time for the
         // action and a restarted one reads the same.
-        let at_ms = changes
-            .iter()
-            .map(|change| u64::try_from(change.timestamp()).unwrap_or(0))
-            .max()
-            .unwrap_or(0)
-            .saturating_mul(1000);
-        Ok(Some(Self::new(
+        let at_ms = parts.iter().map(|part| part.at_ms).max().unwrap_or(0);
+        Self::new(
             workspace,
             CommitAuthor {
                 principal,
@@ -254,12 +297,8 @@ impl WorkspaceCommit {
             },
             at_ms,
             action,
-            vec![CommitPart {
-                app: app.to_owned(),
-                record: record.to_owned(),
-                changes: hashes,
-            }],
-        )))
+            parts.iter().map(|part| part.part.clone()).collect(),
+        )
     }
 
     /// The commit's canonical bytes: what a host stores, and what its id
@@ -438,6 +477,103 @@ impl WorkspaceCommit {
     }
 }
 
+/// One unit's changes, read for the commit that names them.
+struct Read {
+    /// The unit as the commit names it: which app's record, which changes.
+    part: CommitPart,
+    /// The one invocation every change of the unit ran under, when they all
+    /// ran under the same one: the action they are all part of.
+    signature: Option<uuid::Uuid>,
+    /// The names the unit's changes gave the action.
+    names: Vec<String>,
+    /// The item inside its resource the action addressed, when it named one.
+    item: Option<String>,
+    /// The invocation the unit's changes ran under, when one admitted them.
+    invocation: Option<uuid::Uuid>,
+    /// Who invoked the action.
+    principal: Option<String>,
+    /// When its latest change was made, in milliseconds since the Unix epoch.
+    at_ms: u64,
+}
+
+impl Read {
+    fn of(unit: &UnitMutation<'_>) -> Result<Option<Self>, CommitError> {
+        let DocumentMutation::Incremental(bytes) = unit.mutation else {
+            return Ok(None);
+        };
+        let changes =
+            claim::parse_changes(bytes).map_err(|error| CommitError::Unnamed(error.to_string()))?;
+        if changes.is_empty() {
+            return Ok(None);
+        }
+        let mut read = Self {
+            part: CommitPart {
+                app: unit.app.to_owned(),
+                record: unit.record.to_owned(),
+                changes: Vec::with_capacity(changes.len()),
+            },
+            signature: None,
+            names: Vec::new(),
+            item: None,
+            invocation: None,
+            principal: None,
+            at_ms: 0,
+        };
+        let mut one_action = true;
+        let mut first = None;
+        for (position, change) in changes.iter().enumerate() {
+            let claim = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
+                .map_err(|error| CommitError::Unnamed(error.to_string()))?;
+            read.part.changes.push(change.hash().0);
+            let claimed = claim.action.named();
+            let names: Vec<String> = claimed
+                .iter()
+                .map(|(name, _)| name.clone())
+                .filter(|name| !name.is_empty())
+                .collect();
+            if read.names.is_empty() {
+                read.names.clone_from(&names);
+            }
+            if read.item.is_none() {
+                read.item = claimed.into_iter().find_map(|(_, item)| item);
+            }
+            read.at_ms = read.at_ms.max(
+                u64::try_from(change.timestamp())
+                    .unwrap_or(0)
+                    .saturating_mul(1000),
+            );
+            let context = change
+                .message()
+                .and_then(tilo_actions::ActionContext::from_change_message);
+            let Some(context) = context else {
+                // A change no door admitted names no action: the unit says
+                // nothing of which action it is part of.
+                one_action = false;
+                continue;
+            };
+            // The first change that says who invoked it speaks for the
+            // action: every change of one action shares that context.
+            if read.principal.is_none() {
+                read.principal = context
+                    .invoker
+                    .as_ref()
+                    .map(|invoker| invoker.actor.clone());
+            }
+            if read.invocation.is_none() {
+                read.invocation = context.source_invocation.map(|id| id.0);
+            }
+            let ran_under = context.source_invocation.map(|id| id.0);
+            if position == 0 {
+                first = ran_under;
+            } else if first != ran_under {
+                one_action = false;
+            }
+        }
+        read.signature = one_action.then_some(first).flatten();
+        Ok(Some(read))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,6 +634,134 @@ mod tests {
         assert!(!commit.covers("tasks", "c"));
         assert_eq!(commit.part("tasks", "b"), Some(&part("tasks", "b", 2)));
         assert_eq!(commit.author, author([7; 32]));
+    }
+
+    /// Write one change of `field` = `value` into `doc`, as the action
+    /// `field` invoked under `invocation` made it.
+    fn action_change(
+        doc: &mut automerge::AutoCommit,
+        field: &str,
+        value: &str,
+        invocation: InvocationId,
+    ) {
+        use automerge::transaction::Transactable as _;
+        doc.put(automerge::ROOT, field, value).unwrap();
+        let context = ActionContext {
+            what: Some(Did::Edit(FieldEdit {
+                ty: "tasks".to_owned(),
+                field: field.to_owned(),
+                path: vec![tilo_actions::PathStep::Field(field.to_owned())],
+                op: tilo_actions::EditOp::Set,
+                old: None,
+                new: None,
+                args: std::collections::BTreeMap::new(),
+            })),
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            source_invocation: Some(invocation),
+            ..ActionContext::for_resource("tasks", "tasks", field)
+        };
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
+        options.set_message(context.change_message().unwrap());
+        doc.commit_with(options).unwrap();
+    }
+
+    /// The mutation one action made in a unit holding `field` = `value`.
+    fn action_mutation(field: &str, value: &str, invocation: InvocationId) -> DocumentMutation {
+        let mut doc = automerge::AutoCommit::new();
+        action_change(&mut doc, field, value, invocation);
+        DocumentMutation::Incremental(doc.save_after(&[]))
+    }
+
+    #[test]
+    fn the_units_of_one_action_share_one_commit() {
+        let invocation = InvocationId::new();
+        let other = InvocationId::new();
+        let title = action_mutation("title", "a", invocation);
+        let body = action_mutation("body", "b", invocation);
+        let elsewhere = action_mutation("title", "c", other);
+        let mut both = automerge::AutoCommit::new();
+        action_change(&mut both, "title", "d", invocation);
+        action_change(&mut both, "body", "e", other);
+        let mixed = DocumentMutation::Incremental(both.save_after(&[]));
+        let snapshot = DocumentMutation::Snapshot(Vec::new());
+        let units = [
+            UnitMutation {
+                app: "tasks",
+                record: "a",
+                mutation: &title,
+            },
+            UnitMutation {
+                app: "tasks",
+                record: "b",
+                mutation: &body,
+            },
+            UnitMutation {
+                app: "chat",
+                record: "t",
+                mutation: &elsewhere,
+            },
+            UnitMutation {
+                app: "tasks",
+                record: "mixed",
+                mutation: &mixed,
+            },
+            UnitMutation {
+                app: "tasks",
+                record: "s",
+                mutation: &snapshot,
+            },
+        ];
+        let commits = WorkspaceCommit::of_units("workspace", &author([0; 32]), &units).unwrap();
+        assert_eq!(commits.len(), units.len(), "one entry per unit");
+
+        let action = commits[0]
+            .as_ref()
+            .expect("a unit that changed travels under a commit");
+        assert_eq!(
+            commits[1].as_ref(),
+            Some(action),
+            "both units the action wrote travel under its one commit"
+        );
+        assert_eq!(action.parts.len(), 2);
+        assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
+        assert_eq!(action.parts[0].changes, vec![change_of(&title)]);
+        assert_eq!(action.action.invocation, Some(invocation.0));
+        assert_eq!(action.action.name, "title");
+        assert_eq!(action.author.principal.as_deref(), Some("alice"));
+        assert_eq!(
+            action.author.device, [0; 32],
+            "the transport stamps the device"
+        );
+        assert_eq!(
+            action.at_ms, 1_700_000_000_000,
+            "the action's own change time"
+        );
+        assert_eq!(
+            WorkspaceCommit::decode(&action.encode()).as_ref(),
+            Ok(action),
+            "a commit of an action's units is a valid commit"
+        );
+
+        let single = commits[2].as_ref().expect("another action, another commit");
+        assert_ne!(single.id(), action.id());
+        assert_eq!(single.parts.len(), 1);
+        let mixed = commits[3]
+            .as_ref()
+            .expect("a unit of several actions keeps a commit of its own");
+        assert_eq!(mixed.parts.len(), 1, "it joins neither of its actions");
+        assert_ne!(mixed.id(), action.id());
+        assert_eq!(commits[4], None, "a unit that carries no change has none");
+    }
+
+    /// The one change `mutation` carries.
+    fn change_of(mutation: &DocumentMutation) -> [u8; 32] {
+        let DocumentMutation::Incremental(bytes) = mutation else {
+            return [0; 32];
+        };
+        claim::parse_changes(bytes)
+            .ok()
+            .and_then(|changes| changes.first().map(|change| change.hash().0))
+            .unwrap_or_default()
     }
 
     #[test]

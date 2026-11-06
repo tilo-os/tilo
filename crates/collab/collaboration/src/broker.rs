@@ -5567,9 +5567,14 @@ async fn send_document_mutation(
 }
 
 /// The commit this publication carries: the action across every unit its
-/// caller made it as, or one this unit alone. A caller that names another
-/// device, or a commit naming another unit, publishes its change without
-/// one: the change must not be lost because its action was described wrong.
+/// caller made it as, or one this unit alone. A caller that names a commit
+/// that does not cover this unit publishes its change without one: the change
+/// must not be lost because its action was described wrong.
+///
+/// The device is the one this transport signs with: a publisher holds no
+/// signing key, so the commit a caller declares names the device as zeros and
+/// the broker stamps it here. The device signature over the payload then
+/// signs the commit, and a receiver reads the author off that signature.
 fn origin_commit(
     route: &SdkRoute,
     signer: &LocalSdkDocumentSigner,
@@ -5579,14 +5584,15 @@ fn origin_commit(
     let app = route.spec.app_id.as_str();
     let record = route.spec.record.as_deref().unwrap_or("");
     let device = signer_device(signer);
-    if let Some(commit) = declared {
-        if commit.author.device == device && commit.covers(app, record) {
+    if let Some(mut commit) = declared {
+        if commit.covers(app, record) {
+            commit.author.device = device;
             return Some(commit);
         }
         tracing::error!(
             app,
             record,
-            "collab: refusing to publish an action commit this device or unit is not part of; sending the change alone"
+            "collab: refusing to publish an action commit this unit is not part of; sending the change alone"
         );
         return None;
     }

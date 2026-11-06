@@ -7,7 +7,10 @@
 //! commit's own order, so an app never applies half an action and every peer
 //! that can read all parts applies them in the same order. A peer that
 //! receives only some parts keeps the ones it has, undelivered, until the
-//! rest come.
+//! rest come. A part that comes again on its own — a publisher that sent it
+//! in a later pass, under a commit of its own or none — still completes the
+//! action it was held for, so one action stays one action however its parts
+//! were retried.
 //!
 //! The log is also the action log history reads: [`Commits::history`] names
 //! one action with its author, its time, the action it ran and every unit
@@ -78,6 +81,18 @@ pub(crate) fn gate(
     unit: (&str, &str),
     event: CollabEvent,
 ) -> Delivery {
+    // The part a held action waits for is here, named by another commit or
+    // by none: the action goes on with it. A publisher that could not send
+    // every part of an action in one pass sends the rest later, and it is
+    // still one action.
+    let held = state.commits().holding(unit, claims);
+    if let Some(held) = held
+        && commit
+            .as_ref()
+            .is_none_or(|commit| commit.id() != held.id())
+    {
+        return state.commits().arrive(held, unit, event);
+    }
     let Some(commit) = commit else {
         return Delivery::Now(event);
     };
@@ -95,6 +110,27 @@ pub(crate) fn gate(
 }
 
 impl Commits {
+    /// The action this endpoint holds a part of for `unit`, when every change
+    /// that part names is among `claims`: the part arrived again, so the
+    /// action it is part of can go on.
+    pub(crate) fn holding(
+        &self,
+        unit: (&str, &str),
+        claims: &[[u8; 32]],
+    ) -> Option<WorkspaceCommit> {
+        if claims.is_empty() {
+            return None;
+        }
+        self.held
+            .iter()
+            .find(|held| {
+                held.commit
+                    .part(unit.0, unit.1)
+                    .is_some_and(|part| part.changes.iter().all(|change| claims.contains(change)))
+            })
+            .map(|held| held.commit.clone())
+    }
+
     /// Note the arrival of one part of `commit` on the unit `(app, record)`,
     /// keeping its `event` until the action's other parts are here.
     pub(crate) fn arrive(
@@ -241,7 +277,7 @@ mod tests {
             source_invocation: Some(invocation),
             ..ActionContext::for_resource("tasks", "tasks", field)
         };
-        let mut options = automerge::transaction::CommitOptions::default();
+        let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
         options.set_message(context.change_message().unwrap());
         let hash = doc.commit_with(options).unwrap();
         (doc, hash.0)
@@ -328,36 +364,82 @@ mod tests {
         }
     }
 
+    /// One action that wrote two units, and the commit the publisher sends
+    /// with them: the two replicas it changed, and one commit naming both.
     fn two_unit_action() -> (WorkspaceCommit, AutoCommit, AutoCommit) {
         let invocation = InvocationId(uuid::Uuid::from_u128(11));
-        let (first, first_change) = record("title", "child", invocation);
-        let (second, second_change) = record("body", "text", invocation);
-        let commit = WorkspaceCommit::new(
-            WORKSPACE,
-            collab_types::CommitAuthor {
-                principal: Some("alice".to_owned()),
-                device: DEVICE,
+        let (first, _) = record("title", "child", invocation);
+        let (second, _) = record("body", "text", invocation);
+        let first_mutation = mutation(&mut first.clone());
+        let second_mutation = mutation(&mut second.clone());
+        let units = [
+            collab_types::UnitMutation {
+                app: "tasks",
+                record: "a",
+                mutation: &first_mutation,
             },
-            1_700_000_000_000,
-            collab_types::CommitAction {
-                name: "title".to_owned(),
-                item: None,
-                invocation: Some(invocation.0),
+            collab_types::UnitMutation {
+                app: "discussion",
+                record: "thread",
+                mutation: &second_mutation,
             },
-            vec![
-                CommitPart {
-                    app: "tasks".to_owned(),
-                    record: "a".to_owned(),
-                    changes: vec![first_change],
-                },
-                CommitPart {
-                    app: "tasks".to_owned(),
-                    record: "b".to_owned(),
-                    changes: vec![second_change],
-                },
-            ],
-        );
+        ];
+        let author = publisher();
+        let commit = WorkspaceCommit::of_units(WORKSPACE, &author, &units)
+            .unwrap()
+            .remove(0)
+            .expect("a unit that changed travels under its action's commit");
         (commit, first, second)
+    }
+
+    /// Who publishes from this device.
+    fn publisher() -> collab_types::CommitAuthor {
+        collab_types::CommitAuthor {
+            principal: None,
+            device: DEVICE,
+        }
+    }
+
+    #[test]
+    fn a_part_retried_alone_completes_the_action_it_was_held_for() {
+        let (commit, first, second) = two_unit_action();
+        let state = BridgeState::new();
+        let mut peer = AutoCommit::new();
+        let part_a = publication(&commit, "tasks", "a", &first, 1);
+        assert!(
+            !deliver(&state, &part_a, "tasks", "a", &mut peer),
+            "the first part alone is not applied"
+        );
+        assert_eq!(state.commits().held_parts(), 1);
+
+        // The publisher could not send the second part with the first, and
+        // sends it in a later pass under a commit naming it alone: the action
+        // it was part of is still one action, and completes.
+        let alone = WorkspaceCommit::of_units(
+            WORKSPACE,
+            &publisher(),
+            &[collab_types::UnitMutation {
+                app: "discussion",
+                record: "thread",
+                mutation: &mutation(&mut second.clone()),
+            }],
+        )
+        .unwrap()
+        .remove(0)
+        .expect("the part's own commit");
+        let retried = publication(&alone, "discussion", "thread", &second, 2);
+        assert!(
+            deliver(&state, &retried, "discussion", "thread", &mut peer),
+            "the retried part completes the action"
+        );
+        assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
+        assert!(peer.get(automerge::ROOT, "body").unwrap().is_some());
+        assert_eq!(state.commits().held_parts(), 0);
+        assert_eq!(
+            state.commits().history(WORKSPACE).len(),
+            1,
+            "one action, one entry"
+        );
     }
 
     #[test]
@@ -375,9 +457,9 @@ mod tests {
         assert_eq!(peer.get(automerge::ROOT, "body").unwrap(), None);
         assert_eq!(state.commits().held_parts(), 1);
 
-        let part_b = publication(&commit, "tasks", "b", &second, 2);
+        let part_b = publication(&commit, "discussion", "thread", &second, 2);
         assert!(
-            deliver(&state, &part_b, "tasks", "b", &mut peer),
+            deliver(&state, &part_b, "discussion", "thread", &mut peer),
             "the second part completes the action"
         );
         assert!(peer.get(automerge::ROOT, "title").unwrap().is_some());
@@ -403,9 +485,9 @@ mod tests {
         );
         deliver(
             &state,
-            &publication(&commit, "tasks", "b", &second, 2),
-            "tasks",
-            "b",
+            &publication(&commit, "discussion", "thread", &second, 2),
+            "discussion",
+            "thread",
             &mut peer,
         );
 
@@ -435,9 +517,9 @@ mod tests {
         );
         deliver(
             &state,
-            &publication(&commit, "tasks", "b", &second, 2),
-            "tasks",
-            "b",
+            &publication(&commit, "discussion", "thread", &second, 2),
+            "discussion",
+            "thread",
             &mut peer,
         );
         state.commits().record(commit.clone());
