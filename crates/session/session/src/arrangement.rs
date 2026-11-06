@@ -190,25 +190,55 @@ pub struct Surface {
 /// never a search of its own (shell.md §8, "Finding what to place").
 pub type Find = Rc<dyn Fn(&str) -> Vec<tilo_desktop_search::Hit>>;
 
-/// Whether `hit` names a resource the arrangement can place: an app's own
-/// search hit, or an action hit that acts on one. This is the one test a
-/// text typed on the canvas and an agent's `find` share, so both lead with
-/// the same result.
-#[must_use]
-pub fn names_a_resource(hit: &tilo_desktop_search::Hit) -> bool {
+/// The resource `hit` names, and the name its resource goes by, when a place
+/// can make something of it: an app's own `open` of a resource, or an action
+/// that acts on one. Every other row (a settings section, a file, a window's
+/// focus, a command) names nothing a place stands.
+fn placeable(hit: &tilo_desktop_search::Hit) -> Option<(&str, &str)> {
     match &hit.target {
-        tilo_desktop_search::Target::Invoke(invoke) => {
-            invoke.address.action == tilo_desktop_search::OPEN_ACTION
+        tilo_desktop_search::Target::Invoke(invoke)
+            if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
+        {
+            let label = invoke
+                .descriptor
+                .as_ref()
+                .map_or("", |descriptor| descriptor.resource_label.as_str());
+            Some((invoke.address.resource.as_str(), label))
         }
-        tilo_desktop_search::Target::Action(_) => true,
-        _ => false,
+        tilo_desktop_search::Target::Action(action) => {
+            Some((action.resource.as_str(), action.resource_label.as_str()))
+        }
+        _ => None,
     }
 }
 
+/// Which of `hits` a text typed on the canvas places: the top one that names
+/// a resource `shows` accepts, or the one inside it that carries the same
+/// name when the text is that name.
+///
+/// This is the one ranking a text typed on the canvas and an agent's `find`
+/// share: the canvas stands this hit's resource, and `find` leads with this
+/// same hit — never with another row about the same resource. A hit the
+/// arrangement cannot place (a settings section) does not stand in the way
+/// of one it can.
+#[must_use]
+pub(crate) fn placed(
+    hits: &[tilo_desktop_search::Hit],
+    text: &str,
+    shows: impl Fn(&str) -> bool,
+) -> Option<usize> {
+    let named: Vec<(usize, &str, &str)> = hits
+        .iter()
+        .enumerate()
+        .filter_map(|(at, hit)| placeable(hit).map(|(resource, label)| (at, resource, label)))
+        .filter(|(_, resource, _)| shows(resource))
+        .collect();
+    most_specific(&named, text)
+}
+
 /// The first resource `text` finds that a place can show, as the arrangement
-/// places it: the top hit that names a resource (an app's own search hit) and
-/// that `shows` accepts, else the resource such an action hit acts on, else
-/// `None` for a query no result answers with something placeable.
+/// places it: the resource of the hit [`placed`] chooses, else `None` for a
+/// query no result answers with something placeable.
 #[must_use]
 pub fn found(
     text: &str,
@@ -216,31 +246,9 @@ pub fn found(
     shows: impl Fn(&str) -> bool,
 ) -> Option<String> {
     let hits = find(text);
-    // What a hit opens is the resource it names: an annotated entry's own
-    // anchor, or the one an action hit acts on. The best such hit the place
-    // can show wins, in the search's order: a hit the arrangement cannot
-    // place (a settings section) does not stand in the way of one it can.
-    let named: Vec<(&str, &str)> = hits
-        .iter()
-        .filter_map(|hit| match &hit.target {
-            tilo_desktop_search::Target::Invoke(invoke)
-                if invoke.address.action == tilo_desktop_search::OPEN_ACTION =>
-            {
-                let named = invoke.address.resource.as_str();
-                let label = invoke
-                    .descriptor
-                    .as_ref()
-                    .map_or("", |descriptor| descriptor.resource_label.as_str());
-                Some((named, label))
-            }
-            tilo_desktop_search::Target::Action(action) => {
-                Some((action.resource.as_str(), action.resource_label.as_str()))
-            }
-            _ => None,
-        })
-        .filter(|(resource, _)| shows(resource))
-        .collect();
-    most_specific(&named, text)
+    let at = placed(&hits, text, shows)?;
+    let (resource, _) = placeable(hits.get(at)?)?;
+    Some(resource.to_owned())
 }
 
 /// The app a window shows, by its id, when its tab holds a window at all.
@@ -255,20 +263,20 @@ pub(crate) fn tab_app(tile: &tilo_desktop_model::TileContent) -> Option<String> 
     }
 }
 
-/// The resource `text` names among the hits a place can show, each with the
-/// name its resource goes by: the top of them, or the one inside it that
-/// carries the same name when the text is that name — a note titled like the
-/// notebook it sits in is the note, while a resource the text only describes
-/// stays itself.
-fn most_specific(named: &[(&str, &str)], text: &str) -> Option<String> {
-    let (resource, label) = named.first()?;
+/// The hit `text` names among the placeable ones, each with its position in
+/// the search's order and the name its resource goes by: the top of them, or
+/// the one inside it that carries the same name when the text is that name —
+/// a note titled like the notebook it sits in is the note, while a resource
+/// the text only describes stays itself.
+fn most_specific(named: &[(usize, &str, &str)], text: &str) -> Option<usize> {
+    let (at, resource, label) = named.first()?;
     if !text.trim().eq_ignore_ascii_case(label) {
-        return Some((*resource).to_owned());
+        return Some(*at);
     }
-    let deeper = named.iter().find(|(other, other_label)| {
+    let deeper = named.iter().find(|(_, other, other_label)| {
         other != resource && other_label == label && inside(other, resource)
     });
-    Some(deeper.map_or(*resource, |(other, _)| *other).to_owned())
+    Some(deeper.map_or(*at, |(at, _, _)| *at))
 }
 
 /// Whether `resource` is a level under `other` (`inbox/m1` is under `inbox`).
@@ -1954,7 +1962,7 @@ impl ArrangementDoor {
 
 #[cfg(test)]
 mod tests {
-    use super::{found, most_specific};
+    use super::{found, most_specific, placed};
     use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
 
     /// A row text typed on the canvas would stand for: what it opens, and what it is.
@@ -1973,6 +1981,27 @@ mod tests {
             score: 0,
             icon: None,
             target: Target::Invoke(Box::new(InvokeTarget::open("test", "", resource))),
+        }
+    }
+
+    /// A row for an action an app publishes on `resource`: `find` answers it
+    /// (it is a row a caller acts on) but a place does not stand it, so it
+    /// is never what typing `text` places.
+    fn acting(resource: &str, action: &str) -> Hit {
+        Hit {
+            row: None,
+            preview: None,
+            faces: Vec::new(),
+            outcome: None,
+            kind: ResourceKind::Action,
+            provider: "test".into(),
+            id: format!("{resource}#{action}"),
+            title: action.into(),
+            subtitle: None,
+            facts: Vec::new(),
+            score: 0,
+            icon: None,
+            target: Target::Invoke(Box::new(InvokeTarget::action("test", "", resource, action))),
         }
     }
 
@@ -2000,26 +2029,49 @@ mod tests {
     }
 
     #[test]
-    fn the_text_places_what_it_names_inside_the_resource_it_sits_in() {
+    fn the_text_places_the_hit_whose_resource_it_names() {
         let named = [
-            ("notes", "Groceries"),
-            ("notes/i1", "Groceries"),
-            ("notes/i2", "Groceries"),
+            (0, "notes", "Groceries"),
+            (1, "notes/i1", "Groceries"),
+            (2, "notes/i2", "Groceries"),
         ];
         assert_eq!(
-            most_specific(&named, "Groceries").as_deref(),
-            Some("notes/i1"),
+            most_specific(&named, "Groceries"),
+            Some(1),
             "a note titled like its notebook is the note, and the top of them"
         );
         assert_eq!(
-            most_specific(&named, "my notes").as_deref(),
-            Some("notes"),
+            most_specific(&named, "my notes"),
+            Some(0),
             "a resource the text only describes stays itself"
         );
         assert_eq!(
-            most_specific(&[("inbox", "Inbox")], "inbox").as_deref(),
-            Some("inbox"),
+            most_specific(&[(0, "inbox", "Inbox")], "inbox"),
+            Some(0),
             "and the top stays when nothing inside it carries the same name"
+        );
+    }
+
+    #[test]
+    fn the_text_places_the_row_that_opens_the_resource_not_one_that_acts_on_it() {
+        // "my mails" ranks Mail's actions far above Mail's root, as the
+        // search does: the root's own row stands last of the rows about it.
+        let hits = vec![
+            acting("tl:so.tilo.lang.mail:root", "rename_label"),
+            acting("tl:so.tilo.lang.mail:root/account", "set_signature"),
+            opening("tl:so.tilo.lang.mail:root", "Mail", ResourceKind::Record),
+        ];
+        let at = placed(&hits, "my mails", |_| true);
+        assert_eq!(
+            at,
+            Some(2),
+            "the row typing the text stands is the row that opens the resource, \
+             not another row about it"
+        );
+        assert_eq!(
+            found("my mails", &|_| hits.clone(), |_| true).as_deref(),
+            Some("tl:so.tilo.lang.mail:root"),
+            "and the canvas stands its resource"
         );
     }
 }
