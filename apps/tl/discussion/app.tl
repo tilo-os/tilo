@@ -6,10 +6,10 @@ app so.tilo.lang.discussion "Discussion" (icon: .message_square, category: .offi
 /// the row of the task it is about, and the place holding it, count a new comment the way they
 /// count an edit.
 ///
-/// `(attached)` says what the rest of a workspace should think of these records: they are about
-/// what they were made from, never work made from it, so `linked` leaves them to the thread
-/// that draws them.
-type Comment (attached) {
+/// What the rest of a workspace makes of these records is the page's to say: a page that draws
+/// the thread under a resource draws what is about it there, and leaves it out of `std.linked`
+/// (`said_about`).
+type Comment {
     text: RichText (body)
 }
 
@@ -21,6 +21,8 @@ type Comments {
 root comments: Comments
 
 default view recently for comments
+
+default view comment_page for Comment
 
 row view remark for Comment
 
@@ -44,6 +46,15 @@ action edit(c: Comment, text: RichText = c.text) (icon: .pencil, label: "Edit") 
 destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Delete") {
     require created(c)?.who == .some(invoker) "Only its author can delete a comment"
     all.items.remove(c)
+}
+
+/// What the thread under `about` draws: the comments made from it, which a page that draws the
+/// thread leaves out of `std.linked` (`without`), so what is said about a resource is drawn
+/// once. The query is `linked`'s, as `thread`'s is: what the index says links to `about` and is
+/// one of these comments.
+fn said_about(about: host.Resource) -> List<host.Resource> {
+    let said = comments.filter(c -> created(c)?.from == .some(about))
+    linked(about).filter(l -> said.any(c -> l.of == c)).map(l -> l.of)
 }
 
 /// What people said about `about`, oldest first — each with the face of who said it, when, what
@@ -77,8 +88,8 @@ view thread(about: host.Resource) {
     }
 }
 
-/// One comment of a thread: who said it and when over what they said, and what its author can do
-/// to it while they are over it.
+/// One comment of a thread: who said it and when over what they said — in an editor while its
+/// author changes it — and what they can do to it while they are over it.
 view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<RichText>) {
     let made = created(c)
     stack(gap: .tight) {
@@ -91,16 +102,22 @@ view comment_row(c: Comment, editing: State<Option<Comment>>, revised: State<Ric
                 ui.Time(at, role: .caption, secondary: true)
             }
         }
-        if let e = editing {
-            if e == c {
-                revision(c, editing, revised)
-            } else {
-                written(c)
+        if editing == .some(c) {
+            rich_input(bind: revised, placeholder: "Edit comment") {
+                on submit: edit(c, revised).then(set(editing, .none))
+            }
+            row {
+                ui.Button("Cancel") {
+                    on press: set(editing, .none)
+                }
+                ui.Button("Save", role: .primary) {
+                    on press: edit(c, revised).then(set(editing, .none))
+                }
             }
         } else {
             written(c)
         }
-        if created(c)?.who == .some(workspace.me) {
+        if made?.who == .some(workspace.me) {
             ui.HoverToolbar {
                 ui.Button("Edit", icon: .pencil, icon_only: true) {
                     on press: set(revised, c.text).then(set(editing, c))
@@ -120,33 +137,84 @@ view written(c: Comment) {
     }
 }
 
-/// A comment being edited in place: what it says in an editor, saved or left as it was.
-view revision(c: Comment, editing: State<Option<Comment>>, revised: State<RichText>) {
-    rich_input(bind: revised, placeholder: "Edit comment") {
-        on submit: edit(c, revised).then(set(editing, .none))
-    }
-    row {
-        ui.Button("Cancel") {
-            on press: set(editing, .none)
-        }
-        ui.Button("Save", role: .primary) {
-            on press: edit(c, revised).then(set(editing, .none))
-        }
-    }
-}
-
-/// Everything said lately, each remark under the resource it is about: the window of the app
-/// itself, where a thread is found by what it is about and opens it.
+/// Everything said lately, each remark under the resource it is about, the one chosen opening
+/// beside them as the thread it stands in: the window of the app itself, where a thread is found
+/// by what it is about and opens it.
 view recently(all: Comments) {
     std.list(all, all.items, empty: "Nothing said yet")
 }
 
-/// One comment as a row: the title of what it is about, and what was said about it; pressing it
-/// opens what it is about.
+/// A comment's window: where it was said, which opens, and the thread it stands in — the same
+/// thread that stands under what it is about. A comment made from nothing says what it says.
+view comment_page(c: Comment) {
+    let about = created(c)?.from
+    std.document(c) {
+        std.origin(c)
+        if let at = about {
+            thread(at)
+        }
+        if about == .none {
+            written(c)
+        }
+    }
+}
+
+/// One comment as a row: the title of what it is about, and what was said about it.
 view remark(c: Comment) {
     ui.ListRow(
         if let about = created(c)?.from { meta(about).title } else { meta(c).title },
         secondary: meta(c).title,
-        item: created(c)?.from,
+    )
+}
+
+/// Two days of a discussion: two people answering one another over what they are planning.
+scenario "what people said lately" {
+    let mia = person("Mia")
+    let leo = person("Leo")
+    let ask = invoke(
+        comment(comments, RichText("Should the offsite be one day or two?")),
+        by: mia,
+        at: 2026-06-22T09:10Z,
+    )
+    invoke(
+        comment(comments, RichText("Two: the travel eats a day on its own.")),
+        by: leo,
+        at: 2026-06-22T09:41Z,
+        from: ask,
+    )
+    invoke(
+        comment(comments, RichText("Agreed, I'll book the Thursday night.")),
+        by: mia,
+        at: 2026-06-23T08:05Z,
+        from: ask,
+    )
+    let plan = invoke(
+        comment(comments, RichText("Who books the room for the workshop?")),
+        by: leo,
+        at: 2026-06-24T16:20Z,
+    )
+    invoke(
+        comment(comments, RichText("I can, once the dates are settled.")),
+        by: mia,
+        at: 2026-06-25T07:15Z,
+        from: plan,
+    )
+}
+
+/// A reply, with the thread it stands in under what it answers: what was asked, who answered and
+/// when.
+scenario "a reply to a comment" -> Comment {
+    let mia = person("Mia")
+    let leo = person("Leo")
+    let ask = invoke(
+        comment(comments, RichText("Do we renew the studio lease this year?")),
+        by: mia,
+        at: 2026-06-24T10:02Z,
+    )
+    invoke(
+        comment(comments, RichText("Ask the neighbours what they pay first.")),
+        by: leo,
+        at: 2026-06-24T11:45Z,
+        from: ask,
     )
 }

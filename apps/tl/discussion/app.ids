@@ -4,6 +4,7 @@ Comment.text = 5q4mbecw
 Comments = d6k3e7fz
 Comments.items = 3g3duquj
 comment = l7s2czjp
+comment_page = 3666szuv
 comment_row = ommjdgvw
 comment~present = vzn4frig
 delete = l3wyj42h
@@ -12,9 +13,14 @@ edit = iae4o5k3
 edit~present = 4mzlhyvw
 recently = vp5uwkal
 remark = jxt3set4
-revision = tizbl7pr
+said_about = e7xoj5yt
+scenario "a reply to a comment" = hckncjk3
+scenario "what people said lately" = melg76t4
 thread = upy33rnt
 thread.draft = usyvbi67
 thread.editing = dn5lhygr
 thread.revised = edguzfhh
 written = nsv2jvpu
+
+# retired
+revision = tizbl7pr

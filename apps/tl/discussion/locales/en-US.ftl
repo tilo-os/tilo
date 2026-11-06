@@ -43,4 +43,6 @@ d-nsv2jvpu = Written
 
 d-vp5uwkal = Recently
 
+d-3666szuv = Comment page
+
 d-jxt3set4 = Remark
