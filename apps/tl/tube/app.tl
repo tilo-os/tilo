@@ -274,12 +274,12 @@ action watch_later(v: Video, saved: Bool = not v.watch_later) (
 }
 
 /// Plays the video, whether or not it was played before.
-primary action play(v: Video) (icon: .play) {
+primary action play(v: Video) uses time (icon: .play) {
     progress(v, 0.0)
 }
 
 /// Plays the video from where the person left off, when they did not finish it.
-action resume(v: Video) (icon: .play, label: "Resume") {
+action resume(v: Video) uses time (icon: .play, label: "Resume") {
     let yt = root YouTube
     progress(v, watched_before(yt, v)?.progress ?? 0.0)
 }
@@ -288,7 +288,7 @@ action resume(v: Video) (icon: .play, label: "Resume") {
 /// front of the history — and asks the service for the address its bytes play from when that is
 /// not known yet. Starting a video, resuming it and moving the playhead as it plays are one
 /// action, so a video has one place it is played from.
-action progress(v: Video, at: Float) {
+action progress(v: Video, at: Float) uses time {
     let yt = root YouTube
     let watched = now
     if let entry = yt.history.find(h -> h.key == v.key) {
@@ -621,7 +621,7 @@ view history_list(yt: YouTube) {
 }
 
 /// Plays the video a history entry names, from where the person left off.
-action play_again(yt: YouTube, h: WatchEntry) {
+action play_again(yt: YouTube, h: WatchEntry) uses time {
     if let v = yt.videos.find(x -> x.key == h.key) { progress(v, h.progress) }
 }
 
