@@ -486,8 +486,8 @@ pub struct ListRowFace<'a> {
     /// The row as a dense row: one quiet line at the caption's size, for a reference that
     /// stands among content or a list that shows a lot at once.
     dense: bool,
-    /// The least tall the row stands, where it is not the list's own row height: an outline's
-    /// row token.
+    /// The row's own height, where it is not the list's row height: an outline's row token.
+    /// The row stands at it, taller only when what it holds needs more.
     row_height: Option<f64>,
 }
 
@@ -561,8 +561,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// Stand the row at least `px` tall, rather than the list's row height for what it holds:
-    /// a tree's own row token, shorter than a list's.
+    /// Stand the row `px` tall, rather than the list's row height for what it holds: a tree's
+    /// own row token, shorter than a list's. What the row holds still fits inside it.
     #[must_use]
     pub fn row_height(mut self, px: f32) -> Self {
         self.row_height = Some(f64::from(px));
@@ -1326,8 +1326,8 @@ pub struct ListRow {
     card_lines: u8,
     /// The row is a dense row ([`ListRowFace::dense`]): one quiet line at the caption's size.
     dense: bool,
-    /// The least tall the row stands ([`ListRowFace::row_height`]), where it is not the list's
-    /// row height.
+    /// The row's own height ([`ListRowFace::row_height`]), where it is not the list's row
+    /// height.
     row_height: Option<f64>,
 }
 
@@ -1436,7 +1436,8 @@ impl ListRow {
         self
     }
 
-    /// Stand the row at least `px` tall, rather than the list's row height for what it holds.
+    /// Stand the row `px` tall, rather than the list's row height for what it holds
+    /// ([`ListRowFace::row_height`]).
     #[must_use]
     pub fn row_height(mut self, px: f32) -> Self {
         self.row_height = Some(f64::from(px));
