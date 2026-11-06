@@ -69,7 +69,9 @@ struct File {
 fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
     vec![
         (
-            tilo_desktop::desk_verbs::chrome_resource(),
+            tilo_desktop::desk_verbs::chrome_resource(
+                &ui::shortcut_table::ShortcutConfig::default(),
+            ),
             Some(<ChromeEffect as Effect>::declaration),
         ),
         (

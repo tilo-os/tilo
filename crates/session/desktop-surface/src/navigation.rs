@@ -100,7 +100,8 @@ fn history_direction(target: &str) -> Result<HistoryDirection, String> {
 }
 
 /// Where a window goes: another strip of its workspace, another workspace,
-/// or another display. Exactly one of them names the place.
+/// or another display. Exactly one of them names the place; `before` and
+/// `group` say where in a strip it lands.
 #[derive(
     Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, tilo_resource::JsonSchema,
 )]
@@ -115,6 +116,14 @@ pub struct Destination {
     /// The display to show the window on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+    /// The window group of `strip` to stand before; the strip's end when
+    /// absent. A group standing first reorders within its own strip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    /// The window group of the tab's own strip to put the tab in, its tab
+    /// joining that window instead of a window of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 /// A share of its strip a window takes in one step.
@@ -285,9 +294,10 @@ pub enum ChromeEffect {
 
     /// Move a tab elsewhere
     ///
-    /// Its window onto another strip of the workspace, the tab alone into
-    /// another workspace as a window of its own, or its window onto another
-    /// display.
+    /// Its window onto another strip of the workspace (or another place in
+    /// its own), the tab alone into another workspace as a window of its
+    /// own, its window onto another display, or the tab into a window of
+    /// its strip.
     #[effect(own_device)]
     MoveTab {
         /// The tab whose window moves.
@@ -781,8 +791,11 @@ pub enum Admitted {
     /// Open `app` as a tab right after the tab at the route, in its group,
     /// taking focus unless the last field says not to.
     TabOpenBeside(RouteIds, String, bool),
-    /// Carry the window into another strip of its workspace.
-    MoveToStrip(RouteIds, StripId),
+    /// Carry the window into another strip of its workspace, before the
+    /// window named when one is: a place in its own strip reorders it.
+    MoveToStrip(RouteIds, StripId, Option<GroupId>),
+    /// Put the tab into the window `GroupId` of its own strip.
+    JoinGroup(RouteIds, GroupId),
     /// Take the tab into another workspace, as a window of its own.
     MoveToWorkspace(RouteIds, WorkspaceSlot),
     /// Show the window on another display.
@@ -1166,17 +1179,39 @@ fn admit_beside(ids: RouteIds, app: &str, background: bool) -> Result<Admitted, 
 /// Where a window goes: the destination one of `to`'s ids names, checked
 /// against the tree.
 fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Admitted, String> {
-    if let Some(strip) = &to.strip {
-        let target = StripId(id(strip)?);
+    if let Some(group) = &to.group {
+        let target: GroupId = id(group)?;
         let there = tree
             .workspaces
             .iter()
             .find(|workspace| workspace.slot == ids.workspace)
-            .is_some_and(|workspace| {
-                target != ids.strip && workspace.strips.iter().any(|held| held.id == target)
+            .and_then(|workspace| workspace.strips.iter().find(|held| held.id == ids.strip))
+            .is_some_and(|strip| {
+                target != ids.group && strip.window_groups.iter().any(|group| group.id == target)
             });
         return there
-            .then_some(Admitted::MoveToStrip(ids, target))
+            .then_some(Admitted::JoinGroup(ids, target))
+            .ok_or_else(|| "Window unavailable".into());
+    }
+    if let Some(strip) = &to.strip {
+        let target = StripId(id(strip)?);
+        let before = to.before.as_deref().map(id).transpose()?;
+        let strip_held = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.slot == ids.workspace)
+            .and_then(|workspace| workspace.strips.iter().find(|held| held.id == target))
+            .is_some_and(|strip| {
+                before.is_none_or(|before| {
+                    before != ids.group
+                        && strip.window_groups.iter().any(|group| group.id == before)
+                })
+            });
+        // A place in the strip the window already stands on reorders it;
+        // any other strip of its workspace carries it there.
+        let there = strip_held && (target != ids.strip || before.is_some());
+        return there
+            .then_some(Admitted::MoveToStrip(ids, target, before))
             .ok_or_else(|| "Strip unavailable".into());
     }
     if let Some(workspace) = &to.workspace {
@@ -1196,7 +1231,7 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
             .then_some(Admitted::MoveToDisplay(ids, display))
             .ok_or_else(|| "Display unavailable".into());
     }
-    Err("The surface carries a tab to a strip, workspace or display only".into())
+    Err("The surface carries a tab to a strip, workspace, display or window only".into())
 }
 
 fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {

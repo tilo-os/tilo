@@ -21,12 +21,14 @@
 //! workspace, another display — keeps its row, disabled, with the reason, so
 //! the menu reads the same for every window.
 
-use tilo_desktop_model::commands::{DesktopCommand, apply_command, move_tab_to_workspace};
+use tilo_desktop_model::commands::{
+    DesktopCommand, TabLocation, TabPlacement, apply_command, move_tab_to_workspace,
+};
 use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, equalize_widths,
 };
 use tilo_desktop_model::{
-    DesktopTree, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceSlot,
+    DesktopTree, GroupId, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceSlot,
 };
 
 use crate::i18n::{t, t_args};
@@ -540,7 +542,8 @@ pub(super) fn apply(
 ) -> bool {
     use crate::navigation::Admitted;
     let handled = match command {
-        Admitted::MoveToStrip(ids, strip) => move_to_strip(shared, *ids, *strip),
+        Admitted::MoveToStrip(ids, strip, before) => move_to_strip(shared, *ids, *strip, *before),
+        Admitted::JoinGroup(ids, into) => join_group(shared, *ids, *into),
         Admitted::MoveToWorkspace(ids, to) => move_to_workspace(shared, *ids, *to),
         Admitted::MoveToDisplay(ids, display) => move_to_display(shared, *ids, *display),
         Admitted::WidthPreset(ids, width) => width_preset(shared, *ids, *width, ops),
@@ -563,18 +566,32 @@ pub(super) fn apply(
     true
 }
 
-/// Carry the window at `ids` into strip `strip` of its own workspace.
-fn move_to_strip(shared: &mut Shared, ids: RouteIds, strip: StripId) -> bool {
+/// Carry the window at `ids` into strip `strip` of its own workspace, before
+/// the window `before` when one is named: its own strip reorders it in place.
+fn move_to_strip(
+    shared: &mut Shared,
+    ids: RouteIds,
+    strip: StripId,
+    before: Option<GroupId>,
+) -> bool {
     let Shared { tree, minter, .. } = shared;
     let moved = tree
         .workspaces
         .iter_mut()
         .find(|workspace| workspace.slot == ids.workspace)
         .is_some_and(|workspace| {
-            let command = DesktopCommand::MoveGroup {
-                group: ids.group,
-                strip: strip.0,
-                before: None,
+            let command = if strip == ids.strip {
+                DesktopCommand::ReorderGroup {
+                    strip: strip.0,
+                    group: ids.group,
+                    before,
+                }
+            } else {
+                DesktopCommand::MoveGroup {
+                    group: ids.group,
+                    strip: strip.0,
+                    before,
+                }
             };
             apply_command(
                 workspace,
@@ -586,6 +603,39 @@ fn move_to_strip(shared: &mut Shared, ids: RouteIds, strip: StripId) -> bool {
         });
     // The windows were rearranged, so the rows follow the tree they are in
     // now rather than the one they were built from.
+    shared.replaced |= moved;
+    moved
+}
+
+/// Put the tab at `ids` into the window `into` of its own strip, its tab
+/// standing last there.
+fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
+    let Shared { tree, minter, .. } = shared;
+    let moved = tree
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.slot == ids.workspace)
+        .is_some_and(|workspace| {
+            let command = DesktopCommand::MoveTab {
+                location: TabLocation {
+                    strip: ids.strip.0,
+                    group: ids.group,
+                    tab: ids.tab,
+                },
+                placement: TabPlacement::InGroup {
+                    strip: ids.strip.0,
+                    group: into,
+                    after: None,
+                },
+            };
+            apply_command(
+                workspace,
+                &command,
+                &mut || Ok(minter.mint()),
+                &mut |_, _| Err("a join opens no window".into()),
+            )
+            .is_ok()
+        });
     shared.replaced |= moved;
     moved
 }

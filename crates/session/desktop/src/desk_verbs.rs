@@ -11,6 +11,7 @@ use tilo_actions::{ActionSpec, Audience, ResourcePresentation, ResourceSpec};
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
 use tilo_desktop_surface::window;
 use tilo_resource::{Effect, offer};
+use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
 
 use crate::i18n::{t, t_args};
 
@@ -61,15 +62,46 @@ pub fn launchpad_card_id(slug: &str) -> String {
     format!("{LAUNCHPAD_RESOURCE}:{slug}")
 }
 
+/// The chord each verb answers to, where one shortcut of the table reaches
+/// it whole: the row reads the keys the person's table binds now, so a
+/// rebinding reads there too. A verb of two directions (stepping a strip,
+/// switching a workspace, a width) takes the direction from its arguments
+/// and shows none; the shortcut guide lists the chord of every direction and
+/// of every other action.
+const VERB_SHORTCUTS: &[(&str, ShortcutAction)] = &[
+    ("reopen-closed", ShortcutAction::ReopenClosedTab),
+    ("maximize", ShortcutAction::ToggleMaximize),
+    ("fullscreen", ShortcutAction::ToggleFullscreen),
+    ("split-right", ShortcutAction::DetachTab),
+];
+
+/// `resource` with the chord of each of its actions that a shortcut reaches
+/// shown beside it, as the person's table binds it now.
+fn with_shortcuts(mut resource: ResourceSpec, shortcuts: &ShortcutConfig) -> ResourceSpec {
+    for action in &mut resource.actions {
+        let bound = VERB_SHORTCUTS
+            .iter()
+            .find(|(verb, _)| *verb == action.id)
+            .and_then(|(_, shortcut)| shortcuts.bindings.get(shortcut));
+        if let Some(chord) = bound {
+            action.type_mut().state.shortcut = Some(chord.display());
+        }
+    }
+    resource
+}
+
 /// The chrome's resource: the verbs of everything over the desk, published
-/// as they are declared.
+/// as they are declared, each showing the chord that runs it.
 #[must_use]
-pub fn chrome_resource() -> ResourceSpec {
-    offer::<ChromeEffect>(ResourceSpec::new(
-        CHROME_RESOURCE,
-        "desktop",
-        t("desktop-actions-chrome"),
-    ))
+pub fn chrome_resource(shortcuts: &ShortcutConfig) -> ResourceSpec {
+    with_shortcuts(
+        offer::<ChromeEffect>(ResourceSpec::new(
+            CHROME_RESOURCE,
+            "desktop",
+            t("desktop-actions-chrome"),
+        )),
+        shortcuts,
+    )
 }
 
 /// The open search as the desk publishes it: what is typed, the rows it

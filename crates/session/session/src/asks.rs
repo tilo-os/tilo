@@ -14,7 +14,7 @@ use tilo_desktop::desktop_host::{
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::Slot;
 use tilo_sheets::power::PowerEffect;
-use ui::shortcut_table::ShortcutAction;
+use ui::shortcut_table::{ShortcutAction, ShortcutHome};
 
 use crate::keys::Invocation;
 use crate::{
@@ -448,8 +448,17 @@ impl Shared {
         }
     }
 
-    /// A desktop shortcut the chrome left to its host.
+    /// A desktop shortcut the desk left to its host: the device's own
+    /// answers, and the surfaces over the desk. Every shortcut of the
+    /// session's is named here ([`ShortcutAction::home`]), so one the table
+    /// gains without an answer does not build.
     fn shortcut(&self, action: ShortcutAction) {
+        if action.home() == ShortcutHome::Desk {
+            // The desk carries out its own windows' shortcuts; one arriving
+            // here is one it has nothing to act on right now.
+            tracing::debug!(?action, "a shortcut of the desk's found no window");
+            return;
+        }
         let mut invocations = self.invocations.borrow_mut();
         match action {
             ShortcutAction::QuickSettings => {
@@ -502,7 +511,21 @@ impl Shared {
             | ShortcutAction::DictationFinish
             | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
             ShortcutAction::ShortcutHelp => self.shortcut_guide.toggle(),
-            other => tracing::debug!(?other, "shortcut the session has no part in yet"),
+            // Asking the person's agents and saying something both start a
+            // conversation, which Chat holds: the chord opens it there, on
+            // the same card the desk's chat card is.
+            ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
+                self.launchpad(LaunchpadAction::Chat);
+            }
+            // The desk's feedback picker asks the host for the report's
+            // transport, and this session carries none yet: the browser
+            // desktop reports, the native one has nowhere to send it.
+            ShortcutAction::ReportProblem => {}
+            _ => debug_assert_eq!(
+                action.home(),
+                ShortcutHome::Desk,
+                "a shortcut of the session's is answered above"
+            ),
         }
     }
 }

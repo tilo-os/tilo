@@ -1319,6 +1319,7 @@ desk-first-workspace = This is the first workspace
 desk-last-workspace = This is the last workspace
 desk-first-strip = This is the first strip
 desk-last-strip = This is the last strip
+desk-window-edge = Nothing changed. The window can't move any further that way.
 desktop-no-strip = There is no strip called { $name } here
 desktop-strip-not-here = That strip is not on this workspace any more
 desktop-workspace-gone = That workspace is not here any more

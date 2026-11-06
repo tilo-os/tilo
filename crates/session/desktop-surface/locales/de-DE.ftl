@@ -1335,6 +1335,7 @@ desk-first-workspace = Das ist der erste Arbeitsbereich
 desk-last-workspace = Das ist der letzte Arbeitsbereich
 desk-first-strip = Das ist die erste Leiste
 desk-last-strip = Das ist die letzte Leiste
+desk-window-edge = Nichts geändert. Das Fenster kann nicht weiter in diese Richtung.
 desktop-no-strip = Hier gibt es keine Leiste namens { $name }
 desktop-strip-not-here = Diese Leiste ist nicht mehr in diesem Arbeitsbereich
 desktop-workspace-gone = Diesen Arbeitsbereich gibt es hier nicht mehr
