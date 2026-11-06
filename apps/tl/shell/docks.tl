@@ -25,20 +25,16 @@ view dock(s: Shell, d: Desk) {
 /// person last was in it.
 fn running_items(d: Desk) -> List<DockItem> {
     let windows = d.windows.filter(w -> w.local).sort_by(w -> w.recency)
-    let _ = d
-    return windows.map(w -> stub_item(w))
+    return windows.filter(w -> front_of_its_app(windows, w)).map(w -> running_item(w))
 }
 
-fn stub_item(w: Win) -> DockItem {
-    return DockItem(
-        key: w.app_key,
-        title: "Running",
-        icon: "file-text",
-        pinned: false,
-        running: true,
-        badge: 0,
-        attention: false,
-    )
+/// Whether `w` is the window of its app the person was in last: the first of `windows` showing
+/// that app, they being in the order of the walk.
+fn front_of_its_app(windows: List<Win>, w: Win) -> Bool {
+    if let front = windows.find(v -> v.app_key == w.app_key) {
+        return front.key == w.key
+    }
+    return false
 }
 
 /// The dock's item for the running window `w`: the window's app, by its `app_key`, named as the
@@ -72,17 +68,14 @@ view dock_run(s: Shell, d: Desk) {
             for item in s.dock_items {
                 if item.pinned or s.dock_running {
                     ui.DragItem(item, title: item.title) {
-                        on activate: if item.key == "launcher" {
-                            device.show_surface(device.desk, surface: "launcher")
-                        } else {
-                            session.open(resource("app.{item.key}", of: session.App))
-                        }
+                        on activate: open_item(s, d, item)
                         dock_tile(s, d, item)
                     }
                 }
             }
             for item in running {
                 ui.DragItem(item, title: item.title) {
+                    on activate: open_item(s, d, item)
                     dock_tile(s, d, item)
                 }
             }
@@ -98,17 +91,14 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: if item.key == "launcher" {
-                                device.show_surface(device.desk, surface: "launcher")
-                            } else {
-                                session.open(resource("app.{item.key}", of: session.App))
-                            }
+                            on activate: open_item(s, d, item)
                             dock_tile(s, d, item)
                         }
                     }
                 }
                 for item in running {
                     ui.DragItem(item, title: item.title) {
+                        on activate: open_item(s, d, item)
                         dock_tile(s, d, item)
                     }
                 }
@@ -121,17 +111,14 @@ view dock_run(s: Shell, d: Desk) {
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
                         ui.DragItem(item, title: item.title) {
-                            on activate: if item.key == "launcher" {
-                                device.show_surface(device.desk, surface: "launcher")
-                            } else {
-                                session.open(resource("app.{item.key}", of: session.App))
-                            }
+                            on activate: open_item(s, d, item)
                             dock_tile(s, d, item)
                         }
                     }
                 }
                 for item in running {
                     ui.DragItem(item, title: item.title) {
+                        on activate: open_item(s, d, item)
                         dock_tile(s, d, item)
                     }
                 }
@@ -140,11 +127,17 @@ view dock_run(s: Shell, d: Desk) {
     }
 }
 
-/// A press on a running item: its window comes to the front, so the desk says which window the
-/// person is in, and the top bar's commands are its own. The window is the one the item was
-/// drawn for, by its key (`session.focus(window(w))`), so a press never opens a second copy.
-flow focus_running(d: Desk, item: DockItem) {
-    if let w = d.windows.find(w -> w.app_key == item.key) { session.focus(window: window(w)) }
+/// What a press on a dock item does: a window of that app on this desk comes to the front, so the
+/// desk says which window the person is in and the top bar's commands are its own; the window is
+/// the one the item was drawn for, so a press never opens a second copy. An app with no window
+/// open is opened (`session.open_app`), and the launcher shows. One action for the pinned items
+/// and the running ones, so a press on either does the same thing.
+action open_item(s: Shell, d: Desk, item: DockItem) {
+    if let w = d.windows.find(w -> w.app_key == item.key) {
+        session.focus(window: window(w))
+    } else if item.key == "launcher" {
+        device.show_surface(device.desk, surface: "launcher")
+    } else { session.open_app(app: item.key) }
 }
 
 /// One dock item: its glyph, with its badge on the glyph's top trailing corner (the count of what
@@ -162,10 +155,6 @@ view dock_tile(s: Shell, d: Desk, item: DockItem) {
         dot: item.attention,
         alert: item.attention,
     ) {
-        on press: if item.key == "launcher" {
-            device.show_surface(device.desk, surface: "launcher")
-        } else {
-            session.open(resource("app.{item.key}", of: session.App))
-        }
+        on press: open_item(s, d, item)
     }
 }
