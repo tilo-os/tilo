@@ -64,6 +64,7 @@ class Doors:
             "desk.display-move": self.display_move,
             "desk.display-layout": self.display_layout,
             "desk.files-shared": self.files_shared,
+            "desk.file-portal": self.file_portal,
             "desk.dnd": self.dnd,
             "desk.wifi": self.wifi,
             "desk.bluetooth": self.bluetooth,
@@ -426,6 +427,27 @@ class Doors:
         if self.new:
             raise DoorMissing("the new session lists no shared-files settings action")
         return self.tail("settings.apps.open")
+
+    # What an app's own ask for a file is called, per side's language.
+    PORTALS = {"open": ("open file", "open a file", "open audio file", "datei öffnen",
+                        "choose a file", "import file"),
+               "save": ("save as", "save a copy", "export file", "speichern unter",
+                        "save to a folder")}
+
+    def file_portal(self, kind: str = "open"):
+        """The dialog an app opens when it asks which file to open or save."""
+        hints = self.PORTALS.get(kind)
+        if hints is None:
+            raise DoorMissing(f"the audit knows no `{kind}` file dialog")
+        listed = []
+        for row in self.side.action_rows():
+            text = f"{row.get('title')} {row.get('id')}".lower()
+            if any(hint in text for hint in hints):
+                return self.side.invoke(row)
+            if "file" in text or "datei" in text:
+                listed.append(str(row.get("title") or row.get("id")))
+        raise DoorMissing(f"no app lists an action that asks which file to {kind}; the "
+                          f"side lists {', '.join(sorted(set(listed))[:12]) or 'none'}")
 
     def theme(self, theme: str):
         if self.new:
@@ -816,10 +838,17 @@ class Doors:
                     break
         if shutil.which("wl-copy") is None:
             raise DoorMissing("no wl-copy to put text on the clipboard")
-        done = subprocess.run(["wl-copy", text], env=env, capture_output=True, text=True,
-                              timeout=20)
-        if done.returncode != 0:
-            raise Failed(f"wl-copy: {done.stderr.strip()[:200]}")
+        # A compositor with no clipboard manager keeps wl-copy serving the
+        # selection in the background; that process staying up is the copy
+        # having worked, not a step that never returns.
+        serving = subprocess.Popen(["wl-copy", text], env=env, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            code = serving.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            return "wl-copy, serving the selection"
+        if code != 0:
+            raise Failed(f"wl-copy: {(serving.stderr.read() or '').strip()[:200]}")
         return "wl-copy"
 
     def clipboard_paste(self):

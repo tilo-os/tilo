@@ -67,8 +67,9 @@ own private session bus and a throwaway identity, headless.
 
 `catalogue.json` is the list, as data. One area per everyday subject (launching,
 windows, tabs, strips, workspaces, keyboard, pointer, drag and drop, text, bar,
-quick settings, notifications, search, lock and power, displays, files,
-settings, apps, motion), each story a few steps:
+quick settings, notifications, search, lock and power, displays, files, the
+dialogs an app asks for a file with, settings, apps, motion), each story a few
+steps:
 
 ```json
 {
@@ -102,6 +103,12 @@ controls the desk listed at the capture; `residual_px` is how much of the idle
 desk was left changed after the tool closed what the story opened. Timings are
 wall time on one machine, so compare the two sides within a run, not across
 runs.
+
+Each scenario ends in one of four states: `captured` (the story ran and the
+frame was taken), `door_missing` (that side has no such surface, with what it
+offers instead), `failed` (a surface answered and refused, or a step did not get
+what it waited for) and `no_frame` (the side ran the story but would not show
+its desk afterwards).
 
 The audit does not judge looks. It records what each side did and leaves the
 pictures for a person.

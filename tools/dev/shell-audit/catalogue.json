@@ -4175,7 +4175,7 @@
        "wait": 0.6
       },
       {
-       "client_type": "h\u00e9llo \u2192 \u4e16\u754c"
+       "client_type": "héllo → 世界"
       },
       {
        "wait": 0.8
@@ -5075,6 +5075,49 @@
      "capture": "two windows",
      "measure": [
       "which has focus"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "portals",
+   "about": "the dialogs an app opens when it asks for a file",
+   "restart": false,
+   "scenarios": [
+    {
+     "id": "portal-open",
+     "story": "an app asks which file to open",
+     "steps": [
+      {
+       "door": "desk.file-portal",
+       "kind": "open"
+      },
+      {
+       "wait": 1.5
+      }
+     ],
+     "capture": "the file-choosing dialog",
+     "measure": [
+      "a dialog",
+      "first frame"
+     ]
+    },
+    {
+     "id": "portal-save",
+     "story": "an app asks where to save a file",
+     "steps": [
+      {
+       "door": "desk.file-portal",
+       "kind": "save"
+      },
+      {
+       "wait": 1.5
+      }
+     ],
+     "capture": "the save dialog",
+     "measure": [
+      "a dialog",
+      "first frame"
      ]
     }
    ]
