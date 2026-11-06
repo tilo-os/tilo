@@ -7,9 +7,9 @@ use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
     DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FnDecl, Ident,
     Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal,
-    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt,
-    StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
-    UseDecl, VariantDecl, ViewDecl, ViewsDecl,
+    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind,
+    StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UseDecl,
+    VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
 use crate::lexer::{Comment, StrPiece, Tok, Token, lex, lex_at};
