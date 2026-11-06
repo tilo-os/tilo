@@ -1,25 +1,30 @@
-//! The persistent room as the room service runs it: a real `tilo-relay
-//! room --persistent` process spoken to over operator protocol 2.
+//! The persistent room as its deployment runs it: a real `tilo-relay room
+//! --persistent` process spoken to over operator protocol 5, and the plain-HTTP
+//! routes beside it.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
-use tilo_relay_protocol::room_operator::{OperatorCommand, RoomEvent, VERSION};
-use tilo_relay_protocol::rooms::RoomRole;
+use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-struct Room {
+struct Workspace {
     child: Child,
-    stdin: ChildStdin,
-    events: mpsc::Receiver<RoomEvent>,
+    /// The operator's input; `None` once the operator closed it.
+    stdin: Option<ChildStdin>,
+    events: mpsc::Receiver<OperatorEvent>,
 }
+
+/// The revision a published image reports at `/mode`: the commit it was built
+/// from, forty lowercase hex digits.
+const SOURCE_REVISION: &str = "0123456789abcdef0123456789abcdef01234567";
 
 fn start(
     state: &std::path::Path,
     root_file: &std::path::Path,
     secrets: &std::path::Path,
-) -> std::io::Result<Room> {
+) -> std::io::Result<Workspace> {
     start_with(state, root_file, secrets, &[])
 }
 
@@ -28,10 +33,12 @@ fn start_with(
     root_file: &std::path::Path,
     secrets: &std::path::Path,
     extra: &[&str],
-) -> std::io::Result<Room> {
+) -> std::io::Result<Workspace> {
     let mut child = Command::new(tilo_test_env::package_binary!("tilo-relay"))
         .env("TILO_SECRETS_DIR", secrets)
         .env("TILO_RELAY_LOG", "warn")
+        // What a published image sets from the commit it was built from.
+        .env("TILO_SOURCE_REVISION", SOURCE_REVISION)
         .args(["room", "--state"])
         .arg(state.join("relay"))
         .args([
@@ -53,27 +60,27 @@ fn start_with(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn_locked()?;
-    let stdin = child.stdin.take().unwrap();
+    let stdin = Some(child.stdin.take().unwrap());
     let stdout = child.stdout.take().unwrap();
     let (sender, events) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if let Ok(event) = RoomEvent::from_line(&line)
+            if let Ok(event) = OperatorEvent::from_line(&line)
                 && sender.send(event).is_err()
             {
                 break;
             }
         }
     });
-    Ok(Room {
+    Ok(Workspace {
         child,
         stdin,
         events,
     })
 }
 
-impl Room {
-    fn next(&self, what: impl Fn(&RoomEvent) -> bool) -> RoomEvent {
+impl Workspace {
+    fn next(&self, what: impl Fn(&OperatorEvent) -> bool) -> OperatorEvent {
         loop {
             let event = self
                 .events
@@ -85,13 +92,23 @@ impl Room {
         }
     }
 
-    fn tell(&mut self, command: &OperatorCommand) {
-        self.stdin.write_all(command.to_line().as_bytes()).unwrap();
-        self.stdin.flush().unwrap();
+    /// The operator goes away, as it does in a deployment that runs the room
+    /// without one: its input is at its end.
+    fn close_operator(&mut self) {
+        self.stdin = None;
     }
 
     fn stop(mut self) {
-        self.tell(&OperatorCommand::Shutdown {});
+        match self.stdin.take() {
+            Some(mut stdin) => {
+                let _ = stdin.write_all(OperatorCommand::Shutdown {}.to_line().as_bytes());
+                let _ = stdin.flush();
+            }
+            // Nobody is left to tell: the room stops with its process.
+            None => {
+                let _ = self.child.kill();
+            }
+        }
         let _ = self.child.wait();
     }
 
@@ -102,102 +119,69 @@ impl Room {
     }
 }
 
+/// A fresh room has one member, its owner's root: the host holds no person of
+/// its own. It keeps that id and owner across restarts, and refuses a start
+/// under another root or none.
 #[test]
-fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_and_spectators() {
+fn a_persistent_room_keeps_its_id_and_owner_across_restarts() {
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
 
-    let mut room = start(&state, &root_file, &secrets).unwrap();
-    let RoomEvent::Started {
-        room: Some(id),
+    let room = start(&state, &root_file, &secrets).unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(id),
         version,
         user_public_key,
         ..
-    } = room.next(|e| matches!(e, RoomEvent::Started { .. }))
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
         panic!("no governed room announced")
     };
     assert_eq!(version, VERSION);
-    room.tell(&OperatorCommand::PreAdmit {
-        user_public_key: "22".repeat(32),
-        token_sha256: "33".repeat(32),
-        label: "Brave Otter".into(),
-        role: RoomRole::Editor,
-    });
-    let event = room.next(|e| {
-        matches!(
-            e,
-            RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
-        )
-    });
-    let RoomEvent::PreAdmitted {
-        token_sha256,
-        invitation,
-    } = event
+    // The workspace's only member is its owner; the host holds no person of
+    // its own, so nobody is a member before anyone joined.
+    let OperatorEvent::Online {
+        people,
+        members,
+        online,
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Online { .. }))
     else {
-        panic!("the pre-admission was refused: {event:?}");
+        panic!("no presence announced")
     };
-    assert_eq!(token_sha256, "33".repeat(32));
-    assert!(!invitation.is_empty());
-    room.tell(&OperatorCommand::PreAdmit {
-        user_public_key: "not-hex".into(),
-        token_sha256: "44".repeat(32),
-        label: "x".into(),
-        role: RoomRole::Editor,
-    });
-    assert!(matches!(
-        room.next(|e| matches!(e, RoomEvent::PreAdmitRefused { .. })),
-        RoomEvent::PreAdmitRefused { .. }
-    ));
-
-    // A watching page's device becomes the spectator person: not the owner,
-    // no capabilities, short-lived.
-    room.tell(&OperatorCommand::Spectate {
-        device_public_key: "66".repeat(32),
-    });
-    let event = room.next(|e| {
-        matches!(
-            e,
-            RoomEvent::SpectatorCertified { .. } | RoomEvent::SpectateRefused { .. }
-        )
-    });
-    let RoomEvent::SpectatorCertified { certificate, .. } = event else {
-        panic!("the spectator was refused: {event:?}");
-    };
-    assert_eq!(certificate.device_public_key, [0x66; 32]);
-    assert_ne!(hex::encode(certificate.user_public_key), user_public_key);
-    assert!(certificate.expires_at_ns.is_some());
-    assert!(!certificate.capabilities.can_own_workspaces);
+    assert_eq!(members, 1, "the owner is the workspace's only member");
+    assert_eq!(people, 0);
+    assert!(online.is_empty());
+    assert_eq!(
+        user_public_key,
+        hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[0x11; 32])
+                .verifying_key()
+                .to_bytes()
+        ),
+        "the member is the mounted owner root"
+    );
     room.stop();
 
-    // Restarted: the same room, and the same spectator person.
-    let mut room = start(&state, &root_file, &secrets).unwrap();
-    let RoomEvent::Started {
-        room: Some(again), ..
-    } = room.next(|e| matches!(e, RoomEvent::Started { .. }))
+    // Restarted: the same room, and still nobody else.
+    let room = start(&state, &root_file, &secrets).unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(again),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
     else {
         panic!("no governed room announced")
     };
     assert_eq!(again, id);
-    room.tell(&OperatorCommand::Spectate {
-        device_public_key: "77".repeat(32),
-    });
-    let RoomEvent::SpectatorCertified {
-        certificate: second,
-        ..
-    } = room.next(|e| {
-        matches!(
-            e,
-            RoomEvent::SpectatorCertified { .. } | RoomEvent::SpectateRefused { .. }
-        )
-    })
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
     else {
-        panic!("the spectator was refused after a restart");
+        panic!("no presence announced")
     };
-    assert_eq!(second.user_public_key, certificate.user_public_key);
+    assert_eq!(members, 1, "the restart mints no second person");
     room.stop();
 
     // Another root mounted: the start is refused, so no other owner is minted.
@@ -212,83 +196,110 @@ fn a_persistent_room_keeps_its_id_and_owner_across_restarts_and_admits_guests_an
     assert!(!missing.child.wait().unwrap().success());
 }
 
-/// Asks the room to pre-admit `visitors` all at once and waits for every
-/// answer: how long the last one took.
-fn pre_admit_all(room: &mut Room, visitors: std::ops::Range<usize>) -> Duration {
-    let asked = std::time::Instant::now();
-    let count = visitors.len();
-    for visitor in visitors {
-        let seed = visitor.to_le_bytes();
-        room.tell(&OperatorCommand::PreAdmit {
-            user_public_key: hex::encode(blake3::hash(&seed).as_bytes()),
-            token_sha256: hex::encode(blake3::hash(&[&seed[..], b"token"].concat()).as_bytes()),
-            label: format!("Guest {visitor}"),
-            role: RoomRole::Editor,
-        });
-    }
-    for _ in 0..count {
-        let event = room.next(|e| {
-            matches!(
-                e,
-                RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
-            )
-        });
-        assert!(
-            matches!(event, RoomEvent::PreAdmitted { .. }),
-            "refused: {event:?}"
-        );
-    }
-    asked.elapsed()
+/// The room as the image's entrypoint starts it on the state volume a room
+/// service leaves: the relay's own state in `relay/`, the workspace id beside
+/// it, and the avatars and sealed secrets the image mounts.
+fn start_lounge(
+    state: &std::path::Path,
+    root_file: &std::path::Path,
+    plain: std::net::SocketAddr,
+) -> std::io::Result<Workspace> {
+    let web_plain = plain.to_string();
+    start_with(
+        state,
+        root_file,
+        &state.join("secrets"),
+        &[
+            "--public-avatars",
+            state.join("avatars").to_str().unwrap(),
+            "--public-avatars-url",
+            "https://plaza.example/avatars",
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
 }
 
-/// Visitors arriving in bursts, as a launch brings them: every
-/// pre-admission of a burst is asked at once, burst after burst into a room
-/// that keeps the open grants of those before. The room service waits ten
-/// seconds for each answer before it turns that visitor into a spectator,
-/// and answered one at a time each answer waited for its own write, which
-/// grew with the grants already open: the third burst of 300 ran past the
-/// wait. Side by side, a burst shares its writes.
-///
-/// Measured against the machine itself rather than the clock, so a busy
-/// machine slows both sides alike: before each burst, a lone visitor's
-/// answer (the median of a few) is what one pre-admission takes then. One
-/// at a time, the last burst, the one with the most grants to write, took
-/// about 240 of those on a busy builder; side by side about 40 (the first
-/// burst is mostly signing, which no ordering shares). The bound sits
-/// between the two, on the last burst.
+/// A deployment moved onto this image starts on the volume the room service
+/// left: the same workspace, its owner, and the people it took in keep their
+/// seats across that first start.
 #[test]
-fn bursts_of_pre_admissions_share_the_rooms_writes() {
-    const BURSTS: usize = 3;
-    const VISITORS: usize = 300;
-    const LONE: usize = 5;
-    // The last burst may take as long as half its visitors' lone answers.
-    const LONE_ANSWERS: u32 = 150;
+fn a_volume_a_room_service_left_keeps_its_workspace_and_people() {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::JoinReply;
+
     let scratch = tempfile::tempdir().unwrap();
-    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
-    std::fs::create_dir_all(&state).unwrap();
+    let state = scratch.path().join("plaza");
+    // What the volume holds before the new image starts.
+    for dir in ["relay", "avatars", "secrets"] {
+        std::fs::create_dir_all(state.join(dir)).unwrap();
+    }
     let root_file = scratch.path().join("root");
     std::fs::write(&root_file, "11".repeat(32)).unwrap();
-    let mut room = start(&state, &root_file, &secrets).unwrap();
-    room.next(|e| matches!(e, RoomEvent::Started { .. }));
-    let mut lone_visitor = 1_000_000;
-    let mut measured = Vec::new();
-    for burst in 0..BURSTS {
-        let mut lone: Vec<Duration> = (0..LONE)
-            .map(|_| {
-                lone_visitor += 1;
-                pre_admit_all(&mut room, lone_visitor..lone_visitor + 1)
-            })
-            .collect();
-        lone.sort_unstable();
-        let one = lone[LONE / 2];
-        let took = pre_admit_all(&mut room, burst * VISITORS..(burst + 1) * VISITORS);
-        measured.push((took, one));
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+
+    // The workspace the room service ran, and one person it took in.
+    let room = start_lounge(&state, &root_file, plain).unwrap();
+    let (workspace, _) = announced(&room);
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
+    else {
+        panic!("no presence announced")
+    };
+    assert_eq!(members, 1, "the owner is the workspace's only member");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (device, cert) = own_device(0x41, "Ana");
+    let answer = runtime.block_on(ask_door(plain, &workspace, &cert, "Ana"));
+    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&answer.invitation)
+        .unwrap();
+    match runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+        &Plain(plain),
+        &invitation,
+        &cert,
+        &device,
+        [1; 32],
+        "Ana",
+        answer.admission_token.as_bytes(),
+    )) {
+        Ok(JoinReply::Admitted { .. }) => {}
+        other => panic!("Ana was not admitted: {other:?}"),
     }
-    eprintln!("each burst of {VISITORS} took, beside one lone answer: {measured:?}");
-    let (took, lone) = measured[BURSTS - 1];
-    assert!(
-        took < lone * LONE_ANSWERS,
-        "the last burst of {VISITORS} took more than {LONE_ANSWERS} lone answers: {measured:?}"
+    let listed = runtime.block_on(directory_page(plain));
+    assert_eq!(
+        listed.workspaces[0].members, 2,
+        "the owner and the person who joined"
+    );
+    room.stop();
+
+    // The new image's first start of that volume.
+    let room = start_lounge(&state, &root_file, plain).unwrap();
+    let OperatorEvent::Started {
+        workspace: Some(again),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    else {
+        panic!("no governed room announced")
+    };
+    assert_eq!(
+        again, workspace,
+        "the volume's workspace is the one it serves"
+    );
+    let OperatorEvent::Online { members, .. } =
+        room.next(|e| matches!(e, OperatorEvent::Online { .. }))
+    else {
+        panic!("no presence announced")
+    };
+    assert_eq!(
+        members, 2,
+        "the owner and the person who joined keep their seats"
     );
     room.stop();
 }
@@ -312,8 +323,10 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
     };
     let started = |extra: &[&str]| {
         let room = start_with(&state, &root_file, &secrets, extra).unwrap();
-        let RoomEvent::Started { room: Some(id), .. } =
-            room.next(|e| matches!(e, RoomEvent::Started { .. }))
+        let OperatorEvent::Started {
+            workspace: Some(id),
+            ..
+        } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
         else {
             panic!("no governed room announced")
         };
@@ -333,9 +346,12 @@ fn a_persistent_room_remembers_the_apps_it_let_members_write_through_across_rest
         "the same start settles the same"
     );
 
-    let (room, _) = started(&[]);
+    let (room, _) = started(&["--author-app", "none"]);
     room.stop();
-    assert!(authored().is_empty(), "an app no longer named is withdrawn");
+    assert!(
+        authored().is_empty(),
+        "a start that names no app withdraws the ones it named before"
+    );
 }
 
 /// Plain HTTP/1.1 to the room's loopback listener: the page's `fetch`.
@@ -411,7 +427,6 @@ fn page(
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
-    watching: bool,
 ) -> tilo_browser_peer::PeerHandle {
     tilo_browser_peer::PeerHandle::start(
         tilo_browser_peer::PeerConfig {
@@ -419,7 +434,6 @@ fn page(
             cert,
             host_cert: host_cert.clone(),
             revocations: tilo_user_identity::RevocationList::new(),
-            watching,
             background: false,
         },
         std::sync::Arc::new(key),
@@ -427,23 +441,35 @@ fn page(
     )
 }
 
-/// Ask the room to certify a fresh page device as its spectator person, as
-/// the room service's `/spectate` does for the homepage embed.
-fn spectate(room: &mut Room) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
-    let key = ed25519_dalek::SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(
-        getrandom::SysRng,
+/// A person asks the room's door and redeems what it answers, as their
+/// computer does: their device and certificate, a member now.
+fn join_through_door(
+    runtime: &tokio::runtime::Runtime,
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    (device, cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+    name: &str,
+) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::JoinReply;
+
+    let answer = runtime.block_on(ask_door(plain, workspace, &cert, name));
+    let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&answer.invitation)
+        .unwrap();
+    let request_id = cert.device_public_key;
+    let admitted = runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+        &Plain(plain),
+        &invitation,
+        &cert,
+        &device,
+        request_id,
+        name,
+        answer.admission_token.as_bytes(),
     ));
-    room.tell(&OperatorCommand::Spectate {
-        device_public_key: hex::encode(key.verifying_key().to_bytes()),
-    });
-    match room.next(|e| {
-        matches!(
-            e,
-            RoomEvent::SpectatorCertified { .. } | RoomEvent::SpectateRefused { .. }
-        )
-    }) {
-        RoomEvent::SpectatorCertified { certificate, .. } => (key, certificate),
-        other => panic!("the spectator was refused: {other:?}"),
+    match admitted {
+        Ok(JoinReply::Admitted { .. }) => (device, cert),
+        other => panic!("{name} was not admitted: {other:?}"),
     }
 }
 
@@ -478,11 +504,15 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
     (sibling_key, sibling_cert)
 }
 
+/// Wait until `visiting` reads `route` with every one of `channels`, and return
+/// the page's copy of it.
 async fn assert_page_reads_the_chat(
-    watcher: &tilo_browser_peer::PeerHandle,
+    who: &str,
+    visiting: &tilo_browser_peer::PeerHandle,
     workspace_id: u64,
     route: &tilo_peer_state::document_frame::DocumentRoute,
-) {
+    channels: &[&str],
+) -> automerge::AutoCommit {
     use collab_types::DocumentMutation;
     use tilo_automerge::ApplyIncoming;
     use tilo_browser_peer::PeerEvent;
@@ -491,9 +521,9 @@ async fn assert_page_reads_the_chat(
     let mut doc = automerge::AutoCommit::new();
     let events = std::sync::Mutex::new(Vec::new());
     wait_for(
-        "the watching page to read the chat's starting channel",
+        &format!("{who}'s page to read the chat's channels {channels:?}"),
         || {
-            for event in watcher.drain() {
+            for event in visiting.drain() {
                 match &event {
                     PeerEvent::Ready { workspace_id: at } if *at == workspace_id => {
                         ready = true;
@@ -517,32 +547,144 @@ async fn assert_page_reads_the_chat(
                     other => format!("{other:?}"),
                 });
             }
-            (ready && chat_channels(&doc)?.iter().any(|name| name == "general")).then_some(())
+            let read = chat_channels(&doc)?;
+            (ready
+                && channels
+                    .iter()
+                    .all(|wanted| read.iter().any(|name| name == wanted)))
+            .then_some(())
         },
         || {
             format!(
                 "{:?}; status {:?}",
                 events.lock().unwrap(),
-                watcher.status()
+                visiting.status()
             )
         },
     )
     .await;
-    let status = watcher.status();
+    let status = visiting.status();
     assert!(status.failures.is_empty(), "{:?}", status.failures);
+    doc
 }
 
-/// The homepage embed's path through the real room process: a page whose
-/// device the room certified as its spectator person subscribes, reads the
-/// room's chat with its starting channel, and has every write refused; the owner's root
-/// still admits none of its other devices by itself.
-#[test]
-fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothing() {
-    use collab_types::DocumentMutation;
-    use tilo_browser_peer::PeerEvent;
-    use tilo_peer_state::document_frame::DocumentRoute;
+/// The room's announced workspace id and the workspace it numbers.
+fn announced(room: &Workspace) -> (String, u64) {
+    let OperatorEvent::Started {
+        workspace: Some(id),
+        ..
+    } = room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    else {
+        panic!("no governed room announced")
+    };
+    let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
+    (id, workspace_id)
+}
 
+/// The room's chat as a page on `plain` reaches it: the room host's
+/// certificate and the chat's route for the room `cluster`.
+async fn chat_route(
+    plain: std::net::SocketAddr,
+    cluster: &str,
+) -> (
+    tilo_user_identity::DeviceCert,
+    tilo_peer_state::document_frame::DocumentRoute,
+) {
     const CHAT: &str = "so.tilo.chat";
+    let host_cert = tilo_browser_peer::host_info(&Plain(plain))
+        .await
+        .unwrap()
+        .host_cert;
+    let catalogue = tilo_agent_participant::AppCatalogue::native();
+    let route = tilo_peer_state::document_frame::DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: cluster.into(),
+        record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
+    };
+    (host_cert, route)
+}
+
+/// A person of their own: a root this test generates, and a device the root
+/// certifies, as a computer that never met the room's owner does.
+fn own_device(
+    seed: u8,
+    label: &str,
+) -> (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert) {
+    let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
+    let mut cert = tilo_user_identity::DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: label.into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    (device, cert)
+}
+
+/// A person asks the room's door, as their computer does.
+async fn ask_door_raw(
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+    name: &str,
+) -> (u16, Vec<u8>) {
+    use tilo_browser_peer::HttpClient as _;
+    let join = tilo_relay_protocol::directory::DoorJoin {
+        user_public_key: hex::encode(cert.user_public_key),
+        display_name: name.into(),
+    };
+    Plain(plain)
+        .post(
+            &format!("/peer/v1/directory/{workspace}/join"),
+            None,
+            serde_json::to_vec(&join).unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// The door's answer to a person it lets in.
+async fn ask_door(
+    plain: std::net::SocketAddr,
+    workspace: &str,
+    cert: &tilo_user_identity::DeviceCert,
+    name: &str,
+) -> tilo_relay_protocol::directory::DoorAnswer {
+    let (status, body) = ask_door_raw(plain, workspace, cert, name).await;
+    assert_eq!(
+        status,
+        200,
+        "the door refused {name}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// What the room lists in its directory now.
+async fn directory_page(
+    plain: std::net::SocketAddr,
+) -> tilo_relay_protocol::directory::DirectoryPage {
+    use tilo_browser_peer::HttpClient as _;
+    let (status, body) = Plain(plain)
+        .post("/peer/v1/directory", None, Vec::new())
+        .await
+        .unwrap();
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    serde_json::from_slice(&body).unwrap()
+}
+
+/// The room's door, with no operator command: two people of their own roots
+/// join the listed workspace at its default role, each as their own person,
+/// and the directory counts both.
+#[test]
+fn the_relay_door_admits_two_people_as_distinct_members_at_its_default_role() {
+    use base64::Engine as _;
+    use tilo_relay_protocol::workspaces::{JoinReply, WorkspaceRole};
+
     let scratch = tempfile::tempdir().unwrap();
     let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
     std::fs::create_dir_all(&state).unwrap();
@@ -553,105 +695,317 @@ fn a_persistent_rooms_spectator_page_subscribes_reads_the_room_and_writes_nothin
         .local_addr()
         .unwrap();
     let web_plain = plain.to_string();
-    let mut room = start_with(
+    let room = start_with(
         &state,
         &root_file,
         &secrets,
-        &["--chat-channel", "general", "--web-plain", &web_plain],
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+        ],
     )
     .unwrap();
-    let RoomEvent::Started { room: Some(id), .. } =
-        room.next(|e| matches!(e, RoomEvent::Started { .. }))
-    else {
-        panic!("no governed room announced")
-    };
-    let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
-    let (watching_key, watching_cert) = spectate(&mut room);
-    let (writing_key, writing_cert) = spectate(&mut room);
-    let (sibling_key, sibling_cert) = unenrolled_owner_device();
+    let (workspace, _) = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let before = runtime.block_on(directory_page(plain));
+    assert_eq!(before.workspaces.len(), 1);
+    assert_eq!(before.workspaces[0].description, "Coffee and tea");
+    assert_eq!(
+        before.workspaces[0].default_role,
+        WorkspaceRole::Editor,
+        "the listing the operator asked for"
+    );
 
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let host_cert = tilo_browser_peer::host_info(&Plain(plain))
-            .await
-            .unwrap()
-            .host_cert;
-        let catalogue = tilo_agent_participant::AppCatalogue::native();
-        let route = DocumentRoute {
-            app_id: CHAT.into(),
-            cluster_id: id.clone(),
-            record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
-        };
-
-        let watcher = page(plain, watching_key, watching_cert, &host_cert, true);
-        watcher.join(workspace_id).unwrap();
-        watcher.open_route(route.clone()).unwrap();
-        assert_page_reads_the_chat(&watcher, workspace_id, &route).await;
-
-        // A page of the spectator person that does not say it only watches
-        // still writes nothing: the host refuses it.
-        let writer = page(plain, writing_key, writing_cert, &host_cert, false);
-        writer.join(workspace_id).unwrap();
-        writer
-            .publish(
-                route.clone(),
-                &DocumentMutation::Incremental(b"a spectator's edit".to_vec()),
-            )
+    let mut people = Vec::new();
+    for (index, (seed, name)) in [(0x41, "Ana"), (0x51, "Ben")].into_iter().enumerate() {
+        let (device, cert) = own_device(seed, name);
+        let answer = runtime.block_on(ask_door(plain, &workspace, &cert, name));
+        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&answer.invitation)
             .unwrap();
-        let mut committed = false;
-        let refused = wait_for(
-            "the spectator's write to be refused",
-            || {
-                committed |= writer
-                    .drain()
-                    .iter()
-                    .any(|event| matches!(event, PeerEvent::Committed { .. }));
-                writer
-                    .status()
-                    .failures
-                    .into_iter()
-                    .find(|failure| failure.message == "a spectator only watches this room")
-            },
-            || format!("{:?}", writer.status()),
-        )
-        .await;
-        assert!(
-            !committed,
-            "the spectator's write was committed: {refused:?}"
-        );
+        let admitted = runtime.block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+            &Plain(plain),
+            &invitation,
+            &cert,
+            &device,
+            [u8::try_from(index).unwrap(); 32],
+            name,
+            answer.admission_token.as_bytes(),
+        ));
+        match admitted {
+            Ok(JoinReply::Admitted { role, .. }) => assert_eq!(role, WorkspaceRole::Editor),
+            other => panic!("{name} was not admitted: {other:?}"),
+        }
+        people.push(cert.user_public_key);
+    }
+    assert_ne!(people[0], people[1], "two people, not one");
 
-        let other = page(plain, sibling_key, sibling_cert, &host_cert, false);
-        other.join(workspace_id).unwrap();
-        let refused = wait_for(
-            "the sibling device to be refused",
-            || {
-                other
-                    .status()
-                    .failures
-                    .into_iter()
-                    .find(|failure| failure.message == "device not in workspace membership")
-            },
-            || format!("{:?}", other.status()),
+    let after = runtime.block_on(directory_page(plain));
+    assert_eq!(
+        after.workspaces[0].members,
+        before.workspaces[0].members + 2,
+        "both joined as members"
+    );
+    room.stop();
+}
+
+/// The room takes over the removals it kept before the door had them: a
+/// person moderation removed before the upgrade stays out, and the old file
+/// goes.
+#[test]
+fn the_room_keeps_out_a_person_it_removed_before_the_door() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let (_, cert) = own_device(0x61, "Ana");
+    let legacy = state.join("relay").join("removals.json");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(
+        &legacy,
+        serde_json::json!({
+            hex::encode(cert.user_public_key): tilo_clock::unix_now_ms(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let web_plain = plain.to_string();
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
+    .unwrap();
+    let (workspace, _) = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (status, body) = runtime.block_on(ask_door_raw(plain, &workspace, &cert, "Ana"));
+    assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        String::from_utf8_lossy(&body).contains("within the day"),
+        "{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(!legacy.exists(), "the room took the old removals over");
+    room.stop();
+}
+
+/// A person who joined through the real room process's door subscribes, reads
+/// the room's chat with its starting channel, and has every write refused as
+/// the viewer the listing made them; the owner's root still admits none of its
+/// other devices by itself. The same room, listing people as its editors,
+/// takes the next person's write in: what someone may change is the role the
+/// listing gives them, and nothing else about the page changes.
+#[test]
+fn a_persistent_rooms_pages_read_the_room_and_write_what_their_role_lets_them() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    std::fs::create_dir_all(&state).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let web_plain = plain.to_string();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--chat-channel",
+            "general",
+            "--listing-description",
+            "Coffee and tea",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
+    .unwrap();
+    let (id, workspace_id) = announced(&room);
+    let visiting = join_through_door(&runtime, plain, &id, own_device(0x71, "Ana"), "Ana");
+    let writer = join_through_door(&runtime, plain, &id, own_device(0x72, "Ben"), "Ben");
+    let sibling = unenrolled_owner_device();
+    runtime.block_on(persons_read_the_room_and_are_refused(
+        plain,
+        &id,
+        workspace_id,
+        visiting,
+        writer,
+        sibling,
+    ));
+    room.stop();
+
+    // The same room, listing people as its editors: a new person joins
+    // through the door as the others did, and their write is taken in.
+    let room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--chat-channel",
+            "general",
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+        ],
+    )
+    .unwrap();
+    let (same, _) = announced(&room);
+    assert_eq!(same, id, "the same room opens");
+    let editor = join_through_door(&runtime, plain, &same, own_device(0x73, "Cy"), "Cy");
+    runtime.block_on(an_editor_page_writes_and_is_committed(
+        plain,
+        &same,
+        workspace_id,
+        editor,
+    ));
+    room.stop();
+}
+
+/// The first start's pages: two people who joined through the door read the
+/// chat and the viewer's writes are refused, and a device of the owner the
+/// room never enrolled is not admitted.
+async fn persons_read_the_room_and_are_refused(
+    plain: std::net::SocketAddr,
+    cluster: &str,
+    workspace_id: u64,
+    (visiting_key, visiting_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+    (writing_key, writing_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+    (sibling_key, sibling_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+) {
+    use collab_types::DocumentMutation;
+    use tilo_browser_peer::PeerEvent;
+
+    let (host_cert, route) = chat_route(plain, cluster).await;
+
+    let visiting = page(plain, visiting_key, visiting_cert, &host_cert);
+    visiting.join(workspace_id).unwrap();
+    visiting.open_route(route.clone()).unwrap();
+    assert_page_reads_the_chat("Ana", &visiting, workspace_id, &route, &["general"]).await;
+
+    // Another person holds the listing's default role, a viewer's: they read
+    // the room and write nothing.
+    let writer = page(plain, writing_key, writing_cert, &host_cert);
+    writer.join(workspace_id).unwrap();
+    writer.open_route(route.clone()).unwrap();
+    assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
+    writer
+        .publish(
+            route.clone(),
+            &DocumentMutation::Incremental(b"a viewer's edit".to_vec()),
         )
-        .await;
-        assert!(
-            !other
+        .unwrap();
+    let mut committed = false;
+    let refused = wait_for(
+        "the viewer's write to be refused",
+        || {
+            committed |= writer
                 .drain()
                 .iter()
-                .any(|event| matches!(event, PeerEvent::Ready { .. })),
-            "a sibling device was admitted: {refused:?}"
-        );
+                .any(|event| matches!(event, PeerEvent::Committed { .. }));
+            writer
+                .status()
+                .failures
+                .into_iter()
+                .find(|failure| failure.message.contains("not granted"))
+        },
+        || format!("{:?}", writer.status()),
+    )
+    .await;
+    assert!(!committed, "the viewer's write was committed: {refused:?}");
 
-        other.close();
-        writer.close();
-        watcher.close();
-    });
-    room.stop();
+    let other = page(plain, sibling_key, sibling_cert, &host_cert);
+    other.join(workspace_id).unwrap();
+    let refused = wait_for(
+        "the sibling device to be refused",
+        || {
+            other
+                .status()
+                .failures
+                .into_iter()
+                .find(|failure| failure.message == "device not in workspace membership")
+        },
+        || format!("{:?}", other.status()),
+    )
+    .await;
+    assert!(
+        !other
+            .drain()
+            .iter()
+            .any(|event| matches!(event, PeerEvent::Ready { .. })),
+        "a sibling device was admitted: {refused:?}"
+    );
+
+    other.close();
+    writer.close();
+    visiting.close();
+}
+
+/// The restart's page: a person who joined through the door writes, and the
+/// room commits it, as the listing's role now lets them.
+async fn an_editor_page_writes_and_is_committed(
+    plain: std::net::SocketAddr,
+    cluster: &str,
+    workspace_id: u64,
+    (editor_key, editor_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+) {
+    use collab_types::DocumentMutation;
+    use tilo_browser_peer::PeerEvent;
+
+    let (host_cert, route) = chat_route(plain, cluster).await;
+    let editor = page(plain, editor_key, editor_cert, &host_cert);
+    editor.join(workspace_id).unwrap();
+    editor.open_route(route.clone()).unwrap();
+    assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
+    editor
+        .publish(
+            route.clone(),
+            &DocumentMutation::Incremental(b"an editor's edit".to_vec()),
+        )
+        .unwrap();
+    let refused = wait_for(
+        "the editor's write to be committed",
+        || {
+            let events = editor.drain();
+            let committed = events
+                .iter()
+                .any(|event| matches!(event, PeerEvent::Committed { .. }));
+            committed.then(|| editor.status().failures)
+        },
+        || format!("{:?}", editor.status()),
+    )
+    .await;
+    assert!(
+        refused.is_empty(),
+        "an editor's write was refused: {refused:?}"
+    );
+    editor.close();
 }
 
 /// A room service stops its room hard (`podman rm -f`): killed after it
 /// decided things and wrote them, and killed again while it starts. Each
-/// next start opens the same room, settles its chat and lets a watching
-/// page read it.
+/// next start opens the same room, settles its chat and lets a person who
+/// joins through its door read it.
 #[test]
 fn a_persistent_room_reopens_after_hard_stops() {
     const CHAT: &str = "so.tilo.chat";
@@ -670,30 +1024,24 @@ fn a_persistent_room_reopens_after_hard_stops() {
         "general",
         "--chat-channel",
         "show-and-tell",
+        "--listing-description",
+        "Coffee and tea",
         "--web-plain",
         web_plain.as_str(),
     ];
-    let started = |room: &Room| match room.next(|e| matches!(e, RoomEvent::Started { .. })) {
-        RoomEvent::Started { room: Some(id), .. } => id,
+    let started = |room: &Workspace| match room.next(|e| matches!(e, OperatorEvent::Started { .. }))
+    {
+        OperatorEvent::Started {
+            workspace: Some(id),
+            ..
+        } => id,
         other => panic!("no governed room announced: {other:?}"),
     };
 
-    let mut room = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
     let id = started(&room);
-    room.tell(&OperatorCommand::PreAdmit {
-        user_public_key: "22".repeat(32),
-        token_sha256: "33".repeat(32),
-        label: "Brave Otter".into(),
-        role: RoomRole::Editor,
-    });
-    assert!(matches!(
-        room.next(|e| matches!(
-            e,
-            RoomEvent::PreAdmitted { .. } | RoomEvent::PreAdmitRefused { .. }
-        )),
-        RoomEvent::PreAdmitted { .. }
-    ));
-    let _ = spectate(&mut room);
+    join_through_door(&runtime, plain, &id, own_device(0x74, "Ana"), "Ana");
     room.kill();
 
     // Killed again before it says it started.
@@ -701,11 +1049,11 @@ fn a_persistent_room_reopens_after_hard_stops() {
     std::thread::sleep(Duration::from_millis(300));
     starting.kill();
 
-    let mut room = start_with(&state, &root_file, &secrets, &extra).unwrap();
+    let room = start_with(&state, &root_file, &secrets, &extra).unwrap();
     assert_eq!(started(&room), id, "the same room opens");
     let workspace_id = tilo_relay::room_workspace_id(&id).unwrap();
-    let (key, cert) = spectate(&mut room);
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
+    let (key, cert) = join_through_door(&runtime, plain, &id, own_device(0x75, "Ben"), "Ben");
+    runtime.block_on(async {
         let host_cert = tilo_browser_peer::host_info(&Plain(plain))
             .await
             .unwrap()
@@ -716,11 +1064,254 @@ fn a_persistent_room_reopens_after_hard_stops() {
             cluster_id: id.clone(),
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
-        let watcher = page(plain, key, cert, &host_cert, true);
-        watcher.join(workspace_id).unwrap();
-        watcher.open_route(route.clone()).unwrap();
-        assert_page_reads_the_chat(&watcher, workspace_id, &route).await;
-        watcher.close();
+        let visiting = page(plain, key, cert, &host_cert);
+        visiting.join(workspace_id).unwrap();
+        visiting.open_route(route.clone()).unwrap();
+        assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
+        visiting.close();
     });
+    room.stop();
+}
+
+/// One answer from the deployment's plain-HTTP routes.
+struct Answer {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Answer {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header, _)| header.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
+/// A GET to `addr`, as a health check, a browser following a link or a
+/// Discord sign-in coming back does.
+async fn try_get(addr: std::net::SocketAddr, path: &str) -> Result<Answer, String> {
+    use http_body_util::BodyExt as _;
+    let request = hyper::Request::get(path)
+        .header(hyper::header::HOST, "localhost")
+        .body(http_body_util::Full::new(bytes::Bytes::new()))
+        .map_err(|error| error.to_string())?;
+    let tcp = tokio::net::TcpStream::connect(addr)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (mut sender, connection) =
+        hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(tcp))
+            .await
+            .map_err(|error| error.to_string())?;
+    tokio::spawn(connection);
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|error| error.to_string())?;
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.as_str().to_owned(),
+                String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| error.to_string())?
+        .to_bytes()
+        .to_vec();
+    Ok(Answer {
+        status,
+        headers,
+        body,
+    })
+}
+
+/// `try_get` once the listener answers, until the hang bound passes.
+fn get(runtime: &tokio::runtime::Runtime, addr: std::net::SocketAddr, path: &str) -> Answer {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        match runtime.block_on(try_get(addr, path)) {
+            Ok(answer) => return answer,
+            Err(error) if std::time::Instant::now() < deadline => {
+                let _ = error;
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => panic!("nothing answered {path} at {addr}: {error}"),
+        }
+    }
+}
+
+/// What a bot publishes as an avatar: PNG bytes, addressed by their hash.
+const AVATAR_PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+/// An avatar the workspace published is served by its content address as
+/// bytes that never change, and nothing else is served there.
+fn answers_its_avatars(
+    runtime: &tokio::runtime::Runtime,
+    management: std::net::SocketAddr,
+    published: &str,
+) {
+    let avatar = get(runtime, management, &format!("/avatars/{published}"));
+    assert_eq!(avatar.status, 200);
+    assert_eq!(avatar.header("content-type"), Some("image/png"));
+    assert_eq!(avatar.body, AVATAR_PNG, "the published bytes, as they are");
+    assert_eq!(
+        avatar.header("cache-control"),
+        Some("public, max-age=31536000, immutable"),
+        "a content address never changes"
+    );
+    assert_eq!(
+        get(runtime, management, &format!("/avatars/{}", "0".repeat(64))).status,
+        404,
+        "an avatar the workspace did not publish"
+    );
+    assert_eq!(get(runtime, management, "/avatars/not-a-hash").status, 404);
+}
+
+/// What Discord's consent page comes back with: on to the entry when the
+/// person said no, and a page saying why when the round trip was not one this
+/// host started or Discord did not confirm it.
+fn answers_its_sign_in(runtime: &tokio::runtime::Runtime, management: std::net::SocketAddr) {
+    let declined = get(runtime, management, "/discord/callback?error=access_denied");
+    assert_eq!(declined.status, 302);
+    assert_eq!(declined.header("location"), Some("https://tilo.example/"));
+    let malformed = get(
+        runtime,
+        management,
+        "/discord/callback?code=the-code&state=short",
+    );
+    assert_eq!(malformed.status, 400);
+    assert_eq!(
+        malformed.header("content-type"),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(
+        String::from_utf8_lossy(&malformed.body).contains("href=\"https://tilo.example/\""),
+        "{}",
+        String::from_utf8_lossy(&malformed.body)
+    );
+    // A round trip this host did start, whose account Discord would not
+    // confirm (the workspace's Discord is unreachable from a test): the
+    // browser is not sent on as if it had linked anything.
+    let unconfirmed = get(
+        runtime,
+        management,
+        "/discord/callback?code=the-code&state=0123456789abcdef0123456789abcdef",
+    );
+    assert_eq!(unconfirmed.status, 400);
+    assert!(
+        String::from_utf8_lossy(&unconfirmed.body).contains("Discord didn't confirm"),
+        "{}",
+        String::from_utf8_lossy(&unconfirmed.body)
+    );
+}
+
+/// A page's own error report still lands on the door and is answered as
+/// reports always are.
+fn answers_the_door(
+    runtime: &tokio::runtime::Runtime,
+    plain: std::net::SocketAddr,
+    workspace: &str,
+) {
+    let reported = runtime.block_on(async {
+        use tilo_browser_peer::HttpClient as _;
+        Plain(plain)
+            .post(
+                &format!("/peer/v1/directory/{workspace}/errors"),
+                None,
+                br#"{"kind":"error","message":"boom","page":"/","build":"abc"}"#.to_vec(),
+            )
+            .await
+            .unwrap()
+    });
+    assert_eq!(reported.0, 204, "{}", String::from_utf8_lossy(&reported.1));
+}
+
+/// The room as its deployment runs it: no operator at all, and the plain-HTTP
+/// routes the ingress publishes — the health check, the avatars its bots
+/// publish and Discord's sign-in callback — answering beside the browser
+/// listener, whose door still logs a page's error and answers it.
+#[test]
+fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
+    let scratch = tempfile::tempdir().unwrap();
+    let (state, secrets) = (scratch.path().join("plaza"), scratch.path().join("secrets"));
+    let published = blake3::hash(AVATAR_PNG).to_hex().to_string();
+    std::fs::create_dir_all(state.join("avatars")).unwrap();
+    std::fs::write(state.join("avatars").join(&published), AVATAR_PNG).unwrap();
+    let root_file = scratch.path().join("root");
+    std::fs::write(&root_file, "11".repeat(32)).unwrap();
+    let secret = scratch.path().join("discord-client-secret");
+    std::fs::write(&secret, "s3cret").unwrap();
+
+    let plain = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let management = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (web_plain, http) = (plain.to_string(), management.to_string());
+    let avatars = state.join("avatars");
+    let avatars = avatars.to_str().unwrap();
+    let secret = secret.to_str().unwrap();
+    let mut room = start_with(
+        &state,
+        &root_file,
+        &secrets,
+        &[
+            "--listing-description",
+            "Coffee and tea",
+            "--default-role",
+            "editor",
+            "--web-plain",
+            &web_plain,
+            "--web-entry",
+            "https://tilo.example/",
+            "--http",
+            &http,
+            "--public-avatars",
+            avatars,
+            "--public-avatars-url",
+            "https://eu1.example/avatars",
+            "--discord-client-id",
+            "123",
+            "--discord-client-secret-file",
+            secret,
+            "--discord-redirect-url",
+            "https://eu1.example/discord/callback",
+            "--discord-authorize-url",
+            "https://discord.com/oauth2/authorize",
+            // Discord itself, in production; no test reaches it.
+            "--discord-api-base",
+            "http://127.0.0.1:9",
+        ],
+    )
+    .unwrap();
+    // The deployment runs the room with nobody at the operator's end.
+    room.close_operator();
+    let (workspace, _) = announced(&room);
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+
+    let mode = get(&runtime, management, "/mode");
+    assert_eq!(mode.status, 200, "{}", String::from_utf8_lossy(&mode.body));
+    let mode: serde_json::Value = serde_json::from_slice(&mode.body).unwrap();
+    assert_eq!(mode["relay"], "up", "the health check a deploy waits on");
+    assert_eq!(mode["revision"], SOURCE_REVISION, "the image it built");
+
+    answers_its_avatars(&runtime, management, &published);
+    answers_its_sign_in(&runtime, management);
+    assert_eq!(get(&runtime, management, "/join").status, 404);
+    assert_eq!(get(&runtime, management, "/wait-list").status, 404);
+    answers_the_door(&runtime, plain, &workspace);
+
     room.stop();
 }

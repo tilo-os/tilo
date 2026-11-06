@@ -25,6 +25,9 @@ ruzstd = { version = "0.9.1", default-features = false, features = ["std"], opti
 lzma-rust2 = { version = "0.23.0", default-features = false, features = ["std", "xz"], optional = true }
 serde.workspace = true
 serde_json.workspace = true
+# Moving a downloaded program into the person's Applications folder goes
+# through the one crash-safe transfer engine.
+host-fs = { path = "../../system/host-fs" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # The scan is kept current by a worker watching the application directories.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }

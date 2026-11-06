@@ -43,7 +43,7 @@ pub const MANAGEMENT_ALPN: &[u8] = b"tilo-home-peer-management/1";
 pub struct ContentEndpointAdvertisement {
     /// Explicit schema version for persisted/client registration envelopes.
     pub schema_version: u16,
-    /// Relay room whose signed filesystem authority authorised this lookup.
+    /// Relay workspace whose signed filesystem authority authorised this lookup.
     pub workspace_id: u64,
     /// Direct authenticated filesystem/blob endpoints currently ready for it.
     pub filesystem_endpoints: Vec<EndpointAddr>,
@@ -99,11 +99,11 @@ pub struct HomePeerManagementResponse {
     pub decommissioned: bool,
 }
 
-/// A client must name the relay room it is resolving. The host never exposes
+/// A client must name the relay workspace it is resolving. The host never exposes
 /// its filesystem endpoints as a global, unauthorised discovery answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentEndpointRequest {
-    /// Relay room whose filesystem endpoint the caller wants to resolve.
+    /// Relay workspace whose filesystem endpoint the caller wants to resolve.
     pub workspace_id: u64,
 }
 
@@ -320,16 +320,17 @@ pub enum Envelope {
         reason: String,
     },
 
-    /// Retired: join the workspace's live plane over the relay connection.
-    /// Nothing sends it — a device joins the plane itself, on its own carrier
-    /// — and it stays only so every later variant keeps its postcard
-    /// position.
+    /// Join the workspace's live plane: the host answers with the members
+    /// already present and tells them this device joined. The name keeps the
+    /// variant's place in the wire enum.
     RetiredLiveJoin {
         /// Workspace id.
         workspace_id: u64,
     },
 
-    /// Leave the workspace's live plane.
+    /// Leave the workspace's live plane. Nothing sends it — a device that
+    /// goes is dropped with its connection — and it stays only so every
+    /// later variant keeps its postcard position.
     LiveLeave {
         /// Workspace id.
         workspace_id: u64,
@@ -348,9 +349,9 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// Retired: a device joined (`active`) or left the workspace's live
-    /// plane. Nothing sends it — membership is the plane's own — and it stays
-    /// only so every later variant keeps its postcard position.
+    /// A device joined (`active`) or left the workspace's live plane, sent
+    /// by the host to the plane's other members. The name keeps the
+    /// variant's place in the wire enum.
     RetiredLiveMember {
         workspace_id: u64,
         device_public_key: [u8; 32],
@@ -394,7 +395,7 @@ pub enum Envelope {
         request: [u8; 16],
         /// The route's application.
         app_id: String,
-        /// The route's room.
+        /// The route's workspace.
         cluster_id: String,
         /// The route's record.
         record: String,
@@ -413,9 +414,9 @@ pub enum Envelope {
         signature: [u8; 64],
     },
 
-    /// Open, start, end or moderate a call of a room the host governs (see
+    /// Open, start, end or moderate a call of a workspace the host governs (see
     /// [`crate::voice`]). Requires an accepted `Subscribe`; opening a
-    /// channel's call takes a member, everything else the room's owner or an
+    /// channel's call takes a member, everything else the workspace's owner or an
     /// administrator. Answered with [`Envelope::VoiceCallResult`].
     /// Sent only to a host that advertised voice.
     VoiceCall {
@@ -470,22 +471,22 @@ pub enum Envelope {
         participation: [u8; 32],
     },
 
-    /// Ask for the calls of a room the host governs. Requires an accepted
+    /// Ask for the calls of a workspace the host governs. Requires an accepted
     /// `Subscribe`. Answered with [`Envelope::VoiceCallList`].
     VoiceCalls {
         /// Workspace id.
         workspace_id: u64,
     },
 
-    /// A room's calls as its governance records them, with who is in each.
+    /// A workspace's calls as its governance records them, with who is in each.
     VoiceCallList {
         workspace_id: u64,
-        /// The calls, or why the room has none to list.
+        /// The calls, or why the workspace has none to list.
         result: Result<Vec<crate::voice::CallSummary>, String>,
     },
 
     /// One piece of a record's content for exactly one device of the
-    /// workspace, which asked the room for it. Routed like
+    /// workspace, which asked the workspace for it. Routed like
     /// [`Envelope::RemoteAction`] — to the addressed device's live
     /// connection, never stored, never fanned out — but never answered:
     /// content that does not arrive is asked for again.
@@ -502,7 +503,7 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// Open an on-demand record of a subscribed room: a record a joining
+    /// Open an on-demand record of a subscribed workspace: a record a joining
     /// device is not replayed (`neighbour_wire::record_sync`). The relay
     /// sends what it retains of the record as [`Envelope::Delta`]s, under
     /// the same admission as a replay, then [`Envelope::RecordOpened`];
@@ -526,7 +527,7 @@ pub enum Envelope {
 
     /// What `participation` shows besides its voice from now on (its
     /// camera, a shared screen). The relay records it on the participation
-    /// and tells the call's participants and the room's call list when it
+    /// and tells the call's participants and the workspace's call list when it
     /// changed. Not answered.
     VoiceShow {
         workspace_id: u64,
@@ -537,7 +538,7 @@ pub enum Envelope {
     },
 
     /// One of the host's own operations (`tilo.host`: creating, listing,
-    /// entering and hosting rooms), asked of the host itself by a device of
+    /// entering and hosting workspaces), asked of the host itself by a device of
     /// the host's own person, or the host's answer to it: an opaque
     /// remote-action frame. It names no workspace: the authenticated
     /// connection says who asks, and the host answers only its own person's
@@ -548,13 +549,13 @@ pub enum Envelope {
         frame: Vec<u8>,
     },
 
-    /// What a member device builds its replica of the room from, sent to a
-    /// subscriber before the room's replay: the room's
+    /// What a member device builds its replica of the workspace from, sent to a
+    /// subscriber before the workspace's replay: the workspace's
     /// `tilo_workspace_join::JoinBootstrap` for this device, postcard
     /// encoded, as a joining native device receives it. Its governance
     /// messages and records stay out: the replay that follows carries the
-    /// room's retained governance and records.
-    RoomBootstrap {
+    /// workspace's retained governance and records.
+    WorkspaceBootstrap {
         workspace_id: u64,
         #[serde(with = "serde_bytes")]
         bootstrap: Vec<u8>,
@@ -618,16 +619,18 @@ impl Envelope {
             Self::RecordOpened { .. } => "RecordOpened",
             Self::VoiceShow { .. } => "VoiceShow",
             Self::HostAction { .. } => "HostAction",
-            Self::RoomBootstrap { .. } => "RoomBootstrap",
+            // The kind names a key in the web envelope JSON, so it keeps the
+            // spelling it was first written under.
+            Self::WorkspaceBootstrap { .. } => "RoomBootstrap",
             Self::RecordContentWant { .. } => "RecordContentWant",
         }
     }
 
-    /// The workspace (relay room) this envelope belongs to, or `None` for
+    /// The workspace (relay workspace) this envelope belongs to, or `None` for
     /// the connection-level frames (`Ping`, `Pong`, `PeerRelayHello`).
     ///
     /// The match is exhaustive on purpose: a new variant has to say which
-    /// room it is charged to.
+    /// workspace it is charged to.
     #[must_use]
     pub const fn workspace_id(&self) -> Option<u64> {
         match self {
@@ -665,7 +668,7 @@ impl Envelope {
             | Self::VoiceShow { workspace_id, .. }
             | Self::OpenRecord { workspace_id, .. }
             | Self::RecordOpened { workspace_id, .. }
-            | Self::RoomBootstrap { workspace_id, .. }
+            | Self::WorkspaceBootstrap { workspace_id, .. }
             | Self::RecordContentWant { workspace_id, .. } => Some(*workspace_id),
             Self::Ping | Self::Pong | Self::PeerRelayHello { .. } | Self::HostAction { .. } => None,
         }

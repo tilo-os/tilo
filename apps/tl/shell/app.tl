@@ -233,26 +233,13 @@ default view shell_settings for Shell
 /// other root, as any view reads a root of the package it uses. A change of the arrangement runs
 /// the preset body; a change of the desk reading runs the bar.
 ///
+/// The whole screen is `screen`'s view (`desk.tl`), which this calls: a person meets the same
+/// desk as a window and as a display, and neither drifts from the other.
+///
 /// The traditional desktop is the one preset that is the chrome's too: picking its layout
 /// (`apply` of `windows_desktop`) lays the desk out that way, as picking it in the switch does.
 view desk_view(a: Arrangement) {
-    let v = viewing
-    if (v.showing == .desktop or bar_is_traditional(shell)) and not space.compact {
-        layers(fill) {
-            traditional_desktop(
-                a,
-                bar_lists_actions(
-                    shell,
-                    root Desk,
-                    space.width_class == .expanded or space.width_class == .wide,
-                ),
-                fill,
-            )
-            desk(root Desk, fill)
-        }
-    } else {
-        desk_around(root Desk, .some(a), fill)
-    }
+    screen(a, fill)
 }
 
 /// The time, to the minute, and the timer Clocks runs beside it: its label and what it has
@@ -307,9 +294,10 @@ view bar(d: Desk) {
 /// Whether a part of the bar gives way on a bar narrower than a wide one: the strip and the
 /// focused window's menu below an expanded bar (a phone, a tablet, or large text), and the
 /// tasks and the agents, which run longest, below a wide one. The menu, the workspace, the clock,
-/// the status and a question put to the person always keep their room. The bar decides by its
-/// width, so a part that gives way leaves no room behind; the bar's parts must never press into
-/// each other (the overview shows what gave way).
+/// the status and a question put to the person always keep their room — the menu alone on a bar
+/// narrower than a compact one, where its preset switch gives way (`bar_part`). The bar decides
+/// by its width, so a part that gives way leaves no room behind; the bar's parts must never press
+/// into each other (the overview shows what gave way).
 fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     if part.slot == .tasks or part.slot == .agent {
         return true
@@ -317,22 +305,41 @@ fn part_gives_way(part: BarPart, roomy: Bool) -> Bool {
     return not roomy and (part.slot == .strip or part.slot == .app_menu)
 }
 
+/// Whether the bar is too narrow to hold its parts at their roomiest: a phone, or a short window
+/// with large text. Room enough for the menu, the workspace's name, the clock and the status
+/// beside each other starts at about this width; below it the parts pack a tighter gap apart, the
+/// workspace keeps only its icon and the preset switch gives way, so the person's own face at the
+/// end never goes off the bar.
+fn bar_is_narrow(width: Float) -> Bool {
+    return width < 26.0
+}
+
 /// One part of the bar, drawn from what it is. Who is here is its faces alone, one button that
 /// opens the roster of everyone here and names them to assistive technology (`people_button`);
 /// a question put to the person stands beside them, their answer or their putting it off, never
 /// a banner over their windows. The status part leads with the running applications' tray
-/// items, each under the app's own words for it, then the device's own status
-/// (`status_icons`), the notifications, and the person's own face at the far end. On a compact
-/// bar the tray items and the sound give way: what a glance needs — the clock, the workspace,
-/// the connection, the charge, the notifications and the person's own face — keeps its room.
+/// items, each under the app's own words for it, then the device's own status, the notifications,
+/// and the person's own face at the far end. On a compact bar the tray items and the sound give
+/// way: what a glance needs — the clock, the workspace, the connection, the charge, the
+/// notifications and the person's own face — keeps its room.
 view bar_part(d: Desk, part: BarPart) {
     if part.slot == .space {
         spacer
     } else if part.slot == .clock {
         clock(d)
     } else if part.slot == .menu {
-        ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
-            on press: session.tilo_menu()
+        row(gap: .related, align: .center) {
+            ui.Button("Tilo", icon: .tilo, icon_only: true, role: .bar) {
+                on press: session.tilo_menu()
+            }
+            // The switch between the presets, in the bar's own seat rather than in a row of its
+            // own, so nothing stands between a window and the bar. A bar too narrow for it beside
+            // the clock and the status gives it up, as it gives up the strip and the focused
+            // window's menu; the same switch is a page of Settings, so the preset a person picked
+            // is never out of reach, and no control is pressed into its neighbour to keep it here.
+            if not bar_is_narrow(space.width) {
+                preset_menu(viewing)
+            }
         }
     } else if part.slot == .workspace {
         workspace_menu(d)
@@ -343,13 +350,13 @@ view bar_part(d: Desk, part: BarPart) {
             ui.Button(d.strip, icon: .chevron_right, role: .bar)
         }
     } else if part.slot == .tasks {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             for t in d.tasks {
                 ui.Button(t.title, icon: .bot, role: .bar)
             }
         }
     } else if part.slot == .people {
-        row(gap: .tight, align: .center) {
+        row(gap: .related, align: .center) {
             if not space.compact {
                 people_button(d)
             }
@@ -365,15 +372,28 @@ view bar_part(d: Desk, part: BarPart) {
             agent_chip(d, a)
         }
     } else if part.slot == .status {
-        row(gap: .sibling, align: .center) {
+        // One cluster, so its controls stand a cluster gap apart and never the tightest: a bar
+        // control's press target is wider than its face (a finger's, and a mouse's), and two of
+        // them at the tightest gap would share the press between them. What the device does not
+        // publish is not drawn at all, so no gap stands for a control that is not there.
+        row(gap: .related, align: .center) {
             if not space.compact and not d.tray.is_empty() {
-                row(gap: .tight, align: .center) {
+                row(gap: .related, align: .center) {
                     for item in d.tray {
                         ui.Button(item.title, role: .bar)
                     }
                 }
             }
-            status_icons()
+            // The device's own status: the sound's level, the connection the machine's traffic
+            // leaves on, and the pack's charge. Each reads the resource the session publishes —
+            // the sound, the network and the battery `quick.tl` reads and changes too, so the bar
+            // and the panel show one fact, never a copy — and each press opens the quick settings,
+            // the one place a person changes them.
+            if not space.compact {
+                volume_status()
+            }
+            network_status()
+            battery_status()
             bell(d)
             if d.person != "" {
                 ui.Avatar(name: .some(d.person))
@@ -388,12 +408,8 @@ view bar_part(d: Desk, part: BarPart) {
 /// workspace the session has not published a name for still opens by the workspaces' name.
 view workspace_menu(d: Desk) {
     let name = if d.workspace != "" { d.workspace } else { "Workspaces" }
-    ui.MenuButton(
-        name,
-        icon: if space.width < 18.0 { .layers },
-        icon_only: space.width < 18.0,
-        role: .bar,
-    ) {
+    let icon_only = bar_is_narrow(space.width)
+    ui.MenuButton(name, icon: if icon_only { .layers }, icon_only: icon_only, role: .bar) {
         for w in d.workspaces {
             ui.MenuItem(w.name, checked: .some(w.current)) {
                 on choose: device.switch_workspace(device.desk, workspace: w.key)
@@ -414,24 +430,9 @@ view workspace_menu(d: Desk) {
     }
 }
 
-/// The device's status as the session publishes it: the sound's level, the connection the
-/// machine's traffic leaves on, and the pack's charge. Each reads the resource the session
-/// publishes — the sound, the network and the battery `quick.tl` reads and changes too, so the
-/// bar and the panel show one fact, never a copy — and each press opens the quick settings,
-/// the one place a person changes them. A device that publishes none of them shows none.
-view status_icons() {
-    row(gap: .tight, align: .center) {
-        // A compact bar keeps the connection and the charge, what a glance looks for; the sound
-        // is a key away and a press on the others opens it (`volume_status`).
-        if not space.compact {
-            volume_status()
-        }
-        network_status()
-        battery_status()
-    }
-}
-
 /// The sound's level, and that it is muted; nothing on a device whose sound reads no level.
+/// A compact bar keeps the connection and the charge, what a glance looks for; the sound is a
+/// key away and a press on the others opens it.
 view volume_status() {
     let sound = device.sound
     if let volume = sound.volume {

@@ -1326,6 +1326,18 @@ impl ActionSpec {
         }
     }
 
+    /// The encoding an [`Immediate`](ActionInput::Immediate) spec already holds, when it was
+    /// encoded once and shared by every resource offering it; `None` for one built from its
+    /// target when it is invoked. Reads, never builds: validating a surface of ten thousand
+    /// items runs no action.
+    #[must_use]
+    pub fn published_encoding(&self) -> Option<&Arc<EncodedAction>> {
+        match &self.lane {
+            Lane::Immediate(encoded) => encoded.as_ref(),
+            Lane::Deferred { .. } | Lane::Prompted { .. } => None,
+        }
+    }
+
     /// Run a [`Deferred`](ActionInput::Deferred) spec's builder, unchecked:
     /// `None` for any other. Callers check the result's type against the
     /// declared one, as the door does.

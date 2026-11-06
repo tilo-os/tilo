@@ -120,15 +120,17 @@ fn published_new_note_and_page_tokens_use_the_canonical_component_once() {
         1
     );
     let before = revision(&f, &checkout);
+    // A page row names its page: the list addresses rows by the key their
+    // host gave them.
     let page = named(&a, "Untitled")
         .into_iter()
-        .find(|r| r.1.as_deref().is_some_and(|t| t.starts_with("node:")))
+        .find(|r| r.1.as_deref().is_some_and(|t| t.starts_with("key:")))
         .unwrap();
     perform(&mut a, &page, &Action::Activate);
     assert_eq!(revision(&f, &checkout), before, "selection is local");
     for action in [Action::Activate, Action::Focus] {
         assert!(
-            a.perform_semantic_named(&page.0, Some("node:999999999"), &action)
+            a.perform_semantic_named(&page.0, Some("key:999999999"), &action)
                 .is_err()
         );
     }

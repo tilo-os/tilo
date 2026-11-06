@@ -4,39 +4,25 @@ use collab_types::EncryptionMetadata;
 use collab_types::inbound::OpAdmission;
 
 /// What a broker checks every document op of a channel against: whether
-/// plaintext is closed off, and the epoch of the latest membership change.
+/// plaintext is closed off there, and that ciphertext names the channel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChannelGate {
     pub encryption_required: bool,
-    pub head_epoch: Option<u64>,
 }
 
 impl ChannelGate {
-    /// Refuse plaintext once encryption is required, ciphertext bound to
-    /// another channel, and content sealed under a content key older than
-    /// the latest membership change: a removed member still holds those
-    /// keys, so it must not inject content under them, and a lagging member
-    /// must catch up first (otherwise the removed member could read it).
+    /// Refuse plaintext once encryption is required, and ciphertext bound to
+    /// another channel.
+    ///
+    /// An op sealed under an epoch the channel has since moved past is
+    /// admitted: its author was a member when they wrote it, this device
+    /// still holds the key it was sealed under, and a member's write
+    /// routinely reaches another device after the channel's next membership
+    /// change. Refusing it would lose that write for being a moment old,
+    /// and reading it takes nothing from a device removed since: content
+    /// written before the removal reached its author was readable by that
+    /// device at the time.
     pub fn accepts(
-        &self,
-        encryption: Option<&EncryptionMetadata>,
-        channel: collab_types::ChannelId,
-    ) -> bool {
-        if let Some(metadata) = encryption
-            && metadata.retention().is_some()
-            && self.head_epoch.is_some_and(|head| metadata.epoch < head)
-        {
-            return false;
-        }
-        !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
-    }
-
-    /// [`Self::accepts`] for history a workspace host replays in its own
-    /// order: content sealed under an older epoch was current when the host
-    /// admitted it (the host admits only the workspace's members), so only
-    /// plaintext on an encrypted channel and ciphertext bound to another
-    /// channel are refused.
-    pub fn accepts_history(
         &self,
         encryption: Option<&EncryptionMetadata>,
         channel: collab_types::ChannelId,
@@ -75,23 +61,20 @@ mod gate_tests {
     use super::ChannelGate;
     use collab_types::{ChannelId, ContentRetention, EncryptionMetadata};
 
-    /// Live content sealed under a key older than the latest membership
-    /// change is refused (a removed member still holds it); the same content
-    /// replayed by the host from its history was current when admitted and
-    /// is accepted. Plaintext and other channels are refused either way.
+    /// Content sealed under an earlier epoch is admitted live as it is from
+    /// the host's history; plaintext and other channels are refused either
+    /// way.
     #[test]
-    fn host_history_under_an_older_epoch_is_accepted_live_content_is_not() {
+    fn content_sealed_under_an_earlier_epoch_is_admitted_live() {
         let channel = ChannelId::new();
         let gate = ChannelGate {
             encryption_required: true,
-            head_epoch: Some(3),
         };
         let old = EncryptionMetadata::content_key(1, channel, ContentRetention::Delta);
-        assert!(!gate.accepts(Some(&old), channel));
-        assert!(gate.accepts_history(Some(&old), channel));
-        assert!(!gate.accepts_history(None, channel));
+        assert!(gate.accepts(Some(&old), channel));
+        assert!(!gate.accepts(None, channel));
         let other = EncryptionMetadata::content_key(3, ChannelId::new(), ContentRetention::Delta);
-        assert!(!gate.accepts_history(Some(&other), channel));
+        assert!(!gate.accepts(Some(&other), channel));
     }
 
     #[test]
@@ -101,7 +84,6 @@ mod gate_tests {
         let open = ChannelGate::default();
         let required = ChannelGate {
             encryption_required: true,
-            head_epoch: None,
         };
         assert_eq!(
             super::admission([], false, channel, None),

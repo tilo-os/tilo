@@ -239,7 +239,6 @@ fn gated_endpoint(host: GatedHost) -> Arc<Endpoint<GatedHost>> {
         "workspace".into(),
         "owner".into(),
         Some("secret".into()),
-        None,
     )
 }
 

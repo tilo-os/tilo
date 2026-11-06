@@ -84,18 +84,19 @@ pub struct AccountCredentials {
 impl AccountCredentials {
     /// Open signed-in user custody, refusing an unreadable or unavailable vault.
     pub fn open() -> Result<Self, String> {
-        Self::from_vault(SecretVault::open())
+        Self::open_person(None)
     }
 
-    /// Open the credentials kept under the config root `root`. The person's
-    /// own root ([`crate::config_root`]) is sealed under session custody, so
-    /// it opens as [`Self::open`] does; any other root (a test, capture or
-    /// `--data-dir` profile, a recovery copy) under its own private key.
+    /// Open the credentials kept under the config root `root`; see
+    /// [`SecretVault::open_person`] for what each root's custody is.
     pub fn open_in(root: &Path) -> Result<Self, String> {
-        if crate::config_root().as_deref() == Some(root) {
-            return Self::open();
-        }
-        Self::from_vault(SecretVault::open_in(root))
+        Self::open_person(Some(root))
+    }
+
+    /// Open the person's custody under `config_root` (their own when `None`):
+    /// the keyring where it answers, otherwise an owner-only key file.
+    pub fn open_person(config_root: Option<&Path>) -> Result<Self, String> {
+        Self::from_vault(SecretVault::open_person(config_root))
     }
 
     fn from_vault(vault: SecretVault) -> Result<Self, String> {
@@ -144,10 +145,7 @@ impl ServiceCredentials {
     }
 
     fn vault(&self) -> Result<SecretVault, BrokerError> {
-        let vault = self
-            .root
-            .as_deref()
-            .map_or_else(SecretVault::open, SecretVault::open_in);
+        let vault = SecretVault::open_person(self.root.as_deref());
         if let Some(error) = vault.recovery_error() {
             return Err(BrokerError::Storage(error.into()));
         }
@@ -324,11 +322,11 @@ impl ServiceCredentials {
 mod tests {
     use super::*;
 
-    /// The person's vault opened by its root is the session's vault: the
-    /// same custody, refused or opened alike, and never sealed afresh under
-    /// a key file of its own.
+    /// The person's vault opened by its root is the person's vault opened
+    /// from the environment: the same custody, opened alike, and never read
+    /// under a key file of its own.
     #[test]
-    fn the_persons_root_opens_under_session_custody() {
+    fn the_persons_root_opens_under_the_persons_custody() {
         let Some(root) = crate::config_root() else {
             return;
         };

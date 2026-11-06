@@ -80,9 +80,10 @@ pub(crate) struct Closure {
     pub scope: Scope,
 }
 
-/// A block given to a template, with the scope it was written in: its item, when it shows one.
+/// A block given to a template, with the scope it was written in: the values it names, each
+/// with its type — an item block's one item, or the several values of a function's block.
 pub(crate) struct UiClosure {
-    pub item: Option<(String, Ty)>,
+    pub params: Vec<(String, Ty)>,
     pub body: Vec<UiStmt>,
     pub scope: Scope,
 }
@@ -229,6 +230,22 @@ impl Checker<'_> {
                     "Set" => Ty::Set(inner),
                     "Map" => Ty::Map(inner),
                     "Collection" => Ty::Collection(inner),
+                    // `Filter<T>`: a filter of the type `T` names, as outside a template.
+                    "Filter" => match *inner {
+                        Ty::Record(key) => Ty::Filter(key),
+                        other if other.is_error() => Ty::Error,
+                        other => {
+                            let t = other.display(&self.env.app);
+                            self.err(
+                                "E013",
+                                te.span,
+                                format!(
+                                    "`Filter<T>` is the filters of a type's items; `{t}` is no resource type"
+                                ),
+                            );
+                            Ty::Error
+                        }
+                    },
                     _ => Ty::Error,
                 }
             }
@@ -361,22 +378,32 @@ impl Checker<'_> {
                     Macro::Some(inner) => inner.as_ref(),
                     other => other,
                 };
-                if let Macro::State(state) = held {
-                    let te = match kind_of(&p.ty) {
-                        Kind::State(te) => Some(te),
-                        Kind::Optional(inner) => match *inner {
+                match held {
+                    Macro::State(state) => {
+                        let te = match kind_of(&p.ty) {
                             Kind::State(te) => Some(te),
+                            Kind::Optional(inner) => match *inner {
+                                Kind::State(te) => Some(te),
+                                _ => None,
+                            },
                             _ => None,
-                        },
-                        _ => None,
-                    };
-                    if let Some(te) = te {
-                        Self::unify(te, &state.ty, &params, &mut types);
+                        };
+                        if let Some(te) = te {
+                            Self::unify(te, &state.ty, &params, &mut types);
+                        }
+                        if !matches!(m, Macro::Some(_) | Macro::Absent) {
+                            values.insert(p.name.name.clone(), state.local);
+                            states.insert(p.name.name.clone(), state.clone());
+                        }
                     }
-                    if !matches!(m, Macro::Some(_) | Macro::Absent) {
-                        values.insert(p.name.name.clone(), state.local);
-                        states.insert(p.name.name.clone(), state.clone());
+                    // A function passed on by the name its caller gave it binds the type
+                    // parameters its result names, as the function a caller writes does.
+                    Macro::Lambda(closure) => {
+                        if let Some(result) = function_result(&p.ty) {
+                            Self::unify(result, &closure.result, &params, &mut types);
+                        }
                     }
+                    Macro::View(_) | Macro::Block(_) | Macro::Absent | Macro::Some(_) => {}
                 }
                 macros.insert(p.name.name.clone(), m);
                 continue;
@@ -463,8 +490,8 @@ impl Checker<'_> {
                     self.function_arg(
                         given[i],
                         (fparams, result, item_block),
-                        (&content, &caller, &types),
-                        (view, p, span),
+                        (&content, &caller, &mut types, &params),
+                        (view, p, span, optional),
                     )
                 }
                 Kind::View => {
@@ -473,13 +500,13 @@ impl Checker<'_> {
                         .find(|(name, _)| name.name == p.name.name)
                         .map(|(_, body)| (*body).clone())
                         .or_else(|| {
-                            (content.item.is_none() && !content.body.is_empty())
+                            (content.params.is_empty() && !content.body.is_empty())
                                 .then(|| content.body.clone())
                                 .filter(|_| is_content_param(view, p))
                         });
                     body.map(|body| {
                         Macro::Block(Rc::new(UiClosure {
-                            item: None,
+                            params: Vec::new(),
                             body,
                             scope: caller.clone(),
                         }))
@@ -503,7 +530,7 @@ impl Checker<'_> {
                         macros.insert(
                             p.name.name.clone(),
                             Macro::Block(Rc::new(UiClosure {
-                                item: None,
+                                params: Vec::new(),
                                 body: Vec::new(),
                                 scope: caller.clone(),
                             })),
@@ -652,17 +679,23 @@ impl Checker<'_> {
     }
 
     /// What a function parameter is given: a lambda, the call's item block, a view's name, or
-    /// for a view of an item left out, the item type's row view.
+    /// for a view of an item left out, the item type's row view. `.none` for a parameter a call
+    /// may leave out is nothing, as leaving it out is.
     fn function_arg(
         &mut self,
         arg: Option<&ast::Arg>,
         (fparams, result, item_block): (&[TypeExpr], &TypeExpr, bool),
-        (content, caller, types): (&Content, &Scope, &HashMap<String, Ty>),
-        (view, p, span): (&ast::ViewDecl, &ast::Param, Span),
+        (content, caller, types, names): (&Content, &Scope, &mut HashMap<String, Ty>, &[String]),
+        (view, p, span, optional): (&ast::ViewDecl, &ast::Param, Span, bool),
     ) -> Option<Macro> {
         let param_tys: Vec<Ty> = fparams.iter().map(|t| self.type_in(t, types)).collect();
         if let Some(a) = arg {
-            // A key path or a lambda, as the function of every value the parameter takes.
+            if optional && is_none(&a.value) {
+                return None;
+            }
+            // A key path or a lambda, as the function of every value the parameter takes. A
+            // function of a view is given its rows by the call's block, never by a lambda: the
+            // block names the values it draws with, and the item is one of them.
             let bound: Option<(Vec<ast::Ident>, ast::Expr)> = if item_block {
                 None
             } else if let Some((param, body)) = super::optional::lambda_of(&a.value) {
@@ -685,14 +718,41 @@ impl Checker<'_> {
                     );
                     return None;
                 }
-                let result = self.type_in(result, types);
-                return Some(Macro::Lambda(Rc::new(Closure {
-                    params: params
+                let held: Vec<(String, Ty)> = params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .zip(param_tys)
+                    .collect();
+                // What the function is worth binds the type parameters its result names:
+                // `group: .due` makes a list's heading a day, and anyone reading the list
+                // keeps it a day.
+                let named = type_params_in(result, names);
+                let unbound = |types: &HashMap<String, Ty>| {
+                    named
                         .iter()
-                        .map(|param| param.name.clone())
-                        .zip(param_tys)
-                        .collect(),
-                    result,
+                        .any(|name| types.get(*name).is_none_or(Ty::is_error))
+                };
+                let result_ty = if unbound(types) {
+                    let worth = self.body_type(&held, &body, caller);
+                    Self::unify(result, &worth, names, types);
+                    if !worth.is_error() && unbound(types) {
+                        let (want, found) = (crate::print::print_type(result), self.show(&worth));
+                        self.err(
+                            "E020",
+                            a.value.span,
+                            format!(
+                                "`{}` of `{}` is a function that makes {want}; this one makes {found}",
+                                p.name.name, view.name.name
+                            ),
+                        );
+                    }
+                    self.type_in(result, types)
+                } else {
+                    self.type_in(result, types)
+                };
+                return Some(Macro::Lambda(Rc::new(Closure {
+                    params: held,
+                    result: result_ty,
                     body,
                     scope: caller.clone(),
                 })));
@@ -727,9 +787,30 @@ impl Checker<'_> {
             return None;
         }
         let item_ty = param_tys.first().cloned().unwrap_or(Ty::Error);
-        if let Some((item, ())) = &content.item {
+        // The block names the values its rows are drawn with: the item, and at the top of a
+        // nested list the item it stands under.
+        if !content.params.is_empty() {
+            if content.params.len() != param_tys.len() {
+                self.err(
+                    "E022",
+                    content.params[0].span,
+                    format!(
+                        "`{}` takes a block naming {} value(s); this block names {}",
+                        p.name.name,
+                        param_tys.len(),
+                        content.params.len()
+                    ),
+                );
+                return None;
+            }
+            let params = content
+                .params
+                .iter()
+                .zip(param_tys.iter())
+                .map(|(param, ty)| (param.name.clone(), ty.clone()))
+                .collect();
             return Some(Macro::Block(Rc::new(UiClosure {
-                item: Some((item.name.clone(), item_ty)),
+                params,
                 body: content.body.clone(),
                 scope: Scope {
                     ui: UiPlace {
@@ -751,6 +832,24 @@ impl Checker<'_> {
             self.err("E097", span, format!("`{}` needs the rows of its items: write an item block, `{{ x -> row(x.title) }}`, or declare the type's row, `row view <view> for {t}`", view.name.name));
         }
         None
+    }
+
+    /// What a function parameter's body is worth on its own: its values are bound, its body
+    /// read, and what it lowers to dropped. The body is read here for its type alone and read
+    /// again where the template calls the function, which is where an error in it is reported.
+    fn body_type(&mut self, params: &[(String, Ty)], body: &ast::Expr, scope: &Scope) -> Ty {
+        let mut extra = HashMap::new();
+        for (name, ty) in params {
+            extra.insert(name.clone(), self.fresh(ty.clone()));
+        }
+        let saved = self.enter(scope, extra);
+        let known = self.diags.len();
+        self.push_sink();
+        let worth = self.expr(body, None);
+        self.pop_sink();
+        self.diags.truncate(known);
+        self.leave(saved);
+        worth.ty
     }
 
     /// A template's body where its call stands: its nodes under `parent`, or the one node it
@@ -802,29 +901,20 @@ impl Checker<'_> {
         match m {
             Macro::Block(block) => {
                 let mut extra = HashMap::new();
-                match (&block.item, args) {
-                    (Some((item, ty)), [a]) => {
+                if block.params.len() == args.len() {
+                    for ((name, ty), a) in block.params.iter().zip(args) {
                         let v = self.expr_as(&a.value, ty);
                         let local = self.fresh(ty.clone());
                         self.emit(Stmt::Set(local, v));
-                        extra.insert(item.clone(), local);
+                        extra.insert(name.clone(), local);
                     }
-                    (None, []) => {}
-                    _ => {
-                        self.err(
-                            "E022",
-                            span,
-                            format!(
-                                "`{name}` takes {}",
-                                if block.item.is_some() {
-                                    "one item"
-                                } else {
-                                    "no arguments"
-                                }
-                            ),
-                        );
-                        return parent;
-                    }
+                } else {
+                    self.err(
+                        "E022",
+                        span,
+                        format!("`{name}` takes {} value(s)", block.params.len()),
+                    );
+                    return parent;
                 }
                 let saved = self.enter(&block.scope, extra);
                 if name == "composer" {
@@ -1097,11 +1187,70 @@ fn coerces(found: &Ty, want: &Ty) -> bool {
     }
 }
 
+/// Whether `e` is the `.none` a call leaves an optional parameter out with.
+fn is_none(e: &ast::Expr) -> bool {
+    matches!(&e.kind, ExprKind::Variant { name, args: None } if name.name == "none")
+}
+
+/// The type parameters `names` that the written type `te` mentions, each once: what a
+/// function's result binds where a call passes it.
+fn type_params_in<'a>(te: &'a TypeExpr, names: &'a [String]) -> Vec<&'a String> {
+    let mut found: Vec<&String> = Vec::new();
+    collect_type_params(te, names, &mut found);
+    found
+}
+
+fn collect_type_params<'a>(te: &'a TypeExpr, names: &'a [String], found: &mut Vec<&'a String>) {
+    match &te.kind {
+        TypeExprKind::Named(path) => {
+            if path.len() == 1
+                && let Some(name) = names.iter().find(|name| **name == path[0].name)
+                && !found.contains(&name)
+            {
+                found.push(name);
+            }
+        }
+        TypeExprKind::Generic(_, args) | TypeExprKind::Tuple(args) | TypeExprKind::Union(args) => {
+            for arg in args {
+                collect_type_params(arg, names, found);
+            }
+        }
+        TypeExprKind::Fn(params, result) => {
+            for param in params {
+                collect_type_params(param, names, found);
+            }
+            collect_type_params(result, names, found);
+        }
+    }
+}
+
+/// The result a written function type names: `(T) -> Option<K>`, plain or optional.
+fn function_result(te: &TypeExpr) -> Option<&TypeExpr> {
+    if let TypeExprKind::Fn(_, result) = &te.kind {
+        return Some(result);
+    }
+    let TypeExprKind::Generic(name, args) = &te.kind else {
+        return None;
+    };
+    match (name.name.as_str(), args.as_slice()) {
+        (
+            "Option",
+            [
+                TypeExpr {
+                    kind: TypeExprKind::Fn(_, result),
+                    ..
+                },
+            ],
+        ) => Some(result),
+        _ => None,
+    }
+}
+
 /// The block of a template call taken apart: its named slots, and the rest. An item block
 /// names slots too: `std.transcript(c, c.messages) { m -> message(m) composer: { ... } }` is the
 /// row of each item and, beside it, the composer, which does not see the item.
 struct Content {
-    item: Option<(ast::Ident, ())>,
+    params: Vec<ast::Ident>,
     body: Vec<UiStmt>,
 }
 
@@ -1117,7 +1266,7 @@ fn split_block(c: &UiCall) -> (Vec<(&ast::Ident, &Vec<UiStmt>)>, Content) {
         }
     }
     let content = Content {
-        item: c.item.clone().map(|item| (item, ())),
+        params: c.params.clone(),
         body,
     };
     (slots, content)

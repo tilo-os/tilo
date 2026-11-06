@@ -130,48 +130,6 @@ async fn browser_as(
     protocol::decode_grant(&body).unwrap().0.token
 }
 
-/// A page takes its seat in a room by subscribing to it over its session, as
-/// the page's own client does once it joined: the room's bootstrap and replay
-/// reach the page, then its `Ready`.
-#[cfg(feature = "agents")]
-async fn subscribe(addr: SocketAddr, token: [u8; 32], workspace_id: u64) {
-    let (status, _) = post(
-        addr,
-        "/send",
-        Some(token),
-        postcard::to_allocvec(&vec![crate::Envelope::Subscribe { workspace_id }]).unwrap(),
-    )
-    .await;
-    assert_eq!(status, 204, "the page's subscription");
-    let mut ack = None;
-    let mut ready = false;
-    for _ in 0..10 {
-        let (status, body) = post(
-            addr,
-            "/events",
-            Some(token),
-            postcard::to_allocvec(&protocol::EventsRequest {
-                ack,
-                wait_ms: 5_000,
-            })
-            .unwrap(),
-        )
-        .await;
-        assert_eq!(status, 200, "the page's events");
-        let page: protocol::EventsPage = postcard::from_bytes(&body).unwrap();
-        if page
-            .envelopes
-            .iter()
-            .any(|envelope| matches!(envelope, crate::Envelope::Ready { .. }))
-        {
-            ready = true;
-            break;
-        }
-        ack = page.cursor;
-    }
-    assert!(ready, "the room admitted the page");
-}
-
 #[test]
 fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
     let files = |host| TlsSource::Files {
@@ -189,48 +147,48 @@ fn resource_locator_uses_configured_https_host_and_refuses_wildcards() {
         None
     );
     assert_eq!(
-        browser_locator_origin(&files(Some("room.example".into())), wildcard).unwrap(),
-        Some("https://room.example".into())
+        browser_locator_origin(&files(Some("workspace.example".into())), wildcard).unwrap(),
+        Some("https://workspace.example".into())
     );
     assert_eq!(
         browser_locator_origin(&files(None), "[::1]:8443".parse().unwrap()).unwrap(),
         Some("https://[::1]:8443".into())
     );
-    for host in ["user@room.example", "room.example/path", "bad host"] {
+    for host in [
+        "user@workspace.example",
+        "workspace.example/path",
+        "bad host",
+    ] {
         assert!(browser_locator_origin(&files(Some(host.into())), wildcard).is_err());
     }
     let development = TlsSource::Development {
-        hosts: vec!["0.0.0.0".into(), "room.example".into()],
+        hosts: vec!["0.0.0.0".into(), "workspace.example".into()],
         store: None,
     };
     assert_eq!(
         browser_locator_origin(&development, wildcard).unwrap(),
-        Some("https://room.example".into())
+        Some("https://workspace.example".into())
     );
 }
 
-/// A public room's spectator takes a channel's content keys from the node
-/// and opens what was sealed there; nobody else does: not before it
-/// holds a seat, not a member, not in a room that is not public, and never
-/// for a channel nobody created.
+/// No route hands a page the content keys of a record's channel. A page takes
+/// part in its records' encrypted channels like any device: the keys it opens
+/// them with are the ones the group admits it with, and the host hands none.
 #[cfg(feature = "agents")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its rooms serve the page until the relay shuts down at the end"
+    reason = "the relay and its workspaces serve the page until the relay shuts down at the end"
 )]
-async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
+async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
     let signer = SigningKey::from_bytes(&[71; 32]);
-    let watcher = SigningKey::from_bytes(&[72; 32]);
-    // A room service's node, which takes part in its rooms' channels.
+    // A workspace service's node, which takes part in its workspaces' channels.
     let (host_key, host) = device(
         &signer,
         73,
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
     let (owner_key, owner) = device(&signer, 74, DeviceCapabilities::member());
-    let (joined_key, joined) = device(&watcher, 75, DeviceCapabilities::member());
-    let (watch_key, watch) = device(&watcher, 76, DeviceCapabilities::member());
     let state = tempfile::tempdir().unwrap();
     let relay = Relay::start_with_relay_mode(
         RelayConfig {
@@ -247,59 +205,11 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
     )
     .await
     .unwrap();
-    let rooms = relay.rooms().unwrap().clone();
-    let room = rooms.create("Plaza").await.unwrap();
-    rooms.enter(&room.room, &owner).await.unwrap();
-    // The spectator person is a viewer of the room, as its host makes it.
-    let invitation = rooms
-        .issue(
-            &room.room,
-            &owner,
-            crate::rooms::IssueInvitationRequest {
-                request_id: [1; 32],
-                role: MemberRole::Viewer,
-                recipient_user_public_key: Some(joined.user_public_key),
-                invitee_name: None,
-                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
-                inviter_name: None,
-            },
-        )
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &owner)
         .await
-        .unwrap();
-    let verified = tilo_peer_state::join::decode_and_verify_invitation(
-        &invitation.signed_invitation,
-        None,
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    crate::workspace_join::WorkspaceJoinClient::new(endpoint(&joined_key).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            invitation.signed_invitation,
-            joined.clone(),
-            &joined_key,
-            [2; 32],
-        )
-        .await
-        .unwrap();
-    // A member wrote in the chat's channel.
-    let record = "@tilo:package-primary";
-    let node = rooms
-        .own_route_keys(
-            &tilo_peer_state::document_frame::DocumentRoute {
-                app_id: "so.tilo.chat".into(),
-                cluster_id: room.room.clone(),
-                record: record.into(),
-            },
-            true,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    let artifact = collab_types::ArtifactId::new();
-    let (metadata, sealed) = node
-        .seal_content(artifact, collab_types::ContentRetention::Delta, b"hello")
         .unwrap();
 
     let sessions = Sessions::new(relay.web_context().clone());
@@ -310,7 +220,7 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         },
         allowed_origins: vec![],
         features: 0,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -319,72 +229,202 @@ async fn a_public_rooms_seated_spectator_takes_its_channels_content_keys() {
         here: Arc::new(here::Here::new(None)),
         country: None,
         fetch: None,
-        calls: Arc::new(call_lane::CallLane::new(host.device_public_key, None)),
         live: None,
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(plain_accept_loop(listener, web));
-    let ask = |token, record: &str| {
-        post(
-            addr,
-            protocol::CHANNEL_KEYS_PATH,
-            Some(token),
-            postcard::to_allocvec(&protocol::ChannelKeysRequest {
-                app_id: "so.tilo.chat".into(),
-                room: room.room.clone(),
-                record: record.into(),
-            })
-            .unwrap(),
-        )
-    };
-    let spectators = |public| crate::room_access::Spectators {
-        root: watcher.verifying_key().to_bytes(),
-        seats: 4,
-        public,
-    };
-    let watching = browser(addr, &watch_key, &watch).await;
-    let owner_token = browser(addr, &owner_key, &owner).await;
+    let token = browser(addr, &owner_key, &owner).await;
+    let (code, body) = post(addr, "/channel-keys", Some(token), Vec::new()).await;
+    assert_eq!(
+        code,
+        404,
+        "a page is handed no content keys over HTTPS: {}",
+        String::from_utf8_lossy(&body)
+    );
 
-    // Before the room lets anyone watch, and before the page holds a seat.
-    assert_eq!(ask(watching, record).await.0, 403);
-    relay
-        .admit_spectators(room.workspace_id, spectators(true))
+    serving.abort();
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
+/// The public directory and its doors answer any site's page without
+/// credentials, and a full door says when to come back: what a page on
+/// another origin reads and does without going through a proxy.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay governs the workspace until it shuts down at the end"
+)]
+async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
+    let root = SigningKey::from_bytes(&[121; 32]);
+    let (host_key, host) = device(
+        &root,
+        122,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            max_workspace_grants: Some(1),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .publish(
+            &workspace,
+            &host,
+            tilo_relay_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            },
+        )
         .await
         .unwrap();
-    assert_eq!(
-        ask(watching, record).await.0,
-        403,
-        "a spectator without a seat"
-    );
-    subscribe(addr, watching, room.workspace_id).await;
-    let (code, body) = ask(watching, record).await;
-    assert_eq!(code, 200, "{}", String::from_utf8_lossy(&body));
-    let keys: protocol::ChannelKeys = postcard::from_bytes(&body).unwrap();
-    let keys = channel_crypto::ChannelContentKeys::from_bytes(&keys.keys).unwrap();
-    assert_eq!(
-        &keys.open_content(artifact, &metadata, &sealed).unwrap()[..],
-        b"hello",
-        "the spectator opens what a member sealed"
-    );
-    assert_eq!(
-        ask(watching, "@tilo:never-written").await.0,
-        403,
-        "no channel is created for a spectator"
-    );
-    assert_eq!(
-        ask(owner_token, record).await.0,
-        403,
-        "a member takes keys over the channel"
-    );
-    // A room that is not public keeps its members' writing from spectators.
-    relay
-        .admit_spectators(room.workspace_id, spectators(false))
+    let sessions = Sessions::new(relay.web_context().clone());
+    let web = Arc::new(Web {
+        sessions,
+        host_info: HostInfo {
+            host_cert: host.clone(),
+        },
+        allowed_origins: vec![],
+        features: 0,
+        workspaces: relay.workspaces().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+        country: None,
+        fetch: None,
+        live: None,
+        page_errors: page_errors::PageErrors::default(),
+    });
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
-    assert_eq!(ask(watching, record).await.0, 403);
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(plain_accept_loop(listener, web));
+
+    // The directory, from a site the host never configured.
+    let head = format!(
+        "POST {API_PREFIX}/directory HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Length: 0\r\n\r\n"
+    );
+    let (status, head, body) = exchange(addr, &head, b"").await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    assert_eq!(
+        header_value(&head, "access-control-allow-credentials"),
+        None,
+        "anyone reads it, nobody is signed in by it"
+    );
+    let page: tilo_relay_protocol::directory::DirectoryPage =
+        serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.workspaces.len(), 1);
+    assert_eq!(page.workspaces[0].description, "Coffee and tea");
+
+    let ask = |person: [u8; 32]| {
+        let body = serde_json::json!({
+            "userPublicKey": hex::encode(person),
+            "displayName": "Cy",
+        })
+        .to_string();
+        let head = format!(
+            "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, body.as_bytes()).await }
+    };
+    let (status, head, body) = ask([31; 32]).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    let answer: tilo_relay_protocol::directory::DoorAnswer = serde_json::from_slice(&body).unwrap();
+    assert!(!answer.invitation.is_empty());
+
+    // The door keeps one open grant: the next person is told when to come back,
+    // and the page may read that header cross-origin.
+    let (status, head, body) = ask([32; 32]).await;
+    assert_eq!(status, 503, "{head}");
+    assert!(
+        header_value(&head, "retry-after").is_some(),
+        "no Retry-After: {head}"
+    );
+    assert!(
+        header_value(&head, "access-control-expose-headers")
+            .unwrap_or_default()
+            .contains("retry-after"),
+        "{head}"
+    );
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    eprintln!("full door: {}", String::from_utf8_lossy(&body));
+
+    // The preflight a page on another site sends before asking.
+    let head = format!(
+        "OPTIONS {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &head, b"").await;
+    assert_eq!(status, 204, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*")
+    );
+    assert!(
+        header_value(&head, "access-control-allow-methods")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("post"),
+        "{head}"
+    );
+
+    // A page's own uncaught error goes to the door that let it in: the host
+    // logs it, and answers the same whether or not it was a report, so a
+    // failing page never asks twice.
+    let report = serde_json::json!({
+        "kind": "error", "message": "x is not a function", "source": "https://someone.example/v/7/page.js",
+        "line": 12, "column": 4, "stack": "at page.js:12", "page": "/", "build": "7",
+    })
+    .to_string();
+    let head = format!(
+        "POST {API_PREFIX}/directory/{workspace}/errors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://someone.example\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n",
+        report.len()
+    );
+    let (status, head, body) = exchange(addr, &head, report.as_bytes()).await;
+    assert_eq!(status, 204, "{head}");
+    assert!(body.is_empty(), "a report is logged here, not stored");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*"),
+        "any site's page reports to its own door"
+    );
+    let head = format!(
+        "POST {API_PREFIX}/directory/{workspace}/errors HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: 8\r\n\r\n"
+    );
+    let (status, head, _) = exchange(addr, &head, b"not json").await;
+    assert_eq!(status, 204, "{head}");
 
     serving.abort();
     crate::daemon::Relay::shutdown(relay).await;
@@ -525,7 +565,7 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the relay and its rooms serve the page until the relay shuts down at the end; only some feature sets see the drop"
+    reason = "the relay and its workspaces serve the page until the relay shuts down at the end; only some feature sets see the drop"
 )]
 async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let signer = SigningKey::from_bytes(&[81; 32]);
@@ -555,16 +595,19 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     )
     .await
     .unwrap();
-    let rooms = relay.rooms().unwrap().clone();
-    let room = rooms.create("Lounge").await.unwrap();
-    rooms.enter(&room.room, &owner).await.unwrap();
-    // The spectator person is a viewer of the room, as its host makes it,
-    // and every watching page is one of its devices.
-    let invitation = rooms
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &owner)
+        .await
+        .unwrap();
+    // Another person is a viewer of the workspace, as an invitation makes
+    // them, and one of their devices joins; their other device does not.
+    let invitation = workspaces
         .issue(
-            &room.room,
+            &workspace.workspace,
             &owner,
-            crate::rooms::IssueInvitationRequest {
+            crate::workspaces::IssueInvitationRequest {
                 request_id: [1; 32],
                 role: MemberRole::Viewer,
                 recipient_user_public_key: Some(joined.user_public_key),
@@ -601,7 +644,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         },
         allowed_origins: vec!["https://app.example".into()],
         features: protocol::FEATURE_FETCH_PROXY,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -610,22 +653,22 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         here: Arc::new(here::Here::new(None)),
         country: None,
         // The target is on loopback, which a host's proxy never reaches; the
-        // refusal of its own network is `tilo_net`'s to test. The room may
+        // refusal of its own network is `tilo_net`'s to test. The workspace may
         // receive what the two answers below carry, together.
         fetch: Some(
             tilo_net::proxy::host::FetchProxy::new(tilo_net::proxy::host::Config {
                 destinations: tilo_net::proxy::host::Destinations::Any,
                 budgets: tilo_net::proxy::host::Budgets {
                     visitor_bytes: None,
-                    room_bytes: Some(26),
+                    room_bytes: Some(52),
                     ..Default::default()
                 },
                 ..Default::default()
             })
             .unwrap(),
         ),
-        calls: Arc::new(call_lane::CallLane::new(host.device_public_key, None)),
         live: None,
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -633,24 +676,21 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     let addr = listener.local_addr().unwrap();
     let serving = tokio::spawn(plain_accept_loop(listener, web));
     let owner_token = browser(addr, &owner_key, &owner).await;
-    let watching = browser(addr, &watch_key, &watch).await;
-    relay
-        .admit_spectators(
-            room.workspace_id,
-            crate::room_access::Spectators {
-                root: watcher.verifying_key().to_bytes(),
-                seats: 4,
-                public: true,
-            },
-        )
-        .await
-        .unwrap();
+    let visiting = browser(addr, &watch_key, &watch).await;
 
     let target = test_http::Responder::start(vec![
         test_http::Reply::status(200)
             .header("Content-Type", "application/json")
             .header("Set-Cookie", "tracker=1")
             .body("[{\"title\":\"Trending\"}]"),
+        test_http::Reply::status(200)
+            .header("Content-Type", "application/json")
+            .header("Set-Cookie", "tracker=1")
+            .body("[{\"title\":\"Trending\"}]"),
+        test_http::Reply::status(206)
+            .header("Content-Type", "video/mp4")
+            .header("Content-Range", "bytes 0-3/9000000")
+            .body("mp4!"),
         test_http::Reply::status(206)
             .header("Content-Type", "video/mp4")
             .header("Content-Range", "bytes 0-3/9000000")
@@ -671,13 +711,9 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         async move { exchange(addr, &head, b"").await }
     };
 
-    // Nobody signed in, a made-up session and a watching page are refused,
-    // in a way the page can read.
-    for token in [
-        None,
-        Some(hex::encode([5; 32])),
-        Some(hex::encode(watching)),
-    ] {
+    // Nobody signed in and a made-up session are refused, in a way the page
+    // can read.
+    for token in [None, Some(hex::encode([5; 32]))] {
         let (status, head, _) = fetch(token, "https://app.example").await;
         assert_eq!(status, 401, "{head}");
         assert_eq!(
@@ -720,8 +756,22 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     assert_eq!(seen.header("x-tilo-session"), None);
     assert_eq!(seen.header("origin"), None);
 
+    // A page of a member with the Viewer role reads through the host like any
+    // other: what it may load is bounded by its device's and its workspace's
+    // budgets, never by its role.
+    let (status, head, body) = fetch(Some(hex::encode(visiting)), "https://app.example").await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(body, b"[{\"title\":\"Trending\"}]");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("https://app.example")
+    );
+    let seen = target.next_request();
+    assert_eq!(seen.target, "/api/v1/trending");
+    assert_eq!(seen.header("x-tilo-session"), None);
+
     // A media element sends no headers of its own: its GET names the proxy
-    // and the session in the query, and only a member's session is served.
+    // and the session in the query.
     let media = |token: [u8; 32]| {
         let proxy = tilo_net::proxy::Proxy {
             endpoint: tilo_net::Url::parse("http://host/peer/v1/fetch").unwrap(),
@@ -738,11 +788,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         );
         async move { exchange(addr, &head, b"").await }
     };
-    let (status, _, _) = media(watching).await;
-    assert_eq!(
-        status, 401,
-        "a watching page streams nothing through the host"
-    );
     let (status, head, body) = media(owner_token).await;
     assert_eq!(status, 206, "{head}");
     assert_eq!(body, b"mp4!");
@@ -755,8 +800,16 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         Some("bytes=0-2097151"),
         "an open-ended range is asked a piece at a time"
     );
+    let (status, head, body) = media(visiting).await;
+    assert_eq!(status, 206, "{head}");
+    assert_eq!(body, b"mp4!");
+    assert_eq!(
+        target.next_request().header("range"),
+        Some("bytes=0-2097151"),
+        "an open-ended range is asked a piece at a time"
+    );
 
-    // The room received its budget: another of its people's devices is
+    // The workspace received its budget: another of its people's devices is
     // refused, in a way the page can read, and the target never asked.
     let laptop_token = browser(addr, &laptop_key, &laptop).await;
     let (status, head, _) = fetch(Some(hex::encode(laptop_token)), "https://app.example").await;
@@ -796,141 +849,6 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
     crate::daemon::Relay::shutdown(relay).await;
 }
 
-/// A page's call turn reaches the bridge its host carries, and only a device
-/// the workspace admits is answered: the route the deployed page posts to.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the relay carries the page's calls until it shuts down at the end"
-)]
-async fn a_page_turns_its_call_at_the_host_and_only_an_admitted_device_is_answered() {
-    const CALLER: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-    let signer = SigningKey::from_bytes(&[91; 32]);
-    let outsider_root = SigningKey::from_bytes(&[92; 32]);
-    let (host_key, host) = device(&signer, 93, DeviceCapabilities::host());
-    let (member_key, member) = device(&signer, 94, DeviceCapabilities::member());
-    let (outsider_key, outsider) = device(&outsider_root, 95, DeviceCapabilities::member());
-    let state = tempfile::tempdir().unwrap();
-    let workspace = tilo_relay_protocol::room_workspace_id(CALLER).unwrap();
-    let relay = Relay::start_with_relay_mode(
-        RelayConfig {
-            state_root: state.path().into(),
-            // A guest of the host who is not a member of the call's workspace
-            // still opens a session: the route, not the handshake, is what
-            // keeps them out.
-            trust_policy: crate::policy::TrustPolicy::AllowList {
-                users: vec![
-                    hex::encode(signer.verifying_key().to_bytes()),
-                    hex::encode(outsider_root.verifying_key().to_bytes()),
-                ],
-            },
-            ..Default::default()
-        },
-        crate::daemon::RelayIdentity {
-            user_public_key: host.user_public_key,
-            device_signing_key: host_key,
-            device_cert: host.clone(),
-            revocations: RevocationList::new(),
-        },
-        iroh::RelayMode::Disabled,
-    )
-    .await
-    .unwrap();
-    relay
-        .replace_governed_workspace_access(
-            workspace,
-            true,
-            tilo_peer_state::GovernedAccess {
-                member_user_roots: vec![signer.verifying_key().to_bytes()],
-                member_devices: vec![member.device_public_key],
-            },
-            state.path().into(),
-        )
-        .await
-        .unwrap();
-    let sessions = Sessions::new(relay.web_context().clone());
-    // The lanes' endpoint keeps the route offline: a call with no other
-    // device's lane open answers the page's turn with nothing carried.
-    let lane = endpoint(&SigningKey::from_bytes(&[96; 32])).await;
-    let web = Arc::new(Web {
-        sessions,
-        host_info: HostInfo {
-            host_cert: host.clone(),
-        },
-        allowed_origins: vec![],
-        features: 0,
-        rooms: relay.rooms().cloned(),
-        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
-        profiles: envelopes::Envelopes::of(
-            envelopes::Kind::Profile,
-            relay.state_root().join("profiles"),
-        ),
-        here: Arc::new(here::Here::new(None)),
-        country: None,
-        fetch: None,
-        calls: Arc::new(call_lane::CallLane::at(lane)),
-        live: None,
-    });
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    let addr = listener.local_addr().unwrap();
-    let serving = tokio::spawn(plain_accept_loop(listener, web.clone()));
-    drop(web);
-
-    let turn = |workspace: &str| {
-        postcard::to_allocvec(&tilo_call_lane::page::Up {
-            workspace: workspace.into(),
-            call: "the call".into(),
-            channel: collab_types::ChannelId::default(),
-            audio: vec![],
-            pictures: vec![],
-            shows: vec![],
-            keyframes: vec![],
-        })
-        .unwrap()
-    };
-    let token = browser(addr, &member_key, &member).await;
-    let (code, body) = post(addr, tilo_call_lane::page::PATH, Some(token), turn(CALLER)).await;
-    assert_eq!(code, 200);
-    let down: tilo_call_lane::page::Down = postcard::from_bytes(&body).unwrap();
-    assert!(down.audio.is_empty());
-    assert!(down.pictures.is_empty());
-
-    assert_eq!(
-        post(addr, tilo_call_lane::page::PATH, None, turn(CALLER))
-            .await
-            .0,
-        401
-    );
-    let outsider_token = browser(addr, &outsider_key, &outsider).await;
-    assert_eq!(
-        post(
-            addr,
-            tilo_call_lane::page::PATH,
-            Some(outsider_token),
-            turn(CALLER)
-        )
-        .await
-        .0,
-        403
-    );
-    assert_eq!(
-        post(
-            addr,
-            tilo_call_lane::page::PATH,
-            Some(token),
-            turn("Somewhere else")
-        )
-        .await
-        .0,
-        400
-    );
-
-    serving.abort();
-    crate::daemon::Relay::shutdown(relay).await;
-}
-
 /// The live plane a page joins: the relay's own WebTransport listener, a grant
 /// issued only to a page whose device the workspace admits, and a session cut
 /// when that device is removed.
@@ -943,9 +861,9 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
     use base64::Engine as _;
     use channel_crypto::{ChannelGroup, MemberKey};
     use sha2::Digest as _;
-    use tilo_call_lane::Roster;
     use tilo_live::live::Track;
     use tilo_live::plane::{Join, Plane, PlaneError};
+    use tilo_live::roster::Roster;
     use tilo_live::scope::Scope;
     use tilo_relay_protocol::web::{LiveInfo, LiveRequest};
 
@@ -1009,13 +927,30 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         limits: super::WebLimits::default(),
         country: None,
         fetch_proxy: None,
+        live: LiveConfig::default(),
     };
     let identity = tls::Identity::load(&config.tls).unwrap();
     let plane = relay.plane.as_ref().expect("the relay runs a live plane");
     plane.pages.serve_pages(sessions.clone());
     let live = wt::Live::start(plane, &identity, &config, "https://127.0.0.1").unwrap();
     let answered = live.info.clone();
-    let lane = endpoint(&SigningKey::from_bytes(&[76; 32])).await;
+    // Published behind a proxy: the plane binds where it was told and pages
+    // are told the origin they dial, with the port that origin names.
+    let published = WebConfig {
+        live: super::LiveConfig {
+            listen: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
+            origin: Some("https://live.example".into()),
+        },
+        ..config.clone()
+    };
+    let published = wt::Live::start(plane, &identity, &published, "https://127.0.0.1").unwrap();
+    assert_eq!(published.info.webtransport_origin, "https://live.example");
+    assert_eq!(published.info.webtransport_port, 443);
+    assert_eq!(
+        published.bound.ip(),
+        std::net::IpAddr::from(std::net::Ipv4Addr::LOCALHOST)
+    );
+    drop(published);
     let web = Arc::new(Web {
         sessions,
         host_info: HostInfo {
@@ -1023,7 +958,7 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         },
         allowed_origins: vec![],
         features: 0,
-        rooms: relay.rooms().cloned(),
+        workspaces: relay.workspaces().cloned(),
         envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
         profiles: envelopes::Envelopes::of(
             envelopes::Kind::Profile,
@@ -1032,8 +967,8 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         here: Arc::new(here::Here::new(None)),
         country: None,
         fetch: None,
-        calls: Arc::new(call_lane::CallLane::at(lane)),
         live: Some(Arc::new(live)),
+        page_errors: page_errors::PageErrors::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await

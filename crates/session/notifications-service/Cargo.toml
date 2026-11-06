@@ -28,6 +28,9 @@ resvg = { version = "0.47", default-features = false }
 url.workspace = true
 # The installed Flatpaks a sender's sandbox metadata is checked against.
 desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-entry" }
+# The interface language those entries are read in: the person's, not the
+# machine's, as every other surface resolves it.
+settings-store = { path = "../../system/settings-store" }
 # Ends an ongoing notification when its sender leaves the bus.
 futures-util.workspace = true
 serde.workspace = true

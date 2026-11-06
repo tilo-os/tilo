@@ -1017,18 +1017,7 @@ impl Widget for FileView {
         if self.mode != ViewMode::List {
             return false;
         }
-        // A screen reader, the agent or a test acts on a row through the
-        // accessibility tree, which no pointer event delivers, so the table
-        // hands the request over here: the same commands a double-click and a
-        // right-press push.
-        let (open, menu) = self.list.take_row_requests();
-        if let Some(index) = open {
-            push(&self.sink, FileCommand::Activate(index));
-        }
-        if let Some((index, at)) = menu {
-            push(&self.sink, FileCommand::ContextMenuAt { index, at });
-        }
-        self.list.update(state, path) || open.is_some() || menu.is_some()
+        self.list.update(state, path)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1304,6 +1293,23 @@ impl Widget for FileView {
     }
     fn is_focused(&self) -> bool {
         self.is_focused
+    }
+
+    /// The rows a file's list names are the table's, and the actions an
+    /// assistive technology addresses to them are the table's too: the node
+    /// this view forwards stands for the table, so the target it carries is
+    /// answered here.
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
+    ) -> bool {
+        self.mode == ViewMode::List
+            && self
+                .list
+                .perform_semantic_action(target, action, state, path)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

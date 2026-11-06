@@ -495,7 +495,7 @@ impl Window for Hosted {
                 .published()
                 .into_iter()
                 .find(|(resource, _, label)| {
-                    resource.starts_with(&format!("tl:{TASKS}:")) && label == "New task"
+                    resource.starts_with(&format!("tl:{TASKS}:")) && label == "New task…"
                 })
                 .map(|(resource, _, _)| resource);
             if let Some(root) = root {

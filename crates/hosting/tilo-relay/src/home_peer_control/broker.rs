@@ -107,7 +107,7 @@ fn desired_config(request: &ApplyRequest) -> anyhow::Result<RelayConfig> {
     };
     let serving = config.device_role.can_serve();
     let full = config.device_role == DeviceRole::AlwaysOnServer;
-    // Which rooms this device holds, and how much of each, is the rooms'
+    // Which workspaces this device holds, and how much of each, is the workspaces'
     // own hosting membership, not this file's.
     if !matches!(
         request.replication.as_str(),
@@ -424,7 +424,7 @@ fn account_groups(account: &Account) -> anyhow::Result<Vec<libc::gid_t>> {
     loop {
         let mut groups = vec![0; usize::try_from(capacity)?];
         let mut count = capacity;
-        // SAFETY: `name` is NUL-terminated and `groups` has room for `count`
+        // SAFETY: `name` is NUL-terminated and `groups` has workspace for `count`
         // entries; getgrouplist writes at most that many and reports the
         // number it needs in `count`.
         let found = unsafe {

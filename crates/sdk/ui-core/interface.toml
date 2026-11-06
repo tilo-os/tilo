@@ -5,13 +5,14 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 21
+version = 23
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
 sources = [
     "crates/sdk/ui-core/src/floating_surface.rs",
     "crates/sdk/ui-core/src/pick_wire.rs",
+    "crates/sdk/ui-core/src/window_targets.rs",
     "crates/sdk/ui-core/src/workspace_sync.rs",
     "crates/sdk/ui-core/src/window_toolbar.rs",
     "crates/sdk/ui-core/src/window_share.rs",
@@ -212,6 +213,8 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::set_capture_protection.protected" = "bool"
 "FloatingSurfaceClientMessage::shared_windows" = "struct"
 "FloatingSurfaceClientMessage::shared_windows.shared" = "Vec<SharedWindow>"
+"FloatingSurfaceClientMessage::sideways_wheel" = "struct"
+"FloatingSurfaceClientMessage::sideways_wheel.travel" = "f64"
 "FloatingSurfaceClientMessage::source_cleared" = "struct"
 "FloatingSurfaceClientMessage::source_cleared.id" = "String"
 "FloatingSurfaceClientMessage::surface_geometry" = "struct"
@@ -238,6 +241,9 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceClientMessage::window_record.record" = "String"
 "FloatingSurfaceClientMessage::window_resource" = "struct"
 "FloatingSurfaceClientMessage::window_resource.resource" = "Option<ActionResource> optional"
+"FloatingSurfaceClientMessage::window_targets" = "struct"
+"FloatingSurfaceClientMessage::window_targets.instance" = "Option<u64> optional"
+"FloatingSurfaceClientMessage::window_targets.targets" = "Vec<WindowTarget>"
 "FloatingSurfaceHostMessage" = "enum internal tag=type"
 "FloatingSurfaceHostMessage::activate_test_id" = "struct"
 "FloatingSurfaceHostMessage::activate_test_id.test_id" = "String"
@@ -288,6 +294,10 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::prepare_surface.rect" = "[f64; 4]"
 "FloatingSurfaceHostMessage::prepare_surface.token" = "String"
 "FloatingSurfaceHostMessage::prepare_surface.transfer_covered" = "bool"
+"FloatingSurfaceHostMessage::press_target" = "struct"
+"FloatingSurfaceHostMessage::press_target.action" = "TargetAction"
+"FloatingSurfaceHostMessage::press_target.name" = "String"
+"FloatingSurfaceHostMessage::press_target.role" = "String"
 "FloatingSurfaceHostMessage::reattach" = "struct"
 "FloatingSurfaceHostMessage::reattach.id" = "String"
 "FloatingSurfaceHostMessage::share_selection" = "unit"
@@ -553,12 +563,16 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "SurfaceLadder.overlay" = "f32"
 "SurfaceLadder.raised" = "f32"
 "SurfaceLadder.sidebar" = "f32"
+"TargetAction" = "enum external"
+"TargetAction::activate" = "unit"
+"TargetAction::show-context-menu" = "unit"
 "ThemeDensity" = "struct deny_unknown_fields"
 "ThemeDensity.spacing" = "f32"
 "ThemeDocument" = "struct deny_unknown_fields"
 "ThemeDocument.density" = "ThemeDensity"
 "ThemeDocument.depth" = "Depth optional"
 "ThemeDocument.emphasis" = "Emphasis optional"
+"ThemeDocument.icons" = "Option<ThemeIcons> optional"
 "ThemeDocument.id" = "String"
 "ThemeDocument.material" = "ThemeMaterial deserialize_with=read_material"
 "ThemeDocument.motion" = "ThemeMotion"
@@ -569,6 +583,8 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "ThemeDocument.schema_version" = "u32 deserialize_with=read_schema"
 "ThemeDocument.shape" = "ThemeShape"
 "ThemeDocument.type" = "ThemeType"
+"ThemeIcons" = "struct deny_unknown_fields"
+"ThemeIcons.stroke" = "f32"
 "ThemeMaterial" = "struct deny_unknown_fields"
 "ThemeMaterial.bar" = "Option<Finish> optional"
 "ThemeMaterial.control" = "Finish optional"
@@ -696,6 +712,11 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "WindowRequest.collaboration" = "bool optional"
 "WindowRequest.instance" = "u64"
 "WindowRequest.shell_ui" = "bool optional"
+"WindowTarget" = "struct"
+"WindowTarget.actions" = "Vec<TargetAction>"
+"WindowTarget.name" = "String"
+"WindowTarget.rect" = "[f64; 4]"
+"WindowTarget.role" = "String"
 "WindowToolbar" = "struct"
 "WindowToolbar.actions" = "Vec<ToolbarAction> optional"
 "WindowToolbar.leading" = "Vec<ToolbarAction> optional"

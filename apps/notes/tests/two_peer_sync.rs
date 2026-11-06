@@ -4,7 +4,6 @@
 
 use crate::framework_support::{body, surface, with_note};
 use notes::read;
-use notes::sidebar::OutEvent;
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
 
@@ -56,7 +55,7 @@ fn peer_edits_and_duplicates_replicate_before_the_other_peer_opens_them() {
         // The sidebar's context-menu path: the copy and its bodies are one
         // action, so nobody has to open the copy for its body to exist.
         surface(&mut app, |notes| {
-            notes.apply_event_for_test(OutEvent::Duplicate(source));
+            notes.duplicate_page_for_test(source);
         });
         let copy = crate::framework_support::shown(&app)
             .pages()

@@ -70,7 +70,7 @@ impl ChatApp {
     pub(crate) fn reads_back(&self) -> bool {
         // A window still choosing its channel (its record not read yet)
         // shows no timeline to read back from.
-        self.direct_person.is_none()
+        self.direct_person().is_none()
             && self.channel(&self.active_channel).is_some()
             && self.scrollback.loading()
             && self.earlier_may_hold_channel()
@@ -97,9 +97,10 @@ impl ChatApp {
         chat: &crate::record::Chat,
         held: &crate::messages::Messages,
     ) {
-        let back = &mut self.scrollback;
         let channel = self.active_channel.clone();
-        if channel.is_empty() || self.direct_person.is_some() {
+        let direct = self.direct_person().is_some();
+        let back = &mut self.scrollback;
+        if channel.is_empty() || direct {
             back.opened = None;
             back.first_unread = None;
             return;

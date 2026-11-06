@@ -126,11 +126,32 @@ pub(crate) struct Closing {
 
 /// Where the pointer's events go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PointerTarget {
+pub(crate) enum PointerTarget {
     /// A client surface (or nothing): the seat's own focus tracks which.
     Clients,
     /// The hosted surface at this index of [`State::hosts`].
     Host(usize),
+}
+
+/// A running Xwayland server: the window manager that makes its windows
+/// toplevels the desktop places, and the session's own connection to it.
+pub(crate) struct X11Server {
+    /// The display's window manager. Dropping it destroys its window and
+    /// closes the server's window manager connection.
+    pub(crate) wm: smithay::xwayland::X11Wm,
+    /// What the session reads on the display: window properties, the X input
+    /// focus, the display's density and pointer. `None` when the display
+    /// could not be connected to.
+    pub(crate) windows: Option<crate::x11_windows::X11Windows>,
+    /// The display number this server serves (`DISPLAY=:N`).
+    pub(crate) display: u32,
+}
+
+impl X11Server {
+    /// The id of the server's window manager.
+    pub(crate) fn id(&self) -> smithay::xwayland::xwm::XwmId {
+        self.wm.id()
+    }
 }
 
 /// The compositor's state: protocol globals, windows, seat, policy and hosts.
@@ -163,7 +184,7 @@ pub struct State {
     pub(crate) policy: Box<dyn WindowPolicy>,
     pub(crate) hosts: Vec<Box<dyn SurfaceHost>>,
     /// The outputs the hosted surfaces were last told of.
-    told_outputs: Vec<(i32, i32, i32, i32)>,
+    told_outputs: Vec<crate::output::HostedOutput>,
     /// The connector the person made primary, as the configuration names
     /// it, whether or not it is lit right now.
     primary_output: Option<String>,
@@ -172,7 +193,12 @@ pub struct State {
     /// The primary monitor the policy was last told of.
     told_primary: Option<String>,
     pub(crate) pointer: Point<f64, Logical>,
-    pointer_target: PointerTarget,
+    pub(crate) pointer_target: PointerTarget,
+    /// The seats beside the person's: an agent's, a viewer's (§ seats).
+    pub(crate) seats: crate::seats::Seats,
+    /// A seat's keys are the app-facing seat's for this delivery: no hosted
+    /// surface takes them, and they reach the client the seat aims at.
+    pub(crate) seat_keys_only: bool,
     pub(crate) protocols: crate::protocols::Protocols,
     /// The GPU clients import their dma-bufs on, as `linux-dmabuf` told
     /// them ([`crate::State::enable_dmabuf`]); a render service allocates
@@ -185,8 +211,12 @@ pub struct State {
     pub(crate) cursor: crate::cursor::Cursor,
     pub(crate) output_management: crate::output_management::OutputManagement,
     pub(crate) xwayland_shell: smithay::wayland::xwayland_shell::XWaylandShellState,
-    /// The X11 window manager, once Xwayland is ready.
-    pub(crate) xwm: Option<smithay::xwayland::X11Wm>,
+    /// The X11 servers running now, one per workspace display with an app
+    /// on it.
+    pub(crate) xwms: Vec<X11Server>,
+    /// The session's X11 displays, one per workspace that launched an X11
+    /// app ([`crate::X11Displays`]).
+    pub(crate) x11: Option<crate::X11Displays>,
     pub(crate) touch: crate::touch::Touches,
     pub(crate) tablets: crate::tablet::Tablets,
     pub(crate) output_power: crate::output_power::OutputPower,
@@ -337,6 +367,8 @@ impl State {
             told_primary: None,
             pointer: Point::from((0.0, 0.0)),
             pointer_target: PointerTarget::Clients,
+            seats: crate::seats::Seats::default(),
+            seat_keys_only: false,
             protocols,
             render_node: None,
             icons: crate::toplevel_icon::Icons::default(),
@@ -351,7 +383,8 @@ impl State {
             xwayland_shell: smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(
                 display,
             ),
-            xwm: None,
+            xwms: Vec::new(),
+            x11: None,
             touch: crate::touch::Touches::default(),
             tablets: crate::tablet::Tablets::default(),
             output_power: crate::output_power::OutputPower::new(display),
@@ -458,12 +491,18 @@ impl State {
         }
     }
 
-    /// The outputs' rectangles `(x, y, w, h)`, as hosted surfaces are
-    /// told them.
-    pub(crate) fn hosted_outputs(&self) -> Vec<(i32, i32, i32, i32)> {
-        self.output_geometries()
-            .iter()
-            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    /// The outputs as hosted surfaces are told them: each one's logical
+    /// rectangle and the scale it draws at.
+    pub(crate) fn hosted_outputs(&self) -> Vec<crate::output::HostedOutput> {
+        self.space
+            .outputs()
+            .filter_map(|output| {
+                let rect = self.space.output_geometry(output)?;
+                Some(crate::output::HostedOutput {
+                    rect: (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h),
+                    scale: output.current_scale().fractional_scale(),
+                })
+            })
             .collect()
     }
 
@@ -525,6 +564,18 @@ impl State {
         self.rearrange();
     }
 
+    /// How long the displays hold each frame, the shortest one among them:
+    /// what the frames of the surfaces above them are paced to.
+    pub(crate) fn frame_interval(&self) -> std::time::Duration {
+        self.space
+            .outputs()
+            .filter_map(|output| output.current_mode().map(|mode| mode.refresh))
+            .filter(|refresh| *refresh > 0)
+            .map(crate::output::refresh_interval)
+            .min()
+            .unwrap_or_else(|| crate::output::refresh_interval(0))
+    }
+
     /// The logical rectangles of every output.
     pub(crate) fn output_geometries(&self) -> Vec<Rectangle<i32, Logical>> {
         self.space
@@ -558,7 +609,7 @@ impl State {
                         on_an_output(location, window.geometry().size, &outputs)
                     })
             })
-            .filter_map(|window| describe(&self.display, &self.icons, window))
+            .filter_map(|window| describe(self, window))
             .collect()
     }
 
@@ -567,7 +618,7 @@ impl State {
         self.space
             .elements()
             .filter_map(|window| {
-                let info = describe(&self.display, &self.icons, window)?;
+                let info = describe(self, window)?;
                 let location = self.space.element_location(window)?;
                 let size = window.geometry().size;
                 Some((info, Rectangle::new(location, size)))
@@ -580,7 +631,7 @@ impl State {
     /// desktop drops it with [`crate::Compositor::release_snapshot`] or a
     /// window of the same id maps again.
     pub(crate) fn keep_closing(&mut self, window: &Window) {
-        let Some(info) = describe(&self.display, &self.icons, window) else {
+        let Some(info) = describe(self, window) else {
             return;
         };
         let Some(location) = self.space.element_location(window) else {
@@ -612,9 +663,7 @@ impl State {
         let Some(window) = self
             .space
             .elements()
-            .find(|window| {
-                describe(&self.display, &self.icons, window).is_some_and(|info| info.id == id)
-            })
+            .find(|window| describe(self, window).is_some_and(|info| info.id == id))
             .cloned()
         else {
             return;
@@ -650,14 +699,14 @@ impl State {
         R: smithay::backend::renderer::Renderer,
         R::TextureId: Clone + 'static,
     {
-        if let Some(id) = describe(&self.display, &self.icons, window).map(|info| info.id) {
+        if let Some(id) = describe(self, window).map(|info| info.id) {
             self.snapshots.record_shown(id, &self.hdr, renderer, window);
         }
     }
 
     /// How `window` is drawn this frame: its effect, or as it stands.
     pub(crate) fn effect_of(&self, window: &Window) -> crate::effects::WindowEffect {
-        describe(&self.display, &self.icons, window)
+        describe(self, window)
             .and_then(|info| self.effects.get(&info.id))
             .copied()
             .unwrap_or_default()
@@ -666,13 +715,14 @@ impl State {
     /// How `window` is framed: its own frame, or the desktop's.
     pub(crate) fn framing(&self, window: &Window) -> crate::effects::Framing<'_> {
         crate::effects::Framing {
-            frame: describe(&self.display, &self.icons, window)
+            frame: describe(self, window)
                 .and_then(|info| self.window_frames.get(&info.id))
                 .copied()
                 .unwrap_or(self.frame),
             images: &self.frame_images,
             snapshots: &self.snapshots,
             hdr: &self.hdr,
+            state: self,
         }
     }
 
@@ -797,7 +847,12 @@ impl State {
                 horizontal,
                 vertical,
             } => self.pointer_axis(horizontal, vertical, time),
-            InputEvent::Key { keycode, pressed } => self.key(keycode, pressed, serial, time),
+            InputEvent::Key { keycode, pressed } => {
+                // The person's own keyboard, kept so a seat's next event puts
+                // their held keys aside and gives them back.
+                self.seats.hold_person_key(keycode, pressed);
+                self.key(keycode, pressed, serial, time);
+            }
             InputEvent::TouchDown { slot, x, y } => {
                 self.touch_down(slot, Point::from((x, y)), serial, time);
             }
@@ -819,7 +874,7 @@ impl State {
     /// Route a key: a press to the hosted surface that claims it, else to
     /// the topmost one that wants the keyboard, else to the focused client;
     /// a release to where its press went ([`crate::keys`]).
-    fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
+    pub(crate) fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -872,6 +927,12 @@ impl State {
                 };
                 if !pressed {
                     if let Some(host) = state.host_keys.release(keycode) {
+                        // A held modifier's release also reaches what else answers it: a
+                        // surface that opened while it was down (a switcher), whose press
+                        // went to the window it now stands over.
+                        if crate::sticky_keys::is_modifier(keycode) {
+                            state.release_beside(&key, host);
+                        }
                         return FilterResult::Intercept((host, key));
                     }
                     // A key no surface took the press of, let go: a surface that takes it now
@@ -924,11 +985,38 @@ impl State {
         }
     }
 
+    /// A released modifier reaches the hosted surfaces that answer it besides
+    /// the one that had its press: what opened while it was held hears it let
+    /// go. A client holding the desktop's shortcuts has its releases too.
+    fn release_beside(&mut self, key: &HostKey, recorded: usize) {
+        if self.seat_keys_only || self.shortcut_inhibit.is_active() {
+            return;
+        }
+        let locked = self.locked();
+        let composing = self.composing();
+        for index in (0..self.hosts.len()).rev() {
+            if index == recorded || composing == Some(index) {
+                continue;
+            }
+            let claim = self
+                .hosts
+                .get_mut(index)
+                .map_or(KeyClaim::Pass, |host| host.claim_key(key, locked, false));
+            if claim == KeyClaim::Pass {
+                continue;
+            }
+            if let Some(host) = self.hosts.get_mut(index) {
+                host.key(key);
+            }
+            return;
+        }
+    }
+
     /// The hosted surface a released key belongs to: one that claims it, from
     /// the top of the stack down. A held modifier's release reaches what it
     /// opened; a client holding the desktop's shortcuts has its releases too.
     fn release_host(&mut self, key: &HostKey) -> Option<usize> {
-        if self.shortcut_inhibit.is_active() {
+        if self.seat_keys_only || self.shortcut_inhibit.is_active() {
             return None;
         }
         let locked = self.locked();
@@ -964,6 +1052,11 @@ impl State {
         repeats: bool,
         now: Instant,
     ) -> Option<usize> {
+        if self.seat_keys_only {
+            // A seat's key belongs to the client the seat aims at, whatever
+            // the person has open over it.
+            return None;
+        }
         let composing = self.composing();
         for index in (0..self.hosts.len()).rev() {
             if composing == Some(index) {
@@ -1030,7 +1123,7 @@ impl State {
         }
     }
 
-    fn pointer_axis(&mut self, horizontal: f64, vertical: f64, time: u32) {
+    pub(crate) fn pointer_axis(&mut self, horizontal: f64, vertical: f64, time: u32) {
         if let PointerTarget::Host(index) = self.pointer_target {
             if let Some(host) = self.hosts.get_mut(index) {
                 host.pointer_axis(horizontal, vertical);
@@ -1121,6 +1214,11 @@ impl State {
     }
 
     pub(crate) fn pointer_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        // Somebody else already holds this button: the one pointer the windows
+        // see stays down until the last of them lets go.
+        if !self.seats.hold_person_button(button, pressed) {
+            return;
+        }
         if pressed {
             self.buttons_down.insert(button);
         } else {
@@ -1180,6 +1278,53 @@ impl State {
         }
         if !pressed {
             self.x11_drag_motion(self.pointer);
+        }
+    }
+
+    /// Deliver one pointer button as a seat pressed it: to the client under
+    /// the pointer, focusing nothing and raising nothing.
+    pub(crate) fn seat_button(&mut self, button: u32, pressed: bool, serial: Serial, time: u32) {
+        if pressed {
+            self.buttons_down.insert(button);
+        } else {
+            self.buttons_down.remove(&button);
+        }
+        self.pointer_target = PointerTarget::Clients;
+        let state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        pointer.button(
+            self,
+            &ButtonEvent {
+                button,
+                state,
+                serial,
+                time,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Give the window with `id` the keyboard, for a seat's keys: it is not
+    /// raised and stays inactive, so the person's desk looks as it did.
+    pub(crate) fn focus_window_id(&mut self, id: u64, serial: Serial) {
+        let surface = self
+            .space
+            .elements()
+            .find(|window| describe(self, window).is_some_and(|info| info.id == id))
+            .and_then(|window| {
+                window
+                    .toplevel()
+                    .map(|toplevel| toplevel.wl_surface().clone())
+                    .or_else(|| crate::xwayland::x11_wl_surface(window))
+            });
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.set_focus(self, surface, serial);
         }
     }
 
@@ -1269,7 +1414,7 @@ impl State {
     /// Map a toplevel whose first buffer arrived (or an X11 window that
     /// asked to be mapped), where the policy places it.
     pub(crate) fn map_window(&mut self, window: &Window) {
-        let Some(info) = describe(&self.display, &self.icons, window) else {
+        let Some(info) = describe(self, window) else {
             return;
         };
         // It came back before the desktop was done with its close.
@@ -1303,7 +1448,7 @@ impl State {
         };
         let stack: Vec<Window> = self.space.elements().cloned().collect();
         for window in stack {
-            let Some(id) = describe(&self.display, &self.icons, &window).map(|info| info.id) else {
+            let Some(id) = describe(self, &window).map(|info| info.id) else {
                 continue;
             };
             let Some(arrangement) = arrangements.iter().find(|arrangement| arrangement.id == id)
@@ -1345,9 +1490,7 @@ impl State {
             state
                 .space
                 .elements()
-                .find(|window| {
-                    describe(&self.display, &self.icons, window).is_some_and(|info| info.id == id)
-                })
+                .find(|window| describe(state, window).is_some_and(|info| info.id == id))
                 .cloned()
         };
         for id in self.policy.take_close_requests() {
@@ -1395,8 +1538,7 @@ impl State {
     /// `window` asked for the keyboard: it gets it when the policy says so
     /// ([`WindowPolicy::activate`]).
     pub(crate) fn activation_requested(&mut self, window: &Window, fresh: bool) {
-        let focus = describe(&self.display, &self.icons, window)
-            .map_or(fresh, |info| self.policy.activate(&info, fresh));
+        let focus = describe(self, window).map_or(fresh, |info| self.policy.activate(&info, fresh));
         if focus {
             self.focus_window(window, SERIAL_COUNTER.next_serial());
         }
@@ -1409,7 +1551,7 @@ impl State {
             return;
         }
         if let Some((window, _, _)) = self.surface_under(point) {
-            let info = describe(&self.display, &self.icons, &window);
+            let info = describe(self, &window);
             if info.is_some_and(|info| self.policy.focus_on_click(&info)) {
                 self.focus_window(&window, serial);
             }
@@ -1424,13 +1566,21 @@ static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64:
 /// Wayland toplevels' counter.
 const X11_IDS: u64 = 1 << 40;
 
+/// How far up a display number sits in an X11 window id: every display's X
+/// identifiers start over, so two workspaces' windows would otherwise share
+/// ids.
+const X11_DISPLAY_SHIFT: u32 = 32;
+
 /// The id of `window`, when it has one.
-pub(crate) fn window_id(window: &Window) -> Option<u64> {
+pub(crate) fn window_id(state: &State, window: &Window) -> Option<u64> {
     if let Some(toplevel) = window.toplevel() {
         return window_id_of(toplevel.wl_surface());
     }
     let x11 = window.x11_surface()?;
-    (!x11.is_override_redirect()).then(|| x11_window_id(x11.window_id()))
+    if x11.is_override_redirect() {
+        return None;
+    }
+    x11_window_id(state, x11)
 }
 
 /// The id of the toplevel drawing into `surface`, once it has one.
@@ -1440,9 +1590,31 @@ pub(crate) fn window_id_of(surface: &WlSurface) -> Option<u64> {
     })
 }
 
-/// The [`WindowInfo`] id of the X11 window `window`.
-pub(crate) fn x11_window_id(window: u32) -> u64 {
-    X11_IDS | u64::from(window)
+/// The [`WindowInfo`] id of the X11 `window`, on the display that shows it.
+pub(crate) fn x11_window_id(state: &State, window: &smithay::xwayland::X11Surface) -> Option<u64> {
+    let xwm = window.xwm_id()?;
+    x11_window_id_of(state, xwm, window.window_id())
+}
+
+/// The [`WindowInfo`] id of the X11 window `window` of `xwm`'s display.
+pub(crate) fn x11_window_id_of(
+    state: &State,
+    xwm: smithay::xwayland::xwm::XwmId,
+    window: u32,
+) -> Option<u64> {
+    let display = state.xwms.iter().find(|server| server.id() == xwm)?.display;
+    Some(X11_IDS | (u64::from(display) << X11_DISPLAY_SHIFT) | u64::from(window))
+}
+
+/// Forget the toplevels still waiting for their first buffer on `xwm`'s
+/// display: their server is going, so they never map.
+pub(crate) fn forget_unmapped_of(state: &mut State, xwm: smithay::xwayland::xwm::XwmId) {
+    state.unmapped.retain(|window| {
+        window
+            .x11_surface()
+            .and_then(smithay::xwayland::X11Surface::xwm_id)
+            != Some(xwm)
+    });
 }
 
 /// Whether a window at `location` of `size` is on one of `outputs`: the
@@ -1462,28 +1634,31 @@ pub(crate) fn on_an_output(
 
 /// What a policy learns about a window, Wayland or X11; `None` for
 /// override-redirect X11 windows, which place themselves.
-pub(crate) fn describe(
-    display: &DisplayHandle,
-    icons: &crate::toplevel_icon::Icons,
-    window: &Window,
-) -> Option<WindowInfo> {
+pub(crate) fn describe(state: &State, window: &Window) -> Option<WindowInfo> {
     if let Some(toplevel) = window.toplevel() {
-        return Some(window_info(display, icons, toplevel));
+        return Some(window_info(&state.display, &state.icons, toplevel));
     }
     let x11 = window.x11_surface()?;
+    if x11.is_override_redirect() {
+        return None;
+    }
     let size = |size: Option<smithay::utils::Size<i32, Logical>>| {
         size.filter(|size| size.w > 0 && size.h > 0)
             .map(|size| (size.w, size.h))
     };
-    (!x11.is_override_redirect()).then(|| WindowInfo {
-        id: x11_window_id(x11.window_id()),
+    let id = x11_window_id(state, x11)?;
+    let xwm = x11.xwm_id()?;
+    Some(WindowInfo {
+        id,
         app_id: Some(x11.class()),
         title: Some(x11.title()),
-        parent: x11.is_transient_for().map(x11_window_id),
+        parent: x11
+            .is_transient_for()
+            .and_then(|parent| x11_window_id_of(state, xwm, parent)),
         min_size: size(x11.min_size()),
         max_size: size(x11.max_size()),
         pid: x11.pid(),
-        icon: icons.of(x11_window_id(x11.window_id())),
+        icon: state.icons.of(id),
     })
 }
 
@@ -1569,7 +1744,7 @@ fn pid_of(client: Option<&Client>, display: &DisplayHandle) -> Option<u32> {
 }
 
 /// What a policy learns about a toplevel.
-fn window_info(
+pub(crate) fn window_info(
     display: &DisplayHandle,
     icons: &crate::toplevel_icon::Icons,
     toplevel: &ToplevelSurface,

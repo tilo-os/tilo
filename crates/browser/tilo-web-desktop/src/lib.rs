@@ -16,7 +16,6 @@ mod activity;
 mod apps;
 mod feedback;
 mod lazy;
-mod messaging;
 mod split;
 
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
@@ -24,7 +23,6 @@ fn start() {
     tilo_browser_runtime::start();
     activity::register();
     lazy::register();
-    messaging::register();
     apps::register();
     // After the apps: the composer stays last in launcher order.
     feedback::register();

@@ -48,7 +48,7 @@ use tilo_relay::room_bots::discord::{self, DiscordLink};
 use tilo_relay::room_bots::installed::{self, BotRunner};
 use tilo_relay::room_bots::membership::{HostRootCertifier, keep_member};
 use tilo_relay::room_bots::workspace_record;
-use tilo_relay::rooms::Rooms;
+use tilo_relay::workspaces::Workspaces;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use ui::tilo_actions::ActionContext;
 use ui::tilo_resource::{Id, Invoke, Resource as _};
@@ -214,7 +214,7 @@ impl Rest {
 
 /// The workspace, as the governor's copy holds its records.
 struct Workspace {
-    rooms: Rooms,
+    workspaces: Workspaces,
     id: String,
     cert: DeviceCert,
     catalogue: AppCatalogue,
@@ -226,7 +226,7 @@ impl Workspace {
     async fn doc(&self, app: &str) -> AutoCommit {
         AutoCommit::load(
             &self
-                .rooms
+                .workspaces
                 .record_document(&self.id, app, &workspace_record(&self.catalogue, app))
                 .await
                 .unwrap()
@@ -247,7 +247,7 @@ impl Workspace {
         &self,
         change: impl FnOnce(&mut AutoCommit) -> Result<T, String> + Send + 'static,
     ) -> T {
-        self.rooms
+        self.workspaces
             .author_application(
                 &self.id,
                 &self.cert,
@@ -262,7 +262,7 @@ impl Workspace {
 
     /// The chat's first part of messages, as the workspace holds it.
     async fn part(&self) -> AutoCommit {
-        self.rooms
+        self.workspaces
             .record_document(&self.id, CHAT, chat::parts::part(0).as_str())
             .await
             .unwrap()
@@ -277,7 +277,7 @@ impl Workspace {
         change: impl FnOnce(&mut AutoCommit, &chat::Chat) -> Result<T, String> + Send + 'static,
     ) -> T {
         let chat = self.chat().await;
-        self.rooms
+        self.workspaces
             .author_application(
                 &self.id,
                 &self.cert,
@@ -446,10 +446,10 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .await
     .unwrap();
-    let rooms = relay.rooms().unwrap().clone();
+    let workspaces = relay.workspaces().unwrap().clone();
     let workspace = Workspace {
-        id: rooms.create(&server_name).await.unwrap().room,
-        rooms,
+        id: workspaces.create(&server_name).await.unwrap().workspace,
+        workspaces,
         cert: cert.clone(),
         catalogue: AppCatalogue::native(),
         owner: hex::encode(cert.user_public_key),
@@ -466,7 +466,7 @@ async fn live(token: String, guild_id: String) -> usize {
     )
     .unwrap()
     .unwrap();
-    discord::connect(&workspace.rooms, &workspace.id, &cert, &bridged)
+    discord::connect(&workspace.workspaces, &workspace.id, &cert, &bridged)
         .await
         .unwrap();
     workspace
@@ -504,11 +504,17 @@ async fn live(token: String, guild_id: String) -> usize {
         .await
         .unwrap();
     let certifier = HostRootCertifier::new(SigningKey::from_bytes(&[1; 32]));
-    keep_member(&workspace.rooms, &workspace.id, &cert, &certifier, &bot)
-        .await
-        .unwrap();
+    keep_member(
+        &workspace.workspaces,
+        &workspace.id,
+        &cert,
+        &certifier,
+        &bot,
+    )
+    .await
+    .unwrap();
     let mut runner = BotRunner::new(
-        workspace.rooms.clone(),
+        workspace.workspaces.clone(),
         workspace.id.clone(),
         cert.clone(),
         certifier.device_key(&bot.installation),

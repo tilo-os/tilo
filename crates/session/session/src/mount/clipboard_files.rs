@@ -31,15 +31,17 @@
 //! Trash). Every item ends as either its source, untouched, or its copy,
 //! complete: never half of either.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io;
-use std::os::unix::fs::{
-    DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
-};
+use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use host_fs::transfer::{
+    Staging, best_effort, best_effort_by, free_name, quarantine_at, quarantine_path, remove_path,
+    restore_source, staging_path, sync_directory, sync_parent, trash,
+};
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use ui::dnd::CopiedFiles;
@@ -50,17 +52,9 @@ const MAX_ITEMS: usize = 4096;
 const BATCH_ITEMS: usize = 256;
 /// The most names one item's publication tries before it gives up.
 const MAX_NAME_TRIES: usize = 4;
-/// The most numbered names one item tries in a folder.
-const MAX_NUMBERS: u32 = 9999;
-/// The folder a paste stages its copies in, inside the receiving folder, so
-/// that publishing them is a rename within one filesystem.
-const STAGING_PREFIX: &str = ".tilo-transfer-";
 /// The environment names a moment of a paste a crash test dies at (see
 /// [`crash_point`]).
 const CRASH_POINT_ENV: &str = "TILO_FILE_PASTE_CRASH_POINT";
-/// Where a cut's source hides while its copy is published: a hidden name of
-/// its own in its own folder, so putting it back is a rename.
-const HELD_PREFIX: &str = ".tilo-held-";
 /// The receipt this writes and reads.
 const RECEIPT_FILE: &str = "paste.json";
 /// The shape of that receipt.
@@ -210,14 +204,16 @@ impl Paste {
     /// Start pasting `files` into `destination`, staged and recorded as the
     /// module describes. The receiving folder is read, the receipt written
     /// and the copies made on the worker, so the caller never waits on a
-    /// disk.
+    /// disk. `None` when another paste is still running: there is one receipt,
+    /// so a second paste would overwrite the record the first is recovered
+    /// from.
     pub(crate) fn start(
         files: &CopiedFiles,
         destination: &Path,
         conflict: Conflict,
         now_ms: u64,
         wake: &tilo_service::Wake,
-    ) -> Self {
+    ) -> Option<Self> {
         Self::spawn(
             Job::Paste {
                 files: files.clone(),
@@ -232,31 +228,35 @@ impl Paste {
     /// The paste a session that stopped was in the middle of, to be undone.
     /// `None` when it left nothing behind.
     pub(crate) fn unfinished(wake: &tilo_service::Wake) -> Option<Self> {
-        read_receipt().map(|receipt| Self::spawn(Job::Undo(receipt), wake))
+        let receipt = read_receipt()?;
+        Self::spawn(Job::Undo(receipt), wake)
     }
 
-    fn spawn(job: Job, wake: &tilo_service::Wake) -> Self {
+    fn spawn(job: Job, wake: &tilo_service::Wake) -> Option<Self> {
+        let slot = Slot::take()?;
         let progress = Arc::new(Mutex::new(Progress::default()));
         let shared = Arc::clone(&progress);
         let wake = Arc::clone(wake);
         match thread::Builder::new()
             .name("file-paste".to_owned())
-            .spawn(move || run(&job, &shared, &wake))
-        {
-            Ok(worker) => Self {
+            .spawn(move || {
+                run(&job, &shared, &wake);
+                drop(slot);
+            }) {
+            Ok(worker) => Some(Self {
                 progress,
                 worker: Some(worker),
-            },
+            }),
             Err(error) => {
                 tracing::warn!(%error, "the paste of files could not be started");
                 let mut state = progress.lock_recover();
                 state.refusal = Some(Refused::Stopped(error.to_string()));
                 state.finished = true;
                 drop(state);
-                Self {
+                Some(Self {
                     progress,
                     worker: None,
-                }
+                })
             }
         }
     }
@@ -269,8 +269,12 @@ impl Paste {
     /// What the worker did, once it is over: it is waited for here, which is
     /// no wait at all by then.
     pub(crate) fn outcome(&mut self) -> Outcome {
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
+        if let Some(worker) = self.worker.take()
+            && worker.join().is_err()
+        {
+            // Its progress is all the outcome says; a worker that panicked
+            // leaves the paste half-done with no reason.
+            tracing::warn!("the paste worker stopped before it finished");
         }
         let state = std::mem::take(&mut *self.progress.lock_recover());
         Outcome {
@@ -280,6 +284,25 @@ impl Paste {
             refusal: state.refusal,
             undone: state.undone,
         }
+    }
+}
+
+/// The one paste a session carries at a time: the receipt is one file, so a
+/// second paste written down beside the first would leave neither whole.
+static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The running paste's claim on the receipt, held until its worker is done.
+struct Slot;
+
+impl Slot {
+    fn take() -> Option<Self> {
+        (!RUNNING.swap(true, std::sync::atomic::Ordering::AcqRel)).then_some(Self)
+    }
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        RUNNING.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -329,22 +352,37 @@ fn paste(
     let mut receipt = plan(files, destination, conflict, now_ms)?;
     progress.lock_recover().total = receipt.items.len();
     save(&receipt).map_err(Refused::Stopped)?;
-    if let Err(error) = make_staging(&receipt.staging) {
-        let _ = clear_receipt();
-        return Err(Refused::Stopped(format!(
-            "{} could not hold the paste: {error}",
-            destination.display()
-        )));
-    }
-    if let Err(error) = transfer(&mut receipt, progress) {
+    let mut staging = match Staging::take(destination, &receipt.staging) {
+        Ok(staging) => staging,
+        Err(error) => {
+            if let Err(error) = clear_receipt() {
+                tracing::warn!(%error, "the receipt of a paste that could not start was kept");
+            }
+            return Err(Refused::Stopped(format!(
+                "{} could not hold the paste: {error}",
+                destination.display()
+            )));
+        }
+    };
+    if let Err(error) = transfer(&mut receipt, &staging, progress) {
         // Nothing of a paste that could not be recorded is left standing:
         // what landed stays whole and the rest goes back where it was.
-        let _ = undo(&receipt, progress);
+        if let Err(kept) = undo(&receipt, progress) {
+            staging.keep();
+            tracing::warn!(
+                %kept,
+                %error,
+                destination = %destination.display(),
+                "a paste that could not be recorded could not be put back"
+            );
+        }
         progress.lock_recover().undone = false;
         return Err(Refused::Stopped(error));
     }
-    let _ = remove_staging(&receipt.staging);
-    clear_receipt().ok();
+    staging.finish_success();
+    if let Err(error) = clear_receipt() {
+        tracing::warn!(%error, "a finished paste's receipt was kept");
+    }
     Ok(())
 }
 
@@ -356,8 +394,9 @@ fn trash_asides(receipt: &Receipt) {
     }
 }
 
-/// Plan the paste of `files` into `destination`: what lands where. Nothing
-/// is touched on the disk here.
+/// Plan the paste of `files` into `destination`: what lands where, and the
+/// private folder their copies are staged in. Nothing is touched on the disk
+/// here: the paste is written down before its staging folder exists.
 fn plan(
     files: &CopiedFiles,
     destination: &Path,
@@ -367,14 +406,7 @@ fn plan(
     if !destination.is_dir() {
         return Err(Refused::NotAFolder(destination.to_path_buf()));
     }
-    let staging = destination.join(format!(
-        "{STAGING_PREFIX}{}",
-        short_id(&uuid::Uuid::new_v4().simple().to_string())
-    ));
-    let id = staging
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let staging = staging_path(destination);
     let mut items = Vec::new();
     for source in &files.paths {
         if items.len() >= MAX_ITEMS {
@@ -387,7 +419,9 @@ fn plan(
             continue;
         };
         let target = match conflict {
-            Conflict::KeepBoth => free_target(destination, source),
+            Conflict::KeepBoth => {
+                free_name(destination, name).map_err(|error| Refused::Stopped(error.to_string()))?
+            }
             Conflict::Skip => {
                 let target = destination.join(name);
                 fs::symlink_metadata(&target).is_err().then_some(target)
@@ -399,7 +433,14 @@ fn plan(
         let Some(target) = target.filter(|target| target != source) else {
             continue;
         };
-        let held = files.cut.then(|| held_name(source, &id)).flatten();
+        let held = if files.cut {
+            quarantine_path(source).ok()
+        } else {
+            None
+        };
+        if files.cut && held.is_none() {
+            continue;
+        }
         items.push(Item {
             source: source.clone(),
             target,
@@ -421,44 +462,6 @@ fn plan(
     })
 }
 
-/// The first eight characters of `id`, which is enough to tell this paste's
-/// hidden names from any other's.
-fn short_id(id: &str) -> String {
-    id.chars().take(8).collect()
-}
-
-/// Where `source` hides while its copy is published: its own name, hidden,
-/// in its own folder, so putting it back is a rename.
-fn held_name(source: &Path, id: &str) -> Option<PathBuf> {
-    let parent = source.parent()?;
-    let name = source.file_name()?.to_string_lossy().into_owned();
-    Some(parent.join(format!("{HELD_PREFIX}{id}-{name}")))
-}
-
-/// The target `source` takes in `folder`: its own name, or the first free
-/// numbered one, so a paste never lands on what is already there.
-fn free_target(folder: &Path, source: &Path) -> Option<PathBuf> {
-    let name = source.file_name()?;
-    let stem = source.file_stem()?;
-    let extension = source.extension();
-    let mut candidate = folder.join(name);
-    let mut number: u32 = 2;
-    while fs::symlink_metadata(&candidate).is_ok() {
-        let mut numbered = stem.to_os_string();
-        numbered.push(format!(" ({number})"));
-        if let Some(extension) = extension {
-            numbered.push(".");
-            numbered.push(extension);
-        }
-        candidate = folder.join(numbered);
-        number = number.saturating_add(1);
-        if number > MAX_NUMBERS {
-            return None;
-        }
-    }
-    Some(candidate)
-}
-
 /// The staged path of the item at `index`.
 fn staged_path(staging: &Path, index: usize) -> PathBuf {
     staging.join(index.to_string())
@@ -470,21 +473,22 @@ fn replaced_path(staging: &Path, index: usize) -> PathBuf {
 }
 
 /// Carry the paste out a batch at a time.
-fn transfer(receipt: &mut Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
+fn transfer(
+    receipt: &mut Receipt,
+    staging: &Staging,
+    progress: &Mutex<Progress>,
+) -> Result<(), String> {
     let total = receipt.items.len();
     let mut start = 0usize;
     while start < total {
         let end = start.saturating_add(BATCH_ITEMS).min(total);
         for index in start..end {
-            stage(receipt, index, progress);
+            stage(receipt, staging, index, progress);
         }
         // Every staged copy is flushed and whole; the receipt now names
         // them, so a session that stops can tell a published copy from a
         // stray one.
-        sync_filesystem(&receipt.staging).map_err(|error| {
-            format!("{} could not be synced: {error}", receipt.staging.display())
-        })?;
-        sync_directory(&receipt.staging).map_err(|error| {
+        staging.sync().map_err(|error| {
             format!("{} could not be synced: {error}", receipt.staging.display())
         })?;
         save(receipt)?;
@@ -531,7 +535,7 @@ fn crash_point(stage: &str) {
 
 /// Stage the item at `index`: its whole copy, synced, under the paste's
 /// staging folder.
-fn stage(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
+fn stage(receipt: &mut Receipt, staging: &Staging, index: usize, progress: &Mutex<Progress>) {
     let Some(item) = receipt.items.get(index) else {
         return;
     };
@@ -541,10 +545,13 @@ fn stage(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
     let source = item.source.clone();
     let staged = staged_path(&receipt.staging, index);
     let name = display_name(&source);
-    let copied = copy_tree(&source, &staged).and_then(|()| {
-        let metadata = fs::symlink_metadata(&staged)?;
-        Ok(Identity::of(&metadata))
-    });
+    let leaf = index.to_string();
+    let copied = staging
+        .stage(&source, Path::new(&leaf), &mut ())
+        .and_then(|()| {
+            let metadata = fs::symlink_metadata(&staged)?;
+            Ok(Identity::of(&metadata))
+        });
     match copied {
         Ok(identity) => {
             if let Some(item) = receipt.items.get_mut(index) {
@@ -552,7 +559,11 @@ fn stage(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
             }
         }
         Err(error) => {
-            let _ = remove_path(&staged);
+            best_effort(
+                "removing what was staged for a file that was not pasted",
+                &staged,
+                || remove_path(&staged),
+            );
             tracing::warn!(%error, source = %source.display(), "a file was not pasted");
             fail(receipt, index, progress, &name, &error.to_string());
         }
@@ -601,7 +612,11 @@ fn set_aside(
         );
         return false;
     }
-    let _ = sync_directory(&receipt.destination);
+    best_effort(
+        "making the paste's folder survive a crash",
+        &receipt.destination,
+        || sync_directory(&receipt.destination),
+    );
     true
 }
 
@@ -621,8 +636,10 @@ fn hide_source(
     let Some((source, held)) = hiding else {
         return true;
     };
-    if let Err(error) = fs::rename(&source, &held) {
-        let _ = sync_parent(&source);
+    if let Err(error) = quarantine_at(&source, &held, &mut ()) {
+        best_effort("making a hidden source survive a crash", &source, || {
+            sync_parent(&source)
+        });
         fail(
             receipt,
             index,
@@ -677,8 +694,10 @@ fn publish(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
                 return;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                if let Some(item) = receipt.items.get(index) {
-                    put_back(item).ok();
+                if let Some(item) = receipt.items.get(index)
+                    && let Err(error) = put_back(item)
+                {
+                    best_effort_by("putting a cut's source back", &item.source, error);
                 }
                 if conflict == Conflict::Replace {
                     continue;
@@ -687,15 +706,26 @@ fn publish(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
                     fail(receipt, index, progress, &name, "it has no folder");
                     return;
                 };
-                let Some(free) = free_target(folder, &target) else {
-                    fail(
-                        receipt,
-                        index,
-                        progress,
-                        &name,
-                        "every free name beside it is taken",
-                    );
+                let Some(target_name) = target.file_name() else {
+                    fail(receipt, index, progress, &name, "its name has no leaf");
                     return;
+                };
+                let free = match free_name(folder, target_name) {
+                    Ok(Some(free)) => free,
+                    Ok(None) => {
+                        fail(
+                            receipt,
+                            index,
+                            progress,
+                            &name,
+                            "every free name beside it is taken",
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        fail(receipt, index, progress, &name, &error.to_string());
+                        return;
+                    }
                 };
                 target = free;
                 if let Some(item) = receipt.items.get_mut(index) {
@@ -707,8 +737,10 @@ fn publish(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
                 }
             }
             Err(error) => {
-                if let Some(item) = receipt.items.get(index) {
-                    put_back(item).ok();
+                if let Some(item) = receipt.items.get(index)
+                    && let Err(kept) = put_back(item)
+                {
+                    best_effort_by("putting a cut's source back", &item.source, kept);
                 }
                 fail(receipt, index, progress, &name, &error.to_string());
                 return;
@@ -742,14 +774,24 @@ fn unhold(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>) {
         );
         return;
     }
-    let _ = sync_parent(&source);
+    best_effort(
+        "making a cut's emptied source survive a crash",
+        &source,
+        || sync_parent(&source),
+    );
 }
 
 /// Record that the item at `index` did not land, and why.
 fn fail(receipt: &mut Receipt, index: usize, progress: &Mutex<Progress>, name: &str, reason: &str) {
     if let Some(item) = receipt.items.get_mut(index) {
         // A cut's source comes out of hiding before anything else.
-        let _ = put_back(item);
+        if let Err(error) = put_back(item) {
+            best_effort_by(
+                "putting a cut's source back after a failure",
+                &item.source,
+                error,
+            );
+        }
         item.state = State::Failed;
     }
     progress
@@ -792,7 +834,11 @@ fn undo(receipt: &Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
             if !came_back {
                 trash(&aside);
             }
-            let _ = sync_parent(&item.target);
+            best_effort(
+                "making a restored name survive a crash",
+                &item.target,
+                || sync_parent(&item.target),
+            );
         }
         if let Err(error) = put_back(item) {
             record(&mut trouble, &name, &error, progress);
@@ -807,7 +853,9 @@ fn undo(receipt: &Receipt, progress: &Mutex<Progress>) -> Result<(), String> {
     }
     remove_staging(&receipt.staging)
         .map_err(|error| format!("the staging folder could not be removed: {error}"))?;
-    clear_receipt().ok();
+    if let Err(error) = clear_receipt() {
+        tracing::warn!(%error, "a put-back paste's receipt was kept");
+    }
     Ok(())
 }
 
@@ -827,33 +875,7 @@ fn put_back(item: &Item) -> Result<(), String> {
     let Some(held) = &item.held else {
         return Ok(());
     };
-    if fs::symlink_metadata(held).is_err() {
-        return Ok(());
-    }
-    if fs::symlink_metadata(&item.source).is_ok() {
-        // Its name was taken again while the paste ran: the hidden source
-        // comes back beside it rather than over it, so neither is lost.
-        let Some(folder) = item.source.parent() else {
-            return Err(format!(
-                "{} has nowhere to go back to",
-                item.source.display()
-            ));
-        };
-        let Some(beside) = free_target(folder, &item.source) else {
-            return Err(format!(
-                "{} has its name back and no other is free",
-                item.source.display()
-            ));
-        };
-        fs::rename(held, &beside)
-            .map_err(|error| format!("{} could not be put back: {error}", beside.display()))?;
-        let _ = sync_parent(&beside);
-        return Ok(());
-    }
-    fs::rename(held, &item.source)
-        .map_err(|error| format!("{} could not be put back: {error}", item.source.display()))?;
-    let _ = sync_parent(&item.source);
-    Ok(())
+    restore_source(held, &item.source, &mut ()).map_err(|error| error.to_string())
 }
 
 /// Take a finished item's hidden source away.
@@ -865,7 +887,11 @@ fn remove_held(item: &Item) -> Result<(), String> {
         return Ok(());
     }
     remove_path(held).map_err(|error| error.to_string())?;
-    let _ = sync_parent(&item.source);
+    best_effort(
+        "making a removed name survive a crash",
+        &item.source,
+        || sync_parent(&item.source),
+    );
     Ok(())
 }
 
@@ -877,110 +903,13 @@ fn display_name(path: &Path) -> String {
     )
 }
 
-/// Copy `source` to `staged`: a file's bytes, mode and time, a folder's tree,
-/// a link as the link it is. Nothing is flushed here: the batch is committed
-/// once ([`sync_filesystem`]), which is what a folder of many small files
-/// costs on any disk.
-fn copy_tree(source: &Path, staged: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(source)?;
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() {
-        let link = fs::read_link(source)?;
-        return std::os::unix::fs::symlink(link, staged);
-    }
-    if metadata.is_dir() {
-        fs::DirBuilder::new()
-            .mode(metadata.permissions().mode())
-            .create(staged)?;
-        for entry in fs::read_dir(source)? {
-            let entry = entry?;
-            copy_tree(&entry.path(), &staged.join(entry.file_name()))?;
-        }
-        return Ok(());
-    }
-    if metadata.is_file() {
-        let mut from = File::open(source)?;
-        let mut to = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(metadata.permissions().mode())
-            .open(staged)?;
-        io::copy(&mut from, &mut to)?;
-        // A copy is the file it was made of, in its permission bits and when
-        // it last changed, so a photo album keeps its order.
-        to.set_permissions(fs::Permissions::from_mode(metadata.permissions().mode()))?;
-        if let Ok(modified) = metadata.modified() {
-            let _ = to.set_times(fs::FileTimes::new().set_modified(modified));
-        }
-        return Ok(());
-    }
-    Err(io::Error::other(format!(
-        "{} is not a file, a folder or a link",
-        source.display()
-    )))
-}
-
-/// Flush `path`'s directory entry, so a rename or a fresh name survives a
-/// power cut.
-fn sync_directory(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-/// Flush every write this filesystem has cached: one group commit per batch,
-/// rather than one per file, so a folder of many small files is not a folder
-/// of many small waits.
-fn sync_filesystem(path: &Path) -> io::Result<()> {
-    rustix::fs::syncfs(&File::open(path)?).map_err(io::Error::from)
-}
-
-/// Flush the folder `path` is in.
-fn sync_parent(path: &Path) -> io::Result<()> {
-    match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => sync_directory(parent),
-        _ => Ok(()),
-    }
-}
-
-/// Take `path` away: a folder with everything in it, a file, or a link.
-fn remove_path(path: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => fs::remove_dir_all(path),
-        Ok(_) => fs::remove_file(path),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-/// Move `path` to the person's Trash, saying so when the Trash cannot take
-/// it.
-fn trash(path: &Path) {
-    if fs::symlink_metadata(path).is_err() {
-        return;
-    }
-    if let Err(error) = host_fs::trash::trash(path) {
-        tracing::warn!(%error, path = %path.display(), "an item could not be moved to the Trash");
-    }
-}
-
-/// Make the paste's staging folder, owner-only, inside the receiving folder.
-fn make_staging(staging: &Path) -> io::Result<()> {
-    match fs::DirBuilder::new().mode(0o700).create(staging) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    sync_parent(staging)
-}
-
 /// Take the paste's staging folder away.
 fn remove_staging(staging: &Path) -> io::Result<()> {
-    let gone = match fs::remove_dir_all(staging) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    };
-    let _ = sync_parent(staging);
-    gone
+    remove_path(staging)?;
+    best_effort("removing the staging folder", staging, || {
+        sync_parent(staging)
+    });
+    Ok(())
 }
 
 /// The receipt's file: this session's own state, never the shared settings
@@ -1048,6 +977,7 @@ fn clear_receipt() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn scratch(name: &str) -> tempfile::TempDir {
         tempfile::Builder::new()
@@ -1063,8 +993,12 @@ mod tests {
         }
     }
 
-    fn carry(receipt: &mut Receipt, progress: &Mutex<Progress>) {
-        transfer(receipt, progress).expect("the paste was carried out");
+    fn take_staging(receipt: &Receipt) -> Staging {
+        Staging::take(&receipt.destination, &receipt.staging).expect("the staging folder")
+    }
+
+    fn carry(receipt: &mut Receipt, staging: &Staging, progress: &Mutex<Progress>) {
+        transfer(receipt, staging, progress).expect("the paste was carried out");
     }
 
     /// What the paste has to say about itself, taken without holding on to
@@ -1089,7 +1023,7 @@ mod tests {
             plan(&files(&[&note], false), &destination, Conflict::KeepBoth, 7).expect("a paste");
         assert_eq!(receipt.items.len(), 1);
         let item = receipt.items.first().expect("the item");
-        assert_eq!(item.target, destination.join("note (2).txt"));
+        assert_eq!(item.target, destination.join("note 2.txt"));
         assert_eq!(item.state, State::Pending);
         assert!(!receipt.moving);
         assert_eq!(receipt.started_ms, 7);
@@ -1100,7 +1034,7 @@ mod tests {
             .expect("a paste into its own folder");
         assert_eq!(
             beside.items.first().expect("the item").target,
-            source.join("note (2).txt")
+            source.join("note 2.txt")
         );
         // A destination that is not a folder takes nothing.
         assert_eq!(
@@ -1132,9 +1066,9 @@ mod tests {
             0,
         )
         .expect("a paste");
-        make_staging(&receipt.staging).expect("the staging folder");
         let progress = Mutex::new(Progress::default());
-        carry(&mut receipt, &progress);
+        let staging = take_staging(&receipt);
+        carry(&mut receipt, &staging, &progress);
         assert_eq!(
             fs::read(destination.join("note.txt")).expect("pasted"),
             b"hello"
@@ -1178,9 +1112,9 @@ mod tests {
             0,
         )
         .expect("a paste");
-        make_staging(&receipt.staging).expect("the staging folder");
         let progress = Mutex::new(Progress::default());
-        carry(&mut receipt, &progress);
+        let staging = take_staging(&receipt);
+        carry(&mut receipt, &staging, &progress);
         let pasted = destination.join("tree");
         assert_eq!(
             fs::read(pasted.join("deeper").join("note.txt")).expect("pasted"),
@@ -1214,9 +1148,9 @@ mod tests {
 
         let mut receipt =
             plan(&files(&[&note], false), &destination, Conflict::Replace, 0).expect("a paste");
-        make_staging(&receipt.staging).expect("the staging folder");
         let progress = Mutex::new(Progress::default());
-        carry(&mut receipt, &progress);
+        let staging = take_staging(&receipt);
+        carry(&mut receipt, &staging, &progress);
         assert_eq!(
             fs::read(destination.join("note.txt")).expect("pasted"),
             b"the new one"
@@ -1240,7 +1174,7 @@ mod tests {
         fs::create_dir_all(&source).expect("a source folder");
         let note = source.join("note.txt");
         fs::write(&note, b"mine").expect("a file");
-        let held = held_name(&note, "abc").expect("a hidden name");
+        let held = quarantine_path(&note).expect("a hidden name");
         fs::rename(&note, &held).expect("the source is hidden");
         fs::write(&note, b"someone else's").expect("the name is taken again");
 
@@ -1256,7 +1190,7 @@ mod tests {
         put_back(&item).expect("the source comes back");
         assert_eq!(fs::read(&note).expect("the new file"), b"someone else's");
         assert_eq!(
-            fs::read(source.join("note (2).txt")).expect("the source beside it"),
+            fs::read(source.join("note 2.txt")).expect("the source beside it"),
             b"mine"
         );
     }
@@ -1282,16 +1216,16 @@ mod tests {
             0,
         )
         .expect("a paste");
-        make_staging(&receipt.staging).expect("the staging folder");
         let progress = Mutex::new(Progress::default());
         // The first item went all the way; the second is only staged; the
         // third was written down and never touched, as a session that
         // stopped partway leaves them.
         let (first, second) = (0usize, 1usize);
-        stage(&mut receipt, first, &progress);
+        let staging = take_staging(&receipt);
+        stage(&mut receipt, &staging, first, &progress);
         publish(&mut receipt, first, &progress);
         unhold(&mut receipt, first, &progress);
-        stage(&mut receipt, second, &progress);
+        stage(&mut receipt, &staging, second, &progress);
         save(&receipt).expect("the receipt is written");
 
         undo(&receipt, &progress).expect("the paste was undone");
@@ -1340,9 +1274,9 @@ mod tests {
             0,
         )
         .expect("a paste");
-        make_staging(&receipt.staging).expect("the staging folder");
         let progress = Mutex::new(Progress::default());
-        carry(&mut receipt, &progress);
+        let staging = take_staging(&receipt);
+        carry(&mut receipt, &staging, &progress);
         assert_eq!(
             fs::read(destination.join("fine.txt")).expect("the readable one landed"),
             b"open"

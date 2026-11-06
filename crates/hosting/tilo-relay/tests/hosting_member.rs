@@ -4,7 +4,7 @@
 //! members' changes to the governor, and stops when detached.
 
 use iroh::protocol::Router;
-use tilo_relay::host::{HostConfig, HostIdentity, HostMode, RoomHost};
+use tilo_relay::host::{HostConfig, HostIdentity, HostMode, WorkspaceHost};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -27,7 +27,7 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
 /// A room host in `mode` on `device`'s own endpoint, routed as its embedder
 /// routes it.
 struct Hosted {
-    host: RoomHost,
+    host: WorkspaceHost,
     router: Router,
     _state: tempfile::TempDir,
 }
@@ -35,7 +35,7 @@ struct Hosted {
 async fn host_on(user: &TestUser, device: &TestDevice, mode: HostMode) -> Hosted {
     let state = tempfile::tempdir().unwrap();
     let endpoint = device_endpoint(device).await;
-    let host = RoomHost::open(
+    let host = WorkspaceHost::open(
         HostConfig::new(state.path().to_path_buf(), mode),
         HostIdentity {
             user_public_key: user.user_pk,
@@ -125,7 +125,7 @@ async fn a_certified_host_of_the_person_serves_a_room_its_device_governs() {
     let nas = alice.enrol("nas", DeviceCapabilities::host());
     let governor = host_on(&alice, &laptop, HostMode::Device).await;
     let member = host_on(&alice, &nas, HostMode::CertifiedHost).await;
-    let rooms = governor.host.rooms();
+    let rooms = governor.host.workspaces();
     let room = rooms.create("Notes").await.unwrap();
 
     // Which hosts serve the room is its owner's decision: another person's
@@ -134,32 +134,32 @@ async fn a_certified_host_of_the_person_serves_a_room_its_device_governs() {
     let bobs = bob.enrol("bob-phone", DeviceCapabilities::member());
     let refused = rooms
         .attach_host(
-            &room.room,
+            &room.workspace,
             &bobs.cert,
             nas.device_pubkey(),
             member.host.node_addr(),
         )
         .await;
     assert!(refused.is_err(), "{refused:?}");
-    assert_eq!(rooms.hosts(&room.room).await.unwrap().len(), 1);
+    assert_eq!(rooms.hosts(&room.workspace).await.unwrap().len(), 1);
 
     let hint = rooms
         .attach_host(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             nas.device_pubkey(),
             member.host.node_addr(),
         )
         .await
         .unwrap();
-    let hosts = rooms.hosts(&room.room).await.unwrap();
+    let hosts = rooms.hosts(&room.workspace).await.unwrap();
     assert_eq!(hosts.len(), 2, "the governor and the host serving it");
     assert_eq!(hosts[0].host, laptop.cert, "the governor comes first");
     assert_eq!(hosts[1], hint);
 
     // The phone enters the room on the laptop; the host follows that
     // governance and admits it.
-    rooms.enter(&room.room, &phone.cert).await.unwrap();
+    rooms.enter(&room.workspace, &phone.cert).await.unwrap();
     let on_member = session_to(&alice, &phone, &member).await;
     tilo_test_env::within("the host admits the member its governor admitted", async {
         while !admitted(&on_member, room.workspace_id).await {
@@ -202,12 +202,12 @@ async fn a_certified_host_of_the_person_serves_a_room_its_device_governs() {
     // Detached, the host is no longer named and admits nobody to the room.
     assert!(
         rooms
-            .detach_host(&room.room, &laptop.cert, nas.device_pubkey(), None)
+            .detach_host(&room.workspace, &laptop.cert, nas.device_pubkey(), None)
             .await
             .unwrap(),
         "the host confirms it stopped"
     );
-    assert_eq!(rooms.hosts(&room.room).await.unwrap().len(), 1);
+    assert_eq!(rooms.hosts(&room.workspace).await.unwrap().len(), 1);
     let again = session_to(&alice, &phone, &member).await;
     assert!(!admitted(&again, room.workspace_id).await);
 
@@ -227,19 +227,19 @@ async fn a_device_serves_no_room_another_device_governs() {
     let desktop = alice.enrol("desktop", DeviceCapabilities::primary());
     let governor = host_on(&alice, &laptop, HostMode::Device).await;
     let other = host_on(&alice, &desktop, HostMode::Device).await;
-    let rooms = governor.host.rooms();
+    let rooms = governor.host.workspaces();
     let room = rooms.create("Notes").await.unwrap();
 
     let refused = rooms
         .attach_host(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             desktop.device_pubkey(),
             other.host.node_addr(),
         )
         .await;
     assert!(refused.is_err(), "{refused:?}");
-    assert_eq!(rooms.hosts(&room.room).await.unwrap().len(), 1);
+    assert_eq!(rooms.hosts(&room.workspace).await.unwrap().len(), 1);
     other.stop().await;
     governor.stop().await;
 }
@@ -260,21 +260,21 @@ async fn a_detached_host_lets_the_room_go_and_serves_it_again_from_its_files() {
     let nas = alice.enrol("nas", DeviceCapabilities::host());
     let governor = host_on(&alice, &laptop, HostMode::Device).await;
     let member = host_on(&alice, &nas, HostMode::CertifiedHost).await;
-    let rooms = governor.host.rooms();
+    let rooms = governor.host.workspaces();
     let room = rooms.create("Notes").await.unwrap();
-    let records = member.host.room_records();
+    let records = member.host.workspace_records();
     let retained = || async { records.retained(room.workspace_id).await.ok() };
 
     rooms
         .attach_host(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             nas.device_pubkey(),
             member.host.node_addr(),
         )
         .await
         .unwrap();
-    rooms.enter(&room.room, &phone.cert).await.unwrap();
+    rooms.enter(&room.workspace, &phone.cert).await.unwrap();
     let kept = tilo_test_env::within("the host to keep the room's changes", async {
         loop {
             if let Some(bodies) = retained().await.filter(|bodies| !bodies.is_empty()) {
@@ -287,18 +287,18 @@ async fn a_detached_host_lets_the_room_go_and_serves_it_again_from_its_files() {
 
     assert!(
         rooms
-            .detach_host(&room.room, &laptop.cert, nas.device_pubkey(), None)
+            .detach_host(&room.workspace, &laptop.cert, nas.device_pubkey(), None)
             .await
             .unwrap()
     );
     assert!(retained().await.is_none(), "the host let the room go");
 
     // The room moves on while the host is away.
-    rooms.enter(&room.room, &tablet.cert).await.unwrap();
+    rooms.enter(&room.workspace, &tablet.cert).await.unwrap();
 
     rooms
         .attach_host(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             nas.device_pubkey(),
             member.host.node_addr(),

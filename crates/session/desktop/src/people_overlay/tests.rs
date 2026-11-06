@@ -64,9 +64,7 @@ impl PeekPictures for Pictures {
 struct Frame<'a> {
     rows: &'a [RosterRow],
     screens: &'a [PeerScreen],
-    messages: &'a [PeerMessages],
     followed: Option<&'a str>,
-    unavailable: Option<&'a str>,
 }
 
 fn draw(overlay: &mut PeopleOverlay, frame: &Frame<'_>, pictures: &mut dyn PeekPictures) {
@@ -101,9 +99,7 @@ fn draw_in(
             occupied: &[],
             rows: frame.rows,
             screens: frame.screens,
-            messages: frame.messages,
             followed_id: frame.followed,
-            messaging_unavailable: frame.unavailable,
             own,
         },
         pictures,
@@ -208,9 +204,7 @@ fn their_own_row_edits_what_they_are_doing_in_place() {
     let frame = Frame {
         rows: &rows,
         screens: &[],
-        messages: &[],
         followed: None,
-        unavailable: None,
     };
     let mut me = row("me", "Kim");
     me.followable = false;
@@ -287,9 +281,7 @@ fn agents_follow_the_people_under_their_own_heading() {
         &Frame {
             rows: &rows,
             screens: &[],
-            messages: &[],
             followed: None,
-            unavailable: None,
         },
         &mut NoPictures,
     );
@@ -308,9 +300,7 @@ fn dragging_the_panel_moves_it_and_reports_its_new_edge() {
     let frame = Frame {
         rows: &rows,
         screens: &[],
-        messages: &[],
         followed: None,
-        unavailable: None,
     };
     let mut overlay = shown_overlay();
     let start = ui::time::now();
@@ -355,9 +345,7 @@ fn a_peek_opens_on_a_rest_not_a_pass() {
     let frame = Frame {
         rows: &rows,
         screens: &screens,
-        messages: &[],
         followed: None,
-        unavailable: None,
     };
     let mut overlay = shown_overlay();
     let start = ui::time::now();
@@ -417,9 +405,7 @@ fn a_peek_opens_at_twice_the_density_on_the_frame_it_asks_for() {
     let frame = Frame {
         rows: &rows,
         screens: &screens,
-        messages: &[],
         followed: None,
-        unavailable: None,
     };
     let mut overlay = shown_overlay();
     let start = ui::time::now();
@@ -487,9 +473,7 @@ fn only_shared_windows_are_pictured() {
     let frame = Frame {
         rows: &rows,
         screens: &screens,
-        messages: &[],
         followed: None,
-        unavailable: None,
     };
     let mut overlay = shown_overlay();
     let _guard = ui::motion::testing::settled();
@@ -512,9 +496,7 @@ fn follow_is_one_press_from_the_row_and_the_peek() {
     let frame = Frame {
         rows: &rows,
         screens: &screens,
-        messages: &[],
         followed: None,
-        unavailable: None,
     };
     let mut overlay = shown_overlay();
     let _guard = ui::motion::testing::settled();
@@ -536,83 +518,6 @@ fn follow_is_one_press_from_the_row_and_the_peek() {
     assert_eq!(hit, Some(PeopleHit::ToggleFollow("ada".into())));
 }
 
-/// The message box takes the keyboard only once pressed; Enter hands the
-/// message to the host for Chat to send, Escape lets go of the box and
-/// the peek.
-#[test]
-fn the_message_box_sends_on_enter_and_escape_closes_it() {
-    use winit::keyboard::{ModifiersState, NamedKey, SmolStr};
-    let rows = vec![row("ada", "Ada")];
-    let messages = [PeerMessages {
-        id: "ada".into(),
-        lines: vec![MessageLine {
-            mine: false,
-            text: "see you at standup".into(),
-        }],
-    }];
-    let frame = Frame {
-        rows: &rows,
-        screens: &[],
-        messages: &messages,
-        followed: None,
-        unavailable: None,
-    };
-    let mut overlay = shown_overlay();
-    let _guard = ui::motion::testing::settled();
-    draw(&mut overlay, &frame, &mut NoPictures);
-    overlay.open_peek("ada");
-    draw(&mut overlay, &frame, &mut NoPictures);
-    let typed = Key::Character(SmolStr::new("h"));
-    assert_eq!(
-        overlay.key(&typed, ModifiersState::empty()),
-        None,
-        "untouched, the box leaves the keyboard alone"
-    );
-    let field = overlay.composer.field.center();
-    let mut handled = false;
-    overlay.handle_event(&moved(field), 1.0, &mut handled);
-    overlay.handle_event(&button(ElementState::Pressed), 1.0, &mut handled);
-    overlay.handle_event(&button(ElementState::Released), 1.0, &mut handled);
-    assert!(overlay.composing());
-    assert!(overlay.commit_text("hi Ada"));
-    let sent = overlay.key(&Key::Named(NamedKey::Enter), ModifiersState::empty());
-    assert_eq!(
-        sent,
-        Some(Some(PeopleHit::Send {
-            to: "ada".into(),
-            text: "hi Ada".into()
-        }))
-    );
-    overlay.sent();
-    let escaped = overlay.key(&Key::Named(NamedKey::Escape), ModifiersState::empty());
-    assert_eq!(escaped, Some(None));
-    assert!(!overlay.composing());
-    draw(&mut overlay, &frame, &mut NoPictures);
-    assert_eq!(overlay.peeked(), None, "Escape closed the peek");
-}
-
-/// Where direct messages cannot be sent from this device, the box says so
-/// and offers no field to type into.
-#[test]
-fn without_direct_messages_the_box_says_why() {
-    let rows = vec![row("ada", "Ada")];
-    let reason = "Direct messages need the Tilo app on this device";
-    let frame = Frame {
-        rows: &rows,
-        screens: &[],
-        messages: &[],
-        followed: None,
-        unavailable: Some(reason),
-    };
-    let mut overlay = shown_overlay();
-    let _guard = ui::motion::testing::settled();
-    draw(&mut overlay, &frame, &mut NoPictures);
-    overlay.open_peek("ada");
-    draw(&mut overlay, &frame, &mut NoPictures);
-    assert_eq!(overlay.composer.field, Rect::ZERO);
-    assert!(overlay.composer.send_rect().is_none());
-}
-
 /// At its edge the panel stands where a desk widget would: past a widget
 /// or a call card already waiting there, never on top of it.
 #[test]
@@ -631,9 +536,7 @@ fn the_panel_steps_past_what_already_waits_at_its_edge() {
                 occupied,
                 rows: &rows,
                 screens: &[],
-                messages: &[],
                 followed_id: None,
-                messaging_unavailable: None,
                 own: None,
             },
             &mut NoPictures,

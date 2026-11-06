@@ -4,9 +4,10 @@
 //! published as a named node and operated through the same paths as a
 //! press on it.
 
+use super::bar::{BarItem, output_name, studio_text, target_key};
 use super::{
-    BarItem, CaptureStudio, OUTPUTS, OptionChoice, PipLayout, ScreenshotSendTarget, TARGETS,
-    output_name, receipt::ReceiptAction, studio_text, target_key,
+    CaptureStudio, OUTPUTS, OptionChoice, PipLayout, ScreenshotSendTarget, TARGETS,
+    receipt::ReceiptAction,
 };
 use crate::a11y::{AccessNode, AccessState, Action, Politeness, Role};
 use vello::kurbo::Rect;
@@ -48,7 +49,7 @@ pub(super) fn bar_target(item: BarItem) -> Option<&'static str> {
         BarItem::Target(_) => "capture.target.strip",
         BarItem::Shutter => "capture.shutter",
         BarItem::Options => "capture.options",
-        BarItem::Time | BarItem::Save => return None,
+        BarItem::Time | BarItem::Save | BarItem::Skipped => return None,
     })
 }
 
@@ -216,7 +217,7 @@ impl CaptureStudio {
                         .with_state(AccessState::new().disabled(!self.shutter_ready())),
                     BarItem::Options => button(studio_text("widget-capture-options"))
                         .with_state(AccessState::new().expanded(self.options_menu.is_some())),
-                    BarItem::Time | BarItem::Save => continue,
+                    BarItem::Time | BarItem::Save | BarItem::Skipped => continue,
                 };
                 push(target, rect, Route::Bar, node);
             }
@@ -278,7 +279,7 @@ impl CaptureStudio {
                 .with_live(Politeness::Polite)
         } else if self.recording_finished_at.is_some() {
             AccessNode::new(Role::Group)
-                .with_name(studio_text("widget-recording-saved"))
+                .with_name(self.recording_status())
                 .with_live(Politeness::Polite)
         } else if self.shows_status() {
             // Keeping the last 30 s is not a recording of its own.

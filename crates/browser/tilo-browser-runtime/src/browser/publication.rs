@@ -248,9 +248,6 @@ pub(super) enum Invoker {
     Door,
     /// The door's caller, having confirmed this exact request.
     Confirmed,
-    /// The person themself, by a control they pressed in the desktop's own
-    /// chrome.
-    Person,
 }
 
 pub(super) fn invoke_as(
@@ -272,7 +269,6 @@ pub(super) fn invoke_as(
         let started = match by {
             Invoker::Door => m.frame.invoke_bound_action(&address, arguments),
             Invoker::Confirmed => m.frame.invoke_bound_action_confirmed(&address, arguments),
-            Invoker::Person => m.frame.invoke_bound_action_by_person(&address, arguments),
         }
         .map_err(|e| door_error(&e))?;
         // A following call sees the state this one left, not the last frame's.

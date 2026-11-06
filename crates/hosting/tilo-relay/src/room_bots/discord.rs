@@ -1,5 +1,5 @@
-//! The Discord bridge's link to one server, set up by the room's host: the
-//! guild record connected to that server and mirrored in the room's Chat, and
+//! The Discord bridge's link to one server, set up by the workspace's host: the
+//! guild record connected to that server and mirrored in the workspace's Chat, and
 //! the settings the connector's worker runs with. The bridge bot keeps both
 //! sides in line from there; nothing here talks to Discord.
 
@@ -10,7 +10,7 @@ use tilo_resource::Replica;
 use tilo_user_identity::DeviceCert;
 
 use super::workspace_record;
-use crate::rooms::Rooms;
+use crate::workspaces::Workspaces;
 
 /// The Discord connector's app id, whose records the bridge keeps.
 pub const APP: &str = "so.tilo.discord";
@@ -92,14 +92,14 @@ impl DiscordLink {
     }
 }
 
-/// Connect the room's guild record to `link`'s server, mirrored in the
-/// room's Chat, as the room's owner (`host`, the room's governor):
-/// connecting a server is a person's decision, and in a hosted room the
+/// Connect the workspace's guild record to `link`'s server, mirrored in the
+/// workspace's Chat, as the workspace's owner (`host`, the workspace's governor):
+/// connecting a server is a person's decision, and in a hosted workspace the
 /// operator who named the server is that person. A record already connected
 /// the same way is left as it is.
 pub async fn connect(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     host: &DeviceCert,
     link: &DiscordLink,
 ) -> Result<(), String> {
@@ -109,12 +109,12 @@ pub async fn connect(
         workspace_record(&catalogue, CHAT),
         workspace_record(&catalogue, APP),
     );
-    rooms
-        .prepare_application(room, host, &catalogue, APP, &guild_record)
+    workspaces
+        .prepare_application(workspace, host, &catalogue, APP, &guild_record)
         .await
         .map_err(|error| format!("add the Discord record: {error}"))?;
-    let guild = rooms
-        .record_document(room, APP, &guild_record)
+    let guild = workspaces
+        .record_document(workspace, APP, &guild_record)
         .await
         .map_err(|error| error.to_string())?
         .ok_or("the Discord record is missing")?;
@@ -135,12 +135,12 @@ pub async fn connect(
             Ok(())
         } else {
             Err(format!(
-                "the room's bridge is connected as {connected:?}, not {link:?}; a bridge is connected once"
+                "the workspace's bridge is connected as {connected:?}, not {link:?}; a bridge is connected once"
             ))
         };
     }
-    rooms
-        .prepare_application(room, host, &catalogue, CHAT, &chat_record)
+    workspaces
+        .prepare_application(workspace, host, &catalogue, CHAT, &chat_record)
         .await
         .map_err(|error| format!("add Chat: {error}"))?;
     let connect = discord::Guild::CONNECT.with(discord::record::guild::Connect {
@@ -150,10 +150,15 @@ pub async fn connect(
         mirror_channels: Some(link.mirror_channels),
         map_roles: Some(link.map_roles),
     });
-    rooms
-        .author_application(room, host, &catalogue, APP, &guild_record, move |doc| {
-            apply_as_owner::<discord::Guild>(doc, &owner, (APP, "Discord"), connect)
-        })
+    workspaces
+        .author_application(
+            workspace,
+            host,
+            &catalogue,
+            APP,
+            &guild_record,
+            move |doc| apply_as_owner::<discord::Guild>(doc, &owner, (APP, "Discord"), connect),
+        )
         .await
         .map_err(|error| format!("connect the Discord record: {error}"))
 }
@@ -174,20 +179,20 @@ pub(super) fn apply_as_owner<R: tilo_resource::Resource>(
     applied.map_err(|error| error.to_string())
 }
 
-/// Connect the room to the Discord server `inputs` name (`guild=`, and
+/// Connect the workspace to the Discord server `inputs` name (`guild=`, and
 /// `server=`, `channel=`, `mirror-channels=`, `map-roles=`), and keep that
 /// link with the host: the link inputs leave the bot's own (the program
 /// never reads them), the bot's posts point at `avatars_url` unless its
-/// inputs say otherwise, and the worker's settings come back. The room's
+/// inputs say otherwise, and the worker's settings come back. The workspace's
 /// operator naming the bridge on the command line and a member asking for
-/// it in the room both come here.
+/// it in the workspace both come here.
 ///
 /// # Errors
 /// No server is named (a bridge without one would act in every server the
-/// bot is in), an input is malformed, or the room refused the link.
+/// bot is in), an input is malformed, or the workspace refused the link.
 pub async fn link_bridge(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     host: &DeviceCert,
     inputs: &BTreeMap<String, String>,
     bot: &mut super::installed::InstalledBot,
@@ -195,24 +200,24 @@ pub async fn link_bridge(
 ) -> Result<Vec<(String, String)>, String> {
     let link =
         DiscordLink::from_inputs(inputs)?.ok_or("a Discord bridge needs guild=<server id>")?;
-    connect(rooms, room, host, &link).await?;
+    connect(workspaces, workspace, host, &link).await?;
     for key in LINK_INPUTS {
         bot.inputs.remove(key);
     }
     if !bot.inputs.contains_key("context")
-        && let Some(context) = served.context(room, host)
+        && let Some(context) = served.context(workspace, host)
     {
         bot.inputs.insert("context".to_owned(), context);
     }
     let mut env = link.worker_env();
-    // `/link` answers with a button into the room's web entry.
+    // `/link` answers with a button into the workspace's web entry.
     if let Some(entry) = &served.web_entry {
         env.push(("DISCORD_LINK_URL".to_owned(), entry.clone()));
     }
     Ok(env)
 }
 
-/// What the room's host serves publicly that the bridge's posts point at.
+/// What the workspace's host serves publicly that the bridge's posts point at.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Served {
     /// The public URL of the avatars the bridge publishes.
@@ -226,10 +231,10 @@ pub struct Served {
 
 impl Served {
     /// The bridge's `context` input: where its posts' avatars and the links
-    /// of shared resources point, for the room `room` its host `host`
+    /// of shared resources point, for the workspace `workspace` its host `host`
     /// governs. `None` when the host serves neither.
     #[must_use]
-    pub fn context(&self, room: &str, host: &DeviceCert) -> Option<serde_json::Value> {
+    pub fn context(&self, workspace: &str, host: &DeviceCert) -> Option<serde_json::Value> {
         let mut context = serde_json::Map::new();
         if let Some(url) = &self.avatars_url {
             context.insert(
@@ -238,14 +243,14 @@ impl Served {
             );
         }
         // A shared resource opens on the web where `share-link` would send
-        // its reader: the room's resource under the host's web entry.
+        // its reader: the workspace's resource under the host's web entry.
         if let (Some(entry), Some(origin)) = (&self.web_entry, &self.origin) {
             context.insert(
                 "links".into(),
                 serde_json::json!({
                     "web_entry": entry,
                     "origin": origin,
-                    "room": room,
+                    "workspace": workspace,
                     "host_device": hex::encode(host.device_public_key),
                 }),
             );
@@ -272,11 +277,11 @@ mod tests {
     }
 
     /// The bridge's posts point at the avatars the host publishes and at
-    /// the room's resources on its web entry, and at neither when it
+    /// the workspace's resources on its web entry, and at neither when it
     /// serves neither.
     #[test]
     fn the_bridge_context_names_what_the_host_serves() {
-        let (_, cert) = crate::rooms::fixtures::governor();
+        let (_, cert) = crate::workspaces::fixtures::governor();
         assert_eq!(Served::default().context("lounge", &cert), None);
         let served = Served {
             avatars_url: Some("https://rooms.example/avatars".into()),
@@ -290,7 +295,7 @@ mod tests {
                 "links": {
                     "web_entry": "https://tilo.example/",
                     "origin": "https://host.example:9764",
-                    "room": "lounge",
+                    "workspace": "lounge",
                     "host_device": hex::encode(cert.device_public_key),
                 },
             }))
@@ -341,25 +346,27 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_host_connects_the_room_to_the_server_its_bridge_names_once() {
         let scratch = tempfile::tempdir().unwrap();
-        let (key, cert) = crate::rooms::fixtures::governor();
-        let relay = crate::rooms::fixtures::test_host(scratch.path(), &key, &cert).await;
-        let rooms = relay.rooms().clone();
-        let room = rooms.create("Plaza").await.unwrap().room;
+        let (key, cert) = crate::workspaces::fixtures::governor();
+        let relay = crate::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
+        let workspaces = relay.workspaces().clone();
+        let workspace = workspaces.create("Plaza").await.unwrap().workspace;
         let link = DiscordLink::from_inputs(&inputs(&[("guild", "12"), ("channel", "34")]))
             .unwrap()
             .unwrap();
-        connect(&rooms, &room, &cert, &link).await.unwrap();
+        connect(&workspaces, &workspace, &cert, &link)
+            .await
+            .unwrap();
         let catalogue = AppCatalogue::native();
         let read = |app: &'static str| {
-            let (rooms, room, record) = (
-                rooms.clone(),
-                room.clone(),
+            let (workspaces, workspace, record) = (
+                workspaces.clone(),
+                workspace.clone(),
                 workspace_record(&catalogue, app),
             );
             async move {
                 automerge::AutoCommit::load(
-                    &rooms
-                        .record_document(&room, app, &record)
+                    &workspaces
+                        .record_document(&workspace, app, &record)
                         .await
                         .unwrap()
                         .unwrap(),
@@ -370,7 +377,7 @@ mod tests {
         let guild = discord::Guild::read(&read(APP).await).unwrap();
         assert!(
             chat::Chat::read(&read(CHAT).await).is_ok(),
-            "the room's Chat is added for the bridge to mirror"
+            "the workspace's Chat is added for the bridge to mirror"
         );
         assert_eq!(
             (guild.guild_id.as_str(), guild.only_channel.as_deref()),
@@ -378,11 +385,17 @@ mod tests {
         );
 
         // A restart finds it connected; another server is refused.
-        connect(&rooms, &room, &cert, &link).await.unwrap();
+        connect(&workspaces, &workspace, &cert, &link)
+            .await
+            .unwrap();
         let other = DiscordLink {
             guild_id: "56".into(),
             ..link
         };
-        assert!(connect(&rooms, &room, &cert, &other).await.is_err());
+        assert!(
+            connect(&workspaces, &workspace, &cert, &other)
+                .await
+                .is_err()
+        );
     }
 }

@@ -74,6 +74,16 @@ pub struct Ask {
 pub enum Step {
     /// Ask the person whether the device may join.
     Approve,
+    /// Ask a key holder to sign `cert`, which renews the certificate
+    /// `held` the same device already acts with: no new device joins, so
+    /// nobody is asked here. Only a certificate that
+    /// [`DeviceCert::renews`] `held` is answered, and only while `held`
+    /// still is that device's.
+    Renew {
+        /// The certificate this one replaces, as the asking device's
+        /// custody held it.
+        held: DeviceCert,
+    },
     /// Sign with the share approved for this session, together with the
     /// shares that made these commitments.
     Sign {
@@ -162,6 +172,81 @@ pub fn check_proposal(
     }
     if ask.service == [0; 32] {
         return Err("the proposed device announced no relay service".into());
+    }
+    Ok(())
+}
+
+/// Whether a renewal's lifetime is the shape the certificate it replaces had:
+/// both expire, or neither does. The length may differ — a policy may have
+/// shortened the lifetime — but a renewal never turns an expiring
+/// certificate into one that never expires, or the reverse.
+fn renewal_expiry_shape(held: Option<u64>, renewed: Option<u64>) -> Result<(), ()> {
+    match (held, renewed) {
+        (None, None) | (Some(_), Some(_)) => Ok(()),
+        _ => Err(()),
+    }
+}
+
+/// Check what a [`Step::Renew`] ask proposes before a key holder signs it:
+/// `ask.cert` renews `held` ([`DeviceCert::renews`]) — the same device key
+/// under the same person's root, issued later, granting nothing more — and
+/// neither is revoked or for another person. `current` is the certificate
+/// the key holder's fleet holds for that device, when it holds one; a
+/// renewal replaces that and nothing else, so a stale one is refused.
+///
+/// A renewal adds no device and grants nothing new, so unlike
+/// [`check_proposal`] it is not the person's to approve: the device is
+/// already theirs, and the person already trusts what it may do.
+///
+/// # Errors
+///
+/// Why the renewal is refused.
+pub fn check_renewal(
+    ask: &Ask,
+    held: &DeviceCert,
+    current: Option<&DeviceCert>,
+    person: [u8; 32],
+    revoked: &dyn Fn(&[u8; 32]) -> bool,
+) -> Result<(), String> {
+    let Step::Renew { held: proposed } = &ask.step else {
+        return Err("not a renewal".into());
+    };
+    if ask.cert.user_public_key != person || held.user_public_key != person {
+        return Err("the renewal was proposed for another identity".into());
+    }
+    if proposed != held {
+        return Err("the renewal names a certificate other than the one it replaces".into());
+    }
+    if ask.cert.signature != [0; 64] {
+        return Err("the proposed certificate is already signed".into());
+    }
+    if !ask.cert.renews(held) {
+        return Err(
+            "a renewal is the same device under the same root, later, granting no more".into(),
+        );
+    }
+    // The renewal keeps the name and the lifetime shape: a certificate that
+    // expires keeps expiring, and one that never did stays that way.
+    if ask.cert.device_label != held.device_label {
+        return Err("a renewal keeps the device's name".into());
+    }
+    let held_lifetime = held
+        .expires_at_ns
+        .map(|expires| expires.saturating_sub(held.issued_at_ns));
+    let renewed_lifetime = ask
+        .cert
+        .expires_at_ns
+        .map(|expires| expires.saturating_sub(ask.cert.issued_at_ns));
+    if renewal_expiry_shape(held_lifetime, renewed_lifetime).is_err() {
+        return Err("a renewal keeps the lifetime the certificate it replaces had".into());
+    }
+    if let Some(current) = current
+        && !ask.cert.renews(current)
+    {
+        return Err("the renewal does not replace the certificate this identity holds".into());
+    }
+    if revoked(&ask.cert.device_public_key) {
+        return Err("that device was removed from this identity and cannot be renewed".into());
     }
     Ok(())
 }
@@ -285,6 +370,41 @@ impl Signer {
         Reply::Committed(commitment)
     }
 
+    /// Answer a [`Step::Renew`] ask the person did not have to approve:
+    /// [`check_renewal`] is what a caller runs first. A device holding the
+    /// whole key signs the renewal; one holding a share answers with its
+    /// commitment, and the shares gather as for any certificate
+    /// ([`Gathering`]). The session is retained so a [`Step::Sign`] round
+    /// can use the share, exactly as [`Self::approve`] retains it.
+    pub fn renew(&mut self, key: &dyn IdentityKey, ask: &Ask, now_ns: u64) -> Reply {
+        self.approved
+            .retain(|_, approved| approved.until_ns > now_ns);
+        if ask.cert.user_public_key != key.person() {
+            return Reply::Refused("the renewal was proposed for another identity".into());
+        }
+        let digest = match ask.digest() {
+            Ok(digest) => digest,
+            Err(error) => return Reply::Refused(error),
+        };
+        match key.sign_whole(&digest) {
+            Ok(Some(signature)) => return Reply::Signed(signature.to_vec()),
+            Ok(None) => {}
+            Err(error) => return Reply::Refused(error),
+        }
+        let Some((commitment, nonces)) = key.commit() else {
+            return Reply::HoldsNoKey;
+        };
+        self.approved.insert(
+            ask.session,
+            Approved {
+                digest,
+                nonces,
+                until_ns: now_ns.saturating_add(SESSION_LIFETIME_NS),
+            },
+        );
+        Reply::Committed(commitment)
+    }
+
     /// Answer a [`Step::Sign`] ask: only for a session the person approved
     /// here, over the same certificate, once.
     pub fn sign(&mut self, key: &dyn IdentityKey, ask: &Ask, now_ns: u64) -> Reply {
@@ -348,13 +468,47 @@ impl Gathering {
         threshold: u16,
         total: u16,
     ) -> Self {
-        Self {
-            ask: Ask {
+        Self::over(
+            Ask {
                 session,
                 cert,
                 service,
                 step: Step::Approve,
             },
+            threshold,
+            total,
+        )
+    }
+
+    /// Renew `cert` (unsigned), which replaces `held` for the same device,
+    /// under an identity whose key `threshold` of its `total` devices must
+    /// sign. `service` is the relay service the device announced, which
+    /// names the pairing code a renewal is shown under like any
+    /// certificate.
+    #[must_use]
+    pub fn renewal(
+        session: [u8; 16],
+        cert: DeviceCert,
+        held: DeviceCert,
+        service: [u8; 32],
+        threshold: u16,
+        total: u16,
+    ) -> Self {
+        Self::over(
+            Ask {
+                session,
+                cert,
+                service,
+                step: Step::Renew { held },
+            },
+            threshold,
+            total,
+        )
+    }
+
+    fn over(ask: Ask, threshold: u16, total: u16) -> Self {
+        Self {
+            ask,
             threshold: threshold.max(1),
             total: total.max(threshold).max(1),
             commitments: BTreeMap::new(),

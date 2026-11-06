@@ -224,6 +224,9 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn remove(&mut self, resource: &str) -> Result<(), IndexError> {
+        // The links it made leave their targets' lists; the ones its items made are dropped
+        // with the open writes and read from the index until the record holds the removal.
+        super::derive::unlink(self, resource)?;
         self.overlay.drop_within(resource);
         self.overlay.removed.insert(resource.to_owned());
         Ok(())

@@ -111,10 +111,11 @@ pub struct CatalogueEntry {
 }
 
 impl CatalogueEntry {
-    /// The identity matched case-insensitively, as installed apps and block
-    /// lists name it.
+    /// The identity matched as installed apps and block lists name it: an
+    /// app listed by a desktop entry's id (`com.spotify.Client.desktop`) and
+    /// by its own (`com.spotify.Client`) is one app.
     #[must_use]
     pub fn key(&self) -> String {
-        self.id.to_ascii_lowercase()
+        crate::catalogue::canonical_id(&self.id)
     }
 }

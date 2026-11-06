@@ -139,6 +139,7 @@ fn plan(
             resource: Some(root),
             args: &args,
             caller: None,
+            from: None,
         })
         .unwrap();
     replica.apply(&planned);
@@ -271,6 +272,7 @@ fn planning_an_action_leaves_the_mirror_as_it_was() {
                 resource: Some(&root),
                 args: &args,
                 caller: None,
+                from: None,
             })
             .unwrap();
     }

@@ -520,14 +520,15 @@ fn a_task_indented_under_another_is_put_back_in_one_undo() {
     ada.commit();
     let id = |task: &ResourceRef| task.id_string();
 
-    // Tab puts each task under the task over it: both under the first, in order.
-    for task in [&find, &ring] {
+    // Tab puts each task under the task the list shows over it at its level, the first task
+    // here for both: one change each.
+    for (task, above) in [(&find, &book), (&ring, &book)] {
         call(
             &ada,
             "ada",
             TASKS_APP,
             "indent",
-            vec![Value::resource(task)],
+            vec![Value::resource(task), Value::some(Value::resource(above))],
         );
         ada.commit();
     }

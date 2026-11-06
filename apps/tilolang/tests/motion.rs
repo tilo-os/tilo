@@ -4,7 +4,7 @@
 //! platform plays the change.
 //!
 //! The frames are read one at a time: each frame the harness draws is rasterised, and a band of
-//! it compared with the frame before, so a motion is a series of values rather than a single
+//! it compared with another frame, so a motion is a series of values rather than a single
 //! before and after. `the_frames_a_person_sees` writes those frames as PNGs; it is ignored by
 //! default because it is there to look at, not to gate.
 
@@ -80,6 +80,36 @@ fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
         .collect()
 }
 
+/// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
+/// Today, and the inbox holds only what no day and no project sorts.
+fn open_place(app: &mut TestApp<TlApp>, label: &str) {
+    fn place<'a>(node: &'a ui::a11y::AccessNode, label: &str) -> Option<&'a ui::a11y::AccessNode> {
+        if node.role == ui::a11y::Role::TreeItem
+            && node
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with(label))
+        {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| place(child, label))
+    }
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let bounds = all
+        .iter()
+        .filter_map(|node| node.semantics.as_ref())
+        .find_map(|access| place(access, label))
+        .and_then(|access| access.bounds)
+        .unwrap_or_else(|| panic!("the sidebar offers {label}"));
+    app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    settle(app);
+}
+
 /// The space the leading checkbox of the row titled `title` takes: the start of the row, as
 /// tall as its box.
 fn row_box(app: &mut TestApp<TlApp>, title: &str) -> [f64; 4] {
@@ -117,41 +147,27 @@ fn moving(app: &mut TestApp<TlApp>) -> bool {
     app.harness().frame_schedule().needs_animation_frame
 }
 
-/// The rect of the widget the window shows under the semantics name `name`: a control on
-/// screen, not a menu item the window keeps for a menu that is closed.
-fn named(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
+/// The rect of the text field the window shows under the semantics name `name`: the entry at a
+/// list's foot, which the window also offers as a button of its own.
+fn field(app: &mut TestApp<TlApp>, name: &str) -> [f64; 4] {
     let snapshot = app.harness().inspection();
-    let viewport = snapshot.viewport;
     let mut all = Vec::new();
     walk(&snapshot.root, &mut all);
-    let named: Vec<&InspectionNode> = all
-        .into_iter()
-        .filter(|node| {
-            node.semantics
-                .as_ref()
-                .and_then(|semantics| semantics.name.as_deref())
-                == Some(name)
-        })
-        .collect();
-    named
-        .iter()
-        .copied()
+    all.into_iter()
         .find(|node| {
-            node.widget == "Button"
-                && node.rect[2] > 0.0
-                && node.rect[3] > 0.0
-                && node.rect[0] >= 0.0
-                && node.rect[1] >= 0.0
-                && node.rect[0] < f64::from(viewport[0])
-                && node.rect[1] < f64::from(viewport[1])
+            node.widget == "TextInput"
+                && node
+                    .semantics
+                    .as_ref()
+                    .and_then(|semantics| semantics.name.as_deref())
+                    == Some(name)
         })
-        .or_else(|| named.first().copied())
-        .unwrap_or_else(|| panic!("the window shows {name}"))
+        .unwrap_or_else(|| panic!("the window shows a field named {name}"))
         .rect
 }
 
-/// The window's Remove command, as a person reaches it.
-enum Remove {
+/// The window's Delete command, as a person reaches it.
+enum Delete {
     /// A button of the header's own, when the bar has room for it.
     Button([f64; 4]),
     /// The row of the header's menu the bar keeps it in, while the menu is open.
@@ -174,13 +190,19 @@ fn shown_button(app: &mut TestApp<TlApp>, name: &str) -> Option<[f64; 4]> {
         .map(|node| node.rect)
 }
 
-/// Bring the window's Remove command within reach: the header's own button, or the row of the
-/// header's menu, opened here so that only the press that follows is what the frames measure.
-fn reach_remove(app: &mut TestApp<TlApp>) -> Remove {
-    if let Some(rect) = shown_button(app, "Remove") {
-        return Remove::Button(rect);
+/// Bring the window's Delete command within reach: a button of its own, or the row of the "…"
+/// beside the item's title, opened here so that only the press that follows is what the frames
+/// measure.
+fn reach_delete(app: &mut TestApp<TlApp>) -> Delete {
+    if let Some(rect) = shown_button(app, "Delete") {
+        return Delete::Button(rect);
     }
-    let more = app.harness().targets()["nav-shell-more-content"].center();
+    let targets = app.harness().targets();
+    let (_, more) = targets
+        .iter()
+        .find(|(id, _)| id.ends_with("~more"))
+        .expect("the item's commands are behind the \"…\" beside its title");
+    let more = more.center();
     with_monotonic_time(ui::time::Instant::now(), || {
         app.harness().click_at(more.x, more.y);
     });
@@ -190,17 +212,17 @@ fn reach_remove(app: &mut TestApp<TlApp>) -> Remove {
         .a11y_nodes()
         .into_iter()
         .find(|(_, node)| {
-            node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Remove")
+            node.role() == ui::accesskit::Role::MenuItem && node.label() == Some("Delete")
         })
         .and_then(|(_, node)| node.bounds())
-        .expect("the header's menu offers the command the bar keeps there");
-    Remove::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
+        .expect("the \"…\" offers the command the bar keeps there");
+    Delete::Row([row.x0, row.y0, row.x1 - row.x0, row.y1 - row.y0])
 }
 
-/// Press what `reach_remove` reached, at `at`.
-fn press_remove(app: &mut TestApp<TlApp>, remove: &Remove, at: ui::time::Instant) {
+/// Press what `reach_delete` reached, at `at`.
+fn press_delete(app: &mut TestApp<TlApp>, remove: &Delete, at: ui::time::Instant) {
     let [x, y, w, h] = match remove {
-        Remove::Button(rect) | Remove::Row(rect) => *rect,
+        Delete::Button(rect) | Delete::Row(rect) => *rect,
     };
     with_monotonic_time(at, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
@@ -252,6 +274,12 @@ fn pixels_in(app: &mut TestApp<TlApp>, pixels: &[u8], rect: [f64; 4]) -> Vec<[u8
 /// distances between the colours, 0 for the same frame.
 fn difference(app: &mut TestApp<TlApp>, pixels: &[u8], settled: &[[u8; 4]], rect: [f64; 4]) -> f64 {
     let now = pixels_in(app, pixels, rect);
+    apart(&now, settled)
+}
+
+/// How far one crop of a rect is from another of the same rect: the mean distance between
+/// their colours, 0 for the same pixels.
+fn apart(now: &[[u8; 4]], settled: &[[u8; 4]]) -> f64 {
     let common = now.len().min(settled.len());
     if common == 0 {
         return 0.0;
@@ -344,7 +372,8 @@ fn page_box(app: &mut TestApp<TlApp>) -> ([f64; 4], bool) {
 #[test]
 fn checking_a_task_off_fills_its_box_over_frames() {
     let mut app = staged("a busy week");
-    let title = "Buy oat milk and eggs";
+    // A task nothing sorts into a project or a day: the inbox keeps it open in the list.
+    let title = "Sort the paper mail";
     assert!(!marked(&mut app, title), "the task starts open");
     open_task(&mut app, title);
     let (band, held) = page_box(&mut app);
@@ -403,8 +432,10 @@ fn a_task_a_person_adds_lands_in_the_list() {
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
 
-    // The entry at the list's foot, as a person adds a task: a title typed, then Enter.
-    let [x, y, w, h] = named(&mut app, "Draft");
+    // The entry at the list's foot, as a person adds a task: a title typed, then Enter. What is
+    // typed names no day, so the row lands under the list's "No date" heading, below the rows
+    // the band reaches.
+    let [x, y, w, h] = field(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
@@ -413,10 +444,12 @@ fn a_task_a_person_adds_lands_in_the_list() {
     });
 
     let mut series = Vec::new();
+    let mut first = None;
     for step in 1..=14 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let (_, pixels) = frame_at(&mut app, at);
         series.push(difference(&mut app, &pixels, &before, band));
+        first.get_or_insert(pixels);
     }
     println!("insert frames: {series:?}");
 
@@ -426,15 +459,18 @@ fn a_task_a_person_adds_lands_in_the_list() {
         before_rows + 1,
         "the task a person added is in the list"
     );
-    assert!(
-        rows(&mut app)
-            .iter()
-            .any(|(name, _)| name == "Water the plants"),
-        "the list shows what was typed"
+    let row = rows(&mut app)
+        .into_iter()
+        .find(|(name, _)| name == "Water the plants")
+        .unwrap_or_else(|| panic!("the list shows what was typed: {:?}", rows(&mut app)))
+        .1;
+    let drawn = apart(
+        &pixels_in(&mut app, &first.expect("a frame after the key"), row),
+        &pixels_in(&mut app, &rest, row),
     );
     assert!(
-        series.first().copied().unwrap_or_default() > 0.5,
-        "the new row is drawn by the frame after the key: {series:?}"
+        drawn > 0.5,
+        "the new row is drawn by the frame after the key, where it lands: {drawn}"
     );
     assert!(
         in_flight(&series) == 0,
@@ -445,47 +481,67 @@ fn a_task_a_person_adds_lands_in_the_list() {
 #[test]
 fn the_rows_a_person_removes_leave_the_list() {
     let mut app = staged("a busy week");
+    open_place(&mut app, "Today");
     let before_rows = rows(&mut app).len();
     assert!(before_rows > 2, "the place holds tasks");
 
-    // A first removal teaches the list its rows' order; the next one moves the survivors.
-    let remove = reach_remove(&mut app);
-    press_remove(&mut app, &remove, ui::time::Instant::now());
+    // A first removal teaches the list its rows' order: a task the person opens, then removes
+    // from the pane it opened, takes the row it made. It stands at the list's foot, so nothing
+    // below it has to make way.
+    open_task(&mut app, "Reply to Mia about Sunday lunch");
+    let remove = reach_delete(&mut app);
+    press_delete(&mut app, &remove, ui::time::Instant::now());
     settle(&mut app);
+    assert_eq!(
+        rows(&mut app).len(),
+        before_rows - 1,
+        "the task a person removed left the row it made"
+    );
 
-    // A task the person opens, then removes from the pane it opened.
-    let [x, y, w, h] = rows(&mut app)
-        .into_iter()
-        .find(|(name, _)| name == "Book a haircut")
-        .expect("the list shows the task")
-        .1;
-    with_monotonic_time(ui::time::Instant::now(), || {
-        app.harness().click_at(x + w / 2.0, y + h / 2.0);
-    });
-    settle(&mut app);
-
-    // The command reached first, so what is measured is the press and the rows it moves.
-    let remove = reach_remove(&mut app);
+    // The command reached first, so what is measured is the press and the rows it moves: the task
+    // takes the step under it with it, and the rows below make way for the rest.
+    open_task(&mut app, "Find the last service date");
+    let remove = reach_delete(&mut app);
     let band = list_band(&mut app);
     let start = ui::time::Instant::now();
     let (_, rest) = frame_at(&mut app, start);
     let before = pixels_in(&mut app, &rest, band);
     let pressed = start + ui::time::Duration::from_millis(100);
-    press_remove(&mut app, &remove, pressed);
+    press_delete(&mut app, &remove, pressed);
 
-    let mut series = Vec::new();
+    let mut frames = Vec::new();
     for step in 1..=14 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let (_, pixels) = frame_at(&mut app, at);
-        series.push(difference(&mut app, &pixels, &before, band));
+        frames.push(pixels);
     }
-    println!("remove frames: {series:?}");
+
+    // Where the rows the removal leaves come to rest. They make way by about their own height,
+    // so the frame before the press is a poor ruler for the move: it differs from the last
+    // frame as much as any frame on the way does. The last frame is the one they end on, so
+    // every frame read against it says how far the rows still are from where they land.
+    let last = frames.last().expect("frames were read");
+    let held = pixels_in(&mut app, last, band);
+    let moved = apart(&before, &held);
+    assert!(
+        moved > 3.0,
+        "the rows the removal leaves are drawn elsewhere: {moved}"
+    );
+    let mut series = Vec::new();
+    for pixels in &frames {
+        series.push(difference(&mut app, pixels, &held, band));
+    }
+    println!("removal frames: {series:?}");
 
     settle(&mut app);
     assert_eq!(
         rows(&mut app).len(),
-        before_rows - 2,
-        "the tasks a person removed are gone"
+        before_rows - 3,
+        "the task a person removed took the step under it, and the row it made: {:?}",
+        rows(&mut app)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect::<Vec<_>>()
     );
     assert!(
         in_flight(&series) >= 3,
@@ -688,6 +744,120 @@ fn a_frame_of_the_mark_costs_what_a_still_frame_costs() {
     );
 }
 
+/// A still window is not a frame source: left alone, it produces no frames at all, and a frame
+/// something outside it forces re-measures nothing, syncs nothing and asks no History surface
+/// anything, because nothing it shows moved.
+#[test]
+fn a_still_window_produces_no_frames() {
+    let mut app = staged("a busy week");
+    // The live window's own tick: take up what the app's workers woke it for.
+    app.frame();
+    // The frame that settles the window left the witness the next frame is read against.
+    app.harness().relayout();
+    assert!(
+        !moving(&mut app),
+        "the window rests before it is left alone"
+    );
+
+    let start = ui::time::Instant::now();
+    let mut produced = 0;
+    let mut cpu = std::time::Duration::ZERO;
+    for step in 0..30 {
+        let at = start + ui::time::Duration::from_millis(16 * step);
+        let began = ui::rt::thread_cpu_time().expect("a thread's CPU clock");
+        if with_monotonic_time(at, || app.frame()) {
+            produced += 1;
+        }
+        cpu += ui::rt::thread_cpu_time()
+            .expect("a thread's CPU clock")
+            .saturating_sub(began);
+    }
+    assert_eq!(
+        produced, 0,
+        "an idle window produces no frame: what it would draw, it already shows"
+    );
+    assert!(
+        cpu < std::time::Duration::from_millis(50),
+        "half a second of idle ticks costs {:.2} ms CPU, not a frame's worth per tick",
+        cpu.as_secs_f64() * 1000.0
+    );
+    assert!(
+        app.harness().queued_work_sources().is_empty(),
+        "an idle window queues no work: {:?}",
+        app.harness().queued_work_sources()
+    );
+    assert_eq!(
+        app.harness().frame_requesters(),
+        Vec::new(),
+        "no widget asks an idle window for a frame"
+    );
+    assert_eq!(
+        app.harness().redraw_sources(),
+        Vec::<String>::new(),
+        "no widget asks an idle window to repaint it"
+    );
+
+    // A frame the window itself asks for while nothing of the app changed — a mark
+    // filling in — costs the paint of what moved: no measure, no sync, no History
+    // surface asked anything.
+    let mark = the_mark_box(&mut app);
+    let (x, y) = (mark[0] + mark[2] / 2.0, mark[1] + mark[3] / 2.0);
+    let pressed = start + ui::time::Duration::from_millis(200);
+    with_monotonic_time(pressed, || app.harness().click_at(x, y));
+    let (samples, drew, layout, quiet) = {
+        let mut step = 0;
+        loop {
+            step += 1;
+            assert!(step <= 20, "the mark settles");
+            let at = pressed + ui::time::Duration::from_millis(16 * step);
+            let quiet_before = app.harness().quiet_frames();
+            let (drew, samples) =
+                ui::tilo_resource::profiling::observe(|| with_monotonic_time(at, || app.frame()));
+            let quiet = app.harness().quiet_frames() > quiet_before;
+            let layout = app.harness().last_relayout();
+            if !moving(&mut app) {
+                break (samples, drew, layout, quiet);
+            }
+        }
+    };
+    assert!(
+        drew,
+        "the frame that ends the mark is one the window asked for"
+    );
+    assert!(
+        quiet,
+        "a still frame syncs and publishes nothing: {samples:?}"
+    );
+    assert_eq!(
+        layout.marked_dirty, 0,
+        "a still frame marks nothing for a measure"
+    );
+    assert!(!layout.rebuilt, "a still frame rebuilds no layout");
+    let calls = |phase: &str| {
+        samples
+            .iter()
+            .filter(|sample| sample.phase == phase)
+            .map(|sample| sample.calls)
+            .sum::<usize>()
+    };
+    assert_eq!(
+        calls("ui.frame_sync"),
+        0,
+        "a still frame syncs no app: {samples:?}"
+    );
+    assert_eq!(
+        calls("ui.history_root_validation"),
+        0,
+        "a still frame asks History nothing: {samples:?}"
+    );
+    let loud: Vec<&str> = samples
+        .iter()
+        .map(|sample| sample.phase)
+        .filter(|phase| phase.starts_with("ui.loud."))
+        .collect();
+    assert!(loud.is_empty(), "a still frame is quiet, not {loud:?}");
+}
+
 fn median_ms(times: &[std::time::Duration]) -> f64 {
     let mut sorted: Vec<f64> = times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
     sorted.sort_by(f64::total_cmp);
@@ -718,7 +888,7 @@ fn the_frames_a_person_sees() {
     let mut app = staged("a busy week");
     let start = ui::time::Instant::now();
     let _ = frame_at(&mut app, start);
-    let [x, y, w, h] = named(&mut app, "Draft");
+    let [x, y, w, h] = field(&mut app, "New task");
     let pressed = start + ui::time::Duration::from_millis(100);
     with_monotonic_time(pressed, || {
         app.harness().click_at(x + w / 2.0, y + h / 2.0);
@@ -738,8 +908,8 @@ fn the_frames_a_person_sees() {
     let start = ui::time::Instant::now();
     let _ = frame_at(&mut app, start);
     shot(&mut app, "remove-00-rest");
-    let remove = reach_remove(&mut app);
-    press_remove(
+    let remove = reach_delete(&mut app);
+    press_delete(
         &mut app,
         &remove,
         start + ui::time::Duration::from_millis(100),
@@ -756,9 +926,9 @@ fn the_frames_a_person_sees() {
     settle(&mut app);
     let (_, _) = frame_at(&mut app, ui::time::Instant::now());
     shot(&mut app, "remove-01-opened");
-    let remove = reach_remove(&mut app);
+    let remove = reach_delete(&mut app);
     let pressed = ui::time::Instant::now() + ui::time::Duration::from_millis(100);
-    press_remove(&mut app, &remove, pressed);
+    press_delete(&mut app, &remove, pressed);
     for step in 1..=10 {
         let at = pressed + ui::time::Duration::from_millis(16 * step);
         let _ = frame_at(&mut app, at);

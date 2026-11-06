@@ -22,8 +22,8 @@
 //! expected to fall back to a local-only mode.
 
 pub mod agent_transport;
+pub mod door;
 #[cfg(target_os = "linux")]
-pub mod jobs;
 #[cfg(unix)]
 pub mod launch_handoff;
 pub mod local_socket;
@@ -51,7 +51,7 @@ pub mod windows;
 /// this version (docs/architecture/compatibility.md); `interface.toml`
 /// holds the schema, and the repository policy fails a change to it that
 /// keeps the number.
-pub const RUNTIME_INTERFACE_VERSION: u32 = 16;
+pub const RUNTIME_INTERFACE_VERSION: u32 = 18;
 
 use std::env;
 use std::io;

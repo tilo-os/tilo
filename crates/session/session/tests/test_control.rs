@@ -37,7 +37,38 @@ use tilo_session::mount::shell::WINDOW_MENU;
 use tilo_session::{Options, Session};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use common::{HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+use common::{CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, control as ask, private_home, reached};
+
+/// Click the shell's control `name` through the test-control socket, as the person does: the
+/// socket takes the click, and what it presses is what stands there.
+fn click(session: &mut Session, socket: &Path, name: &str) {
+    let (x, y, w, h) = session
+        .shell_control(name)
+        .unwrap_or_else(|| panic!("the shell shows {name}: {:?}", session.accessible_labels()));
+    let clicked = ask(
+        session,
+        socket,
+        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
+    );
+    assert_eq!(clicked, json!({"ok": {}}), "the click on {name} is taken");
+}
+
+/// The desk's preset menu, once the shell stands on the output: the bar names the preset the
+/// desk shows, and which one that is depends on the desk the session starts from.
+fn preset_menu(session: &mut Session) -> String {
+    assert!(
+        reached(session, |session| session
+            .shell_control("Notifications")
+            .is_some()),
+        "the shell stands on the output: {:?}",
+        session.accessible_labels()
+    );
+    session
+        .accessible_labels()
+        .into_iter()
+        .find(|label| label.starts_with("Showing ") && session.shell_control(label).is_some())
+        .expect("the desk's preset menu")
+}
 
 /// A headless session with the shell as the whole screen writes a PNG of it through
 /// `tilo-control snapshot`'s request, and the bar stands in it.
@@ -102,18 +133,21 @@ fn a_snapshot_through_the_test_control_socket_shows_the_shells_bar() {
         distinct.len()
     );
 
-    // A click through the socket presses the screen's own control there: the preset switch
-    // shows the framed canvas, whose entry stands where the strips stood.
-    let (x, y, w, h) = session.shell_control("Frames").expect("the preset switch");
-    let clicked = ask(
-        &mut session,
-        &socket,
-        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
-    );
-    assert_eq!(clicked, json!({"ok": {}}), "the click is taken");
+    // A click through the socket presses the screen's own control there: the bar's preset menu
+    // opens, and the framed canvas it offers stands with its entry where the strips stood.
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
     assert!(
         reached(&mut session, |session| session
-            .shell_control("Typed")
+            .shell_control("Frames")
+            .is_some()),
+        "the preset menu offers Frames: {:?}",
+        session.accessible_labels()
+    );
+    click(&mut session, &socket, "Frames");
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control(CANVAS_ENTRY)
             .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0)),
         "the canvas: {:?}",
         session.accessible_labels()
@@ -437,17 +471,14 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
     assert!(reached(&mut session, |session| session
         .shell_control("Frames")
         .is_some()));
-    let (x, y, w, h) = session.shell_control("Frames").unwrap();
-    ask(
-        &mut session,
-        &socket,
-        &json!({"op": "click_at", "x": x + w / 2.0, "y": y + h / 2.0}),
-    );
+    click(&mut session, &socket, "Frames");
     assert!(reached(&mut session, |session| session
-        .shell_control("Typed")
+        .shell_control(CANVAS_ENTRY)
         .is_some()));
 
     let (workspace, row) = {
@@ -519,6 +550,8 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

@@ -83,11 +83,11 @@ impl Members {
 /// The view state slot the members are kept under: a view that read them runs again when the
 /// host gives new ones.
 fn members_key() -> StateKey {
-    StateKey {
-        window: crate::platform::LENS_WINDOW.to_owned(),
-        principal: None,
-        state: "$workspace-members".to_owned(),
-    }
+    StateKey::runtime(
+        crate::platform::LENS_WINDOW,
+        None,
+        "$workspace-members".to_owned(),
+    )
 }
 
 /// How many of those who spoke last a rich input's drawer offers first (chat.md).
@@ -115,6 +115,17 @@ impl Core {
     /// A scenario named a person (`person("Mia")`): they are in the workspace it stages, so a
     /// view that offers the members offers them too, under the name the scenario gave.
     pub(crate) fn named_person(&self, who: crate::ids::Principal) {
+        self.named_member(who, MemberKind::Person);
+    }
+
+    /// A scenario named software (`agent("Scout")`): it is a member of the workspace it stages,
+    /// as an agent of it is, and views offer it beside the people and mark it as software.
+    pub(crate) fn named_agent(&self, who: crate::ids::Principal) {
+        self.named_member(who, MemberKind::Agent);
+    }
+
+    /// Adds the member `who` of `kind` to the workspace, unless it is one already.
+    fn named_member(&self, who: crate::ids::Principal, kind: MemberKind) {
         if self
             .members
             .borrow()
@@ -130,14 +141,14 @@ impl Core {
         };
         list.push(Member {
             who,
-            kind: MemberKind::Person,
+            kind,
             role: None,
         });
         self.set_members(list, reads);
     }
 
     /// The members, noted as read by the running view.
-    fn read_members(&self) -> Vec<Member> {
+    pub(crate) fn read_members(&self) -> Vec<Member> {
         let key = members_key();
         let (value, generation) = {
             let states = self.view_states.borrow();

@@ -39,7 +39,7 @@ impl TailFixture {
                 }
             })
             .collect();
-        let mut owner = seeded_owner(SYNTHETIC_ROOM, &cert, &key, documents, now);
+        let mut owner = seeded_owner(SYNTHETIC_WORKSPACE_ID, &cert, &key, documents, now);
         let checkpoint = owner
             .publication_mut()
             .durable_bootstrap_messages(&key, now, 1)
@@ -49,7 +49,7 @@ impl TailFixture {
             automerge::AutoCommit::load(&owner.document("selector.app", "r0").unwrap()).unwrap();
         Self {
             key,
-            authority: RetentionAuthority::new(SYNTHETIC_ROOM, cert).unwrap(),
+            authority: RetentionAuthority::new(SYNTHETIC_WORKSPACE_ID, cert).unwrap(),
             baseline: owner.clone(),
             owner,
             now,
@@ -75,7 +75,7 @@ impl TailFixture {
         self.next_seq = self.next_seq.checked_add(1).unwrap();
         let msg = synthetic_signed_record(
             &self.key,
-            self.authority.room(),
+            self.authority.workspace(),
             "r0",
             &collab_types::DocumentMutation::Incremental(bytes),
             (seq, self.now),
@@ -86,7 +86,7 @@ impl TailFixture {
     fn covering_checkpoint(&mut self) -> Vec<Vec<u8>> {
         let next = synthetic_signed_record(
             &self.key,
-            self.authority.room(),
+            self.authority.workspace(),
             "r0",
             &collab_types::DocumentMutation::Snapshot(self.branch.save()),
             (self.next_seq, self.now),

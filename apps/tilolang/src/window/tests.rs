@@ -13,7 +13,7 @@ use ui::widget::controls::ActionControls as _;
 use ui::widget::{ItemRow, ListItemProps};
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::Answer;
@@ -32,6 +32,7 @@ use super::*;
 
 mod mail;
 mod opening;
+mod personal;
 
 /// The text a value of the runtime holds.
 fn rt_text(value: &RtValue) -> String {
@@ -78,6 +79,36 @@ impl Workspace {
     fn staged(app: &str, scenario: &str) -> Self {
         let mut workspace = Self::new(app);
         workspace.window.stage(Some(scenario));
+        workspace.settle();
+        workspace
+    }
+
+    /// The window of `app` over an empty workspace as `person`, keeping `record` as their own
+    /// state of it: the window and lens state they pick, and what they have seen.
+    fn personal(app: &str, person: &str, record: WorkspaceRecord<Personal>) -> Self {
+        crate::app::builtin::choose(app);
+        let meta = crate::app::builtin::package_named(app).expect("a built-in package");
+        let sink = MemorySink::new();
+        let window = Window::new(meta.app.clone(), person.to_owned(), RunMode::Live)
+            .with_sink(sink.clone())
+            .keeping_personal(Some(record));
+        let mut workspace = Self {
+            doc: AutoCommit::new(),
+            window,
+            sink,
+        };
+        workspace.settle();
+        workspace
+    }
+
+    /// [`Self::personal`] with `app`'s first scenario staged.
+    fn personal_seeded(app: &str, person: &str, record: WorkspaceRecord<Personal>) -> Self {
+        let mut workspace = Self::personal(app, person, record);
+        let scenario = crate::app::builtin::package_named(app)
+            .and_then(|meta| meta.scenarios.first())
+            .map(|scenario| scenario.name.clone())
+            .expect("the package declares a scenario");
+        workspace.window.stage(Some(&scenario));
         workspace.settle();
         workspace
     }
@@ -656,14 +687,19 @@ fn activating_a_row_shows_the_item_in_the_next_column_and_back_returns_to_the_li
 fn the_primary_action_is_the_header_and_empty_states_action_and_creates_through_the_door() {
     let mut workspace = Workspace::new("notes");
     assert_eq!(workspace.items_of("so.tilo.lang.notes", "items"), 0);
-    // An empty notebook offers its primary action and says one sentence.
+    // An empty notebook says one sentence, and its primary action stands once, in the window's
+    // bar: the empty state has no button of its own.
     let empty = slot_of(&workspace.composed(), "overview")
         .into_iter()
         .find(|node| node.kind == "ui.EmptyState")
         .cloned()
         .expect("the empty notebook says so");
     assert_eq!(empty.props.get("title"), Some(&Value::text("No notes yet")));
-    assert_eq!(empty.props.get("action"), Some(&Value::text("New note")));
+    assert_eq!(
+        header_labels(&workspace.composed(), "overview_actions"),
+        ["Sort", "search", "New note"],
+        "the bar offers the primary once"
+    );
     workspace.header_action("New note");
     assert_eq!(
         workspace.items_of("so.tilo.lang.notes", "items"),
@@ -806,6 +842,12 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
                 "Social".to_owned(),
                 vec!["weekend".to_owned(), "books".to_owned()]
             ),
+            // The people the workspace knows, each a conversation to open: the sidebar keeps
+            // them apart from the channels, under a heading of their own.
+            (
+                "Direct messages".to_owned(),
+                vec!["Mia".to_owned(), "Leo".to_owned(), "Ada".to_owned()]
+            ),
         ],
         "each category's channels under its heading"
     );
@@ -822,7 +864,10 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
             // The conversations with a person, and the one with yourself, which the sidebar
             // labels as your notes: they come after the channels they are listed with.
             "Leo",
-            "Notes to self"
+            "Notes to self",
+            "Mia",
+            "Leo",
+            "Ada"
         ],
         "the channels outside any category first"
     );
@@ -844,7 +889,8 @@ fn a_filter_case_from_the_sidebar_narrows_the_list_and_titles_it() {
 
 #[test]
 fn a_destructive_row_action_runs_through_the_menu_and_offers_undo() {
-    let mut workspace = Workspace::seeded("notes");
+    // A thread's menu keeps Delete on the row itself, outside the runs of commands it groups.
+    let mut workspace = Workspace::seeded("mail");
     let before = workspace.rows().len();
     let (key, _) = workspace.rows().remove(0);
     let list = workspace.list();
@@ -1105,13 +1151,13 @@ fn approving_a_pressed_send_through_the_ask_bar_delivers_the_letter_once() {
         .expect("the letter opened");
     let host = workspace.window.current_host().unwrap();
     let to = rt_text(&host.runtime().read(&draft, "to").unwrap());
-    let send = node_with(&workspace.composed(), "ui.Button", "label", "Send")
-        .expect("the letter's Send button")
+    let send = node_with(&workspace.composed(), "ui.MenuItem", "label", "Send")
+        .expect("the letter's Send command, behind the \"…\" beside its title")
         .key
         .clone();
     workspace
         .window
-        .act(UiEvent::Fire(send, "press".to_owned(), None));
+        .act(UiEvent::Fire(send, "choose".to_owned(), None));
     workspace.settle();
     assert!(
         workspace.window.view().asks().is_some(),
@@ -1186,8 +1232,8 @@ fn a_person_approves_an_agents_suggested_send_through_the_door_and_it_leaves_onc
 }
 
 /// A workspace of Today with the todo list and the notebook it points at, each with its scenario, and
-/// how many of the todos are finished: done, with nothing unfinished beneath them, so a cleanup
-/// takes no unfinished work with it.
+/// how many of the todos are finished: what a cleanup takes, read from the list's own index,
+/// which works out each task's branch as done with nothing open under it.
 fn today_workspace() -> (Workspace, usize) {
     let mut workspace = Workspace::new("today");
     workspace.seed("tasks");
@@ -1197,43 +1243,14 @@ fn today_workspace() -> (Workspace, usize) {
     let RtValue::List(items) = host.runtime().read(&list, "items").unwrap() else {
         panic!("the list holds items");
     };
-    let mut done: HashMap<String, bool> = HashMap::new();
-    let mut over: HashMap<String, Option<String>> = HashMap::new();
-    for item in &items {
-        let RtValue::Ref(item) = item else {
-            continue;
-        };
-        let id = item.target.id_string();
-        let read = |field: &str| host.runtime().read(&item.target, field).ok();
-        done.insert(id.clone(), read("done") == Some(RtValue::Bool(true)));
-        over.insert(
-            id,
-            match read("parent") {
-                Some(RtValue::Opt(Some(held))) => match *held {
-                    RtValue::Ref(parent) => Some(parent.target.id_string()),
-                    _ => None,
-                },
-                _ => None,
-            },
-        );
-    }
-    // Every task over an unfinished one is not finished either.
-    let mut unfinished: HashSet<String> = HashSet::new();
-    for (id, held) in &done {
-        if *held {
-            continue;
-        }
-        let mut at = Some(id.clone());
-        while let Some(here) = at {
-            if !unfinished.insert(here.clone()) {
-                break;
-            }
-            at = over.get(&here).cloned().flatten();
-        }
-    }
-    let finished = done
+    let finished = items
         .iter()
-        .filter(|(id, held)| **held && !unfinished.contains(*id))
+        .filter(|item| match item {
+            RtValue::Ref(item) => {
+                host.runtime().read(&item.target, "finished").ok() == Some(RtValue::Bool(true))
+            }
+            _ => false,
+        })
         .count();
     assert!(finished > 0, "the saturday list has finished tasks");
     (workspace, finished)
@@ -1267,10 +1284,11 @@ fn todo_titles(workspace: &Workspace) -> Vec<String> {
         .collect()
 }
 
-/// The tasks `before` held that the list no longer does: named, they are the finished ones and
-/// nothing else. The week has a task done with a step still open under it — a check from before
-/// steps were tasks of their own, or made while someone else added that step — and clearing
-/// keeps the step, so that task stays too.
+/// The tasks `before` held that the list no longer does: the finished branches and nothing
+/// else. A task with steps is finished once its steps are, so the inbox task nobody checked but
+/// whose one step is done goes with that step. The week also has a task done with a step still
+/// open under it — a check from before steps were tasks of their own, or made while someone
+/// else added that step — and clearing keeps the step, so that branch stays too.
 fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
     let after = todo_titles(workspace);
     let went: Vec<String> = before
@@ -1282,10 +1300,12 @@ fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
         went,
         [
             "Take the bins out",
+            "Buy oat milk and eggs",
+            "Check what is in the fridge",
             "Pack the books",
             "Set up the redirects"
         ],
-        "the done tasks with nothing open under them went"
+        "the finished branches went"
     );
     for title in ["Outline", "Collect the beta quotes"] {
         assert!(
@@ -1527,31 +1547,64 @@ fn an_action_the_content_shows_as_a_button_is_not_repeated_in_the_header() {
     let _ = target;
     assert_eq!(
         header_labels(&workspace.composed(), "actions"),
-        ["search"],
-        "the counter's buttons are its content's"
+        Vec::<String>::new(),
+        "the counter's buttons are its content's, and a page searches nothing: {:#?}",
+        workspace.composed()
     );
 }
 
-// One control per action: an item's "Done" switch in its window is how it is checked there, so
-// the header does not offer "Check" beside it. The action stays the item's, on the door and in
-// its row's menu.
+// An item's actions are on the item: the page shows the task's Done switch, and what can be
+// done with the task, "Complete" among it, stands behind the "…" beside its title. The window's
+// bar does not repeat them.
 #[test]
-fn a_control_bound_to_the_state_an_action_toggles_stands_for_it_in_the_header() {
+fn a_control_bound_to_the_state_an_action_toggles_stands_for_that_state_beside_the_title() {
     let mut workspace = Workspace::seeded("tasks");
     assert!(
         workspace.window.detail_target().is_some(),
         "the scenario's item is shown"
     );
-    let header = header_labels(&workspace.composed(), "actions");
+    let composed = workspace.composed();
+    let more = node_with(&composed, "ui.MenuButton", "label", "More actions")
+        .unwrap_or_else(|| panic!("the page has a \"…\": {composed:#?}"));
+    let commands: Vec<String> = more
+        .children
+        .iter()
+        .filter(|child| child.kind == "ui.MenuItem")
+        .filter_map(|item| match item.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .collect();
+    let toggled: Vec<Option<bool>> = more
+        .children
+        .iter()
+        .filter(|child| child.kind == "ui.MenuItem")
+        .filter(|item| {
+            matches!(
+                item.props.get("label"),
+                Some(Value::Text(label)) if label == "Complete" || label == "Reopen"
+            )
+        })
+        .map(|item| match item.props.get("checked") {
+            Some(Value::Bool(on)) => Some(*on),
+            Some(Value::Int(n)) => Some(*n != 0),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !toggled.is_empty() && toggled.iter().all(Option::is_some),
+        "the page's \"…\" holds the item's actions, the one that toggles a state saying which way it stands: {toggled:?}"
+    );
+    assert!(
+        commands.iter().any(|label| label == "Delete"),
+        "and the one that takes it away: {commands:?}"
+    );
+    let header = header_labels(&composed, "overview_actions");
     assert!(
         !header
             .iter()
-            .any(|label| label == "Complete" || label == "Reopen"),
-        "the Done switch stands for Complete: {header:?}"
-    );
-    assert!(
-        header.iter().any(|label| label == "Remove"),
-        "the rest of the item's actions stay: {header:?}"
+            .any(|label| label == "Complete" || label == "Reopen" || label == "Delete"),
+        "the bar does not repeat the item's actions: {header:?}"
     );
     let menus: Vec<String> = workspace
         .items()
@@ -1719,6 +1772,11 @@ fn a_change_to_an_item_reaches_its_shown_row() {
 #[test]
 fn a_rows_checkbox_shows_whether_its_item_is_done_from_its_first_read() {
     let mut workspace = Workspace::staged("tasks", "a busy week");
+    // A project's place holds what is done with beside what is not: the inbox holds only what
+    // nothing sorts, and never what is done.
+    let flat = workspace.key_of("ui.NavItem", "label", "Move flat");
+    workspace.fire(&flat, "select", None);
+    workspace.settle();
     let checked: Vec<bool> = workspace
         .items()
         .into_iter()
@@ -2076,7 +2134,7 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     assert_eq!(
         menu,
         ["Mark read", "Remove"],
-        "the book's actions and the shelf's on it"
+        "the book's actions and the shelf's on it, in the order the app declares them"
     );
     let swipe = first.swipe.as_ref().expect("a swipe takes the book off");
     assert!(swipe.destructive);
@@ -2101,7 +2159,13 @@ fn an_app_composes_its_own_list_window_from_the_toolkit_and_the_platform() {
     assert!(list.list_mut().unwrap().reveal(first_key));
     let area = list.menu_area_mut().expect("the rows share one menu");
     assert!(area.open_at(ui::vello::kurbo::Point::ZERO, false));
-    area.choose(1);
+    let remove = area
+        .menu()
+        .items()
+        .iter()
+        .position(|item| item.label() == Some("Remove"))
+        .expect("the shelf's Remove is on the book's row");
+    area.choose(remove);
     workspace.settle();
     assert_eq!(workspace.rows().len(), 1);
     assert!(

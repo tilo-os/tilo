@@ -59,7 +59,7 @@ use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
 use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
+use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
@@ -125,6 +125,7 @@ async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: Model
             limits: tilo_relay::web::WebLimits::default(),
             country: None,
             fetch_proxy: None,
+            live: LiveConfig::default(),
         })
         .await
         .unwrap();
@@ -141,7 +142,7 @@ impl Hosted {
     async fn stop(self) {
         let retained = self
             .relay
-            .room_records()
+            .workspace_records()
             .retained(workspace())
             .await
             .unwrap();
@@ -536,7 +537,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         "{:?}",
         info.tasks[0]
     );
-    assert_eq!(info.room.as_deref(), Some(WORKSPACE));
+    assert_eq!(info.workspace.as_deref(), Some(WORKSPACE));
     let steps: Vec<_> = info.tasks[0]
         .steps
         .iter()
@@ -1353,7 +1354,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     let question = asked(&mut device).await;
     assert_eq!(question.agent_id, grant);
     assert_eq!(question.agent_label, "Careful");
-    assert_eq!(question.room, WORKSPACE);
+    assert_eq!(question.workspace, WORKSPACE);
     // The action as the reader offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove from library");
     assert_eq!(question.resource_label, "Books");

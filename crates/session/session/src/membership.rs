@@ -10,7 +10,7 @@
 //! to the sheet.
 //!
 //! The desk keeps no roster of its own: the workspace's members on the desk are
-//! a projection of its governance, written by [`crate::Shared::project_people`]
+//! a projection of its governance, written by [`crate::Shared::project_governance`]
 //! whenever the governance this device holds moves, so what this device admits
 //! and how its apps judge a person follow the same source the sheet shows.
 //!
@@ -114,15 +114,35 @@ impl<'a> Membership<'a> {
     /// [`Self::write`] one change, saying why when the workspace refuses it
     /// or cannot publish it.
     pub(crate) fn commit(&self, change: &Change) -> Result<(), String> {
+        self.command(WorkspaceMembershipCommand::Member {
+            change: change.clone(),
+        })
+    }
+
+    /// Take back the workspace's request for the bot whose directory entry is
+    /// `entry`, as this device: the workspace's host stops running it from
+    /// then on.
+    ///
+    /// # Errors
+    /// The workspace refused the request — this device's person does not
+    /// administer it — or this device could not publish it.
+    pub(crate) fn withdraw_bot_request(&self, entry: &str) -> Result<(), String> {
+        self.command(WorkspaceMembershipCommand::WithdrawBotRequest {
+            entry: entry.to_owned(),
+        })
+    }
+
+    /// Write `command` into the workspace's governance as this device, signed
+    /// with its own key, saying why when the workspace refuses it or cannot
+    /// publish it.
+    fn command(&self, command: WorkspaceMembershipCommand) -> Result<(), String> {
         let identity = self.engine.identity();
         let request = OwnerCommitRequest {
             workspace: self.workspace_id.to_string(),
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: identity.device_cert.clone(),
-                command: WorkspaceMembershipCommand::Member {
-                    change: change.clone(),
-                },
+                command,
             },
         };
         self.engine
@@ -145,36 +165,21 @@ impl<'a> Membership<'a> {
     /// The workspace refused the grant — this device's person does not
     /// administer it — or this device could not publish it.
     pub(crate) fn grant_app_authorship(&self, app: &str) -> Result<(), String> {
-        let identity = self.engine.identity();
-        let request = OwnerCommitRequest {
-            workspace: self.workspace_id.to_string(),
-            operation: CommitOperation::WorkspaceMembershipCommand {
-                invocation: uuid::Uuid::new_v4(),
-                caller: identity.device_cert.clone(),
-                command: WorkspaceMembershipCommand::GrantAppAuthorship {
-                    app: app.to_owned(),
-                },
-            },
-        };
-        self.engine
-            .owner()
-            .commit_workspace_membership_command(
-                request,
-                &identity.device_signing_key,
-                std::time::SystemTime::now(),
-            )
-            .map(|_receipt| ())
+        self.command(WorkspaceMembershipCommand::GrantAppAuthorship {
+            app: app.to_owned(),
+        })
     }
 }
 
 /// Let `app` author its own records in `workspace`, as the person who opens it
-/// there: the workspace's governance gives the grant when they may change the
-/// workspace, and the desk takes it from there like the rest of the
-/// workspace's grants ([`project`]), so the launch that follows hands the app
-/// its authorship. A workspace this device's governance does not hold — one
-/// that lives only on this desk, or a session that holds none — has nothing to
-/// ask, and its own policy takes the grant from the owner. Nothing is written
-/// while the workspace already makes the app an author.
+/// there: the workspace's governance gives the grant when they administer it
+/// ([`crate::engine::Engine::administers`]), and the desk takes it from there
+/// like the rest of the workspace's grants ([`project`]), so the launch that
+/// follows hands the app its authorship. A workspace this device's governance
+/// does not hold — one that lives only on this desk, or a session that holds
+/// none — has nothing to ask, and its own policy takes the grant from the
+/// owner. Nothing is written while the workspace already makes the app an
+/// author.
 ///
 /// # Errors
 /// The workspace's governance refused the grant, or a desk-only workspace has
@@ -194,7 +199,12 @@ pub(crate) fn authorship(
     };
     if let Some(engine) = engine.filter(|engine| engine.holds(id)) {
         let policy = engine.policy(workspace)?;
-        if !authors(&policy) {
+        // The grant is the workspace's to give, and this device gives it where
+        // its person administers the workspace: a member whose role only lets
+        // them write cannot change its people, and asks for nothing here. The
+        // workspace's own devices grant it, and what they grant arrives in the
+        // projection below like the rest of its grants.
+        if !authors(&policy) && engine.administers(workspace) {
             Membership::of(engine, id).grant_app_authorship(app)?;
         }
         let policy = engine.policy(workspace)?;
@@ -245,14 +255,15 @@ fn author_on_desk(workspace: &mut Workspace, app: &str, now: u64) -> Result<bool
 }
 
 impl crate::Shared {
-    /// Who each workspace on the desk has in it, as the workspace's own
-    /// governance here says: who it was shared with, in what part, and when
-    /// each was admitted. The desk keeps no roster of its own — its workspaces
-    /// carry the governance's people as a projection, which is what the People
-    /// tab, the broker and every other reader of the roster read. Nothing of a
-    /// workspace's state reaches this device without the engine admitting it,
-    /// so a revision that has not moved has nothing to show.
-    pub(crate) fn project_people(&self) {
+    /// Who each workspace on the desk has in it and which bots it runs, as the
+    /// workspace's own governance here says: who it was shared with, in what
+    /// part, when each was admitted, and the bots it runs or asks its host for.
+    /// The desk keeps no roster of its own — its workspaces carry the
+    /// governance's people and bots as a projection, which is what the People
+    /// and Agents tabs, the broker and every other reader of the roster read.
+    /// Nothing of a workspace's state reaches this device without the engine
+    /// admitting it, so a revision that has not moved has nothing to show.
+    pub(crate) fn project_governance(&self) {
         let Some(engine) = &self.engine else {
             return;
         };
@@ -266,10 +277,19 @@ impl crate::Shared {
         for workspace in &mut tree.workspaces {
             let Ok(policy) = engine.policy(&workspace.id().to_string()) else {
                 // A workspace whose governance this device does not hold keeps
-                // the people the desk has of it.
+                // the people and bots the desk has of it.
                 continue;
             };
             changed |= project(workspace, &policy);
+            let Ok(bots) = engine.owner().with_current(workspace.id(), |view| {
+                Ok(view.peer().governance().workspace_bots())
+            }) else {
+                continue;
+            };
+            if workspace.bots != bots {
+                workspace.bots = bots;
+                changed = true;
+            }
         }
         if changed {
             self.handle.replace_tree(tree);
@@ -473,6 +493,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
+                    None,
                     now,
                 )
                 .expect("this device takes the workspace as its governor has it");
@@ -579,6 +600,7 @@ mod tests {
                             a_cert.device_public_key,
                         ),
                         message.clone(),
+                        None,
                         now,
                     )
                     .expect("a device takes the workspace as its host has it");
@@ -641,6 +663,7 @@ mod tests {
                         desks.owner_cert.device_public_key,
                     ),
                     message,
+                    None,
                     desks.now,
                 )
                 .expect("this desk takes the change");
@@ -1042,6 +1065,7 @@ mod tests {
     struct GovernedDesk {
         session: Option<crate::Session>,
         state: tempfile::TempDir,
+        _served: Option<tempfile::TempDir>,
         _hers: tempfile::TempDir,
         _identity: tempfile::TempDir,
         _home: tilo_test_env::TestHome,
@@ -1054,14 +1078,22 @@ mod tests {
         now: std::time::SystemTime,
     }
 
-    /// [`session_keeping`], acting as `person` instead of the default one.
-    fn session_as(state: &std::path::Path, person: &str) -> crate::Session {
+    /// [`session_keeping`], acting as `person` instead of the default one, and
+    /// serving its apps' broker on `socket` when the test gives it one.
+    fn session_as(
+        state: &std::path::Path,
+        person: &str,
+        socket: Option<&std::path::Path>,
+    ) -> crate::Session {
         crate::Session::headless(
             crate::Options {
                 person: person.to_owned(),
                 presentation: ui::headless::fixture_runner_inputs,
                 collab: false,
                 state: Some(state.to_path_buf()),
+                action_plane: socket.map_or(crate::ActionPlane::Off, |socket| {
+                    crate::ActionPlane::At(socket.to_path_buf())
+                }),
                 ..crate::Options::default()
             },
             &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
@@ -1070,6 +1102,17 @@ mod tests {
     }
 
     fn a_governed_desk() -> GovernedDesk {
+        governed_desk(None)
+    }
+
+    /// [`a_governed_desk`] whose session serves its apps' broker, so this
+    /// computer's own device changes the workspace through the session it
+    /// runs.
+    fn a_governed_desk_serving() -> GovernedDesk {
+        governed_desk(Some(private_directory()))
+    }
+
+    fn governed_desk(served: Option<tempfile::TempDir>) -> GovernedDesk {
         let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
         let (identity, cert, key) = provisioned_identity(&mut home);
         let person = hex::encode(cert.user_public_key);
@@ -1079,13 +1122,17 @@ mod tests {
         let hers = tempfile::tempdir().expect("her state directory");
         let (her, _her_cert, _her_key, ada) =
             a_second_device(state.path(), hers.path(), workspace_id, &cert, &key, now);
-        let mut session = session_as(state.path(), &person);
+        let socket = served
+            .as_ref()
+            .map(|served| served.path().join("collab.sock"));
+        let mut session = session_as(state.path(), &person, socket.as_deref());
         session
             .step(std::time::Duration::from_millis(1))
             .expect("a frame");
         GovernedDesk {
             session: Some(session),
             state,
+            _served: served,
             _hers: hers,
             _identity: identity,
             _home: home,
@@ -1265,10 +1312,9 @@ mod tests {
             .expect("the sheet says the workspace refused it");
         assert_eq!(notice.title, "The workspace refused that change");
         assert!(
-            notice
-                .detail
-                .as_deref()
-                .is_some_and(|detail| detail.contains("ownership is transferred")),
+            notice.detail.as_deref().is_some_and(
+                |detail| detail.contains("ownership is set when the workspace is made")
+            ),
             "the sheet says why: {:?}",
             notice.detail
         );
@@ -1407,6 +1453,59 @@ mod tests {
         .expect("a session")
     }
 
+    /// A bot a member asks the workspace's host for is listed in the settings
+    /// sheet, and Remove there takes the request back through the workspace:
+    /// the sheet stops listing it and the host stops being asked for it.
+    #[test]
+    fn a_bot_the_sheet_removes_is_no_longer_asked_of_the_host() {
+        let _settled = ui::motion::testing::settled();
+        let mut desk = a_governed_desk_serving();
+        let entry = "so.tilo.bots.standup";
+        let workspace_id = desk.workspace_id;
+        let cert = desk.cert.clone();
+        change_governance(
+            desk.session(),
+            workspace_id,
+            &cert,
+            &WorkspaceMembershipCommand::RequestBot(
+                tilo_peer_state::workspace_membership::BotRequest {
+                    entry: entry.to_owned(),
+                    version: "1.2.0".to_owned(),
+                    inputs: BTreeMap::default(),
+                    program: None,
+                },
+            ),
+        );
+        let mut app = settings_sheet(&mut desk);
+        the_sheet_lists_bot(&mut desk, entry, true);
+        app.effect(
+            &tilo_sheets::workspace_settings::WorkspaceSettingsEffect::ShowTab {
+                tab: "agents".to_owned(),
+            },
+        )
+        .expect("show the agents");
+        desk.frames();
+        app.settle();
+        press(&mut app, &format!("ws-bots-remove-{entry}"));
+        desk.frames();
+        the_sheet_lists_bot(&mut desk, entry, false);
+        let asks = desk
+            .session()
+            .shared
+            .engine
+            .as_ref()
+            .expect("this device holds the workspace")
+            .owner()
+            .with_current(workspace_id, |view| {
+                Ok(view.peer().governance().bot_requests())
+            })
+            .expect("the workspace's governance");
+        assert!(
+            asks.is_empty(),
+            "the workspace no longer asks its host for the bot: {asks:?}"
+        );
+    }
+
     /// A person another device of the workspace took in is on this desk's
     /// copy of it, in the part the workspace gives them, when the desk comes
     /// back: the People tab shows the workspace's people, not only those this
@@ -1462,6 +1561,7 @@ mod tests {
                             cert.device_public_key,
                         ),
                         postcard::from_bytes(bytes).expect("a workspace change"),
+                        None,
                         now,
                     )
                     .expect("this device takes the workspace's change");
@@ -1647,6 +1747,7 @@ mod tests {
                             cert.device_public_key,
                         ),
                         postcard::from_bytes(bytes).expect("a workspace change"),
+                        None,
                         now,
                     )
                     .expect("the workspace's change is taken");
@@ -1681,20 +1782,21 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
+                    None,
                     now,
                 )
                 .expect("the workspace's change is taken");
         }
     }
 
-    /// This session's broker changes the workspace's people as this
-    /// computer's own device asks it, and the change answers as taken.
+    /// This session's broker writes `command` into the workspace's people as
+    /// this computer's own device asks it, and the workspace answers as taken.
     #[track_caller]
-    fn change_people(
+    fn change_governance(
         session: &crate::Session,
         workspace_id: WorkspaceId,
         cert: &tilo_user_identity::DeviceCert,
-        change: &Change,
+        command: &WorkspaceMembershipCommand,
     ) {
         let broker = session
             .action_plane
@@ -1703,19 +1805,56 @@ mod tests {
             .expect("the session serves its broker");
         wait_for_people(&broker, workspace_id);
         let job = broker
-            .change_workspace_membership(
-                &workspace_id.to_string(),
-                &WorkspaceMembershipCommand::Member {
-                    change: change.clone(),
-                },
-                cert,
-            )
+            .change_workspace_membership(&workspace_id.to_string(), command, cert)
             .expect("this device's person may change the workspace's people");
         let completed = job
             .completion
             .recv_timeout(tilo_test_env::hang_bound())
             .expect("the invocation answers");
         assert!(completed.code.is_empty(), "{}", completed.message);
+    }
+
+    /// [`change_governance`] one of the people changes the settings sheet
+    /// makes.
+    #[track_caller]
+    fn change_people(
+        session: &crate::Session,
+        workspace_id: WorkspaceId,
+        cert: &tilo_user_identity::DeviceCert,
+        change: &Change,
+    ) {
+        change_governance(
+            session,
+            workspace_id,
+            cert,
+            &WorkspaceMembershipCommand::Member {
+                change: change.clone(),
+            },
+        );
+    }
+
+    /// Run frames until the sheet lists the bot whose entry is `entry`, or
+    /// stops listing it.
+    #[track_caller]
+    fn the_sheet_lists_bot(desk: &mut GovernedDesk, entry: &str, listed: bool) {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let shows = desk
+                .settings()
+                .agents
+                .bots
+                .iter()
+                .any(|bot| bot.entry.as_deref() == Some(entry));
+            if shows == listed {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the sheet never {} the bot {entry}",
+                if listed { "listed" } else { "dropped" }
+            );
+            desk.frames();
+        }
     }
 
     /// Run frames until the desk shows `person` in `expected`'s part of the
@@ -1775,6 +1914,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     message,
+                    None,
                     now,
                 )
                 .expect("her device takes the workspace's change");
@@ -1993,6 +2133,7 @@ mod tests {
                     workspace_id,
                     tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).expect("a workspace change"),
+                    None,
                     now,
                 )
                 .expect("this device takes the workspace's change");

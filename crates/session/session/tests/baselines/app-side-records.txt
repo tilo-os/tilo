@@ -1,0 +1,8 @@
+# Apps still doing for themselves what the document host now does
+# (docs/architecture/apps.md §8). One line per app, as `app: what`.
+# This list may only shrink: a slice that migrates an app deletes its
+# line, and a new app, or an added use, fails the ratchet.
+
+agent: broker
+tilolang: broker
+web-search: broker

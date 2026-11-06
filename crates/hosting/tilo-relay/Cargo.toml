@@ -21,7 +21,7 @@ test-support = ["tilo-room-host/test-support"]
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
 agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-browser-peer", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli"]
-web = ["tilo-room-host/web", "dep:tilo-call-lane", "dep:tilo-live", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
+web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:agent-provider-config", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
 
 [[bin]]
 name = "tilo-relay"
@@ -73,7 +73,6 @@ path = "src/home_peer_control/main.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 tilo-paths.workspace = true
@@ -162,9 +161,6 @@ bytes = { workspace = true, optional = true }
 tilo-live = { path = "../../collab/tilo-live", features = ["native"], optional = true }
 # SHA-256 of the live listener's certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
-# The calls pages take part in: the host carries a page's sealed media onto
-# the call's lane as itself, and opens none of it.
-tilo-call-lane = { path = "../../collab/tilo-call-lane", optional = true }
 # Who-is-here lines may be summarised by a model provider the operator
 # configures, in the dialects shared with the model gateway.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
@@ -219,12 +215,11 @@ tilo-fs = { path = "../../system/fs" }
 runtime-fs = { path = "../../runtime/runtime-fs" }
 # The workspace-join exchange every governor answers, over this relay's rooms.
 collab-types = { path = "../../collab/collab-types" }
-# A node takes part in the encrypted channels of the rooms it governs.
+# A node takes part in the encrypted channels of the rooms it governs, through
+# the one channel service every device runs.
 channel-crypto = { path = "../../collab/channel-crypto" }
 neighbour-wire = { path = "../../collab/neighbour-wire" }
-# The seam the core asks about opaque co-edit bodies, which the desktop's
-# adapter injects at `Relay::start`.
-tilo-relay-shell = { path = "../tilo-relay-shell" }
+tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The room host every device runs, which the relay embeds.
 tilo-room-host = { path = "../tilo-room-host" }
 # Retained-store primitives the workspace store shares with the shell replay
@@ -239,10 +234,6 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# Only the local Linux guest backend needs namespaces, Landlock and vsock.
-runtime-portal = { path = "../../runtime/runtime-portal", default-features = false }
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 getrandom03 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
@@ -256,9 +247,6 @@ tilo-room-host = { path = "../tilo-room-host", features = ["test-support"] }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-# The shell-selection fixture, the selection construction counter and the
-# barriers inside selection that the store, peer and persistence tests use.
-tilo-relay-shell = { path = "../tilo-relay-shell", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
@@ -298,12 +286,6 @@ path = "tests/held_memory.rs"
 [[example]]
 name = "relay_load"
 test = true
-
-# The original timed median-one-write assertion, run only in Perf / scheduled.
-# Examples with test = false are compiled, not executed, by normal test jobs.
-[[example]]
-name = "keystroke_writes"
-test = false
 
 [lints]
 workspace = true

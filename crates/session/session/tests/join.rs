@@ -15,6 +15,8 @@
               lives until the apps it serves are done"
 )]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 
 use automerge::transaction::Transactable as _;
@@ -305,16 +307,13 @@ fn private_home() -> tempfile::TempDir {
 
 /// The session's pass until the apps are done, as the session runs its loop.
 fn until_the_apps_are_done<T>(session: &mut Session, received: &std::sync::mpsc::Receiver<T>) -> T {
-    for _ in 0..4000 {
+    common::wait_for(session, "the apps to finish their calls", |session| {
         session.settle_services();
         session
             .step(std::time::Duration::from_millis(1))
             .expect("step");
-        if let Ok(done) = received.try_recv() {
-            return done;
-        }
-    }
-    panic!("the apps never finished their calls");
+        received.try_recv().ok()
+    })
 }
 
 /// An app connected to the session's plane as `APP` in `WORKSPACE`, as the

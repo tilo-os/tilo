@@ -14,6 +14,8 @@
               lives until the app it serves is done"
 )]
 
+mod common;
+
 use std::sync::{Arc, Mutex};
 
 use media::audio::{AudioDevice, AudioGraph, GraphControl};
@@ -218,14 +220,11 @@ fn app(socket: &std::path::Path, seen: &std::sync::mpsc::Sender<Seen>) {
 
 /// The session's pass until the app is done, as the session runs its loop.
 fn until_the_app_is_done<T>(session: &mut Session, seen: &std::sync::mpsc::Receiver<T>) -> T {
-    for _ in 0..4000 {
+    common::wait_for(session, "the app to finish its calls", |session| {
         session.settle_services();
         session.step(std::time::Duration::from_millis(1)).unwrap();
-        if let Ok(seen) = seen.try_recv() {
-            return seen;
-        }
-    }
-    panic!("the app never finished its calls");
+        seen.try_recv().ok()
+    })
 }
 
 fn reading_of(reading: &str) -> Value {

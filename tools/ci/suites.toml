@@ -265,6 +265,7 @@ suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-relay/test-contract.sh",
   "os/containers/tilo-agent-host/test-contract.sh",
+  "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
@@ -685,6 +686,9 @@ inputs = [
   "crates/sdk/themes/bauhaus/theme.json",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
   "tools/test-assets.py",
+  # The catalogue test reads the gallery app's sources: every component the
+  # toolkit describes is shown there, or says at its declaration why it cannot.
+  "apps/tl/gallery/",
   # The ratchets find the checkout by its workspace manifest.
   "Cargo.toml",
 ]
@@ -696,6 +700,7 @@ readers = [
   "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/src/theme_bundle/tests.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
+  "crates/sdk/ui-core/src/component/coverage_tests.rs",
 ]
 # App, shell and framework sources are read only by the look ratchets in the
 # `it` target. A change confined to them runs those ratchets, not the whole
@@ -727,6 +732,7 @@ readers = [
   "apps/tilolang/src/packages.rs",
   "apps/tilolang/tests/board.rs",
   "apps/tilolang/tests/history_undo.rs",
+  "apps/tilolang/tests/hosted.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
 ]
@@ -772,30 +778,41 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_notes.rs",
   "crates/lang/tilolang-runtime/tests/e2e_todo.rs",
   "crates/lang/tilolang-runtime/tests/programs.rs",
+  "crates/lang/tilolang-runtime/tests/provenance.rs",
   "crates/lang/tilolang-runtime/tests/rich_text.rs",
+  "crates/lang/tilolang-runtime/tests/window_bar.rs",
+  "crates/lang/tilolang-runtime/tests/window_state_seed.rs",
   "crates/lang/tilolang-runtime/tests/written_views.rs",
 ]
 
 [[cargo]]
 package = "tilolang-tilo"
 # The collaboration tests compile the built-in packages and the rich-text fixture from their sources.
-# The platform apps embed the device's published surface and Settings' committed one.
+# The platform apps embed the device's published surface and Settings' committed one, and a
+# task's session holds a native app's package from its surface.
 inputs = [
   "apps/tl/",
+  "apps/chat/",
+  "apps/tasks/surface.toml",
   "crates/lang/tilolang/tests/fixtures/",
   "crates/session/session/device-surface.json",
   "apps/settings/surface.toml",
 ]
 readers = [
+  "crates/platform/tilolang-tilo/src/native.rs",
   "crates/platform/tilolang-tilo/src/platform_apps.rs",
+  "crates/platform/tilolang-tilo/src/task.rs",
   "crates/platform/tilolang-tilo/tests/agent_queries.rs",
   "crates/platform/tilolang-tilo/tests/budgets.rs",
   "crates/platform/tilolang-tilo/tests/bundle.rs",
   "crates/platform/tilolang-tilo/tests/chat.rs",
+  "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
+  "crates/platform/tilolang-tilo/tests/links.rs",
+  "crates/platform/tilolang-tilo/tests/make_from.rs",
   "crates/platform/tilolang-tilo/tests/naming.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
@@ -804,6 +821,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/rich_text.rs",
   "crates/platform/tilolang-tilo/tests/scenarios.rs",
   "crates/platform/tilolang-tilo/tests/shell_record.rs",
+  "crates/platform/tilolang-tilo/tests/suggest.rs",
   "crates/platform/tilolang-tilo/tests/task.rs",
   "crates/platform/tilolang-tilo/tests/tasks.rs",
   "crates/platform/tilolang-tilo/tests/undo_own.rs",
@@ -814,10 +832,17 @@ readers = [
 
 [[cargo]]
 package = "tilolang-host"
-# The host compiles built-in packages and embeds the UI host's catalogues.
-inputs = ["apps/tl/", "crates/platform/tilo-ui-host/locales/"]
+# The host compiles built-in packages and embeds the UI host's catalogues, and its task's tests
+# hold native apps' packages from their surfaces, as a session hands them.
+inputs = [
+  "apps/tl/",
+  "apps/chat/",
+  "apps/tasks/",
+  "crates/platform/tilo-ui-host/locales/",
+]
 readers = [
   "crates/platform/tilolang-host/examples/host_cost.rs",
+  "crates/platform/tilolang-host/src/task.rs",
   "crates/platform/tilolang-host/src/phrases.rs",
   "crates/platform/tilolang-host/tests/host.rs",
   "crates/platform/tilolang-host/tests/own_records.rs",
@@ -1055,8 +1080,6 @@ inputs = [
   "crates/collab/collab-types/tests/net_host_vectors.txt",
   # The session script that starts the compositor without huge pages.
   "os/usr/libexec/tilo-session",
-  # The OOM score the image gives the session.
-  "os/etc/systemd/system/greetd.service.d/50-tilo-oom.conf",
   # The units that rebuild the sandbox system view when what it reads changes.
   "os/usr/lib/systemd/system/tilo-sandbox-view.path",
   "os/usr/lib/systemd/system/tilo-extension-activate.service",
@@ -1065,7 +1088,6 @@ readers = [
   "crates/packaging/launcher/src/hardening.rs",
   "crates/packaging/launcher/src/manifest.rs",
   "crates/packaging/launcher/src/netgate.rs",
-  "crates/packaging/launcher/src/priority.rs",
   "crates/packaging/launcher/src/sandbox_view.rs",
   "crates/packaging/launcher/src/seccomp.rs",
   "crates/packaging/launcher/src/services.rs",
@@ -1422,6 +1444,11 @@ inputs = [
   "crates/system/system-stats/src/protocol.rs",
   "crates/platform/tilo-render-protocol/src/broker.rs",
   "apps/*/tilo-app.toml",
+  # Every app's manifest and baseline the app-side ratchet reads: it lists
+  # what each app still does for itself (its own records, identity, sync) and
+  # fails if the list grows.
+  "apps/*/Cargo.toml",
+  "crates/session/session/tests/baselines/app-side-records.txt",
 ]
 readers = [
   "crates/session/session/src/channels/vault.rs",
@@ -1430,15 +1457,17 @@ readers = [
   "crates/session/session/src/seeded_apps.rs",
   "crates/session/session/src/shell.rs",
   "crates/session/session/tests/common/mod.rs",
+  "crates/session/session/tests/common/people.rs",
   "crates/session/session/tests/firstboot.rs",
   "crates/session/session/tests/session_package.rs",
+  "crates/session/session/tests/app_side_records.rs",
 ]
 
 [[cargo]]
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules to
-# Chromium and carries the page's turns to a native participant of its call.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "crates/collab/tilo-call-lane/src/"]
+# Chromium and carries the page's pictures to a native participant of its call.
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
 readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
@@ -1509,6 +1538,10 @@ reason = "requires an unmodified pinned GPL-3.0 OpenDrop checkout, external Pyth
 [[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/container/test-image.sh"
 reason = "needs the built web entry image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-image.sh"
+reason = "needs the built Lounge image"
 
 [[unrequired]]
 suite = "crates/packaging/registry-server/container/test-image.sh"

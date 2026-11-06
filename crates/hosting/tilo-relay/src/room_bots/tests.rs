@@ -7,47 +7,59 @@
 use tilo_moderation::{Case, JudgeError, Outcome, Verdict};
 
 use super::*;
-use crate::rooms::fixtures::{governor, restricted_until, test_host};
+use crate::workspaces::fixtures::{governor, restricted_until, test_host, test_host_taking_part};
 
 const MALLORY: [u8; 32] = [7; 32];
 const ADA: [u8; 32] = [8; 32];
 /// The greeter's installation.
 const GREETER: &str = "0b7e4c2a-9d1f-4e3b-8a6c-5f2d1e0c9b8a";
 
-/// The root `governor()`'s device belongs to, which installs the room's bots.
+/// The root `governor()`'s device belongs to, which installs the workspace's bots.
 pub(super) fn owner_root() -> ed25519_dalek::SigningKey {
     ed25519_dalek::SigningKey::from_bytes(&[1; 32])
 }
 
 /// A host that decides what members and bots change against the surfaces
-/// of the apps it runs, as a room host does.
+/// of the apps it runs, as a workspace host does.
 pub(super) async fn bot_host(
     state: &std::path::Path,
     key: &ed25519_dalek::SigningKey,
     cert: &DeviceCert,
-) -> crate::rooms::fixtures::TestHost {
+) -> crate::workspaces::fixtures::TestHost {
     // The native apps name their surfaces as the host first runs them.
     let _ = AppCatalogue::native();
     crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
     test_host(state, key, cert).await
 }
 
-/// `bot`'s runner in `room`, the bot installed as a member first, as the
+/// The same host run on a device that takes part in its workspaces' channels,
+/// as a relay whose device owns workspaces does.
+async fn bot_host_taking_part(
+    state: &std::path::Path,
+    key: &ed25519_dalek::SigningKey,
+    cert: &DeviceCert,
+) -> crate::workspaces::fixtures::TestHost {
+    let _ = AppCatalogue::native();
+    crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    test_host_taking_part(state, key, cert).await
+}
+
+/// `bot`'s runner in `workspace`, the bot installed as a member first, as the
 /// host does before it runs one.
 async fn member_runner(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     bot: installed::InstalledBot,
     state: std::path::PathBuf,
 ) -> installed::BotRunner {
     let certifier = membership::HostRootCertifier::new(owner_root());
-    membership::keep_member(rooms, room, cert, &certifier, &bot)
+    membership::keep_member(workspaces, workspace, cert, &certifier, &bot)
         .await
         .unwrap();
     installed::BotRunner::new(
-        rooms.clone(),
-        room.to_owned(),
+        workspaces.clone(),
+        workspace.to_owned(),
         cert.clone(),
         certifier.device_key(&bot.installation),
         bot,
@@ -88,15 +100,15 @@ fn texts_by(posts: &[chat::record::Message], person: [u8; 32]) -> Vec<String> {
         .collect()
 }
 
-/// The chat's first part of messages, as a record of the room.
+/// The chat's first part of messages, as a record of the workspace.
 fn first_part() -> String {
     chat::parts::part(0).as_str().to_owned()
 }
 
-/// The messages of the chat's first part, as the room holds it.
-async fn posts(rooms: &Rooms, room: &str) -> Vec<chat::record::Message> {
-    rooms
-        .record_document(room, CHAT, &first_part())
+/// The messages of the chat's first part, as the workspace holds it.
+async fn posts(workspaces: &Workspaces, workspace: &str) -> Vec<chat::record::Message> {
+    workspaces
+        .record_document(workspace, CHAT, &first_part())
         .await
         .unwrap()
         .map(|bytes| chat::messages::read_part(&AutoCommit::load(&bytes).unwrap()))
@@ -118,42 +130,42 @@ fn message_ids(page: &Replica) -> Vec<String> {
         .collect()
 }
 
-/// Post `text` in `channel` of `room` as `author`, as their page does: a
+/// Post `text` in `channel` of `workspace` as `author`, as their page does: a
 /// view of the chat record and the parts of its messages, posting through
 /// the chain into the head (starting the first part), its change carried
-/// to the room on the part's own route. The new message's id.
+/// to the workspace on the part's own route. The new message's id.
 async fn post_in(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     (author, channel, text): (&str, &str, &str),
 ) -> String {
-    post_with(rooms, room, cert, (author, channel, text), None).await
+    post_with(workspaces, workspace, cert, (author, channel, text), None).await
 }
 
 /// [`post_in`] with `attachment`, a file another action put in the store.
 async fn post_with(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     cert: &DeviceCert,
     (author, channel, text): (&str, &str, &str),
     attachment: Option<serde_json::Value>,
 ) -> String {
     let catalogue = AppCatalogue::native();
-    let chat = rooms
-        .record_document(room, CHAT, "")
+    let chat = workspaces
+        .record_document(workspace, CHAT, "")
         .await
         .unwrap()
         .unwrap();
     let mut held = Vec::new();
-    for (app, record) in rooms.record_routes(room).await.unwrap() {
+    for (app, record) in workspaces.record_routes(workspace).await.unwrap() {
         let Some(part) = ui::record::RecordId::parse(&record)
             .filter(|part| app == CHAT && chat::parts::part_index(part).is_some())
         else {
             continue;
         };
-        let bytes = rooms
-            .record_document(room, CHAT, &record)
+        let bytes = workspaces
+            .record_document(workspace, CHAT, &record)
             .await
             .unwrap()
             .unwrap();
@@ -164,7 +176,7 @@ async fn post_with(
         let mut page = Replica::open(
             &catalogue,
             CHAT,
-            room,
+            workspace,
             author,
             ReplicaActor::Owner,
             Seed::Existing {
@@ -199,16 +211,16 @@ async fn post_with(
     };
     for (record, mutation) in taken {
         match mutation {
-            DocumentMutation::Snapshot(bytes) => rooms
-                .author_room_record(room, cert, (CHAT, record.as_str()), |doc| {
+            DocumentMutation::Snapshot(bytes) => workspaces
+                .author_room_record(workspace, cert, (CHAT, record.as_str()), |doc| {
                     tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                         .map(drop)
                         .map_err(|error| error.to_string())
                 })
                 .await
                 .unwrap(),
-            DocumentMutation::Incremental(bytes) => rooms
-                .author_application(room, cert, &catalogue, CHAT, record.as_str(), |doc| {
+            DocumentMutation::Incremental(bytes) => workspaces
+                .author_application(workspace, cert, &catalogue, CHAT, record.as_str(), |doc| {
                     tilo_automerge::ApplyIncoming::load_incoming(doc, &bytes)
                         .map(drop)
                         .map_err(|error| error.to_string())
@@ -250,15 +262,27 @@ fn flood(
 
 /// Mallory's three identical posts in `general` beside Ada's, and Ada's
 /// report of one.
-async fn flood_posts(rooms: &Rooms, room: &str, cert: &DeviceCert, general: &str) {
+async fn flood_posts(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert, general: &str) {
     let (ada, mallory) = (hex::encode(ADA), hex::encode(MALLORY));
-    post_in(rooms, room, cert, (&ada, general, "hello everyone")).await;
+    post_in(
+        workspaces,
+        workspace,
+        cert,
+        (&ada, general, "hello everyone"),
+    )
+    .await;
     let mut spam = String::new();
     for _ in 0..3 {
-        spam = post_in(rooms, room, cert, (&mallory, general, "cheap links here")).await;
+        spam = post_in(
+            workspaces,
+            workspace,
+            cert,
+            (&mallory, general, "cheap links here"),
+        )
+        .await;
     }
-    rooms
-        .author_application(room, cert, &AppCatalogue::native(), CHAT, "", |doc| {
+    workspaces
+        .author_application(workspace, cert, &AppCatalogue::native(), CHAT, "", |doc| {
             chat::demo::apply_as(
                 doc,
                 &ada,
@@ -277,45 +301,45 @@ async fn flood_posts(rooms: &Rooms, room: &str, cert: &DeviceCert, general: &str
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_report_filed_in_the_room_restricts_and_undoes_the_flood_as_the_bot() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let room = rooms.create("Plaza").await.unwrap().room;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     let catalogue = AppCatalogue::native();
-    rooms
-        .prepare_application(&room, &cert, &catalogue, CHAT, "")
+    workspaces
+        .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
         .await
         .unwrap();
     let (ada, mallory) = (hex::encode(ADA), hex::encode(MALLORY));
-    let general = rooms
-        .author_application(&room, &cert, &catalogue, CHAT, "", |doc| {
+    let general = workspaces
+        .author_application(&workspace, &cert, &catalogue, CHAT, "", |doc| {
             flood(doc, &ada, &mallory).map_err(|error| error.to_string())
         })
         .await
         .unwrap();
-    flood_posts(&rooms, &room, &cert, &general).await;
+    flood_posts(&workspaces, &workspace, &cert, &general).await;
 
     let mut bot = ModerationBot::new(
-        rooms.clone(),
-        room.clone(),
+        workspaces.clone(),
+        workspace.clone(),
         cert.clone(),
         ModerationAgent::new(FakeJudge),
     );
     bot.wake().await.unwrap();
 
-    let posted = posts(&rooms, &room).await;
+    let posted = posts(&workspaces, &workspace).await;
     assert!(
         texts_by(&posted, MALLORY).is_empty(),
         "the flood is taken back"
     );
     assert_eq!(texts_by(&posted, ADA), ["hello everyone"]);
     let after = chat_of(
-        &rooms
-            .record_document(&room, CHAT, "")
+        &workspaces
+            .record_document(&workspace, CHAT, "")
             .await
             .unwrap()
             .unwrap(),
@@ -329,10 +353,10 @@ async fn a_report_filed_in_the_room_restricts_and_undoes_the_flood_as_the_bot() 
         "the report is settled"
     );
     assert!(
-        restricted_until(&rooms, &room, &cert, MALLORY)
+        restricted_until(&workspaces, &workspace, &cert, MALLORY)
             .await
             .is_some(),
-        "Mallory is restricted through the room's governance"
+        "Mallory is restricted through the workspace's governance"
     );
     // The bot's own changes file no report, so they do not wake it again.
     let cursor = bot.cursor.clone();
@@ -374,7 +398,7 @@ fn greeter(channel: &str) -> installed::InstalledBot {
         saved_by: None,
         saved_proof: None,
     };
-    // Exactly what its steps and triggers need, as a room admits a bot.
+    // Exactly what its steps and triggers need, as a workspace admits a bot.
     let shortcut = Shortcut {
         grant: tilo_automation::grant::derived_rules(
             &shortcut,
@@ -397,22 +421,22 @@ fn greeter(channel: &str) -> installed::InstalledBot {
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn an_installed_bot_answers_a_post_in_the_room_once() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let room = rooms.create("Plaza").await.unwrap().room;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
     let catalogue = AppCatalogue::native();
-    rooms
-        .prepare_application(&room, &cert, &catalogue, CHAT, "")
+    workspaces
+        .prepare_application(&workspace, &cert, &catalogue, CHAT, "")
         .await
         .unwrap();
     let ada = hex::encode(ADA);
-    let general = rooms
-        .author_application(&room, &cert, &catalogue, CHAT, "", |doc| {
+    let general = workspaces
+        .author_application(&workspace, &cert, &catalogue, CHAT, "", |doc| {
             chat::demo::apply_as(
                 doc,
                 &hex::encode(cert.user_public_key),
@@ -435,8 +459,8 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
         .await
         .unwrap();
     let mut runner = member_runner(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         greeter(general.as_str()),
         scratch.path().join("greeter.json"),
@@ -447,9 +471,9 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
     assert_eq!(
         runner.room_input().await.unwrap()["members"],
         serde_json::json!([{"person": hex::encode(cert.user_public_key), "role": "owner"}]),
-        "a program declaring `room` is told who is in it"
+        "a program declaring `workspace` is told who is in it"
     );
-    post_in(&rooms, &room, &cert, (&ada, &general, "hello")).await;
+    post_in(&workspaces, &workspace, &cert, (&ada, &general, "hello")).await;
     let reports = runner.step().await.unwrap();
     assert_eq!(
         reports.len(),
@@ -465,7 +489,7 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
     // Its own post is a bot's, which the trigger does not count.
     assert!(runner.step().await.unwrap().is_empty());
 
-    let posted = posts(&rooms, &room).await;
+    let posted = posts(&workspaces, &workspace).await;
     let answers: Vec<_> = posted
         .iter()
         .filter(|message| message.text == "welcome!")
@@ -474,17 +498,17 @@ async fn an_installed_bot_answers_a_post_in_the_room_once() {
     assert_eq!(answers[0].author.0, format!("bot:{GREETER}"));
 }
 
-/// A room with the chat, Ada introduced, and `#general`'s id.
-async fn chat_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
+/// A workspace with the chat, Ada introduced, and `#general`'s id.
+async fn chat_room(workspaces: &Workspaces, cert: &DeviceCert) -> (String, String) {
     let catalogue = AppCatalogue::native();
-    let room = rooms.create("Plaza").await.unwrap().room;
-    rooms
-        .prepare_application(&room, cert, &catalogue, CHAT, "")
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .prepare_application(&workspace, cert, &catalogue, CHAT, "")
         .await
         .unwrap();
     let ada = hex::encode(ADA);
-    let general = rooms
-        .author_application(&room, cert, &catalogue, CHAT, "", |doc| {
+    let general = workspaces
+        .author_application(&workspace, cert, &catalogue, CHAT, "", |doc| {
             chat::demo::apply_as(
                 doc,
                 &hex::encode(cert.user_public_key),
@@ -506,12 +530,18 @@ async fn chat_room(rooms: &Rooms, cert: &DeviceCert) -> (String, String) {
         })
         .await
         .unwrap();
-    (room, general)
+    (workspace, general)
 }
 
-async fn ada_says(rooms: &Rooms, room: &str, cert: &DeviceCert, channel: &str, text: &str) {
+async fn ada_says(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    channel: &str,
+    text: &str,
+) {
     let ada = hex::encode(ADA);
-    post_in(rooms, room, cert, (&ada, channel, text)).await;
+    post_in(workspaces, workspace, cert, (&ada, channel, text)).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -519,13 +549,13 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
     let start = || {
         member_runner(
-            &rooms,
-            &room,
+            &workspaces,
+            &workspace,
             &cert,
             greeter(general.as_str()),
             state.clone(),
@@ -535,8 +565,15 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
     assert!(runner.step().await.unwrap().is_empty());
     drop(runner);
 
-    ada_says(&rooms, &room, &cert, general.as_str(), "anyone here?").await;
-    ada_says(&rooms, &room, &cert, general.as_str(), "hello?").await;
+    ada_says(
+        &workspaces,
+        &workspace,
+        &cert,
+        general.as_str(),
+        "anyone here?",
+    )
+    .await;
+    ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello?").await;
 
     let mut runner = start().await;
     let reports = runner.step().await.unwrap();
@@ -554,20 +591,20 @@ async fn a_restarted_runner_answers_what_was_posted_while_it_was_down() {
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let state = scratch.path().join("greeter.json");
     // Its answer goes to a channel the chat does not have.
     let start = || {
         member_runner(
-            &rooms,
-            &room,
+            &workspaces,
+            &workspace,
             &cert,
             greeter("no-such-channel"),
             state.clone(),
@@ -575,7 +612,7 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
     };
     let mut runner = start().await;
     assert!(runner.step().await.unwrap().is_empty());
-    ada_says(&rooms, &room, &cert, general.as_str(), "hello").await;
+    ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if matches!(report.outcome, tilo_automation::RunOutcome::Failed { .. })),
@@ -592,49 +629,49 @@ async fn a_run_that_fails_for_good_is_kept_as_a_dead_letter() {
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     use membership::{DELEGATION_LIFETIME_NS, HostRootCertifier, Kept, keep_member};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let mut bot = greeter(general.as_str());
     bot.installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".into();
 
     // Installed with a delegation that is already running out.
     let short = HostRootCertifier::new(owner_root()).lasting(60 * 60 * 1_000_000_000);
-    let (kept, _) = keep_member(&rooms, &room, &cert, &short, &bot)
+    let (kept, _) = keep_member(&workspaces, &workspace, &cert, &short, &bot)
         .await
         .unwrap();
     assert_eq!(kept, Kept::Installed);
-    let row = rooms
-        .installed_bot(&room, &bot.installation)
+    let row = workspaces
+        .installed_bot(&workspace, &bot.installation)
         .await
         .unwrap()
-        .expect("the room records the bot");
-    assert!(row.acting, "the bot acts in the room");
+        .expect("the workspace records the bot");
+    assert!(row.acting, "the bot acts in the workspace");
     assert_eq!(
         row.installation.installed_by,
         hex::encode(cert.user_public_key)
     );
 
     let certifier = HostRootCertifier::new(owner_root());
-    let (kept, expires) = keep_member(&rooms, &room, &cert, &certifier, &bot)
+    let (kept, expires) = keep_member(&workspaces, &workspace, &cert, &certifier, &bot)
         .await
         .unwrap();
     assert_eq!(kept, Kept::Renewed);
-    let row = rooms
-        .installed_bot(&room, &bot.installation)
+    let row = workspaces
+        .installed_bot(&workspace, &bot.installation)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(row.delegation_expires_at_ns, expires);
     assert!(expires > tilo_clock::unix_now_ns() + DELEGATION_LIFETIME_NS / 3 * 2);
     assert_eq!(
-        keep_member(&rooms, &room, &cert, &certifier, &bot)
+        keep_member(&workspaces, &workspace, &cert, &certifier, &bot)
             .await
             .unwrap()
             .0,
@@ -646,15 +683,15 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_bot_step_reads_through_a_records_registered_read() {
     use tilo_automation::{ActorFilter, Selector, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let trigger = TriggerSpec::RecordChanged {
         kind: "chat.messages".into(),
         actions: vec!["post".into()],
@@ -699,15 +736,15 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         release: String::new(),
     };
     let mut runner = member_runner(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         bot,
         scratch.path().join("reader.json"),
     )
     .await;
     assert!(runner.step().await.unwrap().is_empty());
-    ada_says(&rooms, &room, &cert, &general, "what is here?").await;
+    ada_says(&workspaces, &workspace, &cert, &general, "what is here?").await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
@@ -718,14 +755,14 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let mut bridge = greeter(general.as_str());
     let mut shortcut = bridge.shortcut().unwrap();
     if let tilo_automation::StepKind::Invoke { appearance, .. } = &mut shortcut.steps[0].kind {
@@ -736,26 +773,26 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
     bridge.program =
         String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap();
     let mut runner = member_runner(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         bridge,
         scratch.path().join("bridge.json"),
     )
     .await;
     assert!(runner.step().await.unwrap().is_empty());
-    ada_says(&rooms, &room, &cert, general.as_str(), "hello").await;
+    ada_says(&workspaces, &workspace, &cert, general.as_str(), "hello").await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
-        "the room admits the bridge's post: {reports:?}"
+        "the workspace admits the bridge's post: {reports:?}"
     );
-    let bytes = rooms
-        .record_document(&room, CHAT, &first_part())
+    let bytes = workspaces
+        .record_document(&workspace, CHAT, &first_part())
         .await
         .unwrap()
         .unwrap();
-    let post = posts(&rooms, &room)
+    let post = posts(&workspaces, &workspace)
         .await
         .iter()
         .find(|message| message.text == "welcome!")
@@ -781,29 +818,29 @@ async fn a_bridge_posts_under_another_name_signed_by_its_own_device() {
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_land() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let bot = greeter(general.as_str());
     let certifier = membership::HostRootCertifier::new(owner_root());
-    // The room has it installed with no grant at all, so it refuses the
+    // The workspace has it installed with no grant at all, so it refuses the
     // post this host's copy of the program lets the bot make.
     let mut granted_nothing = bot.clone();
     let mut program = bot.shortcut().unwrap();
     program.grant.clear();
     granted_nothing.program =
         String::from_utf8(tilo_automation::program::canonical_bytes(&program).unwrap()).unwrap();
-    membership::keep_member(&rooms, &room, &cert, &certifier, &granted_nothing)
+    membership::keep_member(&workspaces, &workspace, &cert, &certifier, &granted_nothing)
         .await
         .unwrap();
     let mut runner = installed::BotRunner::new(
-        rooms.clone(),
-        room.clone(),
+        workspaces.clone(),
+        workspace.clone(),
         cert.clone(),
         certifier.device_key(&bot.installation),
         bot.clone(),
@@ -812,7 +849,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
     )
     .unwrap();
     assert!(runner.step().await.unwrap().is_empty());
-    ada_says(&rooms, &room, &cert, &general, "first").await;
+    ada_says(&workspaces, &workspace, &cert, &general, "first").await;
     let reports = runner.step().await.unwrap();
     assert!(reports.is_empty(), "{reports:?}");
     assert_eq!(runner.dead_letters().count(), 0, "a refused run goes again");
@@ -829,15 +866,15 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
     assert!(
         dead[0]
             .reason
-            .starts_with("the room refused the bot's change to so.tilo.chat/"),
+            .starts_with("the workspace refused the bot's change to so.tilo.chat/"),
         "{}",
         dead[0].reason
     );
 
-    membership::keep_member(&rooms, &room, &cert, &certifier, &bot)
+    membership::keep_member(&workspaces, &workspace, &cert, &certifier, &bot)
         .await
         .unwrap();
-    ada_says(&rooms, &room, &cert, &general, "second").await;
+    ada_says(&workspaces, &workspace, &cert, &general, "second").await;
     let reports = runner.step().await.unwrap();
     assert_eq!(reports.len(), 1, "{reports:?}");
     assert_eq!(
@@ -846,7 +883,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
         "{:?}",
         runner.dead_letters().collect::<Vec<_>>()
     );
-    let answers = posts(&rooms, &room)
+    let answers = posts(&workspaces, &workspace)
         .await
         .iter()
         .filter(|message| message.text == "welcome!")
@@ -859,7 +896,7 @@ async fn a_refused_change_runs_again_then_is_a_dead_letter_and_later_runs_still_
 
 #[test]
 fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
-    use crate::rooms::MemberMark;
+    use crate::workspaces::MemberMark;
     use tilo_automation::dispatch::{Armed, Event, Firer, dispatch};
     use tilo_automation::{ActorFilter, Shortcut, TriggerSpec};
     let mark = |role: &str, removed: bool, banned: bool| MemberMark {
@@ -915,7 +952,7 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
     // The same membership seen again is no change.
     assert!(installed::governance_events("r1", "owner", 7, &after, &after).is_empty());
 
-    // A program's room trigger fires on them, the person in the event.
+    // A program's workspace trigger fires on them, the person in the event.
     let trigger = TriggerSpec::RecordChanged {
         kind: "tilo.room".into(),
         actions: vec!["set-role".into(), "ban".into()],
@@ -949,31 +986,31 @@ fn membership_changes_fire_a_bots_room_triggers_as_governance_verbs() {
     );
 }
 
-/// In a public room whose channels a node takes part in, guests seal every chat post. A bot
-/// (the Discord bridge, say) still answers in that chat: the room decides
+/// In a public workspace whose channels a node takes part in, guests seal every chat post. A bot
+/// (the Discord bridge, say) still answers in that chat: the workspace decides
 /// its post as the bot's own, it reaches the chat sealed, and a guest
 /// opens it.
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
-    use crate::rooms::sealed_fixtures::{SealingMember, governor_published, member_device};
+    use crate::workspaces::sealed_fixtures::{SealingMember, governor_published, member_device};
     let scratch = tempfile::tempdir().unwrap();
-    let (key, cert) = crate::rooms::fixtures::governor_with(
+    let (key, cert) = crate::workspaces::fixtures::governor_with(
         tilo_user_identity::cloud_enrollment::host_capabilities(),
     );
-    let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
-    let (guest, guest_cert) = member_device(&rooms, &room, (&key, &cert), 3).await;
-    let guest = SealingMember::join(&rooms, &room, (CHAT, ""), guest).await;
+    let relay = bot_host_taking_part(scratch.path(), &key, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
+    let (guest, guest_cert) = member_device(&workspaces, &workspace, (&key, &cert), 3).await;
+    let guest = SealingMember::join(&workspaces, &workspace, (CHAT, ""), guest).await;
     // The chat's messages start in a part the guest's page starts sealed.
-    let part = guest.part(&rooms, &room, &first_part()).await;
+    let part = guest.part(&workspaces, &workspace, &first_part()).await;
     let mut runner = member_runner(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         greeter(general.as_str()),
         scratch.path().join("greeter.json"),
@@ -984,15 +1021,15 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     // The guest's post leaves its page sealed, in the first part of the
     // chat's messages: those are sealed now.
     let started = {
-        let chat = rooms
-            .record_document(&room, CHAT, "")
+        let chat = workspaces
+            .record_document(&workspace, CHAT, "")
             .await
             .unwrap()
             .unwrap();
         let mut page = Replica::open(
             &AppCatalogue::native(),
             CHAT,
-            &room,
+            &workspace,
             &hex::encode(guest_cert.user_public_key),
             ReplicaActor::Owner,
             Seed::Existing {
@@ -1016,24 +1053,24 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
             other => panic!("the page started the first part: {other:?}"),
         }
     };
-    part.writes(&rooms, &room, |doc| {
+    part.writes(&workspaces, &workspace, |doc| {
         tilo_automerge::ApplyIncoming::load_incoming(doc, &started).unwrap();
     })
     .await;
     let reports = runner.step().await.unwrap();
     assert!(
         matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
-        "the room admits the bot's post to the sealed chat: {reports:?}"
+        "the workspace admits the bot's post to the sealed chat: {reports:?}"
     );
 
-    // The guest opens what the room published, as its page does.
-    let post = governor_published(&rooms, &room, &first_part(), &cert)
+    // The guest opens what the workspace published, as its page does.
+    let post = governor_published(&workspaces, &workspace, &first_part(), &cert)
         .await
         .expect("the bot's post was published");
     assert!(post.encryption.is_some(), "never in the clear");
     part.take_in(&post);
     let _ = part.document();
-    let posted = posts(&rooms, &room).await;
+    let posted = posts(&workspaces, &workspace).await;
     let answers: Vec<_> = posted
         .iter()
         .filter(|message| message.text == "welcome!")
@@ -1046,11 +1083,11 @@ async fn a_bot_posts_into_a_sealed_chat_and_a_guest_reads_it() {
     );
 }
 
-/// The files the chat's first part references, as the room holds it.
-async fn referenced_in(rooms: &Rooms, room: &str) -> Vec<attachments::Referenced> {
+/// The files the chat's first part references, as the workspace holds it.
+async fn referenced_in(workspaces: &Workspaces, workspace: &str) -> Vec<attachments::Referenced> {
     attachments::referenced(
-        &rooms
-            .record_document(room, CHAT, &first_part())
+        &workspaces
+            .record_document(workspace, CHAT, &first_part())
             .await
             .unwrap()
             .unwrap(),
@@ -1092,17 +1129,22 @@ fn answer(want: &[u8], device: [u8; 32], bytes: &[u8]) -> Vec<u8> {
     .unwrap()
 }
 
-/// What the room answers `device` asking it for `bytes`, assembled.
-fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<Vec<u8>> {
+/// What the workspace answers `device` asking it for `bytes`, assembled.
+fn opened(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: [u8; 32],
+    bytes: &[u8],
+) -> Option<Vec<u8>> {
     let want = postcard::to_allocvec(&neighbour_wire::NeighbourMsg::RecordContentWant {
         requester: tilo_peer_state::peer_handle(&device),
         app_id: CHAT.into(),
-        cluster_id: room.into(),
+        cluster_id: workspace.into(),
         hash: blake3::hash(bytes).to_hex().to_string(),
     })
     .unwrap();
     let mut whole = Vec::new();
-    for frame in rooms.content_answer(room, &want) {
+    for frame in workspaces.content_answer(workspace, &want) {
         match postcard::from_bytes(&frame).unwrap() {
             neighbour_wire::NeighbourMsg::RecordContentPiece { bytes, .. } => whole.extend(bytes),
             neighbour_wire::NeighbourMsg::RecordContentLacks { .. } => return None,
@@ -1112,14 +1154,14 @@ fn opened(rooms: &Rooms, room: &str, device: [u8; 32], bytes: &[u8]) -> Option<V
     (!whole.is_empty()).then_some(whole)
 }
 
-/// Ada posts a file in the room's Chat. While her device is online it
+/// Ada posts a file in the workspace's Chat. While her device is online it
 /// answers the host's request for it; once she left, Bo opens the file
 /// from the host's copy. Past Ada's quota her oldest file goes, and a file
 /// over the cap is not asked for at all.
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 #[expect(
     clippy::too_many_lines,
@@ -1130,15 +1172,15 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let blobs =
         std::sync::Arc::new(installed::FsBlobs::new(scratch.path().join("blobs"), None).unwrap());
-    rooms.serve_content(blobs.clone());
+    workspaces.serve_content(blobs.clone());
     let attachments_of = |limits| {
-        attachments::RoomAttachments::new(
-            rooms.clone(),
-            room.clone(),
+        attachments::WorkspaceAttachments::new(
+            workspaces.clone(),
+            workspace.clone(),
             cert.device_public_key,
             blobs.clone(),
             scratch.path().join("attachments.json"),
@@ -1148,40 +1190,40 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     let keeper = attachments_of(attachments::AttachmentLimits {
         file_bytes: 64,
         member_bytes: 40,
-        room_bytes: 1000,
+        workspace_bytes: 1000,
     });
-    rooms.keep_content(keeper.clone());
+    workspaces.keep_content(keeper.clone());
     let ada = hex::encode(ADA);
 
     let notes = b"the meeting notes, version one".to_vec();
     post_with(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         (&ada, &general, "notes"),
         Some(file("notes.txt", &notes)),
     )
     .await;
-    let asks = keeper.asks(&referenced_in(&rooms, &room).await, 0);
+    let asks = keeper.asks(&referenced_in(&workspaces, &workspace).await, 0);
     assert_eq!(
         asks.len(),
         1,
-        "the host asks the room for the file it lacks"
+        "the host asks the workspace for the file it lacks"
     );
     assert!(
         keeper
-            .asks(&referenced_in(&rooms, &room).await, 1)
+            .asks(&referenced_in(&workspaces, &workspace).await, 1)
             .is_empty(),
         "and only once a while"
     );
     // Ada's device answers the host; then she leaves.
-    rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &notes));
+    workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &notes));
     assert_eq!(
         keeper.kept_for(&blake3::hash(&notes).to_hex()).as_deref(),
         Some(ada.as_str())
     );
     assert_eq!(
-        opened(&rooms, &room, BO, &notes),
+        opened(&workspaces, &workspace, BO, &notes),
         Some(notes.clone()),
         "Bo opens it from the host"
     );
@@ -1189,8 +1231,8 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     // A second file takes Ada past her quota: her oldest goes.
     let slides = b"the slides that came after them".to_vec();
     post_with(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         (&ada, &general, "slides"),
         Some(file("slides.txt", &slides)),
@@ -1198,21 +1240,24 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     .await;
     assert!(
         keeper
-            .asks(&referenced_in(&rooms, &room).await, 2)
+            .asks(&referenced_in(&workspaces, &workspace).await, 2)
             .is_empty(),
-        "within the hour her quota has no room for it"
+        "within the hour her quota has no workspace for it"
     );
     let an_hour_later = 3_600_000 + 2;
-    let asks = keeper.asks(&referenced_in(&rooms, &room).await, an_hour_later);
+    let asks = keeper.asks(&referenced_in(&workspaces, &workspace).await, an_hour_later);
     assert_eq!(
         asks.len(),
         1,
         "an hour later only the new file is asked for"
     );
-    rooms.content_for_host(&room, ADA, &answer(&asks[0], ADA, &slides));
-    assert_eq!(opened(&rooms, &room, BO, &slides), Some(slides.clone()));
+    workspaces.content_for_host(&workspace, ADA, &answer(&asks[0], ADA, &slides));
     assert_eq!(
-        opened(&rooms, &room, BO, &notes),
+        opened(&workspaces, &workspace, BO, &slides),
+        Some(slides.clone())
+    );
+    assert_eq!(
+        opened(&workspaces, &workspace, BO, &notes),
         None,
         "the oldest went past her quota"
     );
@@ -1220,8 +1265,8 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     // A file over the cap stays with its poster.
     let video = vec![7_u8; 65];
     post_with(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         (&ada, &general, "a video"),
         Some(file("big.bin", &video)),
@@ -1229,7 +1274,10 @@ async fn a_file_a_member_posted_stays_in_the_room_after_they_leave() {
     .await;
     assert!(
         keeper
-            .asks(&referenced_in(&rooms, &room).await, an_hour_later + 1)
+            .asks(
+                &referenced_in(&workspaces, &workspace).await,
+                an_hour_later + 1
+            )
             .is_empty()
     );
 
@@ -1256,11 +1304,11 @@ pub(super) fn discord_bridge() -> installed::InstalledBot {
     }
 }
 
-/// The room's Chat categories by name, each with its channels' names.
-async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
+/// The workspace's Chat categories by name, each with its channels' names.
+async fn chat_layout(workspaces: &Workspaces, workspace: &str) -> Vec<(String, Vec<String>)> {
     let record = workspace_record(&AppCatalogue::native(), CHAT);
-    let saved = rooms
-        .record_document(room, CHAT, &record)
+    let saved = workspaces
+        .record_document(workspace, CHAT, &record)
         .await
         .unwrap()
         .unwrap();
@@ -1268,7 +1316,7 @@ async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
     let named = |category: Option<&tilo_resource::Id>| {
         chat.channels
             .values()
-            .filter(|channel| channel.conversation_with.is_none())
+            .filter(|channel| channel.is_channel())
             .filter(|channel| channel.category.as_ref() == category)
             .map(|channel| channel.name.clone())
             .collect::<Vec<_>>()
@@ -1282,9 +1330,9 @@ async fn chat_layout(rooms: &Rooms, room: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Connect `room` to the Discord server the bridge last saw as `goal`, and
+/// Connect `workspace` to the Discord server the bridge last saw as `goal`, and
 /// `chat` holding `general` and `voice`.
-async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
+async fn bridged_lounge(workspaces: &Workspaces, workspace: &str, cert: &DeviceCert) {
     use tilo_resource::Fields as _;
     let link = discord::DiscordLink {
         guild_id: "1000".into(),
@@ -1293,13 +1341,15 @@ async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
         mirror_channels: false,
         map_roles: false,
     };
-    discord::connect(rooms, room, cert, &link).await.unwrap();
+    discord::connect(workspaces, workspace, cert, &link)
+        .await
+        .unwrap();
     let catalogue = AppCatalogue::native();
     // The server as the bridge last saw it: `goal`, and `chat` holding
     // `general` and `voice`.
-    rooms
+    workspaces
         .author_application(
-            room,
+            workspace,
             cert,
             &catalogue,
             discord::APP,
@@ -1335,26 +1385,26 @@ async fn bridged_lounge(rooms: &Rooms, room: &str, cert: &DeviceCert) {
         .unwrap();
 }
 
-/// A bridge run the room refuses part of leaves the import half done: the
+/// A bridge run the workspace refuses part of leaves the import half done: the
 /// category it made stands, the moves after it were dropped. The run goes
-/// again from the room's records and finishes the layout, the channels
+/// again from the workspace's records and finishes the layout, the channels
 /// under the server's category as in Discord.
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_again() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let room = rooms.create("Lounge").await.unwrap().room;
-    bridged_lounge(&rooms, &room, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    bridged_lounge(&workspaces, &workspace, &cert).await;
     let catalogue = AppCatalogue::native();
     let mut runner = member_runner(
-        &rooms,
-        &room,
+        &workspaces,
+        &workspace,
         &cert,
         discord_bridge(),
         scratch.path().join("bridge.json"),
@@ -1362,12 +1412,12 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
     .await;
     assert!(runner.step().await.unwrap().is_empty());
 
-    // A change to the room's Chat has the bridge reconcile; the room
+    // A change to the workspace's Chat has the bridge reconcile; the workspace
     // refuses the run's second change, mapping the category it just made.
     let owner = hex::encode(cert.user_public_key);
-    rooms
+    workspaces
         .author_application(
-            &room,
+            &workspace,
             &cert,
             &catalogue,
             CHAT,
@@ -1390,14 +1440,14 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
         .unwrap();
     runner.refuse_change_after(1);
     runner.step().await.unwrap();
-    let half = chat_layout(&rooms, &room).await;
+    let half = chat_layout(&workspaces, &workspace).await;
     assert!(
         half.iter()
             .any(|(name, channels)| name == "chat" && channels.is_empty()),
         "the category stands, empty: {half:?}"
     );
 
-    // It goes again, from the room's records, and finishes.
+    // It goes again, from the workspace's records, and finishes.
     let done = |layout: &[(String, Vec<String>)]| {
         layout.iter().any(|(name, channels)| {
             name == "chat"
@@ -1406,13 +1456,13 @@ async fn a_bridge_run_the_room_refuses_part_of_finishes_the_import_when_it_goes_
         })
     };
     for _ in 0..40 {
-        if done(&chat_layout(&rooms, &room).await) {
+        if done(&chat_layout(&workspaces, &workspace).await) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         runner.step().await.unwrap();
     }
-    let layout = chat_layout(&rooms, &room).await;
+    let layout = chat_layout(&workspaces, &workspace).await;
     assert!(done(&layout), "general and voice under chat: {layout:?}");
     assert_eq!(
         layout.iter().filter(|(name, _)| name == "chat").count(),
@@ -1451,15 +1501,15 @@ async fn a_bot_installed_from_a_program_file_is_named_for_itself_not_its_path() 
     assert_eq!(kept, installed);
 }
 
-/// A room installed from an older image keeps its bot when the host starts
+/// A workspace installed from an older image keeps its bot when the host starts
 /// on a newer one, and the bot runs the program the newer image ships: a
 /// grant the older program lacked (reaching outside when the bridge settles
-/// an outbox entry) reaches the room's row, so the room stops refusing the
+/// an outbox entry) reaches the workspace's row, so the workspace stops refusing the
 /// bot's settles.
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     use membership::{HostRootCertifier, Kept, keep_member};
@@ -1478,8 +1528,8 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, _) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, _) = chat_room(&workspaces, &cert).await;
     let file = scratch.path().join("discord-bridge.json");
     let entry = file.to_str().unwrap();
     let dir = scratch.path().join("bot");
@@ -1489,7 +1539,7 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     let before = installed::install(&dir, entry, serde_json::Map::new())
         .await
         .unwrap();
-    let (kept, _) = keep_member(&rooms, &room, &cert, &certifier, &before)
+    let (kept, _) = keep_member(&workspaces, &workspace, &cert, &certifier, &before)
         .await
         .unwrap();
     assert_eq!(kept, Kept::Installed);
@@ -1510,12 +1560,16 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
                 && rule.kinds.contains(tilo_action_policy::ActionKind::Outside)),
         "the shipped bridge may reach outside as it settles: {grants:?}"
     );
-    let (kept, _) = keep_member(&rooms, &room, &cert, &certifier, &after)
+    let (kept, _) = keep_member(&workspaces, &workspace, &cert, &certifier, &after)
         .await
         .unwrap();
-    assert_eq!(kept, Kept::Updated, "the room's row follows the program");
-    let row = rooms
-        .installed_bot(&room, &after.installation)
+    assert_eq!(
+        kept,
+        Kept::Updated,
+        "the workspace's row follows the program"
+    );
+    let row = workspaces
+        .installed_bot(&workspace, &after.installation)
         .await
         .unwrap()
         .unwrap();
@@ -1530,14 +1584,41 @@ async fn a_program_file_bot_runs_the_program_its_host_ships_now() {
     assert_eq!(again, after);
 }
 
-/// A developer pushes their bot's program into a running room, then a
-/// changed one: the room's host runs each as soon as the room asks for it,
+/// Ada posts until the bot answers with `text`: a runner that just started
+/// answers only what is posted after its first look.
+async fn answered(
+    workspaces: &Workspaces,
+    workspace: &str,
+    cert: &DeviceCert,
+    general: &str,
+    text: &str,
+) {
+    tilo_test_env::within(format!("the bot answers {text}"), async {
+        loop {
+            ada_says(workspaces, workspace, cert, general, "hello").await;
+            for _ in 0..20 {
+                if posts(workspaces, workspace)
+                    .await
+                    .iter()
+                    .any(|post| post.text == text)
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        }
+    })
+    .await;
+}
+
+/// A developer pushes their bot's program into a running workspace, then a
+/// changed one: the workspace's host runs each as soon as the workspace asks for it,
 /// without restarting, and the second is the same bot (its installation and
 /// what it read up to) running the new program under its new grants.
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::significant_drop_tightening,
-    reason = "the relay and its room stay live for the whole test"
+    reason = "the relay and its workspace stay live for the whole test"
 )]
 async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
     use tilo_peer_state::workspace_membership::{BotRequest, WorkspaceMembershipCommand};
@@ -1545,14 +1626,14 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
-    let rooms = relay.rooms().clone();
-    let (room, general) = chat_room(&rooms, &cert).await;
+    let workspaces = relay.workspaces().clone();
+    let (workspace, general) = chat_room(&workspaces, &cert).await;
     let first = greeter(general.as_str()).program;
     let second = first.replace("welcome!", "welcome, again!");
     assert_ne!(first, second);
     let follower = requested::Follower {
-        rooms: rooms.clone(),
-        room: room.clone(),
+        workspaces: workspaces.clone(),
+        workspace: workspace.clone(),
         host: cert.clone(),
         root: owner_root(),
         state: scratch.path().join("host"),
@@ -1566,50 +1647,31 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
             inputs: std::collections::BTreeMap::new(),
             program: Some(program.to_owned()),
         });
-        let rooms = rooms.clone();
-        let (room, cert) = (room.clone(), cert.clone());
+        let workspaces = workspaces.clone();
+        let (workspace, cert) = (workspace.clone(), cert.clone());
         let id = *blake3::hash(program.as_bytes()).as_bytes();
-        async move { rooms.ask_for_bot(&room, &cert, id, command).await.unwrap() }
-    };
-    let row_program = |installation: String| {
-        let rooms = rooms.clone();
-        let room = room.clone();
         async move {
-            rooms
-                .installed_bot(&room, &installation)
+            workspaces
+                .ask_for_bot(&workspace, &cert, id, command)
                 .await
                 .unwrap()
-                .expect("the bot is on the room's roster")
+        }
+    };
+    let row_program = |installation: String| {
+        let workspaces = workspaces.clone();
+        let workspace = workspace.clone();
+        async move {
+            workspaces
+                .installed_bot(&workspace, &installation)
+                .await
+                .unwrap()
+                .expect("the bot is on the workspace's roster")
                 .installation
                 .program
         }
     };
-    // Ada posts until the bot answers with `text`: a runner that just
-    // started answers only what is posted after its first look.
-    let answered = |text: &'static str| {
-        let (rooms, room, cert, general) =
-            (rooms.clone(), room.clone(), cert.clone(), general.clone());
-        async move {
-            tilo_test_env::within(format!("the bot answers {text}"), async {
-                loop {
-                    ada_says(&rooms, &room, &cert, general.as_str(), "hello").await;
-                    for _ in 0..20 {
-                        if posts(&rooms, &room)
-                            .await
-                            .iter()
-                            .any(|post| post.text == text)
-                        {
-                            return;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    }
-                }
-            })
-            .await;
-        }
-    };
-    let welcomes = |rooms: Rooms, room: String| async move {
-        posts(&rooms, &room)
+    let welcomes = |workspaces: Workspaces, workspace: String| async move {
+        posts(&workspaces, &workspace)
             .await
             .iter()
             .filter(|post| post.text == "welcome!")
@@ -1625,8 +1687,8 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
         row_program(installation.clone()).await,
         tilo_automation::program::program_hash(first.as_bytes())
     );
-    answered("welcome!").await;
-    let first_answers = welcomes(rooms.clone(), room.clone()).await;
+    answered(&workspaces, &workspace, &cert, general.as_str(), "welcome!").await;
+    let first_answers = welcomes(workspaces.clone(), workspace.clone()).await;
 
     push("0.1.0-dev.2", &second).await;
     follower.follow_requests(&mut known).await;
@@ -1636,11 +1698,18 @@ async fn a_bot_program_pushed_into_a_running_room_replaces_the_one_it_runs() {
     assert_eq!(
         row_program(installation.clone()).await,
         tilo_automation::program::program_hash(second.as_bytes()),
-        "the room's row names the program it runs now"
+        "the workspace's row names the program it runs now"
     );
-    answered("welcome, again!").await;
+    answered(
+        &workspaces,
+        &workspace,
+        &cert,
+        general.as_str(),
+        "welcome, again!",
+    )
+    .await;
     assert_eq!(
-        welcomes(rooms.clone(), room.clone()).await,
+        welcomes(workspaces.clone(), workspace.clone()).await,
         first_answers,
         "the first program answers nothing once replaced"
     );

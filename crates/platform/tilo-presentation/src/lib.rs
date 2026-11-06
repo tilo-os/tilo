@@ -37,6 +37,23 @@ pub fn key_stamp(event: &WindowEvent) -> Option<(u32, u32)> {
     None
 }
 
+/// What the desktop said about the window's frame: `Some(true)` where the
+/// desktop draws it (KDE, X11 window managers), `Some(false)` where it asks
+/// the app to (GNOME on Wayland), and `None` until it says, or on a target
+/// whose desktops always draw it.
+pub fn desktop_draws_frame(window: &Window) -> Option<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        use winit::platform::wayland::WindowExtWayland as _;
+        window.server_side_decorations()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = window;
+        None
+    }
+}
+
 pub fn present(
     window: &Window,
     observer: Box<dyn FnOnce(Feedback) + Send>,

@@ -1442,6 +1442,16 @@ impl<C: Widget + 'static> Widget for Popover<C> {
     fn mark_drawn(&mut self) {
         self.dirty = false;
         crate::widget::Widget::mark_children_drawn(self);
+        // A closed panel's content is laid out in the host's tree (so
+        // reopening finds its nodes) but not painted
+        // ([`Self::for_each_layout_child`] reaches it, [`Self::children_mut`]
+        // does not). What it changed while closed is on screen as soon as it
+        // opens, which recomposes the panel and asks for that frame, so it
+        // must not keep asking for a measure in the meantime: a form with an
+        // unopened date picker kept its whole window recomposing.
+        if !self.open && self.options.is_none() {
+            self.content.mark_drawn();
+        }
     }
 
     fn name(&self) -> &'static str {

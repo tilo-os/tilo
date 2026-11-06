@@ -82,7 +82,7 @@ pub struct SearchHostFeed {
     pub published: Vec<tilo_desktop_search::providers::PublishedActions>,
     /// The host's own sources, each over what is published or a service
     /// answers.
-    pub sources: Vec<Box<dyn tilo_desktop_search::Source>>,
+    pub sources: Vec<std::sync::Arc<dyn tilo_desktop_search::Source>>,
     /// The sources the person switched off.
     pub preferences: tilo_desktop_search::SearchPreferences,
     /// Now, in Unix seconds.
@@ -171,12 +171,20 @@ pub trait SearchHost {
     /// What to search beyond the desktop's own, in the workspace
     /// `workspace`, narrowed to it unless `scope` reaches every workspace
     /// ([`Scope::Everywhere`]): then the rows of every workspace are offered
-    /// too, each saying which workspace it is in. Only a search over the
-    /// workspace asks the host at all: an app's own search and a window
-    /// group's applications are the desktop's. Called as search opens,
+    /// too, each saying which workspace it is in. Called as search opens,
     /// inside the desktop's update pass: it reads what the host keeps, never
-    /// the desktop's own tree.
+    /// the desktop's own tree. A search over the workspace and one over
+    /// every workspace ask it; an app's own search and the applications
+    /// alone ([`Self::applications`]) do not.
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed;
+    /// The apps this host opens, each an id a launch accepts, whether or not
+    /// a search is over a workspace: a window group's new tab and the empty
+    /// desk's launchpad list the applications alone, and the apps a person
+    /// can open from there are this host's. A host whose tile source already
+    /// lists them answers nothing here.
+    fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        Vec::new()
+    }
     /// Whether the host carries out `target` itself; the desktop then hands
     /// it back through [`DesktopHandle::take_search_choices`].
     fn performs(&self, target: &Target) -> bool;
@@ -231,17 +239,31 @@ pub const PALETTE_EDGE: f64 = 8.0;
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct HostAction {
     pub id: String,
+    /// What the action is called: its name, as the menus and search list it
+    /// ("Leave workspace"), never the sentence describing it, which is
+    /// `subtitle`.
     pub title: String,
     #[serde(default)]
     pub subtitle: Option<String>,
+    /// The action's own picture, by its Lucide name
+    /// ([`ui::icons::Icon::name`]): every list of it draws the one the
+    /// action declares, never a generic glyph of its kind.
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Taking something away from the person (leaving this workspace,
+    /// logging out): a menu draws it as that, and search never offers it
+    /// before anything is typed.
+    #[serde(default)]
+    pub destructive: bool,
+    /// Search offers it with nothing typed: what a person may want from the
+    /// empty card, which is making something or bringing someone in, never
+    /// a verb that only takes something away or closes this computer down.
+    #[serde(default)]
+    pub unasked: bool,
     /// What the action is about, named as the source of the notices that
     /// offer it.
     #[serde(default)]
     pub source: Option<HostActionSource>,
-    /// What a menu listing it calls it, when that differs from `title`
-    /// (the workspace menu lists "Lounge", search says "Open Lounge").
-    #[serde(default)]
-    pub label: Option<String>,
 }
 
 /// The part of the system a host action belongs to, in the desktop's
@@ -257,6 +279,9 @@ pub enum HostActionSource {
     Workspaces,
     /// Workspaces themselves: joining one, leaving this one, a new one.
     Workspace,
+    /// The session itself, on this computer: locking the screen, logging
+    /// out, restarting the computer, shutting it down.
+    Session,
 }
 
 impl HostActionSource {
@@ -265,6 +290,7 @@ impl HostActionSource {
             Self::Identity => "host-action-source-identity",
             Self::Devices => "host-action-source-devices",
             Self::Workspaces | Self::Workspace => "host-action-source-workspace",
+            Self::Session => "host-action-source-session",
         })
     }
 }
@@ -702,9 +728,12 @@ fn people(
     (workspace.id().to_string(), people)
 }
 
-/// What search offers to do: the host's actions, then what the focused
-/// window allows (no close for a window someone else holds, `held`), then
-/// the other workspaces.
+/// What search offers to do, in this order: the host's actions (a
+/// workspace's own, the session's), then what the focused window allows (no
+/// close for a window someone else holds, `held`), then the other
+/// workspaces. Each row says whether it may stand there with nothing typed:
+/// closing a window or moving to another workspace is something a person
+/// goes looking for, and typing still finds every one of them.
 fn commands(
     tree: &DesktopTree,
     host: &[HostAction],
@@ -716,6 +745,8 @@ fn commands(
             id: format!("{HOST_PREFIX}{}", action.id),
             title: action.title.clone(),
             subtitle: action.subtitle.clone(),
+            icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            unasked: action.unasked && !action.destructive,
         })
         .collect();
     if let Some(ids) = navigation::active_route(tree)
@@ -731,6 +762,8 @@ fn commands(
                 id: CLOSE_WINDOW.into(),
                 title: "Close window".into(),
                 subtitle: title.clone(),
+                icon: Some(ui::icons::Icon::X),
+                unasked: false,
             });
         }
         out.push(CommandSpec {
@@ -741,6 +774,12 @@ fn commands(
                 "Maximize window".into()
             },
             subtitle: title,
+            icon: Some(if group.maximized {
+                ui::icons::Icon::Minimize2
+            } else {
+                ui::icons::Icon::Maximize2
+            }),
+            unasked: false,
         });
     }
     for workspace in &tree.workspaces {
@@ -753,6 +792,8 @@ fn commands(
                 ),
                 title: format!("Switch to {}", workspace.name),
                 subtitle: Some("Workspace".into()),
+                icon: Some(ui::icons::Icon::LayoutGrid),
+                unasked: false,
             });
         }
     }
@@ -922,9 +963,19 @@ impl DesktopSurface {
 
     /// The applications alone, each listed: what a window group's new tab
     /// may show, the empty desk's launchpad.
+    ///
+    /// Its source is the desktop's tile source and the host's own apps
+    /// ([`SearchHost::applications`]): a session's tile source lists no app,
+    /// because the session is what starts them, so without the host's list
+    /// the applications scope would list nothing and the person could not
+    /// open anything from it.
     fn applications_search_data(&self, scope: &Scope) -> SearchData {
+        let mut applications = self.tiles.search_applications();
+        if let Some(host) = self.shared.borrow().search_host.clone() {
+            applications.extend(host.applications());
+        }
         SearchData {
-            applications: self.tiles.search_applications(),
+            applications,
             scope: scope.clone(),
             ..SearchData::default()
         }
@@ -955,7 +1006,7 @@ impl DesktopSurface {
         let mut applications = self.tiles.search_applications();
         applications.extend(feed.applications);
         let mut sources = feed.sources;
-        sources.push(Box::new(
+        sources.push(std::sync::Arc::new(
             tilo_desktop_search::providers::people::People::new(workspace, people),
         ));
         let mut data = SearchData {

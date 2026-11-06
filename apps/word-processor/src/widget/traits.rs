@@ -344,7 +344,7 @@ impl Editor {
             self.style_menu.menu_mut(),
         ] {
             if menu.is_open() {
-                menu.constrain_to(viewport);
+                menu.set_viewport(Some(viewport));
             }
         }
         if self.context_menu.is_open() {

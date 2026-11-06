@@ -28,11 +28,15 @@ use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
 mod emoji_row;
+mod folding;
+mod placement;
 mod published;
 mod query;
-use query::MenuQuery;
 
 pub use emoji_row::EmojiRow;
+pub use folding::MenuPick;
+use placement::is_point;
+use query::MenuQuery;
 
 /// What a menu row runs. Menus live on the UI thread with the widgets that
 /// open them, so a row takes the toolkit's usual single-threaded callback:
@@ -68,6 +72,10 @@ pub enum MenuItem {
         /// `Some` makes the row open a nested menu (with a chevron) instead
         /// of running `action`.
         submenu: Option<Vec<MenuItem>>,
+        /// The run of a resource's actions this row stands in (`group: "Due"`),
+        /// as the app names it: consecutive rows of one run fold into one row
+        /// that opens the run's commands ([`MenuItem::fold_groups`]).
+        group: Option<String>,
         /// The row's choice is confirmed before it runs, except that Shift
         /// skips the question for what Undo takes back
         /// ([`MenuItem::asking_first`]).
@@ -115,6 +123,7 @@ impl MenuItem {
             detail: None,
             description: None,
             submenu: None,
+            group: None,
             asks_first: false,
             address: None,
         }
@@ -445,7 +454,9 @@ pub fn note_input(event: &WindowEvent) {
 pub struct ContextMenu {
     items: Vec<MenuItem>,
     open: bool,
-    position: Option<[f32; 2]>,
+    /// What opened the menu, which it stands against: a control, a row, or a
+    /// point (a box with no area). `None` before it has ever opened.
+    anchor: Option<Rect>,
     rect: Rect,
     /// `None` when the cursor is off the menu or on a separator.
     hovered: Option<usize>,
@@ -464,7 +475,6 @@ pub struct ContextMenu {
     /// `take_selection()` after dispatching the event and mutates itself.
     /// The legacy `Arc` callback still fires too.
     selection: Option<usize>,
-    bounds: Option<(Rect, Rect)>,
     row_height: f64,
     measured_width: f64,
     /// The rows' scrolling: where they are scrolled to, the bar beside them
@@ -491,6 +501,9 @@ pub struct ContextMenu {
     /// Keyboard focus is in the nested menu.
     submenu_focused: bool,
     platform: PlatformConventions,
+    /// The host's input capabilities: on a coarse pointer a row is as tall as
+    /// a target must be, since the row is the target.
+    interaction: crate::interaction::InteractionEnvironment,
     /// The trailing column (shortcuts, chevrons) from the last measure.
     trailing_width: f64,
     /// Its coming from the pointer or the control that opened it, and
@@ -540,13 +553,12 @@ impl ContextMenu {
         Self {
             items: Vec::new(),
             open: false,
-            position: None,
+            anchor: None,
             rect: Rect::ZERO,
             hovered: None,
             last_cursor: Point::ZERO,
             opened_under: None,
             selection: None,
-            bounds: None,
             row_height: ROW_HEIGHT,
             measured_width: MENU_WIDTH,
             scroll: ScrollRegion::vertical().with_overlaid_bars(),
@@ -561,6 +573,7 @@ impl ContextMenu {
             submenu_selection: None,
             submenu_focused: false,
             platform: PlatformConventions::default(),
+            interaction: crate::interaction::InteractionEnvironment::default(),
             trailing_width: 0.0,
             appear: crate::motion::Appearing::closed(),
             drawn: crate::motion::Pose::REST,
@@ -579,14 +592,14 @@ impl ContextMenu {
 
     pub fn with_items(items: Vec<MenuItem>) -> Self {
         let mut menu = Self::new();
-        menu.items = items;
+        menu.items = MenuItem::fold_groups(items);
         menu.refilter();
         menu
     }
 
     /// Replace every row (closes an open nested menu).
     pub fn set_items(&mut self, items: Vec<MenuItem>) {
-        self.items = items;
+        self.items = MenuItem::fold_groups(items);
         self.own_rows = None;
         self.submenu = None;
         if self.hovered.is_some_and(|i| i >= self.items.len()) {
@@ -666,18 +679,12 @@ impl ContextMenu {
     /// `position`. Every app's context menus do so with no code of their
     /// own.
     pub fn open_at(&mut self, position: [f32; 2]) {
-        self.prepare_query(Point::new(f64::from(position[0]), f64::from(position[1])));
-        self.bounds = None;
-        self.scroll.set_offset(Vec2::ZERO);
-        self.open = true;
-        self.appear.show(true);
-        self.opened_under = Some(Point::new(f64::from(position[0]), f64::from(position[1])));
-        self.position = Some(position);
-        self.measured_width = MENU_WIDTH * self.text_scale;
-        self.row_height = ROW_HEIGHT * self.text_scale;
-        if let Some(viewport) = self.viewport {
-            self.constrain_to(viewport);
-        }
+        let [x, y] = position;
+        let at = Rect::new(f64::from(x), f64::from(y), f64::from(x), f64::from(y));
+        self.open_over(at);
+        // Opened at the pointer, the first row under it is armed unless that
+        // row takes something away: a stray press should not be the one that
+        // does.
         self.hovered = self
             .items
             .iter()
@@ -689,13 +696,33 @@ impl ContextMenu {
                     .iter()
                     .position(|item| item.is_enabled() && !item.is_destructive())
             });
+        self.dirty = true;
+    }
+
+    /// Open over `anchor`: a control, a row, or a point (a box with no area).
+    /// The menu stands below it, or above it where below has less room, and
+    /// inside the window it was opened in. Everything that opens a menu —
+    /// the pointer, a control, the keyboard's row — names where it stands
+    /// this way, so they are placed by one rule.
+    pub fn open_over(&mut self, anchor: Rect) {
+        self.prepare_query(anchor.center());
+        self.scroll.set_offset(Vec2::ZERO);
+        self.open = true;
+        self.appear.show(true);
+        self.opened_under = is_point(anchor).then_some(anchor.origin());
+        self.anchor = Some(anchor);
+        self.hovered = None;
+        self.measured_width = MENU_WIDTH * self.text_scale;
+        self.row_height = self.row_floor();
         self.layout_at_position();
         self.dirty = true;
     }
 
+    /// Open at `position` inside `viewport`: a menu a widget owns as a field
+    /// rather than a tree node, so no frame gives it the window.
     pub fn open_at_clamped(&mut self, position: [f32; 2], viewport: Rect) {
-        self.set_viewport(Some(viewport));
         self.open_at(position);
+        self.set_viewport(Some(viewport));
     }
 
     /// Update menu geometry for the system text scale.
@@ -708,10 +735,17 @@ impl ContextMenu {
         if (self.text_scale - scale).abs() > f64::EPSILON {
             self.text_scale = scale;
             self.measured_width = MENU_WIDTH * scale;
-            self.row_height = ROW_HEIGHT * scale;
+            self.row_height = self.row_floor();
             self.layout_at_position();
             self.dirty = true;
         }
+    }
+
+    /// The smallest a row may be: the text's line and its air, and on a
+    /// coarse pointer the toolkit's minimum target, since the row itself is
+    /// what a finger presses.
+    fn row_floor(&self) -> f64 {
+        (ROW_HEIGHT * self.text_scale).max(f64::from(self.interaction.minimum_target()))
     }
 
     /// Keep the menu inside an owner-provided viewport. It opens on the side
@@ -724,9 +758,6 @@ impl ContextMenu {
             self.viewport = viewport;
             self.dirty = true;
         }
-        if let Some(viewport) = self.viewport {
-            self.constrain_to(viewport);
-        }
         self.layout_at_position();
     }
 
@@ -736,8 +767,8 @@ impl ContextMenu {
     /// Opened by the context-menu gesture, it takes typing as
     /// [`Self::open_at`] does, a question pointed at the anchor.
     pub fn open_anchored(&mut self, anchor: Rect, viewport: Rect) {
-        self.prepare_query(anchor.center());
-        self.show_anchored(anchor, viewport);
+        self.set_viewport(Some(viewport));
+        self.open_over(anchor);
     }
 
     /// Open at `anchor` with the rows it has: a nested menu, whose parent
@@ -752,24 +783,14 @@ impl ContextMenu {
         self.dirty = true;
     }
 
+    /// Stand an open menu against `anchor`, placed inside `viewport`.
     pub fn reanchor(&mut self, anchor: Rect, viewport: Rect) {
-        if self.bounds != Some((anchor, viewport)) {
-            self.bounds = Some((anchor, viewport));
+        if self.anchor != Some(anchor) || self.viewport != Some(viewport) {
+            self.anchor = Some(anchor);
+            self.viewport = Some(viewport);
             self.dirty = true;
         }
         self.layout_at_position();
-    }
-
-    /// Keep a standalone menu inside its owner's current viewport, preserving
-    /// its opening anchor across resize and text-metric changes.
-    pub fn constrain_to(&mut self, viewport: Rect) {
-        let anchor = self.bounds.map(|(anchor, _)| anchor).or_else(|| {
-            self.position
-                .map(|[x, y]| Rect::new(f64::from(x), f64::from(y), f64::from(x), f64::from(y)))
-        });
-        if let Some(anchor) = anchor {
-            self.reanchor(anchor, viewport);
-        }
     }
 
     fn has_leading_gutter(&self) -> bool {
@@ -848,7 +869,8 @@ impl ContextMenu {
                     * crate::tokens::Metrics::text_growth(theme.text_scale),
             ));
         self.row_height = (height + f64::from(theme.tokens.spacing.s2))
-            .max(f64::from(theme.tokens.metrics.menu_row_height));
+            .max(f64::from(theme.tokens.metrics.menu_row_height))
+            .max(self.row_floor());
         if measured != (self.measured_width, self.row_height, self.trailing_width) {
             self.dirty = true;
         }
@@ -900,7 +922,7 @@ impl ContextMenu {
     }
 
     fn body_rect(&self) -> Rect {
-        let inset = if self.bounds.is_some() {
+        let inset = if self.anchor.is_some() {
             PADDING.min(self.rect.height() / 4.0)
         } else {
             PADDING
@@ -921,16 +943,27 @@ impl ContextMenu {
 
     /// Painted (clipped) geometry of an action row, in host coordinates.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
-        if !self.open || !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
+        if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
             return None;
         }
-        if !self.shown.contains(&index) {
+        let rect = self.row_bounds(index)?.intersect(self.body_rect());
+        (!rect.is_zero_area()).then_some(rect)
+    }
+
+    /// The box a row occupies in the rows' scrolling, on screen or scrolled past the panel's
+    /// edge: where the row is, so a reader of the menu finds it there rather than nowhere.
+    pub fn row_bounds(&self, index: usize) -> Option<Rect> {
+        if !self.open || !self.shown.contains(&index) {
             return None;
         }
         let body = self.body_rect();
         let top = body.y0 - self.scroll.offset().y + self.row_top(index);
-        let rect = Rect::new(body.x0, top, body.x1, top + self.item_height(index)).intersect(body);
-        (!rect.is_zero_area()).then_some(rect)
+        Some(Rect::new(
+            body.x0,
+            top,
+            body.x1,
+            top + self.item_height(index),
+        ))
     }
 
     pub fn focus_item(&mut self, index: usize) -> bool {
@@ -954,7 +987,7 @@ impl ContextMenu {
     }
 
     fn ensure_hover_visible(&mut self) {
-        if self.bounds.is_none() {
+        if self.anchor.is_none() {
             return;
         }
         self.place_scroll();
@@ -992,137 +1025,6 @@ impl ContextMenu {
             self.dirty = true;
         }
         moved
-    }
-
-    /// Give the scroll region the rows' box and how tall they are, and the
-    /// step a wheel line takes (one row). It keeps the offset inside them.
-    fn place_scroll(&mut self) {
-        let body = self.body_rect();
-        let offset = self.scroll.offset();
-        self.scroll.set_viewport(body, &self.theme);
-        self.scroll
-            .set_content_size(body.width(), self.content_height());
-        self.scroll.set_line_step(self.row_height());
-        // A viewport that no longer holds the rows scrolls them back.
-        if self.scroll.offset() != offset {
-            self.dirty = true;
-        }
-    }
-
-    /// Mirrors the `build_layout` + `apply_layout` geometry without a taffy
-    /// round-trip. A no-op when the menu has never been positioned. Lets a
-    /// standalone consumer (one that owns a `ContextMenu` as a field rather
-    /// than a tree node) hit-test and draw the menu directly.
-    pub fn layout_at_position(&mut self) {
-        let was = self.rect;
-        self.place_at_position();
-        if self.rect != was {
-            self.dirty = true;
-        }
-    }
-
-    /// The panel's box for the state it is in.
-    fn place_at_position(&mut self) {
-        if let Some((anchor, viewport)) = self.bounds {
-            // Every anchored floating panel keeps the same air from the
-            // window's edges (`floating_surface::viewport_margin`, the `s2`
-            // step), popovers and menus alike. A window too small for the
-            // menu and its air gives up the air first, on that axis only.
-            let full = self.content_height() + PADDING * 2.0 + self.query_height();
-            let margin_x = PADDING
-                .min((viewport.width() - self.measured_width) / 2.0)
-                .max(0.0);
-            let margin_y = PADDING.min((viewport.height() - full) / 2.0).max(0.0);
-            let viewport = Rect::new(
-                viewport.x0 + margin_x,
-                viewport.y0 + margin_y,
-                viewport.x1 - margin_x,
-                viewport.y1 - margin_y,
-            );
-            let width = self.measured_width.min(viewport.width().max(0.0));
-            // A pointer position opens the menu right at it; a control
-            // opens it `s1` off its edge.
-            let gap = if anchor.width() > 0.0 && anchor.height() > 0.0 {
-                ANCHOR_GAP
-            } else {
-                0.0
-            };
-            if matches!(self.side, PopoverSide::Left | PopoverSide::Right) {
-                // A nested menu opens beside its row, its first row level
-                // with it: the panel starts one inset above the row.
-                let height = full.min(viewport.height().max(0.0));
-                let row = anchor.inflate(0.0, PADDING);
-                self.rect = floating_surface::place_aligned(
-                    row,
-                    (width, height),
-                    self.side,
-                    PanelAlign::Leading,
-                    0.0,
-                    viewport,
-                )
-                .0;
-                self.place_scroll();
-                return;
-            }
-            let below = floating_surface::anchored_room(anchor, PopoverSide::Below, gap, viewport);
-            let above = floating_surface::anchored_room(anchor, PopoverSide::Above, gap, viewport);
-            // Taller than the room on its side, a menu opened from a control
-            // takes the side with more room and scrolls its rows, so the
-            // control stays in view. A menu opened at the pointer has no
-            // control to keep clear: where neither side holds all of it, it
-            // covers the point and takes as much of the viewport as it needs,
-            // as it does when neither side holds a row.
-            let room = if below >= full {
-                below
-            } else {
-                below.max(above)
-            };
-            let one_row = (self.row_height + PADDING * 2.0).min(full);
-            let beside = if gap > 0.0 {
-                room >= one_row
-            } else {
-                room >= full
-            };
-            let rect = if beside {
-                let height = full.min(room).min(viewport.height().max(0.0));
-                floating_surface::place_aligned(
-                    anchor,
-                    (width, height),
-                    PopoverSide::Below,
-                    self.align,
-                    gap,
-                    viewport,
-                )
-                .0
-            } else {
-                let height = full.min(viewport.height().max(0.0));
-                let x = anchor
-                    .x0
-                    .clamp(viewport.x0, (viewport.x1 - width).max(viewport.x0));
-                let y = anchor
-                    .y0
-                    .clamp(viewport.y0, (viewport.y1 - height).max(viewport.y0));
-                Rect::new(x, y, x + width, y + height)
-            };
-            // Narrowed by a query, it keeps the top edge it opened with and
-            // gives up height at the bottom: the field stays put.
-            let rect = match self.pinned_top {
-                Some(top) if top + rect.height() <= viewport.y1 + 0.5 => {
-                    Rect::new(rect.x0, top, rect.x1, top + rect.height())
-                }
-                _ => rect,
-            };
-            self.rect = rect;
-            self.place_scroll();
-            return;
-        }
-        let Some([px, py]) = self.position else {
-            return;
-        };
-        let height = PADDING * 2.0 + self.query_height() + self.content_height().max(ROW_HEIGHT);
-        let x0 = f64::from(px);
-        let y0 = f64::from(py);
-        self.rect = Rect::new(x0, y0, x0 + self.legacy_width(), y0 + height);
     }
 
     /// Safe to call when already closed.
@@ -1179,10 +1081,17 @@ impl ContextMenu {
         bounds
     }
 
-    /// Preserved across `close()` so callers can re-open at the same spot.
-    /// `None` before the menu has ever been opened.
+    /// The point a pointer opened the menu at, preserved across `close()`
+    /// so callers can re-open at the same spot. `None` before the menu has
+    /// ever been opened, and for a menu a control or a row opened.
     pub fn position(&self) -> Option<[f32; 2]> {
-        self.position
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a menu anchor is a logical pixel position on screen"
+        )]
+        self.anchor
+            .filter(|anchor| is_point(*anchor))
+            .map(|anchor| [anchor.x0 as f32, anchor.y0 as f32])
     }
 
     /// Lets a consumer route a left-click to
@@ -1267,9 +1176,7 @@ impl ContextMenu {
             return;
         };
         let viewport = self
-            .bounds
-            .map(|(_, viewport)| viewport)
-            .or(self.viewport)
+            .viewport
             .unwrap_or(Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6));
         let mut menu = ContextMenu::with_items(items.to_vec());
         menu.side = if self.side == PopoverSide::Left {
@@ -1279,6 +1186,7 @@ impl ContextMenu {
         };
         menu.platform = self.platform;
         menu.text_scale = self.text_scale;
+        menu.interaction = self.interaction;
         menu.row_height = self.row_height;
         menu.show_anchored(
             Rect::new(self.rect.x0, row.y0, self.rect.x1, row.y1),
@@ -1472,6 +1380,10 @@ const MENU_WIDTH: f64 = 220.0;
 const CAPTION_ROW_SHARE: f64 = 0.75;
 /// The air between the query field and the first row: the `s1` step.
 const QUERY_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+/// The rows a menu needs before it takes typing: a short menu is read at a
+/// glance, and a field over it only pushes the commands away. At and below
+/// this many, the menu opens as a plain list.
+pub(super) const QUERY_MIN_ROWS: usize = 12;
 /// How far, in logical pixels, the pointer may be from where the menu opened
 /// and still count as not having moved: the opening position went through
 /// `f32`, the pointer's did not.
@@ -1753,16 +1665,11 @@ impl ContextMenu {
         self.scroll.paint_bars(scene, transform, theme);
     }
 
-    /// Where the menu comes from: the control or row it is anchored to, or
-    /// the point it was opened at.
+    /// Where the menu comes from: the control, row or point it stands
+    /// against.
     fn appear_anchor(&self) -> Point {
-        if let Some((anchor, _)) = self.bounds {
-            return anchor.center();
-        }
-        self.position.map_or_else(
-            || self.rect.center(),
-            |[x, y]| Point::new(f64::from(x), f64::from(y)),
-        )
+        self.anchor
+            .map_or_else(|| self.rect.center(), |anchor| anchor.center())
     }
 }
 
@@ -1795,6 +1702,23 @@ impl Widget for ContextMenu {
         if self.platform != conventions {
             self.platform = conventions;
             self.dirty = true;
+        }
+    }
+
+    /// A row is the target a person presses, so on a coarse pointer it grows
+    /// to the toolkit's minimum and the menu is placed again around it.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        if self.interaction != environment {
+            self.interaction = environment;
+            self.row_height = self.row_height.max(self.row_floor());
+            if let Some((_, menu)) = self.submenu.as_mut() {
+                menu.set_interaction_environment(environment);
+            }
+            self.dirty = true;
+            self.layout_at_position();
         }
     }
 
@@ -1832,25 +1756,17 @@ impl Widget for ContextMenu {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        if self.bounds.is_some() {
-            self.layout_at_position();
-            return;
-        }
-        // The caller-provided anchor wins when open; otherwise the
-        // taffy-assigned position keeps offscreen/closed menus sensible.
-        if self.open && self.position.is_some() {
+        // Where it stands against what opened it wins over the node's own
+        // place; a menu that never opened keeps the position layout gave it.
+        if self.anchor.is_some() {
             self.layout_at_position();
             return;
         }
         let l = taffy.layout(node).copied().unwrap_or_default();
-        let (x0, y0) = if let (true, Some([px, py])) = (self.open, self.position) {
-            (f64::from(px), f64::from(py))
-        } else {
-            (
-                origin.x + f64::from(l.location.x),
-                origin.y + f64::from(l.location.y),
-            )
-        };
+        let (x0, y0) = (
+            origin.x + f64::from(l.location.x),
+            origin.y + f64::from(l.location.y),
+        );
         self.rect = Rect::new(
             x0,
             y0,
@@ -1891,18 +1807,16 @@ impl Widget for ContextMenu {
             self.drawn = crate::motion::Pose::REST;
             return;
         }
-        // A menu opened at a point with no viewport of its own flips and
-        // shifts inside the window it is presented in.
-        if self.bounds.is_none()
-            && self.viewport.is_none()
+        // A menu without a viewport of its own flips and shifts inside the
+        // window it is presented in.
+        if self.viewport.is_none()
             && let Some(window) = presence.viewport.get()
         {
             self.set_viewport(Some(window));
         }
 
-        // Measure in both modes: an anchored menu hugs its labels, a
-        // point-placed one keeps its origin and reference width but grows
-        // its rows (and, past the reference width, its width) to the text.
+        // Measure against its labels: a menu hugs them, and its rows grow
+        // with the text and to the minimum target on a coarse pointer.
         self.layout_within(text_renderer, theme);
         // The row the menu acts on stays marked while it is open.
         if let Some(row) = self.anchor_row {
@@ -1990,9 +1904,9 @@ impl Widget for ContextMenu {
                 // Not marked handled (so cursor presence still flows) —
                 // only presses are.
             }
-            // Over the menu, or anywhere while an anchored menu is open.
+            // Over the menu, or anywhere while it is open.
             WindowEvent::MouseWheel { delta, .. }
-                if self.bounds.is_some()
+                if self.anchor.is_some()
                     || self.contains([self.last_cursor.x, self.last_cursor.y]) =>
             {
                 if !self.scroll_event(event, ctx) {
@@ -2208,7 +2122,7 @@ impl Widget for ContextMenu {
                     return Some(
                         AccessNode::new(Role::StaticText)
                             .with_name(text.clone())
-                            .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
+                            .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
                             .with_state(AccessState {
                                 hidden: !self.open,
                                 ..Default::default()
@@ -2231,7 +2145,7 @@ impl Widget for ContextMenu {
                 let mut node = AccessNode::new(Role::MenuItem)
                     .with_name(label.clone())
                     .with_action_target(format!("context-menu:item:{index}"))
-                    .with_bounds(self.item_rect(index).unwrap_or(Rect::ZERO))
+                    .with_bounds(self.row_bounds(index).unwrap_or(Rect::ZERO))
                     .with_position(action_position, action_count)
                     .with_state(AccessState {
                         focusable: *enabled,
@@ -2438,6 +2352,17 @@ impl crate::widget::Decorator for MenuButton {
         Widget::set_platform_conventions(&mut self.menu, conventions);
     }
 
+    // The menu is a child only while it is open, so it hears the host's
+    // input capabilities whenever they change, closed or not: its rows are
+    // the size of a target the next time it opens.
+    fn set_interaction_environment(
+        &mut self,
+        environment: crate::interaction::InteractionEnvironment,
+    ) {
+        self.button.set_interaction_environment(environment);
+        self.menu.set_interaction_environment(environment);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2488,6 +2413,17 @@ impl crate::widget::Decorator for MenuButton {
             return true;
         }
         Widget::perform_action(&mut self.button, action, &[], state, root)
+    }
+
+    // The menu stands against the button, not in the button's box: the pass
+    // places it too, so its edges land on the display's pixels.
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        Widget::apply_layout(&mut self.button, taffy, node, origin);
+        if self.menu.is_open()
+            && let Some(window) = self.window
+        {
+            self.menu.reanchor(Widget::get_rect(&self.button), window);
+        }
     }
 
     fn draw_overlay(
@@ -2578,6 +2514,9 @@ mod tests;
 
 #[cfg(test)]
 mod bounded_tests;
+
+#[cfg(test)]
+mod placement_tests;
 
 #[cfg(test)]
 mod nested_and_anchored_tests {

@@ -26,6 +26,8 @@ fn app(tab: TabId, title: &str, app: &str) -> Tab {
             note: String::new(),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -38,6 +40,8 @@ fn window(tab: TabId, title: &str, app_id: &str) -> Tab {
             surface_id: tab.saturating_add(900),
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 

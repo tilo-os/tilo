@@ -1,5 +1,5 @@
 //! This device's own workspace host: the same host a relay runs
-//! (`room_host::RoomHost`), in this process, serving the workspaces placed
+//! (`room_host::WorkspaceHost`), in this process, serving the workspaces placed
 //! on this device.
 //!
 //! The actor's router is built before any workspace is hosted, so it carries the
@@ -11,7 +11,7 @@
 //!
 //! The device's native owner is a member of every workspace it holds, these
 //! included: for a workspace hosted here its session goes to this host over an
-//! in-process carrier (`RoomHost::connect_local`), through the same
+//! in-process carrier (`WorkspaceHost::connect_local`), through the same
 //! handshake and session code a remote member's takes over iroh. An
 //! endpoint cannot dial itself, and a session that never leaves the
 //! process keeps no relay up and arms no timer.
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// The ALPN handlers a host serves, for the actor's router.
 pub use room_host::Protocols;
-use room_host::{HostSlot, RoomHost};
+use room_host::{HostSlot, WorkspaceHost};
 /// Where the workspace host lives: the one place its path is named.
 pub use tilo_room_host::host as room_host;
 
@@ -30,7 +30,7 @@ pub struct LocalHost(Arc<Inner>);
 
 struct Inner {
     slot: HostSlot,
-    host: Mutex<Option<Arc<RoomHost>>>,
+    host: Mutex<Option<Arc<WorkspaceHost>>>,
 }
 
 impl std::fmt::Debug for LocalHost {
@@ -58,7 +58,7 @@ impl LocalHost {
 
     /// The open host, if this device hosts workspaces.
     #[must_use]
-    pub fn get(&self) -> Option<Arc<RoomHost>> {
+    pub fn get(&self) -> Option<Arc<WorkspaceHost>> {
         self.0
             .host
             .lock()
@@ -87,7 +87,7 @@ impl LocalHost {
     /// Serve `host` from now on: its protocols answer on the router, and
     /// the native owner reaches its workspaces through it. A host already
     /// installed stays; the one answered is the host in use.
-    pub fn install(&self, host: Arc<RoomHost>) -> Arc<RoomHost> {
+    pub fn install(&self, host: Arc<WorkspaceHost>) -> Arc<WorkspaceHost> {
         let mut installed = self.0.host.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(current) = installed.as_ref() {
             return Arc::clone(current);

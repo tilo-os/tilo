@@ -94,6 +94,8 @@ mod crash;
 #[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
+mod directory;
+#[cfg(target_arch = "wasm32")]
 mod feedback_code;
 #[cfg(target_arch = "wasm32")]
 mod feedback_composer;
@@ -151,13 +153,7 @@ mod page_person;
 #[cfg(target_arch = "wasm32")]
 mod peer;
 #[cfg(target_arch = "wasm32")]
-mod person_chat;
 #[cfg(target_arch = "wasm32")]
-pub use person_chat::{PrivateAnswer, ask_private};
-#[cfg(target_arch = "wasm32")]
-mod app_loans;
-#[cfg(target_arch = "wasm32")]
-pub use app_loans::{Lend, lend_on_mount};
 // The person's own records each window holds: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 mod person_records;

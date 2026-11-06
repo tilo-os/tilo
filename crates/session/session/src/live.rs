@@ -32,7 +32,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use collab_types::scope::Scope;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use tilo_call_lane::Roster;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::grant;
 use tilo_live::live::{self, Namespace, Track};
@@ -41,6 +40,7 @@ use tilo_live::plane::{Heard, Join, Plane, PlaneError};
 use tilo_live::relay::{
     Denied, Direction, Peer, Relay, RelayAuthority, SessionAuthorization, VoiceRoute,
 };
+use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
 use tilo_user_identity::DeviceCert;
@@ -288,6 +288,7 @@ where
     for candidate in candidates.iter().copied() {
         match open(candidate).await {
             Ok(opened) => return Some((candidate, opened)),
+            // ignored-failure: an unreachable relay is skipped, and the next is tried
             Err(error) => tracing::debug!(relay = %hex::encode(candidate), %error,
                 "this relay of the workspace was not reached"),
         }
@@ -296,6 +297,29 @@ where
 }
 
 impl Shared {
+    /// This workspace's members and the devices among them that may relay its
+    /// live plane, in the order every device tries them; `None` — after
+    /// withdrawing the plane — when the membership is unknown or names no
+    /// relay.
+    fn relay_candidates(&self, workspace: WorkspaceId) -> Option<(Vec<Member>, Vec<[u8; 32]>)> {
+        let members = match channels::members_of(&self.engine, workspace) {
+            Ok(members) => members,
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "the live plane's membership is unknown");
+                self.withdraw(workspace);
+                return None;
+            }
+        };
+        let candidates = relays_of(&members, now_ns());
+        if candidates.is_empty() {
+            // No member may relay it: the workspace has no live plane.
+            tracing::debug!(%workspace, "no member may relay this workspace's live plane");
+            self.withdraw(workspace);
+            return None;
+        }
+        Some((members, candidates))
+    }
+
     /// Read `workspace` as it is now and join through the first of its relays
     /// this device reaches, move the plane's keys and roster when they changed,
     /// or leave when the workspace names no relay any more.
@@ -305,21 +329,9 @@ impl Shared {
         endpoint: &Endpoint,
         relay: Option<&Relay>,
     ) {
-        let members = match channels::members_of(&self.engine, workspace) {
-            Ok(members) => members,
-            Err(error) => {
-                tracing::debug!(%workspace, %error, "the live plane's membership is unknown");
-                self.withdraw(workspace);
-                return;
-            }
-        };
-        let candidates = relays_of(&members, now_ns());
-        if candidates.is_empty() {
-            // No member may relay it: the workspace has no live plane.
-            tracing::debug!(%workspace, "no member may relay this workspace's live plane");
-            self.withdraw(workspace);
+        let Some((members, candidates)) = self.relay_candidates(workspace) else {
             return;
-        }
+        };
         // The plane's tracks are sealed under the workspace's media channel:
         // taking part in it asks the workspace's devices for access, and the
         // plane opens on the keys arriving.
@@ -544,6 +556,7 @@ impl Shared {
                         .lock_recover()
                         .insert((workspace, other), Bridged { _copy: bridge });
                 }
+                // ignored-failure: an unreachable relay is skipped, and the next is tried
                 Err(error) => tracing::debug!(%workspace, relay = %hex::encode(other), %error,
                     "the other relay of this workspace was not reached"),
             }
@@ -706,6 +719,18 @@ impl Live {
             .lock_recover()
             .get(&workspace)
             .and_then(|joined| joined.plane.try_recv())
+    }
+
+    /// The planes this device is in, by workspace: what a call's audio is
+    /// published into, and who it hears there.
+    #[must_use]
+    pub fn planes(&self) -> Vec<(WorkspaceId, Arc<Plane>)> {
+        self.shared
+            .planes
+            .lock_recover()
+            .iter()
+            .map(|(workspace, joined)| (*workspace, Arc::clone(&joined.plane)))
+            .collect()
     }
 
     /// The device relaying `workspace`, while this session has a plane there.

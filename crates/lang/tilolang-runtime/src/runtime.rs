@@ -114,7 +114,10 @@ impl Runtime {
     ) -> Result<Self, RuntimeError> {
         let core = Core::new(Box::new(store), Box::new(authority), limits)
             .map_err(RuntimeError::Package)?;
-        Ok(Self { core })
+        let runtime = Self { core };
+        // The types the host provides to every module, such as `Invocation`.
+        runtime.publish_types();
+        Ok(runtime)
     }
 
     /// Compile a module (cached by content hash), check it exports everything its metadata
@@ -135,6 +138,7 @@ impl Runtime {
             .borrow_mut()
             .add(pkg)
             .map_err(RuntimeError::Package)?;
+        self.publish_types();
         Ok(hash)
     }
 
@@ -159,7 +163,15 @@ impl Runtime {
             .borrow_mut()
             .replace(pkg)
             .map_err(RuntimeError::Package)?;
+        self.publish_types();
         Ok(hash)
+    }
+
+    /// Give the store the types every loaded package declares: what a store that works a
+    /// derived key out as it reads it finds the key and its parent field by.
+    fn publish_types(&self) {
+        let types = self.core.registry.borrow().loaded_types();
+        self.core.store.borrow_mut().loaded_types(&types);
     }
 
     fn check_exports(&self, hash: &ModuleHash, meta: &Meta) -> Result<(), RuntimeError> {
@@ -180,7 +192,19 @@ impl Runtime {
                 a.params
                     .iter()
                     .filter_map(|p| p.default.as_ref().map(|d| d.export.clone()))
-            }));
+            }))
+            .chain(
+                meta.actions
+                    .iter()
+                    .filter(|a| a.guard)
+                    .map(|a| tilolang::ir::guard_export(&a.id)),
+            )
+            .chain(
+                meta.actions
+                    .iter()
+                    .filter(|a| a.applies)
+                    .map(|a| tilolang::ir::applies_export(&a.id)),
+            );
         for name in wanted {
             if !exports.contains(&name) {
                 return Err(RuntimeError::Package(format!(
@@ -227,14 +251,19 @@ impl Runtime {
     /// `Package` for a description that does not read, or one that reuses another package's
     /// declaration ids.
     pub fn load_foreign(&self, meta: Meta) -> Result<PackageId, RuntimeError> {
+        let app = meta.app.clone();
         let hash = ModuleHash::of_bytes(&meta.to_json_bytes());
         let pkg = crate::registry::Package::foreign(hash, meta).map_err(RuntimeError::Package)?;
-        self.core
+        let hash = self
+            .core
             .registry
             .borrow_mut()
             .add(pkg)
             .map(|pkg| pkg.hash.clone())
-            .map_err(RuntimeError::Package)
+            .map_err(RuntimeError::Package)?;
+        self.publish_types();
+        self.package_arrived(&app);
+        Ok(hash)
     }
 
     /// Load another app's package with its module: its views run here, inline in the views
@@ -251,6 +280,7 @@ impl Runtime {
         let hash = self.core.engine.compile(wasm)?;
         self.add_catalogues(wasm);
         self.check_exports(&hash, &meta)?;
+        let app = meta.app.clone();
         let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
             .map_err(RuntimeError::Package)?;
         self.core
@@ -258,7 +288,19 @@ impl Runtime {
             .borrow_mut()
             .add(pkg)
             .map_err(RuntimeError::Package)?;
+        self.publish_types();
+        self.package_arrived(&app);
         Ok(hash)
+    }
+
+    /// Another app's package is loaded: a view call that read a resource of a type no package
+    /// declared until now runs again, and draws it through that app's own views.
+    fn package_arrived(&self, app: &str) {
+        let arrivals = self.core.wanted_packages.borrow_mut().arrived(app);
+        self.core.view_states.borrow_mut().set(
+            crate::foreign::packages_key(),
+            Value::Int(i64::try_from(arrivals).unwrap_or(i64::MAX)),
+        );
     }
 
     /// Unload the app `app` this runtime does not run, which nothing here shows any more: its
@@ -267,6 +309,7 @@ impl Runtime {
     pub fn unload_foreign(&self, app: &str) -> bool {
         let removed = self.core.registry.borrow_mut().remove_foreign(app);
         self.core.foreign.borrow_mut().forget_app(app);
+        self.core.wanted_packages.borrow_mut().forget(app);
         removed
     }
 
@@ -276,6 +319,19 @@ impl Runtime {
     /// out once; until its reading comes, it reads as it would start.
     pub fn take_wanted(&self) -> Vec<(String, String)> {
         self.core.foreign.borrow_mut().take_wanted()
+    }
+
+    /// The apps whose package a view read a resource of before it was loaded here, each with
+    /// the type as the view named it (`<app>#<Type>`): what the host loads
+    /// ([`Runtime::load_foreign_package`]). Each app is asked for once; until its package
+    /// comes, the view that read it shows its waiting state.
+    pub fn take_wanted_packages(&self) -> Vec<(String, String)> {
+        self.core.wanted_packages.borrow_mut().take()
+    }
+
+    /// Whether a view waits on the package of an app no host has served yet.
+    pub fn wants_packages(&self) -> bool {
+        self.core.wanted_packages.borrow().wants()
     }
 
     /// Whether `error` — a view call's failure — was waiting on a reading that has not arrived
@@ -360,6 +416,7 @@ impl Runtime {
                 let target = crate::render::ViewTarget {
                     module: pkg.hash.clone(),
                     export: "b_main".to_owned(),
+                    view: String::new(),
                     params: Vec::new(),
                 };
                 let window = crate::view_instance::default_window(&target, &[]);
@@ -452,6 +509,7 @@ impl Runtime {
             action: action.to_owned(),
             args,
             author: None,
+            from: None,
         };
         self.core.record_suggestion(invoker, &aref, suggestion)
     }
@@ -472,6 +530,21 @@ impl Runtime {
     ) -> Result<String, RuntimeError> {
         self.core
             .resolve_invocation(invocation, approver, resolution)
+    }
+
+    /// The proposals waiting on `resource`: each the `Invocation` it waits in and what it says,
+    /// with the person or agent who proposed it. Empty when nobody proposed anything that is
+    /// still undecided.
+    ///
+    /// # Errors
+    ///
+    /// Never for a resource that exists; a store that cannot be read says nothing waits.
+    #[must_use]
+    pub fn proposals_of(
+        &self,
+        resource: &ResourceRef,
+    ) -> Vec<(ResourceRef, crate::InvocationRecord)> {
+        self.core.proposals_of(resource)
     }
 
     /// What the host recorded for an `Invocation` resource.
@@ -557,6 +630,24 @@ impl Runtime {
         action: impl Into<ActionRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
         self.core.invoke_direct(principal, &action.into())
+    }
+
+    /// [`Runtime::invoke_action`] made from the resource `from`: what the resources the action
+    /// creates were made from, recorded in the change it makes (`created(r)?.from`,
+    /// [`crate::Store::linked`]). What a "make from this" menu, or an agent working from
+    /// something it read, sets.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::invoke_action`].
+    pub fn invoke_action_from(
+        &self,
+        principal: &Principal,
+        action: impl Into<ActionRef>,
+        from: &crate::value::ResourceRef,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.core
+            .invoke_direct_from(principal, &action.into(), Some(from))
     }
 
     /// The arguments of an invocation of `action` with those left out (`None`) given their
@@ -652,8 +743,9 @@ impl Runtime {
         )
     }
 
-    /// Open a view for `principal` in the window `window`: its `window` state is the one every
-    /// view in that window shares, its `lens` state the principal's own there.
+    /// Open a view for `principal` in the window `window`: its `window` state is how their
+    /// window shows the resource and its `lens` state where they are in it, both that person's
+    /// own, so another person looking at the same window is not moved by either.
     ///
     /// # Errors
     ///
@@ -716,6 +808,60 @@ impl Runtime {
         project(&self.core, value, opts)
     }
 
+    /// Why the action `action` cannot run on the resource `subject` now, as the requirements its
+    /// subject alone decides say: the first that does not hold, in `viewer`'s words. `None` while
+    /// it can run, and for an action whose app keeps no requirement the subject decides.
+    ///
+    /// # Errors
+    ///
+    /// A requirement that traps, or answers something else than a text.
+    pub fn refusal(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<Option<String>, RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .refusal(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("a guard waited on a decision".into())
+                }
+            })
+    }
+
+    /// As [`Runtime::refusal`], with what reading the requirement read: the fields it read, each
+    /// once, and whether it read more than the workspace holds (the clock, the window's space,
+    /// the person's view state), which no change in the workspace moves.
+    ///
+    /// # Errors
+    ///
+    /// A requirement that traps, or answers something else than a text.
+    pub fn refusal_reading(
+        &self,
+        action: &str,
+        subject: &ResourceRef,
+        viewer: &Principal,
+    ) -> Result<(Option<String>, Reading), RuntimeError> {
+        let subject = crate::value::RefValue {
+            target: Rc::new(subject.clone()),
+            author: None,
+        };
+        self.core
+            .refusal_reading(action, &subject, viewer)
+            .map_err(|error| match error {
+                crate::engine::HostFail::Trap(message) => RuntimeError::Package(message),
+                crate::engine::HostFail::Suspend => {
+                    RuntimeError::Package("a guard waited on a decision".into())
+                }
+            })
+    }
+
     /// Signatures of every loaded package, for discovery ([`catalogue`](mod@crate::catalogue)).
     pub fn catalogue(&self) -> Vec<Signature> {
         let pkgs = self.core.registry.borrow().packages();
@@ -744,6 +890,20 @@ impl Runtime {
     /// 9am" in. Until it is set, UTC.
     pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
         *self.core.zone.borrow_mut() = Some(Box::new(zone));
+    }
+
+    /// The person's zone as its IANA name (`Europe/Berlin`): a repeating item keeps its wall time
+    /// of day across a change of clocks in it, and a day begins there first. Until it is set, a
+    /// day and a moment are read by [`Runtime::set_zone`]'s offset, and an occurrence keeps the
+    /// time of day that offset gives it.
+    pub fn set_zone_name(&self, zone: impl Fn() -> Option<String> + 'static) {
+        *self.core.zone_name.borrow_mut() = Some(Box::new(zone));
+    }
+
+    /// The day the person's region starts its week on, as days from Monday (`0`): the day a
+    /// day's `start_of_week` goes back to. Monday until it is set.
+    pub fn set_week_start(&self, start: impl Fn() -> i64 + 'static) {
+        *self.core.week_start.borrow_mut() = Some(Box::new(start));
     }
 
     /// Where the words packages and the platform show come from, in the reader's language
@@ -876,6 +1036,18 @@ impl Runtime {
     /// record.
     pub fn take_seen(&self) -> Vec<crate::seen::SeenWrite> {
         std::mem::take(&mut *self.core.seen_writes.borrow_mut())
+    }
+
+    /// The window and lens state the person set in views since last asked, for the host to
+    /// keep in their own record: one entry per slot, as it is now.
+    pub fn take_view_writes(&self) -> Vec<(crate::view_state::StateKey, Value)> {
+        self.core.view_states.borrow_mut().take_writes()
+    }
+
+    /// Put back a slot of window or lens state the person's record keeps: what they picked
+    /// here before, or on another device of theirs. A slot already holding it is left alone.
+    pub fn set_view_state(&self, key: crate::view_state::StateKey, value: Value) -> bool {
+        self.core.view_states.borrow_mut().restore(key, value)
     }
 
     /// The workspace's members now, from its membership, and how its grants decide who of
@@ -1072,4 +1244,16 @@ impl Runtime {
     pub fn module_hash(wasm: &[u8]) -> ModuleHash {
         ModuleHash::of_bytes(wasm)
     }
+}
+
+/// What reading an action's requirements read of the workspace: the fields, each once, and
+/// whether they read more than the workspace holds, which no change in it moves.
+#[derive(Clone, Debug, Default)]
+pub struct Reading {
+    /// The fields the requirements read, by resource and field. A requirement of an item reads
+    /// the item's own fields, and a collection it read whole reads every item's under it.
+    pub reads: Vec<(String, String)>,
+    /// Whether they read the clock, the window's space or the person's view state: the answer
+    /// moves without the workspace moving, so it is not kept.
+    pub beyond: bool,
 }

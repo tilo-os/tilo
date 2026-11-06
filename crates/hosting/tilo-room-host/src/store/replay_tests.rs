@@ -192,7 +192,7 @@ fn oversized_batch_budget_and_overlimit_files_are_bounded() {
             .unwrap();
         assert_eq!(batch.frames.len(), 1);
         assert!(
-            matches!(&batch.frames[0],Envelope::Delta{authored_at_ns,..} if *authored_at_ns == expected)
+            matches!(&batch.frames[0],Envelope::Delta {authored_at_ns,..} if *authored_at_ns == expected)
         );
         assert_eq!(batch.eof, expected == 3);
     }
@@ -557,7 +557,7 @@ fn interrupted_capture_sort_and_bounded_generation_gc_preserve_unknown_entries()
 }
 
 /// A newcomer's capture runs in its workspace owner's turn, which must not
-/// grow with the room: it lists the retained frames, and pins none. Its
+/// grow with the workspace: it lists the retained frames, and pins none. Its
 /// preparation, off the owner, pins every one of them.
 #[test]
 fn a_capture_lists_the_rooms_frames_and_its_preparation_pins_them() {

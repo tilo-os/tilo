@@ -903,7 +903,6 @@ async fn invocation_journal_native_stream_negotiates_uuid_capability_explicitly(
             let (connection, outgoing) = wire::WireConnection::new(None);
             let handle = connection.open(wire::ChannelSession::new(Rc::new(JoinedChannel {
                 as_app: None,
-                person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: fixture.state.clone(),
                 directories: fixture.directories.clone(),
@@ -957,7 +956,6 @@ async fn invocation_journal_invalid_updates_never_persist_and_legacy_completion_
         fixture.invocation_rx.try_recv().unwrap();
         let foreign = wire_channel(JoinedChannel {
             as_app: None,
-            person_chat_views: RefCell::default(),
             committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
             state: fixture.state.clone(), directories: fixture.directories.clone(),
             channel_id: fixture.route.channel_key(), peer_id: 999, connection_id: 999,

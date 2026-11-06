@@ -145,6 +145,23 @@ pub fn is_kms_node(path: &Path) -> bool {
     !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
 }
 
+/// Whether a card node advertises connectors in `/sys/class/drm`.
+///
+/// A GPU's `cardN` node without KMS has none: the Raspberry Pi's V3D, for
+/// one, exposes `card0` for rendering only, and `drmGetResources` on it fails
+/// with `EOPNOTSUPP`, so it can never scan out. `None` when the sysfs tree
+/// cannot be read, which says nothing about the node.
+pub fn has_connectors(card_path: &Path, drm_sysfs: &Path) -> Option<bool> {
+    let card_name = card_path.file_name().and_then(|name| name.to_str())?;
+    let prefix = format!("{card_name}-");
+    let entries = std::fs::read_dir(drm_sysfs).ok()?;
+    Some(
+        entries
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(&prefix)),
+    )
+}
+
 /// The connector's default mode: [`select_mode`] with no configured mode.
 /// `None` only when `modes` is empty.
 #[cfg(test)]
@@ -262,6 +279,32 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn a_card_node_without_connectors_cannot_scan_out() {
+        let sysfs = tempfile::tempdir().expect("temporary sysfs");
+        for connector in ["card1-HDMI-A-1", "card1-Writeback-1"] {
+            std::fs::create_dir(sysfs.path().join(connector)).expect("connector");
+        }
+        // The Raspberry Pi's V3D exposes card0 for rendering only; the display
+        // controller's card1 carries the connectors.
+        assert_eq!(
+            has_connectors(Path::new("/dev/dri/card0"), sysfs.path()),
+            Some(false)
+        );
+        assert_eq!(
+            has_connectors(Path::new("/dev/dri/card1"), sysfs.path()),
+            Some(true)
+        );
+        assert_eq!(
+            has_connectors(
+                Path::new("/dev/dri/card1"),
+                Path::new("/definitely/missing")
+            ),
+            None,
+            "an unreadable sysfs tree says nothing about the node"
+        );
     }
 
     #[test]

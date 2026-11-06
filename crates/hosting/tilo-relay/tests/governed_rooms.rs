@@ -21,11 +21,11 @@ use neighbour_wire::NeighbourMsg;
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::rooms::{
-    CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, IssueInvitationRequest, IssuedInvitation,
-    RemoveMemberRequest, RoomListing,
-};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay::workspaces::{
+    CREATE_ROOM, CreatedWorkspace, ENTER_ROOM, EnteredWorkspace, IssueInvitationRequest,
+    IssuedInvitation, RemoveMemberRequest, WorkspaceListing,
+};
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
@@ -74,23 +74,23 @@ async fn session(relay: &Relay, device: &TestDevice, workspace_id: u64) -> Relay
 
 /// Alice's `device` creates a room named `name` on her relay and enters it
 /// as its owner, through the relay's own host actions asked of it directly.
-async fn create_and_enter(relay: &Relay, device: &TestDevice, name: &str) -> RoomListing {
+async fn create_and_enter(relay: &Relay, device: &TestDevice, name: &str) -> WorkspaceListing {
     use governance_actions::{connected, host_action};
     let home = connected(relay, device).await;
-    let created: CreatedRoom =
+    let created: CreatedWorkspace =
         host_action(&home, CREATE_ROOM, serde_json::json!({ "name": name })).await;
-    assert_eq!(created.room.name, name);
-    let entered: EnteredRoom = host_action(
+    assert_eq!(created.workspace.name, name);
+    let entered: EnteredWorkspace = host_action(
         &home,
         ENTER_ROOM,
-        serde_json::json!({ "room": created.room.room }),
+        serde_json::json!({ "room": created.workspace.workspace }),
     )
     .await;
     assert!(
         entered.changed,
         "the device is admitted as the room's owner's"
     );
-    created.room
+    created.workspace
 }
 
 /// An invitation to `room` carrying `role`, for `person` only, that the
@@ -103,7 +103,7 @@ async fn invite(
     person: [u8; 32],
 ) -> IssuedInvitation {
     relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .issue(
             room,
@@ -210,7 +210,14 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
-    let invitation = invite(&relay, &laptop, &room.room, MemberRole::Editor, bob.user_pk).await;
+    let invitation = invite(
+        &relay,
+        &laptop,
+        &room.workspace,
+        MemberRole::Editor,
+        bob.user_pk,
+    )
+    .await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -234,7 +241,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
         .await
         .unwrap();
     let bootstrap = admission.bootstrap;
-    assert_eq!(bootstrap.room, room.room);
+    assert_eq!(bootstrap.room, room.workspace);
     assert_eq!(bootstrap.workspace_id, room.workspace_id);
     assert_eq!(bootstrap.role, MemberRole::Editor);
 
@@ -264,7 +271,7 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 
     // Alice's replica learns governance from the relay's retained history.
     let mut alice_peer = StatePeer::new(
-        &room.room,
+        &room.workspace,
         host.cert.clone(),
         vec![host.cert.clone()],
         RevocationList::new(),
@@ -393,10 +400,10 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
 
     // Alice removes Bob: the relay stops admitting his device.
     let generation = relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .remove_member(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             RemoveMemberRequest {
                 request_id: [9; 32],
@@ -435,11 +442,11 @@ async fn an_invited_person_joins_a_governed_room_edits_sees_presence_and_is_remo
     bob_session.close().await;
     relay.shutdown().await;
     let relay = start(state.path(), &alice, &host).await;
-    let rooms = relay.rooms().unwrap().list().await;
-    let [restored] = rooms.as_slice() else {
-        panic!("one governed room: {rooms:?}")
+    let workspaces = relay.workspaces().unwrap().list().await;
+    let [restored] = workspaces.as_slice() else {
+        panic!("one governed workspace: {workspaces:?}")
     };
-    assert_eq!(restored.room, room.room);
+    assert_eq!(restored.workspace, room.workspace);
     assert_eq!(restored.generation, generation);
     assert!(
         restored
@@ -500,7 +507,14 @@ type = "String"
 
     // Alice invites Bob's person; his device redeems through the signed
     // address the invitation carries and is admitted by the room's governor.
-    let invitation = invite(&relay, &laptop, &room.room, MemberRole::Editor, bob.user_pk).await;
+    let invitation = invite(
+        &relay,
+        &laptop,
+        &room.workspace,
+        MemberRole::Editor,
+        bob.user_pk,
+    )
+    .await;
     let verified = decode_and_verify_invitation(
         &invitation.signed_invitation,
         None,
@@ -524,7 +538,7 @@ type = "String"
         .await
         .unwrap();
     let bootstrap = admission.bootstrap;
-    assert_eq!(bootstrap.room, room.room);
+    assert_eq!(bootstrap.room, room.workspace);
     assert_eq!(bootstrap.workspace_id, room.workspace_id);
     assert_eq!(bootstrap.role, MemberRole::Editor);
 
@@ -554,7 +568,7 @@ type = "String"
 
     // Alice's replica learns governance from the relay's retained history.
     let mut alice_peer = StatePeer::new(
-        &room.room,
+        &room.workspace,
         host.cert.clone(),
         vec![host.cert.clone()],
         RevocationList::new(),
@@ -684,7 +698,7 @@ params = []
     let invitation = invite(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         MemberRole::Commenter,
         bob.user_pk,
     )
@@ -712,7 +726,7 @@ params = []
         .await
         .unwrap();
     let bootstrap = admission.bootstrap;
-    assert_eq!(bootstrap.room, room.room);
+    assert_eq!(bootstrap.room, room.workspace);
     assert_eq!(bootstrap.workspace_id, room.workspace_id);
     assert_eq!(bootstrap.role, MemberRole::Commenter);
 
@@ -742,7 +756,7 @@ params = []
 
     // Alice's replica learns governance from the relay's retained history.
     let mut alice_peer = StatePeer::new(
-        &room.room,
+        &room.workspace,
         host.cert.clone(),
         vec![host.cert.clone()],
         RevocationList::new(),
@@ -789,9 +803,9 @@ params = []
         let author = collab_types::Ed25519PublicKey::from_bytes(phone.device_pubkey());
         let mut op = collab_types::SignedOp::new_unsigned(
             mutation.encode().unwrap(),
-            collab_types::document_artifact_id(APP, &room.room, ""),
+            collab_types::document_artifact_id(APP, &room.workspace, ""),
             author,
-            collab_types::document_attestation_id(APP, &room.room, ""),
+            collab_types::document_attestation_id(APP, &room.workspace, ""),
             collab_types::OpKind::Change,
             SystemTime::now(),
             seq,
@@ -801,7 +815,7 @@ params = []
         NeighbourMsg::AppDocument {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: APP.into(),
-            cluster_id: room.room.clone(),
+            cluster_id: room.workspace.clone(),
             record_id: String::new(),
             envelope: Box::new(op),
         }
@@ -860,7 +874,7 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
         let invitation = invite(
             &relay,
             &laptop,
-            &room.room,
+            &room.workspace,
             MemberRole::Editor,
             guest.user_pk,
         )
@@ -884,16 +898,20 @@ async fn pruning_removes_idle_guests_in_one_change_and_their_invitations_admit_n
             .unwrap();
         guests.push((guest, phone, verified, invitation));
     }
-    let rooms = relay.rooms().unwrap();
-    let before = rooms.summary(&room.room).await.unwrap().generation;
+    let workspaces = relay.workspaces().unwrap();
+    let before = workspaces
+        .summary(&room.workspace)
+        .await
+        .unwrap()
+        .generation;
     let idle = std::collections::BTreeSet::from([guests[0].0.user_pk, guests[1].0.user_pk]);
-    let pruned = rooms
-        .prune_members(&room.room, &host.cert, [9; 32], &idle)
+    let pruned = workspaces
+        .prune_members(&room.workspace, &host.cert, [9; 32], &idle)
         .await
         .unwrap();
     assert_eq!(pruned.generation, before + 1, "one change for every guest");
 
-    let members = rooms.summary(&room.room).await.unwrap().members;
+    let members = workspaces.summary(&room.workspace).await.unwrap().members;
     let seated = |person: [u8; 32]| {
         members
             .iter()
@@ -927,9 +945,6 @@ mod members;
 
 #[path = "governed_rooms/governance_actions.rs"]
 mod governance_actions;
-
-#[path = "governed_rooms/spectators.rs"]
-mod spectators;
 
 #[path = "governed_rooms/app_records.rs"]
 mod app_records;

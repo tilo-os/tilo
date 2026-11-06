@@ -755,6 +755,16 @@ fn row_context_menu_opens_from_pointer_keys_and_semantics() {
     {
         let (mut view, chosen, _) = with_menu();
         let _ = lay_out_tree(&mut view, 240.0);
+        // A reader is offered the menu the pointer opens, so it can be opened
+        // without one.
+        let rows = Widget::accessibility(&view).unwrap();
+        assert!(
+            rows.children
+                .iter()
+                .filter(|row| row.role == Role::TreeItem)
+                .all(|row| row.state.context_menu),
+            "every row with a menu says it has one"
+        );
         assert!(semantic(&mut view, "node:5", &Action::ShowContextMenu));
         let semantics = Widget::accessibility(&view).unwrap();
         let menu = semantics

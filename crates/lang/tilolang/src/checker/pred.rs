@@ -89,8 +89,10 @@ impl Checker<'_> {
             vec![Ex::local(answer, answer_ty)],
             filtered_ty,
         );
+        // A count says how many the filter keeps, reading the run where the store cannot say:
+        // a filtered collection's length is only the most it can hold.
         let native = if m == "count" {
-            Ex::host(Imp::ListLen, vec![items], Ty::Int)
+            Ex::host(Imp::CollCount, vec![items], Ty::Int)
         } else {
             items
         };

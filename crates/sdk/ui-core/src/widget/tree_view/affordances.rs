@@ -95,7 +95,6 @@ impl TreeHeadingAction {
 fn is_button_target(target: &str) -> bool {
     target == HEADING_ACTION_TARGET
         || target.starts_with("row-action:")
-        || target.starts_with("section-action:")
         || target.starts_with("move:")
 }
 
@@ -207,9 +206,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     /// Open the menu on a row the way a right click does: the row becomes
     /// the selection and the focus first.
     pub(super) fn open_row_menu(&mut self, id: NodeId, at: Point) -> bool {
-        if self.open_nav_menu(id, at) {
-            return true;
-        }
         if self.context_menu_items.is_none() {
             return false;
         }
@@ -300,15 +296,11 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
     }
 
     /// The disclosure of `id`'s row: the leading caret column of a tree row
-    /// (whether or not it is a branch), the trailing chevron or the whole
-    /// header of a navigation row.
+    /// (whether or not it is a branch).
     #[must_use]
     pub fn disclosure_rect(&self, id: NodeId) -> Option<Rect> {
         let index = self.visible_index_of(id)?;
         let row = self.visible_row_rect(index)?;
-        if let Some(nav) = self.nav_disclosure_rect(id, row) {
-            return nav;
-        }
         let (_, depth) = self.index.row_at(&self.model, index)?;
         let x0 = row.x0 + self.row_inset + crate::num::f64_of_usize(depth) * self.indent_px;
         Some(Rect::new(x0, row.y0, x0 + self.disclosure_w, row.y1))
@@ -328,10 +320,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         let count = self.row_actions.len();
         if count == 0 {
             return Vec::new();
-        }
-        if self.is_nav() {
-            let icons: Vec<Icon> = self.row_actions.iter().map(|action| action.icon).collect();
-            return self.nav_action_rects(row, &icons);
         }
         let margin = f64::from(self.spacing.s1) / 2.0;
         let side = (row.height() - 2.0 * margin).max(1.0);
@@ -365,9 +353,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
             if let Some(callback) = &mut self.on_heading_action {
                 callback();
             }
-            return true;
-        }
-        if self.is_nav() && self.press_nav_section_action(point) {
             return true;
         }
         let Some(key @ TreeRowKey::Node(id)) = self.row_key_at(point) else {
@@ -526,21 +511,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         // seam the pointer is on, so the drop line it is aiming at shows.
         let offset = f64::from(tokens.spacing.s4);
         let top = cursor.y + f64::from(tokens.spacing.s2);
-        if self.paint_nav_drag_ghost(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            source,
-            Rect::new(
-                self.rect.x0 + offset,
-                top,
-                self.rect.x1 + offset,
-                top + height,
-            ),
-        ) {
-            return;
-        }
         let inset = f64::from(tokens.spacing.s1);
         let ghost = Rect::new(
             self.rect.x0 + inset + offset,
@@ -760,9 +730,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         {
             return Some((rect, action.tooltip.clone()));
         }
-        if let Some(tooltip) = self.nav_tooltip(id, row) {
-            return Some(tooltip);
-        }
         let hint = self.row_hint.as_ref()?;
         let label = self.model.label(id)?;
         Some((row, format!("{label}\n{hint}")))
@@ -804,9 +771,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
         } else {
             None
         };
-        if let Some(node) = self.nav_section_action_node(id, label, row) {
-            children.push(node);
-        }
         if let Some(row) = row.filter(|_| self.model.shows_row_actions(id)) {
             for (index, (action, rect)) in self
                 .row_actions
@@ -958,15 +922,6 @@ impl<T, M: TreeModel> TreeImpl<T, M> {
                 return Some(false);
             }
             return Some(self.trigger_row_action(id, index));
-        }
-        if let Some(id) = target.strip_prefix("section-action:") {
-            let Ok(id) = id.parse::<NodeId>() else {
-                return Some(false);
-            };
-            if !matches!(action, Action::Activate) {
-                return Some(false);
-            }
-            return Some(self.trigger_nav_section_action(id));
         }
         if let Some(rest) = target.strip_prefix("move:") {
             let (movement, id) = rest.split_once(':')?;

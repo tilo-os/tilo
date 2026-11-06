@@ -352,7 +352,17 @@ impl ActorState {
         if !self.native_routes.contains(ws) && self.native_routes.entries.len() >= 64 {
             return;
         }
-        self.host_sessions.retain(|(topic, _), _| *topic != ws);
+        // A route that is dialling, or whose session is up, is the one this
+        // workspace takes part through: it needs no second dial.
+        if self.native_routes.contains(ws)
+            && (self.native_routes.establishing(ws)
+                || native_session(&self.host_sessions, ws).is_some())
+        {
+            return;
+        }
+        // A session that was up carried nothing of what this one carries: the
+        // route below dials its own.
+        drop_sessions(&mut self.host_sessions, ws);
         // A workspace pinned to this device, on a device that runs no host of its
         // own, has no host to reach: its apps' empty states are their own
         // from the start, as in a workspace that syncs with no host. With a
@@ -501,18 +511,15 @@ impl ActorState {
             return;
         };
         let host = payload.endpoint_addr.id;
-        if governor {
-            // The governor is back: the host that stood in for it is let go.
-            self.host_sessions.retain(|(topic, _), runtime| {
-                let stays = *topic != ws;
-                if !stays {
-                    runtime.pump.abort();
-                }
-                stays
-            });
-        } else if self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
+        if !governor && native_session(&self.host_sessions, ws).is_some() {
+            // A custody session of this workspace is up already, and this one
+            // would only say what it says.
             return;
         }
+        // A session that stood in for this one is let go: a host that held the
+        // workspace while its governor was away, or a plain session that
+        // carries none of the workspace's records.
+        drop_sessions(&mut self.host_sessions, ws);
         let session = Arc::new(session);
         let replaying = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let pump = spawn_host_pump(
@@ -571,6 +578,21 @@ impl ActorState {
     }
 }
 
+/// Let go of every host session of the workspace on topic `ws`, and of the
+/// pumps that carried them.
+fn drop_sessions(sessions: &mut HashMap<(u64, iroh::EndpointId), HostRuntime>, ws: u64) {
+    let gone: Vec<(u64, iroh::EndpointId)> = sessions
+        .keys()
+        .filter(|(topic, _)| *topic == ws)
+        .copied()
+        .collect();
+    for key in gone {
+        if let Some(runtime) = sessions.remove(&key) {
+            runtime.pump.abort();
+        }
+    }
+}
+
 /// Drop topic `ws`'s host sessions not pinned to its workspace's current
 /// `material`, or reaching a host the workspace no longer names among its
 /// `hosts`.
@@ -588,17 +610,26 @@ fn drop_unpinned_sessions(
     >,
     hosts: &[TransportHint],
 ) {
-    sessions.retain(|(topic, _), runtime| {
-        *topic != ws
-            || runtime.native_scope.as_ref().is_some_and(|scope| {
-                material
-                    .as_ref()
-                    .is_ok_and(|(hint, device, _, continuity)| {
-                        scope.pinned_to(hint, device, *continuity)
-                    })
-                    && (scope.reaches_governor() || hosts.contains(scope.host()))
-            })
-    });
+    let unpinned: Vec<(u64, iroh::EndpointId)> = sessions
+        .iter()
+        .filter(|((topic, _), runtime)| {
+            *topic == ws
+                && !runtime.native_scope.as_ref().is_some_and(|scope| {
+                    material
+                        .as_ref()
+                        .is_ok_and(|(hint, device, _, continuity)| {
+                            scope.pinned_to(hint, device, *continuity)
+                        })
+                        && (scope.reaches_governor() || hosts.contains(scope.host()))
+                })
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    for key in unpinned {
+        if let Some(runtime) = sessions.remove(&key) {
+            runtime.pump.abort();
+        }
+    }
 }
 
 /// What a failed dial of the joined workspace on topic `ws`, whose host is

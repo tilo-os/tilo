@@ -6,7 +6,7 @@ import {existsSync} from 'node:fs';
 import {arrivalLines, arrivalLocale, createArrival, createRotation, describeSpent, doorCopy, failureMessage, FAILURES, fill,
   FIRST_VISIT_SECONDS, inviteLinkTarget, measuredPlan, isCoffeeHost, lineParts, measuredSeconds, plannedSegments, refusedByHost,
   rememberArrival, rememberedArrival, waitListFailure, MEASURED_KEY, parseMessages, progressIn, SEGMENTS, segmentOf,
-  STEP_NOTES, stoppedInside, visitLine} from './arrival.mjs';
+  STEP_NOTES, stoppedInside} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
 const locale = name => parseMessages(readFileSync(here(`locales/${name}.ftl`), 'utf8'));
@@ -413,25 +413,6 @@ test('a tip reads after its label, a joke bare', () => {
   assert.equal(locale('de-DE').get('arrival-label-tip'), 'Tipp');
   // The label is no tip of its own.
   assert.ok(!arrivalLines(locale('de-DE')).tips.includes('Tipp'));
-});
-
-test('a watching page promises a join only where the door gives one', () => {
-  const open = {admission: 'open', joins: true};
-  assert.deepEqual(visitLine({entered: 'watching', presence: open}), {line: 'Click or type to join', join: 'gesture'});
-  // A door that did not answer: the page offers what it always has.
-  assert.equal(visitLine({entered: 'watching'}).join, 'gesture');
-  const invited = visitLine({entered: 'watching', presence: {admission: 'invite', joins: true}, workspace: 'Lounge'});
-  assert.equal(invited.join, 'none');
-  assert.match(invited.line, /^You’re watching live\. You need an invitation to join Lounge for now\./);
-  for (const entered of ['watching', 'seatless']) {
-    const closed = visitLine({entered, because: 'unavailable', presence: {admission: 'open', joins: false}});
-    assert.equal(closed.join, 'seat', 'it asks again, and joins (or offers to) once the room opens');
-    assert.doesNotMatch(closed.line, /in a moment|Click/);
-    assert.match(closed.line, /closed for now/);
-  }
-  assert.match(visitLine({entered: 'seatless', because: 'full', presence: open}).line, /when a seat frees up/);
-  // A member of an invite-only workspace without a seat still joins once one frees.
-  assert.equal(visitLine({entered: 'seatless', because: 'full', presence: {admission: 'invite', joins: true}}).join, 'seat');
 });
 
 test('the door apologises and asks for an email where there is a wait list, else names the workspace', () => {

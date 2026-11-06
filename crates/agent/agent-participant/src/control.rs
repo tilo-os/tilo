@@ -235,7 +235,7 @@ impl AgentControl {
                 tasks,
                 conversation: info.conversation.clone(),
                 activity: None,
-                workspace: info.room.clone(),
+                workspace: info.workspace.clone(),
             }),
             changed: Changed::default(),
             witness: Mutex::new(None),
@@ -620,7 +620,7 @@ impl AgentControl {
             device: hex::encode(self.delegation.device_public_key),
             status: state.status,
             activity: state.activity.clone(),
-            room: state.workspace.clone(),
+            workspace: state.workspace.clone(),
             tasks: state.tasks.clone(),
             conversation: state.conversation.clone(),
             delegation: hex::encode(self.delegation.encode()),
@@ -901,7 +901,7 @@ impl AgentSupervisor {
                 "a grant's label is 1 to {MAX_DELEGATE_TEXT_BYTES} bytes"
             ));
         }
-        if request.rooms.is_empty() || request.rooms.len() > MAX_DELEGATED_ROOMS {
+        if request.workspaces.is_empty() || request.workspaces.len() > MAX_DELEGATED_ROOMS {
             return Err(format!(
                 "a grant names 1 to {MAX_DELEGATED_ROOMS} workspaces"
             ));
@@ -932,7 +932,7 @@ impl AgentSupervisor {
             label: label.to_owned(),
             color,
             scope: DelegateScope {
-                rooms: request.rooms.clone(),
+                rooms: request.workspaces.clone(),
                 apps: request.apps.clone(),
             },
             expires_at_ns: now_ns
@@ -1147,7 +1147,7 @@ impl AgentSupervisor {
                 .map(|grant| AgentGrant {
                     id: grant.id().to_owned(),
                     label: grant.proposal.label.clone(),
-                    rooms: grant.proposal.scope.rooms.clone(),
+                    workspaces: grant.proposal.scope.rooms.clone(),
                     apps: grant.proposal.scope.apps.clone(),
                     in_use: state
                         .agents

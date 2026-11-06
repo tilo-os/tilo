@@ -170,15 +170,7 @@ impl NotesApp {
             tracing::warn!(?effect, "notes: this notebook is open to view only");
             return;
         };
-        // What acts on one note is offered on that note.
-        match effect {
-            NotesEffect::CopyLink { page }
-            | NotesEffect::ExportMarkdown { page }
-            | NotesEffect::InsertImage { page } => {
-                dispatcher.effect_on(&crate::actions::page_resource_id(*page), effect);
-            }
-            _ => dispatcher.effect(effect),
-        }
+        crate::effect::request(dispatcher, effect);
     }
 
     /// Show note `page`.

@@ -24,12 +24,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use tilo_call_lane::Roster;
-use tilo_live::plane::{Join, Plane};
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+use tilo_live::plane::Join;
+use tilo_live::plane::Plane;
+use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Command, Host, Link, PeerEvent, Task, lock};
+#[cfg(feature = "iroh")]
+use super::Host;
+use super::{Command, Link, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
 
 /// The wait before a plane this page could not reach is asked for again.
@@ -64,6 +68,15 @@ pub(crate) struct Joined {
     pub(crate) presence_seq: u32,
     /// The last live-preview object this page said on the plane.
     pub(crate) activity_seq: u32,
+    /// The last voice object this page published on the plane: one stream per
+    /// page across its calls and its mute, so a call that starts again is
+    /// heard at once.
+    pub(crate) audio_seq: u32,
+    /// The tracks this page shows of each device in the call: what the plane
+    /// asks their owners to encode.
+    pub(crate) shown: BTreeMap<[u8; 32], BTreeSet<tilo_live::live::Track>>,
+    /// The picture demand this page last told its app.
+    pub(crate) demand_at: u64,
 }
 
 /// Why this page is not in a workspace's plane, and since when.
@@ -431,10 +444,6 @@ impl Task {
         let Some(client) = client else {
             return;
         };
-        if self.config.watching {
-            // A watching page is here as a spectator: it joins no plane.
-            return;
-        }
         self.planes.keep_only(&self.workspaces);
         let now = tilo_clock::unix_now_ms();
         let workspaces: Vec<u64> = self.workspaces.iter().copied().collect();
@@ -546,6 +555,9 @@ impl Task {
                         epoch,
                         presence_seq: 0,
                         activity_seq: 0,
+                        audio_seq: 0,
+                        shown: BTreeMap::new(),
+                        demand_at: u64::MAX,
                     },
                 );
             }
@@ -560,7 +572,7 @@ impl Task {
                 // plane does not admit the page to the plane's channel; one
                 // that does not admit the page at all is asked again as soon
                 // as its admission may have moved.
-                let seated = lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true);
+                let seated = lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true);
                 let wait = if seated { REFUSED_MS } else { RETRY_MS };
                 self.planes
                     .refused(workspace_id, tilo_clock::unix_now_ms().saturating_add(wait));
@@ -574,6 +586,128 @@ impl Task {
         }
     }
 
+    /// Publish `frames` on `workspace_id`'s plane as this page's voice, in
+    /// the order given: one Opus frame per voice object, numbered on from the
+    /// last this page published.
+    pub(super) fn publish_call_audio(&mut self, workspace_id: u64, frames: Vec<crate::CallFrame>) {
+        use tilo_live::live::Track;
+        for frame in frames {
+            let Some(joined) = self.planes.joined_mut(workspace_id) else {
+                return;
+            };
+            let sequence = joined.audio_seq;
+            joined.audio_seq = sequence.wrapping_add(1);
+            let object = tilo_live::voice::VoiceObject {
+                sequence: u64::from(sequence),
+                timestamp: frame.timestamp_48k,
+                duration: tilo_live::voice::FRAME_SAMPLES,
+                payload: frame.opus,
+            };
+            let Ok(body) = object.encode() else {
+                continue;
+            };
+            if joined.plane.publish(Track::Audio, sequence, &body).is_err() {
+                // The plane ended: its next join carries what follows.
+                return;
+            }
+        }
+    }
+
+    /// Publish `pictures` on `workspace_id`'s plane: each one layer of this
+    /// page's camera or screen, sealed by the plane as this device and read by
+    /// every device showing that layer.
+    pub(super) fn publish_call_pictures(
+        &self,
+        workspace_id: u64,
+        pictures: Vec<super::CallPicture>,
+    ) {
+        for picture in pictures {
+            let Some(joined) = self.planes.joined(workspace_id) else {
+                return;
+            };
+            let object = tilo_live::video::VideoObject {
+                keyframe: picture.keyframe,
+                codec: tilo_live::video::Codec::H264,
+                layer: picture.layer,
+                sequence: picture.sequence,
+                timestamp_us: picture.timestamp_us,
+                width: picture.width,
+                height: picture.height,
+                payload: picture.payload,
+            };
+            // A layer nobody shows, or a plane that ended, drops this
+            // picture: the next layer that gains a reader starts at a
+            // keyframe.
+            let _ = joined.plane.send_picture(picture.source, &object);
+        }
+    }
+
+    /// Show the devices' `shown` layers here, and stop reading the devices
+    /// left out: the plane asks each owner for exactly these.
+    pub(super) fn show_call_pictures(&mut self, workspace_id: u64, shown: &[super::CallShown]) {
+        use tilo_live::live::Track;
+        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+            return;
+        };
+        let wanted: BTreeMap<[u8; 32], BTreeSet<Track>> = shown
+            .iter()
+            .map(|entry| {
+                let tracks: BTreeSet<Track> = entry
+                    .camera
+                    .iter()
+                    .map(|layer| Track::Camera(*layer))
+                    .chain(entry.screen.iter().map(|layer| Track::Screen(*layer)))
+                    .collect();
+                (entry.device, tracks)
+            })
+            .collect();
+        let gone: Vec<[u8; 32]> = joined
+            .shown
+            .keys()
+            .filter(|device| !wanted.contains_key(*device))
+            .copied()
+            .collect();
+        for device in gone {
+            joined.plane.show(device, &[]);
+        }
+        for (device, tracks) in wanted {
+            joined
+                .plane
+                .show(device, &tracks.iter().copied().collect::<Vec<_>>());
+            joined.shown.insert(device, tracks);
+        }
+    }
+
+    /// Ask `device` for `source` afresh: its next picture starts a group the
+    /// page's decoder can begin at.
+    pub(super) fn restart_call_picture(
+        &mut self,
+        workspace_id: u64,
+        device: [u8; 32],
+        source: tilo_live::video::Source,
+    ) {
+        use tilo_live::live::Track;
+        let Some(joined) = self.planes.joined_mut(workspace_id) else {
+            return;
+        };
+        let Some(tracks) = joined.shown.get(&device).cloned() else {
+            return;
+        };
+        let of_source = |track: &Track| {
+            matches!(
+                (track, source),
+                (Track::Camera(_), tilo_live::video::Source::Camera)
+                    | (Track::Screen(_), tilo_live::video::Source::Screen)
+            )
+        };
+        let rest: Vec<Track> = tracks.iter().copied().filter(|t| !of_source(t)).collect();
+        let again: Vec<Track> = tracks.iter().copied().filter(|t| of_source(t)).collect();
+        // Dropping the readers and asking again is what the plane takes as a
+        // new reader: the owner answers with a keyframe.
+        joined.plane.show(device, &rest);
+        joined.plane.show(device, &again);
+    }
+
     /// Take what `workspace_id`'s plane heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
     /// [`PeerEvent::LivePlane`].
@@ -584,6 +718,38 @@ impl Task {
             None => return,
         };
         for heard in heard {
+            // A call's voice: one Opus frame of the device that published it,
+            // as the page's app plays it.
+            if heard.track == Track::Audio {
+                if let Ok(object) = tilo_live::voice::VoiceObject::decode(&heard.body) {
+                    self.emit(&PeerEvent::CallAudio {
+                        workspace_id,
+                        from: heard.sender,
+                        sequence: object.sequence,
+                        timestamp_48k: object.timestamp,
+                        opus: object.payload,
+                    });
+                }
+                continue;
+            }
+            // A call's picture: one layer of a device's camera or screen, as
+            // the page's decoder draws it.
+            if let Track::Camera(_) | Track::Screen(_) = heard.track {
+                if let Ok(object) = tilo_live::video::VideoObject::decode(&heard.body) {
+                    let source = match heard.track {
+                        Track::Screen(_) => tilo_live::video::Source::Screen,
+                        _ => tilo_live::video::Source::Camera,
+                    };
+                    self.emit(&PeerEvent::CallPicture {
+                        workspace_id,
+                        from: heard.sender,
+                        source,
+                        keyframe: object.keyframe,
+                        object: heard.body,
+                    });
+                }
+                continue;
+            }
             // A record's preview frame is still sealed with that record's
             // keys inside the plane's own layer: it opens into the canonical
             // frame the page's live layer reads ([`PeerEvent::Live`]).
@@ -604,6 +770,38 @@ impl Task {
                 track: heard.track,
                 sequence: heard.sequence,
                 body: heard.body,
+            });
+        }
+        // What the call's devices show of this page, and what they need
+        // afresh: its encoders read it, and encode only that.
+        let demand = {
+            let Some(joined) = self.planes.joined_mut(workspace_id) else {
+                return;
+            };
+            let revision = joined.plane.pictures_revision();
+            if joined.demand_at == revision {
+                None
+            } else {
+                joined.demand_at = revision;
+                let wanted = joined.plane.wanted_pictures();
+                let mut keyframes = Vec::new();
+                for source in [
+                    tilo_live::video::Source::Camera,
+                    tilo_live::video::Source::Screen,
+                ] {
+                    if joined.plane.wants_picture_keyframe(source) {
+                        let _ = joined.plane.take_picture_keyframes(source);
+                        keyframes.push(source);
+                    }
+                }
+                Some((wanted, keyframes))
+            }
+        };
+        if let Some((wanted, keyframes)) = demand {
+            self.emit(&PeerEvent::CallDemand {
+                workspace_id,
+                wanted,
+                keyframes,
             });
         }
     }

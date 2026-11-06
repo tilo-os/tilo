@@ -7,14 +7,20 @@
 //! | Column | Holds | Set in |
 //! |---|---|---|
 //! | leading | an [`Avatar`](crate::widget::Avatar), an [`Icon`], a short badge (`GET`), a thumbnail, a checkbox, a swatch, in a fixed-width column so a list's titles line up | the leading slot's own geometry |
-//! | text | the title (with a mark and tags after it), an optional subtitle, then an optional secondary line of one or two lines | `Body` (`.strong()` when emphasised), `Body`, `Caption` |
-//! | meta | a timestamp, a size, a count, on the title's line | `Caption.numeric()`, right-aligned |
-//! | trailing | a value, one persistent control, a status dot, a check, a disclosure chevron | — |
+//! | text | the title (with tags after it), an optional subtitle, then an optional secondary line of one or two lines | `Body` (`.strong()` when emphasised), `Body`, `Caption` |
+//! | facts | what the item is, in the same order on every row: when (a day and the time of day it is due), who (an avatar), how far (a progress count), how important (a mark); right-aligned on one edge | `Caption.numeric()`, `Caption`, icons |
+//! | trailing | one persistent control, a status dot, a check, a disclosure chevron | — |
 //!
-//! Hover (or keyboard focus) swaps the meta for the row's actions. The row
+//! Nothing stands inline after the title: a fact reads in the facts column, whose right edge is
+//! the same on every row of a list, so the facts of a list read as one column down its edge.
+//!
+//! What a face paints lives in `paint` beside this file; the rect of each of
+//! its columns in `geometry`.
+//!
+//! Hover (or keyboard focus) swaps the facts column for the row's actions. The row
 //! height comes from the measured line boxes of its text, never a constant,
 //! so it grows with the text scale. Selection is the lift (HIG §9.3), and
-//! the inset separator between two rows hides beside a selected row.
+//! rows sit edge to edge, with no rule between them.
 //!
 //! **One content edge.** The row's text starts on its column's content
 //! edge; the hover and selection lift bleed [`row_bleed`] past it on both
@@ -24,31 +30,32 @@
 //!
 //! [`row_bleed`]: crate::chrome::row_bleed
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::{RowJoin, SelectionState, paint_row_selection_joined, row_bleed};
+use crate::chrome::{RowJoin, SelectionState, row_bleed};
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::tokens::colors::{PresenceHue, SMALL_TEXT_MIN_CONTRAST};
+use crate::tokens::colors::PresenceHue;
 use crate::widget::activation::{Activation, Interaction};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill, ImageData};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 /// The operation type of a row's leading checkbox turned.
 const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
-    ActionEmitter, BadgeFace, ChipStyle, ControlBindingMetadata, Element, MediaArt, MediaAspect,
-    MediaSource, TaffyTreeExt, Tone, Widget,
+    ActionEmitter, ChipStyle, ControlBindingMetadata, Element, MediaArt, MediaAspect, MediaSource,
+    TaffyTreeExt, Tone, Widget,
 };
 
 /// What sits in a row's leading column.
@@ -221,6 +228,8 @@ struct RowMetrics {
     dot: f64,
     radius: f64,
     tag_gap: f64,
+    /// One step of nesting: the gutter a disclosure chevron hangs in, left of its content.
+    nest: f64,
 }
 
 impl RowMetrics {
@@ -249,7 +258,33 @@ impl RowMetrics {
             dot: f64::from(spacing.s2),
             radius: f64::from(theme.tokens.radii.item),
             tag_gap: f64::from(spacing.s1),
+            nest: crate::chrome::disclosure_gutter(theme),
         }
+    }
+
+    /// The metrics of a row shown as a card: the row is its own surface, so nothing of it
+    /// bleeds past its box, and the padding inside that surface is its own — compact enough
+    /// that a card of one title line and its facts stands under a control's height.
+    fn card(theme: &Theme) -> Self {
+        let mut m = Self::new(theme);
+        m.bleed = f64::from(theme.tokens.spacing.rhythm.sibling);
+        m.pad_y = f64::from(theme.tokens.spacing.rhythm.tight);
+        m
+    }
+
+    /// The metrics of a dense row: one line at the caption's size and the small glyph, for a
+    /// reference that stands among content (what a message was made from) or a list that shows
+    /// a lot at once. Its height comes from its own line and inset, not the list's row height;
+    /// a row a finger presses still grows to its target.
+    fn dense(theme: &Theme) -> Self {
+        let mut m = Self::new(theme);
+        m.min_height = 0.0;
+        m.column_gap = f64::from(theme.tokens.spacing.s2);
+        m.title = theme.text(TextRole::Caption);
+        m.title_strong = theme.text(TextRole::Caption).strong();
+        m.subtitle = theme.text(TextRole::Caption);
+        m.icon = f64::from(theme.tokens.metrics.icon_sm);
+        m
     }
 
     fn line(text: &mut TextRenderer, style: &TextStyle) -> f64 {
@@ -315,13 +350,15 @@ struct RowGeometry {
     /// Where the title starts (the separator starts here too).
     text_x: f64,
     text_right: f64,
-    /// Where the title's line ends: the meta narrows only that line.
+    /// Where the title's line ends: the facts column narrows it.
     title_right: f64,
-    /// Where the line under the title ends: a count narrows only that line.
+    /// Where the line under the title ends.
     second_right: f64,
     /// The persistent trailing control's slot.
     trailing: Option<Rect>,
-    /// The trailing value's right edge.
+    /// The avatar in the facts column, where the row shows one.
+    avatar: Option<Rect>,
+    /// The trailing value's left edge in the facts column.
     value_right: f64,
     /// The status dot's centre x.
     dot_x: Option<f64>,
@@ -330,14 +367,38 @@ struct RowGeometry {
     check: Option<Rect>,
     /// The disclosure chevron's slot.
     disclosure: Option<Rect>,
-    /// Where the meta's right edge sits.
+    /// Where the marks in the facts column end (the column's own right edge).
+    marks_right: Option<f64>,
+    /// Where a count's pill ends in the facts column.
+    count_right: Option<f64>,
+    /// Where the meta's right edge sits in the facts column.
     meta_right: f64,
+    /// Where the meta's room starts: what lies left of it is the text's.
+    meta_left: f64,
+    /// Where the facts' line stands in a card, which puts them under the text; a row stands
+    /// them beside it, on the title's line.
+    facts_cy: f64,
 }
 
-/// How many marks [`ListRowFace::mark`] keeps after a title.
+/// How many marks [`ListRowFace::mark`] keeps on a row's edge.
 pub const MAX_MARKS: usize = 3;
 
-/// One mark after a row's title: an icon in tertiary ink, or a swatch in a
+/// How many lines a card's title may take before it is cut with an ellipsis: a card is a small
+/// document, and its title says what it is without being opened.
+pub const CARD_TITLE_LINES: u8 = 3;
+
+/// A widget that can be shown as a card: what a card component (a board's
+/// [`BoardCard`](super::BoardCard)) asks of the one widget it was given, so the card is that
+/// widget's own surface and what it says is written once. Asked as a capability, so a widget
+/// wrapped in a host's pane, a context menu or any other decorator still answers.
+pub trait CardBody {
+    /// Show as a card: its own surface, its title wrapped over up to [`CARD_TITLE_LINES`]
+    /// lines, its facts on a line under the title, and a press reporting `activate` — and
+    /// selection, where it is the selected one.
+    fn show_as_card(&mut self, selected: bool, activate: crate::component::Event);
+}
+
+/// One mark on a row's edge: an icon in tertiary ink or the row's tone, or a swatch in a
 /// colour that belongs to the item (a task's project, a calendar).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum RowMark {
@@ -353,6 +414,8 @@ enum RowMark {
 #[derive(Clone, Debug)]
 pub struct ListRowFace<'a> {
     title: &'a str,
+    /// A quiet word before the title, on its line.
+    prefix: Option<&'a str>,
     title_lines: u8,
     title_family: Option<&'a FontChoice>,
     /// The words a search found the row by, marked where the title has them.
@@ -360,16 +423,25 @@ pub struct ListRowFace<'a> {
     subtitle: Option<&'a str>,
     secondary: Option<&'a str>,
     secondary_lines: u8,
+    /// A line under the text of the row's own: what waits on the item.
+    note: Option<&'a str>,
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
+    /// Who the item is, as a fact: their face in the facts column.
+    avatar: Option<AvatarFace<'a>>,
     marks: [Option<RowMark>; MAX_MARKS],
+    /// The tone the row's own mark reads in: an item's priority, a status.
+    mark_tone: Tone,
     tags: &'a [(&'a str, ChipStyle)],
     count: Option<usize>,
     leading: Option<RowLeading<'a>>,
     leading_column: Option<f64>,
     /// Indented one leading column under the row above it.
     nested: bool,
+    /// How many rows over it the row stands: its content indents one
+    /// disclosure gutter per depth, while its lift fills the row.
+    depth: u32,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
@@ -403,6 +475,12 @@ pub struct ListRowFace<'a> {
     /// Where the leading checkbox is on its way at this frame, from the row's
     /// [`crate::widget::checkbox::CheckMotion`]; at rest on its value when unset.
     check_pose: Option<crate::widget::checkbox::CheckPose>,
+    /// The row as a card: its own surface, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it.
+    card: bool,
+    /// The row as a dense row: one quiet line at the caption's size, for a reference that
+    /// stands among content or a list that shows a lot at once.
+    dense: bool,
 }
 
 impl<'a> ListRowFace<'a> {
@@ -410,21 +488,26 @@ impl<'a> ListRowFace<'a> {
     pub fn new(title: &'a str) -> Self {
         Self {
             title,
+            prefix: None,
             title_lines: 1,
             title_family: None,
             found: &[],
             subtitle: None,
             secondary: None,
+            note: None,
             secondary_lines: 1,
             meta: None,
             meta_spans: &[],
             value: None,
+            avatar: None,
             marks: [None; MAX_MARKS],
+            mark_tone: Tone::Neutral,
             tags: &[],
             count: None,
             leading: None,
             leading_column: None,
             nested: false,
+            depth: 0,
             status: None,
             change: None,
             struck: false,
@@ -446,6 +529,44 @@ impl<'a> ListRowFace<'a> {
             frame: None,
             min_target: 0.0,
             check_pose: None,
+            card: false,
+            dense: false,
+        }
+    }
+
+    /// The row as a card: a surface of its own, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines with the facts on a line under the text, in the order they
+    /// read in a row.
+    #[must_use]
+    pub fn card(mut self) -> Self {
+        self.card = true;
+        self
+    }
+
+    /// The row as a dense row: one line at the caption's size, the small glyph, as tall as that
+    /// line and its inset: a quiet reference under content, or a list that shows a lot at once.
+    #[must_use]
+    pub fn dense(mut self) -> Self {
+        self.dense = true;
+        self
+    }
+
+    /// How many lines the title may take: [`Self::two_line_title`] sets two, a card sets what
+    /// its title wraps to.
+    #[must_use]
+    pub fn title_lines(mut self, lines: u8) -> Self {
+        self.title_lines = lines.clamp(1, CARD_TITLE_LINES);
+        self
+    }
+
+    /// The metrics this face lays out with: a card's, or a dense row's, where it is one.
+    fn metrics(&self, theme: &Theme) -> RowMetrics {
+        if self.card {
+            RowMetrics::card(theme)
+        } else if self.dense {
+            RowMetrics::dense(theme)
+        } else {
+            RowMetrics::new(theme)
         }
     }
 
@@ -463,6 +584,14 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn found(mut self, words: &'a [&'a str]) -> Self {
         self.found = words;
+        self
+    }
+
+    /// A quiet word before the title, on its line and in the weaker ink: where the item came
+    /// from. The title takes the room left after it.
+    #[must_use]
+    pub fn prefix(mut self, word: &'a str) -> Self {
+        self.prefix = Some(word);
         self
     }
 
@@ -498,6 +627,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// A line under the text of the row's own: what waits on the item, which the app says and
+    /// the row only carries.
+    #[must_use]
+    pub fn note(mut self, text: &'a str) -> Self {
+        self.note = Some(text);
+        self
+    }
+
     /// Let the secondary text wrap to two lines before it is elided (a
     /// message preview).
     #[must_use]
@@ -514,8 +651,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A timestamp, size or count, right-aligned in tabular figures on the
-    /// title's line. It narrows only the title's line.
+    /// When it happened or is due (a day, with the time of day it is due where the view pairs
+    /// one), in tabular figures: the first fact of the facts column, on the title's line.
     #[must_use]
     pub fn meta(mut self, text: &'a str) -> Self {
         self.meta = Some(text);
@@ -530,8 +667,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A figure at the trailing edge (a time, a code, a temperature) that
-    /// hover actions never replace.
+    /// A figure among the facts (how far a branch got, a temperature), between who it is and
+    /// how important it is.
     #[must_use]
     pub fn value(mut self, text: &'a str) -> Self {
         self.value = Some((text, RowValue::Body));
@@ -545,13 +682,29 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// A mark after the title in tertiary ink (starred, pinned, shared,
-    /// has attachments). Each call adds one more, in order, up to
-    /// [`MAX_MARKS`]; later ones are ignored. Star, pin and bookmark are
-    /// filled.
+    /// Who the item is, as a fact in the facts column: their face, between when it is due and
+    /// how far it has got. A row led by an avatar ([`RowLeading::Avatar`]) is a row that _is_
+    /// the person (a contact); a row that is something a person is on shows them here.
+    #[must_use]
+    pub fn avatar(mut self, avatar: AvatarFace<'a>) -> Self {
+        self.avatar = Some(avatar);
+        self
+    }
+
+    /// A mark on the row's edge, after every other fact (starred, pinned, shared, how much it
+    /// matters), in tertiary ink or the row's own tone. Each call adds one more, in order, up
+    /// to [`MAX_MARKS`]; later ones are ignored. Star, pin and bookmark are filled.
     #[must_use]
     pub fn mark(mut self, icon: Icon) -> Self {
         self.push_mark(RowMark::Icon(icon));
+        self
+    }
+
+    /// The tone the row's mark reads in (an item's priority): a theme role,
+    /// never a colour.
+    #[must_use]
+    pub fn mark_tone(mut self, tone: Tone) -> Self {
+        self.mark_tone = tone;
         self
     }
 
@@ -577,8 +730,8 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
-    /// How many items the row stands for (the messages in a thread), in a
-    /// quiet pill at the trailing edge of the line under the title.
+    /// How many items the row stands for (the messages in a thread, a branch's open steps), in
+    /// a quiet pill among the facts, after the figure.
     #[must_use]
     pub fn count(mut self, count: usize) -> Self {
         self.count = Some(count);
@@ -608,6 +761,14 @@ impl<'a> ListRowFace<'a> {
         self
     }
 
+    /// Indent the row's content `depth` steps in, one disclosure gutter each, as a
+    /// subtree's rows stand under their parents; its chevron hangs in its own gutter.
+    #[must_use]
+    pub fn depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
+        self
+    }
+
     #[must_use]
     pub fn change(mut self, change: RowChange<'a>) -> Self {
         self.change = Some(change);
@@ -625,7 +786,7 @@ impl<'a> ListRowFace<'a> {
     /// Where the face of an unseen change sits in `rect`, when the row shows one.
     #[must_use]
     pub fn change_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Option<Rect> {
-        self.geometry(rect, &RowMetrics::new(theme), text, theme)
+        self.geometry(rect, &self.metrics(theme), text, theme)
             .change
     }
 
@@ -759,947 +920,35 @@ impl<'a> ListRowFace<'a> {
     }
 
     /// The number of lines under the title.
-    fn extra_lines(&self) -> u8 {
-        let secondary = if self.secondary.is_some() {
-            self.secondary_lines
+    fn untitled(&self) -> bool {
+        self.title.trim().is_empty()
+    }
+
+    /// The title as the row shows and speaks it: an item nobody has named yet shows a muted
+    /// placeholder, so its row stays visible and pressable until it has one.
+    fn shown_title(&self) -> Cow<'_, str> {
+        if self.untitled() {
+            Cow::Owned(crate::i18n!("list-row-untitled"))
         } else {
-            0
-        };
-        secondary + u8::from(self.subtitle.is_some()) + (self.title_lines - 1)
-    }
-
-    fn title_style(&self, m: &RowMetrics) -> TextStyle {
-        let style = if self.emphasized {
-            m.title_strong.clone()
-        } else {
-            m.title.clone()
-        };
-        match self.title_family {
-            Some(family) => style.with_family(family.clone()),
-            None => style,
-        }
-    }
-
-    /// The text block's height: the title lines, the subtitle and the
-    /// secondary lines.
-    /// Where the status dot's centre stands: on the title's line, as a
-    /// presence dot beside a name; beside a check or chevron it centres with
-    /// them, so the trailing column stands on one line.
-    fn dot_cy(geo: &RowGeometry, row: Rect, extra: bool, title_cy: f64) -> f64 {
-        let accessory = geo.disclosure.is_some() || geo.check.is_some();
-        if extra && !accessory {
-            title_cy
-        } else {
-            row.center().y
-        }
-    }
-
-    /// The status dot's centre in `row`, as painted.
-    #[cfg(test)]
-    pub(crate) fn dot_centre(
-        &self,
-        row: Rect,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<Point> {
-        let m = RowMetrics::new(theme);
-        let geo = self.geometry(row, &m, text, theme);
-        let x = geo.dot_x?;
-        let block = self.text_block(text, &m);
-        let title_line = RowMetrics::line(text, &self.title_style(&m));
-        let title_cy = row.center().y - block / 2.0 + title_line / 2.0;
-        Some(Point::new(
-            x,
-            Self::dot_cy(&geo, row, self.extra_lines() > 0, title_cy),
-        ))
-    }
-
-    fn text_block(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
-        let title = RowMetrics::line(text, &self.title_style(m)) * f64::from(self.title_lines);
-        let subtitle = if self.subtitle.is_some() {
-            RowMetrics::line(text, &m.subtitle)
-        } else {
-            0.0
-        };
-        let secondary = if self.secondary.is_some() {
-            f64::from(self.secondary_lines) * RowMetrics::line(text, &m.secondary)
-        } else {
-            0.0
-        };
-        title + subtitle + secondary
-    }
-
-    fn leading_extent(&self, m: &RowMetrics, text: &mut TextRenderer, theme: &Theme) -> (f64, f64) {
-        let extra = self.extra_lines() > 0;
-        let avatar = RowMetrics::avatar(theme, extra);
-        let own = match self.leading {
-            None if self.nested => (m.icon, m.icon),
-            None => (0.0, 0.0),
-            Some(
-                RowLeading::Icon(_)
-                | RowLeading::Checkbox { .. }
-                | RowLeading::Swatch(_)
-                | RowLeading::Signal(_),
-            ) => (m.icon, m.icon),
-            Some(
-                RowLeading::Avatar(_)
-                | RowLeading::Thumbnail(_)
-                | RowLeading::Paint(_)
-                | RowLeading::AvatarSpace,
-            ) => (avatar, avatar),
-            Some(RowLeading::Media(_, aspect)) => ((avatar * aspect.ratio()).ceil(), avatar),
-            Some(RowLeading::Badge(badge)) => {
-                let width = badge_column_width(text, theme, &[badge]);
-                (width, m.icon)
-            }
-        };
-        if self.leading.is_none() {
-            return own;
-        }
-        (own.0.max(self.leading_column.unwrap_or(0.0)), own.1)
-    }
-
-    /// The row's height at this text scale.
-    pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let m = RowMetrics::new(theme);
-        let (_, leading_h) = self.leading_extent(&m, text, theme);
-        let value = match self.value {
-            Some((value, RowValue::Title)) => {
-                f64::from(text.measure_style(value, None, &m.value_title).1)
-            }
-            _ => 0.0,
-        };
-        let big_leading = matches!(
-            self.leading,
-            Some(
-                RowLeading::Avatar(_)
-                    | RowLeading::Thumbnail(_)
-                    | RowLeading::Media(..)
-                    | RowLeading::AvatarSpace
-            )
-        );
-        let min = RowMetrics::min_height_for(theme, self.extra_lines() > 0, big_leading)
-            .max(m.min_height)
-            .max(self.min_target);
-        (self.text_block(text, &m).max(leading_h).max(value) + 2.0 * m.pad_y)
-            .max(min)
-            .ceil()
-    }
-
-    fn shows_actions(&self) -> bool {
-        !self.actions.is_empty()
-            && !self.interaction.disabled
-            && (self.interaction.hovered || self.interaction.focused || self.reveal_actions)
-    }
-
-    fn value_width(&self, m: &RowMetrics, text: &mut TextRenderer) -> f64 {
-        self.value.map_or(0.0, |(value, size)| {
-            let style = match size {
-                RowValue::Body => &m.value_body,
-                RowValue::Title => &m.value_title,
-            };
-            f64::from(text.measure_style(value, None, style).0)
-        })
-    }
-
-    fn count_label(&self) -> Option<String> {
-        self.count.map(|count| count.to_string())
-    }
-
-    /// How far inside the row's edge its trailing slot ends: its own marks
-    /// after it, or the room its list keeps there if that is wider.
-    fn after_trailing(&self, m: &RowMetrics) -> f64 {
-        self.marks_after_trailing(m).max(self.trailing_after)
-    }
-
-    /// The width of the columns [`Self::geometry`] lays out after the
-    /// trailing slot (a disclosure chevron, a check, a status dot), each
-    /// with its gap.
-    fn marks_after_trailing(&self, m: &RowMetrics) -> f64 {
-        let mut width = 0.0;
-        if self.disclosure {
-            width += m.icon + m.column_gap;
-        }
-        if self.checked.is_some() {
-            width += m.icon + m.column_gap;
-        }
-        if self.status.is_some() {
-            width += m.dot + m.column_gap;
-        }
-        if self.change.is_some() {
-            width += m.icon + m.column_gap;
-        }
-        width
-    }
-
-    /// Lay the columns out in `rect`, the row's outer rect.
-    fn geometry(
-        &self,
-        rect: Rect,
-        m: &RowMetrics,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> RowGeometry {
-        let left = rect.x0 + m.bleed;
-        let mut right = rect.x1 - m.bleed;
-        let cy = rect.center().y;
-        let mut geo = RowGeometry::default();
-        let (lead_w, lead_h) = self.leading_extent(m, text, theme);
-        geo.leading = Rect::new(left, cy - lead_h / 2.0, left + lead_w, cy + lead_h / 2.0);
-        geo.text_x = if lead_w > 0.0 {
-            left + lead_w + m.column_gap
-        } else {
-            left
-        };
-        if self.disclosure {
-            geo.disclosure = Some(Rect::new(
-                right - m.icon,
-                cy - m.icon / 2.0,
-                right,
-                cy + m.icon / 2.0,
-            ));
-            right -= m.icon + m.column_gap;
-        }
-        if self.checked.is_some() {
-            geo.check = Some(Rect::new(
-                right - m.icon,
-                cy - m.icon / 2.0,
-                right,
-                cy + m.icon / 2.0,
-            ));
-            right -= m.icon + m.column_gap;
-        }
-        if self.status.is_some() {
-            geo.dot_x = Some(right - m.dot / 2.0);
-            right -= m.dot + m.column_gap;
-        }
-        if self.change.is_some() {
-            geo.change = Some(Rect::new(
-                right - m.icon,
-                cy - m.icon / 2.0,
-                right,
-                cy + m.icon / 2.0,
-            ));
-            right -= m.icon + m.column_gap;
-        }
-        if let Some(width) = self.trailing_width
-            && width > 0.0
-        {
-            right = right.min(rect.x1 - m.bleed - self.after_trailing(m));
-            geo.trailing = Some(Rect::new(right - width, rect.y0, right, rect.y1));
-            right -= width + m.column_gap;
-        }
-        if self.value.is_some() {
-            geo.value_right = right;
-            right -= self.value_width(m, text) + m.column_gap;
-        }
-        geo.meta_right = right;
-        geo.text_right = right;
-        geo.title_right = right;
-        geo.second_right = right;
-        if self.shows_actions() {
-            let n = self.actions.len() as f64;
-            let width = n * m.action + (n - 1.0).max(0.0) * m.action_gap;
-            geo.text_right = right - width - m.column_gap;
-            geo.title_right = geo.text_right;
-            geo.second_right = geo.text_right;
-        } else {
-            let mut title_right = right;
-            let meta_w = self.meta_width(m, text, (right - left).max(0.0) / 2.0);
-            if meta_w > 0.0 {
-                title_right = right - meta_w - m.column_gap;
-            }
-            if let Some(label) = self.count_label() {
-                let pill = BadgeFace::intrinsic_width(&label, text, theme);
-                if self.extra_lines() > 0 {
-                    geo.second_right = right - pill - m.column_gap;
-                } else {
-                    title_right -= pill + m.column_gap;
-                }
-            }
-            geo.title_right = title_right;
-        }
-        geo
-    }
-
-    /// The meta's painted width, capped at `cap`.
-    fn meta_width(&self, m: &RowMetrics, text: &mut TextRenderer, cap: f64) -> f64 {
-        if !self.meta_spans.is_empty() {
-            let gap = m.tag_gap;
-            let width: f64 = self
-                .meta_spans
-                .iter()
-                .map(|(span, _)| f64::from(text.measure_style(span, None, &m.meta).0))
-                .sum::<f64>()
-                + gap * (self.meta_spans.len() as f64 - 1.0).max(0.0);
-            return width.min(cap);
-        }
-        self.meta.map_or(0.0, |meta| {
-            let shown = text.elide_to_width_style(meta, crate::num::f32_of_f64(cap), &m.meta);
-            f64::from(text.measure_style(&shown, None, &m.meta).0)
-        })
-    }
-
-    /// Where each hover action sits in `rect`, in order. Empty unless the
-    /// row is hovered, focused or revealing its actions.
-    pub fn action_rects(&self, rect: Rect, theme: &Theme) -> Vec<Rect> {
-        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-            self.action_rects_with(rect, &RowMetrics::new(theme), text, theme)
-        })
-    }
-
-    fn action_rects_with(
-        &self,
-        rect: Rect,
-        m: &RowMetrics,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Vec<Rect> {
-        if !self.shows_actions() {
-            return Vec::new();
-        }
-        let mut right = self.geometry(rect, m, text, theme).meta_right;
-        let cy = rect.center().y;
-        let mut rects: Vec<Rect> = self
-            .actions
-            .iter()
-            .rev()
-            .map(|_| {
-                let r = Rect::new(
-                    right - m.action,
-                    cy - m.action / 2.0,
-                    right,
-                    cy + m.action / 2.0,
-                );
-                right -= m.action + m.action_gap;
-                r
-            })
-            .collect();
-        rects.reverse();
-        rects
-    }
-
-    /// The slot [`Self::trailing_width`] reserved in `rect`, as tall as the
-    /// row; centre the control in it.
-    pub fn trailing_rect(
-        &self,
-        rect: Rect,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<Rect> {
-        self.geometry(rect, &RowMetrics::new(theme), text, theme)
-            .trailing
-    }
-
-    /// The leading column's rect in `rect`: the checkbox's hit target, or
-    /// the badge a tooltip explains.
-    pub fn leading_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Rect {
-        let m = RowMetrics::new(theme);
-        let geo = self.geometry(rect, &m, text, theme);
-        match self.leading {
-            Some(RowLeading::Checkbox { .. }) => {
-                // The whole leading column, row-tall: a box is a small target.
-                Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1)
-            }
-            _ => geo.leading,
-        }
-    }
-
-    /// Where the title starts: the inset separator starts here too.
-    fn text_x(&self, rect: Rect, m: &RowMetrics, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        self.geometry(rect, m, text, theme).text_x
-    }
-
-    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            return;
-        }
-        let disabled = self.interaction.disabled;
-        let frame = self.frame.unwrap_or(rect);
-        if disabled {
-            ctx.scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                ctx.transform,
-                &frame,
-            );
-        }
-        self.paint_enabled(ctx, rect, frame);
-        if disabled {
-            ctx.scene.pop_layer();
-        }
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one pass over the row's columns in paint order keeps their geometry in one place"
-    )]
-    fn paint_enabled(&self, ctx: &mut PaintCtx<'_>, rect: Rect, frame: Rect) {
-        let theme = ctx.theme;
-        let m = RowMetrics::new(theme);
-        let colors = &theme.tokens.colors;
-        let ground = colors.surfaces.content;
-
-        let offset = self
-            .swipe
-            .map_or(0.0, |(_, offset)| offset.min(rect.width()));
-        if let Some((action, _)) = self.swipe
-            && offset > 0.0
-        {
-            self.paint_swipe(ctx, frame, &m, action, offset);
-        }
-        let shift = vello::kurbo::Vec2::new(offset, 0.0);
-        let row = rect - shift;
-        let frame_row = frame - shift;
-        if offset > 0.0 {
-            // The sliding row stays opaque over what it reveals.
-            ctx.scene
-                .fill(Fill::NonZero, ctx.transform, ground, None, &frame_row);
-        }
-
-        // Someone else's change the person has not seen: their colour, faintly, under the row.
-        let ground = match self.change {
-            Some(change) => {
-                let wash = crate::tokens::colors::mix8(ground, change.colour(theme), CHANGE_WASH);
-                ctx.scene.fill(
-                    Fill::NonZero,
-                    ctx.transform,
-                    wash,
-                    None,
-                    &RoundedRect::from_rect(frame_row, f64::from(theme.tokens.radii.control)),
-                );
-                wash
-            }
-            None => ground,
-        };
-
-        let lifted = self.selected || self.interaction.pressed;
-        let hovered = self.interaction.hovered && !self.interaction.disabled;
-        // Selected takes the accent's tint; a press is the neutral lift.
-        let pressed = self.interaction.pressed && !self.selected;
-        paint_row_selection_joined(
-            ctx.scene,
-            ctx.transform,
-            frame_row,
-            SelectionState::new(self.selected, hovered, pressed),
-            ground,
-            theme,
-            if self.selected {
-                self.join
-            } else {
-                RowJoin::NONE
-            },
-        );
-        let lift = crate::chrome::selection_tier_on(
-            theme,
-            SelectionState::new(lifted, hovered, false),
-            ground,
-        )
-        .fill;
-        let under = if lifted || hovered {
-            crate::tokens::colors::composite(lift, ground)
-        } else {
-            ground
-        };
-
-        let geo = self.geometry(row, &m, ctx.text, theme);
-        let extra = self.extra_lines() > 0;
-        let title_style = self.title_style(&m);
-        let title_line = RowMetrics::line(ctx.text, &title_style);
-        let room = self.title_room(&geo, ctx.text, theme, &m);
-        let lines = ctx.text.clamp_to_lines(
-            self.title,
-            &title_style,
-            room,
-            usize::from(self.title_lines),
-        );
-        // The row keeps the height of every title line it allows, so rows
-        // do not jump as titles change; the text it draws is centred in it,
-        // beside the leading icon, however many lines the title takes.
-        let title_drawn = lines.len().clamp(1, usize::from(self.title_lines));
-        let unused = usize::from(self.title_lines).saturating_sub(title_drawn);
-        let block = self.text_block(ctx.text, &m) - title_line * crate::num::f64_of_usize(unused);
-        let text_top = row.center().y - block / 2.0;
-        let title_cy = text_top + title_line / 2.0;
-
-        self.paint_leading(ctx, &m, geo.leading, under);
-
-        // Trailing columns, from the far edge in.
-        if let Some(r) = geo.disclosure {
-            let centre = r.center();
-            let turned = ctx.transform
-                * Affine::translate(centre.to_vec2())
-                * Affine::rotate(self.disclosure_turn * std::f64::consts::FRAC_PI_2)
-                * Affine::translate(-centre.to_vec2());
-            Icon::ChevronRight.draw(ctx.scene, turned, r, theme.text_tertiary);
-        }
-        if let (Some(r), Some(true)) = (geo.check, self.checked) {
-            Icon::Check.draw(ctx.scene, ctx.transform, r, theme.text_primary);
-        }
-        if let (Some(change), Some(r)) = (self.change, geo.change) {
-            let cy = Self::dot_cy(&geo, row, extra, title_cy);
-            let face = Rect::from_center_size(Point::new(r.center().x, cy), r.size());
-            crate::widget::avatar::AvatarFace::new(change.name, change.identity)
-                .presence(change.colour(theme))
-                .paint(ctx, face);
-        }
-        if let (Some(status), Some(x)) = (self.status, geo.dot_x) {
-            let cy = Self::dot_cy(&geo, row, extra, title_cy);
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                status.colour(theme),
-                None,
-                &Circle::new(Point::new(x, cy), m.dot / 2.0),
-            );
-        }
-        if let Some((value, size)) = self.value {
-            let style = match size {
-                RowValue::Body => &m.value_body,
-                RowValue::Title => &m.value_title,
-            };
-            let (w, h) = ctx.text.measure_style(value, None, style);
-            ctx.text(
-                value,
-                style,
-                theme.text_primary,
-                Point::new(
-                    geo.value_right - f64::from(w),
-                    row.center().y - f64::from(h) / 2.0,
-                ),
-                None,
-            );
-        }
-
-        // Meta, or the hover actions in its place.
-        if self.shows_actions() {
-            let rects = self.action_rects_with(row, &m, ctx.text, theme);
-            for (index, (action, r)) in self.actions.iter().zip(&rects).enumerate() {
-                if self.hovered_action == Some(index) {
-                    ctx.scene.fill(
-                        Fill::NonZero,
-                        ctx.transform,
-                        colors.lift_on(under, 1.0),
-                        None,
-                        &RoundedRect::from_rect(*r, m.radius),
-                    );
-                    if self.interaction.focused {
-                        crate::widget::activation::paint_focus_ring(
-                            ctx.scene,
-                            ctx.transform,
-                            r.inset(-2.0),
-                            (m.radius - 2.0).max(0.0),
-                            theme,
-                        );
-                    }
-                }
-                let glyph = Rect::from_center_size(r.center(), (m.icon, m.icon));
-                action
-                    .icon
-                    .draw(ctx.scene, ctx.transform, glyph, theme.text_primary);
-            }
-        } else {
-            self.paint_meta(ctx, &m, &geo, row, title_cy, extra, &[ground, under]);
-            if let Some(label) = self.count_label() {
-                let w = BadgeFace::intrinsic_width(&label, ctx.text, theme);
-                let h = BadgeFace::height(theme);
-                let cy = if extra {
-                    let second = if self.subtitle.is_some() {
-                        RowMetrics::line(ctx.text, &m.subtitle)
-                    } else {
-                        RowMetrics::line(ctx.text, &m.secondary)
-                    };
-                    text_top + title_line * crate::num::f64_of_usize(title_drawn) + second / 2.0
-                } else {
-                    row.center().y
-                };
-                let right = if extra {
-                    geo.meta_right
-                } else {
-                    geo.title_right + w + m.column_gap
-                };
-                BadgeFace::new(
-                    Rect::new(right - w, cy - h / 2.0, right, cy + h / 2.0),
-                    &label,
-                )
-                .paint(ctx.scene, ctx.transform, ctx.text, theme);
-            }
-        }
-
-        // Title (with its mark and tags), subtitle and secondary text.
-        let text_x = geo.text_x;
-        let mut y = text_top;
-        let mut last_end = text_x;
-        for line in &lines {
-            for span in found_spans(line, self.found) {
-                let (Some(before), Some(word)) = (line.get(..span.start), line.get(span.clone()))
-                else {
-                    continue;
-                };
-                let start =
-                    text_x + f64::from(ctx.text.measure_style(before, None, &title_style).0);
-                let (width, height) = ctx.text.measure_style(word, None, &title_style);
-                let mark = Rect::new(start, y, start + f64::from(width), y + f64::from(height));
-                crate::widget::paint_find_match(ctx.scene, ctx.transform, mark, false, theme);
-            }
-            // A removed item's title is struck through, in the weaker ink.
-            let ink = if self.struck {
-                theme.text_dim
-            } else {
-                theme.text_primary
-            };
-            ctx.text(line, &title_style, ink, Point::new(text_x, y), None);
-            last_end = text_x + f64::from(ctx.text.measure_style(line, None, &title_style).0);
-            if self.struck {
-                let through = y + title_line / 2.0;
-                ctx.scene.stroke(
-                    &Stroke::new(1.0),
-                    ctx.transform,
-                    ink,
-                    None,
-                    &vello::kurbo::Line::new((text_x, through), (last_end, through)),
-                );
-            }
-            y += title_line;
-        }
-        if lines.is_empty() {
-            y += title_line;
-        }
-        let line_cy = y - title_line / 2.0;
-        let mut x = last_end + m.tag_gap;
-        for mark in self.marks.iter().flatten().copied() {
-            if x + m.mark > geo.title_right {
-                break;
-            }
-            let r = Rect::new(
-                x,
-                line_cy - m.mark / 2.0,
-                x + m.mark,
-                line_cy + m.mark / 2.0,
-            );
-            match mark {
-                RowMark::Icon(icon @ (Icon::Star | Icon::Pin)) => {
-                    icon.draw_filled(ctx.scene, ctx.transform, r, theme.text_tertiary);
-                }
-                RowMark::Icon(icon) => icon.draw(ctx.scene, ctx.transform, r, theme.text_tertiary),
-                RowMark::Swatch(color) => {
-                    // The swatch sits inside the mark's box, as an icon's
-                    // glyph does, with its own derived edge.
-                    let swatch = r.inset(-(m.mark * 0.1));
-                    let radius = swatch.width() * 0.25;
-                    let shape = RoundedRect::from_rect(swatch, radius);
-                    ctx.scene
-                        .fill(Fill::NonZero, ctx.transform, color, None, &shape);
-                    ctx.scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        ctx.transform,
-                        crate::surface::edge_on(color),
-                        None,
-                        &crate::surface::edge_outline(swatch, radius),
-                    );
-                }
-            }
-            x += m.mark + m.tag_gap;
-        }
-        let tag_h = BadgeFace::height(theme);
-        for (label, style) in self.tags {
-            let w = BadgeFace::intrinsic_width(label, ctx.text, theme);
-            if x + w > geo.title_right {
-                break;
-            }
-            BadgeFace::new(
-                Rect::new(x, line_cy - tag_h / 2.0, x + w, line_cy + tag_h / 2.0),
-                label,
-            )
-            .style(*style)
-            .paint(ctx.scene, ctx.transform, ctx.text, theme);
-            x += w + m.tag_gap;
-        }
-        if let Some(subtitle) = self.subtitle {
-            let width = crate::num::f32_of_f64((geo.second_right - text_x).max(0.0));
-            let line = ctx.text.elide_to_width_style(subtitle, width, &m.subtitle);
-            ctx.text(
-                &line,
-                &m.subtitle,
-                theme.text_primary,
-                Point::new(text_x, y),
-                None,
-            );
-            y += RowMetrics::line(ctx.text, &m.subtitle);
-        }
-        if let Some(secondary) = self.secondary {
-            let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
-            let right = if self.subtitle.is_some() {
-                geo.text_right
-            } else {
-                geo.second_right
-            };
-            let width = crate::num::f32_of_f64((right - text_x).max(0.0));
-            let kept = ctx.text.clamp_to_lines(
-                secondary,
-                &m.secondary,
-                width,
-                usize::from(self.secondary_lines),
-            );
-            for (index, line) in kept.iter().enumerate() {
-                ctx.text(
-                    line,
-                    &m.secondary,
-                    theme.text_dim,
-                    Point::new(text_x, y + crate::num::f64_of_usize(index) * secondary_line),
-                    None,
-                );
-            }
-        }
-
-        if self.separator && !self.selected && !self.next_selected {
-            crate::surface::separator(
-                ctx.scene,
-                ctx.transform,
-                text_x,
-                frame_row.x1 - m.bleed,
-                frame.y1 - 0.5,
-                0.0,
-                ground,
-            );
-        }
-
-        if self.interaction.focused && !self.interaction.disabled && self.hovered_action.is_none() {
-            // Inside the row: rows stack edge to edge, so a ring outside one
-            // would sit on its neighbours.
-            crate::widget::activation::paint_focus_ring(
-                ctx.scene,
-                ctx.transform,
-                frame_row.inset(-2.0),
-                (m.radius - 2.0).max(0.0),
-                theme,
-            );
-        }
-    }
-
-    /// The width the title is set in: its column, less the tags and marks
-    /// after it. The title keeps at least half its line; tags and the mark
-    /// take the rest and drop off before the title elides further.
-    fn title_room(
-        &self,
-        geo: &RowGeometry,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        m: &RowMetrics,
-    ) -> f32 {
-        let title_width = (geo.title_right - geo.text_x).max(0.0);
-        let tags_w = self.tags_width(text, theme, m);
-        let mark_count = self.marks.iter().flatten().count();
-        #[allow(clippy::cast_precision_loss, reason = "at most MAX_MARKS")]
-        let mark_w = mark_count as f64 * (m.mark + m.tag_gap);
-        let accessories = (tags_w + mark_w).min(title_width / 2.0);
-        crate::num::f32_of_f64((title_width - accessories).max(0.0))
-    }
-
-    /// Whether the title, painted in `rect`, is cut short with an ellipsis.
-    /// A row shows such a title in full in its tooltip.
-    #[must_use]
-    pub fn title_elided(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> bool {
-        if self.title.is_empty() {
-            return false;
-        }
-        let m = RowMetrics::new(theme);
-        let geo = self.geometry(rect, &m, text, theme);
-        let room = self.title_room(&geo, text, theme, &m);
-        let lines = text.clamp_to_lines(
-            self.title,
-            &self.title_style(&m),
-            room,
-            usize::from(self.title_lines),
-        );
-        lines
-            .last()
-            .is_none_or(|line| line.ends_with('\u{2026}') && !self.title.ends_with('\u{2026}'))
-    }
-
-    fn tags_width(&self, text: &mut TextRenderer, theme: &Theme, m: &RowMetrics) -> f64 {
-        self.tags
-            .iter()
-            .map(|(label, _)| BadgeFace::intrinsic_width(label, text, theme) + m.tag_gap)
-            .sum()
-    }
-
-    fn paint_meta(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        m: &RowMetrics,
-        geo: &RowGeometry,
-        row: Rect,
-        title_cy: f64,
-        extra: bool,
-        grounds: &[Color],
-    ) {
-        let theme = ctx.theme;
-        let cap = (geo.meta_right - (row.x0 + m.bleed)).max(0.0) / 2.0;
-        let line_cy = if extra { title_cy } else { row.center().y };
-        if !self.meta_spans.is_empty() {
-            let width = self.meta_width(m, ctx.text, f64::INFINITY);
-            let mut x = geo.meta_right - width.min(cap);
-            for (span, tone) in self.meta_spans {
-                let ink = if *tone == Tone::Neutral {
-                    theme.text_dim
-                } else {
-                    theme.tokens.colors.ink_on_any(
-                        grounds,
-                        tone.colour(theme),
-                        SMALL_TEXT_MIN_CONTRAST,
-                    )
-                };
-                let (w, h) = ctx.text.measure_style(span, None, &m.meta);
-                if x + f64::from(w) > geo.meta_right + 0.5 {
-                    break;
-                }
-                ctx.text(
-                    span,
-                    &m.meta,
-                    ink,
-                    Point::new(x, line_cy - f64::from(h) / 2.0),
-                    None,
-                );
-                x += f64::from(w) + m.tag_gap;
-            }
-            return;
-        }
-        let Some(meta) = self.meta else {
-            return;
-        };
-        let meta = ctx
-            .text
-            .elide_to_width_style(meta, crate::num::f32_of_f64(cap), &m.meta);
-        let (width, height) = ctx.text.measure_style(&meta, None, &m.meta);
-        ctx.text(
-            &meta,
-            &m.meta,
-            theme.text_dim,
-            Point::new(
-                geo.meta_right - f64::from(width),
-                line_cy - f64::from(height) / 2.0,
-            ),
-            None,
-        );
-    }
-
-    fn paint_leading(&self, ctx: &mut PaintCtx<'_>, m: &RowMetrics, slot: Rect, under: Color) {
-        let theme = ctx.theme;
-        let Some(leading) = self.leading else {
-            return;
-        };
-        match leading {
-            RowLeading::Icon(icon) => {
-                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                icon.draw(ctx.scene, ctx.transform, r, theme.text_dim);
-            }
-            RowLeading::Avatar(face) => {
-                let side = slot.height();
-                face.paint(ctx, Rect::from_center_size(slot.center(), (side, side)));
-            }
-            RowLeading::Badge(badge) => paint_badge(ctx, m, slot, badge),
-            RowLeading::Thumbnail(image) => {
-                let side = slot.height();
-                let r = Rect::from_center_size(slot.center(), (side, side));
-                crate::widget::media_card::paint_art_tile(
-                    ctx,
-                    r,
-                    MediaArt::Image(image),
-                    self.title,
-                    f64::from(theme.tokens.radii.detail),
-                );
-            }
-            RowLeading::Media(art, aspect) => {
-                let h = slot.height();
-                let w = (h * aspect.ratio()).min(slot.width());
-                let r = Rect::from_center_size(slot.center(), (w, h));
-                crate::widget::media_card::paint_art_tile(
-                    ctx,
-                    r,
-                    art,
-                    self.title,
-                    f64::from(theme.tokens.radii.detail),
-                );
-            }
-            RowLeading::Checkbox { checked } => {
-                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                let mut face = crate::widget::checkbox::CheckboxFace::new(r, checked);
-                if let Some(pose) = self.check_pose {
-                    face = face.pose(pose);
-                }
-                crate::widget::Checkbox::paint(ctx.scene, ctx.transform, theme, &face);
-            }
-            RowLeading::Swatch(colour) => {
-                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                let circle = Circle::new(r.center(), r.width() / 2.0);
-                ctx.scene
-                    .fill(Fill::NonZero, ctx.transform, colour, None, &circle);
-                // The swatch is content colour: a derived edge closes it on a
-                // ground of nearly the same lightness.
-                ctx.scene.stroke(
-                    &Stroke::new(1.0),
-                    ctx.transform,
-                    crate::surface::edge_on(under),
-                    None,
-                    &Circle::new(r.center(), r.width() / 2.0 - 0.5),
-                );
-            }
-            RowLeading::Signal(level) => {
-                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
-                crate::widget::SignalMeterFace::new(level).paint(
-                    ctx.scene,
-                    ctx.transform,
-                    theme,
-                    r,
-                );
-            }
-            RowLeading::Paint(painter) => painter(ctx, slot),
-            RowLeading::AvatarSpace => {}
-        }
-    }
-
-    fn paint_swipe(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        m: &RowMetrics,
-        action: SwipeAction<'_>,
-        offset: f64,
-    ) {
-        let theme = ctx.theme;
-        let colors = &theme.tokens.colors;
-        let revealed = Rect::new(rect.x1 - offset, rect.y0, rect.x1, rect.y1);
-        let fill = if action.destructive {
-            colors.semantic.danger
-        } else {
-            colors.lift_on(colors.surfaces.content, 1.0)
-        };
-        ctx.scene
-            .fill(Fill::NonZero, ctx.transform, fill, None, &revealed);
-        let ink = if action.destructive {
-            crate::widget::avatar::initial_ink(fill, theme)
-        } else {
-            theme.text_primary
-        };
-        if offset >= m.icon + 2.0 * m.bleed {
-            let glyph = Rect::new(
-                revealed.x1 - m.bleed - m.icon,
-                revealed.center().y - m.icon / 2.0,
-                revealed.x1 - m.bleed,
-                revealed.center().y + m.icon / 2.0,
-            );
-            action.icon.draw(ctx.scene, ctx.transform, glyph, ink);
+            Cow::Borrowed(self.title)
         }
     }
 
     /// The name a row is announced by: its badge, then its title.
     fn spoken_name(&self) -> String {
-        match self.leading {
-            Some(RowLeading::Badge(badge)) => format!("{badge} {}", self.title),
-            _ => self.title.to_owned(),
+        let title = self.shown_title();
+        // The row says its quiet word and its badge before its title, as it draws them there.
+        let mut name = String::new();
+        if let Some(RowLeading::Badge(badge)) = &self.leading {
+            name.push_str(badge);
+            name.push(' ');
         }
+        if let Some(prefix) = &self.prefix {
+            name.push_str(prefix);
+            name.push(' ');
+        }
+        name.push_str(&title);
+        name
     }
 
     /// The row's accessibility node: a list item named by its badge and
@@ -1713,12 +962,15 @@ impl<'a> ListRowFace<'a> {
             .collect::<Vec<_>>()
             .join(" ");
         let count = self.count.map(|count| count.to_string());
+        // A toned meta draws as spans of its own words: the row says it once.
+        let meta = self.meta.filter(|_| self.meta_spans.is_empty());
         let mut value: Vec<&str> = self.tags.iter().map(|(label, _)| *label).collect();
         value.extend(
             [
                 self.subtitle,
                 self.secondary,
-                self.meta,
+                self.note,
+                meta,
                 (!spans.is_empty()).then_some(spans.as_str()),
                 self.value.map(|(value, _)| value),
                 count.as_deref(),
@@ -1779,6 +1031,8 @@ enum Leading {
         square: bool,
         glyph: Option<Icon>,
     },
+    /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
+    AvatarSpace,
     Icon(Icon),
     Badge(String),
     Thumbnail(ImageData),
@@ -1792,8 +1046,27 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
-    AvatarSpace,
     Signal(crate::widget::SignalLevel),
+}
+
+/// Who a row is about, as a fact in its facts column ([`ListRow::avatar`]): their face.
+struct FactAvatar {
+    name: String,
+    identity: String,
+    image: Option<ImageData>,
+    square: bool,
+    glyph: Option<Icon>,
+}
+
+impl FactAvatar {
+    fn face(&self) -> AvatarFace<'_> {
+        let face = AvatarFace::new(&self.name, &self.identity).image(self.image.as_ref());
+        let face = if self.square { face.square() } else { face };
+        match self.glyph {
+            Some(glyph) => face.glyph(glyph),
+            None => face,
+        }
+    }
 }
 
 /// What a retained hover action runs.
@@ -1920,6 +1193,8 @@ impl RowPart {
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
+    /// A quiet word before the title, on its line: where an item came from.
+    prefix: Option<String>,
     /// Whether a layout pass has built the row.
     laid_out: bool,
     /// Whether the last paint cut the title short; the tooltip then shows it
@@ -1931,15 +1206,24 @@ pub struct ListRow {
     secondary: Option<String>,
     /// How many lines the secondary text may take.
     secondary_line_count: u8,
+    /// A line under the text of the row's own: what waits on the item.
+    note: Option<String>,
     meta: Option<String>,
     meta_spans: Vec<(String, Tone)>,
     value: Option<(String, RowValue)>,
     mark: Option<Icon>,
+    /// The tone the row's mark and its checkbox ring read in: an item's priority.
+    mark_tone: Tone,
     tags: Vec<(String, ChipStyle)>,
     count: Option<usize>,
+    /// Who the row is about, as a fact in the facts column.
+    avatar: Option<FactAvatar>,
     leading: Option<Leading>,
     leading_column: Option<f64>,
     nested: bool,
+    /// How many rows over it the row stands, indenting its content one
+    /// disclosure gutter each ([`ListRowFace::depth`]).
+    depth: u32,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -1949,6 +1233,9 @@ pub struct ListRow {
     pub(crate) shared_after_trailing: Option<f64>,
     leading_tooltip: Option<String>,
     tooltip: Option<String>,
+    /// What a reader hears of the row beyond its name and value; it is not
+    /// shown to the pointer.
+    description: Option<String>,
     status: Option<(StatusKind, String)>,
     /// An unseen change of what the row shows ([`Self::change`]).
     change: Option<Changed>,
@@ -1964,6 +1251,8 @@ pub struct ListRow {
     actions: Vec<OwnedAction>,
     hovered_action: Option<usize>,
     armed_action: Option<usize>,
+    /// The list this row stands in has something painted over it: its tooltip stays away.
+    tooltips_suppressed: bool,
     /// A press on one of the row's own controls (a hover action, the
     /// leading checkbox); a press on the row itself is the activation's.
     pressed_part: crate::pointer_replay::HeldPress<RowPart>,
@@ -1997,6 +1286,14 @@ pub struct ListRow {
     /// A host that builds the row anew for what it shows now: the one built
     /// in its place goes on from its mark (`motion::keep`).
     hand_on: crate::motion::HandOn<KeptRow>,
+    /// The row is a card ([`ListRowFace::card`]): its own surface, its facts on a line under
+    /// its text.
+    card: bool,
+    /// How many lines the title wraps to in a card at the width it was last measured in: a
+    /// card is as tall as its title needs, so its height is measured, not fixed.
+    card_lines: u8,
+    /// The row is a dense row ([`ListRowFace::dense`]): one quiet line at the caption's size.
+    dense: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2018,27 +1315,33 @@ impl ListRow {
     fn new_owned(id: String, title: String) -> Self {
         Self {
             title,
+            prefix: None,
             laid_out: false,
             title_elided: false,
             two_line_title: false,
             title_family: None,
             subtitle: None,
             secondary: None,
+            note: None,
             secondary_line_count: 1,
             meta: None,
             meta_spans: Vec::new(),
             value: None,
             mark: None,
+            mark_tone: Tone::Neutral,
             tags: Vec::new(),
             count: None,
+            avatar: None,
             leading: None,
             leading_column: None,
             nested: false,
+            depth: 0,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
             leading_tooltip: None,
             tooltip: None,
+            description: None,
             status: None,
             change: None,
             struck: false,
@@ -2052,6 +1355,7 @@ impl ListRow {
             actions: Vec::new(),
             hovered_action: None,
             armed_action: None,
+            tooltips_suppressed: false,
             pressed_part: crate::pointer_replay::HeldPress::default(),
             shortcuts: Vec::new(),
             swipe: None,
@@ -2070,7 +1374,71 @@ impl ListRow {
             check: crate::widget::checkbox::CheckMotion::default(),
             check_pose: None,
             hand_on: crate::motion::HandOn::default(),
+            card: false,
+            card_lines: 1,
+            dense: false,
         }
+    }
+
+    /// The metrics the row lays out with: a card's, or a dense row's, where it is one.
+    fn metrics(&self, theme: &Theme) -> RowMetrics {
+        if self.card {
+            RowMetrics::card(theme)
+        } else if self.dense {
+            RowMetrics::dense(theme)
+        } else {
+            RowMetrics::new(theme)
+        }
+    }
+
+    /// Show the row as a dense row: one quiet line at the caption's size, as tall as that line
+    /// and its inset (a reference under content).
+    #[must_use]
+    pub fn dense(mut self) -> Self {
+        self.set_dense();
+        self
+    }
+
+    /// [`Self::dense`], for a row a host has already built.
+    pub fn set_dense(&mut self) {
+        self.dense = true;
+        self.dirty = true;
+    }
+
+    /// Whether the row stands dense ([`ListRowFace::dense`]).
+    #[must_use]
+    pub const fn is_dense(&self) -> bool {
+        self.dense
+    }
+
+    /// Show the row as a card: a surface of its own, its title wrapped over up to
+    /// [`CARD_TITLE_LINES`] lines, and its facts on a line under the text instead of beside it
+    /// (a board's card).
+    #[must_use]
+    pub fn card(mut self) -> Self {
+        self.set_card();
+        self
+    }
+
+    /// [`Self::card`], for a row a host has already built.
+    pub fn set_card(&mut self) {
+        self.card = true;
+        self.dirty = true;
+    }
+
+    /// Whether the row stands as a card: its own surface, as a card component showed it
+    /// ([`CardBody::show_as_card`]).
+    #[must_use]
+    pub const fn is_card(&self) -> bool {
+        self.card
+    }
+
+    /// Have a press on the row (or Enter or Space while it has the keyboard) report `event`:
+    /// what a component's card does when it opens what it stands for.
+    pub fn set_activate(&mut self, event: crate::component::Event) {
+        let label = self.title.clone();
+        self.activation.set_event(event, &label);
+        self.dirty = true;
     }
 
     /// The commands the row's menu offers with the keys they declare: pressing one while the
@@ -2178,6 +1546,14 @@ impl ListRow {
         self
     }
 
+    /// The tone the row's mark and its checkbox ring read in
+    /// ([`ListRowFace::mark_tone`]).
+    #[must_use]
+    pub fn mark_tone(mut self, tone: Tone) -> Self {
+        self.mark_tone = tone;
+        self
+    }
+
     /// See [`ListRowFace::tags`].
     #[must_use]
     pub fn tags(mut self, tags: &[(&str, ChipStyle)]) -> Self {
@@ -2195,7 +1571,9 @@ impl ListRow {
         self
     }
 
-    /// A person's avatar in the leading column.
+    /// A person's avatar in the leading column: the row _is_ the person (a contact, an
+    /// account). Something a person is on shows them as a fact instead
+    /// ([`ListRowFace::avatar`]), on its facts column.
     #[must_use]
     pub fn avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.leading = Some(Leading::Avatar {
@@ -2376,6 +1754,13 @@ impl ListRow {
         self
     }
 
+    /// See [`ListRowFace::depth`].
+    #[must_use]
+    pub fn depth(mut self, depth: u32) -> Self {
+        self.depth = depth;
+        self
+    }
+
     /// The leading column fits every badge in `badges`, measured when the
     /// row is laid out: the rows of a
     /// [`VirtualList`](crate::widget::virtual_list::VirtualList), which
@@ -2391,6 +1776,15 @@ impl ListRow {
     #[must_use]
     pub fn tooltip(mut self, tooltip: impl Into<String>) -> Self {
         self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    /// What a reader hears of the row beyond its name and value — a task's
+    /// status beside its reference, say. It stays out of the pointer's way:
+    /// the row explains itself to a reader, not on hover.
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
         self
     }
 
@@ -2448,6 +1842,12 @@ impl ListRow {
             show,
         });
         self
+    }
+
+    /// Hide this row's tooltip while something the host paints covers the list it stands in:
+    /// the list keeps the flag over every row it mounts ([`crate::widget::VirtualList`]).
+    pub(crate) fn suppress_tooltips(&mut self, suppressed: bool) {
+        self.tooltips_suppressed = suppressed;
     }
 
     /// The presence dot of the person `identity`.
@@ -2566,14 +1966,6 @@ impl ListRow {
         (self.separator, self.next_selected)
     }
 
-    pub(crate) fn set_separator(&mut self, below: bool, next_selected: bool) {
-        if (self.separator, self.next_selected) != (below, next_selected) {
-            self.separator = below;
-            self.next_selected = next_selected;
-            self.dirty = true;
-        }
-    }
-
     /// Set by the list: which selected neighbours this row's lift joins.
     pub(crate) fn set_join(&mut self, join: RowJoin) {
         if self.join != join {
@@ -2610,7 +2002,7 @@ impl ListRow {
         if self.trailing.is_none() {
             return 0.0;
         }
-        let m = RowMetrics::new(theme);
+        let m = self.metrics(theme);
         self.with_face(|face| face.marks_after_trailing(&m))
     }
 
@@ -2766,7 +2158,7 @@ impl ListRow {
         };
         let fill = (wrapped && !keeps_its_face_size(trailing.element.as_ref())).then(|| {
             let band_rect = Rect::new(-bleed, 0.0, row_width + bleed, band_height);
-            let m = RowMetrics::new(&theme);
+            let m = self.metrics(&theme);
             let text_edge = self.with_face(|face| face.text_x(band_rect, &m, text, &theme));
             crate::num::f32_of_f64((row_width - text_edge.max(0.0)).max(0.0))
         });
@@ -2795,6 +2187,10 @@ impl ListRow {
     }
 
     fn outer(&self) -> Rect {
+        if self.card {
+            // A card is its own surface: nothing of it paints past its box.
+            return self.rect;
+        }
         let bleed = self.metrics.as_ref().map_or(0.0, |m| m.bleed);
         self.rect.inflate(bleed, 0.0)
     }
@@ -2816,6 +2212,53 @@ impl ListRow {
     fn trailing_reserve(&self) -> Option<f64> {
         let trailing = self.trailing.as_ref()?;
         (!trailing.wrapped).then(|| trailing.element.get_rect().width())
+    }
+
+    /// The grid the row laid itself out on, for an audit comparing rows with each other. Read
+    /// from the geometry the row paints from, so the two never disagree.
+    fn grid(&self) -> Option<crate::widget::RowLayout> {
+        let metrics = self.metrics.as_ref()?;
+        let theme = self.theme.as_ref()?;
+        let band = self.text_band();
+        Some(crate::text_render::with_layout_renderer(
+            theme.text_scale,
+            |text| {
+                self.with_face(|face| {
+                    let geo = face.geometry(band, metrics, text, theme);
+                    let content_right = band.x1 - metrics.bleed;
+                    // What stands in the facts column, from the edge inwards: any of them, the
+                    // leftmost is where the column's content begins.
+                    let mut facts_left = content_right;
+                    if let Some(right) = geo.marks_right {
+                        facts_left = facts_left.min(right - face.marks_width(metrics));
+                    }
+                    if let Some(count_right) = geo.count_right {
+                        facts_left = facts_left.min(count_right);
+                    }
+                    if let Some(avatar) = geo.avatar {
+                        facts_left = facts_left.min(avatar.x0);
+                    }
+                    if self.value.is_some() {
+                        facts_left = facts_left.min(geo.value_right);
+                    }
+                    if let Some(trailing) = geo.trailing {
+                        facts_left = facts_left.min(trailing.x0);
+                    }
+                    facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
+                    crate::widget::RowLayout {
+                        depth: self.depth,
+                        content_left: crate::num::f32_of_f64(geo.leading.x0),
+                        text_x: crate::num::f32_of_f64(geo.text_x),
+                        text_right: crate::num::f32_of_f64(geo.text_right),
+                        facts_left: crate::num::f32_of_f64(facts_left),
+                        content_right: crate::num::f32_of_f64(content_right),
+                        marks_left: geo
+                            .marks_right
+                            .map(|right| crate::num::f32_of_f64(right - face.marks_width(metrics))),
+                    }
+                })
+            },
+        ))
     }
 
     fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
@@ -2856,11 +2299,19 @@ impl ListRow {
         if self.answers_pointer() {
             face.min_target = f64::from(self.environment.minimum_collection_row());
         }
+        if let Some(prefix) = &self.prefix {
+            face = face.prefix(prefix);
+        }
         if let Some(pose) = self.check_pose {
             face = face.check_pose(pose);
         }
-        if self.two_line_title {
+        if self.card {
+            face = face.card().title_lines(self.card_lines);
+        } else if self.two_line_title {
             face = face.two_line_title();
+        }
+        if self.dense {
+            face = face.dense();
         }
         if let Some(family) = &self.title_family {
             face = face.title_family(family);
@@ -2873,6 +2324,9 @@ impl ListRow {
                 .secondary(secondary)
                 .secondary_lines(self.secondary_line_count);
         }
+        if let Some(note) = &self.note {
+            face = face.note(note);
+        }
         if let Some(meta) = &self.meta {
             face = face.meta(meta);
         }
@@ -2883,7 +2337,7 @@ impl ListRow {
             };
         }
         if let Some(mark) = self.mark {
-            face = face.mark(mark);
+            face = face.mark(mark).mark_tone(self.mark_tone);
         }
         if let Some(count) = self.count {
             face = face.count(count);
@@ -2898,6 +2352,10 @@ impl ListRow {
             face = face.leading_column(width);
         }
         face = face.nested(self.nested);
+        face = face.depth(self.depth);
+        if let Some(avatar) = &self.avatar {
+            face = face.avatar(avatar.face());
+        }
         if let Some(leading) = &self.leading {
             face = face.leading(match leading {
                 Leading::Avatar {
@@ -2907,12 +2365,14 @@ impl ListRow {
                     square,
                     glyph,
                 } => {
-                    let mut avatar = AvatarFace::new(name, identity).image(image.as_ref());
-                    if let Some(glyph) = glyph {
-                        avatar = avatar.glyph(*glyph);
-                    }
-                    RowLeading::Avatar(if *square { avatar.square() } else { avatar })
+                    let avatar = AvatarFace::new(name, identity).image(image.as_ref());
+                    let avatar = if *square { avatar.square() } else { avatar };
+                    RowLeading::Avatar(match glyph {
+                        Some(glyph) => avatar.glyph(*glyph),
+                        None => avatar,
+                    })
                 }
+                Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Icon(icon) => RowLeading::Icon(*icon),
                 Leading::Badge(badge) => RowLeading::Badge(badge),
                 Leading::Thumbnail(image) => RowLeading::Thumbnail(image),
@@ -2934,11 +2394,15 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
-                Leading::AvatarSpace => RowLeading::AvatarSpace,
                 Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
-        face = face.struck(self.struck);
+        // A row checked off is done with: its title strikes through and mutes, as a removed
+        // item's does. The box follows the value it is bound to, so a check shows in the row
+        // itself, whoever made it and wherever its row stands.
+        face = face.struck(
+            self.struck || matches!(&self.leading, Some(Leading::Checkbox { checked: true, .. })),
+        );
         if let Some(change) = &self.change {
             face = face.change(RowChange {
                 identity: &change.identity,
@@ -3000,7 +2464,9 @@ impl ListRow {
             .collect()
     }
 
-    fn action_rects(&self) -> Vec<Rect> {
+    /// Where the row's hover actions sit, in the order it shows them: what a host presses to
+    /// reach them from a script or a test.
+    pub(crate) fn action_rects(&self) -> Vec<Rect> {
         let (Some(metrics), Some(theme)) = (&self.metrics, &self.theme) else {
             return Vec::new();
         };
@@ -3008,6 +2474,35 @@ impl ListRow {
         crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             self.with_face(|face| face.action_rects_with(band, metrics, text, theme))
         })
+    }
+
+    /// Where the row's actions stand, in the order it holds them, whether or not it shows them:
+    /// assistive technology reaches one without hovering the row.
+    fn action_slots(&self) -> Vec<Rect> {
+        let (Some(metrics), Some(theme)) = (&self.metrics, &self.theme) else {
+            return Vec::new();
+        };
+        let band = self.text_band();
+        crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            self.with_face(|face| face.action_slots_with(band, metrics, text, theme))
+        })
+    }
+
+    /// Whether a press at `point` is one of the row's own controls': a hover action, its check,
+    /// a trailing control or a change. Those keep the press; on any other part of it the list
+    /// takes the press, to drag the row and, let go without a drag, to press it.
+    pub(crate) fn claims_pointer(&self, point: Point) -> bool {
+        if self.activation.state.disabled {
+            return false;
+        }
+        self.action_rects().iter().any(|rect| rect.contains(point))
+            || matches!(self.leading, Some(Leading::Checkbox { .. }))
+                && self.leading_hit().is_some_and(|rect| rect.contains(point))
+            || self
+                .trailing
+                .as_ref()
+                .is_some_and(|trailing| trailing.element.get_rect().contains(point))
+            || self.change_hit().is_some_and(|rect| rect.contains(point))
     }
 
     /// Where the face of an unseen change sits, when the row shows one that does something.
@@ -3119,12 +2614,36 @@ impl crate::widget::ReservedShape for ListRow {
     }
 }
 
+impl crate::widget::RowSelectionSink for ListRow {
+    fn take_selection(&mut self, selection: crate::widget::RowSelection) {
+        self.set_selected(selection.selected);
+        self.set_join(selection.join());
+    }
+}
+
+impl crate::widget::RowActionRects for ListRow {
+    fn row_action_rects(&self) -> Vec<Rect> {
+        ListRow::action_rects(self)
+    }
+}
+
+impl CardBody for ListRow {
+    fn show_as_card(&mut self, selected: bool, activate: crate::component::Event) {
+        self.set_card();
+        self.set_selected(selected);
+        self.set_activate(activate);
+    }
+}
+
 impl Widget for ListRow {
     crate::provides!(
+        dyn crate::widget::CardBody,
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
-        dyn crate::widget::ReservedShape
+        dyn crate::widget::ReservedShape,
+        dyn crate::widget::RowActionRects,
+        dyn crate::widget::RowSelectionSink
     );
 
     fn set_interaction_environment(
@@ -3181,7 +2700,7 @@ impl Widget for ListRow {
         if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
             self.take_up(kept);
         }
-        let metrics = RowMetrics::new(theme);
+        let metrics = self.metrics(theme);
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
         let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
@@ -3311,18 +2830,29 @@ impl Widget for ListRow {
         available: taffy::Size<taffy::AvailableSpace>,
         text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        let Some(theme) = &self.theme else {
+        let Some(theme) = self.theme.clone() else {
             return taffy::Size::ZERO;
         };
-        let height = self.with_face(|face| face.height(text_renderer, theme));
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 0.0,
         });
+        // A card's title wraps at the width it is offered, so its height follows the lines it
+        // takes here rather than a count fixed when the row was built.
+        if self.card {
+            let lines = self
+                .with_face(|face| face.card_title_lines(f64::from(width), text_renderer, &theme));
+            self.card_lines = lines;
+        }
+        let height = self.with_face(|face| face.height(text_renderer, &theme));
         taffy::Size {
             width,
             height: crate::num::f32_of_f64(height),
         }
+    }
+
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        Some(crate::widget::LayoutInfo::Row(self.grid()?))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3356,7 +2886,7 @@ impl Widget for ListRow {
             // keeps inside the row.
             let shift = theme.map_or(0.0, |theme| {
                 let band_rect = self.text_band();
-                let m = RowMetrics::new(&theme);
+                let m = self.metrics(&theme);
                 crate::text_render::with_layout_renderer(theme.text_scale, |text| {
                     self.with_face(|face| face.text_x(band_rect, &m, text, &theme))
                 }) - self.rect.x0
@@ -3552,6 +3082,9 @@ impl Widget for ListRow {
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        if self.tooltips_suppressed {
+            return None;
+        }
         if let Some(tooltip) = &self.leading_tooltip
             && let Some(r) = self.leading_hit()
             && r.contains(point)
@@ -3737,10 +3270,21 @@ impl Widget for ListRow {
         if let Some(tooltip) = &self.leading_tooltip {
             node.description = Some(tooltip.clone());
         }
+        if let Some(description) = &self.description {
+            node.description = Some(description.clone());
+        }
         // The face numbers the actions it shows; address each by its place
-        // among all the row's actions, as its binding is.
-        for (child, index) in node.children.iter_mut().zip(self.shown_actions()) {
+        // among all the row's actions, as its binding is, and say where it
+        // shows so a pointer or an agent can reach it.
+        let rects = self.action_slots();
+        for ((child, index), rect) in node
+            .children
+            .iter_mut()
+            .zip(self.shown_actions())
+            .zip(rects)
+        {
             child.action_target = Some(format!("{id}/action/{index}"));
+            child.bounds = Some(rect.into());
         }
         Some(node)
     }
@@ -3932,8 +3476,9 @@ pub use shape::{RowLeadingShape, RowShape};
 mod kept;
 use kept::KeptRow;
 
+mod geometry;
+
 mod paint;
-use paint::paint_badge;
 pub(crate) use paint::paint_code_badge;
 
 mod spans;

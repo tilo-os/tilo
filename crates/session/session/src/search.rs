@@ -24,7 +24,8 @@ use crate::records::Records;
 use tilo_actions::DoorError;
 use tilo_actions::remote::downloaded_apps as downloaded_wire;
 use tilo_actions::remote::{
-    RemoteActionTarget, application_action_target, application_open_target,
+    ActionHostError, Caller, Found, RemoteActionTarget, ResourceSearch, application_action_target,
+    application_open_target,
 };
 use tilo_app_launch::downloaded as registry;
 use tilo_desktop_search::content_index::AppContentIndex;
@@ -108,12 +109,12 @@ pub struct SearchOptions {
 struct Kept {
     /// The lists the sources below were built from.
     lists: Arc<AppLists>,
-    host_apps: Rc<HostApps>,
-    content: Option<Rc<IndexedContent>>,
-    files: Option<Rc<Files>>,
+    host_apps: Arc<HostApps>,
+    content: Option<Arc<IndexedContent>>,
+    files: Option<Arc<Files>>,
     /// Settings' pages and the store's catalogue, for the workspace they
     /// were built for.
-    workspace: Option<(String, Rc<Settings>, Rc<StoreCatalogue>)>,
+    workspace: Option<(String, Arc<Settings>, Arc<StoreCatalogue>)>,
 }
 
 /// The programs the person downloaded, as the registry last read them, and
@@ -199,10 +200,10 @@ impl SessionSearch {
         } = options;
         let read = lists.latest();
         let kept = Kept {
-            host_apps: Rc::new(HostApps::new(read.host_apps.clone(), &preferences)),
+            host_apps: Arc::new(HostApps::new(read.host_apps.clone(), &preferences)),
             lists: read,
-            content: content.map(|index| Rc::new(IndexedContent::new(index, app_name))),
-            files: files.map(|(home, names, content)| Rc::new(Files::new(home, names, content))),
+            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name))),
+            files: files.map(|(home, names, content)| Arc::new(Files::new(home, names, content))),
             workspace: None,
         };
         Self {
@@ -301,7 +302,7 @@ impl SessionSearch {
         // The machine's apps leave out what is switched off as they are
         // built, so the search after this one reads that list again.
         let read = self.lists.latest();
-        self.kept.borrow_mut().host_apps = Rc::new(HostApps::new(read.host_apps.clone(), &next));
+        self.kept.borrow_mut().host_apps = Arc::new(HostApps::new(read.host_apps.clone(), &next));
         if let Err(error) = settings_store::update_section(preferences::SECTION, next.to_values()) {
             tracing::warn!(%error, "the search sources switched off are not kept");
         }
@@ -324,7 +325,7 @@ impl SessionSearch {
         let mut sources: Vec<Box<dyn Source>> = vec![
             Box::new(settings),
             Box::new(catalogue),
-            Box::new(Rc::clone(&kept.host_apps)),
+            Box::new(Arc::clone(&kept.host_apps)),
             Box::new(Waiting::new("", self.notifications.borrow().clone())),
             Box::new(Continue::new(
                 &self.places.borrow(),
@@ -335,10 +336,10 @@ impl SessionSearch {
             )),
         ];
         if let Some(content) = &kept.content {
-            sources.push(Box::new(Rc::clone(content)));
+            sources.push(Box::new(Arc::clone(content)));
         }
         if let Some(files) = &kept.files {
-            sources.push(Box::new(Rc::clone(files)));
+            sources.push(Box::new(Arc::clone(files)));
         }
         let mut published = vec![PublishedActions {
             app: DESKTOP_APP.into(),
@@ -392,7 +393,13 @@ impl SessionSearch {
         if let Some(places) = kept
             .get("places")
             .filter(|places| !places.is_null())
-            .and_then(|places| serde_json::from_value(places.clone()).ok())
+            .and_then(|places| {
+                serde_json::from_value(places.clone())
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "the search places do not read back"),
+                    )
+                    .ok()
+            })
         {
             *self.places.borrow_mut() = places;
         }
@@ -423,6 +430,12 @@ impl SessionSearch {
         self.lists.latest()
     }
 
+    /// The apps this session opens, for what it asks to be opened outside a
+    /// search: a link a page names, a page a sheet asks for.
+    pub(crate) fn apps(&self) -> Option<Rc<dyn AppActions>> {
+        self.apps.clone()
+    }
+
     /// The lists as last read, with the sources built from them rebuilt
     /// when they were read again since: the machine's apps here, Settings
     /// and the catalogue at their workspace's next search.
@@ -430,7 +443,7 @@ impl SessionSearch {
         let latest = self.lists.latest();
         let mut kept = self.kept.borrow_mut();
         if !Arc::ptr_eq(&latest, &kept.lists) {
-            kept.host_apps = Rc::new(HostApps::new(
+            kept.host_apps = Arc::new(HostApps::new(
                 latest.host_apps.clone(),
                 &self.preferences.borrow(),
             ));
@@ -442,13 +455,13 @@ impl SessionSearch {
 
     /// Settings and the catalogue for `workspace`, built once per workspace
     /// and reading of the lists.
-    fn for_workspace(&self, workspace: &str) -> (Rc<Settings>, Rc<StoreCatalogue>) {
+    fn for_workspace(&self, workspace: &str) -> (Arc<Settings>, Arc<StoreCatalogue>) {
         let lists = self.current_lists();
         let mut kept = self.kept.borrow_mut();
         if let Some((built, settings, catalogue)) = &kept.workspace
             && built == workspace
         {
-            return (Rc::clone(settings), Rc::clone(catalogue));
+            return (Arc::clone(settings), Arc::clone(catalogue));
         }
         // Settings the settings service changes in place are found as its
         // actions.
@@ -461,14 +474,14 @@ impl SessionSearch {
                     .map(str::to_owned)
             })
             .collect();
-        let settings = Rc::new(Settings::changing_in_place(workspace, &|id| {
+        let settings = Arc::new(Settings::changing_in_place(workspace, &|id| {
             in_place.contains(id)
         }));
-        let catalogue = Rc::new(StoreCatalogue::new(lists.catalogue.clone(), workspace));
+        let catalogue = Arc::new(StoreCatalogue::new(lists.catalogue.clone(), workspace));
         kept.workspace = Some((
             workspace.to_owned(),
-            Rc::clone(&settings),
-            Rc::clone(&catalogue),
+            Arc::clone(&settings),
+            Arc::clone(&catalogue),
         ));
         (settings, catalogue)
     }
@@ -622,6 +635,36 @@ impl SessionSearch {
 }
 
 impl SearchHost for SessionSearch {
+    /// The apps this session opens: every app of this device's lists, Tilo's
+    /// own and the machine's, each by the launch its own row starts. A
+    /// window group's new tab and the empty desk's launchpad search the
+    /// applications alone, and the session's tile source lists none — the
+    /// session is what starts them — so this is what those searches offer.
+    fn applications(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        let lists = self.current_lists();
+        lists
+            .applications
+            .iter()
+            .map(|app| tilo_desktop_search::providers::AppEntry {
+                id: app.id.clone(),
+                title: app.title.clone(),
+                category: app.category.clone(),
+                description: app.description.clone(),
+            })
+            .chain(
+                lists
+                    .host_apps
+                    .iter()
+                    .map(|app| tilo_desktop_search::providers::AppEntry {
+                        id: format!("{}{}", host_apps::HOST_APP_PREFIX, app.desktop_id),
+                        title: app.name.clone(),
+                        category: app.generic_name.clone(),
+                        description: app.comment.clone(),
+                    }),
+            )
+            .collect()
+    }
+
     fn feed(&self, workspace: &str, scope: &Scope) -> SearchHostFeed {
         let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);
@@ -645,38 +688,38 @@ impl SearchHost for SessionSearch {
                 app_name,
             ),
         };
-        let mut sources: Vec<Box<dyn Source>> = vec![
-            Box::new(Happening::new(
+        let mut sources: Vec<Arc<dyn Source>> = vec![
+            Arc::new(Happening::new(
                 scope.everywhere(),
                 self.here.borrow().clone(),
             )),
-            Box::new(settings),
-            Box::new(catalogue),
-            Box::new(Rc::clone(&kept.host_apps)),
-            Box::new(Waiting::new(workspace, self.notifications.borrow().clone())),
-            Box::new(continue_places),
+            Arc::new(settings),
+            Arc::new(catalogue),
+            Arc::clone(&kept.host_apps) as Arc<dyn Source>,
+            Arc::new(Waiting::new(workspace, self.notifications.borrow().clone())),
+            Arc::new(continue_places),
         ];
         {
             let downloaded = self.downloaded.borrow();
-            sources.push(Box::new(Downloaded::new(
+            sources.push(Arc::new(Downloaded::new(
                 workspace,
                 downloaded.reading.clone(),
                 &downloaded.published,
             )));
         }
         if let Some(content) = &kept.content {
-            sources.push(Box::new(Rc::clone(content)));
+            sources.push(Arc::clone(content) as Arc<dyn Source>);
         }
         if let Some(files) = &kept.files {
-            sources.push(Box::new(Rc::clone(files)));
+            sources.push(Arc::clone(files) as Arc<dyn Source>);
         }
         if let Some(records) = &self.records {
-            sources.push(Box::new(record_rows::Records::new(
+            sources.push(Arc::new(record_rows::Records::new(
                 workspace,
                 records.held(workspace),
             )));
         }
-        sources.push(Box::new(crate::search_ask::Ask::new(
+        sources.push(Arc::new(crate::search_ask::Ask::new(
             std::sync::Arc::clone(&self.ask),
             workspace,
             self.wake.clone(),
@@ -688,7 +731,7 @@ impl SearchHost for SessionSearch {
             types: self.own_types.borrow().clone(),
         }];
         if let Some(apps) = &self.apps {
-            sources.push(Box::new(Jobs(apps.jobs())));
+            sources.push(Arc::new(Jobs(apps.jobs())));
             published.extend(apps.published());
         }
         SearchHostFeed {
@@ -722,6 +765,155 @@ impl SearchHost for SessionSearch {
             | Target::Copy { .. } => false,
         }
     }
+}
+
+/// The desktop's one search as a host that holds it offers it
+/// ([`ResourceSearch`]): the same [`SessionSearch::find`] the palette and
+/// text typed on the canvas run, so an agent's `find` answers what those do,
+/// in their order.
+impl ResourceSearch for SearchThrough {
+    fn find(
+        &self,
+        _caller: &Caller,
+        needle: &str,
+    ) -> tilo_actions::remote::Pending<Result<Vec<Found>, ActionHostError>> {
+        let (done, answer) = tilo_actions::remote::pending();
+        self.ask(needle.trim().to_owned(), done);
+        answer.map(Ok)
+    }
+}
+
+/// A host's [`ResourceSearch`] that asks the thread holding the desktop, as
+/// the session's own doors are asked: the session's search is not `Send`, and
+/// every call of it runs on the loop's pass.
+pub(crate) struct SearchThrough(std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>);
+
+/// Where the session's answer to a search goes.
+pub(crate) type FoundSearch = tilo_actions::remote::Completer<Vec<Found>>;
+
+impl SearchThrough {
+    pub(crate) fn new(ask: std::sync::Arc<dyn Fn(String, FoundSearch) + Send + Sync>) -> Self {
+        Self(ask)
+    }
+
+    fn ask(&self, needle: String, done: FoundSearch) {
+        (self.0)(needle, done);
+    }
+}
+
+/// The search hits `found` names, as a caller who addresses resources reads
+/// them: the resource each is about, best first, and never below the one
+/// `place_found` places. The canvas takes the first hit that names a
+/// resource a place can show (`shows`); `find` leads with that same hit, so
+/// an agent asked for a text answers with what typing it would place, then
+/// with what else the search found under it. Without one (a file, a
+/// command, a window's focus), the resources the search does name stand on
+/// their own.
+pub(crate) fn found_all(
+    text: &str,
+    hits: Vec<tilo_desktop_search::Hit>,
+    shows: impl Fn(&str) -> bool,
+) -> Vec<Found> {
+    // The lead is the hit the canvas places, read by the canvas's own
+    // reading of these hits: the first that names a resource a place can
+    // show. A row that names one it cannot (`session`'s own places, a
+    // record no app publishes as placeable) stands in the way of nothing,
+    // exactly as it does on the canvas.
+    let placed = crate::arrangement::found(text, &|_| hits.clone(), shows);
+    let lead = placed.as_ref().and_then(|placed| {
+        hits.iter()
+            .position(|hit| found_of(hit).is_some_and(|found| found.resource == *placed))
+    });
+    let mut out: Vec<Found> = Vec::new();
+    for (at, hit) in hits.into_iter().enumerate() {
+        let Some(found) = found_of(&hit) else {
+            continue;
+        };
+        // Above the lead, only the lead's own resource stands: a row the
+        // canvas would step past is a row the query did not name.
+        if lead.is_some_and(|lead| at < lead) {
+            continue;
+        }
+        if !out.iter().any(|seen| seen.resource == found.resource) {
+            out.push(found);
+        }
+    }
+    out
+}
+
+/// The resource a search hit is about, as an agent addresses it (`None` for
+/// a hit that names no resource an app publishes: a setting's page, a file,
+/// the machine's own app).
+fn found_of(hit: &tilo_desktop_search::Hit) -> Option<Found> {
+    let (resource, open, arguments) = match &hit.target {
+        Target::Invoke(invoke) => (
+            invoke.address.resource.as_str().to_owned(),
+            Some(invoke.address.action.clone()),
+            invoke.arguments.clone(),
+        ),
+        Target::Action(action) => (
+            action.resource.as_str().to_owned(),
+            Some(action.spec.id.clone()),
+            action
+                .preset
+                .as_ref()
+                .map(|(name, value)| {
+                    let mut arguments = serde_json::Map::new();
+                    arguments.insert(name.clone(), value.clone().into());
+                    arguments
+                })
+                .unwrap_or_default(),
+        ),
+        // Everything else (an app to launch, a window, a command, a
+        // worked-out answer, a file to open, a job to stop) is not a
+        // resource of an app's that a path names: it is left out, as the
+        // palette's own rows are for a caller that places what it finds.
+        Target::Launch { .. }
+        | Target::Window { .. }
+        | Target::Command { .. }
+        | Target::Copy { .. }
+        | Target::Open { .. }
+        | Target::Cancel { .. }
+        | Target::Prefer { .. } => return None,
+    };
+    // The app a caller names the resource by: the provider that published
+    // the row, unless that is the desktop publishing on an app's behalf.
+    // A workspace's record carries its app in the id it published it under
+    // (`tl:<app>:…`), which a caller lists the app's directory by.
+    let app = match &hit.target {
+        Target::Invoke(invoke) if invoke.app != DESKTOP_APP => Some(invoke.app.clone()),
+        _ => None,
+    }
+    .or_else(|| {
+        resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .map(|(app, _)| app.to_owned())
+    });
+    // The kind a caller reads is the resource's own when the row says so,
+    // else the palette's word for the row ("Actions"), which names nothing
+    // an agent can act on.
+    let named_kind = hit.kind.label();
+    let (kind, label) = if named_kind.contains('.') {
+        (named_kind.to_owned(), hit.title.clone())
+    } else {
+        match &hit.target {
+            Target::Action(action) => (action.resource_kind.clone(), action.resource_label.clone()),
+            Target::Invoke(invoke) => match &invoke.descriptor {
+                Some(action) => (action.resource_kind.clone(), action.resource_label.clone()),
+                None => (named_kind.to_owned(), hit.title.clone()),
+            },
+            _ => (named_kind.to_owned(), hit.title.clone()),
+        }
+    };
+    Some(Found {
+        resource,
+        kind,
+        label,
+        open,
+        arguments,
+        app,
+    })
 }
 
 #[cfg(test)]
@@ -846,6 +1038,11 @@ mod tests {
             None,
             None,
         );
+        // Starting the lists reads them on a worker, so the first search
+        // waits for that read to land before it can see what they hold.
+        tilo_test_env::wait_until("the lists' first read", || {
+            found(&search, "viewer").0 == ["Sheets"]
+        });
         assert_eq!(
             found(&search, "viewer"),
             (vec!["Sheets".to_owned()], vec!["Sheets Viewer".to_owned()])
@@ -1074,8 +1271,8 @@ mod tests {
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
         let search = SessionSearch::new(SearchOptions::default(), None, None);
-        let before = Rc::clone(&search.kept.borrow().host_apps);
+        let before = Arc::clone(&search.kept.borrow().host_apps);
         let _ = search.feed("workspace", &Scope::Workspace);
-        assert!(Rc::ptr_eq(&before, &search.kept.borrow().host_apps));
+        assert!(Arc::ptr_eq(&before, &search.kept.borrow().host_apps));
     }
 }

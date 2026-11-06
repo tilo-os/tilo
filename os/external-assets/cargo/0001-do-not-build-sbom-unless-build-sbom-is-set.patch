@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Ross Sullivan <rosssullivan101@gmail.com>
+Date: Sun, 30 Aug 2026 21:20:58 +0900
+Subject: [PATCH] perf: Do not build SBOM if user has not set build.sbom
+
+Before this commit, the SBOM would be generated in memory and be thrown
+away instead of written to a file. For projects with a large
+dependency graph, this can add noticable delay (~100ms for around 1,000
+dependencies)
+
+(cherry picked from commit 97888918b8c4b0f3447c5bc5980ac7cbb558f3f0)
+---
+ src/cargo/core/compiler/mod.rs | 16 +++++++++++-----
+ 1 file changed, 11 insertions(+), 5 deletions(-)
+
+diff --git a/src/cargo/core/compiler/mod.rs b/src/cargo/core/compiler/mod.rs
+index b23e9ff9c..4c2719282 100644
+--- a/src/cargo/core/compiler/mod.rs
++++ b/src/cargo/core/compiler/mod.rs
+@@ -338,7 +338,11 @@ fn rustc(
+     let is_local = unit.is_local();
+     let artifact = unit.artifact;
+     let sbom_files = build_runner.sbom_output_files(unit)?;
+-    let sbom = build_sbom(build_runner, unit)?;
++    let sbom = if !sbom_files.is_empty() {
++        Some(build_sbom(build_runner, unit)?)
++    } else {
++        None
++    };
+ 
+     let hide_diagnostics_for_scrape_unit = build_runner.bcx.unit_can_fail_for_docscraping(unit)
+         && !matches!(
+@@ -422,10 +426,12 @@ fn rustc(
+ 
+         state.running(&rustc);
+         let timestamp = paths::set_invocation_time(&fingerprint_dir)?;
+-        for file in sbom_files {
+-            tracing::debug!("writing sbom to {}", file.display());
+-            let outfile = BufWriter::new(paths::create(&file)?);
+-            serde_json::to_writer(outfile, &sbom)?;
++        if let Some(sbom) = sbom {
++            for file in sbom_files {
++                tracing::debug!("writing sbom to {}", file.display());
++                let outfile = BufWriter::new(paths::create(&file)?);
++                serde_json::to_writer(outfile, &sbom)?;
++            }
+         }
+ 
+         let result = exec

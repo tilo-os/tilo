@@ -1498,11 +1498,12 @@ source = "frames an idle desktop of the demo windows presents per second (headle
 # measurement on that class (see README.md) with headroom for the machine
 # being busy, and lowered when the measurement improves.
 #
-# A session measurement fills its windows with one of two profiles: `arriving`
-# is the native session, where a window's pixels are the client's own buffer
-# and the surface draws the desk's chrome; `apps` is the page, where the
-# surface draws the apps' paint too. They cost differently and are budgeted
-# separately.
+# A session measurement fills its windows with one of three profiles:
+# `arriving` is the native session, where a window's pixels are the client's
+# own buffer and the surface draws the desk's chrome; `apps` is the page,
+# where the surface draws the apps' paint too; `activities` is the floating
+# layer, where three activity cards stand over a desk, one of them ticking and
+# one dragged. They cost differently and are budgeted separately.
 #
 # A budget is a regression alarm, not a target: it is several times the
 # measured figure, so a frame that slows by half still passes.
@@ -1539,6 +1540,30 @@ typing.p95_us = 5000
 # app at rest repaints nothing. Measured 12 µs a frame.
 idle_working_frames = 0
 idle_us_per_frame = 100
+
+# The floating layer over the same desktop: three activity cards docked in a
+# corner, one of them counting down, one dragged across the surface.
+[devices.x86.session.activities]
+# Measured: 6.6 ms for the first frame that draws the cards, after a build
+# that is the surface's own construction only (0.001 ms).
+first_frame_us = 20000
+build_us = 2000
+# Measured: 0.05 ms a steady frame (p95, 0.02 ms p50), 0.05 ms of it draw,
+# 204 allocations. Those are the surface's own relayout, which every frame of
+# this harness takes; the layer itself repaints nothing while no card changes
+# (a steady frame's damage is zero).
+steady.p95_us = 1500
+steady.draw_p95_us = 1200
+steady.allocs_per_frame = 400
+# A ticking card repaints its own rect and nothing else: measured 0.03 ms a
+# frame, no frame touching ground beyond it.
+tick.damage_violations = 0
+tick.body.p95_us = 1500
+# A dragged card repaints where it was and where it is: measured 0.02 ms a
+# frame over 120 frames the pointer moved the card on 119 of, no frame
+# touching ground beyond the two rects.
+drag.damage_violations = 0
+drag.body.p95_us = 1500
 
 # The same desktop in a browser (headless Chrome here, no hardware adapter):
 # the page's first frames rasterize on the CPU while the browser compiles the

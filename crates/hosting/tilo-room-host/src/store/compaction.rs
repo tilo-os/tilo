@@ -102,7 +102,7 @@ impl WorkspaceStore {
             let Some(author) = name
                 .to_str()
                 .and_then(|name| name.strip_suffix(&suffix))
-                // optional-decode: an entry not named `<author><suffix>` is not a lineage
+                // ignored-failure: an entry not named `<author><suffix>` is not a lineage
                 .and_then(|author| hex::decode(author).ok())
                 .and_then(|author| <[u8; 32]>::try_from(author).ok())
             else {
@@ -135,7 +135,7 @@ impl WorkspaceStore {
             if let Some(channel) = name
                 .to_str()
                 .and_then(|name| name.split_once('-'))
-                // optional-decode: an entry not named `<author>-<channel>` is not a lineage
+                // ignored-failure: an entry not named `<author>-<channel>` is not a lineage
                 .and_then(|(_, channel)| hex::decode(channel).ok())
                 .and_then(|channel| <[u8; 32]>::try_from(channel).ok())
             {
@@ -243,7 +243,7 @@ pub(crate) const ARCHIVE_DIR: &str = "archive-v1";
 
 impl WorkspaceStore {
     /// Take every entry of `channel` out of what any replay reads, and keep
-    /// it in a new archive under [`ARCHIVE_DIR`]: a room's document started
+    /// it in a new archive under [`ARCHIVE_DIR`]: a workspace's document started
     /// over from a base at an admission, and the history before it is no
     /// newcomer's to read, yet stays as it was for those who held it. Must run
     /// on the persistence owner. Returns how many entries it archived.

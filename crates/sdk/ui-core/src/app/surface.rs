@@ -462,6 +462,18 @@ impl App {
             handled = true;
         }
 
+        // A sideways wheel in a gesture the shell's window strip took is the
+        // strip's to the end: what the shell does not scroll with pans the
+        // strip the window stands in, and no view of this app sees any event
+        // of it, so a gesture never splits between the app and the strip
+        // ([`App::record_sideways_wheel`] decided at its first event).
+        #[cfg(feature = "native")]
+        if !handled
+            && app.strip_takes_sideways_wheel(&event, window.scale_factor(), crate::time::now())
+        {
+            return true;
+        }
+
         // Two-finger swipe, edge pull or mouse side button; delivered via
         // `on_nav_gesture`.
         if !handled && !synthesized_touch {
@@ -608,6 +620,13 @@ impl App {
             handled = true;
             window.request_redraw();
         }
+
+        // What this window's content did with a sideways wheel: the gesture's
+        // first event decides whether the app scrolls with it or the shell's
+        // strip pans by it, and every later event of the gesture keeps that
+        // owner ([`App::record_sideways_wheel`]).
+        #[cfg(feature = "native")]
+        app.record_sideways_wheel(&event, window.scale_factor(), handled, crate::time::now());
 
         // Arrows, Enter and Space, search and typed keys, the desktop's tab
         // chords (unless the window answers them) and range steps nobody
@@ -777,6 +796,24 @@ impl App {
     /// Whether the last frame left a sync or a layout to settle.
     pub fn unsettled(&self) -> bool {
         self.needs_sync || self.layout.layout_dirty || self.layout.structure_dirty
+    }
+
+    /// Close every modal this window presents, so it leaves as its own way
+    /// out takes it down: what a host whose surface is a modal sheet runs
+    /// when the shell closes the sheet, so nothing stays up drawn taking no
+    /// input. Whether any was presented.
+    pub fn dismiss_presented_modal(&mut self) -> bool {
+        let dismissed = self.root_widget.dismiss_presented_modal();
+        if dismissed {
+            self.needs_sync = true;
+        }
+        dismissed
+    }
+
+    /// Whether the window still presents a modal, arriving, open or leaving:
+    /// a host that stands a modal sheet redraws until this is false.
+    pub fn presents_modal(&self) -> bool {
+        self.root_widget.presents_modal()
     }
 
     /// Whether the app's model woke the window for a frame it has not run

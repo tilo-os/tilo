@@ -419,6 +419,13 @@ impl ResourceApp for ContactsShell {
     const OPENS: &'static [&'static str] = &["text/vcard", "text/x-vcard"];
     const ARGUMENTS: usize = 1;
 
+    /// The directory of the person's identities Contacts keeps for them and
+    /// every app of theirs reads.
+    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
+        &[ui::framework::PersonKind::shared::<
+            tilo_contact_directory::ContactDirectory,
+        >()];
+
     fn commands() -> &'static [ui::framework::Command] {
         COMMANDS
     }

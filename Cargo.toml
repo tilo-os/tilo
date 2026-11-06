@@ -32,6 +32,7 @@ exclude = [
     "vendor/librespot-core",
     "vendor/hyper-proxy2",
     "vendor/cosmic-text",
+    "vendor/taffy",
     "vendor/alacritty_terminal",
     "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
@@ -170,6 +171,7 @@ members = [
     "crates/sdk/font-catalog",
     "crates/sdk/runner-native",
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-model-host",
     "crates/sdk/tilo-caps",
     "crates/sdk/tilo-history",
     "crates/sdk/tilo-cpu-raster",
@@ -202,7 +204,6 @@ members = [
     "crates/collab/feedback",
     "crates/collab/moderation",
     "crates/collab/threshold-identity",
-    "crates/collab/tilo-call-lane",
     "crates/collab/tilo-callstream",
     "crates/collab/tilo-live",
     "crates/collab/tilo-store-link",
@@ -348,6 +349,7 @@ members = [
     "crates/platform/tilo-system-info",
     "crates/platform/tilo-render-protocol",
     "crates/platform/tilo-ui-host",
+    "crates/platform/tilo-view",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-subject",
@@ -427,6 +429,7 @@ members = [
     "crates/session/network-actor",
     "crates/session/network-secret-agent",
     "crates/session/notification-banners",
+    "crates/session/activities",
     "crates/session/notifications-service",
     "crates/session/onboarding",
     "crates/session/onboarding-host",
@@ -437,6 +440,7 @@ members = [
     "crates/session/quick-settings",
     "crates/session/render-service",
     "crates/session/session-record",
+    "crates/session/session-logging",
     "crates/session/sheets",
     "crates/session/tilo-lockdown-policy",
     "crates/session/tilo-unlock-helper",
@@ -455,6 +459,7 @@ members = [
     "crates/session/wayland-ext",
     "crates/session/window-menu",
     "crates/session/window-share",
+    "crates/session/workspace-directory",
 
     # System
     "crates/system/account-custody",
@@ -879,6 +884,15 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+# CI strips the symbol table from test executables (`CARGO_PROFILE_TEST_STRIP` in t.toml); these
+# packages' tests read it and keep it. A package setting wins over that profile-wide one.
+# tilo-liveness names stack frames from its own executable's symbol table (src/symtab.rs).
+[profile.test.package.tilo-liveness]
+strip = false
+# The session's logging test finds the test's own function in a panic's backtrace. It is a package
+# of its own so that the session's tests, which link the compositor, don't keep theirs.
+[profile.test.package.tilo-session-logging]
+strip = false
 
 # Keep the renderer's math, scene encoding and GPU command processing optimised
 # even when application code is unoptimised. These run for every interactive

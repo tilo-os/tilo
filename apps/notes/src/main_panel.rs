@@ -783,10 +783,6 @@ impl MainPanel {
     pub(crate) fn title_focused(&self) -> bool {
         self.title_label.is_editing()
     }
-    /// The title's layout node, the keyboard's target while it is edited.
-    pub(crate) fn title_node(&self) -> Option<NodeId> {
-        self.title_node
-    }
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
         self.title_label.cancel();
         let _ = self.title_label.take_outcome();

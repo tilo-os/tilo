@@ -257,16 +257,11 @@ impl Gpu {
     }
 }
 
-/// Whether hosted surfaces' frames are drawn on a GPU here: never where the
-/// compositor reads their pixels itself (they are rasterized for it, so a GPU
-/// would only copy them back every frame), and never on a machine whose
-/// adapter rasterizes on the CPU. The adapter question opens the toolkit's
-/// device, so it is asked once per process rather than per surface.
+/// Whether hosted surfaces' frames are drawn on a GPU here: never on a
+/// machine whose adapter rasterizes on the CPU. The adapter question opens the
+/// toolkit's device, so it is asked once per process rather than per surface.
 fn draws_on_gpu() -> bool {
     static DRAWS_ON_GPU: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if tilo_compositor::host::hosted_frames_on_cpu() {
-        return false;
-    }
     *DRAWS_ON_GPU.get_or_init(|| {
         ui::offscreen::shared_adapter_info()
             .is_some_and(|adapter| !ui::gpu::rasterizes_on_cpu(&adapter))

@@ -91,6 +91,10 @@ impl LaunchRequest {
 /// for them.
 #[derive(Default)]
 pub struct Launches {
+    /// What each window this session runs shows, read from the broker every
+    /// pass: a window's instance is its tab's id, which the session tells the
+    /// app when it starts it ([`crate::continuations`]).
+    notes: std::sync::Arc<crate::continuations::Continuations>,
     started: Mutex<BTreeMap<u32, Launch>>,
     windows: Mutex<Vec<Window>>,
     /// The launch each window's shell-ui connection belongs to, by app, while
@@ -108,6 +112,12 @@ pub struct Launches {
 }
 
 impl Launches {
+    /// What the windows this session runs show, kept with its launches: one
+    /// store for the desk, the layout record and the arrangement.
+    pub(crate) fn notes(&self) -> std::sync::Arc<crate::continuations::Continuations> {
+        std::sync::Arc::clone(&self.notes)
+    }
+
     /// Wake the session's loop with `wake` when a launch is waiting for it:
     /// the loop is the only thread that starts a process.
     pub fn waking(&self, wake: tilo_service::Wake) {
@@ -457,6 +467,7 @@ fn start_time(pid: u32) -> Option<u64> {
     // the last ')'. Field 3 (state) comes first, so starttime is field 19.
     let rest = stat.rsplit_once(") ")?.1;
     let fields: Vec<&str> = rest.split_whitespace().collect();
+    // ignored-failure: a stat field that is no number names no process start
     fields.get(19)?.parse().ok()
 }
 

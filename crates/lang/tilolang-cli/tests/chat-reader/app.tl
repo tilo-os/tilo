@@ -3,7 +3,7 @@ app so.tilo.test.chatreader "Chat reader"
 use so.tilo.chat as chat
 
 /// How a channel reads in the list: a voice channel says so.
-fn channel_label(c: chat.Channel) -> Text {
+fn channel_label(c: chat.Conversation) -> Text {
     if c.kind == .voice { "{c.name} (voice)" } else { "#{c.name}" }
 }
 
@@ -22,6 +22,9 @@ view channels(w: chat.Workspace, m: chat.Messages) {
         section("Channels") {
             for c in w.channels {
                 text(channel_label(c))
+                for person in c.participants {
+                    text(person, role: .caption)
+                }
                 for msg in said_in(m, c.name) {
                     text(msg.text, role: .caption)
                 }

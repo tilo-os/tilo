@@ -1,5 +1,6 @@
 //! A header row whose window's actions the host lists elsewhere (the desktop bar's window
-//! menu): what does not fit gives way with no door; where nothing lists them, the door stays.
+//! menu): the row keeps none of them, each standing once; where nothing lists them, the row
+//! shows what fits and its door holds the rest.
 
 use super::*;
 use crate::headless::InspectionNode;
@@ -35,7 +36,7 @@ fn bar(lists_actions: bool) -> Option<crate::widget::WindowBar> {
 }
 
 #[test]
-fn actions_listed_elsewhere_give_way_without_a_door() {
+fn actions_listed_elsewhere_stand_only_where_the_host_lists_them() {
     let (w, h) = (390, 700);
     for listed in [false, true] {
         let mut harness = harness(shell(), w, h, Theme::light());
@@ -45,10 +46,14 @@ fn actions_listed_elsewhere_give_way_without_a_door() {
         let shown = (0..6)
             .filter(|i| shows(&inspection.root, &format!("act-{i}")))
             .count();
-        assert!(
-            shown < 6,
-            "six labelled actions do not fit at {w}: {shown} shown"
-        );
+        if listed {
+            assert_eq!(shown, 0, "the host lists them: the row keeps none");
+        } else {
+            assert!(
+                shown < 6,
+                "six labelled actions do not fit at {w}: {shown} shown"
+            );
+        }
         assert_eq!(
             shows(&inspection.root, "nav-shell-more-content"),
             !listed,

@@ -408,7 +408,6 @@ impl AgentParticipant {
                 cert: identity.cert.clone(),
                 host_cert: config.host_cert,
                 revocations: RevocationList::new(),
-                watching: false,
                 background: false,
             },
             Arc::new(identity.key.clone()),
@@ -723,13 +722,6 @@ impl AgentParticipant {
                 frame,
             } if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
-            }
-            PeerEvent::LiveMember {
-                workspace_id,
-                device,
-                active,
-            } if workspace_id == self.workspace_id => {
-                self.live.member(device, active);
             }
             PeerEvent::LivePlane {
                 workspace_id,
@@ -2183,7 +2175,7 @@ impl AgentParticipant {
         self.control.activity().map(|activity| {
             let mut end = activity
                 .len()
-                .min(tilo_relay_protocol::live::MAX_PARTICIPANT_ACTIVITY_BYTES);
+                .min(collab_types::presence::MAX_ACTIVITY_BYTES);
             while !activity.is_char_boundary(end) {
                 end = end.saturating_sub(1);
             }

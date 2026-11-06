@@ -30,16 +30,11 @@ pub(crate) fn category_place(id: &str) -> String {
     format!("category:{id}")
 }
 
-fn person_place(key: &str) -> String {
-    format!("person:{key}")
-}
-
 /// What a sidebar id names.
 #[derive(Debug, PartialEq, Eq)]
 enum Place {
     Channel(String),
     Category(String),
-    Person(String),
     /// Someone in voice channel `channel`'s call.
     InCall {
         channel: String,
@@ -52,9 +47,6 @@ fn place(id: &str) -> Option<Place> {
     }
     if let Some(category) = id.strip_prefix("category:") {
         return Some(Place::Category(category.to_owned()));
-    }
-    if let Some(key) = id.strip_prefix("person:") {
-        return Some(Place::Person(key.to_owned()));
     }
     let rest = id.strip_prefix("in-call:")?;
     let (channel, _) = rest.split_once('/')?;
@@ -130,39 +122,26 @@ impl ChatApp {
         // stage fills the window, else the conversation open.
         let selected = if self.call.active && self.call.expanded {
             Some(channel_place(&self.call.channel))
-        } else if let Some(key) = &self.direct_person {
-            Some(person_place(key))
         } else {
             (!self.active_channel.is_empty()).then(|| channel_place(&self.active_channel))
         };
         self.places.show(sections, selected);
     }
 
-    /// The people this person has a direct conversation with, each once,
-    /// by the name they go by: those whose conversation holds messages and
-    /// the one open now. Everyone else in the workspace is reached from the
-    /// people overlay (or their card), not listed here: a workspace full of
-    /// visitors must not push its channels out of sight.
+    /// The direct conversations this person has, each once, by the name they
+    /// go by: those holding messages and the one open now. Everyone else in
+    /// the workspace is reached from the people overlay (or their card), not
+    /// listed here: a workspace full of visitors must not push its channels
+    /// out of sight.
     fn direct_message_items(&self) -> Vec<NavItem> {
-        let mut people: Vec<(String, &ui::person_chat::Contact)> = self
-            .person_contacts
-            .iter()
-            .filter(|contact| {
-                contact.conversation
-                    || self.direct_person.as_deref() == Some(contact.public_key.as_str())
-            })
-            .map(|contact| (self.contact_name(contact), contact))
-            .collect();
-        people.sort_by(|(a, x), (b, y)| {
-            a.to_lowercase()
-                .cmp(&b.to_lowercase())
-                .then_with(|| x.public_key.cmp(&y.public_key))
-        });
-        people.dedup_by(|(_, a), (_, b)| a.public_key == b.public_key);
-        people
+        self.direct_contacts()
             .into_iter()
-            .map(|(name, contact)| {
-                NavItem::new(person_place(&contact.public_key), name).icon(Icon::User)
+            .map(|conversation| {
+                let unread = conversation.unread;
+                NavItem::new(channel_place(&conversation.id), conversation.name)
+                    .icon(Icon::User)
+                    .unread(unread > 0)
+                    .live_count(unread)
             })
             .collect()
     }
@@ -172,6 +151,7 @@ impl ChatApp {
     fn channel_items(&self, category: &str, drafts: &BTreeMap<String, String>) -> Vec<NavItem> {
         self.category_channels(category)
             .into_iter()
+            .filter(|channel| !channel.direct)
             .map(|channel| self.channel_item(channel, drafts))
             .collect()
     }
@@ -254,7 +234,6 @@ impl ChatApp {
                 Some(Place::Channel(id) | Place::InCall { channel: id }) => {
                     self.on_hit(Hit::Channel(id), doc);
                 }
-                Some(Place::Person(key)) => self.on_hit(Hit::DirectPerson(key), doc),
                 Some(Place::Category(_)) | None => {}
             }
         }
@@ -335,10 +314,6 @@ mod tests {
         assert_eq!(
             place(&category_place("cat_main")),
             Some(Place::Category("cat_main".into()))
-        );
-        assert_eq!(
-            place(&person_place("ab12")),
-            Some(Place::Person("ab12".into()))
         );
         assert_eq!(
             place("in-call:c_standup/u_dana"),

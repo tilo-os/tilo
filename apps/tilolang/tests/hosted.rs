@@ -20,7 +20,7 @@
 )]
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -258,6 +258,25 @@ impl Window {
         }
     }
 
+    /// The pointer moved to `(x, y)` without pressing anything: where a person hovers.
+    fn move_to(&mut self, x: f64, y: f64) {
+        match self {
+            Self::Harness(window) => window.send(&ui::synthetic_input::cursor_moved(x, y)),
+            Self::Live(app) => Self::live_input(app, ui::synthetic_input::cursor_moved(x, y)),
+        }
+    }
+
+    /// The wheel turned by `(dx, dy)` lines where the pointer is, as a person's hand does.
+    fn scroll(&mut self, dx: f64, dy: f64) {
+        match self {
+            Self::Harness(window) => window.scroll(dx, dy),
+            Self::Live(app) => {
+                let (dx, dy) = (dx as f32, dy as f32);
+                Self::live_input(app, ui::synthetic_input::mouse_wheel(dx, dy));
+            }
+        }
+    }
+
     /// The character key `key` pressed and released with `modifiers` held (`ctrl`, `shift`),
     /// as a keyboard sends it: the modifiers first, then the key, then the modifiers let go.
     fn chord(&mut self, modifiers: &[&str], key: &str) {
@@ -376,6 +395,7 @@ impl Session {
             NOTES,
             "../tl/notes",
             "ada",
+            automerge::AutoCommit::new(),
             Box::new(()),
             |hosted| {
                 let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
@@ -419,18 +439,57 @@ impl Session {
             inbox: Rc::clone(&inbox),
             joined: None,
         });
-        Self::over(manager, &route, app, dir, person, Box::new(inbox), window)
+        Self::over(
+            manager,
+            &route,
+            app,
+            dir,
+            person,
+            automerge::AutoCommit::new(),
+            Box::new(inbox),
+            window,
+        )
+    }
+
+    /// A person at a Tasks window over the workspace record `doc`: what a person who has used
+    /// Tasks for years sees when they open it.
+    fn tasks_over(doc: ui::tilo_resource::Doc) -> Self {
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
+        let manager = CollaborationManager::with_peer_transport(Broker {
+            route: route.clone(),
+            sent,
+            inbox: Rc::clone(&inbox),
+            joined: None,
+        });
+        Self::over(
+            manager,
+            &route,
+            TASKS,
+            "../tl/tasks",
+            "ada",
+            doc,
+            Box::new(inbox),
+            |hosted| {
+                Window::Harness(Box::new(FrameHarness::new(
+                    ui::State::new(),
+                    Box::new(hosted),
+                    VIEWPORT,
+                )))
+            },
+        )
     }
 
     /// `person` at the window `window` makes of the hosted window of the package `app` in
     /// `dir`, whose instance's connection is `manager`, on `route`; `broker` is what the broker's
-    /// end holds.
+    /// end holds, and `doc` the workspace record the instance runs over.
     fn over(
         mut manager: CollaborationManager,
         route: &RouteSpec,
         app: &str,
         dir: &str,
         person: &str,
+        doc: ui::tilo_resource::Doc,
         broker: Box<dyn std::any::Any>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
@@ -442,8 +501,7 @@ impl Session {
             handle: Some(person.to_owned()),
         }));
         let _ = manager.poll();
-        let record =
-            InstanceRecord::new(automerge::AutoCommit::new(), manager, route.clone(), person);
+        let record = InstanceRecord::new(doc, manager, route.clone(), person);
         let wake: tilolang_tilo::background::Waker = Arc::new(|| {});
         let mut host = TilolangHost::new(None, Arc::clone(&wake));
         let kept = host.kept(app).unwrap();
@@ -496,23 +554,22 @@ impl Session {
             .expect("the window is the hosted window")
     }
 
-    /// The texts the window's views show.
+    /// The texts the window's views show: its overview, and the page the content lane opens.
     fn shown(&mut self) -> Vec<String> {
-        fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
-            for value in node.props.values() {
-                match value {
-                    tilo_ui_host::Value::Text(text) => out.push(text.clone()),
-                    tilo_ui_host::Value::Principal(who) => out.push(who.name.clone()),
-                    _ => {}
-                }
-            }
-            for child in &node.children {
-                texts(child, out);
-            }
-        }
         let view = self.hosted().view().expect("the window is connected");
         let mut out = Vec::new();
         for tree in [view.root_tree(), view.detail_tree()].into_iter().flatten() {
+            texts(&tree, &mut out);
+        }
+        out
+    }
+
+    /// The texts the window's content lane shows: the page of the row a person opened, where
+    /// the overview keeps its empty state for the next time nothing is chosen.
+    fn page(&mut self) -> Vec<String> {
+        let view = self.hosted().view().expect("the window is connected");
+        let mut out = Vec::new();
+        if let Some(tree) = view.detail_tree() {
             texts(&tree, &mut out);
         }
         out
@@ -1522,7 +1579,7 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     let mut session = Session::new(TASKS, "../tl/tasks", "ada", |_| {});
     // A task, added through the entry the window shows.
     let mut entries = Vec::new();
-    named(session.window.root(), "Draft", &mut entries);
+    named(session.window.root(), "New task", &mut entries);
     let entry = *entries.first().expect("the inbox shows its entry");
     session.window.click_at(entry.center().x, entry.center().y);
     session.window.type_text("Water the plants");
@@ -1597,6 +1654,262 @@ fn a_task_checked_off_through_the_host_fills_its_box_over_frames() {
     );
 }
 
+/// The node key of the entry at the end of the window's list: the field a person adds from.
+fn entry_key(session: &mut Session) -> String {
+    let tree = session
+        .hosted()
+        .view()
+        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .expect("the window has a tree");
+    find(&tree, &|node| {
+        node.kind == "ui.TextInput" && node.props.contains_key("entry")
+    })
+    .unwrap_or_else(|| panic!("the list ends in its entry: {tree:?}"))
+    .key
+    .clone()
+}
+
+/// A task is a row once its title is committed: the window's bar offers one "New task", and
+/// pressing it leaves the person in the list's entry rather than making a nameless row.
+#[test]
+fn a_new_task_is_the_lists_entry_not_a_row_of_its_empty_title() {
+    let mut session = Session::tasks();
+    let tree = session
+        .hosted()
+        .view()
+        .and_then(tilo_ui_host::AppWindow::root_tree)
+        .expect("the window has a tree");
+    let adds = buttons_named(&tree, "New task");
+    assert_eq!(
+        adds.len(),
+        1,
+        "the window's bar holds the one New task: {adds:?}"
+    );
+    // Pressing it there leaves the person in the list's entry, which is how a task is added.
+    let (x, y) = shown_at(&mut session, "New task");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "nothing is made for a task nobody has named"
+    );
+
+    let mut found = Vec::new();
+    named(session.window.root(), "New task", &mut found);
+    let field = *found.last().expect("the window ends in its entry");
+    session.window.click_at(field.center().x, field.center().y);
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "nothing is made for a task nobody has named"
+    );
+}
+
+/// The keys of the buttons named `label` in `node` and under it.
+fn buttons_named(node: &tilo_ui_host::UiNode, label: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    if node.kind == "ui.Button"
+        && matches!(node.props.get("label"), Some(tilo_ui_host::Value::Text(name)) if name == label)
+    {
+        found.push(node.key.clone());
+    }
+    for child in &node.children {
+        found.extend(buttons_named(child, label));
+    }
+    found
+}
+
+/// What the list's entry shows: what is typed there, until it commits or is cleared.
+fn entry(session: &mut Session) -> String {
+    let key = entry_key(session);
+    widget_by_id(session.window.root(), &key)
+        .expect("the entry is laid out")
+        .as_any()
+        .and_then(|any| any.downcast_ref::<ui::widget::TextInput>())
+        .map_or_else(String::new, |input| input.value().to_owned())
+}
+
+/// The record's heads: what the app has written, as its changes name it.
+fn heads(session: &Session) -> Vec<String> {
+    session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance")
+        .record()
+        .doc()
+        .clone()
+        .get_heads()
+        .into_iter()
+        .map(|head| format!("{head:?}"))
+        .collect()
+}
+
+/// The texts a view's tree shows: every text and every person it names.
+fn texts(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+    for value in node.props.values() {
+        match value {
+            tilo_ui_host::Value::Text(text) => out.push(text.clone()),
+            tilo_ui_host::Value::Principal(who) => out.push(who.name.clone()),
+            _ => {}
+        }
+    }
+    for child in &node.children {
+        texts(child, out);
+    }
+}
+
+/// The accessible nodes of the window, each with the widget that draws it.
+fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
+    fn nodes<'a>(node: &'a ui::a11y::AccessNode, out: &mut Vec<&'a ui::a11y::AccessNode>) {
+        out.push(node);
+        for child in &node.children {
+            nodes(child, out);
+        }
+    }
+    fn walk(session_node: &ui::headless::InspectionNode, out: &mut Vec<ui::a11y::AccessNode>) {
+        if let Some(access) = &session_node.semantics {
+            let mut found = Vec::new();
+            nodes(access, &mut found);
+            out.extend(found.into_iter().cloned());
+        }
+        for child in &session_node.children {
+            walk(child, out);
+        }
+    }
+    let snapshot = session.window.harness().inspection();
+    let mut out = Vec::new();
+    walk(&snapshot.root, &mut out);
+    out
+}
+
+/// Where a person clicks to go to the sidebar's place `label`: the rail draws its rows itself, so
+/// they are found in what the window says to assistive technology rather than as widgets.
+fn place_at(session: &mut Session, label: &str) -> (f64, f64) {
+    let rect = accessible(session)
+        .into_iter()
+        .filter(|node| node.role == ui::a11y::Role::TreeItem)
+        .filter(|node| node.name.as_deref() == Some(label))
+        .find_map(|node| node.bounds)
+        .unwrap_or_else(|| panic!("the sidebar shows the place {label:?}"));
+    (
+        f64::midpoint(rect.x0, rect.x1),
+        f64::midpoint(rect.y0, rect.y1),
+    )
+}
+
+/// Where the window shows `label`, laid out.
+fn shown_at(session: &mut Session, label: &str) -> (f64, f64) {
+    let mut found = Vec::new();
+    named(session.window.root(), label, &mut found);
+    let rect = *found
+        .last()
+        .unwrap_or_else(|| panic!("the window shows {label:?}"));
+    (rect.center().x, rect.center().y)
+}
+
+/// The window's primary action takes the person to the list's entry, and nothing is made by it
+/// or by what is typed there: a task exists once Enter commits its title, and the entry clears
+/// for the next one.
+#[test]
+fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "the key makes no task on its own"
+    );
+    assert_eq!(entry(&mut session), "", "the entry starts empty");
+
+    // What is typed lands in the entry, so the keyboard is there, and it is still a draft.
+    session.window.type_text("Water the plants");
+    session.settle();
+    assert_eq!(entry(&mut session), "Water the plants");
+    assert!(
+        session.titles().is_empty(),
+        "what is typed is a draft, not a row"
+    );
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Water the plants"],
+        "Enter makes the one task"
+    );
+    assert_eq!(entry(&mut session), "", "the entry clears for the next one");
+}
+
+/// A draft nobody commits leaves nothing: Escape empties it, and leaving it empty makes no task
+/// and writes nothing at all — no row, no change in the record's history.
+#[test]
+fn an_entry_left_empty_makes_no_task_and_no_history() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    let before = heads(&session);
+
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Water the plants");
+    session.settle();
+    session.window.press_key(NamedKey::Escape);
+    session.settle();
+    assert_eq!(entry(&mut session), "", "Escape empties the entry");
+
+    // Leaving it empties it: the click goes to the place the person came from.
+    let (x, y) = shown_at(&mut session, "Inbox");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(session.titles().is_empty(), "no task was made");
+    assert_eq!(heads(&session), before, "and nothing was written");
+}
+
+/// The place a task is added in is its default: the entry at the end of Today's list adds one
+/// due today, which is what puts it in that list.
+#[test]
+fn the_entry_adds_a_task_due_today_in_the_today_list() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    let (x, y) = place_at(&mut session, "Today");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(session.titles().is_empty(), "Today starts empty");
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Call the bank");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert_eq!(
+        session.titles(),
+        ["Call the bank"],
+        "a task added on Today is due today, so it stands in that list"
+    );
+}
+
+/// Undo takes back a task the entry made, as it takes back any other change: the row goes, and
+/// the create is one step the record takes back whole.
+#[test]
+fn undo_removes_a_task_the_entry_made() {
+    use ui::winit::keyboard::NamedKey;
+    let mut session = Session::tasks();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    assert_eq!(session.titles(), ["Water the plants"]);
+
+    // The person's Undo: the window's key, which the record answers.
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "undo removes the task the entry made"
+    );
+    assert_eq!(entry(&mut session), "", "and leaves the entry empty");
+}
+
 /// The actions the tasks app offers the person at this window, as the window's catalogue
 /// lists them.
 fn offered(session: &mut Session) -> Vec<(String, Option<String>)> {
@@ -1657,7 +1970,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     // read, and the keys the app gives its actions.
     let actions = offered(&mut session);
     let labels: Vec<&str> = actions.iter().map(|(label, _)| label.as_str()).collect();
-    assert!(labels.contains(&"New task"), "{labels:?}");
+    assert!(labels.contains(&"New task…"), "{labels:?}");
     let key = |label: &str| {
         actions
             .iter()
@@ -1666,8 +1979,8 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             .1
             .clone()
     };
-    assert_eq!(key("New task").as_deref(), Some("Ctrl+n"));
-    assert_eq!(key("Remove").as_deref(), Some("delete"));
+    assert_eq!(key("New task…").as_deref(), Some("Ctrl+n"));
+    assert_eq!(key("Delete…").as_deref(), Some("delete"));
 
     // The window's own palette lists them, as a native app window's does.
     let listed: Vec<(String, Option<String>)> = session
@@ -1680,7 +1993,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         .map(|action| (action.label.clone(), action.state.shortcut.clone()))
         .collect();
     assert!(
-        listed.contains(&("New task".to_owned(), Some("Ctrl+n".to_owned()))),
+        listed.contains(&("New task…".to_owned(), Some("Ctrl+n".to_owned()))),
         "{listed:?}"
     );
     // A session's palette builds each action row from that same published state, and paints a
@@ -1709,13 +2022,13 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
             depth: 0,
         })
     };
-    let new_task = row("New task");
+    let new_task = row("New task…");
     assert_eq!(
         new_task.keybinding_label(platform).as_deref(),
         Some("Ctrl+N")
     );
     assert_eq!(
-        row("Remove").keybinding_label(platform).as_deref(),
+        row("Delete…").keybinding_label(platform).as_deref(),
         Some("Delete")
     );
     session
@@ -1741,11 +2054,19 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
 
 #[test]
 fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
+    use ui::winit::keyboard::NamedKey;
     let _settled = ui::motion::testing::settled();
     let mut session = Session::live_tasks();
-    // Choosing the app's New task in the window's palette inserts a task at the app, which
-    // opens it, so its own actions reach the palette with their key.
+    // The app's New task is the list's entry: choosing it in the window's palette puts the
+    // keyboard there, and what is typed and committed is the task the app makes. Opened, that
+    // task offers its own actions with their key.
     choose(&mut session, "New task");
+    session.window.type_text("Water the plants");
+    session.window.press_key(NamedKey::Enter);
+    session.settle();
+    let (x, y) = shown_at(&mut session, "Water the plants");
+    session.window.click_at(x, y);
+    session.settle();
     let actions = offered(&mut session);
     let complete = actions
         .iter()
@@ -1886,18 +2207,13 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         vec![
             ("Tasks".to_owned(), Some(ui::icons::Icon::Layers), None),
             (
-                "New task".to_owned(),
+                "New task…".to_owned(),
                 Some(ui::icons::Icon::Plus),
                 Some(vec![command, "N".to_owned()]),
             ),
             (
                 "New project".to_owned(),
                 Some(ui::icons::Icon::FolderPlus),
-                None,
-            ),
-            (
-                "Clear done".to_owned(),
-                Some(ui::icons::Icon::CircleCheck),
                 None,
             ),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
@@ -1938,7 +2254,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         .collect();
     assert_eq!(
         new,
-        ["New task", "New project"],
+        ["New task…", "New project"],
         "the query narrows the list to what it names"
     );
 }
@@ -1948,46 +2264,52 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     conventions: ui::PlatformConventions,
 ) {
     let command = command_modifier(conventions);
-    // With a task open, the palette lists what that task lets a person do, once
-    // each: the task and the app it belongs to, then the actions bound to it.
+    // The window lists the app, the task the entry made and that stands on
+    // screen as a resource, and the actions a person can take on it, once each.
     // Picks a row cannot collect (Assign to…, Move to, Open) stay where they
     // live, and no row repeats another.
     session
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
     session.settle();
-    let mut found = Vec::new();
-    named(session.window.root(), "New task", &mut found);
-    let rect = *found.last().expect("the header offers New task");
-    let (x, y) = (rect.center().x, rect.center().y);
-    session.window.click_at(x, y);
+    // A task made by the list's entry: it is a record the window holds.
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    session.window.type_text("Water the plants");
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
     session.settle();
     let open = palette_rows(session, "");
     let titles: Vec<&str> = open.iter().map(|(title, ..)| title.as_str()).collect();
     assert_eq!(
         titles,
         [
-            "Task",
             "Tasks",
-            "New task",
+            "Water the plants",
+            "Open",
+            "New task…",
             "New project",
-            "Clear done",
             "Task summary",
             "Complete",
-            "Snooze until…",
-            "Move to inbox",
-            "Set due date",
-            "Prioritize",
-            "Indent",
-            "Outdent",
-            "Undo",
+            "Today",
+            "Tomorrow",
+            "Next week",
+            "Pick date…",
+            "Low",
+            "Medium",
+            "High",
         ],
-        "the open task's palette"
+        "the window's palette"
+    );
+    assert!(
+        !titles.contains(&"Titled row"),
+        "a task is a row once it has a title: {titles:?}"
     );
     let task = open
         .iter()
-        .find(|(title, ..)| title == "Task")
-        .expect("the open task is a row");
+        .find(|(title, ..)| title == "Water the plants")
+        .expect("the task the entry made is a row");
     assert_eq!(
         task.1,
         Some(ui::icons::Icon::Layers),
@@ -2000,10 +2322,635 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     let complete = open
         .iter()
         .find(|(title, ..)| title == "Complete")
-        .expect("the open task offers Complete");
+        .expect("the task offers Complete");
     assert_eq!(
         complete.2,
         Some(vec![command, "Enter".to_owned()]),
         "and its own chord"
     );
+
+    // What cannot run now is no row: a task in the inbox has nowhere to move out of, the app
+    // has nothing done to clear, and a task at the outline's top has nowhere to outdent to.
+    for not_now in ["Inbox", "Delete finished tasks", "Outdent"] {
+        assert!(
+            !titles.contains(&not_now),
+            "{not_now} cannot run now, so it is no row: {titles:?}"
+        );
+    }
+    // The commands a task opens with run in the task's own window, which the
+    // live session covers; this window offers the ones above.
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Escape);
+    session.settle();
+}
+
+/// A header's button for an action that cannot run now stands disabled, and says why: the
+/// requirement it does not meet is the reason the person reads, beside the name it announces.
+#[test]
+fn a_header_button_for_an_action_that_cannot_run_is_disabled_with_its_reason() {
+    /// Every node of `kind` under `node`, its own first.
+    fn of_kind<'a>(
+        node: &'a tilo_ui_host::UiNode,
+        kind: &str,
+        out: &mut Vec<&'a tilo_ui_host::UiNode>,
+    ) {
+        if node.kind == kind {
+            out.push(node);
+        }
+        for child in &node.children {
+            of_kind(child, kind, out);
+        }
+    }
+    let _settled = ui::motion::testing::settled();
+    let mut session = Session::tasks();
+    session.settle();
+    let view = session.hosted().view().expect("the window is connected");
+    let tree = view.root_tree().expect("the window has a tree");
+    let mut buttons = Vec::new();
+    of_kind(&tree, "ui.Button", &mut buttons);
+    let button = |label: &str| {
+        buttons
+            .iter()
+            .find(|button| {
+                button.props.get("label") == Some(&tilo_ui_host::Value::Text(label.to_owned()))
+            })
+            .unwrap_or_else(|| panic!("the header holds {label}"))
+    };
+    let clear = button("Delete finished tasks");
+    assert_eq!(
+        clear.props.get("enabled"),
+        Some(&tilo_ui_host::Value::Int(0)),
+        "nothing is finished, so Delete finished tasks is disabled"
+    );
+    assert_eq!(
+        clear.props.get("description"),
+        Some(&tilo_ui_host::Value::Text(
+            "Nothing is finished yet".to_owned()
+        )),
+        "and it says why"
+    );
+    let new_task = buttons
+        .iter()
+        .find(|button| {
+            button.props.get("label") == Some(&tilo_ui_host::Value::Text("New task".to_owned()))
+        })
+        .expect("the bar holds the window's primary, New task");
+    assert_eq!(
+        new_task.props.get("role"),
+        Some(&tilo_ui_host::Value::Text("primary".to_owned())),
+        "the window's primary action, drawn once in its bar"
+    );
+    // Pressed with nothing typed, it leaves the person in the list's entry rather than making
+    // a task nobody named.
+    let (x, y) = shown_at(&mut session, "New task");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        session.titles().is_empty(),
+        "the bar's New task makes no task nobody typed"
+    );
+}
+
+// -- What the interactions cost ------------------------------------------------------------
+//
+// A person's window of a workspace they have used for years: ten thousand tasks, driven
+// through the interactions they do all day, each measured from the input reaching the window to
+// the window at rest with what it did on screen. The step is the work the window's process did
+// for it (UI-thread CPU time, so a machine busy with other work reads what the window made it
+// do rather than the moments it was descheduled), split into what the instance did (running the
+// action and evaluating the views), the window's sync (taking the views' patches), its layout
+// and its paint.
+//
+// The budgets hold each interaction's CPU time, and what the instance's evaluation and the
+// layout cost within it: a keystroke must not wait for the workspace's size, and neither must a
+// place switch, a check-off, a page or a scroll. They are asserted in an optimised build only
+// (the shipped code), which runs this with `--profile fast`; a development build measures its
+// own slowness and prints the table without holding it.
+
+/// The workspace the interactions are measured in: what a person who has used Tasks for years
+/// keeps.
+const SEEDED: usize = 10_000;
+
+/// A budget for one interaction, in UI-thread CPU microseconds.
+#[derive(Clone, Copy, Debug)]
+struct Budget {
+    /// The whole step: the input, the instance's answer and every frame that shows it.
+    step_us: u64,
+    /// The instance's evaluation and the window's layout within it (`0`: not held).
+    eval_layout_us: u64,
+}
+
+/// One interaction, measured once.
+#[derive(Clone, Copy, Debug)]
+struct Cost {
+    label: &'static str,
+    /// UI-thread CPU time of the step.
+    cpu_us: u64,
+    /// Wall time of the same span.
+    wall_us: u64,
+    /// The instance's share: the host's turns, running the action and evaluating the views.
+    instance_us: u64,
+    /// The window's frames: event dispatch, sync, layout and paint together.
+    window_us: u64,
+    /// The frames' event dispatch, summed.
+    event_us: u64,
+    /// The frames' sync, taking the instance's patches, summed.
+    sync_us: u64,
+    /// The frames' layout, summed.
+    layout_us: u64,
+    /// The frames' paint, summed.
+    paint_us: u64,
+    /// From the input to the frame's commit that showed what it did.
+    shown_us: u64,
+    /// The frames the step took.
+    frames: u64,
+}
+
+impl Cost {
+    fn eval_layout_us(&self) -> u64 {
+        self.instance_us.saturating_add(self.layout_us)
+    }
+}
+
+/// What the interactions cost, per interaction.
+#[derive(Default)]
+struct Costs(BTreeMap<&'static str, Vec<Cost>>);
+
+impl Costs {
+    fn add(&mut self, cost: Cost) {
+        self.0.entry(cost.label).or_default().push(cost);
+    }
+
+    fn p50(&self, label: &str, of: fn(&Cost) -> u64) -> u64 {
+        quantile(self.values(label, of), 0.5)
+    }
+
+    fn values(&self, label: &str, of: fn(&Cost) -> u64) -> Vec<u64> {
+        self.0
+            .get(label)
+            .map(|costs| costs.iter().map(&of).collect())
+            .unwrap_or_default()
+    }
+
+    /// The table, in milliseconds, to stderr.
+    #[allow(
+        clippy::print_stderr,
+        reason = "a measurement reports the table it measured"
+    )]
+    fn print(&self) {
+        let ms = |us: u64| format!("{:.2}", us as f64 / 1000.0);
+        eprintln!(
+            "interaction        steps  frames  cpu_p50  cpu_max  shown  instance  window  event  sync  layout  paint  wall"
+        );
+        for label in self.0.keys() {
+            eprintln!(
+                "{label:<18} {:>5} {:>7} {:>8} {:>8} {:>6} {:>9} {:>7} {:>6} {:>5} {:>7} {:>6} {:>5}",
+                self.0[label].len(),
+                self.p50(label, |c| c.frames),
+                ms(self.p50(label, |c| c.cpu_us)),
+                ms(quantile(self.values(label, |c| c.cpu_us), 1.0)),
+                ms(self.p50(label, |c| c.shown_us)),
+                ms(self.p50(label, |c| c.instance_us)),
+                ms(self.p50(label, |c| c.window_us)),
+                ms(self.p50(label, |c| c.event_us)),
+                ms(self.p50(label, |c| c.sync_us)),
+                ms(self.p50(label, |c| c.layout_us)),
+                ms(self.p50(label, |c| c.paint_us)),
+                ms(self.p50(label, |c| c.wall_us)),
+            );
+        }
+    }
+
+    /// Hold every interaction to its budget, in UI-thread CPU time.
+    #[allow(
+        clippy::print_stderr,
+        reason = "why a measurement was not held is part of its report"
+    )]
+    fn hold_to(&self, budgets: &[(&'static str, Budget)]) {
+        if cfg!(debug_assertions) {
+            eprintln!("a development build: the table is reported, not held");
+            return;
+        }
+        let mut misses = Vec::new();
+        for (label, budget) in budgets {
+            if !self.0.contains_key(label) {
+                misses.push(format!("{label}: no interaction measured"));
+                continue;
+            }
+            let cpu = self.p50(label, |c| c.cpu_us);
+            if cpu > budget.step_us {
+                misses.push(format!(
+                    "{label}: CPU p50 {cpu}us, budget {}us",
+                    budget.step_us
+                ));
+            }
+            if budget.eval_layout_us == 0 {
+                continue;
+            }
+            let eval_layout = self.p50(label, Cost::eval_layout_us);
+            if eval_layout > budget.eval_layout_us {
+                misses.push(format!(
+                    "{label}: instance evaluation and layout p50 {eval_layout}us, budget {}us",
+                    budget.eval_layout_us
+                ));
+            }
+            // A person feels one slow step, not the median: no step may take twice its budget.
+            let worst = self
+                .0
+                .get(label)
+                .into_iter()
+                .flatten()
+                .map(Cost::eval_layout_us)
+                .max()
+                .unwrap_or_default();
+            if worst > budget.eval_layout_us.saturating_mul(2) {
+                misses.push(format!(
+                    "{label}: one step's evaluation and layout {worst}us, over twice its budget"
+                ));
+            }
+        }
+        assert!(
+            misses.is_empty(),
+            "interactions over their budgets:\n{}",
+            misses.join("\n")
+        );
+    }
+}
+
+/// The `q` quantile of `samples` (0.5 the median, 1.0 the worst).
+fn quantile(mut samples: Vec<u64>, q: f64) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    samples.sort_unstable();
+    let last = samples.len().saturating_sub(1);
+    let at = ((last as f64) * q).round() as usize;
+    samples[at.min(last)]
+}
+
+/// The UI thread's CPU time since `start`, in microseconds: the wall time where the platform
+/// keeps no CPU clock.
+fn since(start: Option<ui::time::Duration>, wall: ui::time::Duration) -> u64 {
+    start
+        .zip(ui::rt::thread_cpu_time())
+        .map_or(wall.as_micros(), |(start, now)| {
+            now.saturating_sub(start).as_micros()
+        }) as u64
+}
+
+/// The host's turns and the window's frames until neither has anything left to do: the host's
+/// CPU time and the window's, in microseconds, and the frames' timings.
+fn at_rest(session: &mut Session) -> (u64, u64, Vec<ui::profiling::FrameTiming>) {
+    let (mut instance_us, mut window_us) = (0, 0);
+    let mut quiet = 0_u32;
+    while quiet < 3 {
+        let start = ui::rt::thread_cpu_time();
+        let wall = ui::time::Instant::now();
+        let changed = session.host.turn();
+        instance_us += since(start, wall.elapsed());
+        let start = ui::rt::thread_cpu_time();
+        let wall = ui::time::Instant::now();
+        session.window.frame();
+        window_us += since(start, wall.elapsed());
+        if changed {
+            quiet = 0;
+        } else {
+            quiet = quiet.saturating_add(1);
+        }
+    }
+    let frames = session.window.harness().take_profile_samples();
+    (instance_us, window_us, frames)
+}
+
+/// One interaction, measured from `input` reaching the window to the windows' work at rest with
+/// what it did on screen.
+fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Session)) -> Cost {
+    session.window.harness().begin_profiling();
+    let start = ui::rt::thread_cpu_time();
+    let wall = ui::time::Instant::now();
+    input(session);
+    let (instance_us, window_us, frames) = at_rest(session);
+    let wall_us = wall.elapsed().as_micros() as u64;
+    let cpu_us = start
+        .zip(ui::rt::thread_cpu_time())
+        .map_or(wall_us, |(start, now)| {
+            now.saturating_sub(start).as_micros() as u64
+        });
+    let sum = |of: fn(&ui::profiling::FrameTiming) -> u64| frames.iter().map(of).sum::<u64>();
+    Cost {
+        label,
+        cpu_us,
+        wall_us,
+        instance_us,
+        window_us,
+        event_us: sum(|frame| frame.handle_event_us),
+        sync_us: sum(|frame| frame.sync_us),
+        layout_us: sum(|frame| frame.build_layout_us.saturating_add(frame.apply_layout_us)),
+        paint_us: sum(|frame| frame.draw_us),
+        shown_us: frames.last().map_or(0, |frame| frame.input_to_commit_us),
+        frames: frames.len() as u64,
+    }
+}
+
+/// The budgets each interaction is held to (see the note above), from what the interactions
+/// cost on this workspace when they were measured, with the room a slower machine, a loaded one
+/// and a heavier workspace take: a step's CPU time at three times its measured p50, and the
+/// instance's evaluation and layout likewise, because this runs beside every other test on the
+/// machine that builds the workspace
+///
+/// A person's hand sends a keystroke every 30-100 ms, so every one of these is felt as it comes:
+/// the numbers are what a window of ten thousand tasks costs today, and the budgets hold it
+/// there, so a change that makes one interaction read the whole workspace again fails this
+/// test rather than a person's day.
+///
+/// What is not yet held to what a person would call instant is publishing what a record offers:
+/// opening a workspace of ten thousand tasks reads each of its items' requirements, and a change
+/// to one item reads them again, so opening and adding a task pay seconds and the rest pay
+/// milliseconds. Their budgets are what that costs now, measured as they are, so that the cost is
+/// counted here and cannot grow while it is brought down.
+const BUDGETS: &[(&str, Budget)] = &[
+    (
+        "open",
+        Budget {
+            step_us: 45_000_000,
+            eval_layout_us: 45_000_000,
+        },
+    ),
+    (
+        "entry keystroke",
+        Budget {
+            step_us: 200_000,
+            eval_layout_us: 150_000,
+        },
+    ),
+    (
+        "entry enter",
+        Budget {
+            step_us: 12_000_000,
+            eval_layout_us: 12_000_000,
+        },
+    ),
+    (
+        "check a task",
+        Budget {
+            step_us: 1_500_000,
+            eval_layout_us: 1_500_000,
+        },
+    ),
+    (
+        "switch place",
+        Budget {
+            step_us: 600_000,
+            eval_layout_us: 450_000,
+        },
+    ),
+    (
+        "open a task page",
+        Budget {
+            step_us: 350_000,
+            eval_layout_us: 300_000,
+        },
+    ),
+    (
+        "scroll",
+        Budget {
+            step_us: 700_000,
+            eval_layout_us: 700_000,
+        },
+    ),
+];
+
+/// Whether the workspace's record holds a task titled `title`, as the window's instance runs it:
+/// the list shows only the rows on screen, so what the entry added is read off the record.
+fn record_has_task(session: &Session, title: &str) -> bool {
+    let doc = session
+        .host
+        .instances()
+        .next()
+        .expect("the window's instance")
+        .record()
+        .doc();
+    let titled = |item: &tilolang_tilo::DynRecord| {
+        item.schema().fields.iter().any(|field| {
+            matches!(item.get(&field.id), Some(tilolang_tilo::DynValue::Text(text)) if text == title)
+        })
+    };
+    tilolang_tilo::action::resource_ids(doc, TASKS)
+        .into_iter()
+        .filter_map(|id| tilolang_tilo::action::read_resource(doc, TASKS, &id).ok())
+        .any(|record| {
+            record
+                .schema()
+                .fields
+                .iter()
+                .any(|field| match record.get(&field.id) {
+                    Some(tilolang_tilo::DynValue::Collection(items)) => {
+                        items.iter().any(|(_, item)| titled(item))
+                    }
+                    _ => false,
+                })
+        })
+}
+
+/// The workspace a person who has used Tasks for years keeps: `n` tasks, as
+/// `tilolang_tilo::bench` seeds one, in the record the installed Tasks package runs over.
+fn seeded_tasks(n: usize) -> ui::tilo_resource::Doc {
+    let tasks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl/tasks");
+    let packages = tilolang_tilo::bench::compile(&tasks).expect("the tasks package compiles");
+    tilolang_tilo::bench::seeded_record(&packages, n).expect("the workspace seeds")
+}
+
+/// The title of the list's first row: where the list starts, and what a person reads there.
+fn top_title(session: &mut Session) -> String {
+    session
+        .titles()
+        .first()
+        .cloned()
+        .expect("the list shows a row")
+}
+
+/// The first row the list shows that the person has not checked yet, its title, and where
+/// their press checks it off: the leading checkbox the row draws, in the row's start, as tall
+/// as its box.
+///
+/// A row a person checks stays where it stands, reading checked and muted, until the window
+/// leaves the place: their own change never moves a row out from under their pointer
+/// (`tilolang_runtime::live::virtual_rows`), so the rows to check next are the ones after it.
+fn first_check(session: &mut Session) -> (String, f64, f64) {
+    const BOX: f64 = 22.0;
+    let node = accessible(session)
+        .into_iter()
+        .find(|node| {
+            node.role == ui::a11y::Role::ListItem
+                && node.state.checked != Some(true)
+                && node.bounds.is_some()
+        })
+        .expect("the list shows a row not checked yet");
+    let rect = node.bounds.expect("the row is laid out");
+    (
+        node.name.unwrap_or_default(),
+        rect.x0 + 4.0 + BOX / 2.0,
+        f64::midpoint(rect.y0, rect.y1),
+    )
+}
+
+/// Whether the list shows `title` checked off.
+fn checked_off(session: &mut Session, title: &str) -> bool {
+    accessible(session).into_iter().any(|node| {
+        node.role == ui::a11y::Role::ListItem
+            && node.name.as_deref() == Some(title)
+            && node.state.checked == Some(true)
+    })
+}
+
+/// Whether the sidebar shows `place` chosen.
+fn chosen(session: &mut Session, place: &str) -> bool {
+    accessible(session).into_iter().any(|node| {
+        node.role == ui::a11y::Role::TreeItem
+            && node.name.as_deref() == Some(place)
+            && node.state.selected
+    })
+}
+
+/// What the interactions of a person's window of ten thousand tasks cost: opening it, switching
+/// the sidebar's place, typing a task in the entry and pressing Enter, checking a task off,
+/// opening a task's page and scrolling the list.
+#[test]
+fn what_the_interactions_a_person_feels_cost() {
+    // The `settled` guard keeps the window's motion out of the measurement: what is measured is
+    // the work that shows the result, not the frames that finish its animation.
+    let _motion = ui::motion::testing::settled();
+    let mut costs = Costs::default();
+
+    // The workspace is seeded before the window opens: what opening it costs is the window's
+    // work, not the workspace's making.
+    let doc = seeded_tasks(SEEDED);
+    let start = ui::rt::thread_cpu_time();
+    let wall = ui::time::Instant::now();
+    let mut session = Session::tasks_over(doc);
+    let wall_us = wall.elapsed().as_micros() as u64;
+    let cpu_us = since(start, wall.elapsed());
+    costs.add(Cost {
+        label: "open",
+        cpu_us,
+        wall_us,
+        instance_us: cpu_us,
+        window_us: 0,
+        event_us: 0,
+        sync_us: 0,
+        layout_us: 0,
+        paint_us: 0,
+        shown_us: 0,
+        frames: 0,
+    });
+    assert!(
+        !session.titles().is_empty(),
+        "the window opens on the workspace's tasks"
+    );
+
+    switch_places(&mut session, &mut costs);
+    type_a_task(&mut session, &mut costs);
+    check_tasks(&mut session, &mut costs);
+    open_pages(&mut session, &mut costs);
+    scroll_the_list(&mut session, &mut costs);
+
+    costs.print();
+    costs.hold_to(BUDGETS);
+}
+
+/// Choosing a sidebar place: the list shows what that place holds.
+fn switch_places(session: &mut Session, costs: &mut Costs) {
+    for place in ["Today", "Inbox", "Done", "Inbox", "Today", "Inbox"] {
+        let (x, y) = place_at(session, place);
+        costs.add(cost(session, "switch place", |session| {
+            session.window.click_at(x, y);
+        }));
+        assert!(chosen(session, place), "the sidebar shows {place} chosen");
+    }
+}
+
+/// Typing a task into the entry, a character at a time, and Enter to add it.
+fn type_a_task(session: &mut Session, costs: &mut Costs) {
+    use ui::winit::keyboard::NamedKey;
+
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    let mut typed = String::new();
+    for ch in "Buy".chars() {
+        typed.push(ch);
+        let typed_so_far = typed.clone();
+        costs.add(cost(session, "entry keystroke", |session| {
+            session.window.type_text(&ch.to_string());
+        }));
+        assert_eq!(
+            entry(session),
+            typed_so_far,
+            "the entry shows what was typed"
+        );
+    }
+    costs.add(cost(session, "entry enter", |session| {
+        session.window.press_key(NamedKey::Enter);
+    }));
+    session.settle();
+    assert!(
+        record_has_task(session, "Buy"),
+        "the entry's task is in the workspace"
+    );
+}
+
+/// Checking tasks off: each row stays where it stands, reading checked, the next row below it
+/// the one a person reaches for next.
+fn check_tasks(session: &mut Session, costs: &mut Costs) {
+    for _ in 0..4 {
+        let (title, x, y) = first_check(session);
+        costs.add(cost(session, "check a task", |session| {
+            session.window.click_at(x, y);
+        }));
+        session.settle();
+        assert!(
+            checked_off(session, &title),
+            "the row a person checked reads checked: {title}"
+        );
+    }
+}
+
+/// Opening a task's page: its row's title, whose page the content lane shows beside the list
+/// while the overview keeps its empty state for the next time nothing is chosen.
+fn open_pages(session: &mut Session, costs: &mut Costs) {
+    for _ in 0..3 {
+        let title = session
+            .titles()
+            .get(1)
+            .cloned()
+            .expect("the list shows a row");
+        let (x, y) = shown_at(session, &title);
+        costs.add(cost(session, "open a task page", |session| {
+            session.window.click_at(x, y);
+        }));
+        session.settle();
+        assert!(
+            session.page().contains(&title),
+            "the content lane shows the page of the task the row shows: {title}"
+        );
+    }
+}
+
+/// Scrolling the list: a wheel notch down and back up, the top row changing each time.
+fn scroll_the_list(session: &mut Session, costs: &mut Costs) {
+    let first = top_title(session);
+    let at = shown_at(session, &first);
+    session.window.move_to(at.0, at.1);
+    session.settle();
+    let mut top = top_title(session);
+    for notch in 0..8 {
+        let down = notch % 2 == 0;
+        costs.add(cost(session, "scroll", |session| {
+            session.window.scroll(0.0, if down { -3.0 } else { 3.0 });
+        }));
+        session.settle();
+        let now = top_title(session);
+        assert_ne!(now, top, "the list scrolled");
+        top = now;
+    }
 }

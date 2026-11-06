@@ -23,7 +23,7 @@ impl Installed {
         Self {
             ids: ids
                 .into_iter()
-                .map(|id| canonical(id.as_ref()))
+                .map(|id| canonical_id(id.as_ref()))
                 .filter(|id| !id.is_empty())
                 .collect(),
         }
@@ -33,13 +33,15 @@ impl Installed {
     /// is the app it launches.
     #[must_use]
     pub fn contains(&self, id: &str) -> bool {
-        self.ids.contains(&canonical(id))
+        self.ids.contains(&canonical_id(id))
     }
 }
 
 /// An id as installed apps and catalogue entries are compared: lower case,
-/// without a desktop entry's `.desktop`.
-fn canonical(id: &str) -> String {
+/// without a desktop entry's `.desktop`. One app is one id, however a source
+/// spells it.
+#[must_use]
+pub fn canonical_id(id: &str) -> String {
     let id = id.trim();
     id.strip_suffix(".desktop")
         .unwrap_or(id)
@@ -84,7 +86,7 @@ impl Catalogue {
 
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&CatalogueEntry> {
-        let wanted = canonical(id);
+        let wanted = canonical_id(id);
         self.entries.iter().find(|entry| entry.key() == wanted)
     }
 
@@ -184,6 +186,39 @@ mod tests {
             [&Blocker::Workspace {
                 workspace: "School".into()
             }]
+        );
+    }
+
+    #[test]
+    fn one_app_is_one_entry_however_a_source_spells_its_id() {
+        // Flatpak's metadata can name an app by the desktop entry it
+        // installs, the Store by the app's own id: the same app, listed
+        // once, found by either name, and gone once either name is
+        // installed.
+        let listed = |id: &str| {
+            let mut entry = flathub().pop().expect("the Spotify entry");
+            entry.id = id.into();
+            entry
+        };
+        let catalogue = Catalogue::from_sources(
+            Vec::new(),
+            vec![
+                listed("com.spotify.Client"),
+                listed("com.spotify.Client.desktop"),
+            ],
+        );
+        assert_eq!(catalogue.len(), 1, "one app, one entry");
+        assert!(catalogue.get("com.spotify.client").is_some());
+        assert!(catalogue.get("com.spotify.Client.desktop").is_some());
+        assert_eq!(
+            catalogue
+                .offered(
+                    &Installed::from_ids(["COM.SPOTIFY.CLIENT"]),
+                    &BlockList::empty()
+                )
+                .count(),
+            0,
+            "installing either name installs the app"
         );
     }
 }

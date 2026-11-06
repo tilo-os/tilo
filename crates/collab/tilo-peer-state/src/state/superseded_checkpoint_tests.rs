@@ -66,7 +66,6 @@ fn double_publish() -> DoublePublish {
     assert_eq!(governance.summary().rejected, 0);
     assert!(governance.settled().is_empty(), "superseded N was admitted");
     assert_eq!(receiver.pending_count(), 0);
-    assert!(!receiver.fresh_checkpoint_for("test.app", "tab:1", later));
     // N+1 is still admitted with full verification in the same batch.
     let admitted = receiver.receive_from_report(origin, newer, later).unwrap();
     assert!(
@@ -118,7 +117,6 @@ fn superseded_checkpoint_skip_directly_after_governance_does_not_apply() {
     assert_eq!(receiver.rows(), rows);
     assert_eq!(receiver.replay_floors(), floors);
     assert_eq!(receiver.durable().unwrap(), durable);
-    assert!(!receiver.fresh_checkpoint_for("test.app", "tab:1", later));
     let admitted = receiver.receive_from_report(origin, newer, later).unwrap();
     assert!(matches!(admitted.primary(), InputDisposition::Accepted(_)));
     assert_eq!(heads(&receiver), heads(&author));

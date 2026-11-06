@@ -128,7 +128,6 @@ async fn local_report_admission(
                 .clone();
             let raw = wire_channel(JoinedChannel {
                 as_app: None,
-                person_chat_views: std::cell::RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: rig.state.clone(),
                 directories: rig.directories.clone(),
@@ -217,7 +216,6 @@ async fn local_report_admission(
             // surface it was made under) instead of waiting forever.
             let app_connection = wire_channel(JoinedChannel {
                 as_app: None,
-                person_chat_views: std::cell::RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: rig.state.clone(),
                 directories: rig.directories.clone(),

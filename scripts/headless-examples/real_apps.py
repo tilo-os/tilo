@@ -300,7 +300,21 @@ class Session:
 
     def actions(self, query: str = "") -> list:
         """The actions the desktop lists for `query`, those listed for agents
-        alone included ("Show this window"), which a person's palette leaves out."""
+        alone included ("Show this window"), which a person's palette leaves out.
+
+        The listing moves on as a session settles (an action appears, a window
+        opens), and a page asked for past such a change is refused as stale: the
+        walk starts again from the first page."""
+        for _ in range(10):
+            try:
+                return self.actions_from(query)
+            except Failed as error:
+                if "stale_cursor" not in str(error):
+                    raise
+        raise Failed(f"the actions for {query!r} kept moving on")
+
+    def actions_from(self, query: str) -> list:
+        """One walk of the listing `actions` makes."""
         found, cursor = [], None
         while True:
             request = {"op": "actions_enumerate", "query": query, "include_programmatic": True,
@@ -390,8 +404,9 @@ class Session:
         self.control({"op": "pointer_button", "pressed": True, "button": "right"})
         self.control({"op": "pointer_button", "pressed": False, "button": "right"})
 
-    def click_named(self, name: str) -> dict:
-        return self.control({"op": "click_named", "name": name})
+    def click_named(self, name: str, verb: str = "activate") -> dict:
+        """Press the control `name`; `verb` is `activate` or `show-context-menu`."""
+        return self.control({"op": "click_named", "name": name, "verb": verb})
 
     def targets(self) -> list:
         return self.control({"op": "list_targets"})["targets"]

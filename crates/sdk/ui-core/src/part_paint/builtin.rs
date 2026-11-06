@@ -27,7 +27,7 @@ use vello::peniko::Color;
 
 use super::{
     Brush, Lens, Op, PaintedPart, PainterSet, ParamSpec, Part, PartPainter, PartScene, PartState,
-    PartTokens, Sampling, States, Stop,
+    PartTokens, Sampling, Sides, States, Stop,
 };
 
 /// The name a document gives the Default set.
@@ -227,7 +227,7 @@ impl PartPainter for Stock {
                     scene.fill(path, Brush::Solid(tokens.fill));
                     scene.ops.extend(sheen(&body, light));
                 }
-                scene.ops.extend(rim(&body, light));
+                scene.ops.extend(rim(&body, light, tokens.flush));
             }
             Part::ControlFace => {
                 // The rest face lets the window ground through at the tint
@@ -243,7 +243,7 @@ impl PartPainter for Stock {
                     scene.fill(path, Brush::Solid(fill));
                     if rest {
                         scene.ops.extend(sheen(&body, light));
-                        scene.ops.extend(rim(&body, light));
+                        scene.ops.extend(rim(&body, light, tokens.flush));
                     }
                 }
             }
@@ -298,11 +298,14 @@ impl PartPainter for Block {
 }
 
 /// Pixelated: what lies below the part, sampled at a coarse cell so the
-/// surface shows it as pixels. A window, a panel and a bar show the
-/// backdrop through the cell grid at `cover`; where there is no backdrop
-/// pass (a window's own ground, a panel outside a recording) the part is
-/// its fill, the ground ink is measured on, and a control face is its
-/// fill.
+/// surface shows it as pixels, and the cell grid itself drawn over the body
+/// so the surface reads as pixels even where nothing below it varies: each
+/// cell its ground at `cover`, every `cell`th line a shade off it (a dither
+/// of the surface's own fill towards its ink at `grid`). A window, a panel
+/// and a bar show the backdrop through the cell grid; where there is no
+/// backdrop pass (a window's own ground, a panel outside a recording) the
+/// part is its fill and the grid is what shows, and a control face is its
+/// fill with the grid on it.
 struct Pixelated;
 
 impl PartPainter for Pixelated {
@@ -314,12 +317,14 @@ impl PartPainter for Pixelated {
         _progress: f32,
         tokens: &PartTokens,
     ) -> Option<PaintedPart> {
-        let path = body(size, tokens).to_path(0.1);
+        let body = body(size, tokens);
+        let path = body.to_path(0.1);
         let cell = tokens.param("cell", 8.0).clamp(1.0, 64.0);
         let cover = tokens.param("cover", 0.85).clamp(0.0, 1.0);
         // Softening before the cells: none by default, so each cell is the
         // plain average of what lies below it.
         let softening = tokens.param("blur", 0.0);
+        let grid = tokens.param("grid", 0.16).clamp(0.0, 0.5);
         let mut scene = PartScene::new();
         match part {
             Part::WindowGround | Part::FloatingPanel | Part::BarBody => {
@@ -339,14 +344,23 @@ impl PartPainter for Pixelated {
                             glaze: Vec::new(),
                         },
                     );
-                    scene.fill(path, Brush::Solid(tokens.fill.with_alpha(cover)));
+                    scene.fill(path.clone(), Brush::Solid(tokens.fill.with_alpha(cover)));
                 } else {
-                    scene.fill(path, Brush::Solid(tokens.fill));
+                    scene.fill(path.clone(), Brush::Solid(tokens.fill));
                 }
+                // The cell grid, over the body's fill: one texel of every
+                // cell is the fill stepped towards its ink, so the surface
+                // reads as pixels even over a ground that varies nowhere.
+                scene
+                    .ops
+                    .extend(cell_grid(&body, tokens.fill, tokens.ink, cell, grid));
             }
             Part::ControlFace => {
                 if tokens.fill.components[3] > 0.0 {
-                    scene.fill(path, Brush::Solid(tokens.fill));
+                    scene.fill(path.clone(), Brush::Solid(tokens.fill));
+                    scene
+                        .ops
+                        .extend(cell_grid(&body, tokens.fill, tokens.ink, cell, grid));
                 }
             }
             _ => return None,
@@ -359,8 +373,70 @@ impl PartPainter for Pixelated {
             ParamSpec::new("cell", Some(8.0), CELL_ADMITTED).usable_within(CELL_USABLE),
             ParamSpec::new("cover", Some(0.85), COVER_ADMITTED),
             ParamSpec::new("blur", Some(0.0), BLUR_ADMITTED).usable_within(BLUR_USABLE),
+            ParamSpec::new("grid", Some(0.16), DITHER_ADMITTED),
         ]
     }
+}
+
+/// A shade a document may state for a dither's strength: the cells and grid
+/// marks of the Pixelated set, and the pattern of the Shader set. Past half
+/// the dither reads as a texture of its own, not as the surface's tone.
+pub const DITHER_ADMITTED: std::ops::RangeInclusive<f32> = 0.0..=0.5;
+
+/// The 4 by 4 Bayer matrix: the order in which a cell grid's texels turn
+/// over as the dither deepens (`crate::part_paint::builtin::dither`).
+const BAYER: [u8; 16] = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
+/// One tile's bytes: 16 RGBA texels.
+const TILE_BYTES: usize = 64;
+
+/// A 4 by 4 dither tile between `from` and `to`, `amount` (0 to 1) of whose
+/// texels are `to`, turned over in Bayer order so the tone is even and
+/// crisp at any scale. Drawn as a [`Brush::Pattern`] at the cell's side, its
+/// texels are the pixels.
+fn dither(from: Color, to: Color, amount: f32) -> super::PartImage {
+    let from = from.to_rgba8();
+    let to = to.to_rgba8();
+    let mut rgba = Vec::with_capacity(TILE_BYTES);
+    for rank in BAYER {
+        let texel = if (f32::from(rank) + 0.5) / 16.0 < amount {
+            to
+        } else {
+            from
+        };
+        rgba.extend([texel.r, texel.g, texel.b, texel.a]);
+    }
+    super::PartImage {
+        width: 4,
+        height: 4,
+        rgba,
+    }
+}
+
+/// The pixel cells a Pixelated body shows over its fill: a dither tile
+/// spanning `cell` logical pixels per texel, from `fill` towards `ink` by
+/// `strength`, clipped to the body's rounded outline. Nothing at `0` or on
+/// a body too small to hold a cell.
+fn cell_grid(body: &RoundedRect, fill: Color, ink: Color, cell: f32, strength: f32) -> Vec<Op> {
+    let rect = body.rect();
+    if strength <= 0.0 || rect.width() < f64::from(cell) || rect.height() < f64::from(cell) {
+        return Vec::new();
+    }
+    let stepped = <Color as crate::animation::Lerp>::lerp(fill, ink, strength * 0.5);
+    let mut ops = vec![Op::PushLayer {
+        clip: body.to_path(0.1),
+        alpha: 1.0,
+    }];
+    ops.push(Op::Fill {
+        path: rect.to_path(0.1),
+        brush: Brush::Pattern {
+            image: dither(Color::TRANSPARENT, stepped, strength),
+            scale: cell,
+        },
+        brush_transform: Affine::IDENTITY,
+    });
+    ops.push(Op::PopLayer);
+    ops
 }
 
 /// Shader: the theme's own WGSL fragment over the fixed input set
@@ -463,7 +539,7 @@ impl PartPainter for Liquid {
                 } else {
                     scene.fill(path, Brush::Solid(tokens.fill));
                 }
-                scene.ops.extend(rim.ops(&body));
+                scene.ops.extend(rim.ops(&body, tokens.flush));
             }
             Part::ControlFace => {
                 // As Glass's: the rest face lets the window ground through
@@ -478,7 +554,7 @@ impl PartPainter for Liquid {
                 if fill.components[3] > 0.0 {
                     scene.fill(path, Brush::Solid(fill));
                     if rest {
-                        scene.ops.extend(rim.ops(&body));
+                        scene.ops.extend(rim.ops(&body, tokens.flush));
                     }
                 }
             }
@@ -563,8 +639,11 @@ impl SpecularRim {
     /// The rim of `body` as fills, one per straight edge and a few per
     /// corner, each lit for its own normal: fills that meet edge to edge,
     /// never strokes, whose caps would overlap and light the joins twice.
-    /// Nothing at `0` strength or on a body too small to have a rim.
-    fn ops(self, body: &RoundedRect) -> Vec<Op> {
+    /// Nothing at `0` strength or on a body too small to have a rim, and
+    /// nothing on a side in `flush`: a body on the display's own edge has
+    /// no ground behind that side to catch light against, and a lit pixel
+    /// there shows as a line at the screen's edge.
+    fn ops(self, body: &RoundedRect, flush: Sides) -> Vec<Op> {
         use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
         let rect = body.rect();
         if self.strength <= 0.0
@@ -607,8 +686,14 @@ impl SpecularRim {
                 Vec2::new(-1.0, 0.0),
             ),
         ];
-        for (strip, normal) in edges {
-            if strip.width() > 0.0 && strip.height() > 0.0 {
+        let flush_edges = [
+            flush.has(Sides::TOP),
+            flush.has(Sides::TRAILING),
+            flush.has(Sides::BOTTOM),
+            flush.has(Sides::LEADING),
+        ];
+        for ((strip, normal), skip) in edges.into_iter().zip(flush_edges) {
+            if !skip && strip.width() > 0.0 && strip.height() > 0.0 {
                 ops.push(solid(strip.to_path(0.1), normal));
             }
         }
@@ -621,7 +706,16 @@ impl SpecularRim {
             (Point::new(x0 + radius, y0 + radius), PI),
         ];
         let step = FRAC_PI_2 / f64::from(RIM_CORNER_STEPS);
-        for (centre, start) in corners {
+        let flush_corners = [
+            flush.has(Sides::TOP) && flush.has(Sides::TRAILING),
+            flush.has(Sides::BOTTOM) && flush.has(Sides::TRAILING),
+            flush.has(Sides::BOTTOM) && flush.has(Sides::LEADING),
+            flush.has(Sides::TOP) && flush.has(Sides::LEADING),
+        ];
+        for ((centre, start), skip) in corners.into_iter().zip(flush_corners) {
+            if skip {
+                continue;
+            }
             if radius <= 0.0 {
                 // A square corner: the rim's corner square, lit for the
                 // diagonal it faces.
@@ -718,33 +812,90 @@ fn sheen(body: &RoundedRect, light: Light) -> Option<Op> {
 /// The lit rim of a glass body: its outermost pixel row, brightest along
 /// the top edge at `edge_highlight` opacity, fading down the sides and
 /// catching a little bounced light at the foot. Nothing at `0`.
-fn rim(body: &RoundedRect, light: Light) -> Option<Op> {
+///
+/// A side in `flush` stands on the display's own edge, with no ground
+/// behind it and nothing to separate: the rim is drawn only where it is
+/// not, so the body reaches the screen's edge in its own colour rather than
+/// showing a line of light along it.
+fn rim(body: &RoundedRect, light: Light, flush: Sides) -> Option<Op> {
     let rect = body.rect();
     let edge_highlight = light.edge_highlight;
     if edge_highlight <= 0.0 || rect.width() <= 2.0 || rect.height() <= 2.0 {
         return None;
     }
-    let outline: BezPath = crate::surface::edge_outline(rect, body.radii().top_left).to_path(0.1);
+    if !flush.any() {
+        let outline: BezPath =
+            crate::surface::edge_outline(rect, body.radii().top_left).to_path(0.1);
+        return Some(Op::Stroke {
+            path: outline,
+            width: 1.0,
+            brush: rim_brush(rect, light),
+        });
+    }
+    // A body flush with the display is square on that side (a bar edge to
+    // edge is square), so its rim is four straight edges and a flush side
+    // simply draws none. The edges run half a pixel outside `rect`, as
+    // `edge_outline` does, so a 1-pixel stroke covers the rect's own
+    // outermost row.
+    let rim_rect = crate::surface::edge_outline(rect, body.radii().top_left).rect();
+    let mut path = BezPath::new();
+    for (side, from, to) in [
+        (
+            Sides::TOP,
+            Point::new(rim_rect.x0, rim_rect.y0),
+            Point::new(rim_rect.x1, rim_rect.y0),
+        ),
+        (
+            Sides::TRAILING,
+            Point::new(rim_rect.x1, rim_rect.y0),
+            Point::new(rim_rect.x1, rim_rect.y1),
+        ),
+        (
+            Sides::BOTTOM,
+            Point::new(rim_rect.x1, rim_rect.y1),
+            Point::new(rim_rect.x0, rim_rect.y1),
+        ),
+        (
+            Sides::LEADING,
+            Point::new(rim_rect.x0, rim_rect.y1),
+            Point::new(rim_rect.x0, rim_rect.y0),
+        ),
+    ] {
+        if !flush.has(side) {
+            path.move_to(from);
+            path.line_to(to);
+        }
+    }
+    if path.elements().is_empty() {
+        return None;
+    }
     Some(Op::Stroke {
-        path: outline,
+        path,
         width: 1.0,
-        brush: Brush::Linear {
-            start: Point::new(rect.x0, rect.y0),
-            end: Point::new(rect.x0, rect.y1),
-            stops: vec![
-                Stop {
-                    offset: 0.0,
-                    color: light.catch.with_alpha(edge_highlight),
-                },
-                Stop {
-                    offset: 0.5,
-                    color: light.catch.with_alpha(edge_highlight * 0.12),
-                },
-                Stop {
-                    offset: 1.0,
-                    color: light.catch.with_alpha(edge_highlight * 0.35),
-                },
-            ],
-        },
+        brush: rim_brush(rim_rect, light),
     })
+}
+
+/// The rim's light down the body: brightest at the top, a trace at the
+/// middle, a little bounced light at the foot.
+fn rim_brush(rect: Rect, light: Light) -> Brush {
+    let edge_highlight = light.edge_highlight;
+    Brush::Linear {
+        start: Point::new(rect.x0, rect.y0),
+        end: Point::new(rect.x0, rect.y1),
+        stops: vec![
+            Stop {
+                offset: 0.0,
+                color: light.catch.with_alpha(edge_highlight),
+            },
+            Stop {
+                offset: 0.5,
+                color: light.catch.with_alpha(edge_highlight * 0.12),
+            },
+            Stop {
+                offset: 1.0,
+                color: light.catch.with_alpha(edge_highlight * 0.35),
+            },
+        ],
+    }
 }

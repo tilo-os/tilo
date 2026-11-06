@@ -42,6 +42,7 @@ fn add(replica: &mut Replica, meta: &tilolang_runtime::Meta, root: &str, text: &
             resource: Some(root),
             args: &args,
             caller: None,
+            from: None,
         })
         .unwrap();
     replica.apply(&planned);
@@ -173,6 +174,7 @@ fn a_trial_run_takes_back_only_its_own_writes() {
             resource: Some(&root),
             args: &args,
             caller: None,
+            from: None,
         })
         .unwrap();
     assert_eq!(item_ids(&ada, &meta, &root).len(), 3, "the trial is gone");
@@ -223,6 +225,7 @@ fn what_the_runtime_read_follows_every_change_after() {
             resource: Some(&root),
             args: &args,
             caller: None,
+            from: None,
         })
         .unwrap();
     assert_eq!(count(&ada), 4);

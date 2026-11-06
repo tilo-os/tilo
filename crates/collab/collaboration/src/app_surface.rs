@@ -153,12 +153,13 @@ pub fn bytes_of(app_id: &str) -> Option<&'static [u8]> {
 }
 
 /// The person-record kinds `app_id`'s surface declares (its
-/// `ResourceApp::records`): the records it may keep in, or read from, the
-/// person's own workspace. Empty when this process holds no surface for it.
+/// `ResourceApp::PERSON_RECORDS`): the records it may keep in, or read from,
+/// the person's own workspace. Empty when this process holds no surface for
+/// it.
 #[must_use]
 pub fn person_record_kinds(app_id: &str) -> Vec<String> {
     bytes_of(app_id)
-        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
+        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
         .map(|file| {
             file.resources
@@ -183,7 +184,7 @@ pub fn keeps_person_record(app_id: &str, kind: &str) -> bool {
 #[must_use]
 pub fn reads_app(reader: &str, owner: &str) -> bool {
     let parse = |app: &str| {
-        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
+        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         bytes_of(app).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
     };
     match (parse(reader), parse(owner)) {
@@ -205,7 +206,7 @@ pub fn with_footprints(
 ) -> Vec<collab_types::ChangeClaim> {
     use collab_types::ReceiptSurface as _;
     let Some(file) =
-        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
+        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         bytes_of(app_id).and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())
     else {
         return claims;
@@ -309,7 +310,7 @@ pub fn refusal(
         Err(error) => return Some(error.to_string()),
     };
     let file = bytes_of(record.app)
-        // optional-decode: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
+        // ignored-failure: a held surface that does not parse was logged when it was named (`register_package`); it declares nothing here
         .and_then(|bytes| collab_types::surface::SurfaceFile::parse(bytes).ok())?;
     let surface_for = |kind: Option<&str>| {
         file.resource(kind).map(|resource| {
@@ -331,7 +332,6 @@ pub fn refusal(
 /// Parse a lowercase hex hash, as [`SURFACE_HASH_ENV`] carries it.
 #[must_use]
 pub fn parse_hash(hex: &str) -> Option<[u8; 32]> {
-    // optional-decode: callers report a hash that does not parse (`register_named` refuses with the text)
     let bytes = hex::decode(hex.trim()).ok()?;
     bytes.try_into().ok()
 }

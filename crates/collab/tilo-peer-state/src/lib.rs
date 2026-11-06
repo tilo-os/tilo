@@ -7,6 +7,7 @@ pub mod join_ledger;
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
 use neighbour_wire::NeighbourMsg;
+pub use neighbour_wire::{RefusalReason, WriteRefusal};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
@@ -39,15 +40,15 @@ mod verified_certificate;
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
-    GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, LocalRecoveryReservation,
-    MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority, MembershipError, NativePublicationCut,
-    OpenedRecord, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
-    PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
-    PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
-    PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint,
-    SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WORKSPACE_HOSTS_KEY, committed_document_revision, decide_with_surfaces, default_surfaces,
-    peer_handle, seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
+    GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, MAX_HELD_BYTES, MAX_HELD_INPUTS,
+    MemberAuthority, MembershipError, NativePublicationCut, OpenedRecord, PeerDocumentCapture,
+    PeerDocumentReadError, PeerGovernance, PeerGovernanceMut, PeerMediaGovernance,
+    PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal, PeerPublication,
+    PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore, PlaintextChanges,
+    ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint, SealDelta, SeedDocument,
+    SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite, WORKSPACE_HOSTS_KEY,
+    committed_document_revision, decide_with_surfaces, default_surfaces, peer_handle,
+    seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

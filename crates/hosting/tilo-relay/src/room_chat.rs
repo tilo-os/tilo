@@ -1,5 +1,5 @@
-//! The chat a persistent public room opens with: the channels its operator
-//! names, in place of the `#chat` every room opens with, and its `#voice`.
+//! The chat a persistent public workspace opens with: the channels its operator
+//! names, in place of the `#chat` every workspace opens with, and its `#voice`.
 //! Their ids are derived from their names, so what maps onto them (a bridged
 //! Discord server's channels) finds the same ones on every start.
 
@@ -31,7 +31,7 @@ pub(crate) fn channel_id(name: &str) -> String {
 }
 
 /// Give the chat `doc` the starting `channels` (names) while it has only
-/// the `#chat` and `#voice` every room opens with. They take `#chat`'s
+/// the `#chat` and `#voice` every workspace opens with. They take `#chat`'s
 /// place: a visitor's first channel is the operator's first, not an empty
 /// `#chat` apart from the rest, and they list uncategorised above `#voice`,
 /// since the sidebar is titled "Channels" already. `#chat` goes only while
@@ -46,7 +46,7 @@ pub(crate) fn settle_chat(
     doc: &mut automerge::AutoCommit,
     channels: &[String],
 ) -> Result<(), String> {
-    use chat::record::{CHAT_CHANNEL, Channel, VOICE_CHANNEL};
+    use chat::record::{CHAT_CHANNEL, Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::room_bots::opened::<chat::Chat>(doc)
@@ -58,7 +58,7 @@ pub(crate) fn settle_chat(
     let has_channels = target
         .channels
         .iter()
-        .any(|(id, channel)| channel.conversation_with.is_none() && !opened_with(id));
+        .any(|(id, channel)| channel.is_channel() && !opened_with(id));
     if !has_channels && !channels.is_empty() {
         let opener = Id::from_raw(CHAT_CHANNEL);
         let read = target
@@ -68,7 +68,7 @@ pub(crate) fn settle_chat(
         if !read {
             target.channels.remove(&opener);
         }
-        // Above `#voice` and whatever else opened the room, in the
+        // Above `#voice` and whatever else opened the workspace, in the
         // operator's order.
         let mut at = target
             .channels
@@ -83,9 +83,9 @@ pub(crate) fn settle_chat(
             target.channels.insert(
                 at,
                 id,
-                Channel {
+                Conversation {
                     name: name.clone(),
-                    ..Channel::default()
+                    ..Conversation::default()
                 },
             );
             at = at.saturating_add(1);
@@ -110,7 +110,7 @@ pub(crate) fn settle_feedback_channel(
     doc: &mut automerge::AutoCommit,
     name: &str,
 ) -> Result<(), String> {
-    use chat::record::{Channel, VOICE_CHANNEL};
+    use chat::record::{Conversation, VOICE_CHANNEL};
     use tilo_resource::Id;
 
     tilo_relay::room_bots::opened::<chat::Chat>(doc)
@@ -122,20 +122,18 @@ pub(crate) fn settle_feedback_channel(
         return Ok(());
     }
     let mut target = current.clone();
-    // After the last channel of the room's own, above `#voice`.
+    // After the last channel of the workspace's own, above `#voice`.
     let at = target
         .channels
         .iter()
-        .rposition(|(id, channel)| {
-            channel.conversation_with.is_none() && id.as_str() != VOICE_CHANNEL
-        })
+        .rposition(|(id, channel)| channel.is_channel() && id.as_str() != VOICE_CHANNEL)
         .map_or(0, |index| index.saturating_add(1));
     target.channels.insert(
         at,
         id,
-        Channel {
+        Conversation {
             name: name.to_owned(),
-            ..Channel::default()
+            ..Conversation::default()
         },
     );
     target
@@ -188,7 +186,7 @@ mod tests {
         Replica::<R>::new().doc().clone()
     }
 
-    /// The chat as the room's host prepares it: opened with `#chat` and
+    /// The chat as the workspace's host prepares it: opened with `#chat` and
     /// `#voice`.
     fn prepared_chat() -> automerge::AutoCommit {
         let mut doc = record::<chat::Chat>();
@@ -300,7 +298,7 @@ mod tests {
         assert!(chat.categories.is_empty());
     }
 
-    /// The feedback channel is added after the room's channels, and again
+    /// The feedback channel is added after the workspace's channels, and again
     /// after anyone removed it, but never twice.
     #[test]
     fn the_feedback_channel_is_there_on_every_start() {

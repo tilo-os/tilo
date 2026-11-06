@@ -15,8 +15,7 @@ pub struct Prim {
     /// nothing of its own.
     pub component: Option<&'static str>,
     /// The toolkit component whose kind this primitive builds, when that is not its own name:
-    /// `button` builds a `ui.Button` and `facts` a `ui.PropertyList`, each with arguments of its
-    /// own.
+    /// `button` builds a `ui.Button`, each with arguments of its own.
     pub builds: Option<&'static str>,
 }
 
@@ -92,15 +91,18 @@ pub const PRIMS: &[Prim] = &[
         component: None,
         builds: None,
     },
-    // The facts of a resource, one `"Label": value` per line, as a `ui.PropertyList` of them.
-    prim_as("facts", "PropertyList", &[], &[]),
+    // A resource's page, from what its type declares: what it opens with (whether it is done
+    // and the field marked `(title)`, then the field marked `(body)`), and its facts — one row
+    // of chips, each from the field it shows, with the view's own chips in its block.
+    prim_of("opening", &["of"], &[]),
+    prim_of("facts", &["of"], &[]),
     // Native controls that are no component: a form's fields, and the control for a view state
     // of an enum's cases.
     prim_of("form", &[], &[]),
     prim_of("field", &["label"], &[]),
     prim_of("choice", &[], &["bind"]),
     // Layout for content.
-    prim_of("stack", &[], &["gap", "align"]),
+    prim_of("stack", &[], &["gap", "padding", "align"]),
     // With a block, a layout row; with a title and no block, a list row (`ListRow`).
     prim_of("row", &[], LAYOUT_ROW_ARGS),
     prim_of("grid", &[], &["min", "columns", "gap"]),
@@ -120,12 +122,17 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline (`tilolang_runtime::embed`). `source` is `Text`, `author` a
     // `Principal`, and `invocation` the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
+    // What waits to be proposed of a resource (`suggest`), each as the card a person accepts or
+    // dismisses it with: the action's `proposal` view where it declares one, else what the
+    // action would do in words. `of` is a resource the proposals are about.
+    prim_of("proposals", &["of"], &[]),
     // A resource drawn through its type's default view, as its own package draws it, whatever
     // its type: what a shell composes a place from when it knows the resource by id alone
     // (`show(r)`, shell.md §8). `of` is a resource; its type must have a default view
     // (`meta(r).opens`). `view` (`Text`, a view's id or name, as an arrangement keeps it) draws
     // it through another of its package's views that takes it alone; empty for the default.
-    prim_of("show", &["of"], &["view"]),
+    // `row` draws it as a list of its type draws each item, through the row its type declares.
+    prim_of("show", &["of"], &["view", "row"]),
 ];
 
 /// How many rows a `list` inside a `ui.Card` shows: a card is a summary of its resource, which it
@@ -136,8 +143,12 @@ pub const PREVIEW_ROWS: i64 = 5;
 pub const LAYOUT_ROW_ARGS: &[&str] = &["gap", "padding", "align", "distribute", "wrap"];
 
 /// Sizing and placement arguments accepted by every UI call, including view calls.
+///
+/// `lead` counts row leads — the gutter a row's leading control stands in, its cell and the
+/// gap after it: a container that says `lead: 1` stands its content one lead in, under the
+/// text a heading's control leads to.
 pub const NODE_ARGS: &[&str] = &[
-    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at",
+    "fill", "min", "max", "aspect", "span", "lines", "truncate", "at", "lead",
 ];
 
 /// Bare flags accepted by every UI call: `truncate`, `fill`.
@@ -157,7 +168,7 @@ pub const CHOICES: &[Choice] = &[
     Choice {
         kind: "gap",
         name: "Gap",
-        variants: &["tight", "related", "sibling", "section", "group"],
+        variants: &["tight", "related", "sibling", "section", "group", "none"],
     },
     Choice {
         kind: "align",
@@ -215,6 +226,21 @@ pub const CHOICES: &[Choice] = &[
         name: "PrincipalKind",
         variants: &["person", "agent"],
     },
+    // The day of the week a day is (`d.weekday()`), Monday first, as a date library counts
+    // them; `d.start_of_week()` is the one a region starts its week on.
+    Choice {
+        kind: "weekday",
+        name: "Weekday",
+        variants: &[
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday",
+        ],
+    },
 ];
 
 pub fn choice(kind: &str) -> Option<&'static Choice> {
@@ -248,7 +274,8 @@ pub const BUILTINS: &[&str] = &[
     "run_block",
     "invoker",
     "now",
-    "dated",
+    "today",
+    "Duration",
     "open",
     "set",
     "resource",

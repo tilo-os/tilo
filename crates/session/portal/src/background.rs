@@ -353,7 +353,9 @@ impl Background {
         let Some(arguments) = arguments(&commandline) else {
             return false;
         };
-        let scan = desktop_entry::cache::cached_scan();
+        let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
+            ui::i18n::preferred_language().as_deref(),
+        ));
         let Some(entry) = scan.find(&app_id) else {
             tracing::debug!(app_id, "autostart refused: the app has no installed entry");
             return false;

@@ -33,12 +33,12 @@ fn first_state(peer: &StatePeer) -> Option<String> {
 /// relay issues and `member`'s device redeems.
 async fn admit_viewer(relay: &Relay, host: &TestDevice, member: &TestDevice, room: &str) {
     let issued = relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .issue(
             room,
             &host.cert,
-            tilo_relay::rooms::IssueInvitationRequest {
+            tilo_relay::workspaces::IssueInvitationRequest {
                 request_id: *blake3::hash(&member.device_pubkey()).as_bytes(),
                 role: MemberRole::Viewer,
                 recipient_user_public_key: Some(member.cert.user_public_key),
@@ -83,8 +83,8 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     let relay = start(scratch.path(), &alice, &host).await;
     let room = create_and_enter(&relay, &laptop, "Private app records").await;
     let workspace = room.workspace_id;
-    members::admit(&relay, &host, &member, &room.room).await;
-    admit_viewer(&relay, &host, &viewer, &room.room).await;
+    members::admit(&relay, &host, &member, &room.workspace).await;
+    admit_viewer(&relay, &host, &viewer, &room.workspace).await;
 
     let member_session = session(&relay, &member, workspace).await;
     let roster = vec![
@@ -95,7 +95,7 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     ];
     let replica = || {
         let mut peer = StatePeer::new(
-            &room.room,
+            &room.workspace,
             host.cert.clone(),
             roster.clone(),
             RevocationList::new(),
@@ -107,10 +107,10 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     };
     let mut member_peer = replica();
     let mut laptop_peer = replica();
-    let room_id = room.room.clone();
+    let workspace_id = room.workspace.clone();
     let authors = move |peer: &StatePeer| {
         peer.admitted_workspace().is_some_and(|doc| {
-            tilo_desktop_model::projection::workspace_policy_of(doc, &room_id).app_authors(
+            tilo_desktop_model::projection::workspace_policy_of(doc, &workspace_id).app_authors(
                 OPENED,
                 &tilo_action_policy::Context::at_time(SystemTime::now()),
             )
@@ -132,10 +132,10 @@ async fn an_admitted_member_creates_an_authored_apps_empty_record() {
     // The room lets the app author, as its host is configured to.
     assert!(
         relay
-            .rooms()
+            .workspaces()
             .unwrap()
             .settle_app_authorship(
-                &room.room,
+                &room.workspace,
                 &host.cert,
                 &std::collections::BTreeSet::from([OPENED.to_owned()]),
                 &std::collections::BTreeSet::new(),

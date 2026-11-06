@@ -29,8 +29,9 @@ use collab_types::{
     WholeDocumentPayload,
 };
 use ed25519_dalek::SigningKey;
+use neighbour_wire::{RefusalReason, WriteRefusal};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use tilo_action_policy::{Authority, Party, TreePath};
 use tilo_lock::MutexRecover;
@@ -40,8 +41,12 @@ use web_time::{Duration, SystemTime};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod link;
 
-/// The version of [`PersonalStore::durable`] this build writes and reads.
-const STORE_VERSION: u32 = 1;
+/// The version of [`PersonalStore::durable`] this build writes, and the one
+/// it still reads: a store kept before refusals were held there opens with
+/// none.
+const STORE_VERSION: u32 = 2;
+/// The version it held before, which this build still opens.
+const STORE_VERSION_PLAIN: u32 = 1;
 
 /// A write's clock may lead or trail the receiving device by this much.
 const CLOCK_SKEW: Duration = Duration::from_secs(300);
@@ -60,6 +65,17 @@ pub struct PersonalStore {
     documents: BTreeMap<Route, PeerDocument>,
     /// Which writes were decided already, so a replayed frame changes nothing.
     exact: ExactAdmissions,
+    /// Every refusal this device holds: its own verdicts on its siblings'
+    /// writes, and its siblings' verdicts on its own ([`WriteRefusal`]),
+    /// signed by the device that made each and kept on to the next link. A
+    /// refusal is one device's, never the store's.
+    refusals: Vec<WriteRefusal>,
+    /// The authors this device has given its verdicts to, so a set that
+    /// became empty is sent as empty rather than read as no news.
+    told: BTreeSet<[u8; 32]>,
+    /// Whether what this device refuses moved since it was last asked: the
+    /// links send the sets it names.
+    refusals_moved: bool,
 }
 
 impl PersonalStore {
@@ -75,6 +91,9 @@ impl PersonalStore {
             revocations: RevocationList::new(),
             documents: BTreeMap::new(),
             exact: ExactAdmissions::default(),
+            refusals: Vec::new(),
+            told: BTreeSet::new(),
+            refusals_moved: false,
         })
     }
 
@@ -117,6 +136,197 @@ impl PersonalStore {
         sorted(self.revocations.iter().cloned().collect())
     }
 
+    /// Every refusal this device holds: its own verdicts on its siblings'
+    /// writes, and theirs on its own. What the person's history and notices
+    /// read, and what the next link hands on.
+    #[must_use]
+    pub fn write_refusals(&self) -> Vec<WriteRefusal> {
+        self.refusals.clone()
+    }
+
+    /// This device's own verdicts: what it sends its siblings, and no one
+    /// else's.
+    fn own_refusals(&self) -> Vec<WriteRefusal> {
+        self.refusals
+            .iter()
+            .filter(|refusal| refusal.by == self.device.device_public_key)
+            .cloned()
+            .collect()
+    }
+
+    /// The frame carrying this device's verdicts on `author`'s writes, or
+    /// `None` when it holds none: one message for the whole set, so a set
+    /// that no longer names a write clears it.
+    fn refusals_frame(&self, author: &[u8; 32]) -> Option<NeighbourMsg> {
+        if !self.told.contains(author) {
+            return None;
+        }
+        Some(NeighbourMsg::WriteRefusals {
+            refusals: self.refusals_about(author),
+        })
+    }
+
+    /// This device's verdicts on `author`'s writes, as it holds them now.
+    fn refusals_about(&self, author: &[u8; 32]) -> Vec<WriteRefusal> {
+        self.own_refusals()
+            .into_iter()
+            .filter(|refusal| &refusal.author == author)
+            .collect()
+    }
+
+    /// The sets this device's verdicts moved into since it was last asked,
+    /// one frame each: an author it no longer refuses anything of is told so
+    /// with an empty set.
+    pub fn take_refusal_updates(&mut self) -> Vec<NeighbourMsg> {
+        if !self.refusals_moved {
+            return Vec::new();
+        }
+        self.refusals_moved = false;
+        self.told
+            .iter()
+            .map(|author| NeighbourMsg::WriteRefusals {
+                refusals: self.refusals_about(author),
+            })
+            .collect()
+    }
+
+    /// File this device's refusal of `envelope`'s write, signed by `key`, the
+    /// device's own. What the person who wrote it is shown, and what its
+    /// history joins to.
+    ///
+    /// # Errors
+    /// The fact does not encode, or the key is not this device's.
+    fn file_refusal(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: &SignedOp,
+        reason: &str,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<(), String> {
+        if key.verifying_key().to_bytes() != self.device.device_public_key {
+            return Err("a refusal is signed by the refusing device's own key".into());
+        }
+        // A device the person revoked refuses nothing: its verdicts are not
+        // the store's to keep, and nothing of theirs is sent on.
+        if self.revoked_here() {
+            return Ok(());
+        }
+        let author = *envelope.author.as_bytes();
+        // A device the person revoked is told once why its writes stop, not
+        // once per write: what it already learned of its own revocation is
+        // not repeated by every write it sends.
+        if self.revocations.is_revoked(&author) {
+            self.refusals.retain(|held| {
+                !(held.by == self.device.device_public_key && held.author == author)
+            });
+        }
+        let mut refusal = WriteRefusal {
+            workspace: self.store_key(),
+            app: app.into(),
+            record: record.into(),
+            author,
+            seq: envelope.seq,
+            operation: format!("{}:{}", envelope.artifact.0, envelope.seq),
+            changes: self.unheld_changes(app, record, envelope),
+            reason: RefusalReason::of(reason),
+            detail: reason.into(),
+            by: self.device.device_public_key,
+            at_ns: now_ns(now),
+            signature: Vec::new(),
+        };
+        refusal.sign(key)?;
+        // One verdict per write: a later reason for the same write replaces
+        // the earlier, and a write whose later sequence was admitted drops
+        // every refusal at or below it on the same route.
+        self.refusals.retain(|held| {
+            !(held.by == refusal.by
+                && held.author == refusal.author
+                && held.app == refusal.app
+                && held.record == refusal.record
+                && held.seq == refusal.seq)
+        });
+        self.refusals.push(refusal);
+        if author != self.device.device_public_key {
+            self.told.insert(author);
+        }
+        self.refusals_moved = true;
+        Ok(())
+    }
+
+    /// The changes of `envelope`'s write this store does not hold, as their
+    /// hashes: what the author's history joins a refusal to. A whole-document
+    /// snapshot names the writes it brings, never the ones already here.
+    fn unheld_changes(&self, app: &str, record: &str, envelope: &SignedOp) -> Vec<[u8; 32]> {
+        let mut changes = change_hashes(&envelope.payload);
+        let Some(held) = self.documents.get(&Self::route(app, record)) else {
+            return changes;
+        };
+        // A copy shares the document until asked to change it, so reading every
+        // change it holds costs a pointer copy.
+        let mut held = held.doc.clone();
+        let held: BTreeSet<[u8; 32]> = held
+            .get_changes(&[])
+            .iter()
+            .map(|change| change.hash().0)
+            .collect();
+        changes.retain(|hash| !held.contains(hash));
+        changes
+    }
+
+    /// Take `source`'s verdicts on this device's writes: each carries its
+    /// signature over exactly its contents, from a device this store holds a
+    /// live certificate for. The whole set replaces that device's earlier
+    /// one, so what it no longer refuses is cleared here too.
+    ///
+    /// # Errors
+    /// The source is not the device the verdicts are signed by, or holds no
+    /// certificate here.
+    fn receive_refusals(
+        &mut self,
+        source: [u8; 32],
+        refusals: Vec<WriteRefusal>,
+        now: SystemTime,
+    ) -> Result<ReceiveOutcome, String> {
+        if refusals.iter().any(|refusal| refusal.by != source) {
+            return Err("a refusal is signed by the device that sent it".into());
+        }
+        if !refusals.is_empty() {
+            self.admits_device(&source, now)?;
+            if !self.certificates.contains_key(&source) {
+                return Err("the device's certificate is not here".into());
+            }
+            if refusals.iter().any(|refusal| !refusal.signed_by(&source)) {
+                return Err("a refusal is not the refusing device's signature".into());
+            }
+        }
+        // Only a verdict on this device's own writes is this device's to
+        // keep: what the refuser said of a sibling reaches that sibling.
+        let mine = self.device.device_public_key;
+        let received: Vec<WriteRefusal> = refusals
+            .into_iter()
+            .filter(|refusal| refusal.author == mine)
+            .collect();
+        let changed = {
+            let held: Vec<WriteRefusal> = self
+                .refusals
+                .iter()
+                .filter(|refusal| refusal.by == source)
+                .cloned()
+                .collect();
+            held != received
+        };
+        self.refusals.retain(|refusal| refusal.by != source);
+        self.refusals.extend(received);
+        // Received verdicts are not echoed: each device sends its own.
+        self.refusals.sort_by_key(|refusal| refusal.by);
+        Ok(ReceiveOutcome {
+            metadata_changed: changed,
+            ..Default::default()
+        })
+    }
+
     /// Admit `certificate` to write: a certificate this store's root signed,
     /// current, and not a store node's. Returns whether it was new here.
     pub fn admit_device(
@@ -143,7 +353,15 @@ impl PersonalStore {
         if entry.user_public_key != self.root {
             return Err("the revocation names another identity".into());
         }
+        let revoked = entry.revoked_device_public_key;
         let changed = self.revocations.insert(entry).map_err(err)?;
+        if changed {
+            // What the person took from a device is no longer refused by
+            // anyone: the verdicts about it are forgotten with it.
+            let before = self.refusals.len();
+            self.refusals.retain(|refusal| refusal.author != revoked);
+            self.refusals_moved |= self.refusals.len() != before;
+        }
         if self.revoked_here() {
             self.forget_documents();
         }
@@ -161,6 +379,10 @@ impl PersonalStore {
     fn forget_documents(&mut self) {
         self.documents.clear();
         self.exact = ExactAdmissions::default();
+        // A device the person revoked keeps no verdicts of theirs either: not
+        // its own on its siblings' writes, nor what they said of its own.
+        self.refusals.clear();
+        self.refusals_moved = true;
     }
 
     /// Whether `device` may hold a link to this store: it is not revoked, and
@@ -239,7 +461,7 @@ impl PersonalStore {
     ) -> Result<NeighbourMsg, String> {
         let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
         let signed = self.sign(app, record, mutation, &author, key, now)?;
-        self.admit_local(app, record, signed.clone(), now)?;
+        self.admit_local(app, record, signed.clone(), key, now)?;
         Ok(self.frame(app, record, signed))
     }
 
@@ -251,14 +473,21 @@ impl PersonalStore {
         app: &str,
         record: &str,
         envelope: SignedOp,
+        key: &SigningKey,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
         if envelope.author.as_bytes() != &self.device.device_public_key {
             return Err("this device signs its own writes".into());
         }
         let mut candidate = self.clone();
-        candidate.write(app, record, &envelope, now, true)?;
+        let refused = candidate.write(app, record, &envelope, now, true).err();
         *self = candidate;
+        if let Some(reason) = refused {
+            // The store's verdict on the person's own write is filed like a
+            // sibling's: what its history shows, and what a notice is made of.
+            self.file_refusal(app, record, &envelope, &reason, key, now)?;
+            return Err(reason);
+        }
         Ok(self.frame(app, record, envelope))
     }
 
@@ -269,15 +498,26 @@ impl PersonalStore {
     pub fn catch_up(
         &mut self,
         key: &SigningKey,
+        remote: [u8; 32],
         now: SystemTime,
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut messages = vec![self.hello()];
-        // A revoked device says only who it is: its siblings end the link
-        // when they learn the person revoked it.
+        // What this device refuses of the peer's writes reaches it on the
+        // link, live or here, even when it is revoked and gets nothing else:
+        // a person whose device was taken away is told why their writes stop.
+        if let Some(frame) = self.refusals_frame(&remote) {
+            messages.push(frame);
+        }
+        // A revoked device says only who it is and what was refused of
+        // theirs: its siblings keep no documents from it.
         if self.revoked_here() {
             return Ok(messages);
         }
-        let routes: Vec<Route> = self.documents.keys().cloned().collect();
+        let routes: Vec<Route> = if self.admits_device(&remote, now).is_ok() {
+            self.documents.keys().cloned().collect()
+        } else {
+            Vec::new()
+        };
         for route in routes {
             let Some(held) = self.documents.get(&route) else {
                 continue;
@@ -298,18 +538,25 @@ impl PersonalStore {
     /// connection proved.
     pub fn receive(
         &mut self,
+        key: &SigningKey,
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
+        if key.verifying_key().to_bytes() != self.device.device_public_key {
+            return Err("a store reads with the key of the device that holds it".into());
+        }
         let mut candidate = self.clone();
-        let outcome = candidate.receive_inner(source, message, now)?;
+        let outcome = candidate.receive_inner(key, source, message, now);
+        // A refused write leaves the store as it was, and its refusal is kept:
+        // the candidate carries both, so it is taken either way.
         *self = candidate;
-        Ok(outcome)
+        outcome
     }
 
     fn receive_inner(
         &mut self,
+        key: &SigningKey,
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
@@ -331,7 +578,10 @@ impl PersonalStore {
                 self.receive_hello(source, &cert, revocations, now)
             }
             message @ NeighbourMsg::AppDocument { .. } => {
-                self.receive_document(source, message, now)
+                self.receive_document(key, source, message, now)
+            }
+            NeighbourMsg::WriteRefusals { refusals } => {
+                self.receive_refusals(source, refusals, now)
             }
             _ => Err("the personal store reads no other message".into()),
         }
@@ -349,21 +599,22 @@ impl PersonalStore {
         if cert.device_public_key != source {
             return Err("transport certificate mismatch".into());
         }
-        let held = self
-            .certificates
-            .get(&source)
-            .map(AsRef::as_ref)
-            .is_some_and(|known| known == cert);
-        let mut metadata_changed = if held {
-            false
-        } else {
-            self.admit_device(cert, now)?
-        };
+        let mut metadata_changed = false;
+        // A device the person revoked is admitted to nothing it says, and
+        // told what it was refused instead of being dropped at the door: a
+        // person whose device was taken away learns why their writes stop.
+        if !self.revocations.is_revoked(&source) {
+            let held = self
+                .certificates
+                .get(&source)
+                .map(AsRef::as_ref)
+                .is_some_and(|known| known == cert);
+            if !held {
+                metadata_changed = self.admit_device(cert, now)?;
+            }
+        }
         for entry in revocations {
             metadata_changed |= self.revoke(entry)?;
-        }
-        if self.revocations.is_revoked(&source) {
-            return Err("device revoked".into());
         }
         Ok(ReceiveOutcome {
             metadata_changed,
@@ -373,6 +624,7 @@ impl PersonalStore {
 
     fn receive_document(
         &mut self,
+        key: &SigningKey,
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
@@ -387,13 +639,22 @@ impl PersonalStore {
         else {
             return Err("not a document message".into());
         };
-        if cluster_id != self.store_key()
+        let refused = if cluster_id != self.store_key()
             || peer != peer_handle(&source)
             || envelope.author.as_bytes() != &source
         {
-            return Err("transport author or store key mismatch".into());
-        }
-        self.write(&app_id, &record_id, &envelope, now, false)
+            Some("transport author or store key mismatch".to_owned())
+        } else {
+            match self.write(&app_id, &record_id, &envelope, now, false) {
+                Ok(outcome) => return Ok(outcome),
+                Err(reason) => Some(reason),
+            }
+        };
+        let reason = refused.unwrap_or_default();
+        // The store's verdict on this one write is now a fact it keeps: the
+        // write's author is told, and its history joins it to the write.
+        self.file_refusal(&app_id, &record_id, &envelope, &reason, key, now)?;
+        Err(reason)
     }
 
     /// The one admission: the signed write is the author's own, its device is
@@ -501,11 +762,27 @@ impl PersonalStore {
             };
         self.exact.insert(&admitted).map_err(err)?;
         self.documents.insert(route, candidate);
+        self.landed(&source, app, record, envelope.seq);
         Ok(ReceiveOutcome {
             changed,
             metadata_changed: changed,
             ..Default::default()
         })
+    }
+
+    /// The author's whole state is offered on every link, so a write at or
+    /// past a refused one on the same route means that one landed too: what
+    /// this device refused of this author is cleared.
+    fn landed(&mut self, author: &[u8; 32], app: &str, record: &str, seq: u64) {
+        let before = self.refusals.len();
+        self.refusals.retain(|refusal| {
+            !(refusal.by == self.device.device_public_key
+                && refusal.author == *author
+                && refusal.app == app
+                && refusal.record == record
+                && refusal.seq <= seq)
+        });
+        self.refusals_moved |= self.refusals.len() != before;
     }
 
     fn sign(
@@ -585,6 +862,8 @@ impl PersonalStore {
             revocations: self.revocations(),
             documents,
             exact: self.exact.encode().map_err(err)?,
+            refusals: self.refusals.clone(),
+            told: self.told.iter().copied().collect(),
         };
         postcard::to_allocvec(&durable).map_err(err)
     }
@@ -597,8 +876,30 @@ impl PersonalStore {
     /// The bytes are not this build's, belong to another device, or hold a
     /// certificate, revocation or document this store refuses.
     pub fn restore(bytes: &[u8], device: &DeviceCert, now: SystemTime) -> Result<Self, String> {
-        let durable: Durable = postcard::from_bytes(bytes).map_err(err)?;
-        if durable.version != STORE_VERSION {
+        // A store kept before refusals were held beside the revocations is
+        // read as one holding none: the person's documents are never lost to
+        // a field added later.
+        let durable: Durable = match postcard::from_bytes(bytes) {
+            Ok(durable) => durable,
+            Err(error) => {
+                let plain: DurablePlain = postcard::from_bytes(bytes).map_err(err)?;
+                if plain.version != STORE_VERSION_PLAIN {
+                    return Err(error.to_string());
+                }
+                Durable {
+                    version: STORE_VERSION_PLAIN,
+                    root: plain.root,
+                    device: plain.device,
+                    certificates: plain.certificates,
+                    revocations: plain.revocations,
+                    documents: plain.documents,
+                    exact: plain.exact,
+                    refusals: Vec::new(),
+                    told: Vec::new(),
+                }
+            }
+        };
+        if durable.version != STORE_VERSION && durable.version != STORE_VERSION_PLAIN {
             return Err(format!(
                 "the personal store is version {}, this build reads {STORE_VERSION}",
                 durable.version
@@ -644,12 +945,42 @@ impl PersonalStore {
             );
         }
         store.exact = ExactAdmissions::decode(&durable.exact).map_err(err)?;
+        for refusal in durable.refusals {
+            // A verdict only the device that made it can stand behind, and
+            // only about a write of this device's: anything else is no state
+            // of this store's.
+            let by_us = refusal.by == store.device.device_public_key;
+            let about_us = refusal.author == store.device.device_public_key;
+            if (by_us || about_us) && refusal.signed_by(&refusal.by) {
+                store.refusals.push(refusal);
+            }
+        }
+        store.told = durable.told.into_iter().collect();
         // A device revoked after it kept these bytes keeps none of them.
         if store.revoked_here() {
             store.forget_documents();
         }
         Ok(store)
     }
+}
+
+/// The automerge changes `payload` carries, as their hashes: what the
+/// author's history joins a refusal to. A payload that does not parse
+/// carries none.
+pub(super) fn change_hashes(payload: &[u8]) -> Vec<[u8; 32]> {
+    let Ok(mutation) = DocumentMutation::decode(payload) else {
+        return Vec::new();
+    };
+    let bytes = match mutation {
+        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
+    };
+    // ignored-failure: a payload that is not automerge bytes names no changes this device lacks
+    collab_types::parse_changes(&bytes)
+        .unwrap_or_default()
+        .iter()
+        .map(automerge::Change::hash)
+        .map(|hash| hash.0)
+        .collect()
 }
 
 /// A device's certificate as the store admits it: one this store's root
@@ -679,6 +1010,21 @@ fn sorted(mut entries: Vec<RevocationEntry>) -> Vec<RevocationEntry> {
 /// engine re-derives from a document's route.
 #[derive(Serialize, Deserialize)]
 struct Durable {
+    version: u32,
+    root: [u8; 32],
+    device: DeviceCert,
+    certificates: Vec<DeviceCert>,
+    revocations: Vec<RevocationEntry>,
+    documents: Vec<DurableDocument>,
+    exact: Vec<u8>,
+    refusals: Vec<WriteRefusal>,
+    told: Vec<[u8; 32]>,
+}
+
+/// The store as it was kept before it held refusals: this build reads it so
+/// a person's own documents survive the field being added.
+#[derive(Serialize, Deserialize)]
+struct DurablePlain {
     version: u32,
     root: [u8; 32],
     device: DeviceCert,
@@ -751,9 +1097,17 @@ impl PeerPersonal {
         app: &str,
         record: &str,
         envelope: SignedOp,
+        key: &SigningKey,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
-        self.write(|store| store.admit_local(app, record, envelope, now))
+        self.write(|store| store.admit_local(app, record, envelope, key, now))
+    }
+
+    /// Every refusal this device holds: its own and its siblings' on its own
+    /// writes.
+    #[must_use]
+    pub fn write_refusals(&self) -> Vec<WriteRefusal> {
+        self.read(PersonalStore::write_refusals)
     }
 
     /// The store as bytes to keep beside the profile's workspaces.
@@ -856,8 +1210,11 @@ mod tests {
             .unwrap();
         // B holds nothing until it meets A, then catches up whole.
         assert!(!b.holds_document("tube", "prefs"));
-        for message in a.catch_up(&a_key, now()).unwrap() {
-            b.receive(a_key.verifying_key().to_bytes(), message, now())
+        for message in a
+            .catch_up(&a_key, b_key.verifying_key().to_bytes(), now())
+            .unwrap()
+        {
+            b.receive(&b_key, a_key.verifying_key().to_bytes(), message, now())
                 .unwrap();
         }
         let read = b.document("tube", "prefs").unwrap();
@@ -869,13 +1226,13 @@ mod tests {
 
         // B says who it is, then its own write reaches A, and both hold one
         // document.
-        a.receive(b_key.verifying_key().to_bytes(), b.hello(), now())
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
             .unwrap();
         let published = b
             .publish("tube", "prefs", &change("accent", "blue"), &b_key, now())
             .unwrap();
         let outcome = a
-            .receive(b_key.verifying_key().to_bytes(), published, now())
+            .receive(&a_key, b_key.verifying_key().to_bytes(), published, now())
             .unwrap();
         assert!(outcome.changed);
         assert_eq!(
@@ -905,6 +1262,7 @@ mod tests {
 
         // Its certificate is not this identity's: A refuses it outright.
         let refused = a.receive(
+            &a_key,
             other_key.verifying_key().to_bytes(),
             hello(&other_cert, Vec::new()),
             now(),
@@ -917,10 +1275,13 @@ mod tests {
         );
 
         // And given A's frames, it admits none of them.
-        for message in a.catch_up(&a_key, now()).unwrap() {
+        for message in a
+            .catch_up(&a_key, other_key.verifying_key().to_bytes(), now())
+            .unwrap()
+        {
             assert!(
                 stranger
-                    .receive(a_key.verifying_key().to_bytes(), message, now())
+                    .receive(&other_key, a_key.verifying_key().to_bytes(), message, now())
                     .is_err()
             );
         }
@@ -948,6 +1309,7 @@ mod tests {
         // And it writes nothing to another device's store.
         assert!(
             a.receive(
+                &a_key,
                 node_key.verifying_key().to_bytes(),
                 hello(&node_cert, Vec::new()),
                 now(),
@@ -971,18 +1333,21 @@ mod tests {
         let mut b = PersonalStore::open(root.verifying_key().to_bytes(), b_cert, now()).unwrap();
         a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
             .unwrap();
-        for message in a.catch_up(&a_key, now()).unwrap() {
-            b.receive(a_key.verifying_key().to_bytes(), message, now())
+        for message in a
+            .catch_up(&a_key, b_key.verifying_key().to_bytes(), now())
+            .unwrap()
+        {
+            b.receive(&b_key, a_key.verifying_key().to_bytes(), message, now())
                 .unwrap();
         }
         // B introduces itself, and a write of its is admitted before the
         // revocation.
-        a.receive(b_key.verifying_key().to_bytes(), b.hello(), now())
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), b.hello(), now())
             .unwrap();
         let published = b
             .publish("tube", "prefs", &change("accent", "blue"), &b_key, now())
             .unwrap();
-        a.receive(b_key.verifying_key().to_bytes(), published, now())
+        a.receive(&a_key, b_key.verifying_key().to_bytes(), published, now())
             .unwrap();
         assert_eq!(
             field(&a.document("tube", "prefs").unwrap(), "accent").as_deref(),
@@ -992,6 +1357,7 @@ mod tests {
         // A sibling device hands over the revocation their identity signed.
         let outcome = a
             .receive(
+                &a_key,
                 c_key.verifying_key().to_bytes(),
                 hello(&c_cert, vec![revocation(&root, &b_key)]),
                 now(),
@@ -1009,19 +1375,22 @@ mod tests {
             .publish("tube", "prefs", &change("font", "serif"), &b_key, now())
             .unwrap();
         assert!(
-            a.receive(b_key.verifying_key().to_bytes(), published, now())
+            a.receive(&a_key, b_key.verifying_key().to_bytes(), published, now())
                 .is_err()
         );
         assert_eq!(field(&a.document("tube", "prefs").unwrap(), "font"), None);
-        // A hello from B itself is refused too.
-        assert!(
-            a.receive(
+        // A hello from B itself admits nothing of it either, and no longer
+        // ends the link: a device the person revoked is told what was
+        // refused of its writes.
+        let heard = a
+            .receive(
+                &a_key,
                 b_key.verifying_key().to_bytes(),
                 hello(&b_cert_of(&root, &b_key), Vec::new()),
                 now(),
             )
-            .is_err()
-        );
+            .unwrap();
+        assert!(!heard.changed && !heard.metadata_changed);
     }
 
     #[test]
@@ -1034,8 +1403,11 @@ mod tests {
         let mut b = PersonalStore::open(root_key, b_cert.clone(), now()).unwrap();
         a.publish("tube", "prefs", &record("theme", "dark"), &a_key, now())
             .unwrap();
-        for message in a.catch_up(&a_key, now()).unwrap() {
-            b.receive(a_key.verifying_key().to_bytes(), message, now())
+        for message in a
+            .catch_up(&a_key, b_key.verifying_key().to_bytes(), now())
+            .unwrap()
+        {
+            b.receive(&b_key, a_key.verifying_key().to_bytes(), message, now())
                 .unwrap();
         }
         assert!(b.holds_document("tube", "prefs"));
@@ -1051,7 +1423,7 @@ mod tests {
                 .is_err()
         );
         assert!(
-            !b.catch_up(&b_key, now())
+            !b.catch_up(&b_key, a_key.verifying_key().to_bytes(), now())
                 .unwrap()
                 .iter()
                 .any(|message| matches!(message, NeighbourMsg::AppDocument { .. }))
@@ -1073,7 +1445,7 @@ mod tests {
             .unwrap();
         let before = a.durable().unwrap();
         let outcome = a
-            .receive(a_key.verifying_key().to_bytes(), published, now())
+            .receive(&a_key, a_key.verifying_key().to_bytes(), published, now())
             .unwrap();
         assert!(outcome.duplicate);
         assert!(!outcome.changed);
@@ -1115,6 +1487,72 @@ mod tests {
 
         // A copy kept by one device is not another device's to open.
         assert!(PersonalStore::restore(&kept, &b_cert, now()).is_err());
+    }
+
+    /// The write `mutation` makes of `record`, as `author`'s own store signs
+    /// it: what a link carries, and what a verdict names.
+    fn write(
+        mutation: &DocumentMutation,
+        author: &SigningKey,
+        seq: u64,
+        store_key: &str,
+    ) -> SignedOp {
+        let mut envelope = SignedOp::new_unsigned(
+            mutation.encode().unwrap(),
+            collab_types::document_artifact_id("tube", store_key, "prefs"),
+            Ed25519PublicKey::from_bytes(author.verifying_key().to_bytes()),
+            collab_types::document_attestation_id("tube", store_key, "prefs"),
+            OpKind::Change,
+            now(),
+            seq,
+        );
+        collab_types::sign_op(&mut envelope, author).unwrap();
+        envelope
+    }
+
+    /// A verdict on a change that later lands is let go, and its author is
+    /// told so: the write arrived after all, and what this device refused is
+    /// not missing from it.
+    #[test]
+    fn a_refused_write_that_later_lands_stops_being_missing() {
+        let root = SigningKey::from_bytes(&[12; 32]);
+        let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+        let (b_key, _b_cert) = device(&root, 3, DeviceCapabilities::member());
+        let mut a = PersonalStore::open(root.verifying_key().to_bytes(), a_cert, now()).unwrap();
+        let refused = write(&change("font", "serif"), &b_key, 1, &a.store_key());
+        a.file_refusal(
+            "tube",
+            "prefs",
+            &refused,
+            "it waits for earlier writes",
+            &a_key,
+            now(),
+        )
+        .unwrap();
+        let held = a.write_refusals();
+        assert_eq!(held.len(), 1, "one verdict on the change: {held:?}");
+        assert_eq!(held[0].author, b_key.verifying_key().to_bytes());
+        assert_eq!(held[0].reason, RefusalReason::MissingDependency);
+        assert_eq!(a.take_refusal_updates().len(), 1, "its author is told");
+
+        // The author's next write of the route reaches this store: the change
+        // the verdict named is here, and the verdict goes.
+        a.landed(
+            &b_key.verifying_key().to_bytes(),
+            "tube",
+            "prefs",
+            refused.seq.saturating_add(1),
+        );
+        assert!(
+            a.write_refusals().is_empty(),
+            "the write landed after all: not missing"
+        );
+        let updates = a.take_refusal_updates();
+        assert_eq!(updates.len(), 1, "its author is told it stands");
+        assert!(
+            matches!(&updates[0], NeighbourMsg::WriteRefusals { refusals } if refusals.is_empty()),
+            "the set the author reads no longer names the change: {updates:?}"
+        );
     }
 
     /// The certificate `key` holds under `root`, for a device that already

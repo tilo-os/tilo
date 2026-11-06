@@ -1,15 +1,20 @@
-/// A workspace whose governance this device learns of later, as the workspace
-/// tree does when a workspace's authority arrives: it announces the change.
+/// A workspace whose readers this device's directory cannot name yet, as a
+/// workspace's tree does before its authority arrives: it announces the
+/// change once it can.
 #[derive(Clone, Default)]
-struct LateGovernor {
-    governor: Arc<Mutex<Option<Ed25519PublicKey>>>,
+struct LateReaders {
+    named: Arc<std::sync::atomic::AtomicBool>,
     epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
-impl ChannelDirectory for LateGovernor {
-    fn governor_of(&self, _: WorkspaceId) -> Option<Ed25519PublicKey> {
-        *self.governor.lock().unwrap()
+impl LateReaders {
+    fn name(&self) {
+        self.named.store(true, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+impl ChannelDirectory for LateReaders {
     fn allowed_devices(
         &self,
         _: WorkspaceId,
@@ -17,14 +22,16 @@ impl ChannelDirectory for LateGovernor {
         _: Option<&ChannelRoute>,
         _: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        Some(BTreeSet::new())
+        self.named
+            .load(Ordering::SeqCst)
+            .then(|| [public(21)].into_iter().collect())
     }
     fn policy_epoch(&self) -> Option<u64> {
         Some(self.epoch.load(Ordering::SeqCst))
     }
 }
 
-fn late_governor_service(dir: &Path, directory: &LateGovernor) -> ChannelEncryption {
+fn late_readers_service(dir: &Path, directory: &LateReaders) -> ChannelEncryption {
     ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: dir.join("channels"),
@@ -37,14 +44,14 @@ fn late_governor_service(dir: &Path, directory: &LateGovernor) -> ChannelEncrypt
     .unwrap()
 }
 
-/// A route asked about before its workspace's governance is known is told
-/// when it is learned, with no timer running meanwhile: the endpoint need
-/// not ask on one to find out.
+/// A route asked about before its channel's readers are named is told when
+/// they are, with no timer running meanwhile: the endpoint need not ask on
+/// one to find out.
 #[test]
-fn a_route_hears_when_its_workspaces_governance_is_learned() {
+fn a_route_hears_when_its_channels_readers_are_named() {
     let dir = tempfile::tempdir().unwrap();
-    let directory = LateGovernor::default();
-    let mut service = late_governor_service(dir.path(), &directory);
+    let directory = LateReaders::default();
+    let mut service = late_readers_service(dir.path(), &directory);
     let (workspace, channel) = (WorkspaceId::new(), ChannelId::new());
     let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
     let mut now = Instant::now();
@@ -61,41 +68,42 @@ fn a_route_hears_when_its_workspaces_governance_is_learned() {
     assert_eq!(
         service.next_pump_deadline(now),
         None,
-        "nothing is due while the workspace's governance is unknown"
+        "nothing is due while the channel's readers are unknown"
     );
     assert!(
         service.waits_for_policy_change(),
         "the pump waits for an announcement instead"
     );
 
-    // Announcements that leave the workspace's governance unknown tell no
-    // route.
+    // An announcement that still names no readers tells no route.
     directory.epoch.fetch_add(1, Ordering::SeqCst);
     now = now.checked_add(Duration::from_secs(5)).unwrap();
     service.pump(&transport, now, 1_005);
     assert_eq!(service.channel_change(channel), 0);
 
-    *directory.governor.lock().unwrap() = Some(public(22));
-    directory.epoch.fetch_add(1, Ordering::SeqCst);
+    directory.name();
     now = now.checked_add(Duration::from_secs(5)).unwrap();
     service.pump(&transport, now, 1_010);
     let told = service.channel_change(channel);
-    assert_ne!(
-        told, 0,
-        "the route is told its workspace's governance is known now"
-    );
+    assert_ne!(told, 0, "the route is told its readers are known now");
     assert!(matches!(
         service.access(workspace, channel, now),
         ChannelAccess::Waiting
     ));
     assert!(service.unopened.is_empty());
 
-    directory.epoch.fetch_add(1, Ordering::SeqCst);
+    // The opened channel's own passes tell the route what they change; once
+    // settled, an announcement of the readers adds nothing.
     now = now.checked_add(Duration::from_secs(5)).unwrap();
     service.pump(&transport, now, 1_015);
+    let settled = service.channel_change(channel);
+
+    directory.epoch.fetch_add(1, Ordering::SeqCst);
+    now = now.checked_add(Duration::from_secs(5)).unwrap();
+    service.pump(&transport, now, 1_020);
     assert_eq!(
         service.channel_change(channel),
-        told,
+        settled,
         "an opened channel is not told again"
     );
 }
@@ -105,9 +113,9 @@ fn a_route_hears_when_its_workspaces_governance_is_learned() {
 #[test]
 fn a_failed_open_is_retried_on_the_pumps_backoff() {
     let dir = tempfile::tempdir().unwrap();
-    let directory = LateGovernor::default();
-    *directory.governor.lock().unwrap() = Some(public(22));
-    let mut service = late_governor_service(dir.path(), &directory);
+    let directory = LateReaders::default();
+    directory.name();
+    let mut service = late_readers_service(dir.path(), &directory);
     let (workspace, channel) = (WorkspaceId::new(), ChannelId::new());
     let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
     // The workspace's state directory cannot be created: a file is in its way.
@@ -139,4 +147,144 @@ fn a_failed_open_is_retried_on_the_pumps_backoff() {
         ChannelAccess::Waiting
     ));
     assert!(service.unopened.is_empty(), "an open that succeeds settles");
+}
+
+/// A workspace whose directory names a channel's readers only from the
+/// channel's record, as a runtime's own governance does: a route proves the
+/// record, and a channel asked about without one stays unnamed. It announces
+/// its changes when [`Self::announcing`], and names them by time alone when
+/// quiet.
+#[derive(Clone, Default)]
+struct RoutedReaders {
+    named: Arc<std::sync::atomic::AtomicBool>,
+    /// The announcement epoch, or `None` for a directory that announces
+    /// nothing and is re-checked on the pump's interval.
+    epoch: Option<Arc<std::sync::atomic::AtomicU64>>,
+}
+
+impl RoutedReaders {
+    fn announcing() -> Self {
+        Self {
+            named: Arc::default(),
+            epoch: Some(Arc::default()),
+        }
+    }
+
+    fn name(&self) {
+        self.named.store(true, Ordering::SeqCst);
+        if let Some(epoch) = &self.epoch {
+            epoch.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl ChannelDirectory for RoutedReaders {
+    fn allowed_devices(
+        &self,
+        _: WorkspaceId,
+        _: ChannelId,
+        route: Option<&ChannelRoute>,
+        _: u64,
+    ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        (self.named.load(Ordering::SeqCst) && route.is_some())
+            .then(|| [public(21)].into_iter().collect())
+    }
+    fn policy_epoch(&self) -> Option<u64> {
+        self.epoch
+            .as_ref()
+            .map(|epoch| epoch.load(Ordering::SeqCst))
+    }
+}
+
+fn routed_service(dir: &Path, directory: &RoutedReaders) -> ChannelEncryption {
+    ChannelEncryption::open(
+        ChannelEncryptionConfig {
+            root: dir.join("channels"),
+            vault: VaultKey::new([21; 32]),
+            device_key: key(21),
+        },
+        Box::new(directory.clone()),
+        Arc::new(Mutex::new(BrokerChannels::default())),
+    )
+    .unwrap()
+}
+
+/// A record's channel is named from its record, which only the endpoint that
+/// asks about it carries: asked before the workspace names its readers, the
+/// route hears when it does, and the endpoint's next ask takes the channel
+/// up. The re-check asks with the route the endpoint gave, since a channel
+/// id alone names no record.
+#[test]
+fn a_routed_channel_opens_once_its_record_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let directory = RoutedReaders::announcing();
+    let mut service = routed_service(dir.path(), &directory);
+    let workspace = WorkspaceId::new();
+    let route = ChannelRoute::new("so.tilo.notes", "minutes");
+    let channel = route.channel(&workspace.to_string());
+    let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
+    let mut now = Instant::now();
+    assert!(matches!(
+        service.access_record(workspace, &route, now).1,
+        ChannelAccess::Unavailable
+    ));
+    service.pump(&transport, now, 1_000);
+    assert_eq!(service.channel_change(channel), 0);
+    assert!(
+        service.waits_for_policy_change(),
+        "the pump waits for the workspace to name the record's readers"
+    );
+
+    directory.name();
+    now = now.checked_add(Duration::from_secs(5)).unwrap();
+    service.pump(&transport, now, 1_005);
+    assert_ne!(
+        service.channel_change(channel),
+        0,
+        "the route is told its record is nameable now"
+    );
+    assert!(matches!(
+        service.access_record(workspace, &route, now).1,
+        ChannelAccess::Waiting
+    ));
+    assert!(service.unopened.is_empty());
+}
+
+/// A directory that announces nothing is re-checked on the pump's interval:
+/// a routed channel whose record its workspace names only later opens then,
+/// so an endpoint already told its channel is unavailable hears it is not,
+/// without asking again.
+#[test]
+fn a_routed_channel_opens_on_the_interval_without_announcements() {
+    let dir = tempfile::tempdir().unwrap();
+    let directory = RoutedReaders::default();
+    let mut service = routed_service(dir.path(), &directory);
+    let workspace = WorkspaceId::new();
+    let route = ChannelRoute::new("so.tilo.notes", "minutes");
+    let channel = route.channel(&workspace.to_string());
+    let transport = Endpoint::join(&Arc::new(Workspace::default()), workspace, 0);
+    let now = Instant::now();
+    assert!(matches!(
+        service.access_record(workspace, &route, now).1,
+        ChannelAccess::Unavailable
+    ));
+    service.pump(&transport, now, 1_000);
+    assert_eq!(service.channel_change(channel), 0);
+
+    directory.name();
+    let due = service
+        .next_pump_deadline(now)
+        .expect("the interval re-check is due");
+    assert_eq!(due, now.checked_add(RECHECK_INTERVAL).unwrap());
+    service.pump(&transport, due, 1_001);
+    assert_ne!(
+        service.channel_change(channel),
+        0,
+        "the interval re-check tells the route its record is nameable"
+    );
+    assert!(matches!(
+        service.access_record(workspace, &route, due).1,
+        ChannelAccess::Waiting
+    ));
+    assert!(service.unopened.is_empty());
 }

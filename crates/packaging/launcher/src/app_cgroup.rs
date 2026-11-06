@@ -1,50 +1,25 @@
-//! The session's own cgroup tree for apps.
+//! The cgroup an app runs in.
 //!
-//! The compositor runs in logind's `session-N.scope` and has to stay there
-//! (logind and polkit find a process's session by its cgroup). That scope also
-//! holds the display manager's root session worker, so it can be neither
-//! delegated to the person nor split into leaves. The apps' tree therefore
-//! lives in the user manager instead, as one transient scope per compositor
-//! run that delegates its subtree:
+//! Every launch is one transient scope of the systemd user manager,
+//! `app-tilo-<escaped app id>-<launcher pid>.scope` in `app.slice` (see
+//! [`crate::scope`]). The launcher moves itself into it before it forks the
+//! app, so the app and everything it starts are inside it rather than chased
+//! into it afterwards. One unit per app is what makes an app one thing for
+//! resource accounting (its memory is charged to its own cgroup, never the
+//! compositor's), for the OOM killer, and for logout or a compositor crash,
+//! which stop the app and everything it forked instead of leaving it running
+//! with no display.
 //!
-//! ```text
-//! user@UID.service/app.slice/
-//!   tilo-apps-<spawner pid>.scope/   Delegate=yes, OOMPolicy=continue, PartOf the session
-//!     spawner/                       the app spawner (cgroup2 has no internal processes)
-//!     app-<escaped app id>-<n>/      one per launch: its tier, its accounting, its kill
-//!       main/                        the launcher, its D-Bus proxies, the sandbox and
-//!                                    all they start; memory.oom.group=1 for a Tilo app
-//!       job-<j>/                     an independent job the app started (a terminal
-//!                                    session, a language server): memory.oom.group=1
-//! ```
+//! The session writes the tier an app runs in as the cgroup files systemd
+//! would write for the same resource-control properties
+//! ([`crate::priority::tier_properties`] through [`set_tier`]), so the tier a
+//! launch starts in and the one it is moved to are one write, and its memory
+//! watch reclaims from and ends what it reads here ([`footprint`],
+//! [`memory_events`], [`reclaim`], [`kill`]).
 //!
-//! The spawner ([`crate::spawner`]), a child of the compositor, asks the
-//! manager for the scope once and moves itself into `spawner/`. From then on
-//! it makes each app's cgroup, writes its tier (`cpu.weight`, `io.weight`,
-//! `io.bfq.weight`, `memory.low`), lays it out ([`lay_out`]) and starts the
-//! launcher inside its `main/` leaf with `clone3(CLONE_INTO_CGROUP |
-//! CLONE_PARENT)`: born there, and still the compositor's child, with no
-//! round trip to anyone. It removes each cgroup once `cgroup.events` says it
-//! is no longer populated. The compositor moves apps between tiers by writing
-//! the same files ([`crate::priority`]) and ends a whole app with
-//! `cgroup.kill`.
-//!
-//! **Out of memory, an app is one unit; a job is its own.** The kernel's OOM
-//! killer, when it picks a process, ends every process of the highest
-//! cgroup between it and the root that has `memory.oom.group` set. A Tilo
-//! app's `main/` has it: an app that runs out of memory ends cleanly and
-//! completely, not with a helper missing, and the spawner then ends its jobs
-//! too (`cgroup.kill` on the app). A job's leaf has it as well and is
-//! `main/`'s sibling, not its child, so a runaway language server or build
-//! ends alone and the app that started it keeps running. The app's own
-//! cgroup leaves it unset; that is what keeps the two apart. A host app
-//! (Alacritty, VS Code) keeps `memory.oom.group=0`: its process structure is
-//! its own business, and one victim is what it was built for. How a process
-//! becomes a job is `runtime_portal::jobs`.
-//!
-//! Who may write what: the tree belongs to the person's uid, like everything
+//! Who may write what: the scope belongs to the person's uid, like everything
 //! in their user manager, so only processes outside a sandbox can write it at
-//! all, and those are the compositor, the spawner and the launcher before it
+//! all, and those are the compositor, the session and the launcher before it
 //! enters the sandbox (unconfined host applications could equally write any
 //! other cgroup of the user manager, scopes included, and are not confined by
 //! design). A sandboxed app sees no `/sys/fs/cgroup` ([`crate::profile`]
@@ -56,168 +31,13 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::priority::{Property, Tier, Value};
+use crate::priority::{Property, Tier};
 
 /// Where the cgroup2 hierarchy is mounted.
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 
-/// Unit name prefix of the delegated tree.
-pub const TREE_PREFIX: &str = "tilo-apps-";
-
-/// The leaf the spawner itself lives in.
-pub const SPAWNER_LEAF: &str = "spawner";
-
-pub const APP_PREFIX: &str = "app-";
-
-/// The leaf of an app's cgroup its launcher is born in.
-pub const MAIN_LEAF: &str = "main";
-
-/// Name prefix of an app's job leaves.
-pub const JOB_PREFIX: &str = "job-";
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Leaf {
-    /// The app itself: its launcher and everything that was not started as
-    /// a job.
-    Main,
-    Job,
-}
-
-/// What a launch runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AppKind {
-    /// A Tilo app, in its sandbox: one unit when memory runs out.
-    Tilo,
-    /// A host application (a desktop entry): its structure is unknown.
-    Host,
-}
-
-impl AppKind {
-    /// How a launch request spells it.
-    #[must_use]
-    pub const fn wire(self) -> &'static str {
-        match self {
-            Self::Tilo => "tilo",
-            Self::Host => "host",
-        }
-    }
-
-    /// The kind a launch request names.
-    #[must_use]
-    pub fn from_wire(text: &[u8]) -> Option<Self> {
-        match text {
-            b"tilo" => Some(Self::Tilo),
-            b"host" => Some(Self::Host),
-            _ => None,
-        }
-    }
-}
-
-/// Whether a leaf of an app of `kind` is one OOM group: everything in it
-/// ends together when the kernel picks any of it. Every job is; a Tilo app's
-/// main leaf is; a host app's is not.
-#[must_use]
-pub const fn oom_group(kind: AppKind, leaf: Leaf) -> bool {
-    match (kind, leaf) {
-        (_, Leaf::Job) | (AppKind::Tilo, Leaf::Main) => true,
-        (AppKind::Host, Leaf::Main) => false,
-    }
-}
-
-#[must_use]
-pub fn job_leaf_name(n: u64) -> String {
-    format!("{JOB_PREFIX}{n}")
-}
-
-#[must_use]
-pub fn is_job_leaf(name: &str) -> bool {
-    name.strip_prefix(JOB_PREFIX)
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// Controllers the tree hands its apps, when the manager has them.
-pub const CONTROLLERS: [&str; 4] = ["cpu", "io", "memory", "pids"];
-
-/// The longest name a cgroup directory may have.
-const NAME_MAX: usize = 255;
-
-/// `tilo-apps-<pid>.scope`, the tree the spawner `pid` holds.
-#[must_use]
-pub fn tree_unit_name(pid: u32) -> String {
-    format!("{TREE_PREFIX}{pid}.scope")
-}
-
-/// Whether a cgroup directory name is a delegated tree's scope.
-fn is_tree(name: &str) -> bool {
-    name.strip_prefix(TREE_PREFIX)
-        .and_then(|rest| rest.strip_suffix(".scope"))
-        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
-}
-
-/// `app-<escaped app id>-<n>`: the id spelled as in a unit name
-/// ([`crate::scope::escape_name`]), so `-` only ever separates the fields.
-/// `None` when the id is empty or the name would be too long.
-#[must_use]
-pub fn leaf_name(app_id: &str, n: u64) -> Option<String> {
-    let escaped = crate::scope::escape_name(app_id)?;
-    let name = format!("{APP_PREFIX}{escaped}-{n}");
-    (name.len() <= NAME_MAX).then_some(name)
-}
-
-/// The app id an app cgroup's name carries.
-#[must_use]
-pub fn app_id_of_leaf(leaf: &str) -> Option<String> {
-    let (escaped, n) = leaf.strip_prefix(APP_PREFIX)?.rsplit_once('-')?;
-    (!escaped.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-        .then(|| crate::scope::unescape_name(escaped))
-}
-
-/// The unified-hierarchy path of a `/proc/<pid>/cgroup` text.
-fn unified_path(cgroup: &str) -> Option<&str> {
-    cgroup.lines().find_map(|line| line.strip_prefix("0::"))
-}
-
-/// The delegated app cgroup a `/proc/<pid>/cgroup` text places a process in,
-/// as a path below [`CGROUP_ROOT`] (`/user.slice/…/tilo-apps-7.scope/app-x-3`).
-/// A process in a cgroup an app created below its own counts as in that app.
-#[must_use]
-pub fn app_cgroup_of(cgroup: &str) -> Option<String> {
-    let path = unified_path(cgroup)?;
-    let mut end = 0_usize;
-    let mut parts = path.split('/');
-    let mut in_tree = false;
-    for part in parts.by_ref() {
-        end = end.saturating_add(part.len()).saturating_add(1);
-        if in_tree {
-            return part
-                .starts_with(APP_PREFIX)
-                .then(|| path.get(..end.saturating_sub(1)))
-                .flatten()
-                .map(str::to_string);
-        }
-        in_tree = is_tree(part);
-    }
-    None
-}
-
-/// Whether this process was born in (or moved into) a delegated app cgroup:
-/// then it has its cgroup and must not ask the manager for a scope.
-#[must_use]
-pub fn current_is_app_cgroup() -> bool {
-    std::fs::read_to_string("/proc/self/cgroup")
-        .ok()
-        .is_some_and(|cgroup| app_cgroup_of(&cgroup).is_some())
-}
-
-/// The cgroupfs directory of a unified-hierarchy path.
-#[must_use]
-pub fn fs_path(cgroup: &str) -> PathBuf {
-    Path::new(CGROUP_ROOT).join(cgroup.trim_start_matches('/'))
-}
-
 /// systemd's mapping of an `IOWeight` (1..10000, default 100) onto BFQ's
-/// weight (1..1000, default 100), so a tier reads the same to BFQ here as it
-/// did through a scope.
+/// weight (1..1000, default 100).
 #[must_use]
 pub fn bfq_weight(io_weight: u64) -> u64 {
     const DEFAULT: u64 = 100;
@@ -254,9 +74,6 @@ pub fn bfq_weight(io_weight: u64) -> u64 {
 pub fn property_writes(props: &[Property]) -> Vec<(&'static str, String)> {
     let mut writes = Vec::new();
     for (name, value) in props {
-        let Value::U64(value) = value else {
-            continue;
-        };
         match *name {
             "CPUWeight" => writes.push(("cpu.weight", value.to_string())),
             "IOWeight" => {
@@ -271,7 +88,7 @@ pub fn property_writes(props: &[Property]) -> Vec<(&'static str, String)> {
 }
 
 /// Write `props` into the app cgroup at `dir`. A file that does not exist
-/// is a controller the tree does not have (no `io` without BFQ or iocost):
+/// is a controller the machine does not have (no `io` without BFQ or iocost):
 /// skipped, as systemd skips it.
 ///
 /// # Errors
@@ -287,7 +104,7 @@ pub fn apply(dir: &Path, props: &[Property]) -> Result<(), String> {
         }
         match std::fs::write(&path, &value) {
             Ok(()) => {}
-            // Gone meanwhile: the app ended and its cgroup was removed.
+            // Gone meanwhile: the app ended and its scope was removed.
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("{file}={value}: {error}")),
         }
@@ -295,103 +112,7 @@ pub fn apply(dir: &Path, props: &[Property]) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `dir` hands the memory controller to its children.
-fn memory_delegated(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join("cgroup.subtree_control")).is_ok_and(|control| {
-        control
-            .split_whitespace()
-            .any(|controller| controller.trim_start_matches('+') == "memory")
-    })
-}
-
-/// Set `memory.oom.group` of the leaf at `leaf`, whose parent `app` hands it
-/// the memory controller; without that the file does not exist and there is
-/// nothing to set.
-fn set_oom_group(app: &Path, leaf: &Path, on: bool) -> io::Result<()> {
-    if !memory_delegated(app) {
-        return Ok(());
-    }
-    std::fs::write(leaf.join("memory.oom.group"), if on { "1" } else { "0" })
-}
-
-/// Lay out the fresh app cgroup at `dir` for an app of `kind`: hand the
-/// memory controller to its leaves (cgroup2 then keeps processes out of
-/// `dir` itself) and make the `main/` leaf its launcher is born in, one OOM
-/// group for a Tilo app ([`oom_group`]). Returns the main leaf.
-///
-/// # Errors
-///
-/// When the main leaf cannot be made. A tree without the memory controller
-/// costs the OOM grouping, not the launch.
-pub fn lay_out(dir: &Path, kind: AppKind) -> io::Result<PathBuf> {
-    let available = std::fs::read_to_string(dir.join("cgroup.controllers")).unwrap_or_default();
-    if available
-        .split_whitespace()
-        .any(|controller| controller == "memory")
-        && let Err(error) = std::fs::write(dir.join("cgroup.subtree_control"), "+memory")
-    {
-        eprintln!(
-            "tilo-spawner: {} keeps its memory accounting whole: {error}",
-            dir.display()
-        );
-    }
-    let main = dir.join(MAIN_LEAF);
-    match std::fs::create_dir(&main) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    if let Err(error) = set_oom_group(dir, &main, oom_group(kind, Leaf::Main)) {
-        eprintln!("tilo-spawner: {} is no OOM group: {error}", main.display());
-    }
-    Ok(main)
-}
-
-/// Make the job leaf `job-<n>` of the app cgroup at `dir`: its own OOM
-/// group, a sibling of the app's main leaf.
-///
-/// # Errors
-///
-/// When the leaf cannot be made or made one OOM group: a job that the
-/// kernel would not end whole is no job.
-pub fn create_job(dir: &Path, n: u64) -> io::Result<PathBuf> {
-    let job = dir.join(job_leaf_name(n));
-    std::fs::create_dir(&job)?;
-    if let Err(error) = set_oom_group(dir, &job, oom_group(AppKind::Tilo, Leaf::Job)) {
-        let _ = std::fs::remove_dir(&job);
-        return Err(error);
-    }
-    Ok(job)
-}
-
-/// The job leaves of the app cgroup at `dir`, in creation order.
-#[must_use]
-pub fn jobs(dir: &Path) -> Vec<PathBuf> {
-    let mut jobs: Vec<(u64, PathBuf)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name();
-            let n = name.to_str()?.strip_prefix(JOB_PREFIX)?.parse().ok()?;
-            Some((n, entry.path()))
-        })
-        .collect();
-    jobs.sort();
-    jobs.into_iter().map(|(_, path)| path).collect()
-}
-
-/// The kind of the app whose cgroup is `dir`, from its main leaf's OOM
-/// grouping; `None` where the tree has no memory controller to tell.
-#[must_use]
-pub fn kind_of(dir: &Path) -> Option<AppKind> {
-    match read_u64(&dir.join(MAIN_LEAF), "memory.oom.group")? {
-        0 => Some(AppKind::Host),
-        _ => Some(AppKind::Tilo),
-    }
-}
-
-/// The focus tier the app cgroup at `dir` is in, from its CPU weight.
+/// The tier the app cgroup at `dir` is in, from its CPU weight.
 #[must_use]
 pub fn tier_of(dir: &Path) -> Option<Tier> {
     match read_u64(dir, "cpu.weight")? {
@@ -399,6 +120,32 @@ pub fn tier_of(dir: &Path) -> Option<Tier> {
         crate::priority::BACKGROUND_WEIGHT => Some(Tier::Background),
         _ => None,
     }
+}
+
+/// Put the app cgroup at `dir` in `tier`, writing the files a launch is born
+/// with ([`crate::priority::tier_properties`] through [`apply`]).
+///
+/// # Errors
+///
+/// The first failed write, as [`apply`].
+pub fn set_tier(dir: &Path, tier: Tier, total: Option<u64>) -> Result<(), String> {
+    apply(dir, &crate::priority::tier_properties(tier, total))
+}
+
+/// Make the app cgroup at `dir` one OOM group (`on`) or one victim (`off`):
+/// the kernel then ends everything in it together when it picks any of it.
+/// A cgroup without the memory controller has no such file and nothing to
+/// set.
+///
+/// # Errors
+///
+/// The kernel's refusal.
+pub fn set_oom_group(dir: &Path, on: bool) -> io::Result<()> {
+    let path = dir.join("memory.oom.group");
+    if !path.exists() {
+        return Ok(());
+    }
+    std::fs::write(path, if on { "1" } else { "0" })
 }
 
 /// What `memory.events` of a cgroup counts, for it and everything below it.
@@ -460,6 +207,76 @@ pub fn reclaim(dir: &Path, bytes: u64) -> io::Result<()> {
     }
 }
 
+/// The unified-hierarchy path of a `/proc/<pid>/cgroup` text.
+fn unified_path(cgroup: &str) -> Option<&str> {
+    cgroup.lines().find_map(|line| line.strip_prefix("0::"))
+}
+
+/// Whether a cgroup directory name is a launch's own scope
+/// ([`crate::scope::unit_name`]).
+fn is_app_scope(name: &str) -> bool {
+    name.strip_prefix(crate::scope::UNIT_PREFIX)
+        .and_then(|rest| rest.strip_suffix(".scope"))
+        .is_some_and(|rest| {
+            rest.rsplit_once('-')
+                .is_some_and(|(id, pid)| !id.is_empty() && pid.parse::<u32>().is_ok())
+        })
+}
+
+/// The app id and pid a scope's directory name carries.
+fn app_of_scope(name: &str) -> Option<(String, u32)> {
+    let rest = name
+        .strip_prefix(crate::scope::UNIT_PREFIX)?
+        .strip_suffix(".scope")?;
+    let (escaped, pid) = rest.rsplit_once('-')?;
+    Some((crate::scope::unescape_name(escaped), pid.parse().ok()?))
+}
+
+/// The `app-tilo-<app id>-<pid>.scope` a `/proc/<pid>/cgroup` text places a
+/// process in, as a path below [`CGROUP_ROOT`]; `None` for a process outside
+/// the app slice's own scopes, and for one in another unit of the slice (a
+/// service, the manager itself).
+#[must_use]
+pub fn scope_of(cgroup: &str) -> Option<String> {
+    let path = unified_path(cgroup)?;
+    let mut end = 0_usize;
+    let mut in_slice = false;
+    for part in path.split('/') {
+        end = end.saturating_add(part.len()).saturating_add(1);
+        if in_slice {
+            return is_app_scope(part)
+                .then(|| path.get(..end.saturating_sub(1)))
+                .flatten()
+                .map(str::to_string);
+        }
+        in_slice = part == crate::scope::APP_SLICE;
+    }
+    None
+}
+
+/// The app cgroup a `/proc/<pid>/cgroup` text places a process in: the scope
+/// of its own a launch asked for. A process in a cgroup an app created below
+/// its own counts as in that app.
+#[must_use]
+pub fn app_cgroup_at(cgroup: &str) -> Option<String> {
+    scope_of(cgroup)
+}
+
+/// Whether this process is in an app's cgroup already: then it has one and
+/// must not ask the manager for a second.
+#[must_use]
+pub fn current_is_app_cgroup() -> bool {
+    std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .is_some_and(|cgroup| app_cgroup_at(&cgroup).is_some())
+}
+
+/// The cgroupfs directory of a unified-hierarchy path.
+#[must_use]
+pub fn fs_path(cgroup: &str) -> PathBuf {
+    Path::new(CGROUP_ROOT).join(cgroup.trim_start_matches('/'))
+}
+
 /// Every process in the cgroup at `dir` and below it.
 #[must_use]
 pub fn processes(dir: &Path) -> Vec<u32> {
@@ -476,71 +293,14 @@ pub fn processes(dir: &Path) -> Vec<u32> {
     pids
 }
 
-/// Give every process of the app cgroup at `dir` the `oom_score_adj` of
-/// `tier` ([`crate::priority::oom_score_adj`]): its main leaf the app's, its
-/// jobs a little more. A process that ended meanwhile is skipped.
-///
-/// # Errors
-///
-/// How many processes refused, with the first reason.
-pub fn set_oom_score_adj(dir: &Path, tier: Tier) -> Result<(), String> {
-    let mut leaves = vec![(dir.join(MAIN_LEAF), Leaf::Main)];
-    leaves.extend(jobs(dir).into_iter().map(|job| (job, Leaf::Job)));
-    let mut refused = 0_usize;
-    let mut first = None;
-    for (leaf, kind) in leaves {
-        let value = crate::priority::oom_score_adj(tier, kind).to_string();
-        for pid in processes(&leaf) {
-            match std::fs::write(format!("/proc/{pid}/oom_score_adj"), &value) {
-                Ok(()) => {}
-                Err(error)
-                    if matches!(error.kind(), io::ErrorKind::NotFound)
-                        || error.raw_os_error() == Some(libc::ESRCH) => {}
-                Err(error) => {
-                    refused = refused.saturating_add(1);
-                    first.get_or_insert_with(|| format!("pid {pid}: {error}"));
-                }
-            }
-        }
-    }
-    match first {
-        None => Ok(()),
-        Some(first) => Err(format!(
-            "{refused} processes kept their OOM score ({first})"
-        )),
-    }
-}
-
 /// End every process in the app cgroup at `dir` at once, those that left
 /// its process tree (`setsid`, a double fork) included.
+///
+/// # Errors
+///
+/// The kernel's refusal.
 pub fn kill(dir: &Path) -> io::Result<()> {
     std::fs::write(dir.join("cgroup.kill"), "1")
-}
-
-/// Whether any process is left in the cgroup at `dir` or below it.
-///
-/// # Errors
-///
-/// When `cgroup.events` cannot be read (the cgroup is gone).
-pub fn populated(dir: &Path) -> io::Result<bool> {
-    let events = std::fs::read_to_string(dir.join("cgroup.events"))?;
-    Ok(events.lines().any(|line| line.trim() == "populated 1"))
-}
-
-/// Remove the empty cgroup at `dir` and any cgroups an app made below it.
-///
-/// # Errors
-///
-/// The first directory the kernel refuses to remove (one still populated).
-pub fn remove(dir: &Path) -> io::Result<()> {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                remove(&entry.path())?;
-            }
-        }
-    }
-    std::fs::remove_dir(dir)
 }
 
 /// What an app cgroup's counters say.
@@ -551,7 +311,7 @@ pub struct Stats {
     pub memory_current: Option<u64>,
     /// The most it was ever charged, in bytes.
     pub memory_peak: Option<u64>,
-    /// Its protected floor, in bytes: the focused app's tier has one.
+    /// Its protected floor, in bytes: the foreground tier has one.
     pub memory_low: Option<u64>,
     /// CPU time used, in microseconds.
     pub cpu_usec: Option<u64>,
@@ -583,7 +343,7 @@ fn read_keyed(dir: &Path, file: &str, key: &str) -> Option<u64> {
 }
 
 /// Read the counters of the app cgroup at `dir`. A counter whose controller
-/// the tree lacks is `None`.
+/// the machine lacks is `None`.
 #[must_use]
 pub fn stats(dir: &Path) -> Stats {
     Stats {
@@ -606,7 +366,7 @@ pub struct RunningApp {
     pub stats: Stats,
 }
 
-/// The user manager's `app.slice` of `uid`, where the trees live.
+/// The user manager's `app.slice` of `uid`, where the app scopes live.
 #[must_use]
 pub fn user_app_slice(uid: u32) -> PathBuf {
     fs_path(&format!(
@@ -614,46 +374,34 @@ pub fn user_app_slice(uid: u32) -> PathBuf {
     ))
 }
 
-/// Every app cgroup in every delegated tree below `app_slice` (a cgroupfs
-/// directory), oldest tree first.
+/// Every app cgroup below `app_slice` (a cgroupfs directory), oldest first.
 #[must_use]
 pub fn running_apps(app_slice: &Path) -> Vec<RunningApp> {
-    let mut trees: Vec<PathBuf> = std::fs::read_dir(app_slice)
+    let mut scopes: Vec<(u32, String, PathBuf)> = std::fs::read_dir(app_slice)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|entry| entry.file_name().to_str().is_some_and(is_tree))
-        .map(|entry| entry.path())
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let (_, pid) = app_of_scope(name.to_str()?)?;
+            Some((pid, name.to_str()?.to_owned(), entry.path()))
+        })
         .collect();
-    trees.sort();
+    scopes.sort();
     let mut apps = Vec::new();
-    for tree in trees {
-        let mut leaves: Vec<PathBuf> = std::fs::read_dir(&tree)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-            .map(|entry| entry.path())
-            .collect();
-        leaves.sort();
-        for leaf in leaves {
-            let Some(app_id) = leaf
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(app_id_of_leaf)
-            else {
-                continue;
-            };
-            let cgroup = leaf.strip_prefix(CGROUP_ROOT).map_or_else(
-                |_| leaf.display().to_string(),
-                |path| format!("/{}", path.display()),
-            );
-            apps.push(RunningApp {
-                app_id,
-                cgroup,
-                stats: stats(&leaf),
-            });
-        }
+    for (_, name, dir) in scopes {
+        let Some((app_id, _)) = app_of_scope(&name) else {
+            continue;
+        };
+        let cgroup = dir.strip_prefix(CGROUP_ROOT).map_or_else(
+            |_| dir.display().to_string(),
+            |path| format!("/{}", path.display()),
+        );
+        apps.push(RunningApp {
+            app_id,
+            cgroup,
+            stats: stats(&dir),
+        });
     }
     apps
 }
@@ -720,58 +468,68 @@ pub fn format_table(apps: &[RunningApp]) -> String {
 mod tests {
     use super::*;
 
-    const TREE: &str = "/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-41.scope";
+    const SLICE: &str = "/user.slice/user-1000.slice/user@1000.service/app.slice";
+    const NOTES: &str =
+        "/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-so.tilo.notes-4126.scope";
 
     #[test]
-    fn an_app_cgroup_names_its_app_and_is_found_from_a_process_cgroup() {
-        assert_eq!(tree_unit_name(41), "tilo-apps-41.scope");
-        assert_eq!(
-            leaf_name("so.tilo.notes", 3).as_deref(),
-            Some("app-so.tilo.notes-3")
-        );
-        assert_eq!(
-            leaf_name("org.gnome.Text-Editor", 12).as_deref(),
-            Some("app-org.gnome.Text\\x2dEditor-12")
-        );
-        // No id may reach outside its own directory or name another file.
-        assert_eq!(leaf_name("../x", 1).as_deref(), Some("app-..\\x2fx-1"));
-        assert_eq!(leaf_name("", 1), None);
-        assert_eq!(leaf_name(&"x".repeat(250), 1), None);
-        for id in ["so.tilo.notes", "org.gnome.Text-Editor", "a b/c-9", "../x"] {
-            let leaf = leaf_name(id, 7).unwrap();
-            assert!(!leaf.contains('/'), "{leaf}");
-            assert_eq!(app_id_of_leaf(&leaf).as_deref(), Some(id));
-        }
-        assert_eq!(app_id_of_leaf(SPAWNER_LEAF), None);
-        assert_eq!(app_id_of_leaf("app-x"), None);
-
-        let cgroup = format!("0::{TREE}/app-so.tilo.notes-3\n");
-        assert_eq!(
-            app_cgroup_of(&cgroup).as_deref(),
-            Some(format!("{TREE}/app-so.tilo.notes-3").as_str())
-        );
-        let nested = format!("0::{TREE}/app-so.tilo.notes-3/inner\n");
-        assert_eq!(
-            app_cgroup_of(&nested).as_deref(),
-            Some(format!("{TREE}/app-so.tilo.notes-3").as_str())
-        );
-        // The spawner, the tree itself, a legacy scope and the session are not apps.
-        for other in [
-            format!("0::{TREE}/spawner\n"),
-            format!("0::{TREE}\n"),
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-a-7.scope\n"
-                .to_string(),
-            "0::/user.slice/user-1000.slice/session-2.scope\n".to_string(),
-            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-x.scope/app-a-1\n"
-                .to_string(),
+    fn an_app_cgroup_is_found_from_a_process_cgroup() {
+        for text in [
+            format!("0::{NOTES}\n"),
+            // A process in a cgroup an app made below its own is in that app.
+            format!("0::{NOTES}/inner\n"),
         ] {
-            assert_eq!(app_cgroup_of(&other), None, "{other}");
+            assert_eq!(scope_of(&text).as_deref(), Some(NOTES), "{text}");
+            assert_eq!(app_cgroup_at(&text).as_deref(), Some(NOTES), "{text}");
+            let dir = fs_path(scope_of(&text).unwrap().as_str());
+            assert_eq!(
+                dir,
+                Path::new(CGROUP_ROOT)
+                    .join(SLICE.trim_start_matches('/'))
+                    .join("app-tilo-so.tilo.notes-4126.scope")
+            );
+        }
+        // The app slice holds more than app scopes: a service, the manager
+        // itself, and the session.
+        for other in [
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/cc-model-router.service\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice\n",
+            "0::/user.slice/user-1000.slice/user@1000.service\n",
+            "0::/user.slice/user-1000.slice/session-2.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-tilo-4126.scope\n",
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-other-4126.scope\n",
+        ] {
+            assert_eq!(scope_of(other), None, "{other}");
         }
         assert_eq!(
-            fs_path(TREE),
-            Path::new(
-                "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/tilo-apps-41.scope"
-            )
+            app_of_scope("app-tilo-so.tilo.notes-4126.scope"),
+            Some(("so.tilo.notes".to_string(), 4126))
+        );
+        assert_eq!(
+            app_of_scope("app-tilo-org.gnome.Text\\x2dEditor-7.scope"),
+            Some(("org.gnome.Text-Editor".to_string(), 7))
+        );
+        assert_eq!(app_of_scope("tilo-apps-41.scope"), None);
+        assert_eq!(app_of_scope("app-tilo-4126.scope"), None);
+    }
+
+    #[test]
+    fn putting_an_app_in_a_tier_writes_what_a_launch_is_born_with() {
+        let app = tempfile::tempdir().unwrap();
+        for file in ["cpu.weight", "io.weight", "io.bfq.weight", "memory.low"] {
+            std::fs::write(app.path().join(file), "").unwrap();
+        }
+        set_tier(app.path(), Tier::Background, Some(32 << 30)).unwrap();
+        assert_eq!(tier_of(app.path()), Some(Tier::Background));
+        assert_eq!(
+            std::fs::read_to_string(app.path().join("io.weight")).unwrap(),
+            "default 50"
+        );
+        set_tier(app.path(), Tier::Foreground, Some(32 << 30)).unwrap();
+        assert_eq!(tier_of(app.path()), Some(Tier::Foreground));
+        assert_eq!(
+            std::fs::read_to_string(app.path().join("memory.low")).unwrap(),
+            (4_u64 << 30).to_string()
         );
     }
 
@@ -808,115 +566,45 @@ mod tests {
     }
 
     #[test]
-    fn a_tilo_app_is_one_oom_group_and_each_job_is_its_own() {
-        assert!(oom_group(AppKind::Tilo, Leaf::Main));
-        assert!(oom_group(AppKind::Tilo, Leaf::Job));
-        assert!(!oom_group(AppKind::Host, Leaf::Main));
-        assert!(oom_group(AppKind::Host, Leaf::Job));
-        for kind in [AppKind::Tilo, AppKind::Host] {
-            assert_eq!(AppKind::from_wire(kind.wire().as_bytes()), Some(kind));
-        }
-        assert_eq!(AppKind::from_wire(b"other"), None);
-
-        for (kind, main_group) in [(AppKind::Tilo, "1"), (AppKind::Host, "0")] {
-            let app = tempfile::tempdir().unwrap();
-            std::fs::write(
-                app.path().join("cgroup.controllers"),
-                "cpu io memory pids\n",
-            )
-            .unwrap();
-            let read = |path: &Path| std::fs::read_to_string(path).unwrap();
-            let main = lay_out(app.path(), kind).unwrap();
-            assert_eq!(main, app.path().join(MAIN_LEAF));
-            // Memory goes to the leaves, so the app's own cgroup holds no
-            // process and sets no OOM group of its own.
-            assert_eq!(read(&app.path().join("cgroup.subtree_control")), "+memory");
-            assert!(!app.path().join("memory.oom.group").exists());
-            assert_eq!(read(&main.join("memory.oom.group")), main_group, "{kind:?}");
-            assert_eq!(kind_of(app.path()), Some(kind));
-
-            // Each job is a sibling of the main leaf, its own OOM group: the
-            // kernel ends the highest grouped cgroup above its victim, which
-            // for a job's process is the job and nothing above it.
-            let first = create_job(app.path(), 1).unwrap();
-            let second = create_job(app.path(), 2).unwrap();
-            assert_eq!(first, app.path().join("job-1"));
-            assert_eq!(first.parent(), Some(app.path()));
-            assert_eq!(read(&first.join("memory.oom.group")), "1");
-            assert_eq!(read(&second.join("memory.oom.group")), "1");
-            assert_eq!(jobs(app.path()), [first, second]);
-            assert!(
-                create_job(app.path(), 1).is_err(),
-                "a job leaf is never reused"
-            );
-        }
-        assert!(is_job_leaf("job-12"));
-        assert!(!is_job_leaf("job-"));
-        assert!(!is_job_leaf(MAIN_LEAF));
-        let in_job = format!("0::{TREE}/app-so.tilo.terminal-3/job-2\n");
-        assert_eq!(
-            app_cgroup_of(&in_job).as_deref(),
-            Some(format!("{TREE}/app-so.tilo.terminal-3").as_str())
-        );
-        // The delegated tree is named the same way on both sides of the job door.
-        #[cfg(target_os = "linux")]
-        {
-            assert_eq!(
-                runtime_portal::jobs::tree_in(&in_job),
-                Some("tilo-apps-41.scope")
-            );
-            assert!(is_tree(runtime_portal::jobs::tree_in(&in_job).unwrap()));
-            assert_eq!(runtime_portal::jobs::TREE_PREFIX, TREE_PREFIX);
-        }
-    }
-
-    #[test]
-    fn memory_events_footprint_and_tier_are_read_from_the_cgroup() {
+    fn memory_events_footprint_and_pids_are_read_from_the_cgroup() {
         let app = tempfile::tempdir().unwrap();
-        let main = app.path().join(MAIN_LEAF);
-        std::fs::create_dir(&main).unwrap();
         std::fs::write(
-            main.join("memory.events"),
+            app.path().join("memory.events"),
             "low 0\nhigh 0\nmax 0\noom 2\noom_kill 3\noom_group_kill 1\n",
         )
         .unwrap();
         assert_eq!(
-            memory_events(&main),
+            memory_events(app.path()),
             MemoryEvents {
                 oom: 2,
                 oom_kill: 3,
                 oom_group_kill: 1
             }
         );
-        assert_eq!(memory_events(app.path()), MemoryEvents::default());
-        std::fs::write(main.join("memory.stat"), "anon 1048576\nfile 99999999\n").unwrap();
-        std::fs::write(main.join("memory.swap.current"), "2048\n").unwrap();
+        std::fs::write(
+            app.path().join("memory.stat"),
+            "anon 1048576\nfile 99999999\n",
+        )
+        .unwrap();
+        std::fs::write(app.path().join("memory.swap.current"), "2048\n").unwrap();
         assert_eq!(
-            footprint(&main),
+            footprint(app.path()),
             Some(1_048_576 + 2048),
             "page cache is no footprint"
         );
-        std::fs::write(app.path().join("cpu.weight"), "50\n").unwrap();
-        assert_eq!(tier_of(app.path()), Some(Tier::Background));
-        std::fs::write(app.path().join("cpu.weight"), "800\n").unwrap();
-        assert_eq!(tier_of(app.path()), Some(Tier::Foreground));
-        std::fs::write(main.join("cgroup.procs"), "10\n11\n").unwrap();
-        let job = app.path().join("job-1");
-        std::fs::create_dir(&job).unwrap();
-        std::fs::write(job.join("cgroup.procs"), "12\n").unwrap();
-        let mut pids = processes(app.path());
-        pids.sort_unstable();
-        assert_eq!(pids, [10, 11, 12]);
+        std::fs::write(app.path().join("memory.events"), "oom_kill 0\n").unwrap();
+        assert_eq!(memory_events(app.path()).oom_kill, 0);
+        std::fs::write(app.path().join("cgroup.procs"), "10\n11\n").unwrap();
+        assert_eq!(processes(app.path()), [10, 11]);
     }
 
     #[test]
-    fn the_app_list_reads_every_tree_and_skips_what_is_not_an_app() {
+    fn the_app_list_reads_every_scope_and_skips_what_is_not_an_app() {
         let slice = tempfile::tempdir().unwrap();
-        let tree = slice.path().join("tilo-apps-41.scope");
-        let notes = tree.join("app-so.tilo.notes-3");
+        let notes = slice.path().join("app-tilo-so.tilo.notes-3.scope");
         std::fs::create_dir_all(&notes).unwrap();
-        std::fs::create_dir_all(tree.join(SPAWNER_LEAF)).unwrap();
-        std::fs::create_dir_all(slice.path().join("app-tilo-x-1.scope")).unwrap();
+        std::fs::create_dir_all(slice.path().join("app-tilo-broken.scope")).unwrap();
+        std::fs::create_dir_all(slice.path().join("cc-model-router.service")).unwrap();
         std::fs::write(notes.join("pids.current"), "4\n").unwrap();
         std::fs::write(notes.join("memory.current"), format!("{}\n", 300 << 20)).unwrap();
         std::fs::write(notes.join("memory.peak"), format!("{}\n", 512 << 20)).unwrap();

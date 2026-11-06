@@ -9,17 +9,29 @@ use std::fmt::Write as _;
 use tilo_actions::ResourceSpec;
 use tilo_desktop::desk_verbs::launchpad_resource;
 use tilo_desktop::desk_verbs::{
-    CHROME_RESOURCE, DESK_RESOURCE, OpenSearch, chrome_resource, desk_resource,
+    CHROME_RESOURCE, DESK_RESOURCE, OpenSearch, chrome_resource, desk_resource, tab_resource_id,
 };
 use tilo_desktop_surface::SearchRow;
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect};
+use tilo_desktop_surface::window;
 use tilo_resource::Effect;
 
 /// Every resource the desktop publishes: the chrome over the windows, the
 /// desk under them with its windows, a display and the open search, and the
 /// launchpad.
 fn published() -> Vec<ResourceSpec> {
-    let tabs = [(7, "Notes".to_owned()), (8, "Mail".to_owned())];
+    let windows = [
+        tilo_desktop::desk_verbs::Shown {
+            tab: 7,
+            title: "Notes".to_owned(),
+            foreign: None,
+        },
+        tilo_desktop::desk_verbs::Shown {
+            tab: 8,
+            title: "Mail".to_owned(),
+            foreign: Some("so.tilo.mail".to_owned()),
+        },
+    ];
     let rows = [SearchRow {
         title: "Scratch".to_owned(),
         subtitle: None,
@@ -29,7 +41,7 @@ fn published() -> Vec<ResourceSpec> {
     vec![
         chrome_resource(),
         desk_resource(
-            &tabs,
+            &windows,
             &[8],
             &[1],
             Some(OpenSearch {
@@ -40,16 +52,6 @@ fn published() -> Vec<ResourceSpec> {
         ),
         launchpad_resource(),
     ]
-}
-
-/// Every action the resource tree offers, with the resource offering it.
-fn offered(resource: &ResourceSpec, into: &mut Vec<(String, String)>) {
-    for action in &resource.actions {
-        into.push((resource.id.as_str().to_owned(), action.id.clone()));
-    }
-    for child in &resource.children {
-        offered(child, into);
-    }
 }
 
 /// The resources the desktop publishes, each with the verbs it offers, as
@@ -139,14 +141,125 @@ fn the_desks_and_the_chromes_verbs_are_told_apart() {
 #[test]
 fn every_row_offers_a_verb_of_the_desktop() {
     for resource in published() {
-        let mut actions = Vec::new();
-        offered(&resource, &mut actions);
-        for (at, action) in actions {
+        for spec in actions(&resource) {
+            let action = spec.id.as_str();
+            let read = matches!(
+                spec.action_type().operation_type.as_deref(),
+                Some(window::LOOK | window::READ)
+            );
             assert!(
-                DeskEffect::declaration(&action).is_some()
-                    || ChromeEffect::declaration(&action).is_some(),
-                "{at} offers {action}, which neither vocabulary declares"
+                read || DeskEffect::declaration(action).is_some()
+                    || ChromeEffect::declaration(action).is_some(),
+                "{} offers {action}, which neither vocabulary declares",
+                resource.id.as_str()
             );
         }
     }
+}
+
+#[test]
+fn the_launchpad_cards_are_its_controls_for_scripts() {
+    // A card submits the launchpad verb for what the empty desk shows, and a
+    // script or an agent invokes the same verb by the row this resource
+    // publishes. People reach the verbs through their host actions, which is
+    // what the palette lists, so this resource is never the palette's door.
+    let launchpad = launchpad_resource();
+    assert!(
+        !launchpad.children.is_empty(),
+        "the launchpad has its cards"
+    );
+    for card in &launchpad.children {
+        for action in &card.actions {
+            assert!(
+                !action.reaches_people(),
+                "{} ({}) is listed for people",
+                card.id.as_str(),
+                action.id
+            );
+            assert!(
+                action.reaches_agents(),
+                "{} ({}) stays a control scripts can run",
+                card.id.as_str(),
+                action.id
+            );
+        }
+    }
+}
+
+/// A window this session does not run — another desktop's — is read and
+/// pictured through the desk, and nothing acts on it: the two verbs it adds
+/// only read, and reach agents, who have no other way to see it.
+#[test]
+fn a_foreign_window_offers_the_two_reads_and_nothing_that_acts() {
+    let desk = published()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == DESK_RESOURCE)
+        .expect("the desk");
+    let window = desk
+        .children
+        .iter()
+        .find(|resource| resource.id.as_str() == tab_resource_id(8))
+        .expect("the foreign window's row");
+    let reads: Vec<String> = window
+        .actions
+        .iter()
+        .filter(|spec| {
+            matches!(
+                spec.action_type().operation_type.as_deref(),
+                Some(window::LOOK | window::READ)
+            )
+        })
+        .map(|spec| spec.id.clone())
+        .collect();
+    assert_eq!(
+        reads,
+        ["look", "read"],
+        "the foreign window is read and pictured, and its own verbs are these"
+    );
+    for spec in &window.actions {
+        let ty = spec.action_type();
+        if ty.operation_type.as_deref() != Some(window::LOOK)
+            && ty.operation_type.as_deref() != Some(window::READ)
+        {
+            continue;
+        }
+        assert_eq!(
+            ty.contract.kind,
+            tilo_actions::ActionKind::Read,
+            "{} reads and nothing else",
+            spec.id
+        );
+        assert_eq!(
+            spec.audience(),
+            tilo_actions::Audience::Agents,
+            "{} is offered to whoever cannot see the window otherwise",
+            spec.id
+        );
+    }
+    // The desk's own verbs are the only ones it adds to a window it runs.
+    let window = published()
+        .into_iter()
+        .find(|resource| resource.id.as_str() == DESK_RESOURCE)
+        .and_then(|desk| {
+            desk.children
+                .into_iter()
+                .find(|resource| resource.id.as_str() == tab_resource_id(7))
+        })
+        .expect("the session's own window");
+    assert!(
+        window.actions.iter().all(|spec| {
+            spec.action_type().operation_type.as_deref() != Some(window::LOOK)
+                && spec.action_type().operation_type.as_deref() != Some(window::READ)
+        }),
+        "a window the session runs says what it shows itself"
+    );
+}
+
+/// Every action `resource` and its children offer.
+fn actions(resource: &ResourceSpec) -> Vec<tilo_actions::ActionSpec> {
+    let mut found: Vec<tilo_actions::ActionSpec> = resource.actions.clone();
+    for child in &resource.children {
+        found.extend(actions(child));
+    }
+    found
 }

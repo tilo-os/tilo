@@ -538,8 +538,8 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
@@ -571,8 +571,8 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
@@ -604,8 +604,8 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ahash = { version = "0.8", features = ["no-rng"] }
@@ -637,7 +637,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
 wgpu-core = { version = "29", features = ["dx12", "gles", "metal", "noop", "portable-atomic", "renderdoc", "vulkan", "wgsl"] }
-x11rb = { version = "0.13", default-features = false, features = ["xfixes"] }
-x11rb-protocol = { version = "0.13", default-features = false, features = ["std", "xfixes"] }
+x11rb = { version = "0.13", default-features = false, features = ["res", "xfixes"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["res", "std", "xfixes"] }
 
 ### END HAKARI SECTION

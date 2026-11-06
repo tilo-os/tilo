@@ -52,6 +52,9 @@ fn draw_frame_content_with(
 ) -> DrawnFrame {
     // The motions and the wishes for frames this pass makes are this app's:
     // whichever surface it shares the thread with, its frame is its own.
+    // What a widget places again as it paints (a floating panel measured
+    // against its labels) lands on this display's pixels as layout does.
+    let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
     let owner = app.motion_owner();
     crate::motion::own(owner, || {
         draw_frame_content_owning(app, scene, size, scale_factor, t_draw_start, culled)

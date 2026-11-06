@@ -160,7 +160,7 @@ pub fn workspace_bytes(workspace: &str) -> Option<[u8; 16]> {
 }
 
 /// A track of a live namespace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Track {
     /// Who is here and what they are doing.
     Presence,

@@ -7,6 +7,12 @@
     clippy::expect_used,
     reason = "a failed step in a test is the assertion"
 )]
+#![allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::indexing_slicing,
+    reason = "a fixture's pixels are small whole numbers it laid out itself"
+)]
 
 use tilo_compositor::{
     Compositor, HostFrame, HostLayer, OutputConfig, Region, StackPolicy, SurfaceHost,
@@ -67,7 +73,7 @@ fn a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up() {
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
     compositor.add_host(Box::new(Rows::new((640, 480))));
-    compositor.render().unwrap();
+    compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     let above = frame.pixel(320, 120).unwrap();
     let below = frame.pixel(320, 360).unwrap();
@@ -78,6 +84,281 @@ fn a_hosted_frame_its_host_fills_row_by_row_draws_the_same_way_up() {
     assert!(
         below[2] > 128 && below[0] < 128,
         "blue below the middle: {below:?}"
+    );
+}
+
+/// A host that paints one opaque bar into a frame the size of the output,
+/// the way the top bar does, leaving the rest transparent.
+struct Bar {
+    frame: HostFrame,
+    location: (i32, i32),
+    size: (i32, i32),
+}
+
+impl Bar {
+    /// A `frame` of the drawn pixels, covering `layer` on the output, with
+    /// the bar painted `scale` times up: what a surface drawn at the output's
+    /// scale hands over.
+    fn new(frame: (u32, u32), layer: (i32, i32), scale: u32) -> Self {
+        Self::at((0, 0), frame, layer, scale)
+    }
+
+    /// [`Bar::new`], for a layer whose top left corner is `location` on the
+    /// output rather than the output's own.
+    fn at(location: (i32, i32), frame: (u32, u32), layer: (i32, i32), scale: u32) -> Self {
+        let (width, height) = frame;
+        let bar = (40 * scale, 20 * scale, 200 * scale, 60 * scale);
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        for y in bar.1..bar.1 + bar.3 {
+            for x in bar.0..bar.0 + bar.2 {
+                let start = ((y * width + x) * 4) as usize;
+                pixels[start..start + 4].copy_from_slice(&[0, 255, 0, 255]);
+            }
+        }
+        let mut frame = HostFrame::new(frame);
+        frame.set_pixels(&pixels, &[Region::new(bar.0, bar.1, bar.2, bar.3)]);
+        Self {
+            frame,
+            location,
+            size: layer,
+        }
+    }
+}
+
+impl SurfaceHost for Bar {
+    fn layers(&self) -> Vec<HostLayer> {
+        vec![HostLayer {
+            location: self.location,
+            size: self.size,
+            frame: self.frame.clone(),
+        }]
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+}
+
+/// A host that has a layer but has drawn nothing into it: it never shows.
+struct Blank {
+    frame: HostFrame,
+    size: (i32, i32),
+}
+
+impl SurfaceHost for Blank {
+    fn layers(&self) -> Vec<HostLayer> {
+        vec![HostLayer {
+            location: (0, 0),
+            size: self.size,
+            frame: self.frame.clone(),
+        }]
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+}
+
+#[test]
+fn a_layer_shows_where_it_drew_and_nowhere_else() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    compositor.add_host(Box::new(Bar::new((640, 480), (640, 480), 1)));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let inside = frame.pixel(120, 40).unwrap();
+    assert!(
+        inside[1] > 128 && inside[0] < 128,
+        "the bar it drew shows: {inside:?}"
+    );
+    let outside = frame.pixel(500, 400).unwrap();
+    assert!(
+        (i32::from(outside[0]) - 26).abs() <= 2
+            && (i32::from(outside[1]) - 27).abs() <= 2
+            && (i32::from(outside[2]) - 38).abs() <= 2,
+        "the rest is the desktop behind it: {outside:?}"
+    );
+}
+
+#[test]
+fn a_layer_the_size_of_the_output_drawn_at_half_of_it_lands_where_it_was_drawn() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    // The frame is drawn at twice the pixels of the rectangle it covers: the
+    // bar it draws at (80, 40) of the frame covers (40, 20) on the output.
+    compositor.add_host(Box::new(Bar::new((640, 480), (320, 240), 2)));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let inside = frame.pixel(50, 25).unwrap();
+    assert!(
+        inside[1] > 128 && inside[0] < 128,
+        "the bar, at the rectangle the layer covers: {inside:?}"
+    );
+    let below = frame.pixel(50, 120).unwrap();
+    assert!(below[1] < 128, "nothing below the bar it drew: {below:?}");
+    let beside = frame.pixel(280, 25).unwrap();
+    assert!(beside[1] < 128, "and nothing beside it: {beside:?}");
+}
+
+/// A host that paints a bar in its first frame and erases it in the next,
+/// the way a banner leaves: what it stopped drawing is painted over, not
+/// left on the screen.
+struct Vanishes {
+    frame: HostFrame,
+    size: (i32, i32),
+    /// How many frames it has been asked for: it erases its bar in the second.
+    frames: u32,
+}
+
+impl Vanishes {
+    const BAR: (u32, u32, u32, u32) = (40, 20, 200, 60);
+
+    fn new(size: (i32, i32)) -> Self {
+        let (width, height) = (
+            u32::try_from(size.0).unwrap(),
+            u32::try_from(size.1).unwrap(),
+        );
+        let (bx, by, bw, bh) = Self::BAR;
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        for y in by..by + bh {
+            for x in bx..bx + bw {
+                let start = ((y * width + x) * 4) as usize;
+                pixels[start..start + 4].copy_from_slice(&[0, 255, 0, 255]);
+            }
+        }
+        let mut frame = HostFrame::new((width, height));
+        frame.set_pixels(&pixels, &[Region::new(bx, by, bw, bh)]);
+        Self {
+            frame,
+            size,
+            frames: 0,
+        }
+    }
+}
+
+impl SurfaceHost for Vanishes {
+    fn layers(&self) -> Vec<HostLayer> {
+        vec![HostLayer {
+            location: (0, 0),
+            size: self.size,
+            frame: self.frame.clone(),
+        }]
+    }
+
+    fn prepare_frame(&mut self) -> bool {
+        self.frames += 1;
+        if self.frames != 2 {
+            return false;
+        }
+        let (width, height) = self.frame.size();
+        let (bx, by, bw, bh) = Self::BAR;
+        self.frame.set_pixels(
+            &vec![0u8; (width * height * 4) as usize],
+            &[Region::new(bx, by, bw, bh)],
+        );
+        true
+    }
+
+    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    fn pointer_motion(&mut self, _x: f64, _y: f64) {}
+
+    fn pointer_button(&mut self, _button: u32, _pressed: bool) {}
+}
+
+#[test]
+fn what_a_layer_stopped_drawing_is_painted_over() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    compositor.add_host(Box::new(Vanishes::new((640, 480))));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let painted = frame.pixel(120, 40).unwrap();
+    assert!(
+        painted[1] > 128 && painted[0] < 128,
+        "the bar it drew shows: {painted:?}"
+    );
+    // A display shows one frame per refresh, and the frame that paints the
+    // erase over is built when its turn comes: drawing on brings it.
+    let mut erased = None;
+    for _ in 0..8 {
+        compositor.draw_frame().expect("a frame");
+        let frame = compositor.screenshot("HEADLESS-1").unwrap();
+        let pixel = frame.pixel(120, 40).unwrap();
+        erased = Some(pixel);
+        if (i32::from(pixel[1]) - 27).abs() <= 2 {
+            break;
+        }
+    }
+    let erased = erased.unwrap();
+    assert!(
+        (i32::from(erased[0]) - 26).abs() <= 2
+            && (i32::from(erased[1]) - 27).abs() <= 2
+            && (i32::from(erased[2]) - 38).abs() <= 2,
+        "the desktop behind it shows where the bar was: {erased:?}"
+    );
+}
+
+#[test]
+fn a_layer_that_is_not_at_the_outputs_corner_draws_where_it_says() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    // A panel a third of the way down the output, drawn at twice the pixels
+    // of the rectangle it covers: its bar at (80, 40) of the frame lands at
+    // (40, 320) of the output.
+    compositor.add_host(Box::new(Bar::at((0, 300), (640, 480), (320, 240), 2)));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let inside = frame.pixel(50, 325).unwrap();
+    assert!(
+        inside[1] > 128 && inside[0] < 128,
+        "the bar it drew, where the layer put it: {inside:?}"
+    );
+    for (x, y) in [(50, 420), (50, 40), (280, 325)] {
+        let outside = frame.pixel(x, y).unwrap();
+        assert!(
+            outside[1] < 128,
+            "nothing at ({x}, {y}), where it drew none: {outside:?}"
+        );
+    }
+}
+
+#[test]
+fn a_layer_that_drew_nothing_is_not_drawn() {
+    let mut compositor = Compositor::headless(Box::new(StackPolicy)).expect("compositor");
+    compositor
+        .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
+        .expect("output");
+    compositor.add_host(Box::new(Blank {
+        frame: HostFrame::new((640, 480)),
+        size: (640, 480),
+    }));
+    compositor.draw_frame().expect("a frame");
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    let middle = frame.pixel(320, 240).unwrap();
+    assert!(
+        (i32::from(middle[0]) - 26).abs() <= 2
+            && (i32::from(middle[1]) - 27).abs() <= 2
+            && (i32::from(middle[2]) - 38).abs() <= 2,
+        "an empty layer shows nothing, the desktop shows through: {middle:?}"
     );
 }
 
@@ -111,6 +392,7 @@ fn a_host_that_needs_a_frame_now_shortens_the_loops_wait() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
+    compositor.draw_frame().expect("a frame");
     assert_eq!(
         compositor.next_wait(),
         None,

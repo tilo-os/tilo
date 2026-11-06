@@ -187,13 +187,14 @@ impl Mp4Recording {
         Ok(())
     }
 
-    /// End every track and wait for the muxer to write the trailer.
+    /// End every track and wait for the muxer to write the trailer; the
+    /// caller names the file it could not finish.
     /// # Errors
     /// Returns an error if nothing was recorded or the trailer cannot be
     /// written.
     pub fn finish(mut self) -> Result<(), String> {
         let Some(muxer) = self.muxer.take() else {
-            return Err("recording ended before its first encoded frame".into());
+            return Err("no frame was written to the file".into());
         };
         let _ = muxer.video.end_of_stream();
         for src in &muxer.audio {
@@ -212,12 +213,9 @@ impl Mp4Recording {
         let _ = muxer.pipeline.set_state(gst::State::Null);
         match msg.as_deref().map(gst::MessageRef::view) {
             Some(gst::MessageView::Eos(_)) => Ok(()),
-            Some(gst::MessageView::Error(e)) => {
-                Err(format!("finalize {}: {}", self.path.display(), e.error()))
-            }
+            Some(gst::MessageView::Error(e)) => Err(format!("the muxer failed: {}", e.error())),
             _ => Err(format!(
-                "finalize {}: the muxer did not finish within {FINISH_TIMEOUT:?}",
-                self.path.display()
+                "the muxer did not finish within {FINISH_TIMEOUT:?}"
             )),
         }
     }

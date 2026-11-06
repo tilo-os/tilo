@@ -413,6 +413,120 @@ fn the_glass_sheen_and_rim_take_the_themes_light() {
     );
 }
 
+/// The strokes a painted part draws.
+fn strokes(painted: &PaintedPart) -> Vec<(vello::kurbo::BezPath, f32)> {
+    painted
+        .scene
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Stroke { path, width, .. } => Some((path.clone(), *width)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `path` runs along the side `side` of `rect`, within half a pixel.
+fn runs_along(path: &vello::kurbo::BezPath, rect: Rect, side: crate::part_paint::Sides) -> bool {
+    use vello::kurbo::PathEl;
+    let half = 0.51;
+    let (top, trailing, bottom, leading) = (rect.y0, rect.x1, rect.y1, rect.x0);
+    let on = |p: vello::kurbo::Point| {
+        if side == crate::part_paint::Sides::TOP {
+            (p.y - top).abs() <= half
+        } else if side == crate::part_paint::Sides::BOTTOM {
+            (p.y - bottom).abs() <= half
+        } else if side == crate::part_paint::Sides::LEADING {
+            (p.x - leading).abs() <= half
+        } else {
+            (p.x - trailing).abs() <= half
+        }
+    };
+    // The rim runs along the side when a segment of it does: both ends of
+    // that segment lie on the side's line. A path that only leaves or
+    // arrives there at a corner, or a flush body's rim that turns before it,
+    // does not.
+    let mut pen = None;
+    for element in path.elements() {
+        match *element {
+            PathEl::MoveTo(p) => pen = Some(p),
+            PathEl::LineTo(p) => {
+                if pen.is_some_and(|from| on(from) && on(p)) {
+                    return true;
+                }
+                pen = Some(p);
+            }
+            PathEl::CurveTo(p1, p2, p) => {
+                if pen.is_some_and(|from| on(from) && on(p1) && on(p2) && on(p)) {
+                    return true;
+                }
+                pen = Some(p);
+            }
+            PathEl::ClosePath => pen = None,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// A bar flush with the display draws no lit rim along the screen's own
+/// edges, and keeps its rim on the side that faces what it covers.
+///
+/// The theme's glass lights its outline. On a bar edge to edge with the
+/// screen its top row and end columns are the display's own, so a rim there
+/// is a line of light a pixel in from the bezel: the bar reads as floating
+/// rather than as reaching the edge.
+#[test]
+fn a_flush_bar_lights_no_rim_on_the_display_edges() {
+    use crate::part_paint::Sides;
+    let theme = Theme::named("glass").expect("the Glass preset");
+    let color = Color::from_rgb8(0x40, 0x60, 0x80);
+    let size = Size::new(320.0, 32.0);
+    let body = Rect::new(0.0, 0.0, 320.0, 32.0);
+    let paint = |flush: Sides| {
+        let mut tokens = part_tokens(&theme, SurfaceRole::Bar, (color, color, color), color);
+        tokens.flush = flush;
+        // A bar edge to edge with the display is square, which is what makes
+        // its rim four straight edges to leave off a flush side.
+        tokens.radius = 0.0;
+        let tokens = tokens;
+        builtin::glass_set()
+            .painter()
+            .paint(
+                Part::BarBody,
+                size,
+                PartState::settled(States::REST),
+                1.0,
+                &tokens,
+            )
+            .expect("glass draws a bar body")
+    };
+    // A bar that is not flush keeps its rim all round; every side is drawn,
+    // one path.
+    let all = strokes(&paint(Sides::NONE));
+    assert_eq!(all.len(), 1, "a body not flush lights one rim path");
+    for side in [Sides::TOP, Sides::BOTTOM, Sides::LEADING, Sides::TRAILING] {
+        assert!(
+            runs_along(&all[0].0, body, side),
+            "an unflushed body's rim runs along {side:?}"
+        );
+    }
+    // A bar on the screen's top edge lights only the side it covers.
+    let flush = Sides::TOP.union(Sides::LEADING).union(Sides::TRAILING);
+    let drawn = strokes(&paint(flush));
+    assert_eq!(drawn.len(), 1, "a flush body lights one rim path");
+    for side in [Sides::TOP, Sides::LEADING, Sides::TRAILING] {
+        assert!(
+            !runs_along(&drawn[0].0, body, side),
+            "a flush body draws nothing along the display's {side:?} edge"
+        );
+    }
+    assert!(
+        runs_along(&drawn[0].0, body, Sides::BOTTOM),
+        "and keeps its rim on the side that faces what it covers"
+    );
+}
+
 #[test]
 fn forced_colours_draw_with_the_toolkits_own_painters() {
     let (set, _) = Triangles::set();
@@ -579,4 +693,118 @@ fn the_part_cache_keys_on_every_liquid_parameter() {
         );
         assert_eq!(draw(&tokens), before + 1, "and is kept under it");
     }
+}
+
+/// The parts Pixelated draws a pattern fill in: the cell grid's texels.
+fn pixelated_patterns(tokens: &PartTokens, part: Part) -> Vec<f32> {
+    let painted = builtin::pixelated_set()
+        .painter()
+        .paint(
+            part,
+            Size::new(200.0, 120.0),
+            PartState {
+                was: States::REST,
+                now: States::REST,
+            },
+            1.0,
+            tokens,
+        )
+        .expect("pixelated draws the four surface parts");
+    painted
+        .scene
+        .ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Fill {
+                brush: Brush::Pattern { image, scale },
+                ..
+            } => {
+                assert_eq!((image.width, image.height), (4, 4), "a 4 by 4 tile");
+                Some(*scale)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Pixelated draws its cell grid as its own ops: a pattern fill of the
+/// body in the fill stepped towards the ink, one texel per cell. The look
+/// read as a flat box before, because a ground that varies nowhere left the
+/// cells nothing to quantise, so the finish showed only its corners and its
+/// border.
+#[test]
+fn the_pixelated_set_draws_its_cell_grid() {
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let color = Color::from_rgb8(0x18, 0x20, 0x2c);
+    let tokens = part_tokens(
+        &theme,
+        SurfaceRole::Floating,
+        (color, color, color),
+        crate::chrome::panel_ground(&theme),
+    );
+    let cell = tokens.param("cell", 8.0);
+    for part in [
+        Part::WindowGround,
+        Part::FloatingPanel,
+        Part::BarBody,
+        Part::ControlFace,
+    ] {
+        assert_eq!(
+            pixelated_patterns(&tokens, part),
+            vec![cell],
+            "{part:?} carries the grid, one pattern fill, one texel per cell"
+        );
+    }
+    // A grid of 0 draws none.
+    let plain = with_param(&tokens, "grid", 0.0);
+    assert!(
+        pixelated_patterns(&plain, Part::FloatingPanel).is_empty(),
+        "a grid of 0 draws no cells"
+    );
+}
+
+/// The grid's pattern paints cells on the frame: a 4 by 4 dither tile drawn
+/// at `cell` logical pixels per texel, so a row of the body steps in a
+/// Bayer order rather than shading evenly.
+#[test]
+fn the_cell_grid_paints_cells_on_the_frame() {
+    use crate::offscreen::OffscreenRenderer;
+    let (width, height) = (160, 120);
+    let theme = Theme::preset(crate::theme::Preset::Pixelated);
+    let color = Color::from_rgb8(0x20, 0x28, 0x34);
+    // The ink the grid steps towards: what a surface measures its text on.
+    let ink = Color::from_rgb8(0xf0, 0xf2, 0xf6);
+    let tokens = part_tokens(
+        &theme,
+        SurfaceRole::Floating,
+        (color, ink, color),
+        crate::chrome::panel_ground(&theme),
+    );
+    let mut scene = Scene::new();
+    paint_part(
+        &mut scene,
+        Affine::IDENTITY,
+        Rect::new(20.0, 20.0, 140.0, 100.0),
+        (
+            builtin::pixelated_set(),
+            Part::FloatingPanel,
+            SurfaceRole::Floating,
+        ),
+        Moment::settled(States::REST),
+        &tokens,
+        &theme,
+    );
+    let mut renderer = OffscreenRenderer::new(width, height);
+    let rgba = renderer.render(&scene, Color::BLACK);
+    let row: Vec<(u8, u8, u8)> = (30..130)
+        .map(|x| {
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, width, x, 60);
+            (r, g, b)
+        })
+        .collect();
+    let changes = row.windows(2).filter(|pair| pair[0] != pair[1]).count();
+    assert!(
+        changes >= 4,
+        "the grid paints cells across the body: {changes} changes in {row:?}"
+    );
 }

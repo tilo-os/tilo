@@ -458,7 +458,12 @@ impl Emoji {
                 ))));
                 return;
             }
-            Ok(_) => std::fs::read(path).ok(),
+            Ok(_) => std::fs::read(path)
+                .inspect_err(|error| {
+                    tracing::warn!(%error, path = %path.display(), "a chosen emoji could not be read");
+                    })
+                .ok(),
+            // ignored-failure: the person is told the file cannot be read
             Err(_) => None,
         };
         let Some(bytes) = bytes else {

@@ -276,8 +276,8 @@ view release_board(r: Release) {
                         action: .some("New item"),
                     ) {
                         for x in cards {
-                            ui.BoardCard(x, title: .some(x.title)) {
-                                ui.Text(x.stage, role: .caption, secondary: true)
+                            ui.BoardCard(x) {
+                                board_item_row(x)
                             }
                         }
                     }
@@ -287,10 +287,15 @@ view release_board(r: Release) {
     }
 }
 
+/// An item on the release's board as its row: its title, and the stage it is in.
+view board_item_row(x: Item) {
+    row(x.title, secondary: x.stage)
+}
+
 /// The basics, looked after by the person looking.
 scenario "basics" {
     let g = root Gallery
-    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00Z))
+    g.basics.insert(Basics(title: "Basics", owner: .some(invoker), updated: 2026-06-30T09:00))
 }
 
 /// A team's backlog a week into a release.

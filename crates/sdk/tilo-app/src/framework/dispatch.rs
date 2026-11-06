@@ -1284,7 +1284,12 @@ impl<R: Resource> Dispatcher<R> {
         if invoke.id == tilo_resource::APPLY || invoke.id == tilo_resource::FIELD_EDIT {
             return match invoke.build(0) {
                 Ok(action) => self.may_apply(&action),
-                Err(_) => !self.read_only(),
+                Err(error) => {
+                    // What the invocation applies cannot be read here, so the
+                    // door decides what its published action needs.
+                    tracing::warn!(%error, action = %invoke.id, "an invocation's typed value could not be built; the door decides");
+                    !self.read_only()
+                }
             };
         }
         may_declared(

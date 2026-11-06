@@ -5,8 +5,6 @@
 //!
 //! - a Tilo launch the launcher placed itself:
 //!   `…/app.slice/app-tilo-<escaped id>-<pid>.scope`;
-//! - a launch in the session's delegated app tree:
-//!   `…/app.slice/tilo-apps-<n>.scope/app-<escaped id>-<k>`;
 //! - another desktop's application, by the systemd convention
 //!   (<https://systemd.io/DESKTOP_ENVIRONMENTS>):
 //!   `app[-<launcher>]-<application id>[-<random>].scope` or
@@ -20,18 +18,11 @@
 
 #[must_use]
 pub fn app_of_cgroup(path: &str) -> Option<String> {
-    let mut components = path.split('/').filter(|part| !part.is_empty()).peekable();
-    while let Some(part) = components.next() {
+    for part in path.split('/').filter(|part| !part.is_empty()) {
         if let Some(rest) = part.strip_prefix("app-tilo-")
             && let Some(rest) = rest.strip_suffix(".scope")
         {
             return tilo_leaf(rest);
-        }
-        if part.starts_with("tilo-apps-") && part.strip_suffix(".scope").is_some() {
-            return components
-                .peek()
-                .and_then(|leaf| leaf.strip_prefix("app-"))
-                .and_then(tilo_leaf);
         }
         if let Some(app) = desktop_unit(part) {
             return Some(app);
@@ -183,11 +174,6 @@ mod tests {
                 format!("{base}/app-tilo-so.tilo.my\\x2dapp-7.scope/sub"),
                 Some("so.tilo.my-app"),
             ),
-            (
-                format!("{base}/tilo-apps-12.scope/app-so.tilo.files-3"),
-                Some("so.tilo.files"),
-            ),
-            (format!("{base}/tilo-apps-12.scope/spawner"), None),
             (
                 format!("{base}/app-gnome-org.mozilla.firefox-5512.scope"),
                 Some("org.mozilla.firefox"),

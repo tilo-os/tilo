@@ -30,6 +30,8 @@ fn remote_tab(title: &str, app: &str) -> Tab {
             surface_id: 0,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     }
 }
 
@@ -101,6 +103,8 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                     label: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             },
         );
         match &tab.tile {
@@ -133,6 +137,8 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                     surface_id: 99,
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             },
         );
         match &tab.tile {
@@ -162,6 +168,8 @@ fn a_peers_window_arrives_as_its_app_without_clobbering_local_instances() {
                     surface_id: 99,
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             },
         );
         match &tab.tile {

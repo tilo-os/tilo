@@ -33,6 +33,8 @@ fn windows_tabs(minter: &mut IdMinter, windows: usize) -> Vec<Tab> {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
         .collect()
 }
@@ -626,7 +628,7 @@ fn closing_a_window_keeps_every_frame_settling() {
     let mut at = ui::time::now();
     for _ in 0..40 {
         at = at.checked_add(Duration::from_millis(16)).unwrap();
-        tilo_clock::testing::with_monotonic_time(at, || {
+        ui::time::testing::with_monotonic_time(at, || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
         });
     }
@@ -723,6 +725,28 @@ fn an_edge_drag_sets_the_width_and_the_strip_keeps_it() {
     );
 }
 
+/// The desk mints its ids under the device's range, and a tree kept beside the
+/// device's state file carries none of its own: installing the kept tree lays
+/// this device's changes in this desk's range, not in "nobody's".
+#[test]
+fn a_tree_kept_beside_the_state_file_installs_in_this_desks_range() {
+    let (_surface, handle) = desktop(1);
+    let minted = handle.read(Clone::clone);
+    assert_eq!(minted.salt, 7, "the desk mints in the device's range");
+    let mut kept = minted.clone();
+    kept.salt = 0;
+    handle.replace_tree(kept);
+    let installed = handle.read(Clone::clone);
+    assert_eq!(
+        installed.salt, minted.salt,
+        "the tree installed writes in this desk's range"
+    );
+    assert_eq!(
+        installed.workspaces[0].strips[0].id, minted.workspaces[0].strips[0].id,
+        "and it is the tree that was kept"
+    );
+}
+
 #[test]
 fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
     let (mut surface, handle) = desktop(3);
@@ -809,6 +833,8 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
         }
     }
@@ -916,12 +942,32 @@ fn notch(rightward: f32) -> MouseScrollDelta {
     lines(6.0 * rightward)
 }
 
+/// Route one wheel event the content under the pointer left to the strip,
+/// as the desktop's host routes it, and hand back whether the strip took it.
+fn wheel(surface: &mut DesktopSurface, delta: MouseScrollDelta, at: Instant) -> bool {
+    surface.end_idle_swipe(at);
+    let Some(travel) = surface.strip_travel(delta, 1.0) else {
+        return false;
+    };
+    surface.route_strip_swipe(travel, at) || surface.take_sideways(travel, false, at)
+}
+
+/// Route one wheel event over content that scrolls sideways with it, which
+/// takes the gesture's first event.
+fn wheel_in_app(surface: &mut DesktopSurface, delta: MouseScrollDelta, at: Instant) -> bool {
+    surface.end_idle_swipe(at);
+    let Some(travel) = surface.strip_travel(delta, 1.0) else {
+        return false;
+    };
+    surface.route_strip_swipe(travel, at) || surface.take_sideways(travel, true, at)
+}
+
 #[test]
 fn a_wheel_spin_steps_a_strip_that_cannot_pan_by_its_travel() {
     // Unlaid, the strip cannot pan, as when its windows all fit.
     let (mut surface, handle) = desktop(5);
     let t = ui::time::now();
-    assert!(surface.route_swipe(notch(1.0), 1.0, t));
+    assert!(wheel(&mut surface, notch(1.0), t));
     assert_eq!(
         focused(&mut surface, &handle),
         1,
@@ -931,18 +977,18 @@ fn a_wheel_spin_steps_a_strip_that_cannot_pan_by_its_travel() {
     let mut at = 0;
     for gap in gaps {
         at += gap;
-        assert!(surface.route_swipe(notch(1.0), 1.0, ms(t, at)));
+        assert!(wheel(&mut surface, notch(1.0), ms(t, at)));
     }
-    // Eight notches of six lines travel 1920 px: the first notch's step
-    // and one per STEP_TRAVEL_PX after it.
+    // Eight notches of six lines travel 8 × 6 × line_of_wheel(): the first
+    // notch's step and one per STEP_TRAVEL_PX after it.
     assert_eq!(
         focused(&mut surface, &handle),
-        3,
+        4,
         "a step per window's width of travel, not per notch"
     );
     for i in 1..=12 {
         assert!(
-            surface.route_swipe(notch(1.0), 1.0, ms(t, at + 17 * i)),
+            wheel(&mut surface, notch(1.0), ms(t, at + 17 * i)),
             "travel past the last window stays the strip's"
         );
     }
@@ -950,24 +996,28 @@ fn a_wheel_spin_steps_a_strip_that_cannot_pan_by_its_travel() {
 
     let t = ms(t, 2000);
     assert!(
-        surface.route_swipe(notch(-1.0), 1.0, t),
+        wheel(&mut surface, notch(-1.0), t),
         "after a pause a notch back steps back"
     );
     assert_eq!(focused(&mut surface, &handle), 3);
     assert!(
-        surface.route_swipe(pixels(240.0, 0.0), 1.0, ms(t, 1000)),
+        wheel(&mut surface, pixels(240.0, 0.0), ms(t, 1000)),
         "a trackpad's travel steps the same"
     );
     assert_eq!(focused(&mut surface, &handle), 2);
     for i in 1..=3 {
-        surface.route_swipe(pixels(240.0, 0.0), 1.0, ms(t, 1000 + 17 * i));
+        wheel(&mut surface, pixels(240.0, 0.0), ms(t, 1000 + 17 * i));
     }
     assert_eq!(focused(&mut surface, &handle), 1);
 }
 
 #[test]
 fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
-    for (kind, delta) in [("wheel", notch(1.0)), ("trackpad", pixels(-240.0, 0.0))] {
+    // Six notches a kind: a wheel's six lines each, a trackpad's 240 px.
+    for (kind, delta, travel) in [
+        ("wheel", notch(1.0), 36.0 * ui::widget::line_of_wheel()),
+        ("trackpad", pixels(-240.0, 0.0), 6.0 * 240.0),
+    ] {
         let (surface, handle) = desktop(5);
         let mut frame = ui::headless::FrameHarness::for_root_with(
             ui::state::State::new(),
@@ -990,11 +1040,11 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
         );
         let t = ui::time::now();
         for i in 0..6 {
-            assert!(surface.route_swipe(delta, 1.0, ms(t, 17 * i)), "{kind}");
+            assert!(wheel(&mut surface, delta, ms(t, 17 * i)), "{kind}");
         }
         let row = surface.shown_row_ref().unwrap();
         assert!(
-            (row.scroll_x() - start - 1440.0).abs() < 0.5,
+            (row.scroll_x() - start - travel).abs() < 0.5,
             "{kind}: six notches pan six notches' travel, from {start} to {}",
             row.scroll_x()
         );
@@ -1026,19 +1076,19 @@ fn a_sideways_spin_pans_an_overflowing_strip_and_focus_follows_it() {
         );
         let surface = frame.root::<DesktopSurface>();
         assert!(
-            (surface.shown_row_ref().unwrap().scroll_x() - start - 1440.0).abs() < 0.5,
+            (surface.shown_row_ref().unwrap().scroll_x() - start - travel).abs() < 0.5,
             "{kind}: and the strip stays where the pan left it"
         );
     }
 }
 
 #[test]
-fn a_swipe_with_nowhere_to_go_and_vertical_scrolling_belong_to_content() {
+fn a_sideways_gesture_belongs_to_the_content_that_takes_it() {
     let (mut surface, handle) = desktop(1);
     let t = ui::time::now();
     for i in 0..10 {
         assert!(
-            !surface.route_swipe(lines(1.0), 1.0, ms(t, 16 * i)),
+            !wheel_in_app(&mut surface, lines(1.0), ms(t, 16 * i)),
             "a lone window's app scrolls sideways"
         );
     }
@@ -1046,29 +1096,25 @@ fn a_swipe_with_nowhere_to_go_and_vertical_scrolling_belong_to_content() {
     let t = ms(t, 1000);
     for i in 0..10 {
         assert!(
-            !surface.route_swipe(lines(-1.0), 1.0, ms(t, 16 * i)),
-            "and so does the first window's, backwards"
+            !wheel_in_app(&mut surface, lines(-1.0), ms(t, 16 * i)),
+            "and the whole of its gesture stays the app's, backwards included"
         );
     }
 
     let (mut surface, handle) = desktop(3);
     let t = ui::time::now();
-    for (i, delta) in [
-        pixels(30.0, 60.0),
-        pixels(0.0, -200.0),
-        MouseScrollDelta::LineDelta(0.4, 0.0),
-    ]
-    .into_iter()
-    .enumerate()
+    for (i, delta) in [pixels(30.0, 60.0), pixels(0.0, -200.0)]
+        .into_iter()
+        .enumerate()
     {
         assert!(
-            !surface.route_swipe(delta, 1.0, ms(t, 300 * i as u64)),
+            !wheel(&mut surface, delta, ms(t, 300 * i as u64)),
             "{delta:?}"
         );
     }
     assert_eq!(focused(&mut surface, &handle), 0);
     assert!(
-        surface.route_swipe(lines(1.0), 1.0, ms(t, 1000)),
+        wheel(&mut surface, lines(1.0), ms(t, 1000)),
         "a mouse's sideways wheel click steps like the shell's"
     );
     assert_eq!(focused(&mut surface, &handle), 1);
@@ -1092,20 +1138,10 @@ fn a_swipe_nothing_scrolls_pulls_the_strip_against_its_rubber_band() {
         let home = surface.shown_row_ref().unwrap().scroll_x();
         let t = ui::time::now();
         for i in 0..10 {
-            let at = ms(t, 16 * i);
-            if i == 0 {
-                assert!(
-                    !surface.route_swipe(delta, 1.0, at),
-                    "{kind}: the lone window's content has the swipe first"
-                );
-                // It did not scroll by it, so the strip takes it.
-                surface.pull_unhandled_swipe(delta, 1.0, at);
-            } else {
-                assert!(
-                    surface.route_swipe(delta, 1.0, at),
-                    "{kind}: and the rest of the gesture is the strip's"
-                );
-            }
+            assert!(
+                wheel(&mut surface, delta, ms(t, 16 * i)),
+                "{kind}: the strip takes what the lone window's content leaves"
+            );
         }
         let pulled = home - surface.shown_row_ref().unwrap().scroll_x();
         assert!(
@@ -1176,9 +1212,11 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
     // past the last window once the strip is panned to its end.
     let t = ui::time::now();
     for i in 0..40 {
-        frame
-            .root_mut::<DesktopSurface>()
-            .route_swipe(pixels(-240.0, 0.0), 1.0, ms(t, 17 * i));
+        wheel(
+            &mut frame.root_mut::<DesktopSurface>(),
+            pixels(-240.0, 0.0),
+            ms(t, 17 * i),
+        );
     }
     // Let go past the end, the strip springs back onto it.
     frame
@@ -1190,17 +1228,18 @@ fn a_mouse_pans_the_strip_from_empty_canvas() {
     let start = scroll(&frame);
     let t = ms(t, 2000);
     assert!(
-        frame.root_mut::<DesktopSurface>().route_swipe(
+        wheel(
+            &mut frame.root_mut::<DesktopSurface>(),
             MouseScrollDelta::LineDelta(0.0, 3.0),
-            1.0,
             t
         ),
         "a plain wheel over the canvas is the strip's"
     );
     let wheeled = scroll(&frame);
+    let travel = 3.0 * ui::widget::line_of_wheel();
     assert!(
-        (start - wheeled - 120.0).abs() < 0.5,
-        "three lines up pan 120 px toward earlier windows: {start} -> {wheeled}"
+        (start - wheeled - travel).abs() < 0.5,
+        "three lines up pan three lines toward earlier windows: {start} -> {wheeled}"
     );
     frame
         .root_mut::<DesktopSurface>()
@@ -1248,9 +1287,11 @@ fn a_plain_wheel_over_a_windows_bar_pans_the_strip() {
     let t = ui::time::now();
     // Somewhere to pan to in both directions.
     for i in 0..10 {
-        frame
-            .root_mut::<DesktopSurface>()
-            .route_swipe(pixels(-120.0, 0.0), 1.0, ms(t, 17 * i));
+        wheel(
+            &mut frame.root_mut::<DesktopSurface>(),
+            pixels(-120.0, 0.0),
+            ms(t, 17 * i),
+        );
     }
     frame
         .root_mut::<DesktopSurface>()
@@ -1279,10 +1320,9 @@ fn a_plain_wheel_over_a_windows_bar_pans_the_strip() {
     // Over the app's own content the wheel is the app's: the strip stays.
     frame.send(&ui::synthetic_input::cursor_moved(content.x, content.y));
     let start = scroll(&frame);
+    frame.send(&ui::synthetic_input::mouse_wheel(0.0, 3.0));
     assert!(
-        !frame
-            .root_mut::<DesktopSurface>()
-            .pans_strip(MouseScrollDelta::LineDelta(0.0, 3.0), ms(t, 2000)),
+        (scroll(&frame) - start).abs() < 0.5,
         "the content under the wheel scrolls, not the strip"
     );
 
@@ -1297,17 +1337,92 @@ fn a_plain_wheel_over_a_windows_bar_pans_the_strip() {
         "a bar is the strip's, where an app cannot scroll: {bar:?}"
     );
     assert!(
-        frame.root_mut::<DesktopSurface>().route_swipe(
+        wheel(
+            &mut frame.root_mut::<DesktopSurface>(),
             MouseScrollDelta::LineDelta(0.0, 3.0),
-            1.0,
             ms(t, 3000)
         ),
         "a plain wheel over the bar is the strip's"
     );
     let wheeled = scroll(&frame);
+    let travel = 3.0 * ui::widget::line_of_wheel();
     assert!(
-        (start - wheeled - 120.0).abs() < 0.5,
-        "three lines up pan 120 px toward earlier windows: {start} -> {wheeled}"
+        (start - wheeled - travel).abs() < 0.5,
+        "three lines up pan three lines toward earlier windows: {start} -> {wheeled}"
+    );
+}
+
+#[test]
+fn what_an_app_leaves_of_a_sideways_wheel_pans_the_strip_it_stands_in() {
+    fn scroll(frame: &ui::headless::FrameHarness) -> f64 {
+        frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .unwrap()
+            .scroll_x()
+    }
+    let (surface, handle) = desktop(5);
+    let mut frame = ui::headless::FrameHarness::for_root_with(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::headless::FrameOptions::default(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let t = ui::time::now();
+    // Somewhere to pan to in both directions.
+    for i in 0..10 {
+        wheel(
+            &mut frame.root_mut::<DesktopSurface>(),
+            pixels(-120.0, 0.0),
+            ms(t, 17 * i),
+        );
+    }
+    frame
+        .root_mut::<DesktopSurface>()
+        .end_idle_swipe(ms(t, 17 * 10 + 250));
+    assert!(frame.settle_for_capture(Duration::from_secs(2)));
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let shown = frame
+        .root::<DesktopSurface>()
+        .shown_row_ref()
+        .unwrap()
+        .groups[0]
+        .active_tab_id();
+    let start = scroll(&frame);
+
+    // The app of a window on the shown strip did not scroll with its
+    // sideways wheel: the strip moves by what it left, toward later windows.
+    handle.sideways_wheel(shown, 120.0);
+    frame.relayout();
+    assert!(frame.settle_for_capture(Duration::from_secs(2)));
+    let panned = scroll(&frame);
+    assert!(
+        (panned - start - 120.0).abs() < 0.5,
+        "the strip pans by the travel the app left: {start} -> {panned}"
+    );
+
+    // The rest of the gesture pans it on, event by event.
+    handle.sideways_wheel(shown, 60.0);
+    frame.relayout();
+    assert!(frame.settle_for_capture(Duration::from_secs(2)));
+    let panned_on = scroll(&frame);
+    assert!(
+        (panned_on - panned - 60.0).abs() < 0.5,
+        "every event the app leaves pans the strip: {panned} -> {panned_on}"
+    );
+
+    // An app's window on another strip is not the one the person looks at.
+    handle.sideways_wheel(shown + 1_000, 120.0);
+    frame.relayout();
+    assert!(frame.settle_for_capture(Duration::from_secs(2)));
+    assert!(
+        (scroll(&frame) - panned_on).abs() < 0.5,
+        "a window off this strip moves nothing here"
     );
 }
 
@@ -1318,8 +1433,10 @@ fn host_actions_no_longer_offered_are_reported_for_withdrawal() {
         id: id.into(),
         title: id.into(),
         subtitle: None,
+        icon: None,
+        destructive: false,
+        unasked: false,
         source: None,
-        label: None,
     };
     assert!(
         handle
@@ -1344,6 +1461,8 @@ fn workspace_window(group: u64, tab: TabId, title: &str) -> tilo_desktop_model::
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,
@@ -1403,7 +1522,7 @@ fn play_frames(frame: &mut ui::headless::FrameHarness, count: usize) {
     let mut at = ui::time::now();
     for _ in 0..count {
         at = at.checked_add(Duration::from_millis(16)).unwrap();
-        tilo_clock::testing::with_monotonic_time(at, || {
+        ui::time::testing::with_monotonic_time(at, || {
             assert!(frame.poll_frame().is_ok(), "{:?}", frame.poll_frame());
         });
     }
@@ -1922,6 +2041,8 @@ fn a_windows_own_icon_is_on_its_tab() {
             surface_id: 91,
         },
         app_title: None,
+        view: String::new(),
+        pinned: false,
     };
     let tree = seed_tree(&mut minter, "Desk", vec![tab]);
     let (surface, handle) = DesktopSurface::new(tree, 11, Box::new(Notices));

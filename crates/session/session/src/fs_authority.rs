@@ -6,6 +6,12 @@
 //! folder away stops the app that holds it at its next open — without
 //! closing the app, restarting it, or asking it to notice anything.
 //!
+//! The list is the workspace's own permissions in the mount's terms: the
+//! grants apps hold through portals, and what each member's role lets them
+//! reach in the workspace's files (a viewer reads, an editor writes). Both
+//! follow the desk's replica revision, so a role change or a removed member
+//! reaches the daemon in the same pass, never on a timer.
+//!
 //! The daemon signs nothing itself: `fs publish-authority --acl` signs the
 //! list with the workspace governor key and swaps it into the ACL every
 //! mount reads ([`tilo_files`] mount, `WorkspaceAuthority::apply`). Publishing
@@ -18,7 +24,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use collab_types::caps::{Actor, FsAuthority, Scope, Subject, WorkspaceMember};
+use collab_types::Role;
+use collab_types::caps::{
+    Access, Actor, CapOverride, FsAuthority, Scope, Subject, WorkspaceMember,
+};
 use collab_types::crypto::Ed25519PublicKey;
 use tilo_desktop_model::DesktopTree;
 use tilo_lock::MutexRecover as _;
@@ -54,14 +63,21 @@ pub(crate) fn list(
         for capability in workspace.sandbox.iter().filter(|capability| {
             capability.persists_across_restart() && matches!(capability.scope, Scope::FsPath(_))
         }) {
-            capabilities.push(capability.clone());
-            if let (Some(device), Some(actor)) = (device, actor.as_ref())
-                && capability.subject.matches_actor(actor)
-            {
-                let mut bound = capability.clone();
-                bound.subject = Subject::User(Ed25519PublicKey::from_bytes(device));
-                capabilities.push(bound);
-            }
+            push_with_device(&mut capabilities, capability, actor.as_ref(), device);
+        }
+        // What the workspace's roles let each member reach in its files. The
+        // roles are the workspace's one statement of who may do what, so a
+        // role change rewrites this list and the daemon enforces the new
+        // answer at the next open; a member removed from the workspace holds
+        // nothing here, and their device stops at once without being told.
+        for (member, role) in workspace.roster() {
+            let capability = CapOverride::grant(
+                Subject::person(member.clone()),
+                Scope::FsPath(WORKSPACE_FILES.into()),
+                role_files_access(role),
+            )
+            .with_id(role_capability_id(&workspace.id().to_string(), &member));
+            push_with_device(&mut capabilities, &capability, actor.as_ref(), device);
         }
         // Signed membership is a separate projection from Files access: who
         // the workspace's policy lets read it, per relay shard.
@@ -83,6 +99,46 @@ pub(crate) fn list(
 fn person_key(person: &str) -> Option<Ed25519PublicKey> {
     let bytes: [u8; 32] = hex::decode(person).ok()?.try_into().ok()?;
     Some(Ed25519PublicKey::from_bytes(bytes))
+}
+
+/// Where a workspace's files appear in the mount (see
+/// `fs::WORKSPACE_FILES_PATH`): the path a role's access ranges over.
+const WORKSPACE_FILES: &str = "/var/workspace";
+
+/// What a member's role lets them do to the workspace's files: a viewer and
+/// a commenter read them, an editor and everything above changes them.
+const fn role_files_access(role: Role) -> Access {
+    match role {
+        Role::Viewer | Role::Commenter => Access::Read,
+        Role::Editor | Role::Moderator | Role::Owner => Access::Write,
+    }
+}
+
+/// The id of the capability a workspace's role gives a member, so the same
+/// member's grant is recognisable across revisions and in the daemon's log.
+fn role_capability_id(workspace: &str, member: &str) -> String {
+    format!("role:{workspace}:{member}")
+}
+
+/// Publish `capability` as it stands, and again bound to this device's key
+/// when it is the key of the person sitting here: the mount acts as the
+/// device, so the person's grants must reach it without widening anything.
+fn push_with_device(
+    capabilities: &mut Vec<CapOverride>,
+    capability: &CapOverride,
+    actor: Option<&Actor>,
+    device: Option<[u8; 32]>,
+) {
+    capabilities.push(capability.clone());
+    let (Some(device), Some(actor)) = (device, actor) else {
+        return;
+    };
+    if !capability.subject.matches_actor(actor) {
+        return;
+    }
+    let mut bound = capability.clone();
+    bound.subject = Subject::User(Ed25519PublicKey::from_bytes(device));
+    capabilities.push(bound);
 }
 
 fn member(person: &str, until: Option<u64>) -> Option<WorkspaceMember> {
@@ -198,6 +254,14 @@ impl Publisher {
         true
     }
 
+    /// Whether the newest list handed over did not reach the daemon, and no
+    /// worker is still trying it: nothing of what the desk decided then is
+    /// enforced until one does.
+    pub(crate) fn unpublished(&self) -> bool {
+        let state = self.inner.state.lock_recover();
+        state.last_error.is_some() && !state.running && state.pending.is_none()
+    }
+
     /// Wait until every list handed over so far is in force or has failed,
     /// returning the last error when one did.
     ///
@@ -237,7 +301,10 @@ fn work(inner: &Inner) {
         loop {
             match write_and_publish(inner, &bytes) {
                 Ok(()) => {
-                    inner.state.lock_recover().in_force = Some(bytes);
+                    let mut state = inner.state.lock_recover();
+                    state.in_force = Some(bytes);
+                    state.last_error = None;
+                    drop(state);
                     inner.published.fetch_add(1, Ordering::Relaxed);
                     break;
                 }
@@ -403,6 +470,51 @@ mod tests {
         ) == collab_types::CapDecision::Allow
     }
 
+    /// [`may_read`] for a write.
+    fn may_write(list: &FsAuthority, actor: &Actor, path: &str) -> bool {
+        collab_types::decide_capability(
+            actor,
+            &collab_types::ResourceRef::FsPath(path.into()),
+            Access::Write,
+            &list.capabilities,
+            Some(0),
+        ) == collab_types::CapDecision::Allow
+    }
+
+    #[test]
+    fn a_members_role_decides_whether_they_write_the_workspace_files() {
+        const MEMBER: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+        const NOTE: &str = "/var/workspace/brief/plan.md";
+        let member = Actor::signed(person_key(MEMBER).unwrap());
+        let mut tree = tree_with(app_folder_grant());
+        tree.workspaces[0].admit(MEMBER, Role::Viewer);
+        let read_only = list(&tree, PERSON, None, 0);
+        assert!(
+            may_read(&read_only, &member, NOTE),
+            "a member reads the workspace's files"
+        );
+        assert!(
+            !may_write(&read_only, &member, NOTE),
+            "a member with a read-only role cannot write them"
+        );
+
+        tree.workspaces[0].admit(MEMBER, Role::Editor);
+        let editing = list(&tree, PERSON, None, 0);
+        assert!(may_write(&editing, &member, NOTE), "an editor writes them");
+        assert_ne!(
+            editing.capabilities, read_only.capabilities,
+            "a role change is a new list, so the daemon is handed it"
+        );
+
+        tree.workspaces[0].policy.members.remove(MEMBER);
+        let removed = list(&tree, PERSON, None, 0);
+        assert!(
+            !may_read(&removed, &member, NOTE),
+            "a removed member reads nothing"
+        );
+        assert!(!may_write(&removed, &member, NOTE));
+    }
+
     #[test]
     fn a_revoked_folder_is_refused_at_the_next_open_and_the_app_keeps_running() {
         let device = Some([9u8; 32]);
@@ -530,7 +642,7 @@ mod tests {
         let first = list(&tree, PERSON, None, 0);
         assert!(publisher.publish(&first));
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published");
         assert_eq!(published_count(&seen), 1);
         let written: FsAuthority =
@@ -541,7 +653,7 @@ mod tests {
             "an unchanged list is not published again"
         );
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("idle");
         assert_eq!(published_count(&seen), 1);
     }
@@ -561,7 +673,7 @@ mod tests {
         tree.workspaces[0].revoke_sandbox(&id);
         publisher.publish(&list(&tree, PERSON, None, 0));
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published");
         let last = published_count(&seen);
         let newest: FsAuthority =
@@ -571,16 +683,40 @@ mod tests {
     }
 
     #[test]
+    fn a_list_given_up_on_is_handed_over_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (script, _seen) = stand_in(dir.path());
+        let publisher = Publisher::at(
+            script,
+            dir.path().join("config/fs-capabilities.json"),
+            dir.path().join("sockets"),
+        );
+        // A worker that gave up: the list is not in force and nothing is trying it,
+        // so the next change of the desk hands it over again.
+        publisher.inner.state.lock_recover().last_error = Some("the daemon refused it".into());
+        assert!(
+            publisher.unpublished(),
+            "nothing is trying the list the daemon refused"
+        );
+        // A list being tried is the worker's, not the desk's to hand over again.
+        publisher.inner.state.lock_recover().running = true;
+        assert!(
+            !publisher.unpublished(),
+            "a worker is still trying the list"
+        );
+    }
+
+    #[test]
     fn a_daemon_that_is_not_serving_yet_is_tried_until_it_is() {
         let dir = tempfile::tempdir().unwrap();
         let (script, seen) = stand_in(dir.path());
         let gate = dir.path().join("gate");
-        // The daemon accepts the first list only after the gate exists.
+        // The daemon refuses every list until the gate exists, and says it was asked.
         std::fs::write(
             &script,
             format!(
                 "#!/bin/sh\n\
-             if [ ! -e {gate} ]; then exit 1; fi\n\
+             if [ ! -e {gate} ]; then echo refused >> {seen}/refused; exit 1; fi\n\
              n=$(cat {seen}/count 2>/dev/null || echo 0)\n\
              n=$((n+1))\n\
              echo \"$n\" > {seen}/count\n",
@@ -599,12 +735,26 @@ mod tests {
             dir.path().join("sockets"),
         );
         publisher.publish(&list(&tree_with(app_folder_grant()), PERSON, None, 0));
-        let _ = publisher.wait_until_idle(Duration::from_millis(200));
+        // The first attempt is refused before the gate exists: the daemon's own
+        // word for that is what this waits on, so nothing here races the clock.
+        tilo_test_env::wait_until("the daemon refusing the first attempt", || {
+            seen.join("refused").is_file()
+        });
+        // Its refusal reaches the publisher a moment after the daemon said it, and
+        // the worker goes on trying the list: the desk leaves it to the worker.
+        assert!(
+            !publisher.unpublished(),
+            "a worker is still trying the list"
+        );
         std::fs::write(&gate, b"").unwrap();
         publisher
-            .wait_until_idle(Duration::from_secs(20))
+            .wait_until_idle(tilo_test_env::hang_bound())
             .expect("published once the daemon served");
         assert_eq!(published_count(&seen), 1);
+        assert!(
+            !publisher.unpublished(),
+            "the list the daemon took is in force"
+        );
         assert_eq!(
             std::fs::metadata(dir.path().join("config/fs-capabilities.json"))
                 .unwrap()

@@ -10,6 +10,7 @@
 mod audit;
 mod source;
 mod stage;
+mod ux;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -196,9 +197,10 @@ pub struct Options {
     /// package's first root, as the launcher opens an app.
     pub root: Option<String>,
     /// Key presses sent to each window before it is read, in order, as
-    /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`): the layout a
-    /// person reaches by keyboard, for its shot and its semantics. They reach the window at
-    /// the `dump` size, where a shot shows them; none there, at the first layout.
+    /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
+    /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by
+    /// keyboard, for its shot and its semantics. They reach the window at the `dump` size,
+    /// where a shot shows them; none there, at the first layout.
     pub keys: Vec<String>,
 }
 
@@ -285,10 +287,15 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 
 /// Check every app of `options`.
 ///
+/// The clock is the one a capture pins ([`ui::clock::freeze_for_capture`]): the app's queries
+/// and the days its window writes read the same instant, and every run lays out the same
+/// dates.
+///
 /// # Errors
 /// An app does not compile, or its window refuses what it sends.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
+    ui::clock::freeze_for_capture();
     tilo_ui_host::i18n::ensure();
     let allow = options
         .allow
@@ -467,6 +474,9 @@ impl Scene {
                     .is_some_and(|v| !shown.contains(&v.name))
         });
         default
+            || switch_views(meta)
+                .iter()
+                .any(|(view, _)| !shown.contains(&view.name))
             || surface_views(meta).iter().any(|view| {
                 !shown.contains(&view.name)
                     && view
@@ -854,6 +864,31 @@ fn surface_views(meta: &tilolang::PackageMeta) -> Vec<&tilolang::meta::ViewMeta>
         .collect()
 }
 
+/// The views beside the one a type's windows open on, each with the type it takes: what the
+/// window's bar offers as a switch between them (a project as a board beside its list). Only a
+/// type that declares a default view and the views beside it (`views a, b for T`) has a
+/// switch: every other view of a type is a helper its views place themselves.
+fn switch_views(
+    meta: &tilolang::PackageMeta,
+) -> Vec<(&tilolang::meta::ViewMeta, &tilolang::meta::TypeMeta)> {
+    let mut out = Vec::new();
+    for default in &meta.default_views {
+        let Some(ty) = meta.types.iter().find(|t| t.id == default.ty) else {
+            continue;
+        };
+        out.extend(
+            meta.views_of(&ty.id)
+                .into_iter()
+                .filter(|id| *id != default.view)
+                .filter_map(|id| {
+                    let view = meta.views.iter().find(|view| view.id == id)?;
+                    Some((view, ty))
+                }),
+        );
+    }
+    out
+}
+
 /// What the window calls each of `meta`'s primary actions, once each.
 fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
     let mut labels: Vec<&str> = meta
@@ -884,6 +919,24 @@ fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<Stri
     node.children
         .iter()
         .find_map(|child| button_named(child, label))
+}
+
+/// The test id of the first widget under `node` that publishes a button named `label` as a
+/// control it paints itself (an empty state's action): the widget is what is activated.
+fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
+    let painted = node.semantics.as_ref().is_some_and(|access| {
+        access.children.iter().any(|child| {
+            child.role == ui::a11y::Role::Button
+                && !child.state.disabled
+                && child.name.as_deref() == Some(label)
+        })
+    });
+    if painted && let Some(id) = &node.test_id {
+        return Some(id.clone());
+    }
+    node.children
+        .iter()
+        .find_map(|child| painted_button_named(child, label))
 }
 
 /// One app's check under way.
@@ -972,6 +1025,19 @@ impl AppCheck<'_> {
             staged.open_with(&resource, &view.id);
             self.run(staged, &format!("{title}, then {} shown", view.name))?;
         }
+        // The views a type's bar switches to beside the one it opens on, on a resource of the
+        // type: a project laid out as a board as well as the list it opens on.
+        let meta = self.meta;
+        for (view, ty) in switch_views(meta) {
+            if self.shown.contains(&view.name) {
+                continue;
+            }
+            let Some(resource) = staged.resources().into_iter().find(|r| r.ty == ty.id) else {
+                continue;
+            };
+            staged.open_with(&resource, &view.id);
+            self.run(staged, &format!("{title}, then {} shown", view.name))?;
+        }
         Ok(())
     }
 
@@ -999,10 +1065,20 @@ impl AppCheck<'_> {
                     unit.scene.root.as_deref(),
                 )?;
                 staged.lay_out_moving(viewport, layout.theme(), layout.input())?;
-                let Some(id) = button_named(&staged.harness().inspection().root, label) else {
+                let found = {
+                    let root = &staged.harness().inspection().root;
+                    button_named(root, label)
+                        .map(|id| (id, true))
+                        .or_else(|| painted_button_named(root, label).map(|id| (id, false)))
+                };
+                let Some((id, tapped)) = found else {
                     continue;
                 };
-                staged.press(&id, size.touch)?;
+                if tapped {
+                    staged.press(&id, size.touch)?;
+                } else {
+                    staged.press_action(&id)?;
+                }
                 self.audit(
                     &mut staged,
                     layout,
@@ -1093,13 +1169,17 @@ impl AppCheck<'_> {
             }
         }
         self.note_shown(&inspection.root);
-        // A view that ran but drew nothing has no widget; what the app sent still names it.
+        // A view that ran but drew nothing has no widget; what the app sent still names it. What
+        // it declared its controls do is read off the same trees.
+        let mut declared = ux::Declared::default();
         if let Some(composed) = staged.composed() {
             self.note_shown_row(&composed);
+            declared.read(&composed);
         }
         let rows = staged.rows();
         for row in rows.values() {
             self.note_shown_row(row);
+            declared.read(row);
         }
         let mut problems = audit::inspect(
             &inspection.root,
@@ -1115,6 +1195,7 @@ impl AppCheck<'_> {
             self.text,
             viewport,
         ));
+        problems.extend(ux::inspect(&inspection.root, viewport, &declared));
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
@@ -1315,18 +1396,17 @@ pub fn render(report: &Report) -> String {
     out
 }
 
-/// The shell's traditional desktop as a person sees it, staged from its own scenario through
-/// the UI host's path: windows standing with their apps' content, one bar per window, and the
-/// trailing parts of the top bar at its edge.
+/// The shell's windows as a person sees them, staged from its own scenarios through the UI
+/// host's path: windows standing with their apps' content, one bar per window, filling the
+/// strips the desk gives them, and the trailing parts of the top bar at its edge.
 #[cfg(test)]
-mod traditional_desktop {
+mod windows {
     use std::path::Path;
     use std::rc::Rc;
 
+    use super::stage;
     use ui::kurbo::Rect;
     use ui::widget::Widget;
-
-    use super::stage;
 
     fn packages() -> (String, Rc<stage::Packages>) {
         let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
@@ -1365,6 +1445,30 @@ mod traditional_desktop {
         let mut out = Vec::new();
         all(root, name, &mut out);
         out
+    }
+
+    /// The window's own tabs under `root`: the strip a `TabStrip` draws (it draws as the
+    /// toolkit's bar), never a tab bar an app puts in its own content.
+    fn tab_strips(root: &dyn Widget) -> Vec<&dyn Widget> {
+        named(root, "TabBar")
+            .into_iter()
+            .filter(|bar| is_tab_strip(*bar))
+            .collect()
+    }
+
+    /// Whether `bar` is a window's own tabs rather than a tab bar an app put in its content.
+    fn is_tab_strip(bar: &dyn Widget) -> bool {
+        match bar.as_any() {
+            Some(any) => any.is::<ui::widget::TabStrip>(),
+            None => false,
+        }
+    }
+
+    /// How many places the tab strip `bar` shows.
+    fn tabs_of(bar: &dyn Widget) -> usize {
+        bar.as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::TabStrip>())
+            .map_or(0, |strip| strip.bar().tabs().len())
     }
 
     #[test]
@@ -1428,6 +1532,208 @@ mod traditional_desktop {
                 "the app's header keeps room for the frame's controls: {overlapping:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_strips_windows_fill_their_strip_and_hold_their_apps_under_one_bar() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "a desk of places",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let frames = named(staged.harness().root_widget(), "WindowFrame");
+        assert!(
+            frames.len() >= 6,
+            "the desk's strips stand as windows, not cards: {} frames",
+            frames.len()
+        );
+        windows_fill_their_strips(&frames);
+
+        // A strip of several places is one window whose bar is its tabs, the place in front
+        // filling it under them; a strip of one has no tab bar above its app.
+        let grouped = stage::Staged::over(
+            &app,
+            &packages,
+            "a window of several places",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let group = named(grouped.harness().root_widget(), "WindowFrame");
+        assert_eq!(group.len(), 2, "a window of places beside a window of one");
+        the_places_of_a_strip_are_its_tabs(&group);
+
+        // Two windows the desk holds stand side by side, each the share of the desk its strip's
+        // width names, not the floor two of them would need: a row spreads across the desk while
+        // its windows fit, and pans to them whole once they do not.
+        let from = group
+            .iter()
+            .map(|frame| frame.get_rect().x0)
+            .fold(f64::MAX, f64::min);
+        let to = group
+            .iter()
+            .map(|frame| frame.get_rect().x1)
+            .fold(f64::MIN, f64::max);
+        assert!(
+            to - from >= 1270.0,
+            "the desk's row spreads across it at 1280: {} to {to}",
+            from.round()
+        );
+    }
+
+    #[test]
+    fn a_window_alone_on_the_desk_takes_the_desk() {
+        tilo_ui_host::i18n::ensure();
+        let (app, packages) = packages();
+        let staged = stage::Staged::over(
+            &app,
+            &packages,
+            "a window alone on the desk",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the scenario stages");
+        let frames = named(staged.harness().root_widget(), "WindowFrame");
+        assert_eq!(
+            frames.len(),
+            1,
+            "one window on the desk, not {}",
+            frames.len()
+        );
+        let window = frames[0].get_rect();
+        assert!(
+            window.width() > 1200.0,
+            "a lone window takes the desk's width at 1280: {window:?}"
+        );
+        bar_and_content_in(frames[0], window);
+    }
+
+    /// A window is a window: it fills its strip's whole room, and every window of the desk
+    /// shares that height, as the chrome's groups do. A card is a few hundred pixels tall with
+    /// a sliver of its app under it.
+    fn windows_fill_their_strips(frames: &[&dyn Widget]) {
+        // The desk's own windows: the overlays the shell stages beside them are frames too.
+        let frames: Vec<&dyn Widget> = frames
+            .iter()
+            .copied()
+            .filter(|frame| frame.get_rect().height() > 100.0)
+            .collect();
+        let height = frames
+            .iter()
+            .map(|f| f.get_rect().height())
+            .fold(0.0, f64::max);
+        assert!(
+            height > 500.0,
+            "a window fills the desk's height: {height} at 1280x800"
+        );
+        for frame in &frames {
+            let window = frame.get_rect();
+            assert!(
+                (window.height() - height).abs() < 1.0,
+                "every window of the desk is as tall as the desk: {window:?} beside {height}"
+            );
+            // Its share of the row, never narrower than the chrome's own floor: a row of more
+            // windows than the desk holds pans to them whole.
+            assert!(
+                window.width() >= 160.0,
+                "a window keeps its share of the row: {window:?}"
+            );
+            bar_and_content_in(*frame, window);
+        }
+    }
+
+    /// One bar per window, whichever state it is in — the tabs of a window of several places,
+    /// or the app's own header row — and its app's content under that, filling the rest.
+    fn bar_and_content_in(frame: &dyn Widget, window: Rect) {
+        let strips = tab_strips(frame);
+        let shells = named(frame, "NavShell");
+        if let [tabs] = strips[..] {
+            let bar = tabs.get_rect();
+            assert!(
+                bar.height() > 40.0 && bar.height() < 56.0,
+                "the tabs are one window bar tall: {bar:?}"
+            );
+            assert!(
+                bar.y0 - window.y0 < 1.0,
+                "the tabs are the window's own bar, at its top edge: {bar:?} in {window:?}"
+            );
+            if let [shell] = shells[..] {
+                assert!(
+                    shell.get_rect().y0 >= bar.y1 - 1.0,
+                    "the app stands under the tabs, not over them: {:?} under {bar:?}",
+                    shell.get_rect()
+                );
+            }
+        }
+        for shell in shells {
+            let content = shell.get_rect();
+            assert!(
+                content.y0 - window.y0 < 56.0,
+                "one bar stands over the app, never two: {content:?} in {window:?}"
+            );
+            assert!(
+                window.y1 - content.y1 < 1.0,
+                "the app fills the window to its foot: {content:?} in {window:?}"
+            );
+        }
+    }
+
+    /// A strip of several places shows them as one window's tabs, the place in front under
+    /// them; the strip of one shows its app from the window's own edge.
+    fn the_places_of_a_strip_are_its_tabs(group: &[&dyn Widget]) {
+        for frame in group {
+            let window = frame.get_rect();
+            let strips = tab_strips(*frame);
+            match &strips[..] {
+                [] => {}
+                [bar] => {
+                    let tabs = bar.get_rect();
+                    assert!(
+                        (tabs.y0 - window.y0).abs() < 1.0 && (tabs.x0 - window.x0).abs() < 1.0,
+                        "the tabs are the window's own bar, at its top leading corner: {tabs:?} in {window:?}"
+                    );
+                    assert!(
+                        tabs.height() > 40.0 && tabs.height() < 56.0,
+                        "the tabs are one window bar tall: {tabs:?}"
+                    );
+                    assert!(
+                        tabs.width() > window.width() / 2.0,
+                        "the tabs are the window's bar, not a chip in it: {tabs:?} in {window:?}"
+                    );
+                    let items = tabs_of(*bar);
+                    assert!(
+                        items >= 3,
+                        "every place of the strip is a tab: {items} tabs"
+                    );
+                    let shells = named(*frame, "NavShell");
+                    let [shell] = shells[..] else {
+                        panic!("one app in front of the tabs, not {}", shells.len());
+                    };
+                    let content = shell.get_rect();
+                    assert!(
+                        content.y0 >= tabs.y1 - 1.0 && window.y1 - content.y1 < 1.0,
+                        "the place in front fills the window under its bar: {content:?} in {window:?}"
+                    );
+                }
+                _ => panic!("one tab bar to a window, not {}", strips.len()),
+            }
+        }
+        assert_eq!(
+            group
+                .iter()
+                .filter(|frame| !tab_strips(**frame).is_empty())
+                .count(),
+            1,
+            "the strip of several places shows its tabs"
+        );
     }
 
     /// The controls under `root` outside any window, with their names: the shell's own.
@@ -1694,8 +2000,22 @@ mod traditional_desktop {
                 .is_some_and(|id| id.starts_with("nav-shell-more-"))
     }
 
-    /// The columns each window under `node` heads with a menu, one list per window: a header
-    /// row of a column holds the rest of that column's actions in one menu, and one only.
+    /// Whether `node` is the "…" beside a page's title: the menu the page keeps its own
+    /// actions behind when it is a window of one thing rather than a bar over columns.
+    fn is_title_door(node: &ui::headless::InspectionNode) -> bool {
+        let [_, _, w, h] = node.rect;
+        w > 0.0
+            && h > 0.0
+            && node.widget.as_str() == "MenuButton"
+            && node
+                .test_id
+                .as_deref()
+                .is_some_and(|id| id.ends_with("~more"))
+    }
+
+    /// The menus each window under `node` offers, one list per window: a column of the bar
+    /// holds the rest of the window's actions in one menu, or a page of one thing holds them
+    /// behind the "…" beside its title, and never both.
     fn menus_per_window(node: &ui::headless::InspectionNode, out: &mut Vec<Vec<String>>) {
         if matches!(node.widget.as_str(), "WindowFrame" | "TilolangWindow") {
             out.push(Vec::new());
@@ -1705,25 +2025,33 @@ mod traditional_desktop {
             && let Some(column) = id.strip_prefix("nav-shell-more-")
         {
             doors.push(column.to_owned());
+        } else if is_title_door(node)
+            && let Some(doors) = out.last_mut()
+        {
+            doors.push("title".to_owned());
         }
         for child in &node.children {
             menus_per_window(child, out);
         }
     }
 
-    /// The shell door on the window, by its test id.
-    fn shown_door(node: &ui::headless::InspectionNode) -> Option<String> {
-        if is_shell_door(node) {
-            return node.test_id.clone();
+    /// The window's menu on the page: the bar's door or the "…" beside a title, whichever
+    /// the window draws. Its items are the host's, read where the view is built; here it must
+    /// stand where the person reaches it.
+    fn shown_menu(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+        if is_shell_door(node) || is_title_door(node) {
+            return Some(node);
         }
-        node.children.iter().find_map(shown_door)
+        node.children.iter().find_map(shown_menu)
     }
 
     #[test]
     fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
-        // A column's header draws its owner's main actions as buttons and keeps the rest
-        // behind one menu: never every action as a button of its own, and one menu per
-        // column at most, on a desk or on a phone.
+        // A window draws its main actions as buttons and keeps the rest behind one menu: never
+        // every action as a button of its own, one menu per column of its bar at most, and
+        // one menu beside the title of the thing it shows, on a desk or on a phone. A window
+        // of one thing keeps its commands beside that title, so no lone door stands on a bar
+        // with nothing else to say.
         let columns = ["overview", "content", "sidebar"];
         for size in [(1280, 800), (390, 844)] {
             tilo_ui_host::i18n::ensure();
@@ -1752,19 +2080,19 @@ mod traditional_desktop {
             for (window, doors) in windows.iter().enumerate() {
                 for door in doors {
                     assert!(
-                        columns.contains(&door.as_str()),
+                        columns.contains(&door.as_str()) || door == "title",
                         "window {window} heads a menu of {door:?} at {size:?}"
                     );
                     assert!(
                         doors.iter().filter(|held| *held == door).count() == 1,
-                        "window {window} heads its {door:?} column with two menus at {size:?}"
+                        "window {window} heads a second menu of {door:?} at {size:?}"
                     );
                 }
                 menus += doors.len();
             }
             assert!(
                 menus > 0,
-                "a window's header keeps the rest of its actions in a menu at {size:?}"
+                "a window keeps the rest of its actions in a menu at {size:?}"
             );
         }
     }
@@ -1787,8 +2115,8 @@ mod traditional_desktop {
     #[test]
     fn an_action_without_an_icon_is_reachable_from_its_window_where_nothing_lists_it() {
         // In the strips preset a window is the app's own: nothing lists its actions, so its
-        // header holds the notes app's icon-less Untag as a labelled button, or behind the
-        // header's door when the row has no room for it.
+        // bar holds the notes app's icon-less Untag as a labelled button, or its menu does
+        // when the row has no room for it.
         tilo_ui_host::i18n::ensure();
         let (_, packages) = packages();
         for size in [(1280, 800), (390, 844)] {
@@ -1813,14 +2141,19 @@ mod traditional_desktop {
             if shown_named(&root, "Untag…").is_some() {
                 continue;
             }
-            let door = shown_door(&root)
-                .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a door at {size:?}"));
-            staged.press(&door, size.0 < 600).expect("the door opens");
-            let mut said = Vec::new();
-            read_out(&staged.harness().inspection().root, false, &mut said);
+            let door = shown_menu(&root)
+                .unwrap_or_else(|| panic!("Untag… is neither shown nor behind a menu at {size:?}"));
+            let [_, _, w, h] = door.rect;
             assert!(
-                said.iter().any(|(_, name)| name == "Untag…"),
-                "the door holds Untag… at {size:?}: {said:?}"
+                w > 0.0 && h > 0.0,
+                "the window's menu stands where the person reaches it at {size:?}"
+            );
+            assert!(
+                door.semantics
+                    .as_ref()
+                    .and_then(|said| said.name.as_deref())
+                    .is_some_and(|name| !name.is_empty()),
+                "the window's menu is named at {size:?}"
             );
         }
     }
@@ -1878,10 +2211,9 @@ mod board_lane {
     use std::path::Path;
     use std::rc::Rc;
 
+    use super::stage;
     use ui::kurbo::Rect;
     use ui::widget::Widget;
-
-    use super::stage;
 
     const BOARD: &str = "so.tilo.lang.layoutboard";
 
@@ -1919,10 +2251,21 @@ mod board_lane {
             && rect.y1 <= clip.y1 + SLACK
     }
 
+    /// Whether `node` is a card as a board draws one: the card's own chrome around a body, or
+    /// the row a card component showed as its surface ([`ui::widget::CardBody`]), which a board's
+    /// card is.
+    fn shows_as_card(node: &dyn Widget) -> bool {
+        node.name() == "Card"
+            || node
+                .as_any()
+                .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
+                .is_some_and(ui::widget::ListRow::is_card)
+    }
+
     /// The cards `node` holds that stand whole inside `clip`, in drawing order.
     fn whole_cards(node: &dyn Widget, clip: Rect, out: &mut Vec<Rect>) {
         let rect = node.get_rect();
-        if node.name() == "Card" && inside(clip, rect) {
+        if shows_as_card(node) && inside(clip, rect) {
             out.push(rect);
         }
         let clip = node.child_clip_rect().map_or(clip, |own| {
@@ -1995,5 +2338,163 @@ mod board_lane {
             lane(right) < 30,
             "the third lane scrolls its thirty cards instead of growing past the window"
         );
+    }
+
+    /// The board's sideways scroller under `root`: the lane strip it scrolls, the part of that
+    /// strip the pane shows, and the lanes on the strip in lane order.
+    fn across(root: &dyn Widget) -> (&ui::widget::Scrollable, Rect, Rect, Vec<Rect>) {
+        let mut scrolls = Vec::new();
+        named(root, "Scrollable", &mut scrolls);
+        let pane = scrolls
+            .into_iter()
+            .find_map(|scroll| {
+                let scroll = scroll.as_any()?.downcast_ref::<ui::widget::Scrollable>()?;
+                matches!(
+                    scroll.layout_info(),
+                    Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
+                        direction: ui::widget::ScrollDirection::Horizontal,
+                    }))
+                )
+                .then_some(scroll)
+            })
+            .expect("the board scrolls across");
+        let viewed = pane.child_clip_rect().unwrap_or_else(|| pane.get_rect());
+        let strip = pane
+            .children()
+            .first()
+            .map(|content| content.get_rect())
+            .expect("the board's lanes stand on a strip");
+        let lanes = pane
+            .children()
+            .iter()
+            .flat_map(|content| content.children())
+            .map(Widget::get_rect)
+            .collect();
+        (pane, viewed, strip, lanes)
+    }
+
+    /// The width a lane reads at, which every board gives it (`metrics.board_lane_width`).
+    fn lane_measure() -> f64 {
+        f64::from(ui::Theme::light().tokens.metrics.board_lane_width)
+    }
+
+    /// A pane narrower than a board's lanes scrolls them sideways instead of cutting them off:
+    /// each lane keeps its measure and stands whole on the strip, the strip keeps the same
+    /// gutter at each end, every lane the viewport shows is whole from its heading to its foot,
+    /// and the last lane comes whole into view at the end of the scroll.
+    #[test]
+    fn a_narrow_board_scrolls_its_lanes_whole_across_the_pane() {
+        tilo_ui_host::i18n::ensure();
+        let packages = packages();
+        let staged = stage::Staged::over(
+            BOARD,
+            &packages,
+            "a board",
+            (864, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the board stages");
+        let root = staged.harness().root_widget();
+        let (pane, viewed, strip, lanes) = across(root);
+        assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        assert!(
+            pane.horizontal_overflows(),
+            "three lanes of {measure} outrun the 864 pane, so it scrolls them: {strip:?} in {viewed:?}",
+            measure = lane_measure()
+        );
+        for lane in &lanes {
+            assert!(
+                (lane.width() - lane_measure()).abs() < 1.0,
+                "a lane keeps its measure: {lane:?} at {measure}",
+                measure = lane_measure()
+            );
+            assert!(
+                inside(strip, *lane),
+                "a lane stands whole on the strip: {lane:?} in {strip:?}"
+            );
+        }
+        let start = lanes[0].x0 - strip.x0;
+        let end = strip.x1 - lanes[2].x1;
+        assert!(
+            start > 1.0,
+            "the first lane keeps clear of the strip's edge: {strip:?}"
+        );
+        assert!(
+            (start - end).abs() < 1.0,
+            "the lanes keep the same gutter at both ends of the strip: {start} before, {end} after"
+        );
+        // The strip is the pane's whole width and height: it stands inside the page it is
+        // shown in, so nothing but the lanes' scroll moves it.
+        let mut pages = Vec::new();
+        named(root, "Page", &mut pages);
+        assert_eq!(pages.len(), 1, "the board is one page");
+        assert!(
+            inside(pages[0].get_rect(), pane.get_rect()),
+            "the view that scrolls the board stands inside the page: {:?} in {:?}",
+            pane.get_rect(),
+            pages[0].get_rect()
+        );
+        // Every lane the pane shows now is whole from its heading to its foot: only the lanes
+        // scrolled out of view are out of reach until the person scrolls to them.
+        let shown: Vec<Rect> = lanes
+            .iter()
+            .copied()
+            .filter(|lane| lane.x1 > viewed.x0 && lane.x0 < viewed.x1)
+            .collect();
+        assert!(!shown.is_empty(), "the pane shows lanes: {viewed:?}");
+        for lane in &shown {
+            assert!(
+                lane.height() > 1.0 && lane.y0 >= viewed.y0 - 1.0 && lane.y1 <= viewed.y1 + 1.0,
+                "a lane the pane shows is whole, heading to foot: {lane:?} in {viewed:?}"
+            );
+        }
+        // The end of the scroll brings the last lane whole into view, less the gutter after it.
+        let shift = strip.width() - viewed.width();
+        let reached = Rect::new(viewed.x0 + shift, viewed.y0, viewed.x1 + shift, viewed.y1);
+        assert!(
+            inside(reached, lanes[2]),
+            "the last lane comes whole into view at the end of the scroll: {:?} in {reached:?}",
+            lanes[2]
+        );
+    }
+
+    /// A pane wide enough for a board's lanes shows them all at rest and offers no sideways
+    /// scroll: each keeps its measure, the strip ends inside the pane, and the room the wider
+    /// pane leaves open stays beside the lanes rather than stretching them.
+    #[test]
+    fn a_board_with_room_for_its_lanes_offers_no_sideways_scroll() {
+        tilo_ui_host::i18n::ensure();
+        let packages = packages();
+        let staged = stage::Staged::over(
+            BOARD,
+            &packages,
+            "a board",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+        )
+        .expect("the board stages");
+        let root = staged.harness().root_widget();
+        let (pane, viewed, strip, lanes) = across(root);
+        assert_eq!(lanes.len(), 3, "three lanes: {lanes:?}");
+        assert!(
+            !pane.horizontal_overflows(),
+            "the lanes fit the pane, so it scrolls across nothing: {strip:?} in {viewed:?}"
+        );
+        assert!(
+            strip.x1 <= viewed.x1 + 1.0,
+            "the strip ends inside the pane: {strip:?} in {viewed:?}"
+        );
+        for lane in &lanes {
+            assert!(
+                (lane.width() - lane_measure()).abs() < 1.0,
+                "a lane keeps its measure where the pane has room to spare: {lane:?}"
+            );
+            assert!(
+                inside(viewed, *lane),
+                "every lane stands whole in a pane wide enough for it: {lane:?} in {viewed:?}"
+            );
+        }
     }
 }

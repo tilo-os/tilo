@@ -1,18 +1,16 @@
 //! Mail's Fluent catalogue.
 //!
 //! User-facing strings are keys, never literals, resolved through the toolkit's
-//! [`mod@ui::i18n`] manager. The catalogue is embedded with `include_str!`, so there
-//! is no build step and no runtime file I/O — a `--shots` render and a unit test
-//! resolve the same strings a live session does.
+//! [`mod@ui::i18n`] manager. The source catalogue is embedded with `include_str!`
+//! and the other languages come from the language packs, so there is no build
+//! step and no runtime file I/O — a `--shots` render and a unit test resolve the
+//! same strings a live session does.
 
 use ui::i18n::{ArgValue, EmbeddedCatalog};
 
-/// Loaded per thread on first use; a host's manager is joined, never replaced.
-/// The probe is a key every catalogue revision defines.
-static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new("en-US", LOCALES);
-
-/// Mail's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
+// The catalogue every host mounting Mail loads before its view. It is loaded
+// per thread on first use; a host's manager is joined, never replaced.
+ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
 
 /// The catalogue, which every host mounting Mail loads before its view.
 pub fn catalog() -> &'static EmbeddedCatalog {

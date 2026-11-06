@@ -1,11 +1,14 @@
-//! The imports behind `query(T, ...)`, `items.matching(q)`, `filters(T)` and the parts of a
-//! `std.Identifier` (see [`crate::query`]).
+//! The imports behind `query(T, ...)`, `items.matching(q)`, the filters a type declares
+//! (`filters(T)`, `Task.today`) and the parts of a `std.Identifier` (see [`crate::query`]).
 
 use std::rc::Rc;
 
-use tilolang::meta::{FilterKind, TypeMeta};
+use tilolang::meta::{FilterKind, FilterMeta, TypeMeta};
 
-use crate::core::{Core, HResult, trap};
+use crate::abi::Imp;
+use crate::core::{Args, Core, HResult, trap};
+use crate::engine::Wasm;
+use crate::meta::EnumMeta;
 use crate::query::{Clock, Query, Term, find, resolve};
 use crate::store::{FieldSpec, Lit, lit_of, ordered_cmp};
 use crate::value::{RefValue, Value};
@@ -62,7 +65,8 @@ impl Core {
             return trap(format!("query: type `{ty}` is not declared"));
         };
         let clock = self.query_clock()?;
-        let resolved = resolve(&query, declared, &pkg.meta.enums, &clock)?;
+        let viewer = self.looking().ok();
+        let resolved = resolve(&query, declared, &pkg.meta.enums, &clock, viewer.as_deref())?;
         // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
         // read of it moves on, and only then.
         self.note_time(clock.changes_at());
@@ -243,7 +247,7 @@ impl Core {
         ))
     }
 
-    /// `filters(ty)`: the filters of the type `ty`, each a `host.Filter` (key, label, icon,
+    /// `filters(ty)`: the filters of the type `ty`, each a `Filter<ty>` (key, label, icon,
     /// query, toggle); an enum's is one per case.
     pub(crate) fn filters_import(&self, ty: i32) -> HResult<Value> {
         let ty = self.text(ty)?;
@@ -257,6 +261,51 @@ impl Core {
         Ok(Value::List(filters_of(declared, &pkg.meta.enums)))
     }
 
+    /// `filter_lit(ty, key, value)`: one filter of a type as code names it (`Task.today`,
+    /// `Task.project(p)`), the value `filters(ty)` lists it as and a query takes it: the
+    /// query it asks (`is:today`, `project:<id>`), what a control shows it as, whether it is a
+    /// toggle, and whether its count is one to show.
+    pub(crate) fn filter_lit_import(&self, ty: i32, key: i32, value: i32) -> HResult<Value> {
+        let ty = self.text(ty)?;
+        let key = self.text(key)?;
+        let value = self.val(value)?;
+        let filter = {
+            let registry = self.registry.borrow();
+            let (pkg, _) = registry.type_info(&ty).ok_or_else(|| {
+                format!("filter: type `{ty}` is not declared by any loaded package")
+            })?;
+            let Some(declared) = pkg.meta.types.iter().find(|t| t.id == ty) else {
+                return trap(format!("filter: type `{ty}` is not declared"));
+            };
+            let Some(f) = declared.search.filters.iter().find(|f| f.key == key) else {
+                let keys: Vec<&str> = declared
+                    .search
+                    .filters
+                    .iter()
+                    .map(|f| f.key.as_str())
+                    .collect();
+                return trap(format!(
+                    "filter: `{}` declares no filter `{key}`; its filters: {}",
+                    declared.name,
+                    keys.join(", ")
+                ));
+            };
+            valued_filter(f, &pkg.meta.enums, &value)
+                .map_err(|why| format!("filter: `{}.{key}`: {why}", declared.name))?
+        };
+        Ok(filter)
+    }
+
+    /// The type's catalogue, as a view asks for it: `filters(T)` lists it, and `filter_lit`
+    /// is one of its entries.
+    pub(crate) fn catalogue_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        let found = match imp {
+            Imp::Filters => self.filters_import(a.h(0)?)?,
+            _ => self.filter_lit_import(a.h(0)?, a.h(1)?, a.h(2)?)?,
+        };
+        self.ret_h(found)
+    }
+
     /// `ident_part(id, 0)` is an identifier's scheme, `ident_part(id, 1)` its value.
     pub(crate) fn ident_part(&self, id: i32, part: i32) -> HResult<Value> {
         let held = self.text(id)?;
@@ -265,60 +314,135 @@ impl Core {
     }
 }
 
-/// The filters of `ty` as `host.Filter` values: a toggle each for a Bool or a named filter,
-/// one per case for an enum, one with no query for a filter whose value is picked.
+/// One entry of a type's catalogue: a filter as the value `Filter<T>` holds it — what a query
+/// names it by, what a control shows it as, its icon, the query choosing it asks, whether it
+/// is a toggle, and whether its count is one to show.
+fn filter_value(
+    key: &str,
+    label: &str,
+    icon: Option<&str>,
+    query: String,
+    toggle: bool,
+    counts: bool,
+) -> Value {
+    Value::Tuple(vec![
+        Value::text(key),
+        Value::text(label),
+        icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
+        Value::Text(query),
+        Value::Bool(toggle),
+        Value::Bool(counts),
+    ])
+}
+
+/// The filters of `ty` as `Filter<T>` values: a toggle each for a Bool or a named filter, one
+/// per case for an enum, one with no query for a filter whose value is picked.
 #[must_use]
 pub fn filters_of(ty: &TypeMeta, enums: &[tilolang::meta::EnumMeta]) -> Vec<Value> {
-    let filter = |key: &str, label: &str, icon: Option<&str>, query: String, toggle: bool| {
-        Value::Tuple(vec![
-            Value::text(key),
-            Value::text(label),
-            icon.map_or_else(Value::none, |icon| Value::some(Value::text(icon))),
-            Value::Text(query),
-            Value::Bool(toggle),
-        ])
-    };
     let mut out = Vec::new();
     for f in &ty.search.filters {
         match f.kind {
             FilterKind::Bool | FilterKind::Predicate => {
-                out.push(filter(
+                out.push(filter_value(
                     &f.key,
                     &f.label,
                     f.icon.as_deref(),
                     format!("is:{}", f.key),
                     true,
+                    f.count,
                 ));
             }
-            FilterKind::Enum => {
-                let name =
-                    f.ty.trim_start_matches("Set<")
-                        .trim_start_matches("Option<")
-                        .trim_end_matches('>')
-                        .trim_start_matches("enum ");
-                let last = name.rsplit('.').next().unwrap_or(name);
-                match enums.iter().find(|e| e.name == last || e.id == name) {
-                    Some(e) => {
-                        for v in &e.variants {
-                            let label = if v.label.is_empty() {
-                                &v.name
-                            } else {
-                                &v.label
-                            };
-                            out.push(filter(
-                                &f.key,
-                                label,
-                                v.icon.as_deref(),
-                                format!("{}:{}", f.key, v.name),
-                                true,
-                            ));
-                        }
+            FilterKind::Enum => match enum_of(f, enums) {
+                Some(e) => {
+                    for v in &e.variants {
+                        let label = if v.label.is_empty() {
+                            &v.name
+                        } else {
+                            &v.label
+                        };
+                        out.push(filter_value(
+                            &f.key,
+                            label,
+                            v.icon.as_deref(),
+                            format!("{}:{}", f.key, v.name),
+                            true,
+                            false,
+                        ));
                     }
-                    None => out.push(filter(&f.key, &f.label, None, String::new(), false)),
                 }
-            }
-            _ => out.push(filter(&f.key, &f.label, None, String::new(), false)),
+                None => out.push(filter_value(
+                    &f.key,
+                    &f.label,
+                    None,
+                    String::new(),
+                    false,
+                    false,
+                )),
+            },
+            _ => out.push(filter_value(
+                &f.key,
+                &f.label,
+                None,
+                String::new(),
+                false,
+                false,
+            )),
         }
     }
     out
+}
+
+/// The enum a filter's field declares, when it is one of cases: `status` of `enum Status`.
+fn enum_of<'a>(f: &FilterMeta, enums: &'a [EnumMeta]) -> Option<&'a EnumMeta> {
+    let name =
+        f.ty.trim_start_matches("Set<")
+            .trim_start_matches("Option<")
+            .trim_end_matches('>')
+            .trim_start_matches("enum ");
+    let last = name.rsplit('.').next().unwrap_or(name);
+    enums.iter().find(|e| e.name == last || e.id == name)
+}
+
+/// The filter `f` with the value `v` a program names it with (`Task.project(p)`,
+/// `Task.priority(.high)`): the query it asks (`project:<id>`, `priority:high`), the label a
+/// control shows for it, and whether it is a toggle. A filter given a value is none: its
+/// value is what it asks, so no single place is on or off.
+fn valued_filter(f: &FilterMeta, enums: &[EnumMeta], v: &Value) -> Result<Value, String> {
+    let (query, label) = match v {
+        Value::Opt(None) => (format!("is:{}", f.key), f.label.clone()),
+        Value::Opt(Some(v)) => {
+            return valued_filter(f, enums, v);
+        }
+        Value::Bool(b) => (format!("{}:{b}", f.key), f.label.clone()),
+        Value::Int(n) => (format!("{}:{n}", f.key), f.label.clone()),
+        Value::Float(n) => (format!("{}:{n}", f.key), f.label.clone()),
+        Value::Text(t) => (format!("{}:{t}", f.key), f.label.clone()),
+        Value::Enum(e) => {
+            let label = enum_of(f, enums)
+                .and_then(|meta| meta.variants.iter().find(|x| x.name == e.variant))
+                .map(|x| x.label.clone())
+                .filter(|label| !label.is_empty())
+                .unwrap_or_else(|| e.variant.clone());
+            (format!("{}:{}", f.key, e.variant), label)
+        }
+        Value::Ref(r) => (
+            format!("{}:{}", f.key, r.target.id_string()),
+            f.label.clone(),
+        ),
+        other => {
+            return Err(format!(
+                "it takes a value of its field's type, not {}",
+                other.kind_name()
+            ));
+        }
+    };
+    let toggle = matches!(v, Value::Opt(None)) && f.kind.is_toggle();
+    Ok(filter_value(
+        &f.key,
+        &label,
+        f.icon.as_deref(),
+        query,
+        toggle,
+        f.count,
+    ))
 }

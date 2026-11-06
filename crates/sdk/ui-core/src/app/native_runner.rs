@@ -1993,6 +1993,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::PressTarget { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Pick { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::HistoryDescriptions {
@@ -2501,9 +2502,12 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
+        // The app's own row of slots, then the frame around it: where the row
+        // is the window's bar, the header draws no second one. Only the Linux
+        // header asks: elsewhere the host draws the frame.
+        let _shown = self.slot_bar.refresh(&mut self.app, window);
         #[cfg(target_os = "linux")]
-        self.decorations.refresh(&mut self.app, window);
-        self.slot_bar.refresh(&mut self.app, window);
+        self.decorations.refresh(&mut self.app, window, _shown);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -4411,15 +4415,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
-        // A background pump can run while its visible projection is stable.
-        // Redrawing only on a changed snapshot avoids full-scene GPU work on
-        // every otherwise-idle collaboration wake.
-        if let Some(tick) = app.presence.frame_tick.as_mut()
-            && tick(&mut app.presence_ctx)
-        {
-            request_primary_redraw();
-        }
-
         // `Wait` sleeps until real input, zero CPU; escalate to a bounded
         // ~60 Hz tick only while a root still wants another frame. A live
         // collaboration connection is not such a reason: its transport wakes
@@ -4841,7 +4836,12 @@ impl AppHandler {
                 return;
             }
         }
-        if self.slot_bar.route(&mut self.app, window, &event) {
+        let slots_took = self.slot_bar.route(&mut self.app, window, &event);
+        if self.slot_bar.take_close() {
+            self.close_primary_window(window);
+            return;
+        }
+        if slots_took {
             return;
         }
         if self.dispatch_touch_pointer_events(window, &event) {

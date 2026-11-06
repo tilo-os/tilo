@@ -31,14 +31,6 @@ pub trait Backend {
         false
     }
 
-    /// Whether this backend draws the pixels it is handed itself, in memory,
-    /// rather than sampling them as a texture on a GPU: a hosted surface then
-    /// rasterizes its frames instead of drawing them to copy them back every
-    /// frame ([`crate::host::hosted_frames_on_cpu`]).
-    fn composes_on_cpu(&self) -> bool {
-        false
-    }
-
     /// When the backend next wants [`Backend::render`] called with no event
     /// to bring it: an output with something new to show that cannot take a
     /// frame yet. Nothing owed, nothing due: the compositor sleeps.
@@ -201,11 +193,13 @@ pub trait Backend {
     }
 
     /// What `target` shows now, read back as rows of R, G, B, A (see
-    /// [`crate::capture::read_back`]): what a share stream pushes.
+    /// [`crate::capture::read_back`]), with what `held` covers: what a share
+    /// stream pushes, or the session's own look at a display.
     fn read_back(
         &mut self,
         _state: &mut State,
         _target: &crate::capture::Target,
+        _held: crate::capture::Held,
     ) -> Result<Screenshot, crate::capture::CaptureError> {
         Err(crate::capture::CaptureError::Backend(BackendError(
             "this backend does not read frames back".into(),

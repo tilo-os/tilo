@@ -13,10 +13,10 @@
 //! the desktop going down with it.
 //!
 //! An app that ended because memory ran out is not a crash the app caused:
-//! the launcher ended it, and remembers why
-//! ([`launcher::memory_pressure::Cause`]). The report carries that with the
-//! status ([`End::memory`]), so the person is told the session closed the app
-//! rather than that it stopped working.
+//! the session's memory watch ended it and remembers why
+//! ([`Cause`]), or the kernel's own OOM killer did ([`crate::memory`]). The
+//! report carries that with the status ([`End::memory`]), so the person is
+//! told the session closed the app rather than that it stopped working.
 //!
 //! The apps a session started end with it: dropping the [`Spawner`] asks each
 //! one still running to end (`SIGTERM`), through a pidfd taken while the
@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use tilo_lock::MutexRecover as _;
 
 use crate::doors::HeldDoor;
+use crate::memory;
 use crate::plan::Planned;
 
 /// Why the system ended an app: what the launcher remembers of it.
@@ -160,12 +161,16 @@ pub struct Spawner {
     /// The apps still running, by launch id: each one's watcher removes it
     /// once it has ended, and the drop ends the rest.
     running: Running,
+    /// Why memory ended an app, by its cgroup, until its end is reported.
+    ends: memory::Ends,
+    /// The watch over the apps' memory: theirs while they run.
+    memory: Option<launcher::memory_monitor::Watch>,
 }
 
 /// The apps a spawner started that have not ended yet.
-type Running = Arc<Mutex<BTreeMap<u64, App>>>;
+pub(crate) type Running = Arc<Mutex<BTreeMap<u64, App>>>;
 
-fn running(running: &Running) -> std::sync::MutexGuard<'_, BTreeMap<u64, App>> {
+pub(crate) fn running(running: &Running) -> std::sync::MutexGuard<'_, BTreeMap<u64, App>> {
     running.lock_recover()
 }
 
@@ -179,12 +184,42 @@ impl Spawner {
     /// A spawner that wakes `wake`'s loop whenever an app ends.
     #[must_use]
     pub fn new(wake: Option<Wake>) -> Self {
+        let running = Running::default();
+        let ends = memory::Ends::default();
+        // Started here, so it lives as long as the apps it watches and no
+        // longer: a session that ends leaves no watch behind.
+        let memory = match launcher::memory_monitor::Watch::spawn(
+            "tilo-app-memory",
+            Box::new(memory::Source {
+                running: Arc::clone(&running),
+            }),
+            Box::new(memory::Effects {
+                ends: Arc::clone(&ends),
+            }),
+        ) {
+            Ok(watch) => Some(watch),
+            Err(error) => {
+                tracing::warn!(%error, "memory pressure goes unwatched for the apps");
+                None
+            }
+        };
         Self {
             wake,
             events: mpsc::channel(),
             next: 0,
-            running: Running::default(),
+            running,
+            ends,
+            memory,
         }
+    }
+
+    /// Put every app this session runs in the tier of what the person can
+    /// see: `on_screen` is the process of each window on an output. An app
+    /// with no window on screen is in the background tier and gives memory
+    /// back first; one whose window the person sees again is in the
+    /// foreground tier.
+    pub fn tier_by_visibility(&self, on_screen: &[u32]) {
+        memory::tier_by_visibility(&self.running, on_screen);
     }
 
     /// Start `planned` with exactly the environment it planned: nothing the
@@ -225,6 +260,20 @@ impl Spawner {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        // Where an app's own diagnostics go when the session's desk names a
+        // directory for them (`TILO_APP_STDERR_DIR`): a headless acceptance
+        // drives the app itself, so what it says is the only account of a
+        // step that failed inside it. Without one the app's stderr is dropped,
+        // as a desktop's is.
+        if let Some(dir) = std::env::var_os("TILO_APP_STDERR_DIR") {
+            let path = std::path::Path::new(&dir).join(format!("{}.log", planned.app));
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(file) = std::fs::File::create(&path) {
+                command.stderr(Stdio::from(file));
+            }
+        }
         let gate = match door {
             Some(_) => match launcher::registration_gate::install(&mut command) {
                 Ok(gate) => Some(gate),
@@ -252,7 +301,7 @@ impl Spawner {
         };
         // Taken before the watcher can reap the child, so it names this
         // process and no later one with its pid.
-        running(&self.running).insert(id, App::of(started.pid));
+        running(&self.running).insert(id, App::of(started.pid, &planned.app));
         record(started.pid);
         if let Some(gate) = gate {
             // The launch is written down: the app may connect.
@@ -270,10 +319,11 @@ impl Spawner {
         let events = self.events.0.clone();
         let wake = self.wake.clone();
         let still_running = Arc::clone(&self.running);
+        let ends = Arc::clone(&self.ends);
         std::thread::Builder::new()
             .name(format!("app-{}", planned.app))
             .spawn(move || {
-                let end = ended(child);
+                let end = ended(child, &ends);
                 running(&still_running).remove(&id);
                 // A session that has stopped listening is going away; its
                 // apps' endings are nobody's business then.
@@ -322,12 +372,18 @@ impl Spawner {
 impl Drop for Spawner {
     fn drop(&mut self) {
         self.end_running();
+        // The watch over the apps' memory ends with the session running them.
+        self.memory = None;
     }
 }
 
 /// A started app the spawner can still end: a pidfd of it, where the kernel
 /// has them.
-struct App {
+pub(crate) struct App {
+    /// The launch's process, which the launcher moved into the app's cgroup.
+    pub(crate) pid: u32,
+    /// The app's package id or desktop-file id.
+    pub(crate) name: String,
     #[cfg(target_os = "linux")]
     pidfd: Option<std::os::fd::OwnedFd>,
 }
@@ -335,14 +391,19 @@ struct App {
 impl App {
     /// The app the child `pid` runs, which must not have been reaped yet.
     #[cfg(target_os = "linux")]
-    fn of(pid: u32) -> Self {
+    fn of(pid: u32, app: &str) -> Self {
         use std::os::fd::FromRawFd as _;
-        let Ok(pid) = libc::pid_t::try_from(pid) else {
-            return Self { pidfd: None };
+        let app = app.to_owned();
+        let Ok(child) = libc::pid_t::try_from(pid) else {
+            return Self {
+                pid,
+                name: app,
+                pidfd: None,
+            };
         };
         // SAFETY: pidfd_open takes a pid and flags and returns a new
         // descriptor this process owns, or -1.
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child, 0) };
         let pidfd = match i32::try_from(fd) {
             // SAFETY: the kernel just returned this descriptor, and nothing
             // else owns it.
@@ -355,16 +416,46 @@ impl App {
                 None
             }
         };
-        Self { pidfd }
+        Self {
+            pid,
+            name: app,
+            pidfd,
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn of(_pid: u32) -> Self {
-        Self {}
+    fn of(pid: u32, app: &str) -> Self {
+        Self {
+            pid,
+            name: app.to_owned(),
+        }
     }
 
-    /// Ask the app to end; one that has ended already is left as it is.
+    /// The cgroup directory the launcher put this app in, while it is there.
+    pub(crate) fn cgroup_dir(&self) -> Option<PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            let cgroup = std::fs::read_to_string(format!("/proc/{}/cgroup", self.pid)).ok()?;
+            let cgroup = launcher::app_cgroup::app_cgroup_at(&cgroup)?;
+            Some(launcher::app_cgroup::fs_path(&cgroup))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            None
+        }
+    }
+
+    /// End the app; one that has ended already is left as it is. Its whole
+    /// cgroup goes, so a program it started and left behind ends too; a
+    /// launcher that never got a scope of its own (no user manager) is only
+    /// asked to end.
     fn end(&self) {
+        if let Some(dir) = self.cgroup_dir() {
+            if let Err(error) = launcher::app_cgroup::kill(&dir) {
+                tracing::warn!(app = %self.name, dir = %dir.display(), %error, "the app did not end");
+            }
+            return;
+        }
         #[cfg(target_os = "linux")]
         if let Some(pidfd) = &self.pidfd {
             use std::os::fd::AsRawFd as _;
@@ -385,7 +476,7 @@ impl App {
 
 /// How `child` ended: its exit status, or the signal that killed it, with
 /// why memory ended it when memory did.
-fn ended(mut child: Child) -> End {
+fn ended(mut child: Child, ends: &memory::Ends) -> End {
     // Asked before the child is reaped, when its cgroup can still be read:
     // the launcher moved it there before it started anything.
     let cgroup = app_cgroup(child.id());
@@ -412,18 +503,18 @@ fn ended(mut child: Child) -> End {
         // The app ended as it meant to: memory did not close it.
         return end;
     }
-    match cgroup.and_then(|cgroup| launcher::spawner::memory_end(&cgroup)) {
+    match cgroup.and_then(|dir| memory::take_end(ends, &dir)) {
         Some(cause) => end.remembering(cause),
         None => end,
     }
 }
 
 /// The cgroup of the app `pid` runs in, when the launcher put it in one: the
-/// spawner that keeps the app tree also remembers why it ended an app in it.
+/// app's own scope.
 #[cfg(target_os = "linux")]
 fn app_cgroup(pid: u32) -> Option<PathBuf> {
     let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    launcher::app_cgroup::app_cgroup_of(&cgroup)
+    launcher::app_cgroup::app_cgroup_at(&cgroup)
         .map(|cgroup| launcher::app_cgroup::fs_path(&cgroup))
 }
 

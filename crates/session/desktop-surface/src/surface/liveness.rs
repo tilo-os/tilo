@@ -101,9 +101,15 @@ impl DesktopHandle {
     /// device runs its app: what the compositor pings and what it ends.
     #[must_use]
     pub fn window_of_tab(&self, tab: TabId) -> Option<u64> {
-        let shared = self.shared.borrow();
-        shared
-            .tree
+        self.shared.borrow().window_of_tab(tab)
+    }
+}
+
+impl super::Shared {
+    /// The compositor's window id for the window showing `tab`, when a window
+    /// of an app this device runs fills it.
+    pub(crate) fn window_of_tab(&self, tab: TabId) -> Option<u64> {
+        self.tree
             .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)

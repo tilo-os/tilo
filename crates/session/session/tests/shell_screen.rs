@@ -25,11 +25,13 @@ use tilo_session::{Options, Session};
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press, until,
+    CANVAS_ENTRY, HEIGHT, NOTE_TITLE, PERSON, TITLES, WIDTH, notebook as notes, on_screen, press,
+    show_preset, until,
 };
 
-/// The framed canvas's entry, named for what it holds: the text typed to find what to place.
-const CANVAS_ENTRY: &str = "Typed";
+/// What the strips show of a desk holding no window: their own empty state, which no other
+/// surface of the desk shows.
+const NO_WINDOW: &str = "No window here yet";
 
 /// A notebook kept by the notes app, published as the session publishes a workspace's records,
 /// and the notes in it titled [`TITLES`], made through the app's own actions: their ids, in order.
@@ -120,14 +122,11 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
     // Showing the desk as the framed canvas is the shell's own action, which the preset
     // switch over the arrangement runs. The canvas's entry (typed text finds something and
     // places it on the canvas) stands on it; the strips have none.
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Frames").is_some()
-    });
     assert!(
         on_screen(&session, CANVAS_ENTRY).is_none(),
         "the strips stand first, not the canvas"
     );
-    press(&mut session, "Frames");
+    show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
     });
@@ -154,8 +153,8 @@ fn the_shell_is_the_screen_and_its_arrangement_follows_the_published_actions() {
 fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
     let _settled = ui::motion::testing::settled();
     let (mut session, _) = session();
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Strips").is_some()
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
     });
     assert!(
         on_screen(&session, OVERVIEW).is_none(),
@@ -169,7 +168,7 @@ fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
         on_screen(session, OVERVIEW).is_some()
     });
     assert!(
-        on_screen(&session, "Strips").is_none(),
+        on_screen(&session, NO_WINDOW).is_none(),
         "the overview stands where the strips stood"
     );
 
@@ -181,7 +180,7 @@ fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
         )
         .unwrap_or_else(|error| panic!("the overview closes: {error:?}"));
     until(&mut session, "the strips again", |session| {
-        on_screen(session, OVERVIEW).is_none() && on_screen(session, "Strips").is_some()
+        on_screen(session, OVERVIEW).is_none() && on_screen(session, NO_WINDOW).is_some()
     });
 }
 
@@ -192,8 +191,8 @@ fn the_overview_through_the_door_is_the_shells_own_on_its_screen() {
 fn the_chromes_actions_show_the_shells_surfaces() {
     let _settled = ui::motion::testing::settled();
     let (mut session, _) = session();
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Strips").is_some()
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
     });
     for (action, surface, shown) in [
         ("notifications", "centre", "Notifications"),
@@ -205,10 +204,12 @@ fn the_chromes_actions_show_the_shells_surfaces() {
             .invoke(CHROME, action, &Map::new())
             .unwrap_or_else(|error| panic!("{action} shows {surface}: {error:?}"));
         until(&mut session, surface, |session| here(session) == surface);
-        assert!(
-            on_screen(&session, shown).is_some(),
-            "{action} draws the shell's {surface}: {:?}",
-            session.accessible_labels()
+        // The surface is up in the shell's own state; what it draws is read once it has
+        // laid itself out, which is the same wait as every other one here.
+        until(
+            &mut session,
+            &format!("{action} drawing {shown}"),
+            |session| on_screen(session, shown).is_some(),
         );
         session
             .invoke(CHROME, action, &Map::new())
@@ -254,8 +255,8 @@ fn the_chromes_actions_show_the_shells_surfaces() {
 fn switching_workspace_through_the_door_shows_it_on_the_shell() {
     let _settled = ui::motion::testing::settled();
     let (mut session, _) = session();
-    until(&mut session, "the preset switch", |session| {
-        on_screen(session, "Strips").is_some()
+    until(&mut session, "the strips", |session| {
+        on_screen(session, NO_WINDOW).is_some()
     });
     let first = active_workspace(&session);
     session
@@ -309,16 +310,16 @@ fn active_workspace(session: &Session) -> String {
         .expect("a workspace is in front")
 }
 
-/// On a laptop's display and a phone's, the switch between the presets and the strips under
-/// it stand apart, and every note placed on the desk, one strip each, stands on the display
-/// once placed: the desk shows what just arrived on it.
+/// On a laptop's display and a phone's, the bar's switch between the presets and the strips
+/// under it stand apart, and every note placed on the desk, one strip each, stands on the
+/// display once placed: the desk shows what just arrived on it.
 #[test]
 fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_screen() {
     for (width, height) in [(WIDTH, HEIGHT), (390, 844)] {
         let _settled = ui::motion::testing::settled();
         let (mut session, notes) = session_at(width, height);
         until(&mut session, "the preset switch", |session| {
-            within(session, "Strips", width, height).is_some()
+            within(session, "Showing Strips", width, height).is_some()
         });
         for (index, (note, title)) in notes.iter().zip(TITLES).enumerate() {
             place(&mut session, note);
@@ -333,19 +334,19 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
             }
             // The switch and the first strip under it.
             let first = within(&session, &shown, width, height).unwrap();
-            let switch = preset_switch(&session);
+            let switch = preset_switch(&session, "Strips");
             assert!(
                 !intersects(switch, first),
                 "at {width}x{height} the preset switch {switch:?} and the first strip {first:?} stand apart"
             );
         }
         // The framed canvas: the switch and the canvas's entry stand apart too.
-        press(&mut session, "Frames");
+        show_preset(&mut session, "Frames");
         until(&mut session, "the canvas's entry", |session| {
             within(session, CANVAS_ENTRY, width, height).is_some()
         });
         let entry = within(&session, CANVAS_ENTRY, width, height).unwrap();
-        let switch = preset_switch(&session);
+        let switch = preset_switch(&session, "Frames");
         assert!(
             !intersects(switch, entry),
             "at {width}x{height} the preset switch {switch:?} and the canvas's entry {entry:?} stand apart"
@@ -353,17 +354,17 @@ fn the_preset_switch_and_the_strips_stand_apart_and_each_placed_note_is_on_scree
     }
 }
 
-/// Where the switch between the presets stands: around its three chips.
-fn preset_switch(session: &Session) -> (f64, f64, f64, f64) {
-    ["Strips", "Frames", "Spaces"]
-        .into_iter()
-        .filter_map(|chip| session.shell_control(chip))
-        .reduce(|(x, y, w, h), (cx, cy, cw, ch)| {
-            let (left, top) = (x.min(cx), y.min(cy));
-            let (right, bottom) = ((x + w).max(cx + cw), (y + h).max(cy + ch));
-            (left, top, right - left, bottom - top)
+/// Where the switch between the presets stands: the bar's own menu, which names the preset the
+/// desk shows (`showing`).
+fn preset_switch(session: &Session, showing: &str) -> (f64, f64, f64, f64) {
+    session
+        .shell_control(&format!("Showing {showing}"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the bar shows the preset {showing}: {:?}",
+                session.accessible_labels()
+            )
         })
-        .expect("the preset switch stands")
 }
 
 /// The chrome's published resource.
@@ -444,12 +445,9 @@ fn salted_session() -> (Session, Vec<String>) {
 /// Place `resource` on the surface in front, as activating a reference in a view does: the
 /// desk's own workspace, row, strip and place ids, minted on this device. The place's id.
 fn place_here(session: &mut Session, resource: &str) -> u64 {
-    let before: Vec<u64> = session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
-        .map(|place| place.id)
+    let before: Vec<String> = common::places(session)
+        .iter()
+        .map(|place| place.key.clone())
         .collect();
     let arguments: Map<String, Value> = json!({
         "resource": resource,
@@ -465,16 +463,15 @@ fn place_here(session: &mut Session, resource: &str) -> u64 {
         .invoke("shell:arrangement", "place", &arguments)
         .unwrap_or_else(|error| panic!("place {resource}: {error:?}"));
     until(session, "the place is in the record", |session| {
-        session.arrangement().borrow().strips().places().count() > before.len()
+        common::places(session).len() > before.len()
     });
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .places()
-        .map(|place| place.id)
-        .find(|id| !before.contains(id))
-        .expect("a place the record did not hold before")
+    common::number(
+        &common::places(session)
+            .iter()
+            .map(|place| place.key.clone())
+            .find(|key| !before.contains(key))
+            .expect("a place the record did not hold before"),
+    )
 }
 
 /// An empty strip called `name` in the row in front: what the person makes by dragging one out.
@@ -495,32 +492,18 @@ fn add_strip(session: &Session, name: &str) -> u64 {
 
 /// The strip the place `place` stands in, by the record's ids.
 fn place_strip(session: &Session, place: u64) -> Option<u64> {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .strip_of(place)
-        .map(|strip| strip.id)
+    common::strip_of(session, place).map(|strip| common::number(&strip.key))
 }
 
 /// The row the place `place` stands in, by the record's ids.
 fn place_row(session: &Session, place: u64) -> Option<u64> {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .strip_of(place)
-        .map(|strip| strip.row.0)
+    common::strip_of(session, place).map(|strip| common::number(&strip.row))
 }
 
 /// The width of the strip `strip`, in per-mille of its row.
 fn strip_width(session: &Session, strip: u64) -> Option<u32> {
-    session
-        .arrangement()
-        .borrow()
-        .strips()
-        .strip(strip)
-        .map(|strip| strip.width.permille())
+    common::strip(session, strip)
+        .map(|strip| u32::try_from(strip.width).expect("a width of per-mille fits its count"))
 }
 
 /// Keep the screen as `name.png` where `TL_SHELL_SHOTS` names.
@@ -555,102 +538,64 @@ fn the_arranging_controls_press_the_place_they_name_on_a_salted_device() {
         on_screen(session, "Notifications").is_some()
     });
     until(&mut session, "the strips", |session| {
-        on_screen(session, "Strips").is_some()
+        on_screen(session, "Showing Strips").is_some()
     });
     let placed = place_here(&mut session, &note);
     assert!(
         placed > u64::try_from(i64::MAX).unwrap(),
         "the desk's ids do not fit an integer: {placed}"
     );
-    until(&mut session, "the place's controls", |session| {
-        on_screen(session, "Width").is_some() && on_screen(session, "Close place").is_some()
+    // The window's own controls stand in its one bar: its menu, its maximize and its close.
+    until(&mut session, "the window's controls", |session| {
+        on_screen(session, "This window").is_some() && on_screen(session, "Close").is_some()
     });
     let strip = place_strip(&session, placed).expect("the place stands in a strip");
     assert_ne!(strip_width(&session, strip), Some(1000), "it starts narrow");
 
-    // The strip's width menu resizes the strip the menu is on.
-    press(&mut session, "Width");
+    // The window's width menu resizes the window the menu is on.
+    press(&mut session, "This window");
     until(&mut session, "the width menu", |session| {
         on_screen(session, "Wide").is_some()
     });
-    keep(&mut session, "arrangement-strip-width-menu");
+    keep(&mut session, "arrangement-window-menu");
     press(&mut session, "Wide");
-    until(&mut session, "the strip widened", |session| {
+    until(&mut session, "the window widened", |session| {
         strip_width(session, strip) == Some(1000)
     });
 
-    // The place's pin presses the place the frame is on.
-    press(&mut session, "Pin");
+    // The window's pin presses the place the window is on.
+    press(&mut session, "This window");
+    until(&mut session, "the window's menu", |session| {
+        on_screen(session, "Pin window").is_some()
+    });
+    press(&mut session, "Pin window");
     until(&mut session, "the place pinned", |session| {
-        session
-            .arrangement()
-            .borrow()
-            .strips()
-            .place(placed)
-            .is_some_and(|place| place.pinned)
+        common::place(session, placed).is_some_and(|place| place.pinned)
     });
 
-    // A second row on the desk: the place's move names it, by its own resource.
+    // A second row on the desk: the window's move names it, by the row's own name.
     let second = add_strip(&session, "Elsewhere");
     until(&mut session, "the second row", |session| {
-        session
-            .arrangement()
-            .borrow()
-            .strips()
-            .rows
+        common::rows(session)
             .iter()
-            .any(|row| row.id.0 == second)
+            .any(|row| common::number(&row.key) == second)
     });
-    until(&mut session, "the move menu", |session| {
-        on_screen(session, "Move to row").is_some()
-    });
-    // The bar names the row it shows too; the menu's item is the one that was not there
-    // before the menu opened.
-    let chips = session.shell_controls("Elsewhere");
-    press(&mut session, "Move to row");
+    press(&mut session, "This window");
     until(&mut session, "the rows to move to", |session| {
-        session
-            .shell_controls("Elsewhere")
-            .iter()
-            .any(|rect| !chips.contains(rect))
+        on_screen(session, "Move to Elsewhere").is_some()
     });
     keep(&mut session, "arrangement-move-to-row-menu");
-    let item = session
-        .shell_controls("Elsewhere")
-        .into_iter()
-        .find(|rect| !chips.contains(rect))
-        .expect("the row's item in the menu");
-    press_rect(&mut session, item);
+    press(&mut session, "Move to Elsewhere");
     until(&mut session, "the place moved", |session| {
         place_row(session, placed) == Some(second)
     });
 
-    // Closing presses the place it names, never another.
-    until(&mut session, "the place's controls", |session| {
-        on_screen(session, "Close place").is_some()
+    // Closing presses the place its window holds, never another.
+    until(&mut session, "the window's controls", |session| {
+        on_screen(session, "Close").is_some()
     });
-    press(&mut session, "Close place");
+    press(&mut session, "Close");
     until(&mut session, "the place closed", |session| {
         place_strip(session, placed).is_none()
     });
-}
-
-/// Press the middle of `rect` with the pointer, as the person does.
-fn press_rect(session: &mut Session, (x, y, w, h): (f64, f64, f64, f64)) {
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    session
-        .compositor()
-        .input(tilo_compositor::InputEvent::PointerMotion { x, y })
-        .unwrap();
-    session.step(std::time::Duration::from_millis(1)).unwrap();
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(tilo_compositor::InputEvent::PointerButton {
-                button: common::BTN_LEFT,
-                pressed,
-            })
-            .unwrap();
-        session.step(std::time::Duration::from_millis(1)).unwrap();
-    }
 }

@@ -112,10 +112,7 @@ impl VaultOpener {
     /// root.
     pub fn open(&self) -> accounts::SecretVault {
         self.reach();
-        match &self.explicit {
-            Some(root) => accounts::SecretVault::open_in(root),
-            None => accounts::SecretVault::open(),
-        }
+        accounts::SecretVault::open_person(self.explicit.as_deref())
     }
 
     /// Credential custody over the same stores, which opens the vault

@@ -168,8 +168,6 @@ mod undo_per_author;
 mod undo_the_agents_work;
 #[path = "wake_scope_host.rs"]
 mod wake_scope_host;
-#[path = "warmup_no_adapter.rs"]
-mod warmup_no_adapter;
 #[path = "widget_trait_test.rs"]
 mod widget_trait_test;
 #[path = "window_group_test.rs"]
@@ -180,6 +178,9 @@ mod window_group_visual_journey;
 mod workspace_view_test;
 
 mod canonical_record_owner;
+
+#[path = "finish_render.rs"]
+mod finish_render;
 
 mod application_contract;
 

@@ -71,6 +71,12 @@ pub enum Operand<F> {
         day: bool,
         offset: i64,
     },
+    /// The person the predicate is asked for (`workspace.me` in a named filter, as a `Principal`
+    /// literal is written for a query's `assignee:me`). It is read when the predicate is asked
+    /// ([`Pred::viewer`]), so a filter naming them ("Assigned to me": `assignee ==
+    /// workspace.me`) reads differently for each of the people a workspace is shared with, and
+    /// is never kept as a column of its own.
+    Viewer,
 }
 
 /// What of the time a predicate is asked at it reads ([`Pred::clock_reads`]).
@@ -106,6 +112,8 @@ pub enum Lit {
     Absent,
     /// The members of a set, as a field holds them.
     Set(Vec<Lit>),
+    /// A person or agent of the workspace, by the id the host names them with.
+    Principal(String),
 }
 
 /// A Float a predicate compares: equal, ordered and hashed by its value, `-0.0` as `0.0`.
@@ -166,6 +174,9 @@ impl Lit {
                 if let Some(J::String(r)) = m.get("ref") {
                     return Some(Self::Ref(r.clone()));
                 }
+                if let Some(J::String(p)) = m.get("principal") {
+                    return Some(Self::Principal(p.clone()));
+                }
                 return None;
             }
             J::Array(_) => return None,
@@ -188,7 +199,7 @@ impl Lit {
             Self::Int(i) => Some(i.to_string()),
             Self::Float(f) => Some(f.0.to_string()),
             Self::Bool(b) => Some(b.to_string()),
-            Self::Variant(v) | Self::Ref(v) => Some(v.clone()),
+            Self::Variant(v) | Self::Ref(v) | Self::Principal(v) => Some(v.clone()),
             other => other.as_text().map(str::to_owned),
         }
     }
@@ -209,7 +220,11 @@ impl Lit {
             (Self::Float(x), Self::Float(y)) => x.cmp(y),
             (Self::Int(x), Self::Float(y)) => Float(*x as f64).cmp(y),
             (Self::Float(x), Self::Int(y)) => x.cmp(&Float(*y as f64)),
-            (Self::Variant(x), Self::Variant(y)) | (Self::Ref(x), Self::Ref(y)) if !ordered => {
+            (Self::Variant(x), Self::Variant(y))
+            | (Self::Ref(x), Self::Ref(y))
+            | (Self::Principal(x), Self::Principal(y))
+                if !ordered =>
+            {
                 x.cmp(y)
             }
             (Self::Ident(x), y) | (y, Self::Ident(x)) if !ordered => {
@@ -298,6 +313,45 @@ impl<F> Pred<F> {
     pub fn reads_clock(&self) -> bool {
         let reads = self.clock_reads();
         reads.day || reads.instant
+    }
+
+    /// The same predicate with each [`Operand::Viewer`] as the person `who` names: whose list it
+    /// is.
+    #[must_use]
+    pub fn viewer(&self, who: &str) -> Self
+    where
+        F: Clone,
+    {
+        match self {
+            Self::Not(p) => Self::Not(Box::new(p.viewer(who))),
+            Self::And(ps) => Self::And(ps.iter().map(|p| p.viewer(who)).collect()),
+            Self::Or(ps) => Self::Or(ps.iter().map(|p| p.viewer(who)).collect()),
+            Self::Cmp(op, a, b) => Self::Cmp(*op, a.viewer(who), b.viewer(who)),
+            other => other.clone(),
+        }
+    }
+
+    /// Whether it reads the person it is asked for ([`Operand::Viewer`]).
+    #[must_use]
+    pub fn reads_viewer(&self) -> bool {
+        let mut reads = false;
+        self.each_viewer(&mut || reads = true);
+        reads
+    }
+
+    fn each_viewer(&self, f: &mut impl FnMut()) {
+        match self {
+            Self::Not(p) => p.each_viewer(f),
+            Self::And(ps) | Self::Or(ps) => ps.iter().for_each(|p| p.each_viewer(f)),
+            Self::Cmp(_, a, b) => {
+                for side in [a, b] {
+                    if matches!(side, Operand::Viewer) {
+                        f();
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// What of the time it is asked at it reads: what [`Self::at`] makes of it changes only
@@ -444,7 +498,18 @@ impl<F> Operand<F> {
                 day: *day,
                 offset: *offset,
             },
+            Self::Viewer => Operand::Viewer,
         })
+    }
+
+    fn viewer(&self, who: &str) -> Self
+    where
+        F: Clone,
+    {
+        match self {
+            Self::Viewer => Self::Lit(Lit::Principal(who.to_owned())),
+            other => other.clone(),
+        }
     }
 
     fn at(&self, now: i64, zone: i64) -> Self
@@ -482,13 +547,13 @@ impl<F> Operand<F> {
                 Lit::Set(members) => i64::try_from(members.len()).unwrap_or(i64::MAX),
                 Lit::Int(n) => n,
                 Lit::Absent => 0,
-                other => other
-                    .as_text()
-                    .map_or(0, |t| i64::try_from(t.chars().count()).unwrap_or(i64::MAX)),
+                other => other.as_text().map_or(0, |t| {
+                    i64::try_from(crate::text::len(t)).unwrap_or(i64::MAX)
+                }),
             })),
-            // Bound before it is asked ([`Pred::bind`], [`Pred::at`]): one that is not holds
-            // nothing.
-            Self::Arg(_) | Self::Clock { .. } => Ok(Lit::Absent),
+            // Bound before it is asked ([`Pred::bind`], [`Pred::at`], [`Pred::viewer`]): one
+            // that is not holds nothing.
+            Self::Arg(_) | Self::Clock { .. } | Self::Viewer => Ok(Lit::Absent),
         }
     }
 }

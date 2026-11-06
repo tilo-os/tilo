@@ -161,30 +161,26 @@ impl SecureNearbyDestination {
         self.directory.as_raw_fd()
     }
 
-    #[cfg(not(target_os = "macos"))]
-    pub fn anchored_root(&self) -> PathBuf {
-        PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
-    }
-
+    /// Write `bytes` into this folder as a file called `name`, staged
+    /// privately and published under the first free numbered name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the bytes are empty, too large for one transfer,
+    /// or cannot be received into the retained folder.
     pub fn install_inline(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-        #[cfg(target_os = "macos")]
-        {
-            if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES
-            {
-                return Err(i18n::t("nearby-error-too-large"));
-            }
-            return install_capability_file(&self.directory, name, &mut io::Cursor::new(bytes))
-                .map(|name| self.display_root.join(name));
+        if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES {
+            return Err(i18n::t("nearby-error-too-large"));
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let anchored = install_bytes_create_new(&self.anchored_root(), name, bytes)?;
-            Ok(self.display_root.join(
-                anchored
-                    .file_name()
-                    .ok_or_else(|| i18n::t("nearby-error-destination-name"))?,
-            ))
-        }
+        let installed = host_fs::transfer::receive_bytes(
+            &self.directory,
+            &self.display_root,
+            std::ffi::OsStr::new(name),
+            bytes,
+            &mut (),
+        )
+        .map_err(display)?;
+        Ok(self.display_root.join(installed))
     }
 }
 
@@ -1028,15 +1024,23 @@ impl NearbyTransferStore {
         let part = self.partial_path(id);
         self.verify_incoming(&entry)?;
         ensure_private_dir(downloads)?;
+        let receiving = File::open(downloads).map_err(display)?;
         let installed = match entry.kind {
-            TransferKind::File => install_file_create_new(&part, downloads, &entry.name)?,
+            TransferKind::File => host_fs::transfer::receive_file(
+                &receiving,
+                downloads,
+                std::ffi::OsStr::new(&entry.name),
+                &part,
+                &mut (),
+            )
+            .map_err(display)?,
             TransferKind::FolderArchive => {
-                extract_archive_create_new(&part, downloads, &entry.name)?
+                extract_archive(&part, &receiving, downloads, &entry.name)?
             }
             TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
         };
         self.cancel_incoming(id)?;
-        Ok(installed)
+        Ok(downloads.join(installed))
     }
 
     /// Verify a completed media handoff and move it into the private media
@@ -1131,42 +1135,25 @@ impl NearbyTransferStore {
         }
         let part = self.partial_path(id);
         self.verify_incoming(&entry)?;
-        #[cfg(target_os = "macos")]
-        {
-            let installed = match entry.kind {
-                TransferKind::File => {
-                    let mut input = OpenOptions::new()
-                        .read(true)
-                        .custom_flags(libc::O_NOFOLLOW)
-                        .open(&part)
-                        .map_err(display)?;
-                    install_capability_file(&destination.directory, &entry.name, &mut input)?
-                }
-                TransferKind::FolderArchive => {
-                    extract_capability_archive(&part, &destination.directory, &entry.name)?
-                }
-                TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
-            };
-            self.cancel_incoming(id)?;
-            return Ok(destination.display_root.join(installed));
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let root = destination.anchored_root();
-            let installed = match entry.kind {
-                TransferKind::File => install_file_create_new(&part, &root, &entry.name)?,
-                TransferKind::FolderArchive => {
-                    extract_archive_create_new(&part, &root, &entry.name)?
-                }
-                TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
-            };
-            self.cancel_incoming(id)?;
-            Ok(destination.display_root.join(
-                installed
-                    .file_name()
-                    .ok_or_else(|| i18n::t("nearby-error-destination-name"))?,
-            ))
-        }
+        let installed = match entry.kind {
+            TransferKind::File => host_fs::transfer::receive_file(
+                &destination.directory,
+                &destination.display_root,
+                std::ffi::OsStr::new(&entry.name),
+                &part,
+                &mut (),
+            )
+            .map_err(display)?,
+            TransferKind::FolderArchive => extract_archive(
+                &part,
+                &destination.directory,
+                &destination.display_root,
+                &entry.name,
+            )?,
+            TransferKind::MediaHandoff => return Err(MEDIA_CACHE_ONLY.into()),
+        };
+        self.cancel_incoming(id)?;
+        Ok(destination.display_root.join(installed))
     }
 
     /// Remove outgoing metadata and staged bytes.
@@ -1662,125 +1649,49 @@ fn archive_open_folder(source: &File, destination: &Path) -> Result<(), String> 
     output.sync_all().map_err(display)
 }
 
-fn extract_archive_create_new(
+/// Extract one received folder archive into the folder held open at
+/// `receiving`, staged privately and published under `name` or its first free
+/// numbered name.
+fn extract_archive(
     archive_path: &Path,
-    root: &Path,
+    receiving: &File,
+    folder: &Path,
     name: &str,
-) -> Result<PathBuf, String> {
-    let destination = root.join(format!(".{}.partial", id_hex(random_id())));
-    fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&destination)
-        .map_err(display)?;
-    let result = (|| {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(archive_path)
-            .map_err(display)?;
-        let mut archive = tar::Archive::new(file);
-        let mut count = 0usize;
-        for item in archive.entries().map_err(display)? {
-            count = count.saturating_add(1);
-            if count > MAX_FOLDER_ENTRIES {
-                return Err("archive contains too many entries".into());
-            }
-            let mut item = item.map_err(display)?;
-            let relative = item.path().map_err(display)?.into_owned();
-            validate_relative(&relative)?;
-            let target = destination.join(&relative);
-            let kind = item.header().entry_type();
-            if kind.is_dir() {
-                ensure_private_dir(&target)?;
-            } else if kind.is_file() {
-                if let Some(parent) = target.parent() {
-                    ensure_private_dir(parent)?;
-                }
-                let mut output = create_private_new(&target)?;
-                io::copy(&mut item, &mut output).map_err(display)?;
-                output.sync_all().map_err(display)?;
-            } else {
-                return Err("archive contains a link or special entry".into());
-            }
-        }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        let _ = fs::remove_dir_all(&destination);
-        return Err(error);
-    }
-    for suffix in 0..1000 {
-        let published = root.join(collision_name(name, suffix));
-        match fs::DirBuilder::new().mode(0o700).create(&published) {
-            Ok(()) => match fs::rename(&destination, &published) {
-                Ok(()) => return Ok(published),
-                Err(error) => {
-                    // Only remove our still-empty reservation. If another
-                    // process populated it, leave its data untouched.
-                    let _ = fs::remove_dir(&published);
-                    if error.kind() != io::ErrorKind::AlreadyExists
-                        && error.raw_os_error() != Some(libc::ENOTEMPTY)
-                    {
-                        let _ = fs::remove_dir_all(&destination);
-                        return Err(error.to_string());
-                    }
-                }
-            },
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                let _ = fs::remove_dir_all(&destination);
-                return Err(error.to_string());
-            }
-        }
-    }
-    let _ = fs::remove_dir_all(&destination);
-    Err("too many nearby transfer name collisions".into())
-}
-
-fn install_file_create_new(source: &Path, root: &Path, name: &str) -> Result<PathBuf, String> {
-    let destination = unique_destination(root, name)?;
-    let mut input = OpenOptions::new()
+) -> Result<std::ffi::OsString, String> {
+    let mut staging = host_fs::transfer::Staging::in_folder(receiving, folder).map_err(display)?;
+    let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(source)
+        .open(archive_path)
         .map_err(display)?;
-    let mut output = create_private_new(&destination)?;
-    io::copy(&mut input, &mut output).map_err(display)?;
-    output.sync_all().map_err(display)?;
-    Ok(destination)
-}
-
-fn install_bytes_create_new(root: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES {
-        return Err(i18n::t("nearby-error-too-large"));
-    }
-    let destination = unique_destination(root, name)?;
-    let mut output = create_private_new(&destination)?;
-    output.write_all(bytes).map_err(display)?;
-    output.sync_all().map_err(display)?;
-    Ok(destination)
-}
-
-fn unique_destination(root: &Path, name: &str) -> Result<PathBuf, String> {
-    for suffix in 0..1000 {
-        let candidate = root.join(collision_name(name, suffix));
-        if !candidate.exists() {
-            return Ok(candidate);
+    let mut archive = tar::Archive::new(file);
+    let mut count = 0usize;
+    for item in archive.entries().map_err(display)? {
+        count = count.saturating_add(1);
+        if count > MAX_FOLDER_ENTRIES {
+            return Err("archive contains too many entries".into());
+        }
+        let mut item = item.map_err(display)?;
+        let relative = item.path().map_err(display)?.into_owned();
+        validate_relative(&relative)?;
+        let kind = item.header().entry_type();
+        if kind.is_dir() {
+            staging.create_directory(&relative).map_err(display)?;
+        } else if kind.is_file() {
+            if let Some(parent) = relative.parent() {
+                staging.create_directory(parent).map_err(display)?;
+            }
+            let mut output = staging.create_file(&relative).map_err(display)?;
+            io::copy(&mut item, &mut output).map_err(display)?;
+            output.sync_all().map_err(display)?;
+        } else {
+            return Err("archive contains a link or special entry".into());
         }
     }
-    Err("too many nearby transfer name collisions".into())
-}
-
-fn collision_name(name: &str, suffix: usize) -> String {
-    if suffix == 0 {
-        return name.to_string();
-    }
-    let path = Path::new(name);
-    let stem = path.file_stem().and_then(|v| v.to_str()).unwrap_or("item");
-    path.extension().and_then(|v| v.to_str()).map_or_else(
-        || format!("{stem} ({suffix})"),
-        |ext| format!("{stem} ({suffix}).{ext}"),
-    )
+    staging.sync().map_err(display)?;
+    staging
+        .publish_tree(std::ffi::OsStr::new(name), &mut ())
+        .map_err(display)
 }
 
 fn portable_name(path: &Path) -> Result<String, String> {
@@ -2588,10 +2499,15 @@ mod tests {
             let downloads = tmp.path().join("downloads");
             ensure_private_dir(&downloads).unwrap();
             fs::create_dir(downloads.join("folder")).unwrap();
+            let receiving = File::open(&downloads).unwrap();
             let installed =
-                extract_archive_create_new(&first.object_path(a.id), &downloads, "folder").unwrap();
-            assert_eq!(installed.file_name().unwrap(), "folder (1)");
-            assert_eq!(fs::read(installed.join("a.txt")).unwrap(), b"a");
+                extract_archive(&first.object_path(a.id), &receiving, &downloads, "folder")
+                    .unwrap();
+            assert_eq!(installed, "folder 2");
+            assert_eq!(
+                fs::read(downloads.join(installed).join("a.txt")).unwrap(),
+                b"a"
+            );
             drop(receive);
         }
 
@@ -2633,9 +2549,9 @@ mod tests {
             let installed = capability
                 .install_inline("report.txt", b"received")
                 .unwrap();
-            assert_eq!(installed, expected_destination.join("report (1).txt"));
+            assert_eq!(installed, expected_destination.join("report 2.txt"));
             assert_eq!(fs::read(moved.join("report.txt")).unwrap(), b"existing");
-            assert_eq!(fs::read(moved.join("report (1).txt")).unwrap(), b"received");
+            assert_eq!(fs::read(moved.join("report 2.txt")).unwrap(), b"received");
         }
 
         fn secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder() {
@@ -2674,13 +2590,13 @@ mod tests {
                 .unwrap();
             receiver.append(entry.id, 0, &bytes).unwrap();
             let installed = receiver.finish_secure(entry.id, &destination).unwrap();
-            assert_eq!(installed, expected_destination.join("folder (1)"));
+            assert_eq!(installed, expected_destination.join("folder 2"));
             assert_eq!(fs::read(moved.join("folder/keep.txt")).unwrap(), b"keep");
             assert_eq!(
-                fs::read(moved.join("folder (1)/nested/report.txt")).unwrap(),
+                fs::read(moved.join("folder 2/nested/report.txt")).unwrap(),
                 b"received"
             );
-            assert!(!source_path.join("folder (1)").exists());
+            assert!(!source_path.join("folder 2").exists());
             assert!(!receiver.partial_path(entry.id).exists());
         }
 
@@ -2701,8 +2617,13 @@ mod tests {
             fs::write(&archive_path, bytes).unwrap();
             let root = tmp.path().join("out");
             ensure_private_dir(&root).unwrap();
-            assert!(extract_archive_create_new(&archive_path, &root, "bad").is_err());
+            let receiving = File::open(&root).unwrap();
+            assert!(extract_archive(&archive_path, &receiving, &root, "bad").is_err());
             assert!(!tmp.path().join("x").exists());
+            assert!(
+                fs::read_dir(&root).unwrap().next().is_none(),
+                "a refused extraction leaves nothing behind"
+            );
         }
 
         folder_archive_is_deterministic_rejects_links_and_extracts_create_new();
@@ -2710,6 +2631,74 @@ mod tests {
         secure_destination_survives_rename_and_never_overwrites();
         secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder();
         extraction_rejects_parent_traversal();
+    }
+
+    #[test]
+    fn a_received_name_never_shows_bytes_that_are_not_whole() {
+        let tmp = TempDir::new().unwrap();
+        let source = tmp.path().join("whole.bin");
+        let bytes: Vec<u8> = (0..4 * 1024 * 1024_u32)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        fs::write(&source, &bytes).unwrap();
+        let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
+        let entry = sender.stage(&source, "peer".into(), 10).unwrap();
+        let payload = fs::read(sender.object_path(entry.id)).unwrap();
+
+        let downloads = tmp.path().join("downloads");
+        ensure_private_dir(&downloads).unwrap();
+        let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
+        receiver
+            .begin_incoming(
+                IncomingManifest {
+                    id: entry.id,
+                    source: "peer".into(),
+                    request_id: [7; 16],
+                    name: entry.name.clone(),
+                    kind: entry.kind,
+                    total_bytes: entry.total_bytes,
+                    content_hash: entry.content_hash,
+                },
+                10,
+            )
+            .unwrap();
+        for (index, chunk) in payload.chunks(256 * 1024).enumerate() {
+            receiver
+                .append(entry.id, (index * 256 * 1024) as u64, chunk)
+                .unwrap();
+        }
+
+        // A person's Files polls the download folder while the receive goes
+        // on; whatever it can already name must be the whole file.
+        let polled_folder = downloads.clone();
+        let name = entry.name.clone();
+        let expected = u64::try_from(payload.len()).unwrap();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&finished);
+        let watcher = std::thread::spawn(move || {
+            let mut partial = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !flag.load(std::sync::atomic::Ordering::Relaxed) {
+                match fs::metadata(polled_folder.join(&name)) {
+                    Ok(metadata) if metadata.len() == expected => break,
+                    Ok(metadata) => partial.push(metadata.len()),
+                    Err(_) => {}
+                }
+                if std::time::Instant::now() >= deadline {
+                    partial.push(u64::MAX);
+                    break;
+                }
+            }
+            partial
+        });
+        let installed = receiver.finish(entry.id, &downloads).unwrap();
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        let partial = watcher.join().unwrap();
+        assert!(
+            partial.is_empty(),
+            "a received name showed {partial:?} bytes, not {expected}, before it was whole"
+        );
+        assert_eq!(fs::read(installed).unwrap(), payload);
     }
 }
 
@@ -2783,168 +2772,4 @@ fn capability_entries(root: &File) -> Result<Vec<(PathBuf, bool)>, String> {
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(entries)
-}
-
-#[cfg(target_os = "macos")]
-fn create_capability_file(root: &File, name: impl AsRef<std::ffi::OsStr>) -> io::Result<File> {
-    let name = CString::new(name.as_ref().as_bytes())?;
-    // O_EXCL prevents overwriting either existing files or symlinks.
-    let fd = unsafe {
-        libc::openat(
-            root.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-            0o600,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(fd) })
-}
-
-#[cfg(target_os = "macos")]
-fn install_capability_file(
-    root: &File,
-    name: &str,
-    input: &mut impl Read,
-) -> Result<String, String> {
-    for suffix in 0..1000 {
-        let candidate = collision_name(name, suffix);
-        match create_capability_file(root, &candidate) {
-            Ok(mut output) => {
-                io::copy(input, &mut output).map_err(display)?;
-                output.sync_all().map_err(display)?;
-                return Ok(candidate);
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    Err("too many nearby transfer name collisions".into())
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_capability_directory(root: &File, relative: &Path) -> Result<File, String> {
-    if relative.as_os_str().is_empty() {
-        return root.try_clone().map_err(display);
-    }
-    validate_relative(relative)?;
-    let mut current = root.try_clone().map_err(display)?;
-    for component in relative.components() {
-        let Component::Normal(component) = component else {
-            unreachable!()
-        };
-        let name = CString::new(component.as_bytes()).map_err(display)?;
-        let result = unsafe { libc::mkdirat(current.as_raw_fd(), name.as_ptr(), 0o700) };
-        if result != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
-            return Err(io::Error::last_os_error().to_string());
-        }
-        current = open_beneath(&current, Path::new(component), true)?;
-    }
-    Ok(current)
-}
-
-#[cfg(target_os = "macos")]
-fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<String, String> {
-    let temporary = format!(".{}.partial", id_hex(random_id()));
-    let temporary_c = CString::new(temporary.as_str()).map_err(display)?;
-    // Reserve a private directory exclusively; do not reuse a planted entry.
-    if unsafe { libc::mkdirat(root.as_raw_fd(), temporary_c.as_ptr(), 0o700) } != 0 {
-        return Err(io::Error::last_os_error().to_string());
-    }
-    let directory = open_beneath(root, Path::new(&temporary), true)?;
-    let result = (|| {
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(source)
-            .map_err(display)?;
-        let mut archive = tar::Archive::new(file);
-        let mut total = 0u64;
-        for (index, item) in archive.entries().map_err(display)?.enumerate() {
-            if index >= MAX_FOLDER_ENTRIES {
-                return Err("archive contains too many entries".into());
-            }
-            let mut item = item.map_err(display)?;
-            let path = item.path().map_err(display)?.into_owned();
-            validate_relative(&path)?;
-            let kind = item.header().entry_type();
-            if kind.is_dir() {
-                ensure_capability_directory(&directory, &path)?;
-            } else if kind.is_file() {
-                total = total
-                    .checked_add(item.size())
-                    .ok_or_else(|| "archive exceeds size limit".to_string())?;
-                if total > MAX_TRANSFER_BYTES {
-                    return Err("archive exceeds size limit".into());
-                }
-                let parent = ensure_capability_directory(
-                    &directory,
-                    path.parent().unwrap_or(Path::new("")),
-                )?;
-                let leaf = path
-                    .file_name()
-                    .ok_or_else(|| "archive path is not portable".to_string())?;
-                let mut output = create_capability_file(&parent, leaf).map_err(display)?;
-                io::copy(&mut item, &mut output).map_err(display)?;
-                output.sync_all().map_err(display)?;
-            } else {
-                return Err("archive contains a link or special entry".into());
-            }
-        }
-        for suffix in 0..1000 {
-            let candidate = collision_name(name, suffix);
-            let candidate_c = CString::new(candidate.as_str()).map_err(display)?;
-            // RENAME_EXCL atomically publishes without replacing any existing
-            // directory, including one created after our collision check.
-            if unsafe {
-                libc::renameatx_np(
-                    root.as_raw_fd(),
-                    temporary_c.as_ptr(),
-                    root.as_raw_fd(),
-                    candidate_c.as_ptr(),
-                    libc::RENAME_EXCL,
-                )
-            } == 0
-            {
-                return Ok(candidate);
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::AlreadyExists {
-                return Err(error.to_string());
-            }
-        }
-        Err("too many nearby transfer name collisions".into())
-    })();
-    if result.is_err() {
-        // Enumerate only our private directory, then remove children deepest
-        // first through their retained parent capabilities.
-        if let Ok(entries) = capability_entries(&directory) {
-            for (path, is_dir) in entries.into_iter().rev() {
-                if let Ok(parent) = if path.parent() == Some(Path::new("")) {
-                    directory.try_clone().map_err(display)
-                } else {
-                    open_beneath(&directory, path.parent().unwrap(), true)
-                } {
-                    if let Some(leaf) = path
-                        .file_name()
-                        .and_then(|s| CString::new(s.as_bytes()).ok())
-                    {
-                        unsafe {
-                            libc::unlinkat(
-                                parent.as_raw_fd(),
-                                leaf.as_ptr(),
-                                if is_dir { libc::AT_REMOVEDIR } else { 0 },
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        unsafe {
-            libc::unlinkat(root.as_raw_fd(), temporary_c.as_ptr(), libc::AT_REMOVEDIR);
-        }
-    }
-    result
 }

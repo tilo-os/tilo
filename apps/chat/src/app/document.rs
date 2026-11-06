@@ -65,13 +65,14 @@ impl ChatApp {
             }
         }
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.channels = chat.channel_rows();
+        self.channels = chat.conversation_rows(&self.me.id);
+        self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
         self.categories = chat.category_rows();
         for category in &mut self.categories {
             category.collapsed = self.collapsed.contains(&category.id);
         }
         // Keep the active channel valid (e.g. after it was deleted).
-        if self.direct_person.is_none()
+        if self.direct_person().is_none()
             && self.channel(&self.active_channel).is_none()
             && let Some(first) = self
                 .ws_channels()
@@ -114,6 +115,18 @@ impl ChatApp {
             .flat_map(|(_, messages)| messages.iter().cloned())
             .collect();
         self.search_users = chat.user_rows();
+        // Which direct conversations hold something, so the sidebar lists
+        // those and not every person in the workspace.
+        self.direct_held = per_channel
+            .iter()
+            .filter(|(_, messages)| !messages.is_empty())
+            .map(|(id, _)| id.clone())
+            .filter(|id| {
+                self.channels
+                    .iter()
+                    .any(|channel| channel.direct && channel.id == *id)
+            })
+            .collect();
         self.reports = chat
             .feedback
             .iter()
@@ -154,23 +167,11 @@ impl ChatApp {
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
         // Point each composer at its surface's draft; the editors read it on
         // their next sync (`sync_composers`), keeping the caret while typing.
-        if self.direct_person.is_some() {
-            self.sync_person_draft();
-        } else {
-            self.composer_main.set_key(&self.active_channel);
-            self.composer_main.sync(doc);
-            self.draft_main = self.composer_main.value();
-        }
-        let channel = self
-            .channel(&self.active_channel)
-            .map(|c| c.name.clone())
-            .unwrap_or_default();
+        self.composer_main.set_key(&self.active_channel);
+        self.composer_main.sync(doc);
+        self.draft_main = self.composer_main.value();
         self.composer_main
-            .set_placeholder(&format!("Message #{channel}"));
-        if self.direct_person.is_some() {
-            self.composer_main
-                .set_placeholder(&crate::i18n::t("chat-person-chat-placeholder"));
-        }
+            .set_placeholder(&self.conversation_placeholder(&self.active_channel));
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
@@ -313,12 +314,18 @@ impl ChatApp {
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
     pub(crate) fn mark_active_read(&mut self, doc: &AutoCommit) {
-        if self.direct_person.is_some() || self.active_channel.is_empty() || !self.timeline_at_end {
+        if self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
         let Some(chat) = read_record(doc) else {
             return;
         };
+        self.mark_conversation_read(&chat);
+    }
+
+    /// Mark the conversation in view read up to what this window holds of it,
+    /// for this window's person.
+    pub(crate) fn mark_conversation_read(&mut self, chat: &crate::record::Chat) {
         let read = self
             .held_messages()
             .read_to_end(&ui::tilo_resource::Id::from_raw(

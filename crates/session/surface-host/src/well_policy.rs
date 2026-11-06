@@ -21,6 +21,7 @@
 //! window's tab there.
 
 use std::cell::{RefCell, RefMut};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_compositor::gestures::GestureConfig;
@@ -115,6 +116,12 @@ pub struct WellPolicy {
     /// Those of them that have not shown a buffer yet: they wait in their well, which the
     /// compositor does not list among its windows.
     pending: Vec<u64>,
+    /// The size each window was last configured to, by its id: what the policy compares a
+    /// well against. A client is configured when the room its well gives it changes, not
+    /// when what it last committed differs from that room: a terminal rounds what it commits
+    /// to whole cells, so its commit never equals the constraint it was given, and neither a
+    /// click nor a frame between would ever stop configuring it.
+    configured: HashMap<u64, (i32, i32)>,
     /// Who is told of the windows given a place and of the ones gone.
     followers: WindowFollowers,
 }
@@ -148,6 +155,7 @@ impl WellPolicy {
             mapped: Vec::new(),
             gestures: GestureReader::default(),
             pending: Vec::new(),
+            configured: HashMap::new(),
             followers: WindowFollowers::default(),
         }
     }
@@ -318,6 +326,7 @@ impl WindowPolicy for WellPolicy {
             self.desk.relayout();
         }
         self.mapped.retain(|id| !gone.contains(id));
+        self.configured.retain(|id, _| !gone.contains(id));
         let mut arrangements = Vec::with_capacity(windows.len());
         for (window, current) in windows {
             if let Some(title) = &window.title {
@@ -345,13 +354,24 @@ impl WindowPolicy for WellPolicy {
                 continue;
             }
             let size = (extent(well.width()), extent(well.height()));
-            // The client is configured only when the well changed size; a well that moved
-            // places the window at once.
-            let configured = (current.size.w, current.size.h) != size;
+            // The client is configured when the room its well gives it changed. What it was
+            // configured to is the policy's own record once it has sent one; before that it is
+            // what the compositor lists the window at. A client commits a size it chose within
+            // what it was told (a terminal rounds to whole cells), so comparing the room
+            // against that commit would configure the client again on every frame.
+            let known = self
+                .configured
+                .get(&window.id)
+                .copied()
+                .unwrap_or((current.size.w, current.size.h));
+            let reconfigure = known != size;
+            if reconfigure {
+                self.configured.insert(window.id, size);
+            }
             arrangements.push(Arrangement {
                 id: window.id,
                 location: LayoutPoint::from((round(well.x0), round(well.y0))),
-                size: configured.then_some(size),
+                size: reconfigure.then_some(size),
             });
         }
         Some(arrangements)
@@ -360,6 +380,7 @@ impl WindowPolicy for WellPolicy {
     fn withdrawn(&mut self, window: &WindowInfo) {
         self.pending.retain(|id| *id != window.id);
         self.mapped.retain(|id| *id != window.id);
+        self.configured.remove(&window.id);
         self.followers.gone(window.id);
         self.desk.policy().unmap(window.id);
         self.desk.relayout();

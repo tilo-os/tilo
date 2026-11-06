@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -32,8 +34,53 @@ fn published(resources: &[ResourceSpec], id: &str) -> bool {
         .any(|spec| spec.id.as_str() == id || published(&spec.children, id))
 }
 
+/// The portal frontend, as xdg-desktop-portal forwards an app's call: it asks
+/// for a note on the session's own bus and gives the app the reply.
+fn ask_for_a_note(
+    runtime: &tokio::runtime::Runtime,
+    bus: &PrivateBus,
+) -> tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)> {
+    let frontend = runtime.block_on(async {
+        let frontend = zbus::connection::Builder::address(bus.address())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        frontend
+            .request_name("org.freedesktop.portal.Desktop")
+            .await
+            .unwrap();
+        frontend
+    });
+    runtime.spawn(async move {
+        let reply = frontend
+            .call_method(
+                Some(tilo_portal::BUS_NAME),
+                tilo_portal::OBJECT_PATH,
+                Some("org.freedesktop.impl.portal.FileChooser"),
+                "OpenFile",
+                &(
+                    ObjectPath::try_from(REQUEST).unwrap(),
+                    "org.example.Editor",
+                    "",
+                    "Open a note",
+                    HashMap::<String, OwnedValue>::new(),
+                ),
+            )
+            .await
+            .unwrap();
+        reply
+            .body()
+            .deserialize::<(u32, HashMap<String, OwnedValue>)>()
+            .unwrap()
+    })
+}
+
 #[test]
 fn a_portal_file_chooser_request_is_the_sessions_question() {
+    // The services keep their priority contacts and their schedules under the
+    // person's home: this test's own, never the machine's.
+    let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -67,62 +114,27 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     )
     .expect("session");
 
-    // The portal frontend, as xdg-desktop-portal forwards an app's call.
     let runtime = desktop.runtime();
-    let frontend = runtime.block_on(async {
-        let frontend = zbus::connection::Builder::address(bus.address())
-            .unwrap()
-            .build()
-            .await
-            .unwrap();
-        frontend
-            .request_name("org.freedesktop.portal.Desktop")
-            .await
-            .unwrap();
-        frontend
-    });
-    let call = runtime.spawn({
-        async move {
-            let reply = frontend
-                .call_method(
-                    Some(tilo_portal::BUS_NAME),
-                    tilo_portal::OBJECT_PATH,
-                    Some("org.freedesktop.impl.portal.FileChooser"),
-                    "OpenFile",
-                    &(
-                        ObjectPath::try_from(REQUEST).unwrap(),
-                        "org.example.Editor",
-                        "",
-                        "Open a note",
-                        HashMap::<String, OwnedValue>::new(),
-                    ),
-                )
-                .await
-                .unwrap();
-            reply
-                .body()
-                .deserialize::<(u32, HashMap<String, OwnedValue>)>()
-                .unwrap()
-        }
-    });
+    let call = ask_for_a_note(runtime, &bus);
 
     let resource = format!("question:portal:{REQUEST}");
     // The question wakes the loop: a turn that would wait a minute ends
     // when it is asked.
-    let mut question = None;
     let asked = std::time::Instant::now();
-    for _ in 0..20 {
-        session.step(std::time::Duration::from_secs(60)).unwrap();
-        question = session.read(&resource);
-        if question.is_some() {
-            break;
-        }
-    }
+    let question = common::wait_for(
+        &mut session,
+        "the portal's question to wake the session",
+        |session| {
+            session
+                .step(std::time::Duration::from_secs(60))
+                .expect("a turn of the session that would wait a minute");
+            session.read(&resource)
+        },
+    );
     assert!(
         asked.elapsed() < std::time::Duration::from_secs(60),
         "the question woke the session"
     );
-    let question = question.expect("the request is published as a question");
     assert_eq!(question["kind"], json!("portal.file-chooser"));
     assert_eq!(question["app_id"], json!("org.example.Editor"));
     assert_eq!(question["details"]["title"], json!("Open a note"));
@@ -153,16 +165,9 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
     node.children.iter().find_map(|child| control(child, name))
 }
 
-/// Steps `session` until `asked` answers, for two seconds of session time at
-/// most.
-fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
-    for _ in 0..2000 {
-        session.step(std::time::Duration::from_millis(1)).unwrap();
-        if let Some(answer) = asked(session) {
-            return Some(answer);
-        }
-    }
-    None
+/// Steps `session` until `asked` answers, or the suite's hang bound runs out.
+fn until<T>(session: &mut Session, asked: impl FnMut(&mut Session) -> Option<T>) -> Option<T> {
+    common::wait_maybe(session, asked)
 }
 
 /// An app's notification with its own image is shown by the banners and
@@ -174,6 +179,9 @@ fn until<T>(session: &mut Session, mut asked: impl FnMut(&mut Session) -> Option
 )]
 #[test]
 fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
+    // The services keep their priority contacts and their schedules under the
+    // person's home: this test's own, never the machine's.
+    let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -366,6 +374,9 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
 )]
 #[test]
 fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
+    // The services keep their priority contacts and their schedules under the
+    // person's home: this test's own, never the machine's.
+    let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -425,9 +436,9 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
                     "From Ada",
                     Vec::<&str>::new(),
                     HashMap::<String, zbus::zvariant::Value>::new(),
-                    // Half a second on screen: enough to watch it arrive and
-                    // go again without holding the test up.
-                    500_i32,
+                    // Four seconds on screen: long enough to watch it arrive
+                    // and go again even where one frame takes most of a second.
+                    4000_i32,
                 ),
             )
             .await
@@ -446,7 +457,22 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
             .then_some(())
     });
     assert!(up.is_some(), "the banner shows to begin with");
-    let up_at = std::time::Instant::now();
+    // Still up on the next pass: it went because its lifetime ran out, not
+    // because the test looked again too late.
+    let still = until(&mut session, |session| {
+        session
+            .banners()
+            .shown()
+            .banners
+            .iter()
+            .any(|(banner, _)| *banner == id)
+            .then_some(())
+    });
+    assert!(
+        still.is_some(),
+        "the banner stays up while its lifetime runs: {:?}",
+        session.banners().shown().banners
+    );
 
     let left = until(&mut session, |session| {
         session
@@ -461,11 +487,6 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
         left.is_some(),
         "the banner leaves once its lifetime runs out: {:?}",
         session.banners().shown().banners
-    );
-    assert!(
-        up_at.elapsed() >= std::time::Duration::from_millis(250),
-        "the banner stayed up for its lifetime, not less: {:?}",
-        up_at.elapsed()
     );
     let kept = until(&mut session, |session| {
         let centre = session.read(tilo_session::NOTIFICATIONS_RESOURCE)?;

@@ -3,7 +3,7 @@
 //! room the relay governs, administers none of them, and every member's
 //! replica refuses it from the room's governance.
 use governance_actions::{admitted, connected, host_action};
-use tilo_relay::rooms::ENTER_ROOM;
+use tilo_relay::workspaces::ENTER_ROOM;
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
 use super::*;
@@ -30,7 +30,8 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
 
 async fn enter(relay: &Relay, device: &TestDevice, room: &str) {
     let home = connected(relay, device).await;
-    let _: EnteredRoom = host_action(&home, ENTER_ROOM, serde_json::json!({ "room": room })).await;
+    let _: EnteredWorkspace =
+        host_action(&home, ENTER_ROOM, serde_json::json!({ "room": room })).await;
 }
 
 /// `device` of `person` redeems an editor's invitation to `room` that
@@ -106,9 +107,9 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
     // the first, and Bob is in it with two devices.
     let plans = create_and_enter(&relay, &laptop, "Plans").await;
     let other = create_and_enter(&relay, &laptop, "Other").await;
-    enter(&relay, &phone, &plans.room).await;
-    let mut tablet_peer = join(&relay, &laptop, &plans.room, &bob, &tablet).await;
-    join(&relay, &laptop, &plans.room, &bob, &bob_laptop).await;
+    enter(&relay, &phone, &plans.workspace).await;
+    let mut tablet_peer = join(&relay, &laptop, &plans.workspace, &bob, &tablet).await;
+    join(&relay, &laptop, &plans.workspace, &bob, &bob_laptop).await;
     for workspace in [plans.workspace_id, other.workspace_id] {
         assert!(admitted(&relay, &laptop, workspace).await);
     }
@@ -134,10 +135,10 @@ async fn a_revocation_announced_in_one_room_reaches_the_relay_and_every_room_it_
     assert!(!admitted(&relay, &laptop, other.workspace_id).await);
     assert!(
         relay
-            .rooms()
+            .workspaces()
             .unwrap()
             .issue(
-                &other.room,
+                &other.workspace,
                 &laptop.cert,
                 IssueInvitationRequest {
                     request_id: [3; 32],

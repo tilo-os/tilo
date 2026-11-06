@@ -19,7 +19,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::entry::{DesktopEntry, EntrySource, EntryType, parse};
-use crate::locale::locale_candidates;
 
 /// `XDG_CURRENT_DESKTOP` this desktop announces, and the name `OnlyShowIn` / `NotShowIn`
 /// are matched against.
@@ -111,16 +110,12 @@ pub fn application_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Scan the XDG application directories of the current environment.
-pub fn scan() -> Scan {
-    scan_dirs(&application_dirs(), &current_desktops())
-}
-
 /// Scan an explicit list of `applications` directories, in precedence order, filtering for
-/// `desktop`. Split out from [`scan`] so tests drive real directories they built, rather
-/// than whatever the machine running them happens to have installed.
-pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
-    let locales = locale_candidates();
+/// `desktop`, and name each entry in the language `locales` names (see
+/// [`crate::locale::language_candidates`]; empty reads the unlocalised names). The
+/// directories are the caller's for the same reason: [`application_dirs`] answers the
+/// machine's, and a test drives real directories it built.
+pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String], locales: &[String]) -> Scan {
     let mut stats = ScanStats::default();
     // id -> entry, first writer wins.
     let mut claimed: BTreeMap<String, DesktopEntry> = BTreeMap::new();
@@ -139,7 +134,7 @@ pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
                 stats.unparseable = stats.unparseable.saturating_add(1);
                 continue;
             };
-            let Some(entry) = parse(&contents, &id, &path, &locales) else {
+            let Some(entry) = parse(&contents, &id, &path, locales) else {
                 stats.unparseable = stats.unparseable.saturating_add(1);
                 continue;
             };
@@ -359,7 +354,7 @@ mod tests {
         {
             let tmp = tempfile::tempdir().unwrap();
             write(tmp.path(), "kde4/konsole.desktop", &app("Konsole"));
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 1);
             assert_eq!(scan.entries[0].id, "kde4-konsole");
         }
@@ -374,6 +369,7 @@ mod tests {
             let scan = scan_dirs(
                 &[user.path().to_path_buf(), system.path().to_path_buf()],
                 &tilo(),
+                &[],
             );
             assert_eq!(
                 scan.entries.len(),
@@ -402,6 +398,7 @@ mod tests {
             let scan = scan_dirs(
                 &[user.path().to_path_buf(), system.path().to_path_buf()],
                 &tilo(),
+                &[],
             );
             assert!(scan.entries.is_empty(), "{:?}", scan.entries);
             assert_eq!(scan.stats.tombstoned, 2);
@@ -409,7 +406,11 @@ mod tests {
         }
         // Phase `a_missing_directory_is_not_an_error`.
         {
-            let scan = scan_dirs(&[PathBuf::from("/nonexistent/tilo/applications")], &tilo());
+            let scan = scan_dirs(
+                &[PathBuf::from("/nonexistent/tilo/applications")],
+                &tilo(),
+                &[],
+            );
             assert!(scan.entries.is_empty());
             assert_eq!(scan.stats.files_seen, 0);
         }
@@ -435,7 +436,7 @@ mod tests {
             write(tmp.path(), "vendor-chat.desktop", body);
             write(tmp.path(), "chat.desktop", body);
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 1, "aliases must not become two apps");
             assert_eq!(scan.stats.duplicate_aliases, 1);
         }
@@ -456,7 +457,7 @@ mod tests {
                  X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
             );
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 1, "one application must have one row");
             assert_eq!(scan.stats.duplicate_aliases, 1);
             assert!(matches!(
@@ -481,7 +482,7 @@ mod tests {
                  X-Flatpak=org.example.Chat\nStartupWMClass=org.example.Chat\n",
             );
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 2, "names alone must never merge apps");
             assert_eq!(scan.stats.duplicate_aliases, 0);
         }
@@ -495,7 +496,7 @@ mod tests {
                 "[Desktop Entry]\nType=Application\nName=Editor\nExec=/bin/true --safe\n",
             );
 
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 2);
             assert_eq!(scan.stats.duplicate_aliases, 0);
         }
@@ -522,7 +523,7 @@ mod tests {
                 "[Desktop Entry]\nType=Application\nName=C\n",
             );
             write(tmp.path(), "d.desktop", &app("D"));
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 1);
             assert_eq!(scan.entries[0].name, "D");
             assert_eq!(scan.stats.no_display, 1);
@@ -536,7 +537,7 @@ mod tests {
             write(tmp.path(), "z.desktop", &app("alpha"));
             write(tmp.path(), "a.desktop", &app("Zulu"));
             write(tmp.path(), "m.desktop", &app("Mike"));
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             let names: Vec<&str> = scan.entries.iter().map(|e| e.name.as_str()).collect();
             assert_eq!(names, vec!["alpha", "Mike", "Zulu"]);
         }
@@ -549,7 +550,7 @@ mod tests {
                 "[Desktop Entry]\nType=Application\nName=App\n\
                  Exec=/usr/bin/flatpak run com.x.App\nX-Flatpak=com.x.App\n",
             );
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(
                 scan.entries[0].source,
                 EntrySource::Flatpak {
@@ -571,10 +572,51 @@ mod tests {
                 "here.desktop",
                 "[Desktop Entry]\nType=Application\nName=Here\nExec=/bin/true\nTryExec=/bin/true\n",
             );
-            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo());
+            let scan = scan_dirs(&[tmp.path().to_path_buf()], &tilo(), &[]);
             assert_eq!(scan.entries.len(), 1);
             assert_eq!(scan.entries[0].name, "Here");
             assert_eq!(scan.stats.try_exec_missing, 1);
         }
+    }
+
+    /// What an entry is called is the caller's language, never the machine's:
+    /// the same directory reads as `Files` in an English session and `Dateien`
+    /// in a German one, whichever locale this test process runs in.
+    #[test]
+    fn the_entries_are_named_in_the_language_the_caller_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "org.example.Files.desktop",
+            "[Desktop Entry]\nType=Application\nName=Files\nName[de]=Dateien\n\
+             Name[de_DE]=Dateien\nComment=Browse your files\nComment[de]=Dateien durchsuchen\n\
+             Exec=/bin/true\n",
+        );
+        let named = |preferred: Option<&str>| {
+            let scan = scan_dirs(
+                &[tmp.path().to_path_buf()],
+                &tilo(),
+                &crate::locale::language_candidates(preferred),
+            );
+            assert_eq!(scan.entries.len(), 1, "one entry either way");
+            (
+                scan.entries[0].name.clone(),
+                scan.entries[0].comment.clone(),
+            )
+        };
+        assert_eq!(
+            named(Some("en-US")),
+            ("Files".to_owned(), Some("Browse your files".to_owned())),
+            "an English session on a German machine reads English"
+        );
+        assert_eq!(
+            named(Some("de-DE")),
+            ("Dateien".to_owned(), Some("Dateien durchsuchen".to_owned())),
+        );
+        assert_eq!(
+            named(None),
+            ("Files".to_owned(), Some("Browse your files".to_owned())),
+            "no language named reads the unlocalised keys"
+        );
     }
 }

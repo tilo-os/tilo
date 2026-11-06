@@ -34,6 +34,33 @@ pub const SEP: char = '\u{0}';
 const AFTER: char = '\u{1}';
 /// Comes after every written value.
 const LAST: char = char::MAX;
+/// Separates a column's list from the one counting its items that are open ([`open_list`]).
+pub const OPEN: char = '\u{2}';
+
+/// The list that counts how many of `list`'s entries are items of a type whose done field
+/// (`done: Bool (done)`) is not set: what a place holds of them. Its counts are kept beside the
+/// list's, so [a window's places](crate::index) read how many open items a run holds without
+/// reading the run, and a workspace's whole inbox costs no more than its first page.
+#[must_use]
+pub fn open_list(list: &str) -> String {
+    format!("{list}{OPEN}")
+}
+
+/// Whether `column`'s runs are counted apart for the items that are open: what a place reads to
+/// count what it holds without reading its run. A column of few values ([`counted`]) of a type
+/// that names the flag saying an item is finished ([`done`]).
+#[must_use]
+pub fn open_split(column: &ColumnSchema, done: Option<&str>) -> bool {
+    done.is_some() && counted(column)
+}
+
+/// Whether `value`'s entries fall in the run `run`: at or after its start, before its end.
+#[must_use]
+pub fn holds_value(value: &str, (from, to): &(String, String)) -> bool {
+    let starts = format!("{value}{SEP}");
+    let ends = format!("{value}{AFTER}");
+    from.as_str() <= starts.as_str() && ends.as_str() <= to.as_str()
+}
 
 /// The list of the column `column` of the items of the collection `field` of `parent`.
 #[must_use]
@@ -78,6 +105,14 @@ pub fn after_value(key: &str) -> &str {
     key.split_once(SEP).map_or(key, |(_, rest)| rest)
 }
 
+/// Whether an entry holds no value: the empty value the columns write for an item without one
+/// (a day, a time), which comes first among the values.
+#[must_use]
+pub fn holds_no_value(key: &str) -> bool {
+    key.split_once(SEP)
+        .is_some_and(|(value, _)| value.is_empty())
+}
+
 /// A value written backwards.
 #[must_use]
 pub fn reversed(value: &str) -> String {
@@ -115,11 +150,11 @@ pub fn write(kind: ColumnKind, lit: &Lit) -> Option<String> {
         (ColumnKind::Bool, Lit::Bool(b)) => if *b { "1" } else { "0" }.to_owned(),
         (ColumnKind::Int, Lit::Int(i)) => int(*i),
         // A set holds its members as their text.
-        // optional-decode: a member that is not a number is a value of another kind (`None`).
+        // ignored-failure: a member that is not a number is a value of another kind (`None`).
         (ColumnKind::Int, Lit::Text(t)) => int(t.parse().ok()?),
         (ColumnKind::Float, Lit::Float(f)) => float(f.0),
         (ColumnKind::Float, Lit::Int(i)) => float(int_as_float(*i)),
-        // optional-decode: a member that is not a number is a value of another kind (`None`).
+        // ignored-failure: a member that is not a number is a value of another kind (`None`).
         (ColumnKind::Float, Lit::Text(t)) => float(t.parse().ok()?),
         (ColumnKind::Text, x) => {
             let t = x.as_text()?;
@@ -130,6 +165,8 @@ pub fn write(kind: ColumnKind, lit: &Lit) -> Option<String> {
         (ColumnKind::Enum, Lit::Variant(v) | Lit::Text(v))
         | (ColumnKind::Ref, Lit::Ref(v) | Lit::Text(v)) => v.clone(),
         (ColumnKind::Ident, Lit::Ident(t) | Lit::Text(t)) => t.to_lowercase(),
+        // Who a resource is assigned to, by the id the workspace names them with.
+        (ColumnKind::Principal, Lit::Principal(p) | Lit::Text(p)) => p.clone(),
         _ => return None,
     })
 }
@@ -264,6 +301,27 @@ fn flip(op: CmpOp) -> CmpOp {
     }
 }
 
+/// How a named filter's column answers `pred` as a whole, when `pred` is that filter's predicate
+/// (or its negation): the run of the items it holds (or of those it does not). The column holds
+/// whether the predicate does, so it answers every conjunct of it at once, where a conjunct read
+/// on its own is a wider run that leaves the rest to be checked item by item. `None` when the
+/// predicate is no named filter's.
+#[must_use]
+pub fn named<F>(schema: &TypeSchema, pred: &Pred<F>, id: &dyn Fn(&F) -> String) -> Option<Access> {
+    for column in schema.columns.iter().filter(|c| c.pred.is_some()) {
+        let mapped = pred.resolve(&mut |f: &F| Some(id(f)));
+        if mapped.as_ref() == column.pred.as_ref() {
+            return Some(run(column, one_value("1"), true));
+        }
+        if let Some(Pred::Not(inner)) = &mapped
+            && Some(&**inner) == column.pred.as_ref()
+        {
+            return Some(run(column, one_value("0"), true));
+        }
+    }
+    None
+}
+
 /// How `pred` is answered from the columns of `schema` (`id` naming the field of each of its
 /// field operands), when one answers it: the runs of one column for a comparison, membership,
 /// presence or pattern; several for one of several. `None` when it is read item by item.
@@ -276,16 +334,8 @@ pub fn access<F>(
     whole_type: bool,
 ) -> Option<Vec<Access>> {
     // A named filter: its column.
-    for column in schema.columns.iter().filter(|c| c.pred.is_some()) {
-        let mapped = pred.resolve(&mut |f: &F| Some(id(f)));
-        if mapped.as_ref() == column.pred.as_ref() {
-            return Some(vec![run(column, one_value("1"), true)]);
-        }
-        if let Some(Pred::Not(inner)) = &mapped
-            && Some(&**inner) == column.pred.as_ref()
-        {
-            return Some(vec![run(column, one_value("0"), true)]);
-        }
+    if let Some(named) = named(schema, pred, id) {
+        return Some(vec![named]);
     }
     let column_of = |f: &F| schema.column_of(&id(f));
     match pred {

@@ -34,10 +34,27 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::search::SearchRequest;
 use crate::tokens::MotionSource;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
-use crate::widget::window_controls::{CONTROL_GAP, CONTROL_PX};
+use crate::widget::window_controls::{
+    CONTROL_GAP, CONTROL_PX, ControlsState, WindowControl, WindowControls,
+};
 use crate::widget::window_toolbar_row::ToolbarRow;
 use crate::widget::{HistoryControl, InPlace, Widget, WindowSearch, WindowSearchRequest};
 use crate::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
+
+/// What a press on the window's own part of the bar asked of the window.
+/// The row is the window's bar where the desktop leaves the frame to the
+/// app: its controls stand at the row's trailing end in their pill, and the
+/// row's empty ground moves the window (a double press maximizes it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowAction {
+    Move,
+    ToggleMaximize,
+    Minimize,
+    Close,
+}
+
+/// Within this, a second press on the bar's ground is a double press.
+const DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// The row's one "tab": the window itself.
 const WINDOW: u64 = 0;
@@ -131,6 +148,19 @@ pub(crate) struct SlotRow {
     repaint: bool,
     /// The window's search, ending the row.
     search: WindowSearch,
+    /// The window's own controls, in the pill at the row's trailing end: the
+    /// one part of the bar that is the window's, not the app's. Empty while
+    /// the desktop draws the frame itself.
+    controls: WindowControls,
+    controls_state: ControlsState,
+    control_lifts: [crate::motion::Feedback; 3],
+    /// The window's own controls stand in this row (the desktop leaves the
+    /// frame to the app).
+    window_controls: bool,
+    /// The window's self actions a press asked for, until the host takes
+    /// them.
+    window_actions: Vec<WindowAction>,
+    last_ground_press: Option<crate::time::Instant>,
     /// The window is narrower than the compact breakpoint: a notice has a
     /// strip of its own under the row.
     compact: bool,
@@ -149,8 +179,56 @@ impl SlotRow {
             pointer: Point::ORIGIN,
             repaint: false,
             search: WindowSearch::new(),
+            controls: WindowControls::default(),
+            controls_state: ControlsState::default(),
+            control_lifts: [
+                crate::motion::Feedback::default(),
+                crate::motion::Feedback::default(),
+                crate::motion::Feedback::default(),
+            ],
+            window_controls: false,
+            window_actions: Vec::new(),
+            last_ground_press: None,
             compact: false,
         }
+    }
+
+    /// The window's own controls stand in this row, at its trailing end, and
+    /// its empty ground moves the window: a host whose window leaves its
+    /// frame to the app turns this on. A host the desktop draws the frame
+    /// for (a session's window, a browser page) leaves it off.
+    pub(crate) fn set_window_controls(&mut self, on: bool) {
+        if self.window_controls == on {
+            return;
+        }
+        self.window_controls = on;
+        self.repaint = true;
+        if let Some((_, rect)) = self.shown.as_ref() {
+            let rect = *rect;
+            let room = self.place_controls(rect);
+            self.row.lay_out(room);
+            self.place_search(rect, room);
+        }
+    }
+
+    /// Whether the window's controls stand in this row.
+    pub(crate) fn shows_window_controls(&self) -> bool {
+        self.window_controls
+    }
+
+    /// The window is maximized: its maximize control shows restore.
+    #[cfg(feature = "native")]
+    pub(crate) fn set_maximized(&mut self, maximized: bool) {
+        if self.controls_state.maximized != maximized {
+            self.controls_state.maximized = maximized;
+            self.repaint = true;
+        }
+    }
+
+    /// The window's self actions a press in this row asked for, oldest
+    /// first: the host applies them to its window.
+    pub(crate) fn take_window_actions(&mut self) -> Vec<WindowAction> {
+        std::mem::take(&mut self.window_actions)
     }
 
     /// The row must be painted again in full.
@@ -211,9 +289,9 @@ impl SlotRow {
             );
             self.row
                 .set_popup_area(Rect::new(0.0, 0.0, width, window_height));
-            let row = search_room(rect);
-            self.row.lay_out(row);
-            self.place_search(rect, row);
+            let room = self.place_controls(rect);
+            self.row.lay_out(room);
+            self.place_search(rect, room);
             self.shown = Some((toolbar, rect));
             self.repaint = true;
         }
@@ -227,6 +305,17 @@ impl SlotRow {
         self.search.set_app_name(place.app_name);
         self.repaint |= self.row.measure_views(theme);
         TOOLBAR_ROW_HEIGHT + strip
+    }
+
+    /// Place the window's own controls in the pill at the row's trailing end,
+    /// and return the room the app's slot row keeps before them.
+    fn place_controls(&mut self, rect: Rect) -> Rect {
+        self.controls = if self.window_controls {
+            WindowControls::lay_out_own_window(rect)
+        } else {
+            WindowControls::default()
+        };
+        search_room(rect, self.controls.content_limit(rect))
     }
 
     /// Place the search control at the end of the row: open, it reaches
@@ -353,8 +442,11 @@ impl SlotRow {
     /// Whether the row needs another frame: a menu arriving, the field's
     /// caret.
     pub(crate) fn needs_frame(&self) -> bool {
+        let now = crate::motion::frame_now();
         self.shown.is_some()
-            && (self.row.needs_animation_frame() || self.search.needs_animation_frame())
+            && (self.row.needs_animation_frame()
+                || self.search.needs_animation_frame()
+                || self.control_lifts.iter().any(|lift| lift.is_moving(now)))
     }
 
     /// The band the row paints, from the host's frame at `left` to the
@@ -417,6 +509,25 @@ impl SlotRow {
         self.row.paint(scene, transform, text, theme, presence);
         self.search.set_ground(theme.tokens.colors.surfaces.content);
         self.search.draw(scene, transform, text, theme, presence);
+        // The window's own controls, in their pill over the bar's ground:
+        // the one thing in the bar that is not the app's.
+        let now = crate::motion::frame_now();
+        let motion = theme.motion();
+        for (control, _) in self.controls.iter() {
+            let on = self.controls_state.hovered == Some(control)
+                || self.controls_state.pressed == Some(control);
+            self.control_lifts[control.index()].set(on, motion, now);
+        }
+        let controls = self.controls;
+        let state = ControlsState {
+            lifts: [
+                self.control_lifts[0].level(now),
+                self.control_lifts[1].level(now),
+                self.control_lifts[2].level(now),
+            ],
+            ..self.controls_state
+        };
+        controls.paint(scene, transform, theme, state);
         self.row
             .paint_popups(scene, transform, text, theme, presence);
         // The search's options panel, over the app.
@@ -480,6 +591,15 @@ impl SlotRow {
         if searched {
             return (true, redraw);
         }
+        // The window's own controls and the bar's empty ground: a press on a
+        // control runs it, one on the ground moves the window (a double press
+        // maximizes it), and the app's slots never see either.
+        if let Some((took, redraw)) = self.route_window_controls(event) {
+            if took || redraw {
+                self.repaint = true;
+            }
+            return (took, redraw);
+        }
         let mut ctx = crate::widget::EventCtx {
             scale_factor: input.scale,
             modifiers: input.modifiers,
@@ -513,7 +633,16 @@ impl SlotRow {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
-                } => self.row.press(self.pointer),
+                } => {
+                    let took = self.row.press(self.pointer);
+                    // The bar's empty ground is the window's, not the app's:
+                    // a press there moves the window (a double press
+                    // maximizes it).
+                    if !took && self.window_controls && rect.contains(self.pointer) {
+                        self.press_bar_ground();
+                    }
+                    took
+                }
                 WindowEvent::MouseInput {
                     state: ElementState::Released,
                     button: MouseButton::Left,
@@ -528,6 +657,91 @@ impl SlotRow {
             redraw = true;
         }
         (took, redraw)
+    }
+
+    /// A press on the bar's ground that no slot took: the window moves, or a
+    /// second press on it maximizes the window.
+    fn press_bar_ground(&mut self) {
+        let now = crate::time::now();
+        let double = self
+            .last_ground_press
+            .is_some_and(|last| now.duration_since(last) <= DOUBLE_PRESS);
+        self.last_ground_press = Some(now);
+        self.window_actions.push(if double {
+            WindowAction::ToggleMaximize
+        } else {
+            WindowAction::Move
+        });
+    }
+
+    /// The window's own part of the bar: its controls' hover, press and
+    /// release. `None` when the event is not the window's, so it goes on to
+    /// the app's slots.
+    fn route_window_controls(&mut self, event: &WindowEvent) -> Option<(bool, bool)> {
+        if !self.window_controls {
+            return None;
+        }
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                let hovered = self.controls.hit(self.pointer);
+                if hovered == self.controls_state.hovered {
+                    // Over the pill's padding nothing else is hovered.
+                    return self
+                        .controls
+                        .on_pill(self.pointer)
+                        .then_some((false, false));
+                }
+                self.controls_state.hovered = hovered;
+                if hovered.is_none() {
+                    // Off the controls: the app's slots decide the hover.
+                    self.repaint = true;
+                    return None;
+                }
+                let left = self.row.pointer_left();
+                Some((false, left))
+            }
+            WindowEvent::CursorLeft { .. } => {
+                if self.controls_state.hovered.is_none() && self.controls_state.pressed.is_none() {
+                    return None;
+                }
+                self.controls_state.hovered = None;
+                self.controls_state.pressed = None;
+                self.repaint = true;
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if let Some(control) = self.controls.hit(self.pointer) {
+                    self.controls_state.pressed = Some(control);
+                    return Some((true, true));
+                }
+                if self.controls.on_pill(self.pointer) {
+                    // The pill is the window's: a press on its padding moves
+                    // nothing and reaches nothing.
+                    return Some((true, false));
+                }
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let pressed = self.controls_state.pressed.take()?;
+                if self.controls.hit(self.pointer) == Some(pressed) {
+                    self.window_actions.push(match pressed {
+                        WindowControl::Minimize => WindowAction::Minimize,
+                        WindowControl::Maximize => WindowAction::ToggleMaximize,
+                        WindowControl::Close => WindowAction::Close,
+                    });
+                }
+                Some((true, true))
+            }
+            _ => None,
+        }
     }
 
     /// Hand the app what was done in the row since the last call; the
@@ -553,20 +767,37 @@ impl SlotRow {
     }
 
     /// The row as assistive technology and automation reach it: the app's
-    /// slots, the window's History in the row's menu, and the search.
+    /// slots, the window's History in the row's menu, the search, and the
+    /// window's own controls in their pill.
     pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
         if self.shown.is_none() {
             return Vec::new();
         }
         let mut nodes = self.row.accessibility();
         nodes.extend(self.search.accessibility());
+        for (control, rect) in self.controls.iter() {
+            nodes.push(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_name(crate::i18n::I18nManager::lookup_plain(
+                        control.name_key(self.controls_state.maximized),
+                    ))
+                    .with_action_target(control.target())
+                    .with_bounds(rect)
+                    .with_state(crate::a11y::AccessState {
+                        focusable: true,
+                        ..Default::default()
+                    }),
+            );
+        }
         nodes
     }
 
     /// Perform `action` on the part of the row `target` names (a
-    /// `window-toolbar-*` slot or a `window-search-*` part), as assistive
-    /// technology and automation do; what it runs reaches the app as a
-    /// press does. Returns whether the row took it.
+    /// `window-toolbar-*` slot, a `window-search-*` part, or one of the
+    /// window's own controls), as assistive technology and automation do;
+    /// what it runs reaches the app as a press does, and a control's press
+    /// reaches the host as the window's own. Returns whether the row took
+    /// it.
     pub(crate) fn perform(
         &mut self,
         host: &mut dyn SlotRowHost,
@@ -575,6 +806,18 @@ impl SlotRow {
     ) -> bool {
         if self.shown.is_none() {
             return false;
+        }
+        if let Some(control) = WindowControl::of_target(target) {
+            if !matches!(action, crate::a11y::Action::Activate) {
+                return false;
+            }
+            self.window_actions.push(match control {
+                WindowControl::Minimize => WindowAction::Minimize,
+                WindowControl::Maximize => WindowAction::ToggleMaximize,
+                WindowControl::Close => WindowAction::Close,
+            });
+            self.repaint = true;
+            return true;
         }
         if target.starts_with("window-search-") {
             let root = automerge::ROOT;
@@ -608,9 +851,9 @@ impl SlotRow {
     /// Lay the row out across `rect` without a host's frame, for a test.
     #[cfg(test)]
     pub(crate) fn show_for_test(&mut self, rect: Rect) {
-        let row = search_room(rect);
-        self.row.lay_out(row);
-        self.place_search(rect, row);
+        let room = self.place_controls(rect);
+        self.row.lay_out(room);
+        self.place_search(rect, room);
         self.shown = Some((WindowToolbar::default(), rect));
     }
 
@@ -642,12 +885,182 @@ impl SlotRow {
     }
 }
 
-/// The row's room: the window's band less the search control at its end.
-fn search_room(rect: Rect) -> Rect {
+/// The row's room for the app's slots: the window's band less the search
+/// control at its end, and the window's own controls before that.
+fn search_room(rect: Rect, limit: f64) -> Rect {
     Rect::new(
         rect.x0,
         rect.y0,
-        (rect.x1 - CONTROL_PX - CONTROL_GAP).max(rect.x0),
+        (limit - CONTROL_PX - CONTROL_GAP).max(rect.x0),
         rect.y1,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::platform::{Platform, PlatformConventions};
+    use crate::theme::Theme;
+    use crate::widget::Column;
+
+    /// The app the row serves: no search of its own, no History, and
+    /// nothing it hears.
+    struct NoApp {
+        root: Column,
+    }
+
+    impl NoApp {
+        fn new() -> Self {
+            Self {
+                root: Column::new(),
+            }
+        }
+    }
+
+    impl SlotRowHost for NoApp {
+        fn search_root(&mut self) -> &mut dyn Widget {
+            &mut self.root
+        }
+
+        fn search_offer(&mut self) -> InPlace {
+            InPlace::Nothing
+        }
+
+        fn open_app_search(&mut self, _: SearchRequest) {}
+
+        fn search_drove(&mut self) {}
+
+        fn takes_search(&mut self, _: SearchOpening) -> bool {
+            false
+        }
+
+        fn history_control(&self) -> Option<HistoryControl> {
+            None
+        }
+
+        fn press_history(&mut self, _: HistoryControl) {}
+
+        fn deliver(&mut self, _: ToolbarEvent) {}
+
+        fn slots_acted(&mut self) {}
+    }
+
+    fn placed() -> RowPlace<'static> {
+        RowPlace {
+            left: 0.0,
+            top: 0.0,
+            right: 0.0,
+            window: (800.0, 600.0),
+            app_name: "Inbox",
+        }
+    }
+
+    fn press_at(row: &mut SlotRow, host: &mut NoApp, point: Point) {
+        let modifiers = winit::event::Modifiers::default();
+        let input = RowInput {
+            scale: 1.0,
+            modifiers: &modifiers,
+            platform: PlatformConventions::new(Platform::Linux),
+        };
+        row.route(
+            host,
+            &crate::synthetic_input::cursor_moved(point.x, point.y),
+            &input,
+        );
+        row.route(host, &crate::synthetic_input::mouse_press(), &input);
+        row.route(host, &crate::synthetic_input::mouse_release(), &input);
+    }
+
+    // A window the app decorates itself has one bar: the app's slots, the
+    // window's search and, at the trailing end, the window's own minimize,
+    // maximize and close in their pill. The slots keep their room before
+    // them.
+    #[test]
+    fn the_one_bar_ends_with_the_windows_controls() {
+        let mut row = SlotRow::new();
+        row.set_window_controls(true);
+        let height = row.refresh(&Theme::dark(), Some(placed()), None);
+        assert_eq!(height, TOOLBAR_ROW_HEIGHT);
+        assert!(row.shows_window_controls());
+        let band = row.shown.as_ref().expect("the row shows").1;
+        let controls = row.controls;
+        assert!(controls.pill.area() > 0.0, "the pill stands in the bar");
+        assert!(
+            controls.close.x1 <= band.x1 && controls.close.y1 <= band.y1,
+            "the close stands inside the bar: {:?} in {band:?}",
+            controls.close
+        );
+        assert!(
+            controls.minimize.x0 < controls.maximize.x0 && controls.maximize.x0 < controls.close.x0,
+            "the controls read minimize, maximize, close: {controls:?}"
+        );
+        assert!(
+            row.search.anchor().x1 <= controls.pill.x0,
+            "the search ends before the window's controls: {:?} then {:?}",
+            row.search.anchor(),
+            controls.pill
+        );
+        // Nothing the app declared stands under the pill.
+        for slot in [
+            row.row.slots().sidebar,
+            row.row.slots().back,
+            row.row.slots().forward,
+            row.row.slots().location,
+            row.row.slots().overflow,
+            row.row.slots().views_menu,
+        ]
+        .into_iter()
+        .chain(row.row.slots().actions.iter().copied())
+        {
+            assert!(
+                slot.area() == 0.0 || slot.x1 <= row.search.anchor().x0,
+                "the app's slots keep their room before the search: {slot:?}"
+            );
+        }
+    }
+
+    // A window the host draws the frame for has no pill in its row.
+    #[test]
+    fn a_hosted_frame_leaves_the_row_to_the_app() {
+        let mut row = SlotRow::new();
+        row.refresh(&Theme::dark(), Some(placed()), None);
+        assert!(!row.shows_window_controls());
+        assert!(row.controls.pill.area() == 0.0);
+        let band = row.shown.as_ref().expect("the row shows").1;
+        assert!(
+            (row.search.anchor().x1 - band.x1).abs() < 1.0,
+            "the search ends the row: {:?} in {band:?}",
+            row.search.anchor()
+        );
+    }
+
+    // The row is the window's bar: its controls run the window, and its
+    // empty ground moves it, a double press maximizing it.
+    #[test]
+    fn the_bar_runs_the_window_it_decorates() {
+        let mut row = SlotRow::new();
+        row.set_window_controls(true);
+        row.show_for_test(Rect::new(0.0, 0.0, 800.0, TOOLBAR_ROW_HEIGHT));
+        let mut host = NoApp::new();
+
+        let close = row.controls.close.center();
+        press_at(&mut row, &mut host, close);
+        assert_eq!(row.take_window_actions(), [WindowAction::Close]);
+        let maximize = row.controls.maximize.center();
+        press_at(&mut row, &mut host, maximize);
+        assert_eq!(row.take_window_actions(), [WindowAction::ToggleMaximize]);
+        let minimize = row.controls.minimize.center();
+        press_at(&mut row, &mut host, minimize);
+        assert_eq!(row.take_window_actions(), [WindowAction::Minimize]);
+
+        let ground = Point::new(300.0, TOOLBAR_ROW_HEIGHT / 2.0);
+        press_at(&mut row, &mut host, ground);
+        assert_eq!(row.take_window_actions(), [WindowAction::Move]);
+        press_at(&mut row, &mut host, ground);
+        assert_eq!(
+            row.take_window_actions(),
+            [WindowAction::ToggleMaximize],
+            "a second press moves nothing: it maximizes"
+        );
+    }
 }

@@ -288,6 +288,13 @@ impl LayerStore {
         let target = self.path(&hash);
         if target.is_dir() {
             self.verify(&hash)?;
+            // The same bytes packed again from another tree: a rebuild that
+            // came out identical because nothing of the component changed,
+            // while the tree it was built from moved the interface
+            // declaration on. What the store records is the claim of the tree
+            // that packed it, so the newest import replaces the older one; a
+            // generation is judged by it (crate::interfaces).
+            record_provenance(&target, provenance)?;
             return Ok((hash, true));
         }
         // systemd matches `extension-release.<NAME>` against the image name,
@@ -299,20 +306,26 @@ impl LayerStore {
             &release_dir.join(format!("extension-release.{hash}")),
             release.as_bytes(),
         )?;
-        let provenance = serde_json::to_vec_pretty(provenance)
-            .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
-        write_atomic(&stage.join(PROVENANCE), &provenance)?;
+        record_provenance(stage, provenance)?;
         label(stage)?;
         match fs::rename(stage, &target) {
             Ok(()) => Ok((hash, false)),
             // A concurrent import of identical content won the rename.
             Err(_) if target.is_dir() => {
                 self.verify(&hash)?;
+                record_provenance(&target, provenance)?;
                 Ok((hash, true))
             }
             Err(e) => Err(DaemonError::io("publish layer")(e)),
         }
     }
+}
+
+/// Write what a layer's build claims about itself, beside its tree.
+fn record_provenance(layer: &Path, provenance: &Provenance) -> Result<(), DaemonError> {
+    let bytes = serde_json::to_vec_pretty(provenance)
+        .map_err(|e| DaemonError::InvalidParams(e.to_string()))?;
+    write_atomic(&layer.join(PROVENANCE), &bytes)
 }
 
 pub fn is_hash(text: &str) -> bool {
@@ -441,6 +454,19 @@ mod tests {
             assert_eq!(
                 fs::read_dir(root.path().join("staging")).unwrap().count(),
                 0
+            );
+            // The same bytes packed again from a tree that moved the
+            // interface declaration on: identical build, newer claim.
+            let mut newer = provenance();
+            newer.interfaces.insert("runtime".into(), 18);
+            let (c, existed_c) = store
+                .import_tar(tar.as_slice(), &newer, &mut |_| Ok(()))
+                .unwrap();
+            assert_eq!(c, a);
+            assert!(existed_c);
+            assert_eq!(
+                store.provenance(&a).unwrap().interfaces.get("runtime"),
+                Some(&18)
             );
         }
         {

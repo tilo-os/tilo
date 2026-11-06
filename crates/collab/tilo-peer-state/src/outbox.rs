@@ -1,6 +1,6 @@
-//! Freshness of a signed outgoing publication. An expired durable incremental
-//! is renewed only after fresh governed coverage; its original signed evidence
-//! stays in the outbox until the governor covers it.
+//! Freshness of a signed outgoing publication. A sealed write expires with the
+//! channel epoch it was made under, so its key holder renews it; a cleartext
+//! write is re-sent as it was signed, however old it is.
 use crate::NeighbourMsg;
 use web_time::{Duration, SystemTime};
 pub fn fresh(message: &NeighbourMsg, now: SystemTime) -> bool {

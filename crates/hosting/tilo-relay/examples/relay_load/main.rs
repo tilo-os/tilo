@@ -14,8 +14,8 @@
 //!   toolkit's `Typing` and `Caret` presence (`NeighbourMsg::RetiredAppPresenceV2`);
 //! - **pointing**: 4 seconds of pointer motion at the shell's 30 Hz publish
 //!   rate (`NeighbourMsg::RetiredPresenceMoved`, `peer_presence::MIN_PUBLISH_GAP`),
-//!   which the session writer paces to 20 Hz on the wire
-//!   (`tilo_relay_session::coedit::POINTER_GAP`), as it does for the shell;
+//!   which the relay forwards in the order it was posted, one frame per
+//!   move;
 //! - **idle** for the rest of the minute.
 //!
 //! That is 1,800 edits and 7,200 pointer moves per active hour, the cost

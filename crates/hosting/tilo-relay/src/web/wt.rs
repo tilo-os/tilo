@@ -37,7 +37,7 @@ use tokio::sync::watch;
 use super::{Sessions, WebConfig, tls};
 use crate::auth::AuthenticatedPeer;
 use crate::host::RelayProtocol;
-use crate::room_access::{self, RoomOperation};
+use crate::workspace_access::{self, WorkspaceOperation};
 
 /// One participant's live session: whose it is, the scope it publishes in, and
 /// whether the workspace still admits it.
@@ -226,7 +226,7 @@ impl Pages {
 
     /// Whether the workspace's governance admits `peer`'s device to take its
     /// own frames into the workspace now: the same answer every plane of the
-    /// workspace takes, read from the room as it stands.
+    /// workspace takes, read from the workspace as it stands.
     fn admits_member(&self, peer: &AuthenticatedPeer, workspace: u64) -> bool {
         let Ok(workspaces) = self.relay.workspaces.try_lock() else {
             return false;
@@ -235,10 +235,16 @@ impl Pages {
             return false;
         };
         drop(workspaces);
-        let Ok(room) = workspace.try_lock() else {
+        let Ok(runtime) = workspace.try_lock() else {
             return false;
         };
-        room_access::decide(&room, &self.relay.trust(), peer, RoomOperation::Publish).admitted()
+        workspace_access::decide(
+            &runtime,
+            &self.relay.trust(),
+            peer,
+            WorkspaceOperation::Publish,
+        )
+        .admitted()
     }
 
     /// Admit the page behind `proof`'s session token, while that session is
@@ -378,18 +384,23 @@ impl Plane {
 /// page dials, and the certificate it pins.
 pub(crate) struct Live {
     pub(crate) info: LiveInfo,
+    /// The UDP socket the plane answers on.
+    pub(crate) bound: SocketAddr,
     pub(crate) pages: Arc<Pages>,
     pub(crate) tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl Live {
-    /// Bind the live plane's socket beside the HTTPS listener — on `listen`'s
-    /// address and port where that port is free on UDP — and serve the page
-    /// carrier on it at `origin`'s host, into `plane`'s origin.
+    /// Bind the live plane's socket — on `--web-live` when a proxy forwards to
+    /// it, else beside the HTTPS listener on its address and port where that
+    /// port is free on UDP — and serve the page carrier on it, announced at
+    /// `--web-live-origin` when given, else at `origin`'s host on the bound
+    /// port.
     ///
     /// # Errors
     ///
-    /// Returns a message when the certificate is unusable or no socket can be
+    /// Returns a message when the certificate is unusable, the announced
+    /// origin is not an `https://host[:port]` origin, or no socket can be
     /// bound: a relay serves no live plane it cannot reach.
     pub(crate) fn start(
         plane: &Plane,
@@ -397,36 +408,46 @@ impl Live {
         config: &WebConfig,
         origin: &str,
     ) -> Result<Self, String> {
-        let (socket, port) = bind(config.listen)?;
+        let (socket, bound) = bind(config.live.listen, config.listen)?;
         let endpoint = tilo_live::carrier::listener_on(socket, identity.certificate()?)
             .map_err(|error| format!("live listener: {error}"))?;
+        let (webtransport_origin, port) = match config.live.origin.as_deref() {
+            Some(configured) => live_origin(configured)?,
+            None => (webtransport_origin(origin, bound.port()), bound.port()),
+        };
         let serve = plane.relay.clone();
         let listener = tokio::spawn(async move { serve.serve(endpoint).await });
         Ok(Self {
             info: LiveInfo {
                 webtransport_port: port,
                 certificate_sha256: certificate_sha256(identity)?,
-                webtransport_origin: webtransport_origin(origin, port),
+                webtransport_origin,
             },
+            bound,
             pages: plane.pages.clone(),
             tasks: vec![listener],
         })
     }
 }
 
-/// A UDP socket for the live listener. The HTTPS port is reused when it is
-/// free on UDP, so one host answers on one port; otherwise the kernel picks
-/// the port the page is told.
-fn bind(listen: SocketAddr) -> Result<(std::net::UdpSocket, u16), String> {
-    let address = SocketAddr::new(listen.ip(), listen.port());
-    let socket = std::net::UdpSocket::bind(address)
-        .or_else(|_| std::net::UdpSocket::bind(SocketAddr::new(listen.ip(), 0)))
-        .map_err(|error| format!("live listener: {error}"))?;
-    let port = socket
+/// A UDP socket for the live listener. A configured address is the one a proxy
+/// forwards to, so the socket binds exactly there or the host stops. By
+/// default the HTTPS port is reused when it is free on UDP, so one host
+/// answers on one port; otherwise the kernel picks the port the page is told.
+fn bind(
+    configured: Option<SocketAddr>,
+    listen: SocketAddr,
+) -> Result<(std::net::UdpSocket, SocketAddr), String> {
+    let socket = match configured {
+        Some(address) => std::net::UdpSocket::bind(address),
+        None => std::net::UdpSocket::bind(SocketAddr::new(listen.ip(), listen.port()))
+            .or_else(|_| std::net::UdpSocket::bind(SocketAddr::new(listen.ip(), 0))),
+    }
+    .map_err(|error| format!("live listener: {error}"))?;
+    let bound = socket
         .local_addr()
-        .map_err(|error| format!("live listener: {error}"))?
-        .port();
-    Ok((socket, port))
+        .map_err(|error| format!("live listener: {error}"))?;
+    Ok((socket, bound))
 }
 
 /// Base64 SHA-256 of the listener's leaf certificate, as a page pins it in
@@ -439,6 +460,23 @@ fn certificate_sha256(identity: &tls::Identity) -> Result<String, String> {
         .first()
         .ok_or("live listener: the TLS identity presents no certificate")?;
     Ok(base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(leaf.as_ref())))
+}
+
+/// A configured `https://host[:port]` origin pages dial the live listener at,
+/// and the port it names: 443 when it names none.
+fn live_origin(text: &str) -> Result<(String, u16), String> {
+    let refuse = || format!("live origin: {text}: expected https://host[:port]");
+    let uri: hyper::Uri = text.trim().parse().map_err(|_| refuse())?;
+    let authority = uri.authority().ok_or_else(refuse)?;
+    if uri.scheme_str() != Some("https")
+        || !matches!(uri.path(), "" | "/")
+        || uri.query().is_some()
+        || authority.as_str().contains('@')
+    {
+        return Err(refuse());
+    }
+    let origin = format!("https://{}", authority.as_str());
+    Ok((origin, uri.port_u16().unwrap_or(443)))
 }
 
 /// The origin a page dials the live listener at: the relay's own origin's
@@ -474,5 +512,22 @@ mod tests {
             webtransport_origin("http://localhost:3000/", 3001),
             "https://localhost:3001"
         );
+    }
+
+    #[test]
+    fn a_configured_live_origin_is_announced_as_it_is_and_names_the_port() {
+        assert_eq!(
+            live_origin("https://live.eu1.tilo.coffee").unwrap(),
+            ("https://live.eu1.tilo.coffee".into(), 443)
+        );
+        assert_eq!(
+            live_origin("https://relay.example:9443/").unwrap(),
+            ("https://relay.example:9443".into(), 9443)
+        );
+        // Not an origin a page can dial: no scheme, not https, or a path.
+        assert!(live_origin("relay.example:9443").is_err());
+        assert!(live_origin("http://relay.example").is_err());
+        assert!(live_origin("https://relay.example/live").is_err());
+        assert!(live_origin("https://").is_err());
     }
 }

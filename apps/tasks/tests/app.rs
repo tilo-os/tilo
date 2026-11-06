@@ -605,8 +605,10 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
             .filter_map(|(node, _)| {
                 // The list's rows read as references (`#2 Record the demo`);
                 // the sidebar's rows are its filters, which have no number.
+                // A row's box is a control of its own, named the same, so the
+                // rows are what counts.
                 let name = node["name"].as_str().unwrap_or_default();
-                (name.starts_with('#')).then(|| name.to_owned())
+                (name.starts_with('#') && node["role"] == "TreeItem").then(|| name.to_owned())
             })
             .collect()
     };
@@ -674,6 +676,48 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
     press_view(&mut app, "Issues");
     choose(&mut app, "All issues");
     assert_eq!(rows(&mut app).len(), 3, "every issue shows again");
+}
+
+/// A lane of the board adds at its foot, in its own lane: what is typed
+/// there is made in that lane's status, and the board itself carries no
+/// entry of its own above the lanes.
+#[test]
+fn a_lanes_foot_adds_the_issue_to_that_lane() {
+    let mut app = open();
+    press_view(&mut app, "Board");
+    app.settle();
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key("tasks-board-new-title"),
+        "the board carries no entry of its own above the lanes"
+    );
+    let add = |app: &mut TestApp<App>, status: Status, title: &str| {
+        app.harness()
+            .click_named(&format!("tasks-board-new-{}-title", status.label_key()))
+            .unwrap_or_else(|error| panic!("the {status:?} lane is addable: {error}"));
+        app.harness().type_text(title);
+        app.harness().key("Enter");
+        app.settle();
+    };
+    add(&mut app, Status::Todo, "Ship the launch");
+    add(&mut app, Status::InProgress, "Archive the banner");
+
+    let state = app.state();
+    let statuses: Vec<(&str, Status)> = state
+        .issues
+        .values()
+        .map(|issue| (issue.title.as_str(), issue.status))
+        .collect();
+    assert!(
+        statuses.contains(&("Ship the launch", Status::Todo)),
+        "what the to-do lane's entry makes starts there: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&("Archive the banner", Status::InProgress)),
+        "and the working lane's entry starts a card that is being worked on: {statuses:?}"
+    );
+    assert_eq!(statuses.len(), 2, "one card per entry, nothing else");
 }
 
 /// One task, read through every view the app has: the conversation it is

@@ -4,7 +4,7 @@
 //! toolkit: an app host running tilolang apps as wasm instances, a browser
 //! worker, a host in thin mode. The toolkit builds on it and keeps its paths
 //! (`ui::collaboration`, `ui::record`, `ui::app_surface`,
-//! `ui::local_identity`, `ui::local_document_action`, `ui::person_chat`,
+//! `ui::local_identity`, `ui::local_document_action`,
 //! `ui::portable_storage`), so native apps
 //! compile unchanged.
 //!
@@ -108,14 +108,13 @@ pub mod history_source;
 pub mod invocation_scope;
 pub mod local_document_action;
 pub mod local_identity;
-pub mod person_chat;
 pub mod portable_storage;
 pub mod record;
 pub mod state;
 
-// The clock, background work, wake routing and host inputs, under the paths
-// the toolkit names them by (`ui::time`, `ui::background`, `ui::wake`,
-// `ui::host`), without the toolkit's host services.
+// The clock, wake routing and host inputs, under the paths the toolkit
+// names them by (`ui::time`, `ui::wake`, `ui::host`), without the toolkit's
+// host services.
 pub(crate) mod time {
     // The broker's tests stamp records with it.
     #[cfg(all(test, feature = "broker-transport"))]
@@ -125,8 +124,6 @@ pub(crate) mod time {
     #[cfg(feature = "broker-transport")]
     pub use tilo_clock::wall;
 }
-#[cfg(feature = "broker-transport")]
-pub(crate) use tilo_rt::background;
 pub(crate) use tilo_rt::wake;
 pub(crate) use wake::WakeHandle;
 #[cfg(test)]
@@ -167,16 +164,15 @@ pub mod approved_checks;
 mod broker;
 pub mod browser_service_sessions;
 #[cfg(feature = "broker-transport")]
-pub mod external_moderation;
-#[cfg(feature = "broker-transport")]
-pub mod write_attribution_lane;
-#[cfg(feature = "broker-transport")]
-pub use broker::{person_chat_command, subscribe_person_chat};
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
+#[cfg(feature = "broker-transport")]
+pub mod external_moderation;
 pub mod handoff;
 mod history;
+#[cfg(feature = "broker-transport")]
+pub mod write_attribution_lane;
 
 mod surface_publication;
 pub use runtime_collab::{SurfaceDelta, SurfaceTable};
@@ -1429,7 +1425,11 @@ impl CollaborationManager {
             Ok(()) => self.action_directory = DirectoryOffer::Published,
             // A transport that serves no directory is asked again only on a new route.
             Err(TransportError::Unsupported) => self.action_directory = DirectoryOffer::Unsupported,
-            Err(_) => {}
+            Err(error) => {
+                // The offer stays unoffered, so a later publish asks again;
+                // until then the app's actions are not offered to anyone.
+                tracing::warn!(%error, "collab: action directory offer failed");
+            }
         }
     }
 
@@ -1679,7 +1679,7 @@ impl CollaborationManager {
         // custody and applying the existing certification/commit policy.
         let result = self.submit(TransportCommand::ToRoute(route, req));
         if let Err(error) = &result {
-            tracing::debug!(%error, cause = "transport_queue_refusal", "document route handoff refused");
+            tracing::warn!(%error, cause = "transport_queue_refusal", "document route handoff refused");
         }
         Ok(result?)
     }

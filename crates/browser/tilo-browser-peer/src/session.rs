@@ -28,19 +28,16 @@ use tilo_relay_protocol::Envelope;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
-use crate::call_media::{LaneAnswer, LaneCall, LaneTurn};
 use crate::custody::{OutboxEntry, PeerRecord, PeerStore};
 use crate::document::sign_frame;
-use tilo_call_lane::page::Down;
-use tilo_call_lane::{Page, Roster};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::{
     Ciphers, ContentCipher, DocumentRoute, OpenedDocument, Reassembly, open_frame,
 };
 use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 
-mod lane;
 mod plane;
+mod voice;
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -152,14 +149,6 @@ pub struct PeerConfig {
     pub host_cert: DeviceCert,
     /// Root-signed revocations this device knows about.
     pub revocations: RevocationList,
-    /// This page only watches the workspaces it joins: a public workspace's
-    /// spectator. It writes nothing: no document, live frame, action,
-    /// compaction or presence of its own, no live join, and no channel
-    /// governance, so it never asks a channel for access; it only asks the
-    /// workspace for content its records reference. It takes the
-    /// content keys of the records it opens from the workspace's node over
-    /// HTTPS instead ([`tilo_relay_client::https::channel_keys`]).
-    pub watching: bool,
     /// The page keeps this session beside the workspace in front, only to
     /// deliver for it (problem reports to the page's home workspace): the
     /// host counts nobody online by it, so it takes no seat and shows no
@@ -279,7 +268,7 @@ pub struct PeerStatus {
     /// Last envelope from the host (ms since the epoch).
     pub last_contact_at_ms: Option<u64>,
     /// Joined workspaces and whether the host answered `Ready`.
-    pub rooms: BTreeMap<u64, bool>,
+    pub workspaces: BTreeMap<u64, bool>,
     /// Per-route status.
     pub routes: BTreeMap<DocumentRoute, RouteStatus>,
     /// Current failures, newest last.
@@ -387,20 +376,6 @@ pub enum PeerEvent {
         /// Why.
         reason: String,
     },
-    /// A member's presence, as it published it to the workspace: a
-    /// postcard-encoded `NeighbourMsg`, stamped by the host with the device
-    /// that published it. Nothing publishes this any more — a member's
-    /// presence rides its live plane, and reaches this session as
-    /// [`PeerEvent::LivePlane`] — and it is removed with the rest of the
-    /// retired presence path.
-    Presence {
-        /// The workspace id.
-        workspace_id: u64,
-        /// Host-stamped publishing device.
-        from: [u8; 32],
-        /// A postcard-encoded `NeighbourMsg`.
-        body: Vec<u8>,
-    },
     /// A frame another member published on the workspace's live plane
     /// ([`crate::live`]), opened with the scope's channel keys: what a device
     /// seals on its tracks, carried by the relay that serves the workspace
@@ -417,14 +392,46 @@ pub enum PeerEvent {
         /// The opened body.
         body: Vec<u8>,
     },
-    /// Live membership changed.
-    LiveMember {
+    /// A call's voice heard on `workspace_id`'s plane
+    /// ([`crate::live`]): one Opus frame, opened with the scope's keys, as
+    /// the device `from` published it.
+    CallAudio {
         /// The workspace id.
         workspace_id: u64,
-        /// The member.
-        device: [u8; 32],
-        /// Joined or left.
-        active: bool,
+        /// The device whose voice it is.
+        from: [u8; 32],
+        /// The frame's place in that device's voice stream.
+        sequence: u64,
+        /// The first sample's place in the sender's 48 kHz timeline.
+        timestamp_48k: u64,
+        /// The Opus frame.
+        opus: Vec<u8>,
+    },
+    /// One picture of a call on `workspace_id`'s plane: an encoded
+    /// tilo-video/1 object of `from`'s camera or screen, opened with the
+    /// scope's keys.
+    CallPicture {
+        /// The workspace id.
+        workspace_id: u64,
+        /// The device whose picture it is.
+        from: [u8; 32],
+        /// The camera or screen it shows.
+        source: tilo_live::video::Source,
+        /// Whether it starts a group: the app's decoder starts here.
+        keyframe: bool,
+        /// The tilo-video/1 object, header and access unit.
+        object: Vec<u8>,
+    },
+    /// What this page's call now encodes and starts over: the layers of its
+    /// camera and screen the call's devices show, and the sources they need
+    /// afresh.
+    CallDemand {
+        /// The workspace id.
+        workspace_id: u64,
+        /// The layers shown of each source.
+        wanted: Vec<(tilo_live::video::Source, tilo_live::video::Layer)>,
+        /// The sources a device needs a keyframe of.
+        keyframes: Vec<tilo_live::video::Source>,
     },
     /// The host holds a long sealed history of `route` it cannot read and
     /// asks this device for a snapshot. Answer with
@@ -452,7 +459,7 @@ pub enum PeerEvent {
     /// The workspace's governance changed whether it shares its members' layout
     /// ([`PeerStatus::personal_rooms`]): in a personal one the page keeps
     /// its strips and windows to itself and sends the workspace no desktop.
-    RoomLayout {
+    WorkspaceLayout {
         /// The workspace (its cluster id).
         workspace: String,
         /// Each member's layout is their own.
@@ -494,17 +501,17 @@ fn addressed(envelope: Envelope) -> Option<PeerEvent> {
             to: to_device_public_key,
             reason,
         }),
-        Envelope::RetiredLiveMember {
-            workspace_id,
-            device_public_key,
-            active,
-        } => Some(PeerEvent::LiveMember {
-            workspace_id,
-            device: device_public_key,
-            active,
-        }),
         _ => None,
     }
+}
+
+/// One Opus frame of a page's microphone, as its call publishes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallFrame {
+    /// The first sample's place in the page's 48 kHz timeline.
+    pub timestamp_48k: u64,
+    /// The Opus frame.
+    pub opus: Vec<u8>,
 }
 
 enum Command {
@@ -540,38 +547,62 @@ enum Command {
     Barrier(Completion),
     /// Presence frames for the workspace's plane, said as this device.
     Presence(u64, Vec<collab_types::presence::Presence>),
+    /// The page's microphone frames, published on the workspace's plane as
+    /// this device's voice.
+    CallAudio(u64, Vec<CallFrame>),
     VoiceCalls(u64),
     VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
     VoiceJoin(u64, [u8; 32]),
     VoiceLeave(u64),
     VoiceShow(u64, tilo_relay_protocol::voice::Showing),
-    /// One turn of the page's call in the workspace named, sealed and sent.
-    CallLane(String, crate::call_media::LaneTurn, LaneCompletion),
-    /// What the host answered a turn: the page's side of the call, and the
-    /// answer to open and hand on.
-    CallLaneAnswer(Page, Result<Down, LinkError>, LaneCompletion),
-    /// The page left the call of the workspace named.
-    CallLaneEnd(String),
-    Administer(tilo_relay_protocol::rooms::RoomsRequest, RoomsCompletion),
-    Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
-    Private(
-        tilo_relay_protocol::rooms::private::PrivateCall,
-        PrivateCompletion,
+    /// Pictures this page's camera and screen encoded, for the plane of the
+    /// workspace named.
+    CallPictures(u64, Vec<CallPicture>),
+    /// What this page shows of each device in its call's plane: the layers of
+    /// their camera and screen it draws.
+    CallShowing(u64, Vec<CallShown>),
+    /// This page needs `source` of `device` afresh: a keyframe from its next
+    /// group on.
+    CallPictureRestart(u64, [u8; 32], tilo_live::video::Source),
+    Administer(
+        tilo_relay_protocol::workspaces::WorkspacesRequest,
+        RoomsCompletion,
     ),
+    Here(tilo_relay_protocol::web::HereRequest, HereCompletion),
     Node(NodeCompletion),
     Compact([u8; 16], Vec<u8>),
-    /// What the workspace's node answered a watching page asking for a
-    /// record's keys.
-    WatchedKeys(
-        DocumentRoute,
-        Result<channel_crypto::ChannelContentKeys, String>,
-    ),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
     /// now; a connected or failed one stays as it is.
     Retry,
     Refresh,
     Close,
+}
+
+/// One tilo-video/1 object this page encoded for its call's plane: one layer
+/// of its camera or screen.
+#[derive(Clone, Debug)]
+pub struct CallPicture {
+    pub source: tilo_live::video::Source,
+    pub layer: tilo_live::video::Layer,
+    /// The object's place in the source's stream.
+    pub sequence: u64,
+    pub keyframe: bool,
+    pub timestamp_us: u64,
+    pub width: u16,
+    pub height: u16,
+    /// The encoded access unit.
+    pub payload: Vec<u8>,
+}
+
+/// What this page shows of one device in its call's plane.
+#[derive(Clone, Debug)]
+pub struct CallShown {
+    pub device: [u8; 32],
+    /// The camera layers it draws.
+    pub camera: Vec<tilo_live::video::Layer>,
+    /// The screen layers it draws.
+    pub screen: Vec<tilo_live::video::Layer>,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -607,14 +638,10 @@ pub type HereCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
 /// Called once with the governor's answer, see [`PeerHandle::private_then`].
 pub type PrivateCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::private::PrivateReply, String>) + Send>;
-/// Called once with what a turn of the page's call brought, see
-/// [`PeerHandle::call_lane_then`].
-pub type LaneCompletion = Box<dyn FnOnce(Result<LaneAnswer, String>) + Send>;
+    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::private::PrivateReply, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::rooms::RoomsReply, String>) + Send>;
-
+    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
 struct Shared {
@@ -639,8 +666,6 @@ pub struct PeerHandle {
     commands: mpsc::UnboundedSender<Command>,
     shared: Arc<Mutex<Shared>>,
     events: Queue,
-    /// [`PeerConfig::watching`].
-    watching: bool,
 }
 
 /// One consumer's view of the session's events: every event produced after
@@ -698,7 +723,7 @@ enum Admission {
 /// Where the joined workspaces' admission stands `now_ms`, for a subscription
 /// sent at `since_ms`.
 fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> Admission {
-    if status.rooms.values().all(|ready| *ready) {
+    if status.workspaces.values().all(|ready| *ready) {
         return Admission::Admitted;
     }
     match since_ms {
@@ -723,7 +748,7 @@ impl PeerHandle {
                 attempt: 0,
                 next_attempt_at_ms: None,
                 last_contact_at_ms: None,
-                rooms: BTreeMap::new(),
+                workspaces: BTreeMap::new(),
                 routes: BTreeMap::new(),
                 failures: Vec::new(),
                 outgoing_pending: 0,
@@ -742,7 +767,6 @@ impl PeerHandle {
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
-        let watching = config.watching;
         let mut channels = crate::channels::Channels::new(
             config.cert.device_public_key,
             store.channel_vault().unwrap_or_else(rand::random),
@@ -758,7 +782,6 @@ impl PeerHandle {
         let task = Task {
             replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
             commands: commands.downgrade(),
-            watched: crate::watching::WatchedKeys::default(),
             config,
             signer,
             store,
@@ -789,7 +812,6 @@ impl PeerHandle {
             received: BTreeSet::new(),
             compactions: BTreeMap::new(),
             voice: crate::voice::Participations::default(),
-            lane: None,
         };
         task.update(|status| {
             status.outgoing_pending = task.outbox.len();
@@ -807,14 +829,7 @@ impl PeerHandle {
             commands,
             shared,
             events,
-            watching,
         }
-    }
-
-    /// Whether the page only watches its workspaces, as a public workspace's
-    /// spectator: nobody there sees it, and it writes nothing.
-    pub fn watching(&self) -> bool {
-        self.watching
     }
 
     /// Why this page cannot join its workspaces' live plane at all, in the
@@ -837,7 +852,7 @@ impl PeerHandle {
 
     /// Join `workspace` (its UUID), a workspace of this device's person, named
     /// `name`: the host is first asked to govern it
-    /// ([`tilo_relay_protocol::rooms::RoomsRequest::Place`]), creating it
+    /// ([`tilo_relay_protocol::workspaces::WorkspacesRequest::Place`]), creating it
     /// unless it does, so the workspace has governance like every other; then it
     /// is subscribed. Where the host places nothing for this device (a workspace
     /// of another person's, a host reached without its administration route),
@@ -983,6 +998,17 @@ impl PeerHandle {
         self.send(Command::SendContent(workspace_id, to, frame))
     }
 
+    /// Publish the page's microphone `frames` on `workspace_id`'s plane as
+    /// this device's voice, in the order given. Dropped where this page holds
+    /// no plane for the workspace: a call's voice is current, never replayed.
+    pub fn publish_call_audio(
+        &self,
+        workspace_id: u64,
+        frames: Vec<CallFrame>,
+    ) -> Result<(), String> {
+        self.send(Command::CallAudio(workspace_id, frames))
+    }
+
     /// Say `frames` on `workspace_id`'s presence track, the way every other
     /// device says its presence. Dropped where this page holds no plane for
     /// the workspace: presence is ephemeral, and the next change says where
@@ -1021,22 +1047,11 @@ impl PeerHandle {
         self.send(Command::Here(request, done))
     }
 
-    /// Ask the workspace's governor for a private operation
-    /// ([`tilo_relay_client::https::private`]) over the current HTTPS session;
-    /// `done` receives its answer.
-    pub fn private_then(
-        &self,
-        request: tilo_relay_protocol::rooms::private::PrivateCall,
-        done: PrivateCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::Private(request, done))
-    }
-
     /// Send `request` to the host's workspace administration over the current
     /// HTTPS session; `done` receives the answer.
     pub fn rooms_then(
         &self,
-        request: tilo_relay_protocol::rooms::RoomsRequest,
+        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
         done: RoomsCompletion,
     ) -> Result<(), String> {
         self.send(Command::Administer(request, done))
@@ -1234,8 +1249,6 @@ struct Task {
     /// This session's own command queue, for answers it waits on in the
     /// background; weak, so the session still ends with its last handle.
     commands: mpsc::WeakUnboundedSender<Command>,
-    /// The records a watching page asks the node for keys of.
-    watched: crate::watching::WatchedKeys,
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
@@ -1302,10 +1315,6 @@ struct Task {
     compactions: BTreeMap<[u8; 16], Compaction>,
     /// This device's participation in the workspaces' calls.
     voice: crate::voice::Participations,
-    /// The page's own side of the call it takes turns in: what seals its
-    /// microphone and pictures and opens what the call sends, kept between
-    /// turns so a frame is sealed where the last one left off.
-    lane: Option<Page>,
 }
 
 /// An open compaction request: workspace, route and the entries it covers.
@@ -1332,10 +1341,6 @@ impl Task {
     /// certificate and that it answers compaction requests. Returns `false`
     /// when the session could not take them.
     fn announce(&self, client: &Link, workspace_id: u64) -> bool {
-        if self.config.watching {
-            // Its hello and volunteering would be writes the workspace refuses.
-            return true;
-        }
         if let Some(hello) = identity_hello(workspace_id, &self.config.cert)
             && client.send(hello).is_err()
         {
@@ -1495,7 +1500,7 @@ impl Task {
                 .is_ok();
         }
         self.update(|status| {
-            for ready in status.rooms.values_mut() {
+            for ready in status.workspaces.values_mut() {
                 *ready = false;
             }
         });
@@ -1728,7 +1733,7 @@ impl Task {
             status.failures.retain(|failure| {
                 !failure.code.starts_with("transport") && !failure.code.starts_with("certificate")
             });
-            for ready in status.rooms.values_mut() {
+            for ready in status.workspaces.values_mut() {
                 *ready = false;
             }
         });
@@ -1904,9 +1909,6 @@ impl Task {
         reason = "one arm per command, each handing off to its own method"
     )]
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
-        let Some(command) = self.unless_watching(command) else {
-            return true;
-        };
         match command {
             Command::Join(workspace_id) => self.join(workspace_id, client),
             Command::JoinPlaced(workspace, name) => self.join_placed(workspace, name, client),
@@ -1998,8 +2000,11 @@ impl Task {
                 self.publish_presence(workspace_id, frames);
                 true
             }
+            Command::CallAudio(workspace_id, frames) => {
+                self.publish_call_audio(workspace_id, frames);
+                true
+            }
             Command::Here(request, done) => Self::request_here(request, done, client),
-            Command::Private(request, done) => Self::request_private(request, done, client),
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(workspace, request, op) => {
                 self.voice_call(workspace, request, op, client)
@@ -2007,22 +2012,16 @@ impl Task {
             Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
             Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
             Command::VoiceShow(ws, showing) => self.voice_show(ws, showing, client),
-            Command::CallLane(workspace, turn, done) => {
-                self.call_lane(&workspace, &turn, done, client);
+            Command::CallPictures(workspace_id, pictures) => {
+                self.publish_call_pictures(workspace_id, pictures);
                 true
             }
-            Command::CallLaneAnswer(page, answered, done) => {
-                self.answered(page, answered, done);
+            Command::CallShowing(workspace_id, shown) => {
+                self.show_call_pictures(workspace_id, &shown);
                 true
             }
-            Command::CallLaneEnd(workspace) => {
-                if self
-                    .lane
-                    .as_ref()
-                    .is_some_and(|page| page.call().0 == workspace)
-                {
-                    self.lane = None;
-                }
+            Command::CallPictureRestart(workspace_id, device, source) => {
+                self.restart_call_picture(workspace_id, device, source);
                 true
             }
             Command::Administer(request, done) => {
@@ -2033,12 +2032,8 @@ impl Task {
                 Self::request_node(done, client);
                 true
             }
-            // Handled by the caller's loop, and keys by `unless_watching`.
-            Command::Reconnect
-            | Command::Retry
-            | Command::Refresh
-            | Command::Close
-            | Command::WatchedKeys(..) => true,
+            // Handled by the caller's loop.
+            Command::Reconnect | Command::Retry | Command::Refresh | Command::Close => true,
         }
     }
 
@@ -2046,7 +2041,7 @@ impl Task {
     fn join(&mut self, workspace_id: u64, client: Option<&Link>) -> bool {
         self.workspaces.insert(workspace_id);
         self.update(|status| {
-            status.rooms.entry(workspace_id).or_insert(false);
+            status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
         client.is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
@@ -2061,7 +2056,7 @@ impl Task {
             return true;
         }
         self.update(|status| {
-            status.rooms.entry(workspace_id).or_insert(false);
+            status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.placing.insert(workspace_id, (workspace, name));
         match client {
@@ -2087,14 +2082,14 @@ impl Task {
                 let http = link.client().clone();
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
-                    let request = tilo_relay_protocol::rooms::RoomsRequest::Place {
-                        room: workspace,
+                    let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Place {
+                        workspace,
                         name,
                     };
                     // Refused (not this person's host, a workspace governed
                     // elsewhere) or unanswered: the workspace's admission decides.
-                    let _ =
-                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
+                    let _ = tilo_relay_client::https::workspaces(http.as_ref(), &session, &request)
+                        .await;
                     placed();
                 });
             }
@@ -2104,62 +2099,6 @@ impl Task {
             Link::Iroh { .. } => placed(),
         }
         true
-    }
-
-    /// `command`, unless this page only watches and it would write: then
-    /// it is answered here, sending nothing, and `None` is returned. A
-    /// watching page joins no live plane, publishes, compacts and acts on
-    /// nothing, is not listed as here, and opens a record by asking its
-    /// node for the record's keys.
-    fn unless_watching(&mut self, command: Command) -> Option<Command> {
-        if let Command::WatchedKeys(route, answer) = command {
-            self.watched
-                .answered(&route, answer.is_ok(), tilo_clock::unix_now_ms());
-            // Refused: the workspace keeps the record from those who watch, and
-            // its documents stay held, awaiting keys.
-            if let Ok(keys) = answer {
-                self.absorb(crate::channels::Changes {
-                    keys: vec![(route, keys)],
-                    ..crate::channels::Changes::default()
-                });
-            }
-            return None;
-        }
-        if !self.config.watching {
-            return Some(command);
-        }
-        match command {
-            // A watching page still asks the workspace for content its records
-            // reference: a public workspace's host answers it. It hands the
-            // workspace none of its own.
-            Command::Live(..)
-            | Command::Presence(..)
-            | Command::Publish(..)
-            | Command::Compact(..)
-            | Command::SendContent(..)
-            | Command::CallLaneEnd(_) => {}
-            Command::RemoteAction(workspace_id, to, _) => {
-                self.emit(&PeerEvent::RemoteActionUndeliverable {
-                    workspace_id,
-                    to,
-                    reason: "a page that only watches acts on nothing".into(),
-                });
-            }
-            Command::Here(_, done) => {
-                done(Err("a page that only watches is not listed as here".into()));
-            }
-            Command::Private(_, done) => {
-                done(Err(
-                    "a page that only watches has no private conversations".into()
-                ));
-            }
-            Command::CallLane(_, _, done) => {
-                done(Err("a page that only watches takes part in no call".into()));
-            }
-            Command::OpenRoute(route) => self.watched.want(route),
-            command => return Some(command),
-        }
-        None
     }
 
     /// Restore this session's workspaces, pending commits and call participations.
@@ -2224,44 +2163,6 @@ impl Task {
         }
     }
 
-    /// Ask the workspace's node for the keys of every record this watching
-    /// page waits on and is not asking for already; each answer comes back
-    /// as [`Command::WatchedKeys`].
-    fn ask_watched_keys(&mut self, client: Option<&Link>) {
-        let Some(Link::Https(link)) = client else {
-            return;
-        };
-        let seated = lock(&self.shared).status.rooms.clone();
-        let due = self.watched.due(tilo_clock::unix_now_ms(), |route| {
-            route
-                .workspace_id()
-                .is_ok_and(|workspace| seated.get(&workspace) == Some(&true))
-        });
-        for route in due {
-            let http = link.client().clone();
-            let session = link.session().to_owned();
-            let commands = self.commands.clone();
-            n0_future::task::spawn(async move {
-                let request = tilo_relay_protocol::web::ChannelKeysRequest {
-                    app_id: route.app_id.clone(),
-                    room: route.cluster_id.clone(),
-                    record: route.record.clone(),
-                };
-                let keys =
-                    tilo_relay_client::https::channel_keys(http.as_ref(), &session, &request)
-                        .await
-                        .map_err(|error| error.to_string())
-                        .and_then(|reply| {
-                            channel_crypto::ChannelContentKeys::from_bytes(&reply.keys)
-                                .map_err(|error| error.to_string())
-                        });
-                if let Some(commands) = commands.upgrade() {
-                    let _ = commands.send(Command::WatchedKeys(route, keys));
-                }
-            });
-        }
-    }
-
     /// Always `true`: the session takes it whatever the answer.
     fn request_here(
         request: tilo_relay_protocol::web::HereRequest,
@@ -2285,33 +2186,8 @@ impl Task {
         true
     }
 
-    /// Always `true`: the session takes it whatever the answer.
-    fn request_private(
-        request: tilo_relay_protocol::rooms::private::PrivateCall,
-        done: PrivateCompletion,
-        client: Option<&Link>,
-    ) -> bool {
-        match client {
-            Some(Link::Https(link)) => {
-                let http = link.client().clone();
-                let session = link.session().to_owned();
-                n0_future::task::spawn(async move {
-                    let reply =
-                        tilo_relay_client::https::private(http.as_ref(), &session, &request).await;
-                    done(reply.map_err(|error| error.to_string()));
-                });
-            }
-            #[cfg(feature = "iroh")]
-            Some(Link::Iroh { .. }) => done(Err(
-                "a page's private conversations are served over HTTPS".into(),
-            )),
-            None => done(Err("not connected to the host".into())),
-        }
-        true
-    }
-
     fn administer(
-        request: tilo_relay_protocol::rooms::RoomsRequest,
+        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
         done: RoomsCompletion,
         client: Option<&Link>,
     ) {
@@ -2321,7 +2197,8 @@ impl Task {
                 let session = link.session().to_owned();
                 n0_future::task::spawn(async move {
                     let reply =
-                        tilo_relay_client::https::rooms(http.as_ref(), &session, &request).await;
+                        tilo_relay_client::https::workspaces(http.as_ref(), &session, &request)
+                            .await;
                     done(reply.map_err(|error| error.to_string()));
                 });
             }
@@ -2679,7 +2556,7 @@ impl Task {
         match envelope {
             Envelope::Ready { workspace_id, .. } => {
                 self.update(|status| {
-                    status.rooms.insert(workspace_id, true);
+                    status.workspaces.insert(workspace_id, true);
                 });
                 // The replay's documents reach the page before its `Ready`,
                 // as they arrived.
@@ -2689,7 +2566,7 @@ impl Task {
             Envelope::NotAuthorised { reason, .. } => {
                 self.fail("permission-required", reason);
             }
-            Envelope::RoomBootstrap {
+            Envelope::WorkspaceBootstrap {
                 workspace_id,
                 bootstrap,
             } => {
@@ -2748,18 +2625,6 @@ impl Task {
                 self.fail("protocol-rejected", reason.clone());
                 self.acknowledge(op, Err(reason));
             }
-            Envelope::RetiredLive {
-                workspace_id,
-                from_device_public_key,
-                frame,
-            } => self.live_frame(
-                crate::held_live::Waiting::Receive {
-                    workspace_id,
-                    from: from_device_public_key,
-                    frame,
-                },
-                true,
-            ),
             Envelope::RecordContentWant {
                 workspace_id,
                 from_device_public_key,
@@ -2817,7 +2682,7 @@ impl Task {
                         status.personal_rooms.remove(&workspace);
                     }
                 });
-                self.emit(&PeerEvent::RoomLayout {
+                self.emit(&PeerEvent::WorkspaceLayout {
                     workspace,
                     personal,
                 });
@@ -2829,9 +2694,16 @@ impl Task {
             tilo_clock::unix_now_ms(),
         );
         self.absorb(changes);
+        // A record opened before the governance admitted it waits with its
+        // channel unopened: opening it here asks the participants for the keys
+        // the writes it holds wait on.
+        let unopened: Vec<DocumentRoute> = self.held_outbound.keys().cloned().collect();
+        for route in unopened {
+            self.open_channel(&route);
+        }
         // Writes held for a certificate or governance the workspace now has; the
         // workspace's `Ready` decides those of its replay.
-        if lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true) {
+        if lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true) {
             self.decide_held(workspace_id);
         }
     }
@@ -2846,7 +2718,8 @@ impl Task {
                 message @ (neighbour_wire::NeighbourMsg::IdentityHello { .. }
                 | neighbour_wire::NeighbourMsg::SyncResp { .. }),
             ) => {
-                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                let retained =
+                    lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
                 // Governance the replica refuses is not the workspace's.
                 let admitted = self.replicas.admit(
                     workspace_id,
@@ -2917,7 +2790,8 @@ impl Task {
                 };
                 // The workspace's governance decides the write before any app
                 // sees it, and holds it while it cannot yet.
-                let retained = lock(&self.shared).status.rooms.get(&workspace_id) != Some(&true);
+                let retained =
+                    lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
                 match self.replicas.decide_document(
                     workspace_id,
                     author,
@@ -2936,9 +2810,7 @@ impl Task {
                         return;
                     }
                 }
-                if !self.config.watching {
-                    self.open_channel(&route);
-                }
+                self.open_channel(&route);
                 let waits = match &envelope.encryption {
                     Some(metadata) => self
                         .ciphers
@@ -2967,9 +2839,6 @@ impl Task {
                     },
                 };
                 if waits {
-                    if self.config.watching {
-                        self.watched.want(route.clone());
-                    }
                     let key = OpKey::of(envelope);
                     self.hold_document(route, key, body, author);
                     return;
@@ -2985,7 +2854,7 @@ impl Task {
     /// what the workspace decided.
     fn governance_known(&self, route: &DocumentRoute) -> bool {
         route.workspace_id().is_ok_and(|workspace_id| {
-            lock(&self.shared).status.rooms.get(&workspace_id) == Some(&true)
+            lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
         })
     }
 
@@ -3156,9 +3025,6 @@ impl Task {
     /// seal and commit what was held, and sign and send governance. Returns
     /// `false` when the session could not take an envelope.
     async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
-        if self.config.watching {
-            self.ask_watched_keys(client);
-        }
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
@@ -3229,18 +3095,13 @@ impl Task {
                 self.release_barriers();
             }
             for outgoing in changes.outgoing {
-                if self.config.watching {
-                    // A watching page is no channel member: it asks nothing
-                    // over the channel and acknowledges nothing there.
-                    continue;
-                }
                 let Some(client) = client else {
                     // Offline: overdue requests are sent again after the
                     // reconnect; acknowledgements go with the next frame.
                     continue;
                 };
                 let crate::channels::Outgoing::Request { workspace_id, .. } = &outgoing;
-                if lock(&self.shared).status.rooms.get(workspace_id) != Some(&true) {
+                if lock(&self.shared).status.workspaces.get(workspace_id) != Some(&true) {
                     // The host takes a workspace's governance only from a session
                     // it admitted to the workspace: this is asked again the
                     // moment it does (`admitted`).
@@ -3723,7 +3584,7 @@ mod tests {
             attempt: 0,
             next_attempt_at_ms: None,
             last_contact_at_ms: None,
-            rooms: workspaces.iter().copied().collect(),
+            workspaces: workspaces.iter().copied().collect(),
             routes: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,

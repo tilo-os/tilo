@@ -90,15 +90,19 @@ impl CardMetrics {
         Self {
             padding: f64::from(rhythm.section),
             gap: f64::from(rhythm.sibling),
-            radius: f64::from(theme.tokens.radii.tile),
+            // A card is a control-like block of content inside the page, not a window tile
+            // floating over it: it takes the toolkit's card radius, the one a `Container`
+            // shown as a card draws.
+            radius: theme.radius_standard,
             stripe: f64::from(theme.tokens.metrics.chrome_rule_px) * 3.0,
         }
     }
 }
 
 /// Paint a card's surface (and stripe, hover lift and focus ring) over
-/// `rect`.
-fn paint_surface(
+/// `rect`: the one card chrome a [`super::Card`] and a row shown as a card
+/// ([`super::ListRowFace::card`]) share.
+pub(crate) fn paint_surface(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
     stripe: Option<Tone>,

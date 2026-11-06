@@ -18,6 +18,9 @@
     reason = "test fixtures: a failed step is the assertion, and a session lives for its whole test"
 )]
 
+mod common;
+
+use common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press};
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -70,20 +73,8 @@ fn desk(session: &Session) -> DeskReading {
 
 /// Run frames until `done` holds.
 #[track_caller]
-fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..2000 {
-        session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the shell's refusals: {:?}; effects handed {:?} served {:?}; the session says: {:?}",
-        session.shell_refusals(),
-        session.shell_work().map(|work| work.handed),
-        session.shell_work().map(|work| work.served),
-        session.accessible_labels()
-    );
+fn until(session: &mut Session, done: impl FnMut(&mut Session) -> bool) {
+    common::until(session, "the shell's answer", done);
 }
 
 /// Whether the bar says `words`: a control's label carries what it shows and
@@ -150,27 +141,14 @@ fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Screen
         .count()
 }
 
-/// Press the bar's control named `name` with the pointer.
-fn press(session: &mut Session, name: &str) {
-    let (x, y, w, h) = session
-        .shell_control(name)
-        .unwrap_or_else(|| panic!("the bar shows {name}: {:?}", session.accessible_labels()));
-    let (x, y) = (x + w / 2.0, y + h / 2.0);
-    let compositor = session.compositor();
-    compositor
-        .input(InputEvent::PointerMotion { x, y })
-        .unwrap();
-    session.step(Duration::from_millis(1)).unwrap();
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::PointerButton {
-                button: BTN_LEFT,
-                pressed,
-            })
-            .unwrap();
-        session.step(Duration::from_millis(1)).unwrap();
-    }
+/// The colours the screen shows across the bar's band: the bar draws there,
+/// and nothing of the desk does.
+fn band_colours(shot: &tilo_compositor::Screenshot) -> usize {
+    (0..shot.width)
+        .step_by(2)
+        .filter_map(|x| shot.pixel(x, 16))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
 }
 
 #[test]
@@ -203,13 +181,12 @@ fn the_bar_shows_the_time_the_workspace_its_strip_and_the_person_the_session_pub
     if !desk.strip.is_empty() {
         assert!(says(&session, &desk.strip), "the bar names the strip");
     }
-    let shot = keep(&mut session, "shell-bar-empty-desk");
     // The bar draws in its band: its controls stand on the desk there.
-    let band = (0..shot.width)
-        .step_by(2)
-        .filter_map(|x| shot.pixel(x, 16))
-        .collect::<std::collections::BTreeSet<_>>();
-    assert!(band.len() > 8, "the bar draws in its band");
+    let _shot = common::wait_for(&mut session, "the bar in its band", |session| {
+        session.step(Duration::from_millis(16)).expect("step");
+        let shot = keep(session, "shell-bar-empty-desk");
+        (band_colours(&shot) > 8).then_some(shot)
+    });
     // Its controls stand where the bar's band is.
     let (_, y, _, h) = session.shell_control(&desk.workspace).unwrap();
     let band = bar_band(&session);
@@ -257,12 +234,9 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     });
     keep(&mut session, "shell-bar-workspace-menu");
     press(&mut session, &first.workspace);
-    for _ in 0..300 {
-        session.step(Duration::from_millis(1)).unwrap();
-        if session.handle().read(|tree| tree.active.0.to_string()) == first_key {
-            break;
-        }
-    }
+    common::until(&mut session, "the first workspace in front", |session| {
+        session.handle().read(|tree| tree.active.0.to_string()) == first_key
+    });
     assert_eq!(
         session.handle().read(|tree| tree.active.0.to_string()),
         first_key,
@@ -534,6 +508,8 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab,
         width: tilo_desktop_model::WindowWidth::Normal,
@@ -672,14 +648,17 @@ fn the_reading_holds_every_workspaces_windows_and_the_walk_keeps_to_the_front_on
     assert_eq!(elsewhere.tab_index, 0, "it is the tab in front of it");
     assert!(elsewhere.place > 0, "it has a place in its workspace");
     assert!(!elsewhere.focused, "what has focus is the window in front");
+    // A second window in the workspace in front, so the walk has somewhere to go.
+    let second = open_window(&mut session, "so.tilo.mail");
+    until(&mut session, |session| desk(session).windows.len() == 3);
+    let in_front = [front.to_string(), second.to_string()];
     // The walk crosses the workspace in front alone.
     for _ in 0..3 {
         walk(&mut session, 1, "workspace");
         session.step(Duration::from_millis(300)).unwrap();
         until(&mut session, |session| desk(session).switcher_revealed);
-        assert_eq!(
-            reached(&session).key,
-            front.to_string(),
+        assert!(
+            in_front.contains(&reached(&session).key),
             "the walk keeps to the workspace in front: {:?}",
             desk(&session).windows
         );
@@ -719,7 +698,7 @@ fn the_overviews_search_finds_a_window_of_another_workspace() {
         "the window is not in the workspace in front"
     );
     show(&mut session, "overview");
-    let field = "Query";
+    let field = OVERVIEW_SEARCH;
     until(&mut session, |session| {
         session.shell_control(field).is_some()
     });
@@ -776,11 +755,11 @@ fn the_launcher_opens_from_the_bar_and_searches_windows() {
         )
         .unwrap();
     until(&mut session, |session| here(session) == "launcher");
-    assert!(
-        says(&session, "Overview") && says(&session, "Notifications"),
-        "the launcher shows the desk's doors: {:?}",
-        session.accessible_labels()
-    );
+    // The launcher's doors are what it draws: the surface being up says where
+    // the desk is, and its labels are the doors a person sees.
+    common::wait_for(&mut session, "the launcher's doors", |session| {
+        (says(session, "Overview") && says(session, "Notifications")).then_some(())
+    });
     keep(&mut session, "shell-launcher");
     // Closing it from the desk's reading puts the desk back at rest.
     session
@@ -1162,7 +1141,9 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let mut session = session();
     until(&mut session, |session| says(session, &desk(session).clock));
     // Nobody here: the people door alone.
-    let door = bar_control(&session, "People").expect("the people door");
+    let door = common::wait_for(&mut session, "the people door", |session| {
+        bar_control(session, "People")
+    });
     assert!(
         session.shell_control("Mia Clayton").is_none(),
         "no face of a person who is not here"
@@ -1342,6 +1323,7 @@ fn an_apps_open_the_shell_calls_starts_it() {
             resource: "app.so.tilo.sheets".to_owned(),
             action: "open".to_owned(),
             arguments: std::collections::BTreeMap::new(),
+            from: None,
         });
     until(&mut session, |_| !apps.invoked.borrow().is_empty());
     assert_eq!(
@@ -1447,18 +1429,12 @@ fn session_where(
 /// Run frames, taking in what the services report, until `done` holds.
 #[track_caller]
 fn until_settled(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
-    for _ in 0..2000 {
+    common::wait_for(session, "the services' reading", |session| {
         session.settle_services();
+        // What the services reported reaches the shell on the frame the loop runs.
         session.step(Duration::from_millis(1)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!(
-        "condition not reached; the session says: {:?}; the shell refused: {:?}",
-        session.accessible_labels(),
-        session.shell_refusals()
-    );
+        done(session).then_some(())
+    });
 }
 
 /// A press on the dock's launcher calls the desk's own `show-surface`: the launcher comes up.
@@ -1708,13 +1684,18 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
     until_settled(&mut session, |session| {
         !session.surfaces().running(quick_settings::SURFACE)
     });
-    let closed = drawn(&mut session);
-    assert_ne!(
-        closed.pixel(PROBE.0, PROBE.1).expect("a pixel of the desk"),
-        controls
-            .pixel(PROBE.0, PROBE.1)
-            .expect("a pixel of the panel"),
-        "the panel's ground goes with it"
+    // The panel's ground goes with it: the desk shows where it stood.
+    let closed = common::wait_for(
+        &mut session,
+        "the panel's ground to go with it",
+        |session| {
+            let frame = drawn(session);
+            (frame.pixel(PROBE.0, PROBE.1).expect("a pixel of the desk")
+                != controls
+                    .pixel(PROBE.0, PROBE.1)
+                    .expect("a pixel of the panel"))
+            .then_some(frame)
+        },
     );
     save(&closed, "quick-settings-closed-again");
 }
@@ -1730,16 +1711,21 @@ const PROBE: (u32, u32) = (1100, 200);
 /// the panel has drawn the frame its last action asked for.
 fn drawn(session: &mut Session) -> tilo_compositor::Screenshot {
     let mut last = session.compositor().screenshot("HEADLESS-1").expect("shot");
-    for _ in 0..600 {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         session.settle_services();
         session.step(Duration::from_millis(16)).expect("step");
         let frame = session.compositor().screenshot("HEADLESS-1").expect("shot");
         if frame.rgba == last.rgba {
             return frame;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the screen never settled; the parts say: {:?}",
+            session.shell_parts()
+        );
         last = frame;
     }
-    panic!("the screen never settled");
 }
 
 // ---- each press of the shell's reaches the session ------------------------------------------
@@ -1834,6 +1820,8 @@ fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> 
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab,
         width: tilo_desktop_model::WindowWidth::Normal,
@@ -1851,7 +1839,6 @@ fn window_menu(session: &mut Session, item: &str) {
     until(session, |session| {
         session.shell_control("This window").is_some()
     });
-    eprintln!("PROBE windows={:#?}", desk(session).windows);
     press(session, "This window");
     until(session, |session| session.shell_control(item).is_some());
 }
@@ -1913,9 +1900,9 @@ fn searching_everywhere_from_the_launcher_opens_the_desks_search_with_the_query(
     until(&mut session, |session| says(session, &desk(session).clock));
     show(&mut session, "launcher");
     until(&mut session, |session| {
-        session.shell_control("Query").is_some()
+        session.shell_control(LAUNCHER_SEARCH).is_some()
     });
-    press(&mut session, "Query");
+    press(&mut session, LAUNCHER_SEARCH);
     type_text(&mut session, "quarterly");
     let button = "Search everywhere for quarterly";
     until(&mut session, |session| {
@@ -1972,7 +1959,6 @@ fn moving_a_window_to_a_strip_from_the_overview_carries_it_there() {
     until(&mut session, |session| {
         session.shell_control("This window").is_some()
     });
-    eprintln!("PROBE windows={:#?}", desk(&session).windows);
     press(&mut session, "This window");
     until(&mut session, |session| {
         ["Move to Main", "Move to Research"]
@@ -2092,9 +2078,9 @@ fn creating_a_named_workspace_from_the_workspaces_surface_makes_it() {
     until(&mut session, |session| says(session, &desk(session).clock));
     show(&mut session, "workspaces");
     until(&mut session, |session| {
-        session.shell_control("Name").is_some()
+        session.shell_control(WORKSPACE_NAME).is_some()
     });
-    press(&mut session, "Name");
+    press(&mut session, WORKSPACE_NAME);
     type_text(&mut session, "studio");
     press(&mut session, "Create");
     until(&mut session, |session| {
@@ -2193,10 +2179,7 @@ fn bar_band_controls(session: &Session) -> Vec<(String, (f64, f64, f64, f64))> {
 
 /// Run frames until what a setting wrote is drawn: nothing the views read reports itself.
 fn settle(session: &mut Session) {
-    for _ in 0..20 {
-        session.settle_services();
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    drawn(session);
 }
 
 /// A device whose pack charges (or drains) and whose link is Wi-Fi, in memory: what the bar's
@@ -2506,7 +2489,21 @@ fn the_charge_shows_the_charging_battery_while_the_pack_takes_charge() {
     // group and nothing before it — not the clock, the tabs or the launcher.
     let (_, _, _, band) = bar_band(&taking);
     let from = people.0.min(plain_people.0);
-    let allowed = [(from, 0.0, f64::from(charging.width) - from, band)];
+    // The two frames are of two sessions, kept seconds apart: the clock may
+    // turn its minute between them, and its digits are not the charge.
+    //
+    // The reading is the minute's, and the pass that draws it comes after the
+    // minute the desk now says: wait for the bar to show it rather than take
+    // the minute the last frame drew.
+    let drawn_clock = |session: &mut Session| bar_control(session, &desk(session).clock);
+    let clock = common::wait_for(&mut taking, "the bar's clock", drawn_clock);
+    let plain_clock = common::wait_for(&mut draining, "the bar's clock, draining", drawn_clock);
+    let left = clock.0.min(plain_clock.0);
+    let right = (clock.0 + clock.2).max(plain_clock.0 + plain_clock.2);
+    let allowed = [
+        (from, 0.0, f64::from(charging.width) - from, band),
+        (left, 0.0, right - left, band),
+    ];
     let (glyph, outside) = changed_near(&charging, &plain, pack, &allowed);
     assert!(
         glyph > 20,
@@ -2537,26 +2534,29 @@ fn a_compact_bar_keeps_a_glance_and_nothing_overflows_it() {
             "Notifications",
             PERSON,
         ] {
-            assert!(
-                says(&session, words),
-                "a compact bar keeps {words:?}: {:?}",
-                session.accessible_labels()
+            common::wait_for(
+                &mut session,
+                format!("a compact bar keeping {words:?}"),
+                |session| says(session, words).then_some(()),
             );
         }
         for words in ["Volume", "are here"] {
-            assert!(
-                !says(&session, words),
-                "and gives way on {words:?}: {:?}",
-                session.accessible_labels()
+            common::wait_for(
+                &mut session,
+                format!("a compact bar giving way on {words:?}"),
+                |session| (!says(session, words)).then_some(()),
             );
         }
-        let over: Vec<_> = bar_band_controls(&session)
-            .into_iter()
-            .filter(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
-            .collect();
-        assert!(
-            over.is_empty(),
-            "nothing stands past {width}'s edge: {over:?}"
+        common::wait_for(
+            &mut session,
+            format!("the bar to stand inside {width}'s edge"),
+            |session| {
+                bar_band_controls(session)
+                    .into_iter()
+                    .find(|(_, (x, _, w, _))| *x < -0.5 || x + w > f64::from(width) + 0.5)
+                    .is_none()
+                    .then_some(())
+            },
         );
         // The trailing group ends inside the bar's band, not over its edge.
         let (_, y, _, h) = bar_control(&session, PERSON).expect("the person's face");
@@ -2615,23 +2615,100 @@ fn the_bar_draws_inside_every_width_style_and_appearance() {
                         ),
                         "the capture is of the whole screen"
                     );
-                    let band = bar_band(&session);
-                    let over: Vec<_> = bar_band_controls(&session)
-                        .into_iter()
-                        .filter(|(_, (x, y, w, h))| {
-                            *x < -0.5
-                                || x + w > f64::from(width) + 0.5
-                                || *y < band.1 - 0.5
-                                || y + h > band.1 + band.3 + 0.5
-                        })
-                        .collect();
-                    assert!(
-                        over.is_empty(),
-                        "{width} wide, {style} in {appearance}, {count} here: nothing overflows: \
-                         {over:?}"
+                    common::wait_for(
+                        &mut session,
+                        format!(
+                            "{width} wide, {style} in {appearance}, {count} here: nothing overflows"
+                        ),
+                        |session| {
+                            let band = bar_band(session);
+                            bar_band_controls(session)
+                                .into_iter()
+                                .find(|(_, (x, y, w, h))| {
+                                    *x < -0.5
+                                        || x + w > f64::from(width) + 0.5
+                                        || *y < band.1 - 0.5
+                                        || y + h > band.1 + band.3 + 0.5
+                                })
+                                .is_none()
+                                .then_some(())
+                        },
                     );
                 }
             }
         }
+    }
+}
+
+/// The panel's own tile works at the display's scale: at 2 a press at the
+/// centre of "Dark mode" turns the published appearance, as it does at 1.
+/// A control reported at half its size put a press at its centre past it, so
+/// a click did nothing.
+#[test]
+fn a_press_on_a_quick_settings_tile_works_at_every_scale() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
+        let mut session = Session::headless(
+            Options {
+                services: vec![
+                    Box::new(tilo_settings_service::SettingsService::new()),
+                    Box::new(speaker()),
+                ],
+                collab: false,
+                ..options()
+            },
+            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
+        )
+        .expect("session");
+        until_settled(&mut session, |session| says(session, &desk(session).clock));
+        session
+            .invoke(
+                tilo_surface_host::shell_part::CHROME_RESOURCE,
+                "quick-settings",
+                &serde_json::Map::new(),
+            )
+            .unwrap();
+        until_settled(&mut session, |session| says(session, "Dark mode"));
+        // The tile as the session publishes it, in the desk's logical pixels:
+        // a press at its centre is the one the person makes.
+        until_settled(&mut session, |session| {
+            session
+                .controls()
+                .iter()
+                .any(|(name, _)| name == "Dark mode")
+        });
+        let (x, y, w, h) = session
+            .controls()
+            .into_iter()
+            .find(|(name, _)| name == "Dark mode")
+            .map(|(_, rect)| rect)
+            .expect("the panel shows its Dark mode tile");
+        let dark = serde_json::json!("dark");
+        let was = appearance_mode(&session) == dark;
+        let (x, y) = (x + w / 2.0, y + h / 2.0);
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion { x, y })
+            .unwrap();
+        session.step(Duration::from_millis(1)).unwrap();
+        for pressed in [true, false] {
+            session
+                .compositor()
+                .input(InputEvent::PointerButton {
+                    button: BTN_LEFT,
+                    pressed,
+                })
+                .unwrap();
+            session.step(Duration::from_millis(1)).unwrap();
+        }
+        until_settled(&mut session, |session| {
+            (appearance_mode(session) == dark) != was
+        });
+        assert!(
+            (appearance_mode(&session) == dark) != was,
+            "at {scale} a press at the Dark mode tile turns the appearance: it shows at {:?}",
+            session.controls()
+        );
     }
 }

@@ -48,8 +48,6 @@ mod headless_console;
 #[cfg(target_os = "linux")]
 pub mod host;
 #[cfg(target_os = "linux")]
-pub mod job_door;
-#[cfg(target_os = "linux")]
 pub mod landlock;
 #[cfg(target_os = "linux")]
 pub mod landlock_shim;
@@ -94,8 +92,6 @@ pub mod sandbox_view;
 pub mod scope;
 pub mod seccomp;
 pub mod services;
-#[cfg(target_os = "linux")]
-pub mod spawner;
 #[cfg(target_os = "linux")]
 pub mod system_authority;
 #[cfg(target_os = "linux")]

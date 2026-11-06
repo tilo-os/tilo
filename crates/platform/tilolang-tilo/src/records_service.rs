@@ -261,6 +261,33 @@ impl RecordService {
             published_refs(&mut json);
             fields.insert(field.id.clone(), json);
         }
+        // What links to it, each with how: a view composed elsewhere draws them as this app's
+        // own views do ([`tilolang_runtime::store::LINKS`]), and runs again when they move.
+        if let Ok(links) = self.host.store().linked(&at) {
+            let links: Vec<Json> = links
+                .into_iter()
+                .filter_map(|link| {
+                    let schema = crate::schema::lookup(&link.of.ty)?;
+                    Some(Json::Object(Map::from_iter([
+                        (
+                            "ref".to_owned(),
+                            Json::String(resource_id(&schema.app, &link.of.id_string())),
+                        ),
+                        (
+                            "ty".to_owned(),
+                            Json::String(format!("{}#{}", schema.app, schema.name)),
+                        ),
+                        ("how".to_owned(), Json::String(link.how.word().to_owned())),
+                    ])))
+                })
+                .collect();
+            if !links.is_empty() {
+                fields.insert(
+                    tilolang_runtime::store::LINKS.to_owned(),
+                    Json::Array(links),
+                );
+            }
+        }
         Some(Json::Object(fields))
     }
 

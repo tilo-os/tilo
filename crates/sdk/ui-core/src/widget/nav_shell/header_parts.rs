@@ -21,6 +21,9 @@ use crate::widget::{TaffyTreeExt, Widget};
 pub(super) struct HeaderTitle {
     pub(super) title: Option<String>,
     pub(super) count: Option<usize>,
+    /// The window's sidebar stands beside the content drawing this same count for the place
+    /// chosen in it: the header leaves the number to the place.
+    pub(super) repeated_by_sidebar: bool,
     theme: Theme,
     rect: Rect,
     /// The title and count the last measure saw; a change needs another.
@@ -35,6 +38,7 @@ impl HeaderTitle {
         Self {
             title: None,
             count: None,
+            repeated_by_sidebar: false,
             theme: Theme::dark(),
             rect: Rect::ZERO,
             measured: None,
@@ -44,6 +48,13 @@ impl HeaderTitle {
 
     pub(super) fn is_shown(&self) -> bool {
         self.title.is_some()
+    }
+
+    /// The count the header draws: none while the place beside it already shows it, and none
+    /// for zero, which wants no attention.
+    fn shown_count(&self) -> Option<usize> {
+        self.count
+            .filter(|count| *count > 0 && !self.repeated_by_sidebar)
     }
 }
 
@@ -71,11 +82,12 @@ impl Widget for HeaderTitle {
         _available: taffy::Size<taffy::AvailableSpace>,
         text: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        self.measured = Some((self.title.clone(), self.count));
+        let count = self.shown_count();
+        self.measured = Some((self.title.clone(), count));
         let Some(title) = self.title.as_deref() else {
             return taffy::Size::ZERO;
         };
-        let (w, h) = header_row::measure_title(text, &self.theme, title, self.count);
+        let (w, h) = header_row::measure_title(text, &self.theme, title, count);
         taffy::Size {
             width: known.width.unwrap_or(f32_of_f64(w.ceil())),
             height: known.height.unwrap_or(f32_of_f64(h.ceil())),
@@ -93,7 +105,8 @@ impl Widget for HeaderTitle {
         _presence: &PresenceCtx,
     ) {
         if let Some(title) = self.title.as_deref() {
-            header_row::paint_title_in(scene, transform, text, theme, self.rect, title, self.count);
+            let count = self.shown_count();
+            header_row::paint_title_in(scene, transform, text, theme, self.rect, title, count);
         }
     }
 
@@ -104,26 +117,28 @@ impl Widget for HeaderTitle {
     /// A title that shows what it painted needs no frame: a pointer moving
     /// over the window repaints nothing here.
     fn needs_redraw(&self) -> bool {
-        self.painted.as_ref().is_none_or(|(title, count, rect)| {
-            *title != self.title || *count != self.count || *rect != self.rect
+        let count = self.shown_count();
+        self.painted.as_ref().is_none_or(|(title, painted, rect)| {
+            *title != self.title || *painted != count || *rect != self.rect
         })
     }
 
     fn mark_drawn(&mut self) {
-        self.painted = Some((self.title.clone(), self.count, self.rect));
+        self.painted = Some((self.title.clone(), self.shown_count(), self.rect));
     }
 
     fn is_layout_dirty(&self) -> bool {
+        let count = self.shown_count();
         self.measured
             .as_ref()
-            .is_none_or(|(title, count)| *title != self.title || *count != self.count)
+            .is_none_or(|(title, measured)| *title != self.title || *measured != count)
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
         let title = self.title.clone()?;
         let mut node = AccessNode::new(Role::Heading { level: 2 }).with_name(title);
-        if let Some(count) = self.count {
+        if let Some(count) = self.shown_count() {
             node = node.with_value(count.to_string());
         }
         Some(node)

@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use tilo_actions::ActionKind;
 use tilo_actions::surface::{FieldType, NamedType, Surface, VerbSurface};
+use tilolang::meta::NamedRootMeta;
 use tilolang::meta::SearchMeta;
 use tilolang_runtime::meta::{
     ActionMeta, DefaultMeta, EffectClass, EnumMeta, FieldMeta, MergeKind, PackageMeta, ParamMeta,
@@ -110,13 +111,65 @@ pub fn parse_surfaces(text: &str) -> Result<Vec<Surface>, String> {
     Ok(file.resources)
 }
 
-/// The package a native app directory publishes: its manifest's id and name, and the
-/// resources of its `surface.toml`. `None` for a directory that is not a native app with a
-/// committed surface.
+/// One native app's published surface: its package id, the name people call it, and the bytes
+/// of its `surface.toml`. [`NativeSurface::package`] reads it as a tilolang package, whichever
+/// way it arrived: from the app's directory ([`native_surface`]) for `tilolang check`, or from
+/// what a session hands a task's host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeSurface {
+    pub app: String,
+    pub title: String,
+    pub surface: String,
+}
+
+impl NativeSurface {
+    /// The package this app publishes: its actions named by the catalogue ([`action_id`]), and
+    /// the root a program names its own record by ([`record_root`]).
+    ///
+    /// # Errors
+    /// The surface does not read.
+    pub fn package(&self) -> Result<PackageMeta, String> {
+        let (surfaces, instances) = read_surfaces(&self.surface)?;
+        let mut meta = package_with(&self.app, &self.title, &surfaces, &instances, Ids::Record);
+        for action in &mut meta.actions {
+            action.id = action_id(&meta.app, &action.id);
+        }
+        if let Some(root) = record_root(
+            &self.app,
+            &surfaces,
+            &kind_names(&surfaces, &instances),
+            Ids::Record,
+        ) {
+            meta.named_roots.push(root);
+        }
+        Ok(meta)
+    }
+}
+
+/// The id a catalogue gives the action `verb` of the app `app`: `so.tilo.chat#share-window`.
+/// A surface's verb ids are the app's own (`open`, `share-window`), so several apps in one
+/// catalogue would otherwise be one action; its types are named by their app the same way. The
+/// app's own door takes the verb back ([`published_verb`]).
+#[must_use]
+pub fn action_id(app: &str, verb: &str) -> String {
+    format!("{app}#{verb}")
+}
+
+/// The verb id the app's own door takes for the catalogue action `id` ([`action_id`]): a
+/// tilolang package's action keeps the id its app gives it.
+#[must_use]
+pub fn published_verb<'a>(app: &str, id: &'a str) -> &'a str {
+    id.strip_prefix(app)
+        .and_then(|rest| rest.strip_prefix('#'))
+        .unwrap_or(id)
+}
+
+/// The surface a native app directory publishes: its manifest's id and name, and its
+/// `surface.toml`. `None` for a directory that is not a native app with a committed surface.
 ///
 /// # Errors
 /// The manifest or the surface file does not read.
-pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
+pub fn native_surface(dir: &Path) -> Result<Option<NativeSurface>, String> {
     let (manifest, surface) = (dir.join(MANIFEST_FILE), dir.join(SURFACE_FILE));
     if !manifest.is_file() || !surface.is_file() {
         return Ok(None);
@@ -126,29 +179,82 @@ pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
     };
     let manifest: Manifest = toml::from_str(&read(&manifest)?)
         .map_err(|error| format!("{}: {error}", dir.join(MANIFEST_FILE).display()))?;
-    described(
-        &manifest.package.id,
-        &manifest.package.name,
-        &read(&surface)?,
-    )
-    .map(Some)
-    .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
+    Ok(Some(NativeSurface {
+        app: manifest.package.id,
+        title: manifest.package.name,
+        surface: read(&surface)?,
+    }))
 }
 
-/// The package of the app `app` named `title` whose `surface.toml` is `text`: what
-/// [`native_app`] reads from a directory, for a description a binary carries.
+/// The package a native app directory publishes: its manifest's id and name, and the
+/// resources of its `surface.toml`. `None` for a directory that is not a native app with a
+/// committed surface.
+///
+/// # Errors
+/// The manifest or the surface file does not read.
+pub fn native_app(dir: &Path) -> Result<Option<PackageMeta>, String> {
+    let Some(surface) = native_surface(dir)? else {
+        return Ok(None);
+    };
+    surface
+        .package()
+        .map(Some)
+        .map_err(|error| format!("{}: {error}", dir.join(SURFACE_FILE).display()))
+}
+
+/// The package of the app `app` named `title` whose `surface.toml` is `text`: a description a
+/// binary carries, its actions named as the surface names them.
+///
+/// A task's host and `tilolang check` both read a native app through this one reader, so a
+/// program compiles against the same package either way: [`NativeSurface::package`] adds what
+/// only an app the session does not run has, its actions named by its app ([`action_id`]) and
+/// its record a root a program names ([`record_root`]).
 ///
 /// # Errors
 /// The text is not a surface file.
 pub fn described(app: &str, title: &str, text: &str) -> Result<PackageMeta, String> {
+    let (surfaces, instances) = read_surfaces(text)?;
+    Ok(package_with(app, title, &surfaces, &instances, Ids::Record))
+}
+
+/// The resources `text` publishes, and the kinds `instances` marks: the ones whose verbs act on
+/// the one resource they are called on.
+///
+/// # Errors
+/// The text is not a surface file.
+fn read_surfaces(text: &str) -> Result<(Vec<Surface>, Vec<String>), String> {
     let surfaces = parse_surfaces(text)?;
-    let instances: Vec<String> = surfaces
+    let instances = surfaces
         .iter()
         .zip(published(text)?)
         .filter(|(_, published)| published.instances)
         .map(|(surface, _)| surface.kind.clone())
         .collect();
-    Ok(package_with(app, title, &surfaces, &instances))
+    Ok((surfaces, instances))
+}
+
+/// The named root of a native app's own record: the first resource of its surface that stores
+/// fields (`chat.workspace`), which its verbs are declared on and whose history its steps are
+/// taken back with. A program names it where such a verb takes the record
+/// (`chat.rename_channel(chat.workspace, ...)`), and reaches the app through it without reading
+/// it. `None` for an app whose surface stores nothing, whose resource is no record a program
+/// could name.
+fn record_root(
+    app: &str,
+    surfaces: &[Surface],
+    kinds: &BTreeMap<String, String>,
+    ids: Ids,
+) -> Option<NamedRootMeta> {
+    let kind = surfaces
+        .iter()
+        .find(|surface| !surface.fields.is_empty())
+        .map(|surface| surface.kind.as_str())?;
+    let ty = kinds.get(kind)?;
+    Some(NamedRootMeta {
+        name: snake_case(ty),
+        ty: ids.id(app, ty),
+        published: Some(kind.to_owned()),
+    })
 }
 
 /// The packages a tilolang package may `use` that are no tilolang package directory: the
@@ -270,18 +376,26 @@ const fn effect_class(kind: ActionKind) -> EffectClass {
     }
 }
 
-/// The package of the app `app` named `title` that publishes `surfaces`. See the module docs.
+/// The package of the app `app` named `title` that publishes `surfaces`: an app whose
+/// resources the session publishes as readings (`so.tilo.device#Power`). See the module docs.
 #[must_use]
 pub fn package_of(app: &str, title: &str, surfaces: &[Surface]) -> PackageMeta {
-    package_with(app, title, surfaces, &[])
+    package_with(app, title, surfaces, &[], Ids::Readings)
 }
 
 /// [`package_of`], where each resource of a kind of `instances` is a type too, though it
 /// stores no fields: its verbs act on the one resource they are called on.
-fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[String]) -> PackageMeta {
+fn package_with(
+    app: &str,
+    title: &str,
+    surfaces: &[Surface],
+    instances: &[String],
+    ids: Ids,
+) -> PackageMeta {
     let mut reader = Reader {
         app,
-        kinds: BTreeMap::new(),
+        ids,
+        kinds: kind_names(surfaces, instances),
         declared: BTreeMap::new(),
         meta: PackageMeta {
             app: app.to_owned(),
@@ -289,13 +403,23 @@ fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[Strin
             ..PackageMeta::default()
         },
     };
-    // A resource with stored fields is a type; one without is where loose verbs are. A
-    // resource whose name a record or enum of the app already has is named by more of its kind
-    // (`tilo.workspace.emoji`, holding `Emoji` records, is `WorkspaceEmoji`).
+    for surface in surfaces {
+        reader.surface(surface);
+    }
+    reader.meta
+}
+
+/// The type name of each resource kind of `surfaces`. A resource with stored fields is a type;
+/// one without is where loose verbs are. A resource whose name a record or enum of the app
+/// already has is named by more of its kind (`tilo.workspace.emoji`, holding `Emoji` records, is
+/// `WorkspaceEmoji`). A resource of a kind of `instances` is a type too, though it stores no
+/// fields: its verbs act on the one resource they are called on.
+fn kind_names(surfaces: &[Surface], instances: &[String]) -> BTreeMap<String, String> {
     let named: Vec<&str> = surfaces
         .iter()
         .flat_map(|surface| surface.types.iter().map(|ty| ty.name.as_str()))
         .collect();
+    let mut kinds = BTreeMap::new();
     for surface in surfaces {
         if !surface.fields.is_empty() || instances.contains(&surface.kind) {
             let short = kind_type_name(&surface.kind);
@@ -304,17 +428,40 @@ fn package_with(app: &str, title: &str, surfaces: &[Surface], instances: &[Strin
             } else {
                 short
             };
-            reader.kinds.insert(surface.kind.clone(), name);
+            kinds.insert(surface.kind.clone(), name);
         }
     }
-    for surface in surfaces {
-        reader.surface(surface);
+    kinds
+}
+
+/// How a package spells the ids of its types.
+#[derive(Clone, Copy)]
+enum Ids {
+    /// A record the app itself reads (`so.tilo.tasks.Issue`): a resource a program reads from
+    /// the app's record, as it reads any app's the session holds.
+    Record,
+    /// A resource the session publishes as a reading (`so.tilo.device#Power`), which a view
+    /// reads without a record.
+    Readings,
+}
+
+impl Ids {
+    /// The id of the type or enum `name` of the app `app`, qualified by the app so two apps'
+    /// types of one name are two types wherever both are loaded. A record the app reads itself
+    /// keeps them apart as `so.tilo.tasks.Issue`: an id with a `#` names a resource read from
+    /// its published reading ([`tilolang_runtime::foreign`]), which an app whose record the
+    /// session holds is not.
+    fn id(self, app: &str, name: &str) -> String {
+        match self {
+            Self::Record => format!("{app}.{name}"),
+            Self::Readings => format!("{app}#{name}"),
+        }
     }
-    reader.meta
 }
 
 struct Reader<'a> {
     app: &'a str,
+    ids: Ids,
     /// The type name of each resource kind of the app.
     kinds: BTreeMap<String, String>,
     /// The named types declared so far, by name, and whether each is an enum.
@@ -323,11 +470,9 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    /// The id of the app's type or enum `name`: qualified by the app (`so.tilo.device#Power`),
-    /// as a resource of it is typed, so two apps' types of one name are two types wherever both
-    /// are loaded.
+    /// The id of the app's type or enum `name`; see [`Ids::id`].
     fn type_id(&self, name: &str) -> String {
-        format!("{}#{name}", self.app)
+        self.ids.id(self.app, name)
     }
 
     fn surface(&mut self, surface: &Surface) {
@@ -381,6 +526,7 @@ impl Reader<'_> {
                         doc: String::new(),
                         label: case.label.clone(),
                         icon: None,
+                        tone: None,
                         fields: case
                             .fields
                             .iter()
@@ -457,6 +603,8 @@ impl Reader<'_> {
                 name: snake_case(own),
                 ty: own.to_owned(),
                 default: None,
+                place: false,
+                entry: false,
             });
         }
         for param in &verb.params {
@@ -487,6 +635,8 @@ impl Reader<'_> {
                 name: action_name(&param.name),
                 ty,
                 default: (!param.required).then(DefaultMeta::none),
+                place: false,
+                entry: false,
             });
         }
         self.meta.actions.push(ActionMeta {
@@ -502,11 +652,14 @@ impl Reader<'_> {
             icon: None,
             role: verb.destructive.then(|| "destructive".to_owned()),
             scenario: false,
+            did: None,
             present: None,
             toggles: None,
             key: None,
             group: None,
             frequent: false,
+            guard: false,
+            applies: false,
         });
     }
 
@@ -542,6 +695,7 @@ impl Reader<'_> {
             doc: field.title.clone(),
             default: None,
             role: None,
+            derived: None,
         })
     }
 

@@ -20,9 +20,13 @@
 //!   on auto-approval for exactly this device and the request carries a TPM
 //!   quote of a boot chain the owner accepted.
 //!
-//! The half then travels sealed to the request's ephemeral key. Every
-//! request, approval, denial and refusal becomes an [`UnlockEvent`] for the
-//! owner's activity history.
+//! The half then travels sealed to the request's ephemeral key. The owner's
+//! answer itself is a fact ([`UnlockDecisionRecord`]): the device that
+//! answered keeps it in its own fabric snapshot for as long as it holds
+//! ([`DECISION_LIFETIME_NS`]), so a boot whose stream went away before the
+//! answer reached it hears the same answer from any of the person's devices
+//! instead of asking them all over again. Those signed answers are what the
+//! owner's activity history shows, on every one of their devices.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -50,6 +54,10 @@ pub const MAX_REQUESTS_PER_WINDOW: usize = 5;
 pub const RATE_WINDOW_NS: u64 = 15 * 60 * 1_000_000_000;
 /// Requests waiting for the owner at once, across all devices.
 pub const MAX_PENDING: usize = 16;
+/// Answers one device keeps at once, oldest dropped first.
+pub const MAX_UNLOCK_DECISIONS: usize = 64;
+/// How long the owner's answer stands for the boot that asked.
+pub const DECISION_LIFETIME_NS: u64 = APPROVAL_TIMEOUT_NS;
 /// Boots remembered as served, oldest dropped first.
 const MAX_SERVED_BOOTS: usize = 1024;
 /// Challenges outstanding at once, oldest dropped first.
@@ -178,6 +186,72 @@ impl AutoApproval {
     }
 }
 
+/// What the owner answered one boot's request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DecisionOutcome {
+    /// The half is released to this boot, sealed to each request's own key.
+    Approve,
+    /// The boot is refused, and nobody is asked again while the answer holds.
+    Deny,
+}
+
+/// Which boot's request an answer is about: its enrolment (the boot
+/// certificate's digest), the boot's id, and the slot it asks for.
+pub type DecisionKey = ([u8; 32], BootId, SlotId);
+
+/// The owner's answer to one boot's request, kept in the answering device's
+/// own fabric snapshot: it is that device's fact, and their other devices
+/// carry it to answer the same boot the same way. A boot whose stream went
+/// away before the answer reached it therefore hears the answer instead of
+/// asking again, and a boot whose handler died leaves no question behind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnlockDecisionRecord {
+    /// The enrolment that asked: the boot certificate's digest.
+    pub boot_cert_digest: [u8; 32],
+    pub boot_id: BootId,
+    pub slot: SlotId,
+    pub outcome: DecisionOutcome,
+    /// The device of the person whose owner answered.
+    pub decided_by: [u8; 32],
+    pub decided_at_ns: u64,
+    /// After this the request is put to the person again.
+    pub valid_until_ns: u64,
+}
+
+impl UnlockDecisionRecord {
+    /// The boot this answers.
+    #[must_use]
+    pub fn key(&self) -> DecisionKey {
+        (self.boot_cert_digest, self.boot_id, self.slot)
+    }
+
+    /// Written by the device whose snapshot carries it, and in force when the
+    /// answer was made.
+    pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
+        if owner.as_str() != hex::encode(self.decided_by)
+            || self.valid_until_ns <= self.decided_at_ns
+        {
+            return Err(FabricError::ForeignAuthorship);
+        }
+        Ok(())
+    }
+}
+
+/// The answer in force for the boot `digest`, `boot_id` asks for `slot`, if
+/// the person's devices kept one.
+#[must_use]
+pub fn decision_for<'a>(
+    decisions: &'a BTreeMap<DecisionKey, UnlockDecisionRecord>,
+    digest: &[u8; 32],
+    boot_id: BootId,
+    slot: SlotId,
+    now_ns: u64,
+) -> Option<&'a UnlockDecisionRecord> {
+    decisions
+        .get(&(*digest, boot_id, slot))
+        .filter(|record| record.valid_until_ns > now_ns)
+}
+
 /// What one device publishes about disk unlock in its fabric snapshot.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnlockFabricState {
@@ -186,12 +260,15 @@ pub struct UnlockFabricState {
     /// Root-signed auto-approval settings the owner made on this device,
     /// for any device of the person.
     pub auto_approvals: Vec<AutoApproval>,
+    /// This device's answers to boots that asked it, kept while they hold.
+    pub decisions: Vec<UnlockDecisionRecord>,
 }
 
 impl UnlockFabricState {
     pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
         if self.enrolments.len() > MAX_UNLOCK_ENROLMENTS
             || self.auto_approvals.len() > crate::MAX_DEVICES
+            || self.decisions.len() > MAX_UNLOCK_DECISIONS
         {
             return Err(FabricError::SnapshotTooLarge);
         }
@@ -209,24 +286,38 @@ impl UnlockFabricState {
                 return Err(FabricError::DuplicateItem);
             }
         }
+        let mut answered = BTreeSet::new();
+        for decision in &self.decisions {
+            decision.validate(owner)?;
+            if !answered.insert(decision.key()) {
+                return Err(FabricError::DuplicateItem);
+            }
+        }
         Ok(())
     }
 }
 
-/// The enrolments and auto-approvals across the person's fabric, keeping
-/// only those of the fleet's root and of devices it has not revoked. The
-/// newest auto-approval per device wins.
+/// What the person's fabric says about disk unlock: the enrolments and
+/// auto-approvals it carries, and the answers to boots that are still in
+/// force.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergedUnlock {
+    pub enrolments: BTreeMap<[u8; 32], UnlockEnrolment>,
+    pub auto_approvals: BTreeMap<[u8; 32], AutoApproval>,
+    pub decisions: BTreeMap<DecisionKey, UnlockDecisionRecord>,
+}
+
+/// The enrolments, auto-approvals and answers across the person's fabric,
+/// keeping only those of the fleet's root and of devices it has not revoked.
+/// The newest auto-approval per device wins, and the newest answer per boot,
+/// an approval over a denial made at the same moment.
 #[must_use]
 pub fn merged_unlock_state<'a>(
     snapshots: impl IntoIterator<Item = &'a UnlockFabricState>,
     fleet: &CertifiedFleet,
     now_ns: u64,
-) -> (
-    BTreeMap<[u8; 32], UnlockEnrolment>,
-    BTreeMap<[u8; 32], AutoApproval>,
-) {
-    let mut enrolments = BTreeMap::new();
-    let mut approvals = BTreeMap::<[u8; 32], AutoApproval>::new();
+) -> MergedUnlock {
+    let mut merged = MergedUnlock::default();
     let standing = |device: &[u8; 32]| fleet.standing(device, now_ns);
     for state in snapshots {
         for enrolment in &state.enrolments {
@@ -234,7 +325,7 @@ pub fn merged_unlock_state<'a>(
                 && standing(&enrolment.cert.device_public_key) == DeviceStanding::Certified
                 && let Some(id) = enrolment.id()
             {
-                enrolments.insert(id, enrolment.clone());
+                merged.enrolments.insert(id, enrolment.clone());
             }
         }
         for approval in &state.auto_approvals {
@@ -243,54 +334,52 @@ pub fn merged_unlock_state<'a>(
             {
                 continue;
             }
-            let newer = approvals
+            let newer = merged
+                .auto_approvals
                 .get(&approval.device_public_key)
                 .is_none_or(|current| approval.issued_at_ns > current.issued_at_ns);
             if newer {
-                approvals.insert(approval.device_public_key, approval.clone());
+                merged
+                    .auto_approvals
+                    .insert(approval.device_public_key, approval.clone());
+            }
+        }
+        for decision in &state.decisions {
+            if standing(&decision.decided_by) != DeviceStanding::Certified
+                || decision.valid_until_ns <= now_ns
+            {
+                continue;
+            }
+            let newer = merged.decisions.get(&decision.key()).is_none_or(|current| {
+                (
+                    decision.decided_at_ns,
+                    decision.outcome == DecisionOutcome::Approve,
+                ) >= (
+                    current.decided_at_ns,
+                    current.outcome == DecisionOutcome::Approve,
+                )
+            });
+            if newer {
+                merged.decisions.insert(decision.key(), decision.clone());
             }
         }
     }
-    (enrolments, approvals)
+    merged
 }
 
-/// What a sibling knows when it answers: the person's fleet, the enrolments
-/// and auto-approvals the fabric carries, and the secret-sync key when this
-/// device holds the root.
+/// What a sibling knows when it answers: the person's fleet, the enrolments,
+/// auto-approvals and answers the fabric carries, and the secret-sync key
+/// when this device holds the root.
 pub struct UnlockView<'a> {
     pub fleet: &'a CertifiedFleet,
     pub enrolments: &'a BTreeMap<[u8; 32], UnlockEnrolment>,
     pub auto_approvals: &'a BTreeMap<[u8; 32], AutoApproval>,
+    /// The owner's answers still in force, from every device of theirs.
+    pub decisions: &'a BTreeMap<DecisionKey, UnlockDecisionRecord>,
     /// Whether this device holds the person's root, so it can release.
     pub custodian: bool,
     /// The secret-sync key, loaded only where a half is released.
     pub secret_sync: Option<&'a SecretKey>,
-}
-
-/// One entry for the owner's activity history.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UnlockEvent {
-    pub at_ns: u64,
-    pub device_public_key: [u8; 32],
-    pub slot: Option<SlotId>,
-    pub boot_id: Option<BootId>,
-    pub outcome: UnlockOutcome,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum UnlockOutcome {
-    /// A request is waiting for the owner; the code is on the boot screen.
-    Requested { approval_code: String },
-    /// The owner approved on `approver`, and the half was released.
-    Approved { approver: [u8; 32] },
-    /// Released without asking: auto-approval and an attested boot chain.
-    AutoApproved { boot_chain: [u8; 32] },
-    /// The owner declined on `approver`, or nobody decided in time (`None`).
-    Denied { approver: Option<[u8; 32]> },
-    /// Refused before anyone was asked.
-    Refused { reason: RefusalReason },
-    /// The device left the fleet; its halves were deleted.
-    Removed,
 }
 
 /// A request waiting for the owner's decision on `device.unlock`.
@@ -313,6 +402,16 @@ pub enum UnlockDecision {
     Deny { approver: [u8; 32] },
 }
 
+/// What the owner's answer means for the boot waiting on it: the frame to
+/// send it, and the answer to keep for the boot's next attempt — none where
+/// the answer releases nothing (the half could not be opened, the device was
+/// removed, or nobody decided in time).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Decided {
+    pub frame: SiblingFrame,
+    pub record: Option<UnlockDecisionRecord>,
+}
+
 #[derive(Clone, Debug)]
 struct OpenChallenge {
     enrolment: [u8; 32],
@@ -330,7 +429,6 @@ pub struct UnlockSibling {
     served_order: VecDeque<([u8; 32], BootId)>,
     attempts: BTreeMap<[u8; 32], VecDeque<u64>>,
     pending: BTreeMap<[u8; 32], PendingUnlock>,
-    history: Vec<UnlockEvent>,
 }
 
 impl UnlockSibling {
@@ -344,7 +442,6 @@ impl UnlockSibling {
             served_order: VecDeque::new(),
             attempts: BTreeMap::new(),
             pending: BTreeMap::new(),
-            history: Vec::new(),
         }
     }
 
@@ -357,9 +454,6 @@ impl UnlockSibling {
         nonce: [u8; 32],
         now_ns: u64,
     ) -> SiblingFrame {
-        let cert = &hello.boot_cert;
-        let device = cert.device_public_key;
-        let slot = Some(cert.slot);
         match self.admit(hello, view, now_ns) {
             Ok(enrolment) => {
                 let challenge = Challenge {
@@ -383,7 +477,7 @@ impl UnlockSibling {
                 );
                 SiblingFrame::Challenge(challenge)
             }
-            Err(reason) => self.refuse(device, slot, None, reason, now_ns),
+            Err(reason) => refuse(reason),
         }
     }
 
@@ -437,7 +531,9 @@ impl UnlockSibling {
 
     /// Handle the signed answer to `challenge_nonce` (the challenge issued on
     /// this stream). Returns `Pending` (the owner is asked through
-    /// `device.unlock`), `Released` (auto-approved), or `Refused`.
+    /// `device.unlock`), `Released` (the owner allowed this boot, or
+    /// auto-approved it), `Denied` (the owner's answer to this boot is in
+    /// force), or `Refused`.
     pub fn request(
         &mut self,
         request: &UnlockRequest,
@@ -448,49 +544,43 @@ impl UnlockSibling {
     ) -> SiblingFrame {
         let cert = &hello.boot_cert;
         let device = cert.device_public_key;
-        match self.check_request(request, cert, challenge_nonce, view, now_ns) {
-            Ok((pending, enrolment)) => {
-                if let Some(chain) = auto_approved(request, cert, self.sibling_public_key, view) {
-                    let frame = release(&pending, &enrolment, view);
-                    match &frame {
-                        SiblingFrame::Released(_) => {
-                            self.mark_served(device, request.boot_id);
-                            self.log(
-                                &pending,
-                                UnlockOutcome::AutoApproved { boot_chain: chain },
-                                now_ns,
-                            );
-                        }
-                        SiblingFrame::Refused(reason) => {
-                            self.log(&pending, UnlockOutcome::Refused { reason: *reason }, now_ns);
-                        }
-                        _ => {}
-                    }
-                    return frame;
-                }
-                self.log(
-                    &pending,
-                    UnlockOutcome::Requested {
-                        approval_code: pending.approval_code.clone(),
-                    },
-                    now_ns,
-                );
-                let code = pending.approval_code.clone();
-                self.pending.insert(pending.request_digest, pending);
-                SiblingFrame::Pending {
-                    approval_code: code,
-                }
+        let (pending, enrolment) =
+            match self.check_request(request, cert, challenge_nonce, view, now_ns) {
+                Ok(checked) => checked,
+                Err(reason) => return refuse(reason),
+            };
+        // The person already answered this boot: it hears that answer again,
+        // with a half sealed to this request's own key where they allowed
+        // it, instead of asking them a second time.
+        if let Some(frame) = self.answered(&pending, &enrolment, view, now_ns) {
+            return frame;
+        }
+        if self
+            .served
+            .contains(&(pending.device_public_key, pending.boot_id))
+        {
+            return refuse(RefusalReason::BootAlreadyServed);
+        }
+        self.forget_unanswered(now_ns);
+        if self.pending.len() >= MAX_PENDING {
+            return refuse(RefusalReason::RateLimited);
+        }
+        if auto_approved(request, cert, self.sibling_public_key, view).is_some() {
+            let frame = release(&pending, &enrolment, view);
+            if matches!(frame, SiblingFrame::Released(_)) {
+                self.mark_served(device, request.boot_id);
             }
-            Err(reason) => self.refuse(
-                device,
-                Some(request.slot),
-                Some(request.boot_id),
-                reason,
-                now_ns,
-            ),
+            return frame;
+        }
+        let code = pending.approval_code.clone();
+        self.pending.insert(pending.request_digest, pending);
+        SiblingFrame::Pending {
+            approval_code: code,
         }
     }
 
+    /// The shape of a request that passed every check, before the owner is
+    /// asked anything.
     fn check_request(
         &mut self,
         request: &UnlockRequest,
@@ -520,15 +610,6 @@ impl UnlockSibling {
             .filter(|enrolment| enrolment.cert == *cert)
             .ok_or(RefusalReason::NotEnrolled)?
             .clone();
-        if self
-            .served
-            .contains(&(cert.device_public_key, request.boot_id))
-        {
-            return Err(RefusalReason::BootAlreadyServed);
-        }
-        if self.pending.len() >= MAX_PENDING {
-            return Err(RefusalReason::RateLimited);
-        }
         Ok((
             PendingUnlock {
                 request_digest: digest,
@@ -544,8 +625,45 @@ impl UnlockSibling {
         ))
     }
 
+    /// The owner's answer to this boot, while it holds: a denial as it stands,
+    /// an approval as a half sealed to this request's own key. A boot that
+    /// reconnects after its stream went away is not put to the person again.
+    fn answered(
+        &mut self,
+        pending: &PendingUnlock,
+        enrolment: &UnlockEnrolment,
+        view: &UnlockView<'_>,
+        now_ns: u64,
+    ) -> Option<SiblingFrame> {
+        let record = decision_for(
+            view.decisions,
+            &pending.enrolment,
+            pending.boot_id,
+            pending.slot,
+            now_ns,
+        )?;
+        match record.outcome {
+            DecisionOutcome::Deny => Some(SiblingFrame::Denied),
+            DecisionOutcome::Approve => {
+                let frame = release(pending, enrolment, view);
+                if matches!(frame, SiblingFrame::Released(_)) {
+                    self.mark_served(pending.device_public_key, pending.boot_id);
+                }
+                Some(frame)
+            }
+        }
+    }
+
+    /// Let go of the questions nobody can answer any more: a request whose
+    /// answer window passed while its handler was gone is no longer pending,
+    /// so it holds no place another boot would be refused for.
+    fn forget_unanswered(&mut self, now_ns: u64) {
+        self.pending
+            .retain(|_, pending| pending.expires_at_ns > now_ns);
+    }
+
     /// The boot waiting on `request_digest` went away: nobody can receive a
-    /// decision any more.
+    /// decision any more, and the person is asked no further.
     pub fn withdraw(&mut self, request_digest: &[u8; 32]) {
         self.pending.remove(request_digest);
     }
@@ -555,100 +673,70 @@ impl UnlockSibling {
         self.pending.values()
     }
 
-    /// Apply the owner's decision. Returns the frame for the waiting boot,
-    /// or `None` when no such request is pending (already decided, expired
-    /// or never made).
+    /// Apply the owner's decision. Returns the frame for the waiting boot and
+    /// the answer to keep, or `None` when no such request is pending (already
+    /// decided, withdrawn, or never made).
     pub fn decide(
         &mut self,
         request_digest: &[u8; 32],
         decision: UnlockDecision,
         view: &UnlockView<'_>,
         now_ns: u64,
-    ) -> Option<SiblingFrame> {
+    ) -> Option<Decided> {
         let pending = self.pending.remove(request_digest)?;
         if pending.expires_at_ns <= now_ns {
-            self.log(&pending, UnlockOutcome::Denied { approver: None }, now_ns);
-            return Some(SiblingFrame::Denied);
+            return Some(Decided {
+                frame: SiblingFrame::Denied,
+                record: None,
+            });
         }
-        match decision {
+        let approver = match decision {
             UnlockDecision::Deny { approver } => {
-                self.log(
+                return Some(Decided {
+                    frame: SiblingFrame::Denied,
+                    record: Some(decision_record(
+                        &pending,
+                        DecisionOutcome::Deny,
+                        approver,
+                        now_ns,
+                    )),
+                });
+            }
+            UnlockDecision::Approve { approver } => approver,
+        };
+        let still_enrolled = !matches!(
+            view.fleet.standing(&pending.device_public_key, now_ns),
+            DeviceStanding::Revoked(_)
+        ) && view.enrolments.contains_key(&pending.enrolment);
+        let frame = if still_enrolled {
+            view.enrolments.get(&pending.enrolment).map_or(
+                SiblingFrame::Refused(RefusalReason::NotEnrolled),
+                |enrolment| release(&pending, enrolment, view),
+            )
+        } else {
+            SiblingFrame::Refused(RefusalReason::Revoked)
+        };
+        let record = match &frame {
+            SiblingFrame::Released(_) => {
+                self.mark_served(pending.device_public_key, pending.boot_id);
+                Some(decision_record(
                     &pending,
-                    UnlockOutcome::Denied {
-                        approver: Some(approver),
-                    },
+                    DecisionOutcome::Approve,
+                    approver,
                     now_ns,
-                );
-                Some(SiblingFrame::Denied)
+                ))
             }
-            UnlockDecision::Approve { approver } => {
-                let still_enrolled = !matches!(
-                    view.fleet.standing(&pending.device_public_key, now_ns),
-                    DeviceStanding::Revoked(_)
-                ) && view.enrolments.contains_key(&pending.enrolment);
-                let frame = if still_enrolled {
-                    view.enrolments.get(&pending.enrolment).map_or(
-                        SiblingFrame::Refused(RefusalReason::NotEnrolled),
-                        |enrolment| release(&pending, enrolment, view),
-                    )
-                } else {
-                    SiblingFrame::Refused(RefusalReason::Revoked)
-                };
-                match &frame {
-                    SiblingFrame::Released(_) => {
-                        self.mark_served(pending.device_public_key, pending.boot_id);
-                        self.log(&pending, UnlockOutcome::Approved { approver }, now_ns);
-                    }
-                    SiblingFrame::Refused(reason) => {
-                        self.log(&pending, UnlockOutcome::Refused { reason: *reason }, now_ns);
-                    }
-                    _ => {}
-                }
-                Some(frame)
-            }
-        }
-    }
-
-    /// Deny every request nobody decided in time. Returns their digests for
-    /// the waiting streams.
-    pub fn expire(&mut self, now_ns: u64) -> Vec<[u8; 32]> {
-        let expired: Vec<[u8; 32]> = self
-            .pending
-            .values()
-            .filter(|pending| pending.expires_at_ns <= now_ns)
-            .map(|pending| pending.request_digest)
-            .collect();
-        for digest in &expired {
-            if let Some(pending) = self.pending.remove(digest) {
-                self.log(&pending, UnlockOutcome::Denied { approver: None }, now_ns);
-            }
-        }
-        self.challenges
-            .retain(|_, open| open.challenge.expires_at_ns > now_ns);
-        let challenges = &self.challenges;
-        self.challenge_order
-            .retain(|nonce| challenges.contains_key(nonce));
-        expired
+            _ => None,
+        };
+        Some(Decided { frame, record })
     }
 
     /// The device left the fleet: forget everything about it. The fabric
     /// drops its enrolments (and with them the sealed halves) separately.
-    pub fn remove_device(&mut self, device_public_key: [u8; 32], now_ns: u64) {
+    pub fn remove_device(&mut self, device_public_key: [u8; 32]) {
         self.pending
             .retain(|_, pending| pending.device_public_key != device_public_key);
         self.attempts.remove(&device_public_key);
-        self.history.push(UnlockEvent {
-            at_ns: now_ns,
-            device_public_key,
-            slot: None,
-            boot_id: None,
-            outcome: UnlockOutcome::Removed,
-        });
-    }
-
-    /// Events for the owner's activity history since the last drain.
-    pub fn drain_history(&mut self) -> Vec<UnlockEvent> {
-        std::mem::take(&mut self.history)
     }
 
     fn mark_served(&mut self, device: [u8; 32], boot_id: BootId) {
@@ -660,34 +748,11 @@ impl UnlockSibling {
         self.served_order.push_back((device, boot_id));
         self.served.insert((device, boot_id));
     }
+}
 
-    fn refuse(
-        &mut self,
-        device: [u8; 32],
-        slot: Option<SlotId>,
-        boot_id: Option<BootId>,
-        reason: RefusalReason,
-        now_ns: u64,
-    ) -> SiblingFrame {
-        self.history.push(UnlockEvent {
-            at_ns: now_ns,
-            device_public_key: device,
-            slot,
-            boot_id,
-            outcome: UnlockOutcome::Refused { reason },
-        });
-        SiblingFrame::Refused(reason)
-    }
-
-    fn log(&mut self, pending: &PendingUnlock, outcome: UnlockOutcome, now_ns: u64) {
-        self.history.push(UnlockEvent {
-            at_ns: now_ns,
-            device_public_key: pending.device_public_key,
-            slot: Some(pending.slot),
-            boot_id: Some(pending.boot_id),
-            outcome,
-        });
-    }
+/// The answer to a request nobody will be asked about.
+fn refuse(reason: RefusalReason) -> SiblingFrame {
+    SiblingFrame::Refused(reason)
 }
 
 /// The accepted boot chain when the owner auto-approves this device and the
@@ -725,6 +790,24 @@ fn auto_approved(
         .accepted_boot_chains
         .contains(&chain)
         .then_some(chain)
+}
+
+/// The answer to keep for `pending`, in force for [`DECISION_LIFETIME_NS`].
+fn decision_record(
+    pending: &PendingUnlock,
+    outcome: DecisionOutcome,
+    decided_by: [u8; 32],
+    now_ns: u64,
+) -> UnlockDecisionRecord {
+    UnlockDecisionRecord {
+        boot_cert_digest: pending.enrolment,
+        boot_id: pending.boot_id,
+        slot: pending.slot,
+        outcome,
+        decided_by,
+        decided_at_ns: now_ns,
+        valid_until_ns: now_ns.saturating_add(DECISION_LIFETIME_NS),
+    }
 }
 
 /// Open the sibling half with the secret-sync key and seal it to the

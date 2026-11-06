@@ -361,6 +361,99 @@ fn concurrent_commits_on_one_epoch_converge_on_the_lower_digest() {
     }
 }
 
+/// Two participants commit a later change on the epoch each holds, so the
+/// commits follow different frames and neither can be applied on the other.
+/// They compete by the digest each reached: the device holding the lower one
+/// keeps it and publishes it again, the other starts over and is admitted
+/// again, and what it sealed under the branch it left stays readable.
+#[test]
+fn commits_for_one_epoch_on_different_heads_keep_the_lower_digest() {
+    let channel = ChannelId::new();
+    let mut alice = Device::creating(1, channel);
+    let mut bob = Device::waiting(2, channel);
+    let mut dave = Device::waiting(4, channel);
+    let mut erin = Device::waiting(5, channel);
+    let both = allowed(&[&alice, &bob]);
+    alice.peer.learn_request(bob.ask(false), &vault()).unwrap();
+    alice.peer.reconcile_now(&both, &vault()).unwrap();
+    deliver(&alice.take(), &mut [&mut bob], &both);
+    assert_eq!((alice.epoch(), bob.epoch()), (Some(1), Some(1)));
+
+    // Each admits Dave on the epoch it holds and hears nothing of the other's
+    // commit, so each keeps its own head from here.
+    let everyone = allowed(&[&alice, &bob, &dave, &erin]);
+    let request = dave.ask(false);
+    alice.peer.learn_request(request.clone(), &vault()).unwrap();
+    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&everyone, &vault()).unwrap();
+    bob.peer.reconcile_now(&everyone, &vault()).unwrap();
+    assert_eq!((alice.take()[0].epoch, bob.take()[0].epoch), (2, 2));
+
+    // A second change, committed by both on the epoch each holds: two commits
+    // for epoch 3 that followed different frames.
+    let request = erin.ask(false);
+    alice.peer.learn_request(request.clone(), &vault()).unwrap();
+    bob.peer.learn_request(request, &vault()).unwrap();
+    alice.peer.reconcile_now(&everyone, &vault()).unwrap();
+    bob.peer.reconcile_now(&everyone, &vault()).unwrap();
+    let from_alice = alice.take();
+    let from_bob = bob.take();
+    let head = |frames: &[MlsGovernanceFrame]| frames[0].digest().unwrap();
+    assert_eq!((from_alice[0].epoch, from_bob[0].epoch), (3, 3));
+    assert_ne!(
+        from_alice[0].previous_frame_digest,
+        from_bob[0].previous_frame_digest
+    );
+    let alice_won = head(&from_alice) < head(&from_bob);
+    let sealed = if alice_won {
+        bob.seal("under the branch that lost")
+    } else {
+        alice.seal("under the branch that lost")
+    };
+
+    if alice_won {
+        assert_eq!(
+            bob.receive(&from_alice[0], &everyone).unwrap(),
+            PeerEvent::Desynchronised
+        );
+        assert_eq!(bob.peer.access(), Access::Waiting);
+        assert_eq!(
+            alice.receive(&from_bob[0], &everyone).unwrap(),
+            PeerEvent::Ignored
+        );
+        assert!(
+            alice
+                .take()
+                .iter()
+                .any(|frame| frame.digest().unwrap() == head(&from_alice))
+        );
+    } else {
+        assert_eq!(
+            alice.receive(&from_bob[0], &everyone).unwrap(),
+            PeerEvent::Desynchronised
+        );
+        assert_eq!(alice.peer.access(), Access::Waiting);
+        assert_eq!(
+            bob.receive(&from_alice[0], &everyone).unwrap(),
+            PeerEvent::Ignored
+        );
+        assert!(
+            bob.take()
+                .iter()
+                .any(|frame| frame.digest().unwrap() == head(&from_bob))
+        );
+    }
+    // The device that started over is admitted again and hands the members
+    // what it sealed under the branch it left.
+    settle(&mut [&mut alice, &mut bob], &everyone);
+    for device in [&alice, &bob] {
+        assert_eq!(
+            device.opens(&sealed).as_deref(),
+            Some("under the branch that lost")
+        );
+    }
+}
+
 /// Run the protocol until nothing changes: every waiting device asks, every
 /// member reconciles, and every frame reaches every device (the copy
 /// carrying join material only the devices it adds). Frames a device cannot

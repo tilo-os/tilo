@@ -324,6 +324,9 @@ pub fn cold_start(label: &str, exe: &std::path::Path, launches: usize) -> ColdSt
     for dir in ["home", "config", "data", "state", "cache", "run"] {
         tilo_files::native::create_dir_all(&root.join(dir)).expect("a scratch directory");
     }
+    // The first launch is not measured: it makes the profile each measured
+    // launch opens, and prints numbers nobody reads.
+    // ignored-failure: the priming launch's output is not a measurement
     let _ = launch();
     let mut cold = ColdStart {
         label: label.to_owned(),
@@ -352,6 +355,17 @@ pub struct ColdStart {
     calls: BTreeMap<String, u64>,
 }
 
+/// A number the app printed: a measurement that cannot be read is a broken
+/// measurement, never zero.
+#[allow(
+    clippy::panic,
+    reason = "a measurement fails loudly when the app prints nothing readable"
+)]
+fn measured<T: std::str::FromStr>(label: &str, field: &str, text: &str) -> T {
+    text.parse()
+        .unwrap_or_else(|_| panic!("{label}: {field} is not a number: {text:?}"))
+}
+
 impl ColdStart {
     /// Add what one launch printed: its total, its startup marks and its
     /// first-frame scopes.
@@ -366,14 +380,14 @@ impl ColdStart {
             .unwrap_or_else(|| panic!("{label}: no startup line in {printed}"));
         for field in line.split_whitespace() {
             if let Some(total) = field.strip_prefix("total_ms=") {
-                self.totals.push(total.parse().unwrap_or_default());
+                self.totals.push(measured(label, "total_ms", total));
             } else if let Some(phases) = field.strip_prefix("phases=") {
                 for phase in phases.split(',') {
                     if let Some((name, ms)) = phase.rsplit_once(':') {
                         self.phases
                             .entry(format!("mark {name}"))
                             .or_default()
-                            .push(ms.parse::<u64>().unwrap_or_default().saturating_mul(1000));
+                            .push(measured::<u64>(label, "phases", ms).saturating_mul(1000));
                     }
                 }
             }
@@ -388,7 +402,7 @@ impl ColdStart {
                 if let Some(value) = field.strip_prefix("name=") {
                     name = value;
                 } else if let Some(value) = field.strip_prefix("us=") {
-                    us = value.parse().unwrap_or_default();
+                    us = measured(label, "us", value);
                 }
             }
             self.marks.entry(name.to_owned()).or_default().push(us);
@@ -404,7 +418,7 @@ impl ColdStart {
                     .unwrap_or_default()
                     .to_owned()
             };
-            let calls: u64 = field("calls=").parse().unwrap_or_default();
+            let calls: u64 = measured(label, "calls", &field("calls="));
             let most = self
                 .calls
                 .entry(format!("{} {}", field("stage="), field("phase=")))
@@ -419,7 +433,7 @@ impl ColdStart {
             self.phases
                 .entry(name)
                 .or_default()
-                .push(field("us=").parse().unwrap_or_default());
+                .push(measured(label, "us", &field("us=")));
         }
     }
 }
@@ -789,6 +803,9 @@ impl SweepStep {
             ui_core::vello::kurbo::Rect::new(0.0, 0.0, f64::from(YOGA.0), f64::from(YOGA.1));
         match &self.damage {
             Ok(rects) => rects.iter().map(|rect| rect.intersect(window).area()).sum(),
+            // A frame that cannot say where it repainted counts as the whole
+            // window, which never says less than it repainted.
+            // ignored-failure: the whole window is the conservative answer
             Err(_) => window.area(),
         }
     }

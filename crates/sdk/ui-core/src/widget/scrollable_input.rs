@@ -137,24 +137,27 @@ impl Scrollable {
         // A step big enough that `clamp` caps it at the content edge.
         let full = self.content_h.max(self.content_w);
         let has_v = self.axis_has_vertical();
-        match key {
-            Key::Named(NamedKey::PageDown) if has_v => self.scroll_by(0.0, page_v),
-            Key::Named(NamedKey::PageUp) if has_v => self.scroll_by(0.0, -page_v),
-            Key::Named(NamedKey::PageDown) => self.scroll_by(page_h, 0.0),
-            Key::Named(NamedKey::PageUp) => self.scroll_by(-page_h, 0.0),
-            Key::Named(NamedKey::Home) if has_v => self.scroll_by(0.0, -full),
-            Key::Named(NamedKey::End) if has_v => self.scroll_by(0.0, full),
-            Key::Named(NamedKey::Home) => self.scroll_by(-full, 0.0),
-            Key::Named(NamedKey::End) => self.scroll_by(full, 0.0),
-            Key::Named(NamedKey::ArrowDown) if has_v => self.scroll_by(0.0, LINE_STEP),
-            Key::Named(NamedKey::ArrowUp) if has_v => self.scroll_by(0.0, -LINE_STEP),
-            Key::Named(NamedKey::ArrowRight) if self.axis_has_horizontal() => {
-                self.scroll_by(LINE_STEP, 0.0);
-            }
-            Key::Named(NamedKey::ArrowLeft) if self.axis_has_horizontal() => {
-                self.scroll_by(-LINE_STEP, 0.0);
-            }
+        let (dx, dy) = match key {
+            Key::Named(NamedKey::PageDown) if has_v => (0.0, page_v),
+            Key::Named(NamedKey::PageUp) if has_v => (0.0, -page_v),
+            Key::Named(NamedKey::PageDown) => (page_h, 0.0),
+            Key::Named(NamedKey::PageUp) => (-page_h, 0.0),
+            Key::Named(NamedKey::Home) if has_v => (0.0, -full),
+            Key::Named(NamedKey::End) if has_v => (0.0, full),
+            Key::Named(NamedKey::Home) => (-full, 0.0),
+            Key::Named(NamedKey::End) => (full, 0.0),
+            Key::Named(NamedKey::ArrowDown) if has_v => (0.0, LINE_STEP),
+            Key::Named(NamedKey::ArrowUp) if has_v => (0.0, -LINE_STEP),
+            Key::Named(NamedKey::ArrowRight) if self.axis_has_horizontal() => (LINE_STEP, 0.0),
+            Key::Named(NamedKey::ArrowLeft) if self.axis_has_horizontal() => (-LINE_STEP, 0.0),
             _ => return false,
+        };
+        self.scroll_by(dx, dy);
+        // A key walks the content's detents one at a time: the line it moves
+        // the view takes it to where the content sits one detent on, and it
+        // settles there.
+        if self.snaps() {
+            self.settle_step(dx, dy, crate::tokens::MotionSource::Keyboard);
         }
         true
     }
@@ -196,6 +199,15 @@ impl Scrollable {
                             now,
                         );
                         self.scroll_dirty = true;
+                        return true;
+                    }
+                    // Content that offers detents settles on the one the
+                    // release heads for, carrying the gesture's speed into it.
+                    if self.snaps() {
+                        self.settle_snap(
+                            release.unwrap_or_default(),
+                            crate::tokens::MotionSource::Gesture,
+                        );
                         return true;
                     }
                     return match release {
@@ -243,8 +255,14 @@ impl Scrollable {
         }
         let before = (self.offset_x, self.offset_y);
         self.scroll_by(dx, dy);
-        self.offset_x.to_bits() != before.0.to_bits()
-            || self.offset_y.to_bits() != before.1.to_bits()
+        let moved = self.offset_x.to_bits() != before.0.to_bits()
+            || self.offset_y.to_bits() != before.1.to_bits();
+        // A notch steps to the detent it heads for, so a wheel walks content
+        // that snaps one detent at a time.
+        if moved && self.snaps() {
+            self.settle_step(dx, dy, crate::tokens::MotionSource::Pointer);
+        }
+        moved
     }
 
     /// Fingers moved the content by `dx`, `dy`: one to one inside, and past

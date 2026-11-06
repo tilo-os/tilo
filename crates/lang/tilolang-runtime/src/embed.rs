@@ -23,7 +23,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use serde_json::Value as Json;
-use tilolang::{BlockKind, CompiledBlock, Diagnostic, Span};
+use tilolang::{BlockKind, CompiledBlock, Diagnostic, INVOCATION_TYPE, Span};
 
 use crate::core::Core;
 use crate::error::RuntimeError;
@@ -80,6 +80,10 @@ fn node(kind: &str, key: String, props: &[(&str, Value)], children: Vec<UiNode>)
 
 /// The kind of a text: the toolkit's `Text` component.
 const TEXT: &str = "ui.Text";
+
+/// `proposals(of)`: the proposals waiting on a resource, each as the card a person accepts or
+/// dismisses it with.
+pub(crate) const PROPOSALS: &str = "proposals";
 
 fn text_node(key: String, value: &str) -> UiNode {
     node(TEXT, key, &[("value", Value::text(value))], Vec::new())
@@ -248,6 +252,7 @@ impl Core {
                 let target = ViewTarget {
                     module: block.pkg.hash.clone(),
                     export: "b_main".to_owned(),
+                    view: String::new(),
                     params: Vec::new(),
                 };
                 let nested = self.render_at(&target, &[], cx.offer.deeper(), Some(&identity))?;
@@ -384,6 +389,93 @@ impl Core {
             }
         }
         Ok(node("invocation", card_key, &props, children))
+    }
+
+    /// The proposals waiting on `of`: invocation records a person proposed that nobody has
+    /// accepted or dismissed yet, with what each says, in the order the store keeps what links
+    /// to `of`. Reading them reads what links to `of`, so a view that draws them runs again when
+    /// one arrives.
+    pub(crate) fn proposals_of(
+        &self,
+        of: &ResourceRef,
+    ) -> Vec<(ResourceRef, crate::InvocationRecord)> {
+        self.read_links_of(of);
+        let Ok(links) = self.store.borrow().linked(of) else {
+            return Vec::new();
+        };
+        links
+            .into_iter()
+            .map(|link| link.of)
+            .filter(|at| at.ty == INVOCATION_TYPE)
+            .filter_map(|at| match self.read_invocation(&at) {
+                Ok(rec) if rec.proposed && rec.state == "suggested" => Some((at, rec)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The proposals waiting on `of`, as the resources that hold them.
+    pub(crate) fn pending_proposals(&self, of: &ResourceRef) -> Vec<ResourceRef> {
+        self.proposals_of(of)
+            .into_iter()
+            .map(|(inv, _)| inv)
+            .collect()
+    }
+
+    /// A proposal's card: the invocation card the host draws for a waiting action, and what the
+    /// action would do in words, when it declares no view of it.
+    fn proposal_card(
+        &self,
+        cx: &Build<'_>,
+        key: &str,
+        inv: &ResourceRef,
+        acc: &mut Acc,
+    ) -> Result<UiNode, RuntimeError> {
+        let rec = self.read_invocation(inv)?;
+        let mut card = self.invocation_card(cx, key, Some(inv), acc)?;
+        card.props.insert("proposed".to_owned(), Value::Bool(true));
+        let args = serde_json::from_str::<serde_json::Value>(&rec.args)
+            .ok()
+            .and_then(|json| from_json(&json).ok())
+            .and_then(|value| match value {
+                Value::List(args) => Some(args),
+                _ => None,
+            })
+            .unwrap_or_default();
+        // When the action declares no view of what it would do, its arguments say it.
+        if self.action_facts(&rec.action, &args).2.is_none() {
+            for (i, line) in self.proposal_says(&rec.action, &args).iter().enumerate() {
+                card.children
+                    .push(text_node(format!("{key}/says{i}"), line));
+            }
+        }
+        let name = self.name_of(&rec.author);
+        let source = format!("suggested by {name}");
+        let said = self.words.borrow().word(
+            "tilolang-suggested-by",
+            &[("name".to_owned(), name)],
+            &source,
+        );
+        card.children.push(text_node(format!("{key}/by"), &said));
+        Ok(card)
+    }
+
+    /// `proposals(of)` as the fragment of one card per proposal waiting on the resource.
+    pub(crate) fn resolve_proposals(&self, cx: &Build<'_>, node: &mut UiNode, acc: &mut Acc) {
+        let Some(Value::Ref(of)) = node.props.get("of").cloned() else {
+            node.kind = String::from("fragment");
+            node.children = Vec::new();
+            return;
+        };
+        let mut cards = Vec::new();
+        for (i, inv) in self.pending_proposals(&of.target).iter().enumerate() {
+            let key = format!("{}/{i}", node.key);
+            if let Ok(card) = self.proposal_card(cx, &key, inv, acc) {
+                cards.push(card);
+            }
+        }
+        node.kind = String::from("fragment");
+        node.children = cards;
     }
 
     /// The app and name of an action or flow by id, and the proposal view with the arguments

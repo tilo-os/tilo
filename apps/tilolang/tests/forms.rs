@@ -1,8 +1,7 @@
 //! An action waiting for its arguments opens its form (forms-and-diagrams.md §1), in Tasks as a
-//! person uses it: a task's menu offers "Snooze until…" and "Assign to…", whose parameters
-//! nobody gave and that have no default; choosing one shows its form over the window, the
-//! submit stays disabled until the day reads, what was typed survives closing the form, and
-//! submit runs the action once.
+//! person uses it: a task's menu offers "Pick date…" and "Assign…", whose parameters nobody
+//! gave; choosing one shows its form over the window, a day that does not read keeps the submit
+//! disabled, what was typed survives closing the form, and submit runs the action once.
 //!
 //! With `TILO_FORMS_SHOTS=<dir>` the test `shots` writes the open form at desktop and phone
 //! sizes, light and dark.
@@ -38,6 +37,27 @@ fn settle(app: &mut TestApp<TlApp>) {
             .settle_for_capture(ui::time::Duration::from_millis(300));
         app.harness().relayout();
     }
+}
+
+/// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
+/// Today, and the inbox holds only what no day and no project sorts.
+fn open_place(app: &mut TestApp<TlApp>, label: &str) {
+    let bounds = accessible(app)
+        .into_iter()
+        .find(|node| {
+            node.role == ui::a11y::Role::TreeItem
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with(label))
+        })
+        .and_then(|node| node.bounds)
+        .unwrap_or_else(|| panic!("the sidebar offers {label}: {:?}", all_names(app)));
+    app.harness().click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    settle(app);
 }
 
 fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
@@ -158,6 +178,21 @@ fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
     click(app, at.center());
 }
 
+/// Open the menu of the task `title` and choose the command `path` names: a run of commands
+/// of one kind (`Due`) stands as one row that opens them, so the command inside it is reached
+/// through its run's row.
+fn choose_command(app: &mut TestApp<TlApp>, title: &str, path: &[&str]) {
+    let row = bounds_of(app, title, None)
+        .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
+    right_click(app, row.center());
+    for item in path {
+        let items = menu_items(app);
+        let at = bounds_of(app, item, Some(ui::a11y::Role::MenuItem))
+            .unwrap_or_else(|| panic!("the menu offers {item}: {items:?}"));
+        click(app, at.center());
+    }
+}
+
 /// The form's field named `label`, which has the keyboard: a form opens on its first field.
 fn field(app: &mut TestApp<TlApp>, label: &str) {
     let focused = accessible(app).into_iter().any(|node| {
@@ -176,37 +211,47 @@ fn field(app: &mut TestApp<TlApp>, label: &str) {
 fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
+    open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     right_click(&mut app, row.center());
     let items = menu_items(&mut app);
-    for item in ["Snooze until…", "Assign to…"] {
+    // The dates are one run of commands of a kind, standing as one row that opens them; the
+    // assignment asks for a person and stands on its own.
+    for item in ["Due", "Assign…"] {
         assert!(items.iter().any(|shown| shown == item), "{item}: {items:?}");
     }
 }
 
 #[test]
-fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
+fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
-    choose(&mut app, "Book a haircut", "Snooze until…");
+    open_place(&mut app, "Today");
+    choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
     assert!(
-        reads(&mut app, "Snooze until…"),
+        reads(&mut app, "Pick date…"),
         "the form is titled by its action: {:?}",
         all_names(&mut app)
     );
-    let Some(((), enabled)) = submit(&mut app, "Snooze until") else {
+    let Some(((), enabled)) = submit(&mut app, "Pick date") else {
         let nodes: Vec<String> = accessible(&mut app)
             .into_iter()
             .map(|node| format!("{:?} {:?} {:?}", node.role, node.name, node.state.disabled))
             .collect();
         panic!("the form has its submit: {nodes:#?}");
     };
-    assert!(!enabled, "nothing typed yet: submit waits");
+    // A day may be none, which clears the task's: an empty form submits, and only a day that
+    // does not read waits.
+    assert!(
+        enabled,
+        "an empty day submits as none: {:?}",
+        all_names(&mut app)
+    );
 
-    field(&mut app, "Until");
+    field(&mut app, "Due");
     app.harness().type_text("not a day");
     settle(&mut app);
-    let ((), enabled) = submit(&mut app, "Snooze until").unwrap();
+    let ((), enabled) = submit(&mut app, "Pick date").unwrap();
     assert!(
         !enabled,
         "what does not read as a day keeps submit disabled"
@@ -215,16 +260,11 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
 
     // Closing the form keeps what was typed for next time.
     escape(&mut app);
-    assert!(
-        submit(&mut app, "Snooze until").is_none(),
-        "the form closed"
-    );
-    choose(&mut app, "Book a haircut", "Snooze until…");
+    assert!(submit(&mut app, "Pick date").is_none(), "the form closed");
+    choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
     let shown = accessible(&mut app)
         .into_iter()
-        .find(|node| {
-            node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some("Until")
-        })
+        .find(|node| node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some("Due"))
         .and_then(|node| node.value);
     assert_eq!(
         shown.as_deref(),
@@ -232,7 +272,7 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
         "the lens kept the typing"
     );
 
-    field(&mut app, "Until");
+    field(&mut app, "Due");
     // Its caret is at the end of what it kept.
     app.harness().key("End");
     for _ in "not a day".chars() {
@@ -240,40 +280,42 @@ fn snoozing_a_task_asks_until_when_and_runs_once_the_day_reads() {
     }
     app.harness().type_text("2026-07-20");
     settle(&mut app);
-    let ((), enabled) = submit(&mut app, "Snooze until").unwrap();
+    let ((), enabled) = submit(&mut app, "Pick date").unwrap();
     assert!(enabled, "the day reads: {:?}", all_names(&mut app));
     // Enter is the form's submit.
     app.harness().key("Enter");
     settle(&mut app);
     assert!(
-        submit(&mut app, "Snooze until").is_none(),
+        submit(&mut app, "Pick date").is_none(),
         "submit closed the form"
     );
     assert!(
         reads(&mut app, "Jul 20"),
-        "the task is due on the day it was snoozed until: {:?}",
+        "the task is due on the day it was picked: {:?}",
         all_names(&mut app)
     );
 }
 
 #[test]
-fn a_button_on_the_task_page_asks_whom_to_assign_it_to() {
+fn the_task_pages_assignee_opens_the_people_to_pick_from() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
+    open_place(&mut app, "Today");
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     click(&mut app, row.center());
-    let button = bounds_of(&mut app, "Assign to…", Some(ui::a11y::Role::Button))
-        .unwrap_or_else(|| panic!("the page offers Assign to…: {:?}", all_names(&mut app)));
-    click(&mut app, button.center());
+    // The page keeps one person field for who does the task, showing nobody yet.
+    let chip = bounds_of(&mut app, "No one", Some(ui::a11y::Role::Button)).unwrap_or_else(|| {
+        panic!(
+            "the page offers who does the task: {:?}",
+            all_names(&mut app)
+        )
+    });
+    click(&mut app, chip.center());
     let names = all_names(&mut app);
     assert!(
-        accessible(&mut app)
-            .iter()
-            .any(|node| node.role == ui::a11y::Role::Dialog
-                && node.name.as_deref() == Some("Assign to…")),
-        "the button opened the action's form: {names:?}"
+        names.iter().any(|name| name == "Me"),
+        "the field opened the people to pick from: {names:?}"
     );
-    assert!(names.iter().any(|name| name == "To"), "{names:?}");
 }
 
 #[test]
@@ -294,14 +336,14 @@ fn shots() {
                 // The inbox's list is the window on a phone; its rows are the tasks.
                 settle(&mut app);
             }
-            choose(&mut app, "Book a haircut", "Snooze until…");
+            choose_command(&mut app, "Book a haircut", &["Due", "Pick date…"]);
             app.harness().render_png(&name("snooze"));
-            field(&mut app, "Until");
+            field(&mut app, "Due");
             app.harness().type_text("next friday");
             settle(&mut app);
             app.harness().render_png(&name("snooze-typed"));
             escape(&mut app);
-            choose(&mut app, "Book a haircut", "Assign to…");
+            choose(&mut app, "Book a haircut", "Assign…");
             app.harness().render_png(&name("assign"));
         }
     }

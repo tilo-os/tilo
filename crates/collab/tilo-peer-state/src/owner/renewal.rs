@@ -14,9 +14,7 @@ use web_time::SystemTime;
 /// taken in: the device's custody and the workspace's governance.
 #[must_use]
 pub fn renews(renewed: &DeviceCert, held: &DeviceCert) -> bool {
-    renewed.device_public_key == held.device_public_key
-        && renewed.user_public_key == held.user_public_key
-        && renewed.issued_at_ns > held.issued_at_ns
+    renewed.renews(held)
 }
 
 impl NativeWorkspaceOwner {

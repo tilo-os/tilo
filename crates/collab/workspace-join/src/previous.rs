@@ -27,7 +27,7 @@ const JOIN_VERSION: u32 = 1;
 const DELEGATION_DOMAIN: &[u8] = b"tilo/workspace-delegation/v1\0";
 
 /// Whether `version` is an invitation this module decodes.
-pub(super) const fn is_invitation_version(version: u32) -> bool {
+pub const fn is_invitation_version(version: u32) -> bool {
     matches!(
         version,
         INVITATION_VERSION | INVITATION_WITH_INVITER_VERSION
@@ -164,18 +164,36 @@ impl Grant {
     }
 }
 
+/// A grant this module's layout wrote, read on its own: the copy a host keeps
+/// beside the invitation it signed, which a governor's join ledger holds once
+/// per invitation issued. It is the same grant [`decode_invitation`] reads out
+/// of the signed bytes, so this layout is the one the invitation's version
+/// names.
+///
+/// Answers the grant and the bytes it took, so a reader of a record that
+/// keeps more after it knows where the grant ends.
+///
+/// # Errors
+///
+/// The bytes are not a grant of this layout.
+pub fn take_stored_grant(bytes: &[u8]) -> Result<(InviteGrant, usize), String> {
+    let (grant, tail): (Grant, &[u8]) = postcard::take_from_bytes(bytes)
+        .map_err(|_| "invalid stored invitation grant".to_string())?;
+    Ok((grant.into_current(), bytes.len() - tail.len()))
+}
+
 /// A signed invitation of this layout, checked.
-pub(super) struct Decoded {
-    pub(super) grant: InviteGrant,
+pub struct Decoded {
+    pub grant: InviteGrant,
     /// The device the workspace's host was when this was signed: the issuer
     /// itself, or the authority that delegated the invitation to it.
-    pub(super) authority: DeviceCert,
-    pub(super) inviter: Option<Inviter>,
+    pub authority: DeviceCert,
+    pub inviter: Option<Inviter>,
 }
 
 /// Decode and check the signature of a signed invitation in the layout its
 /// `version` names.
-pub(super) fn decode_invitation(bytes: &[u8], version: u32) -> Result<Decoded, String> {
+pub fn decode_invitation(bytes: &[u8], version: u32) -> Result<Decoded, String> {
     let malformed = |_| "invalid signed invitation".to_string();
     let (grant, inviter, signature) = match version {
         INVITATION_VERSION => {
@@ -363,7 +381,7 @@ impl VerifiedJoin {
 /// An invitation of this module's layout, signed: what a build wrote before
 /// the version bump, for replaying the record it left.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) fn encode_invitation(
+pub fn encode_invitation(
     grant: &InviteGrant,
     inviter: Option<&Inviter>,
     authority: &DeviceCert,

@@ -8,8 +8,8 @@
 //! [`RetentionAuthority`] to a store, and the store steps the [`Selection`],
 //! [`SelectedRead`] and [`tail_cache::FastTail`] that binding hands out.
 use crate::retained_proof::{
-    CoverageDecision, FloorSafety, OrderedTailReadiness, ProofError, RetentionAuthority, RoomInput,
-    VerifiedRoom, VerifiedSnapshot, verify_room, verify_snapshot,
+    CoverageDecision, FloorSafety, OrderedTailReadiness, ProofError, RetentionAuthority,
+    VerifiedSnapshot, VerifiedWorkspace, WorkspaceInput, verify_snapshot, verify_workspace,
 };
 use neighbour_wire::NeighbourMsg;
 use std::{
@@ -107,9 +107,9 @@ pub(crate) fn authority(store: &dyn ShellStore) -> Option<&RetentionAuthority> {
     binding::bound_authority(store.shell_binding()?)
 }
 
-/// A retained lineage supplies a negative channel hint only. Positive room
+/// A retained lineage supplies a negative channel hint only. Positive workspace
 /// and application proofs still decode and verify the actual frame, and Check
-/// visits every input even when the hint excludes it from Rooms or Pair.
+/// visits every input even when the hint excludes it from Workspaces or Pair.
 fn retained_channel_hint(meta: &Meta) -> Option<[u8; 32]> {
     let [prefix, lineage, _, _] = meta.key.as_slice() else {
         return None;
@@ -135,8 +135,8 @@ pub(crate) fn frame(path: &Path, workspace: u64) -> Result<Option<Frame>, StoreE
         return Ok(None);
     };
     let (channel, body, kind) = match payload {
-        CoeditPayload::Checkpoint { channel, body } => (channel, body, RoomInput::Checkpoint),
-        CoeditPayload::RetainedDelta { channel, body } => (channel, body, RoomInput::Delta),
+        CoeditPayload::Checkpoint { channel, body } => (channel, body, WorkspaceInput::Checkpoint),
+        CoeditPayload::RetainedDelta { channel, body } => (channel, body, WorkspaceInput::Delta),
     };
     Ok(Some(Frame {
         source,
@@ -149,14 +149,14 @@ pub(crate) struct Frame {
     pub source: [u8; 32],
     pub channel: [u8; 32],
     pub body: Vec<u8>,
-    pub kind: RoomInput,
+    pub kind: WorkspaceInput,
 }
 impl Frame {
     fn identity(&self) -> [u8; 32] {
         input_identity(
             self.source,
             self.channel,
-            self.kind == RoomInput::Checkpoint,
+            self.kind == WorkspaceInput::Checkpoint,
             &self.body,
         )
     }
@@ -176,7 +176,7 @@ impl Frame {
         rest.is_empty()
             .then(|| (route_key(&app_id, &record_id), envelope.seq))
     }
-    fn room(&self) -> bool {
+    fn workspace(&self) -> bool {
         self.channel == *blake3::hash(b"shell-tree").as_bytes()
     }
 }
@@ -190,17 +190,17 @@ struct Route {
 }
 #[derive(Default, Clone)]
 struct Basis {
-    room: Option<VerifiedRoom>,
+    workspace: Option<VerifiedWorkspace>,
     routes: BTreeMap<String, Route>,
 }
 impl Basis {
     fn complete(&self) -> bool {
-        self.room.is_some() && self.routes.values().all(|r| r.file.is_some())
+        self.workspace.is_some() && self.routes.values().all(|r| r.file.is_some())
     }
-    fn set_room(&mut self, room: VerifiedRoom) -> Result<(), StoreError> {
-        self.routes = room
+    fn set_workspace(&mut self, workspace: VerifiedWorkspace) -> Result<(), StoreError> {
+        self.routes = workspace
             .coverages()
-            .map_err(|_| invalid("invalid verified room coverage"))?
+            .map_err(|_| invalid("invalid verified workspace coverage"))?
             .into_iter()
             .map(|(k, coverage)| {
                 (
@@ -213,7 +213,7 @@ impl Basis {
                 )
             })
             .collect();
-        self.room = Some(room);
+        self.workspace = Some(workspace);
         Ok(())
     }
 }
@@ -223,14 +223,14 @@ enum Phase {
     Old,
     Scan,
     Sort,
-    Rooms,
+    Workspaces,
     Pair,
     Check,
     Historical,
     SortExtrasInput,
     SortExtras,
     ValidateExtras,
-    StageRoom,
+    StageWorkspace,
     StageApps,
     StageExtras,
     StageRetire,
@@ -238,7 +238,7 @@ enum Phase {
     Gc,
     Done,
 }
-/// History metadata spills to disk. At most the current route map, a constant number of room
+/// History metadata spills to disk. At most the current route map, a constant number of workspace
 /// documents, one successor and one prior frame are resident; no history cache.
 #[expect(
     clippy::struct_excessive_bools,
@@ -280,11 +280,11 @@ pub struct Selection {
     wanted: Vec<String>,
     seeded: BTreeMap<String, tail_cache::RouteTail>,
     cache_epoch: u64,
-    room_list: File,
+    workspace_list: File,
     extras: File,
     retire: File,
-    historical: Option<(Meta, Frame, File, Option<VerifiedRoom>)>,
-    prospective: Option<VerifiedRoom>,
+    historical: Option<(Meta, Frame, File, Option<VerifiedWorkspace>)>,
+    prospective: Option<VerifiedWorkspace>,
     fallback: bool,
     // A serial verified prefix may wait durably for its missing checkpoint pairs.
     // Rejected cuts and incomplete projected batches still preserve originals.
@@ -415,7 +415,7 @@ impl Selection {
             wanted,
             seeded: BTreeMap::new(),
             cache_epoch,
-            room_list: File::create(scratch.join("room.manifest"))?,
+            workspace_list: File::create(scratch.join("room.manifest"))?,
             extras: File::create(scratch.join("extras.manifest"))?,
             retire: File::create(scratch.join("retire.manifest"))?,
             historical: None,
@@ -610,8 +610,8 @@ impl Selection {
                 .read(meta)?
                 .ok_or_else(|| invalid("invalid live prerequisite"))?;
             self.note_incoming(&value, IncomingDisposition::SelectedLive);
-            self.old.room.as_ref().is_none_or(|room| {
-                room.covers_frame(value.source, value.channel, &value.body)
+            self.old.workspace.as_ref().is_none_or(|workspace| {
+                workspace.covers_frame(value.source, value.channel, &value.body)
                     != CoverageDecision::Covered
             })
         } else if role == "app" {
@@ -626,7 +626,7 @@ impl Selection {
             self.old.routes.get(&key).map(|r| &r.coverage)
                 != self.basis.routes.get(&key).map(|r| &r.coverage)
         } else {
-            role == "tail" && self.old.room.is_none()
+            role == "tail" && self.old.workspace.is_none()
         };
         if live {
             write_meta(&mut self.live_output, &selected)?;
@@ -637,7 +637,7 @@ impl Selection {
         let identity = input_identity(
             value.source,
             value.channel,
-            value.kind == RoomInput::Checkpoint,
+            value.kind == WorkspaceInput::Checkpoint,
             &value.body,
         );
         for (incoming, slot) in self
@@ -672,7 +672,7 @@ impl Selection {
                 == &input_identity(
                     value.source,
                     value.channel,
-                    value.kind == RoomInput::Checkpoint,
+                    value.kind == WorkspaceInput::Checkpoint,
                     &value.body,
                 )
         }) {
@@ -687,7 +687,7 @@ impl Selection {
         let waiting_pair =
             self.staging_incomplete_pair && !self.old_extras.contains(&value.identity());
         if self.fallback && !waiting_pair {
-            if value.kind == RoomInput::Checkpoint
+            if value.kind == WorkspaceInput::Checkpoint
                 && !self.incoming.contains(&input_identity(
                     value.source,
                     value.channel,
@@ -747,7 +747,10 @@ impl Selection {
             .read(&meta)?
             .ok_or_else(|| invalid("selected route vanished"))?;
         self.candidate_cache = verify_snapshot(
-            self.basis.room.as_ref().invariant("room missing")?,
+            self.basis
+                .workspace
+                .as_ref()
+                .invariant("workspace missing")?,
             value.source,
             value.channel,
             &value.body,
@@ -873,10 +876,10 @@ impl Selection {
                 if let Step::Done(path) = self.sorter.step(limit)? {
                     self.inventory = Some(path);
                     self.ordinal = 0;
-                    self.restart(Phase::Rooms)?;
+                    self.restart(Phase::Workspaces)?;
                 }
             }
-            Phase::Rooms => {
+            Phase::Workspaces => {
                 if let Some(meta) = read_meta(self.input.as_mut().invariant("input missing")?)? {
                     if meta.key.get(2).is_some_and(|role| role == "app")
                         || retained_channel_hint(&meta).is_some_and(|channel| {
@@ -886,28 +889,28 @@ impl Selection {
                         return Ok(Step::More);
                     }
                     if let Some(value) = self.read(&meta)?
-                        && value.room()
+                        && value.workspace()
                     {
-                        if self.basis.room.as_ref().is_some_and(|r| {
+                        if self.basis.workspace.as_ref().is_some_and(|r| {
                             r.covers_frame(value.source, value.channel, &value.body)
                                 == CoverageDecision::Covered
                         }) {
                             return Ok(Step::More);
                         }
-                        if let Ok(room) = verify_room(
+                        if let Ok(workspace) = verify_workspace(
                             &self.authority,
                             value.source,
                             value.channel,
                             &value.body,
                             value.kind,
-                            self.basis.room.as_ref(),
+                            self.basis.workspace.as_ref(),
                         ) {
-                            if value.kind == RoomInput::Checkpoint {
-                                self.room_list.set_len(0)?;
-                                self.room_list.rewind()?;
+                            if value.kind == WorkspaceInput::Checkpoint {
+                                self.workspace_list.set_len(0)?;
+                                self.workspace_list.rewind()?;
                             }
-                            write_meta(&mut self.room_list, &meta)?;
-                            self.basis.set_room(room)?;
+                            write_meta(&mut self.workspace_list, &meta)?;
+                            self.basis.set_workspace(workspace)?;
                         }
                     }
                 } else {
@@ -929,7 +932,7 @@ impl Selection {
                         return Ok(Step::More);
                     }
                     if let Some(value) = self.read(&meta)? {
-                        // Rooms has finished. A different route/sequence cannot
+                        // Workspaces has finished. A different route/sequence cannot
                         // match this basis's exact receipt; Check still sees the
                         // complete input and retains its existing proof rules.
                         if !value.route().is_some_and(|(key, sequence)| {
@@ -940,14 +943,14 @@ impl Selection {
                         }) {
                             return Ok(Step::More);
                         }
-                        if let Some(room) = &self.basis.room {
+                        if let Some(workspace) = &self.basis.workspace {
                             #[cfg(test)]
                             {
                                 self.snapshot_verifications.0 =
                                     self.snapshot_verifications.0.saturating_add(1);
                             }
                             if let Ok(proof) =
-                                verify_snapshot(room, value.source, value.channel, &value.body)
+                                verify_snapshot(workspace, value.source, value.channel, &value.body)
                             {
                                 let identity = value.identity();
                                 let key =
@@ -978,7 +981,7 @@ impl Selection {
                         }
                     }
                 } else {
-                    self.prospective = self.basis.room.clone();
+                    self.prospective = self.basis.workspace.clone();
                     if !self.basis.complete() {
                         self.basis = self.old.clone();
                         self.fallback = true;
@@ -1008,8 +1011,8 @@ impl Selection {
                         return Ok(Step::More);
                     }
                     self.changed = !self.fallback
-                        && self.basis.room.as_ref().map(VerifiedRoom::heads)
-                            != self.old.room.as_ref().map(VerifiedRoom::heads);
+                        && self.basis.workspace.as_ref().map(VerifiedWorkspace::heads)
+                            != self.old.workspace.as_ref().map(VerifiedWorkspace::heads);
                     self.input = Some(File::open(self.scratch.join("extras.manifest"))?);
                     let sort = if self.fallback {
                         "extras-sort-fallback"
@@ -1025,19 +1028,19 @@ impl Selection {
                     self.extra(&meta)?;
                     return Ok(Step::More);
                 };
-                if value.room() {
-                    if self.basis.room.as_ref().is_some_and(|r| {
+                if value.workspace() {
+                    if self.basis.workspace.as_ref().is_some_and(|r| {
                         r.covers_frame(value.source, value.channel, &value.body)
                             == CoverageDecision::Covered
                     }) {
                         self.covered(&meta, &value)?;
-                    } else if verify_room(
+                    } else if verify_workspace(
                         &self.authority,
                         value.source,
                         value.channel,
                         &value.body,
                         value.kind,
-                        self.basis.room.as_ref(),
+                        self.basis.workspace.as_ref(),
                     )
                     .is_ok()
                     {
@@ -1067,7 +1070,7 @@ impl Selection {
                 // fallback receipt can only make it Unpaired. Preserve the
                 // Original exactly as the full check below would do.
                 if self.fallback
-                    && self.basis.room.is_some()
+                    && self.basis.workspace.is_some()
                     && self
                         .basis
                         .routes
@@ -1083,13 +1086,12 @@ impl Selection {
                     return Ok(Step::More);
                 }
                 #[cfg(test)]
-                if self.basis.room.is_some() {
+                if self.basis.workspace.is_some() {
                     self.snapshot_verifications.1 = self.snapshot_verifications.1.saturating_add(1);
                 }
-                let snapshot_result =
-                    self.basis.room.as_ref().map(|room| {
-                        verify_snapshot(room, value.source, value.channel, &value.body)
-                    });
+                let snapshot_result = self.basis.workspace.as_ref().map(|workspace| {
+                    verify_snapshot(workspace, value.source, value.channel, &value.body)
+                });
                 if matches!(snapshot_result, Some(Ok(_))) {
                     self.covered(&meta, &value)?;
                     return Ok(Step::More);
@@ -1113,12 +1115,12 @@ impl Selection {
                     self.phase = Phase::Historical;
                     return Ok(Step::More);
                 }
-                if self.basis.room.is_none() {
-                    // No usable pair yet. A room proof can still establish valid
+                if self.basis.workspace.is_none() {
+                    // No usable pair yet. A workspace proof can still establish valid
                     // staging; without one this remains an opaque original.
-                    if let Some(room) = &self.prospective
+                    if let Some(workspace) = &self.prospective
                         && !matches!(
-                            verify_snapshot(room, value.source, value.channel, &value.body),
+                            verify_snapshot(workspace, value.source, value.channel, &value.body),
                             Err(ProofError::Unknown)
                         )
                     {
@@ -1139,7 +1141,7 @@ impl Selection {
                         return Ok(Step::More);
                     }
                     if decision.floor != FloorSafety::Unknown
-                        && (self.fallback || self.old.room.is_none())
+                        && (self.fallback || self.old.workspace.is_none())
                     {
                         return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
@@ -1153,14 +1155,14 @@ impl Selection {
                 let mut covered = false;
                 if let Some(candidate) = read_meta(&mut file)? {
                     if let Some(value) = self.read(&candidate)?
-                        && value.room()
+                        && value.workspace()
                     {
-                        let previous = if value.kind == RoomInput::Checkpoint {
+                        let previous = if value.kind == WorkspaceInput::Checkpoint {
                             None
                         } else {
                             prior.as_ref()
                         };
-                        if let Ok(room) = verify_room(
+                        if let Ok(workspace) = verify_workspace(
                             &self.authority,
                             value.source,
                             value.channel,
@@ -1168,15 +1170,17 @@ impl Selection {
                             value.kind,
                             previous,
                         ) {
-                            if let Ok(old) =
-                                verify_snapshot(&room, target.source, target.channel, &target.body)
-                                && let Some(next) = self.candidate_snapshot(
-                                    &target.route().invariant("route missing")?.0,
-                                )?
+                            if let Ok(old) = verify_snapshot(
+                                &workspace,
+                                target.source,
+                                target.channel,
+                                &target.body,
+                            ) && let Some(next) = self
+                                .candidate_snapshot(&target.route().invariant("route missing")?.0)?
                             {
                                 covered = next.covers_snapshot(&old);
                             }
-                            prior = Some(room);
+                            prior = Some(workspace);
                         }
                     }
                     if covered {
@@ -1247,7 +1251,7 @@ impl Selection {
                     } else {
                         Some(File::open(self.scratch.join("room.manifest"))?)
                     };
-                    self.phase = Phase::StageRoom;
+                    self.phase = Phase::StageWorkspace;
                     return Ok(Step::More);
                 };
                 if meta.key.first().is_none_or(|value| value != "0") {
@@ -1289,7 +1293,7 @@ impl Selection {
                 if ready {
                     self.tail_last = Some((value.source, seq));
                 } else {
-                    if self.fallback || self.old.room.is_none() {
+                    if self.fallback || self.old.workspace.is_none() {
                         return Ok(Step::Done(SelectionOutcome::UnresolvedTailDependencies));
                     }
                     self.rejected_complete_cut = true;
@@ -1310,7 +1314,7 @@ impl Selection {
                     self.restart(Phase::Check)?;
                 }
             }
-            Phase::StageRoom => {
+            Phase::StageWorkspace => {
                 if let Some(input) = &mut self.input
                     && let Some(meta) = read_meta(input)?
                 {

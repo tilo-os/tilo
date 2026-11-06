@@ -16,7 +16,9 @@ sources of `tilo-test-env`, and `#[cfg(test)]`/`#[test]` items elsewhere), every
 `.status()` on a `Command`: a call chained onto `Command::new` or onto a
 builder method only a command has (`.arg`, `.args`, `.env`, `.stdin`, ...),
 or on a variable bound to or typed as a `Command`, or on a call of a
-function that returns one. There is no baseline and no opt-out.
+function that returns one. A payload under a `fixtures` directory is not test
+code: the test starts it as its own process, so it holds no test's scope.
+There is no baseline and no opt-out.
 """
 from __future__ import annotations
 
@@ -156,6 +158,12 @@ def is_command(expression: str, code: str, commands: set[str]) -> bool:
 
 
 def test_code(relative: Path, code: str) -> str:
+    if any(part == "fixtures" for part in relative.parts[:-1]):
+        # A fixture is a payload a test writes, builds and starts as a process
+        # of its own — often with a bare `rustc`, so it cannot link
+        # `tilo-test-env`: its children inherit the payload's environment, which
+        # the test that starts it sets, never a test thread's scope.
+        return ""
     if rust_source.is_test_file(relative) or any(
         support in relative.parents for support in SUPPORT
     ):

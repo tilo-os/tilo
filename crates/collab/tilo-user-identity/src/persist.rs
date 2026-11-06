@@ -48,7 +48,8 @@ use zeroize::Zeroizing;
 
 use crate::CanonicalError;
 use crate::cert::{
-    DeviceCapabilities, DeviceCert, device_cert_signing_digest, verify_device_cert_at,
+    DeviceCapabilities, DeviceCert, device_cert_signing_digest, verify_device_cert,
+    verify_device_cert_at,
 };
 
 const MAX_DEVICE_CERT_BYTES: usize = 64 * 1024;
@@ -1224,18 +1225,20 @@ pub fn install_device_cert(
     Ok(())
 }
 
-/// Whether `paths` already holds a device enrollment and no human root: one
-/// made by a setup machine, or a nearby pairing approved from another device.
+/// Whether `paths` holds a device enrollment and no human root, whether or
+/// not its certificate is inside its validity right now: a certificate
+/// that ran out is still this device's, and is the one a renewal replaces.
 ///
-/// Missing files are `Ok(false)`, so ordinary first boot still creates an
-/// identity. Present but inconsistent or unreadable files are an error: first
-/// boot must not replace them with a new person.
+/// This is [`joined_device_is_ready`] without the clock's verdict, for a
+/// caller that must renew a lapsed certificate before asking whether the
+/// device is usable now. Every other check — the keys, the certificate's
+/// signature and that it names this device's key — is the same.
 ///
 /// # Errors
 ///
-/// Returns [`PersistError`] when a present identity file cannot be read or the
-/// certificate does not match its keys.
-pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool, PersistError> {
+/// Returns [`PersistError`] when a present identity file cannot be read, the
+/// device key is not accessible, or the certificate does not match its keys.
+pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistError> {
     if paths.user_privkey.exists() {
         return Ok(false);
     }
@@ -1267,6 +1270,40 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
     if cert.capabilities.can_admit_devices {
         return Ok(false);
     }
+    verify_device_cert(&cert).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("enrolled device certificate did not verify: {error}"),
+        ))
+    })?;
+    if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
+    {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "enrolled device certificate does not match its keys",
+        )));
+    }
+    Ok(true)
+}
+
+/// Whether `paths` already holds a device enrollment and no human root: one
+/// made by a setup machine, or a nearby pairing approved from another device.
+///
+/// Missing files are `Ok(false)`, so ordinary first boot still creates an
+/// identity. Present but inconsistent or unreadable files are an error: first
+/// boot must not replace them with a new person.
+///
+/// # Errors
+///
+/// Returns [`PersistError`] when a present identity file cannot be read, the
+/// certificate is refused for the clock's reading alone (as a
+/// [`crate::CertificateClockError`] carried in the error), or it does not
+/// match its keys.
+pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool, PersistError> {
+    if !joined_device_is_enrolled(paths)? {
+        return Ok(false);
+    }
+    let cert = read_device_cert(&paths.device_cert)?;
     verify_device_cert_at(&cert, now_ns).map_err(|error| {
         // Refused for the clock's reading alone, the certificate still
         // proves the enrolment: say so in a form callers can tell apart.
@@ -1282,13 +1319,6 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
             ),
         )
     })?;
-    if cert.user_public_key != pubkey || cert.device_public_key != device.verifying_key().to_bytes()
-    {
-        return Err(PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "enrolled device certificate does not match its keys",
-        )));
-    }
     Ok(true)
 }
 

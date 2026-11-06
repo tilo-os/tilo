@@ -1301,7 +1301,13 @@ impl InvocationJournal {
             // No receipt is preferable to falsely certifying a completion;
             // recovery uncertainty is never retroactively signed as success.
             record.terminal =
-                crate::action_evidence::mint_terminal(admission.public_receipt(), category).ok();
+                match crate::action_evidence::mint_terminal(admission.public_receipt(), category) {
+                    Ok(terminal) => Some(terminal),
+                    Err(error) => {
+                        tracing::warn!(%error, "the invocation's completion has no signed receipt");
+                        None
+                    }
+                };
         }
         let record = self
             .snapshot

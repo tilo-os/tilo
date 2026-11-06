@@ -26,6 +26,12 @@ tilolang adds one input: **who wrote the code.**
 The compiler computes which actions a piece of code can reach. Granting, keeping and updating
 are decided against that list, shown in plain words, so nobody has to read code to decide.
 
+**Agents may propose.** An agent can `suggest` any action it could name, whether or not it may
+run it: the proposal is recorded on the resource the action is about, as ordinary workspace state
+that everyone who sees the resource sees, with the agent named. It changes nothing until a person
+accepts it; accepting runs the action as that person, with their authority, and the change records
+who proposed it. Dismissing records the refusal and changes nothing.
+
 ## Versions
 
 - Every change records which package version made it.

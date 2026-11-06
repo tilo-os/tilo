@@ -126,6 +126,17 @@ pub fn has_overview(shell: &UiNode) -> bool {
     !slot_children(shell, "overview").is_empty()
 }
 
+/// Whether `shell` offers the switch between the views the thing it shows declares: the tabs
+/// the host puts beside its title.
+#[must_use]
+pub fn offers_switch(shell: &UiNode) -> bool {
+    ["actions", "overview_actions"].into_iter().any(|name| {
+        slot_children(shell, name)
+            .iter()
+            .any(|node| node.kind == kind("ViewTabs"))
+    })
+}
+
 /// `node` without the rows a virtual list holds: the list reads those as it shows them.
 #[must_use]
 pub fn without_rows(node: &UiNode) -> UiNode {
@@ -181,6 +192,31 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     let Some(detail) = detail else {
         return shell;
     };
+    // A window after the root's that shows one thing with views of its own — a list it draws,
+    // or the switch between the views its type declares — moves the window there: the window's
+    // shell is its, with the root's sidebar (the places to go back by), and the root's list and
+    // its controls step aside. The window is built anew where it moves to, so its bar is the one
+    // what it shows offers, never a merge of the two.
+    if has_overview(detail) || offers_switch(detail) {
+        let mut moved = detail.clone();
+        moved = with_slot(moved, "sidebar", slot_children(root, "sidebar").to_vec());
+        for name in ["sidebar_title", "can_go_back", "back", "pane"] {
+            match root.props.get(name) {
+                Some(value) => {
+                    moved.props.insert((*name).to_owned(), value.clone());
+                }
+                None => {
+                    if matches!(name, "sidebar_title") {
+                        moved.props.remove(name);
+                    }
+                }
+            }
+        }
+        if root.events.contains_key(BACK) {
+            moved.events.insert(BACK.to_owned(), Event::default());
+        }
+        return header_rules(moved);
+    }
     for name in HEADER_PROPS {
         match detail.props.get(*name) {
             Some(value) => {
@@ -192,7 +228,7 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
         }
     }
     let mut actions: Vec<UiNode> = slot_children(detail, "actions").to_vec();
-    if overview {
+    if has_overview(&shell) {
         // The overview's header searches for the window.
         actions.retain(|node| node.kind != kind("SearchButton"));
     }
@@ -201,8 +237,8 @@ pub fn compose(root: &UiNode, detail: Option<&UiNode>) -> UiNode {
     with_slot(shell, "content", content)
 }
 
-/// Apply the header rules to the content column of the composed shell: its header repeats
-/// neither an action its content offers nor a title its content edits.
+/// Apply the header rules to the composed shell: its bar repeats neither an action its content
+/// offers nor a title its content edits, whichever slot the bar's controls stand in.
 #[must_use]
 pub fn header_rules(mut shell: UiNode) -> UiNode {
     let content = slot_children(&shell, "content").to_vec();
@@ -227,37 +263,39 @@ pub fn header_rules(mut shell: UiNode) -> UiNode {
                 .and_then(|event| event.toggles.as_ref())
                 .is_some_and(|toggled| bound.contains(toggled))
     };
-    let actions: Vec<UiNode> = slot_children(&shell, "actions")
-        .iter()
-        .filter_map(|node| {
-            if node.kind == kind("Button") {
-                return (!repeated(node, "press")).then(|| node.clone());
-            }
-            if node.kind == kind("MenuButton") {
-                let mut menu = node.clone();
-                menu.children
-                    .retain(|item| item.kind != kind("MenuItem") || !repeated(item, "choose"));
-                // The commands the menu holds, wherever the view's calls and loops put them
-                // (a loop of commands stands in a fragment), and those it is given as actions
-                // of the resource it offers.
-                let commands = crate::adapter::description_of(node).is_some_and(|description| {
-                    crate::adapter::slot_parts(node, description, "items")
-                        .iter()
-                        .any(|item| item.kind == kind("MenuItem") && !repeated(item, "choose"))
-                }) || matches!(
-                    node.props.get("actions"),
-                    Some(Value::List(items)) if !items.is_empty()
-                );
-                return commands.then_some(menu);
-            }
-            Some(node.clone())
-        })
-        .collect();
-    with_slot(shell, "actions", actions)
+    let kept = |node: &UiNode| -> Option<UiNode> {
+        if node.kind == kind("Button") {
+            return (!repeated(node, "press")).then(|| node.clone());
+        }
+        if node.kind == kind("MenuButton") {
+            let mut menu = node.clone();
+            menu.children
+                .retain(|item| item.kind != kind("MenuItem") || !repeated(item, "choose"));
+            // The commands the menu holds, wherever the view's calls and loops put them
+            // (a loop of commands stands in a fragment), and those it is given as actions
+            // of the resource it offers.
+            let commands = crate::adapter::description_of(node).is_some_and(|description| {
+                crate::adapter::slot_parts(node, description, "items")
+                    .iter()
+                    .any(|item| item.kind == kind("MenuItem") && !repeated(item, "choose"))
+            }) || matches!(
+                node.props.get("actions"),
+                Some(Value::List(items)) if !items.is_empty()
+            );
+            return commands.then_some(menu);
+        }
+        Some(node.clone())
+    };
+    for slot in ["actions", "overview_actions"] {
+        let children = slot_children(&shell, slot);
+        let actions: Vec<UiNode> = children.iter().filter_map(&kept).collect();
+        shell = with_slot(shell, slot, actions);
+    }
+    shell
 }
 
-/// What `node`'s content offers: the labels of its buttons that apply an action, the fields
-/// its controls are bound to, and whether it edits a title as its large title.
+/// What `node`'s content offers: the labels of the actions it draws itself, the fields its
+/// controls are bound to, and whether it edits a title as its large title.
 fn offered(
     node: &UiNode,
     shown: &mut Vec<String>,
@@ -267,6 +305,13 @@ fn offered(
     if node.kind == kind("Button")
         && node.events.contains_key("press")
         && let Some(Value::Text(label)) = node.props.get("label")
+    {
+        shown.push(label.clone());
+    }
+    // An empty state's one call to action is drawn by the widget itself, so its label is the
+    // state's, not a button's.
+    if node.kind == kind("EmptyState")
+        && let Some(Value::Text(label)) = node.props.get("action")
     {
         shown.push(label.clone());
     }
@@ -408,6 +453,75 @@ mod tests {
     }
 
     #[test]
+    fn a_window_after_the_roots_with_a_list_of_its_own_moves_the_window_there() {
+        let root = shell(
+            "home",
+            vec![
+                ("overview", vec![node("VirtualList", "inbox", &[])]),
+                (
+                    "overview_actions",
+                    vec![
+                        node("SearchButton", "search", &[]),
+                        button("new-task", "New task"),
+                    ],
+                ),
+                ("content", vec![node("EmptyState", "nothing", &[])]),
+            ],
+            &[
+                ("overview_title", Value::text("Inbox")),
+                ("overview_count", Value::Int(4)),
+            ],
+        );
+        let project = prefixed(
+            &shell(
+                "project",
+                vec![
+                    ("overview", vec![node("VirtualList", "tasks", &[])]),
+                    (
+                        "overview_actions",
+                        vec![
+                            node("SearchButton", "search-p", &[]),
+                            button("add", "New task"),
+                            node("ViewTabs", "views", &[]),
+                        ],
+                    ),
+                    ("content", vec![node("EmptyState", "none", &[])]),
+                ],
+                &[
+                    ("overview_title", Value::text("Launch")),
+                    ("overview_count", Value::Int(2)),
+                    ("content_kind", Value::text("document")),
+                ],
+            ),
+            DETAIL,
+        );
+        let composed = compose(&root, Some(&project));
+        let overview: Vec<&str> = slot_children(&composed, "overview")
+            .iter()
+            .map(|node| node.key.as_str())
+            .collect();
+        assert_eq!(
+            overview,
+            ["detail~tasks"],
+            "the window moved to the project"
+        );
+        assert_eq!(
+            composed.props.get("overview_title"),
+            Some(&Value::text("Launch"))
+        );
+        assert_eq!(composed.props.get("overview_count"), Some(&Value::Int(2)));
+        let actions: Vec<&str> = slot_children(&composed, "overview_actions")
+            .iter()
+            .map(|node| node.key.as_str())
+            .collect();
+        assert_eq!(
+            actions,
+            ["detail~search-p", "detail~add", "detail~views"],
+            "the project's own bar, its switch with it"
+        );
+    }
+
+    #[test]
     fn a_header_repeats_neither_a_button_nor_a_title_its_content_has() {
         let mut title = node("TextInput", "t", &[("title", Value::Int(1))]);
         title.binding = None;
@@ -450,6 +564,64 @@ mod tests {
         assert!(
             !ruled.props.contains_key("title"),
             "the content edits its title"
+        );
+    }
+
+    #[test]
+    fn a_bar_steps_aside_for_the_call_to_action_its_empty_content_offers() {
+        // No channels yet: the empty state is where the first one is made, so the bar does not
+        // offer the same action twice. Once the state goes, the bar keeps it.
+        let empty = |key: &str| node("EmptyState", key, &[("action", Value::text("New channel"))]);
+        let bare = shell(
+            "channels",
+            vec![
+                ("actions", vec![button("new", "New channel")]),
+                ("content", vec![empty("none")]),
+            ],
+            &[],
+        );
+        let ruled = header_rules(bare);
+        assert!(
+            slot_children(&ruled, "actions").is_empty(),
+            "the empty state's own action is the only one"
+        );
+
+        // The same rule where the window's controls stand over an overview's column.
+        let over = shell(
+            "channels",
+            vec![
+                (
+                    "overview_actions",
+                    vec![button("new", "New channel"), button("find", "Find")],
+                ),
+                ("content", vec![empty("none")]),
+            ],
+            &[],
+        );
+        let ruled = header_rules(over);
+        let actions: Vec<&str> = slot_children(&ruled, "overview_actions")
+            .iter()
+            .map(|node| node.key.as_str())
+            .collect();
+        assert_eq!(
+            actions,
+            ["find"],
+            "an overview bar keeps only what it alone offers"
+        );
+
+        let filled = shell(
+            "channels",
+            vec![
+                ("actions", vec![button("new", "New channel")]),
+                ("content", vec![button("channel", "# general")]),
+            ],
+            &[],
+        );
+        let ruled = header_rules(filled);
+        assert_eq!(
+            slot_children(&ruled, "actions").len(),
+            1,
+            "the bar keeps its primary once the content offers nothing"
         );
     }
 

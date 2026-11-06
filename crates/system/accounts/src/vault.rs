@@ -12,13 +12,17 @@
 //!
 //! Windows protects keys with current-user DPAPI and private file ACLs, including
 //! explicit-root stores. Existing private plaintext keys migrate only after
-//! authenticated restoration; unavailable protected keys never fall back.
-//! On a Linux desktop session the symmetric key is held by the freedesktop
-//! Secret Service through `tilo-secrets`; it is not stored beside the
-//! ciphertext. New default stores refuse unavailable protected custody rather
-//! than silently creating a local key. Existing owner-only local keys remain
-//! readable for recovery and migration; [`SecretVault::open_in`] explicitly
-//! opts into local custody for headless recovery and tests.
+//! authenticated restoration, and an existing key that becomes unavailable is
+//! never replaced.
+//! The person's own store has one key custody on every host Tilo runs on:
+//! [`SecretVault::open`] holds the key in the platform's secret store
+//! (`tilo-secrets`: the Secret Service on Linux, the Keychain on macOS) where
+//! one answers, and otherwise in an owner-only `vault.key` beside the
+//! ciphertext. An owner-only key left by that fallback migrates into the
+//! secret store once it answers, after a verified round trip.
+//! [`SecretVault::open_in`] opens a store of someone else's root (a capture,
+//! an imported copy, a test's) under its own private key, so such a store
+//! never reads or replays the person's key.
 //!
 //! Failed loads are recorded for callers and prevent saves until recovery and
 //! reopen. Saves revalidate existing ciphertext before replacement; a missing
@@ -149,11 +153,15 @@ impl SecretVault {
     /// Open the vault at the default location (`$XDG_CONFIG_HOME/tilo/accounts/vault`). An empty
     /// vault when nothing is stored. Load failures yield an empty view with
     /// [`Self::recovery_error`] set and writes disabled until recovery and reopen.
+    ///
+    /// This is the person's store, whatever holds its key: the platform's
+    /// secret store where it answers, otherwise an owner-only key file
+    /// beside the ciphertext ([`SecretCustody::for_session`]).
     pub fn open() -> Self {
         match crate::config_root() {
             Some(root) => {
                 let dir = crate::vault_dir_in(&root);
-                Self::open_session_at(dir, SecretCustody::for_session())
+                Self::open_at(dir, SecretCustody::for_session())
             }
             None => match tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").config()) {
                 Ok(page) => Self::open_page(page),
@@ -174,6 +182,17 @@ impl SecretVault {
         }
     }
 
+    /// Open the vault `config_root` names. The person's own root is the
+    /// person's store, opened as [`Self::open`] opens it. Any other root (a
+    /// capture, an imported copy, a test's) is a store of its own under its
+    /// own private key, so it never reads or replays the person's.
+    pub fn open_person(config_root: Option<&Path>) -> Self {
+        match config_root {
+            Some(root) if crate::config_root().as_deref() != Some(root) => Self::open_in(root),
+            _ => Self::open(),
+        }
+    }
+
     /// Open the vault under an explicit config root. Windows uses the same
     /// DPAPI custody as the default store; other hosts use a private local key.
     pub fn open_in(config_root: &Path) -> Self {
@@ -189,30 +208,6 @@ impl SecretVault {
         let dir = crate::vault_dir_in(config_root);
         let custody = explicit_root_custody();
         Self::open_read_only_at(dir, custody)
-    }
-
-    /// Read existing native session custody without creating keys or files.
-    /// An unavailable native config root is a recovery error; no page fallback
-    /// or new credential namespace is created.
-    pub fn open_read_only() -> Self {
-        match crate::config_root() {
-            Some(root) => {
-                Self::open_read_only_at(crate::vault_dir_in(&root), SecretCustody::for_session())
-            }
-            None => Self {
-                dir: PathBuf::new(),
-                page: None,
-                entries: BTreeMap::new(),
-                pending: std::sync::Mutex::default(),
-                native_in_flight: std::sync::Mutex::default(),
-                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                page_in_flight: std::sync::Mutex::default(),
-                custody: explicit_root_custody(),
-                stamp: None,
-                read_only: true,
-                load_error: Some("native credential custody unavailable".into()),
-            },
-        }
     }
 
     fn open_read_only_at(dir: PathBuf, custody: SecretCustody) -> Self {
@@ -261,29 +256,6 @@ impl SecretVault {
             load_error,
             read_only: false,
         }
-    }
-
-    /// Compatibility local keys are retained, but lack of a keyring must not
-    /// silently choose weaker custody for a new default store.
-    fn open_session_at(dir: PathBuf, custody: SecretCustody) -> Self {
-        if custody == SecretCustody::LocalFile && !dir.join("vault.key").exists() {
-            return Self {
-                dir,
-                page: None,
-                entries: BTreeMap::new(),
-                pending: std::sync::Mutex::default(),
-                native_in_flight: std::sync::Mutex::default(),
-                #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-                page_in_flight: std::sync::Mutex::default(),
-                custody,
-                stamp: None,
-                read_only: false,
-                load_error: Some(
-                    "protected credential storage unavailable; restore the system keyring or explicitly open a recovery store".into(),
-                ),
-            };
-        }
-        Self::open_at(dir, custody)
     }
 
     fn open_at(dir: PathBuf, custody: SecretCustody) -> Self {
@@ -1103,32 +1075,45 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
-    fn unavailable_protected_custody_does_not_create_a_default_local_key() {
+    fn no_keyring_keeps_the_persons_vault_under_an_owner_only_local_key() {
+        use std::os::unix::fs::PermissionsExt as _;
         let root = temp_root();
         let dir = crate::vault_dir_in(&root);
-        let mut refused = SecretVault::open_session_at(dir.clone(), SecretCustody::LocalFile);
-        assert!(refused.recovery_error().is_some());
-        refused.put(&AccountId::from("a"), &Secret::password("secret"));
-        assert!(refused.try_save().is_err());
-        assert!(!dir.exists());
-
-        // Explicit recovery stores remain supported, and their existing data
-        // is still readable through the default compatibility path.
-        let mut recovery = SecretVault::open_in(&root);
-        recovery.put(&AccountId::from("a"), &Secret::password("secret"));
-        recovery.try_save().unwrap();
-        let reopened = SecretVault::open_session_at(dir, explicit_root_custody());
+        let mut vault = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
+        assert!(vault.recovery_error().is_none());
+        vault.put(&AccountId::from("a"), &Secret::password("secret"));
+        vault.try_save().unwrap();
+        let key = dir.join("vault.key");
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o077,
+            0,
+            "the key beside the vault is the person's alone"
+        );
+        let reopened = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
         assert!(reopened.recovery_error().is_none());
         assert_eq!(
             reopened.get(&AccountId::from("a")).unwrap().password,
             "secret"
+        );
+
+        // A store of another root is sealed under a key of its own, never
+        // the person's.
+        let other = temp_root();
+        let mut elsewhere = SecretVault::open_in(&other);
+        elsewhere.put(&AccountId::from("a"), &Secret::password("other"));
+        elsewhere.try_save().unwrap();
+        assert_ne!(
+            std::fs::read(crate::vault_dir_in(&other).join("vault.key")).unwrap(),
+            std::fs::read(dir.join("vault.key")).unwrap()
         );
         assert_eq!(
             format!("{:?}", Secret::password("sensitive-value")),
             "Secret { .. }"
         );
         std::fs::remove_dir_all(root).unwrap();
+        std::fs::remove_dir_all(other).unwrap();
     }
 
     #[test]

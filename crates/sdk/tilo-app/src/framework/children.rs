@@ -460,11 +460,9 @@ impl<C: ChildRecord> ChildrenState<C> {
             if !self.workspace.store.takes_writes() {
                 return Err("migrated once the store takes writes".into());
             }
-            self.workspace
-                .store
-                .with(&record, tilo_resource::evolution::migrate::<C>)
-                .ok_or("the child is not open here")?
-                .map_err(|error| error.to_string())?;
+            self.workspace.store.migrate(&record, |doc| {
+                tilo_resource::evolution::migrate::<C>(doc).map_err(|error| error.to_string())
+            })?;
         }
         let reader = self
             .workspace

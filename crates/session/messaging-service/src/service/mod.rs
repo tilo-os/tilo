@@ -26,7 +26,6 @@ mod records;
 mod serve;
 mod signal;
 mod sms;
-mod tilo;
 mod whatsapp;
 
 pub use serve::listen;
@@ -40,7 +39,6 @@ struct Flows {
     signal: Arc<Flow<signal::Signal>>,
     whatsapp: Arc<Flow<whatsapp::Whatsapp>>,
     sms: Arc<Flow<sms::Sms>>,
-    tilo: Arc<Flow<tilo::Tilo>>,
 }
 
 pub struct Service {
@@ -59,7 +57,6 @@ pub struct Service {
     vault_changed: tokio::sync::watch::Sender<u64>,
     changed: Arc<tokio::sync::Notify>,
     clients: Mutex<Vec<AppLink>>,
-    private: Mutex<Option<Weak<tilo::Account>>>,
     restored: AtomicBool,
     runtime: tokio::runtime::Handle,
     history: OnceLock<Box<dyn std::any::Any + Send + Sync>>,
@@ -106,7 +103,6 @@ impl Service {
                 signal: Flow::new(signal::Signal, this.clone()),
                 whatsapp: Flow::new(whatsapp::Whatsapp, this.clone()),
                 sms: Flow::new(sms::Sms, this.clone()),
-                tilo: Flow::new(tilo::Tilo, this.clone()),
             },
             running: Mutex::default(),
             root: profile.join("private-messages"),
@@ -114,7 +110,6 @@ impl Service {
             vault_changed: tokio::sync::watch::channel(0).0,
             changed: Arc::new(tokio::sync::Notify::new()),
             clients: Mutex::default(),
-            private: Mutex::new(None),
             restored: AtomicBool::new(false),
             runtime,
             history: OnceLock::new(),
@@ -157,7 +152,6 @@ impl Service {
             current.flows.signal.check();
             current.flows.whatsapp.check();
             current.flows.sms.check();
-            current.flows.tilo.check();
             let snapshot = current.snapshot();
             let encoded = serde_json::to_string(&snapshot).unwrap_or_default();
             if encoded != last {
@@ -216,7 +210,6 @@ impl Service {
         let mut enrollments = self.flows.signal.views();
         enrollments.extend(self.flows.whatsapp.views());
         enrollments.extend(self.flows.sms.views());
-        enrollments.extend(self.flows.tilo.views());
         Snapshot {
             principal: self.custody.principal().into(),
             accounts,
@@ -258,14 +251,6 @@ impl Service {
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .any(|running| &running.gate().account() == account)
-    }
-
-    pub(crate) fn runs_service(&self, service: &str) -> bool {
-        self.running
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .any(|running| running.gate().account().service == service)
     }
 
     /// The directory an account's private state lives in; never named by a
@@ -312,19 +297,6 @@ impl Service {
         identity.check()
     }
 
-    pub(crate) fn bind_private(&self, account: &Arc<tilo::Account>) {
-        *self.private.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(Arc::downgrade(account));
-    }
-
-    fn private(&self) -> Option<Arc<tilo::Account>> {
-        self.private
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .and_then(Weak::upgrade)
-    }
-
     /// The session became usable or stopped being so.
     fn session(self: &Arc<Self>, active: bool, generation: u64) {
         self.custody.session(active, generation);
@@ -340,8 +312,7 @@ impl Service {
                 };
                 service.flows.signal.clone().restore(store.clone()).await;
                 service.flows.whatsapp.clone().restore(store.clone()).await;
-                service.flows.sms.clone().restore(store.clone()).await;
-                service.flows.tilo.clone().restore(store).await;
+                service.flows.sms.clone().restore(store).await;
             });
         }
         self.changed();
@@ -352,7 +323,6 @@ impl Service {
         self.flows.signal.retire_all();
         self.flows.whatsapp.retire_all();
         self.flows.sms.retire_all();
-        self.flows.tilo.retire_all();
         for account in self
             .running
             .lock()
@@ -366,7 +336,6 @@ impl Service {
     fn prepare(&self, service: &str) -> Result<EnrollmentReview, SendError> {
         match service {
             "whatsapp" => self.flows.whatsapp.prepare(),
-            "tilo" => self.flows.tilo.prepare(),
             _ => Err(SendError::InvalidRequest),
         }
     }
@@ -396,7 +365,6 @@ impl Service {
             "signal" => self.flows.signal.clone().review(account, name).await,
             "whatsapp" => self.flows.whatsapp.clone().review(account, name).await,
             "sms" => self.flows.sms.clone().review(account, name).await,
-            "tilo" => self.flows.tilo.clone().review(account, name).await,
             _ => Err(SendError::InvalidRequest),
         }
     }
@@ -406,7 +374,6 @@ impl Service {
             "signal" => self.flows.signal.cancel(account),
             "whatsapp" => self.flows.whatsapp.cancel(account),
             "sms" => self.flows.sms.cancel(account),
-            "tilo" => self.flows.tilo.cancel(account),
             _ => {}
         }
     }
@@ -477,41 +444,12 @@ impl DoorHandler {
 }
 
 impl Handler<door::Call, door::Reply, door::Event> for DoorHandler {
-    fn call(&self, call: door::Call, reply: Responder<door::Call, door::Reply, door::Event>) {
-        let Some(service) = self.service() else {
+    fn call(&self, _call: door::Call, reply: Responder<door::Call, door::Reply, door::Event>) {
+        if self.service().is_none() {
             reply.send(door::Reply::Unavailable);
             return;
-        };
-        let Some(account) = service.private() else {
-            reply.send(door::Reply::Unavailable);
-            return;
-        };
-        let runtime = service.runtime.clone();
-        runtime.spawn(async move {
-            let answer = match call {
-                door::Call::PrivateCertificate => {
-                    tokio::task::spawn_blocking(move || account.certificate())
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .map_or(door::Reply::Refused, door::Reply::Material)
-                }
-                door::Call::PrivateCheckPeer(material) => {
-                    match tokio::task::spawn_blocking(move || account.check_peer(&material)).await {
-                        Ok(Ok(())) => door::Reply::Done,
-                        _ => door::Reply::Refused,
-                    }
-                }
-                door::Call::PrivateReceive(material, text) => {
-                    match account.receive(material, text).await {
-                        Ok(()) => door::Reply::Done,
-                        Err(_) => door::Reply::Refused,
-                    }
-                }
-                _ => door::Reply::Refused,
-            };
-            reply.send(answer);
-        });
+        }
+        reply.send(door::Reply::Refused);
     }
 
     fn event(&self, event: door::Event) {

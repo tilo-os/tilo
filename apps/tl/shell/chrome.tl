@@ -499,14 +499,16 @@ fn bar_shows(s: Shell, d: Desk) -> Bool {
 /// bar always does (its window menu, at every width), and another bar does while it shows the
 /// app's menus part with the room to keep it (`roomy`: the output is expanded or wide, where
 /// the part does not give way). Each window's frame is told this fact
-/// (`ui.WindowFrame(lists_actions:)`), so its header's actions give way to that menu, not to
-/// a door of their own; a window behind has them there once it is in front, as on every
-/// desktop.
+/// (`ui.WindowFrame(lists_actions:)`), so the window's own bar keeps its title and the shell's
+/// controls alone: each action stands once, in the menu the bar lists it in, never twice.
+///
+/// A desk shown as the traditional desktop (`Viewing.showing == .desktop`) counts as one: its
+/// bar is that bar (`top_bar`), so its frames let their bar's actions give way to it.
 fn bar_lists_actions(s: Shell, d: Desk, roomy: Bool) -> Bool {
     if not bar_shows(s, d) {
         return false
     }
-    if bar_is_traditional(s) {
+    if bar_is_traditional(s) or viewing.showing == .desktop {
         return true
     }
     roomy and s.bar_parts.any(p -> p.slot == Slot.app_menu and p.shown)

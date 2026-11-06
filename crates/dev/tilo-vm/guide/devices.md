@@ -159,15 +159,18 @@ tilo-vm rollback --slot device                        # the generation before
 tilo-vm rollback --slot device --to 0                 # the image's own session again
 ```
 
-A swap mounts the layers over the image as one readonly view and binds it
-over `/usr` and `/opt` with runtime drop-ins (`/run/systemd/system`) for that
-session's unit, the account's user manager and the unit the session runs its
-compositor in on a display, then restarts the session the normal way: stop
-it, restart the user manager, start it. View and drop-ins go at shutdown;
-`tilo-vm-restore.service` brings both back at boot and restarts the session
-if it started first, so an image without tilo-vmd boots its own session. Its account and identity stay as
-they are; the device slot never creates or removes a user. It cannot be
-created, removed or moved to another seat: it is the machine's session.
+A swap merges the layers into the machine's `/usr` with `systemd-sysext`,
+together with the `vm` slot's, and restarts the session the normal way: stop
+it, restart the account's user manager, start it. The merge is system-wide
+because the seat's supervisor starts the compositor as a system transient
+unit in the host's own mount namespace; that unit takes no drop-in and no
+view reaches it, so a per-session view could never start the new session.
+The `systemd-sysext` links stay in `/var/lib/extensions`, so a fresh boot
+merges them again, and `tilo-vm-restore.service` restarts the session if it
+started first; an image without tilo-vmd boots its own session. Its account
+and identity stay as they are; the device slot never creates or removes a
+user. It cannot be created, removed or moved to another seat: it is the
+machine's session.
 
 Set `slot = "device"` in the worktree's `.tilo-vm` (or `TILO_VM_SLOT=device`)
 to make it the default. Your own slots (`tilo-vm slot create --headless`)

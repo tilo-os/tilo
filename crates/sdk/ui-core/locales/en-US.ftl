@@ -306,6 +306,8 @@ close-keep-editing = Keep Editing
 close-broker-disconnected = The save service disconnected. Your document is still open.
 
 block-image-untitled = Picture
+# The title a row shows for an item nobody has named yet.
+list-row-untitled = Untitled
 block-image-missing = Not on this device yet
 notes-image-edit = Edit description
 notes-image-done = Done
@@ -618,6 +620,11 @@ palette-searching = Searching…
 day-yesterday = Yesterday
 day-today = Today
 day-tomorrow = Tomorrow
+# A date fact as a list heading, a row's trailing fact, a chip or a card reads it: a day gone
+# by, and a day and the time of it as one fact.
+day-overdue = Overdue
+day-past = { $overdue } since { $when }
+day-at-time = { $day } { $time }
 history-day-this-week = This week
 history-day-earlier = Earlier
 
@@ -810,6 +817,12 @@ widget-capture-stop = Stop recording
 widget-capture-create-pip = Create picture in picture
 widget-capture-remove-selection = Remove this selection
 widget-recording-saved = Recording saved
+widget-recording-skipped = { $count ->
+    [one] 1 frame was skipped: the disk was too slow
+   *[other] { $count } frames were skipped: the disk was too slow
+}
+widget-recording-incomplete = Recording incomplete: { $reason }
+widget-recording-not-saved = Recording not saved: { $reason }
 widget-recording-play = Play
 widget-replay-save = Save last 30 s
 widget-replay-stop = Stop keeping the last 30 s
@@ -896,10 +909,15 @@ history-preview-after = Earlier version, read-only
 history-preview-before = Before this change, read-only
 history-preview-now = Back to now
 
-# A form's date field: what it reads as with no date, its calendar, and the button that empties it.
-date-field-none = No date
+# A form's date field: what it reads as with no date, its calendar, the button that empties it,
+# and the row that picks the time of day the date is due at.
+date-field-add = Add date
 date-field-calendar = Calendar
 date-field-clear = Clear date
+date-field-named = { $label }, { $day }
+time-field-name = Time of day
+time-field-add = Add time
+time-field-remove = Remove time
 
 # A form's person field: what it reads as with nobody picked, and the entry that picks you.
 person-field-none = No one

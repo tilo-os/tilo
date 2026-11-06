@@ -1,5 +1,5 @@
 {
-  "format": 5,
+  "format": 6,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -491,6 +491,13 @@
           "type": "bool"
         },
         {
+          "name": "description",
+          "doc": "Why it cannot be pressed now, where the label does not say: the requirement an action does not meet. Its tooltip, and the description assistive technology reads beside the name it announces.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "key",
           "doc": "The plain key that presses it while its window has the keyboard (and, on a row's action, while that row is selected), as the app declared it (`key: \"e\"`): the host answers it beside the pressed control's own event. Never drawn here; the header shows it at the action's menu row.",
           "type": {
@@ -519,6 +526,13 @@
           "name": "in_menu",
           "doc": "It belongs in its header's menu rather than in the row ([`crate::widget::Button::in_menu`]).",
           "type": "bool"
+        },
+        {
+          "name": "group",
+          "doc": "The run of its owner's actions it stands in (`group: \"Due\"`), as the app names it: the header's menu shows rows of one run together, under the run's own row.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [
@@ -945,6 +959,22 @@
           }
         },
         {
+          "name": "tone",
+          "doc": "The tone the chip reads in: what it names is a status (a priority, a state of an item), and its pill is washed in that tone. `Neutral` for a chip that only names something.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        },
+        {
           "name": "selected",
           "doc": "Whether the filter it stands for is on; without it the chip is no filter.",
           "type": {
@@ -995,7 +1025,7 @@
         },
         {
           "name": "edge",
-          "doc": "The screen edge the body stands on, where a square body draws its rule.",
+          "doc": "The screen edge the body stands on. A square body casts no rule at it: a bar edge to edge with the screen has no line to mark, and a hairline a pixel inside its body would start its ground below the display's own edge.",
           "type": {
             "option": {
               "choice": {
@@ -1248,6 +1278,13 @@
           "type": {
             "list": "action"
           }
+        },
+        {
+          "name": "subject",
+          "doc": "The resource whose published actions this menu lists, which the host fills: a bar that lists the window in front's commands names the window and leaves the commands to it.",
+          "type": {
+            "option": "resource"
+          }
         }
       ],
       "slots": [
@@ -1387,8 +1424,15 @@
     },
     {
       "name": "DateField",
-      "doc": "A form's date, shown in the person's format and picked from a calendar that opens over it. A date that may be empty can be cleared.",
+      "doc": "A day, shown as the person reads a day (with the time it is due at) and picked from a calendar that opens over it. A date that may be empty can be cleared, and the time it is due at is picked in the same popover, in the `time` slot.",
       "props": [
+        {
+          "name": "at",
+          "doc": "The time of day the day is due at, when its type pairs one with it (`9:00`): what the chip says after the day. The field picks it in its `time` slot; it only says it here.",
+          "type": {
+            "option": "text"
+          }
+        },
         {
           "name": "label",
           "doc": "Its spoken name: what the date is for.",
@@ -1400,6 +1444,14 @@
           "name": "optional",
           "doc": "The date may be cleared: the calendar offers \"Clear date\".",
           "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "time",
+          "doc": "The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.",
+          "accepts": "view",
+          "many": true
         }
       ],
       "events": [
@@ -1907,6 +1959,42 @@
       }
     },
     {
+      "name": "EnumField",
+      "doc": "A value among an enum's cases: the case it holds, as a chip in the case's glyph and tone, opening the cases to pick another.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the field is for (\"Priority\"), as the app named it: what a screen reader hears before the case itself.",
+          "type": {
+            "option": "text"
+          }
+        }
+      ],
+      "slots": [
+        {
+          "name": "cases",
+          "doc": "The cases to pick from, in the enum's order.",
+          "accepts": {
+            "component": "EnumOption"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The case it holds, by the case's name, and where a picked case goes.",
+          "type": "enum",
+          "merge": "register"
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "label"
+      }
+    },
+    {
       "name": "BarGauge",
       "doc": "A labelled level as a bar: a disk's use, a quota, a battery. Its label stands over the track's start and its readout over its end; the fill turns warning, then danger, as it fills, unless the share has no status.",
       "props": [
@@ -2310,6 +2398,13 @@
           "positional": true
         },
         {
+          "name": "prefix",
+          "doc": "A quiet word before the title, on the same line and in the weaker ink: where an item came from, what it answers. The title shares its line, so a row that says one takes the room left after it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "item",
           "doc": "The resource the row shows, which activating the row opens.",
           "type": {
@@ -2324,15 +2419,38 @@
           }
         },
         {
-          "name": "meta",
-          "doc": "A quiet fact on the trailing edge: when it happened, how many.",
+          "name": "note",
+          "doc": "A line of the row's own under its text: what waits on the item and is not its content, as a proposal about it reads (\"Suggested: move this to the end\"). One line, elided; empty shows nothing.",
           "type": {
             "option": "text"
           }
         },
         {
+          "name": "meta",
+          "doc": "When it happened or is due: the first fact of the row's facts column.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "meta_tone",
+          "doc": "The tone the trailing fact reads in, where the item it states has one: a day gone by is overdue. The UI host reads it off the day itself, as the one presenter gives it.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        },
+        {
           "name": "value",
-          "doc": "The item's value on the trailing edge, as a setting shows it.",
+          "doc": "The item's figure among its facts, as a setting shows it.",
           "type": {
             "option": "text"
           }
@@ -2346,9 +2464,25 @@
         },
         {
           "name": "mark",
-          "doc": "A mark after the title: pinned, starred.",
+          "doc": "A mark on the row's edge, after every other fact: pinned, starred, an item's priority.",
           "type": {
             "option": "icon"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The tone the mark and the row's checkbox ring read in: the item's priority, a theme role rather than a colour. `Neutral` draws them as the row's quiet ink.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
           }
         },
         {
@@ -2361,11 +2495,6 @@
         {
           "name": "selected",
           "doc": "Whether the row is selected in its list.",
-          "type": "bool"
-        },
-        {
-          "name": "avatar_space",
-          "doc": "Keep the room an avatar takes without showing one, so the row's text lines up with the rows of its list that show one.",
           "type": "bool"
         },
         {
@@ -2384,12 +2513,17 @@
               }
             }
           }
+        },
+        {
+          "name": "dense",
+          "doc": "The row stands dense: one quiet line at the caption's size with the small glyph, as tall as that line and its inset, for a reference under content rather than a list of items.",
+          "type": "bool"
         }
       ],
       "slots": [
         {
           "name": "avatar",
-          "doc": "The avatar in the leading column: who the item is, or who last wrote in it.",
+          "doc": "Who the item is: their face among its facts, between when it is due and how far it has got.",
           "accepts": {
             "component": "Avatar"
           }
@@ -2724,7 +2858,8 @@
           "type": {
             "option": "text"
           },
-          "data": true
+          "data": true,
+          "identity": true
         },
         {
           "name": "rail",
@@ -3156,6 +3291,81 @@
       "semantics": {
         "role": "Group",
         "label": "label"
+      }
+    },
+    {
+      "name": "BarChip",
+      "doc": "One bar control that stands for people: their faces, a label and a press. A chip with faces opens who is here, an invite opens the host's own invite flow; a press reaches the view's `press` event, which is the same action the palette, scripts and agents invoke.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What the chip is for assistive technology (and its tooltip when it shows only a glyph).",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "label",
+          "doc": "The words beside the faces: \"Editing\", \"Invite\".",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "icon",
+          "doc": "A glyph before the faces: a watch, an invitation.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "trailing",
+          "doc": "A trailing glyph: the chevron of a chip that opens a panel.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "who",
+          "doc": "Who it stands for, in order: the faces it shows, then a count for everyone past them.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "open",
+          "doc": "The chip's panel is open: it holds the whole lift.",
+          "type": "bool"
+        },
+        {
+          "name": "focused",
+          "doc": "Keyboard focus. The ring shows only while focus is visible.",
+          "type": "bool"
+        },
+        {
+          "name": "label_width",
+          "doc": "The most the label may grow to before it elides.",
+          "type": {
+            "option": "float"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "A person whose presence colour washes the chip's body: who the state it says is about.",
+          "type": {
+            "option": "principal"
+          }
+        }
+      ],
+      "events": [
+        {
+          "name": "press",
+          "doc": "A press: the chip's own action."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "name"
       }
     },
     {
@@ -4587,6 +4797,11 @@
           "type": "bool"
         },
         {
+          "name": "autofocus",
+          "doc": "It is where the person types next (an entry a command just opened): it takes the keyboard as soon as it is in the window, once.",
+          "type": "bool"
+        },
+        {
           "name": "changed_by",
           "doc": "Someone else changed the text and the person has not seen it yet: the field takes their colour. The host sets it, from what the field is bound to (task-legibility §3).",
           "type": {
@@ -4599,12 +4814,26 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "entry",
+          "doc": "The entry at the end of a list: what is typed makes an item when Enter or leaving the field commits it, and the field clears; nothing typed leaves nothing (Escape, or leaving it empty). Its own draft, not a record: the item exists once it is committed.",
+          "type": "bool"
+        },
+        {
+          "name": "key",
+          "doc": "The plain key that focuses this control while its window has the keyboard, as the app declared it (`key: \"Ctrl+N\"`): a window's primary action brings the person to the list's entry rather than making an empty item. Never drawn here.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "events": [
         {
           "name": "submit",
-          "doc": "Enter was pressed: what was typed is done (a quick add's entry). With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line."
+          "doc": "Enter was pressed: what was typed is done (a list's entry), carried with it. With it, Enter ends the text rather than breaking its line; Shift+Enter still breaks a wrapping field's line.",
+          "value": "text"
         }
       ],
       "bindings": [
@@ -4618,6 +4847,28 @@
       "semantics": {
         "role": "TextInput",
         "label": "placeholder"
+      }
+    },
+    {
+      "name": "TimeField",
+      "doc": "The time of day a day is due at: the hour and the minute it is due at, with \"Remove time\" beside them, or a quiet \"Add time\" while it has none. It stands in the `time` slot of a [`DateField`](crate::widget::DateField), so the day and its time read as one fact.",
+      "events": [
+        {
+          "name": "change",
+          "doc": "A time was picked or removed: carries the time of day, or nothing for a removed one.",
+          "value": "time"
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "The moment, as a bound field holds it (`09:00`, or the ISO text of an instant), and where a picked time of day goes.",
+          "type": "time",
+          "merge": "register"
+        }
+      ],
+      "semantics": {
+        "role": "Group"
       }
     },
     {
@@ -5093,6 +5344,13 @@
           "type": "bool"
         },
         {
+          "name": "ungrouped_title",
+          "doc": "The title over the group of rows whose item names no group: a list grouped by a thing some items lack (a day, a place) heads those rows with it, never folding them under the last group that names one. The rows keep the order their list gives. `None` leaves them among the others.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "unread",
           "doc": "The item a conversation's reader had not seen when they opened it (`first_unseen(c)`): the \"New messages\" divider stands over the row that shows it, and while that is above the view a pill at the foot offers to take the reader back to it. `None` draws neither. The list works out the row as it builds, so the same list keeps its rows and only the two the divider moved between build again.",
           "type": {
@@ -5217,7 +5475,8 @@
           "doc": "The window's name: what assistive technology reads, and the title of the frame's own bar when the content has no header row to hold the controls.",
           "type": {
             "option": "text"
-          }
+          },
+          "data": true
         },
         {
           "name": "focused",
@@ -5234,6 +5493,11 @@
         {
           "name": "controls",
           "doc": "The frame's controls (close, and what else the shell offers on the window), at the trailing end of the window's bar.",
+          "accepts": "view"
+        },
+        {
+          "name": "tabs",
+          "doc": "The places the window shows, as its tabs: the bar is theirs while there are any, and the content is the tab in front. Empty for a window of one place, whose bar is the place's own header or the frame's.",
           "accepts": "view"
         },
         {
@@ -5548,7 +5812,7 @@
         },
         {
           "name": "action",
-          "doc": "The label of the one action that adds to the lane, at the end of its heading: \"New card\".",
+          "doc": "The label of the one action that adds to the lane, at its foot under the cards: \"New card\". Drawn there, not in the heading, so the lane has one add and it is where the cards end; a lane that gives a `foot` of its own says it there instead.",
           "type": {
             "option": "text"
           }
@@ -5563,6 +5827,11 @@
           },
           "many": true,
           "default": true
+        },
+        {
+          "name": "foot",
+          "doc": "What stands at the lane's foot, under its cards: the entry that adds to the lane. It stays in reach while the cards scroll above it.",
+          "accepts": "view"
         }
       ],
       "events": [
@@ -5585,7 +5854,7 @@
     },
     {
       "name": "BoardCard",
-      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens.",
+      "doc": "One card of a lane: a summary of the resource it stands for, which a press opens. The card is its body: a row given as its body is shown as a card — the row paints the surface, wraps its title and stands its facts under it — so what the card says is written once, and the row is what assistive technology reads as the lane's item. The card itself is the container around it, with no role of its own.",
       "props": [
         {
           "name": "item",
@@ -5594,13 +5863,6 @@
             "option": "resource"
           },
           "positional": true
-        },
-        {
-          "name": "title",
-          "doc": "What the card is called, in its head; without one the body speaks for it.",
-          "type": {
-            "option": "text"
-          }
         },
         {
           "name": "selected",
@@ -5637,8 +5899,7 @@
         }
       ],
       "semantics": {
-        "role": "ListItem",
-        "label": "title",
+        "role": "Generic",
         "presents": "item"
       }
     },
@@ -5753,6 +6014,25 @@
           "doc": "Whether it is the one chosen now, in a menu of choices (a sort order).",
           "type": {
             "option": "bool"
+          }
+        },
+        {
+          "name": "disabled",
+          "doc": "It cannot run now (a `require` of its action does not hold). It is listed all the same, drawn as unavailable, and says `reason`.",
+          "type": "bool"
+        },
+        {
+          "name": "reason",
+          "doc": "Why it cannot run now, in the person's words (`require`'s own): read with the row, and kept beside the label so a person sees what it waits on.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "group",
+          "doc": "The run of commands it stands in (`group: \"Due\"`), as the app names it: consecutive rows of one run fold into one row that opens them.",
+          "type": {
+            "option": "text"
           }
         },
         {
@@ -6031,6 +6311,53 @@
       }
     },
     {
+      "name": "EnumOption",
+      "doc": "One case an [`EnumField`] offers: its name, what it reads as, and how it reads.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "The case's own name, as the app declares it: what an edit writes back, never read out.",
+          "type": "text",
+          "required": true,
+          "data": true
+        },
+        {
+          "name": "label",
+          "doc": "What the case reads as, in a word or two: \"High\".",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "icon",
+          "doc": "The glyph the case names, when it names one.",
+          "type": {
+            "option": "icon"
+          }
+        },
+        {
+          "name": "tone",
+          "doc": "The tone the case reads in: what the chip is washed in.",
+          "type": {
+            "choice": {
+              "name": "Tone",
+              "cases": [
+                "neutral",
+                "success",
+                "warning",
+                "danger",
+                "info"
+              ]
+            }
+          }
+        }
+      ],
+      "semantics": {
+        "role": "MenuItem",
+        "label": "label"
+      }
+    },
+    {
       "name": "SwipeAction",
       "doc": "What swiping a row across does: one command on its item, uncovered under the row as it moves.",
       "props": [
@@ -6210,6 +6537,13 @@
           "name": "collapsible",
           "doc": "Whether its heading folds it away.",
           "type": "bool"
+        },
+        {
+          "name": "add",
+          "doc": "The action that makes another of the places in the group (\"New project\"), drawn at the end of the heading and run when the person presses it.",
+          "type": {
+            "option": "action"
+          }
         }
       ],
       "slots": [
@@ -6238,7 +6572,8 @@
           "type": "text",
           "required": true,
           "positional": true,
-          "data": true
+          "data": true,
+          "identity": true
         },
         {
           "name": "label",
@@ -6547,7 +6882,7 @@
         },
         {
           "name": "icon",
-          "doc": "A glyph instead of the label.",
+          "doc": "A glyph: before the label on a tab ([`ViewTabs`]), and instead of it on any other strip, named by the label either way.",
           "type": {
             "option": "icon"
           }
@@ -6693,7 +7028,7 @@
         },
         {
           "name": "progress",
-          "doc": "How far the branch got while it is folded, just before the trailing text: a done count among its children (\"2/5\"), counted from their checkboxes when the row gives none. Shown only when the branch is closed.",
+          "doc": "How far the branch got while it is folded, just before the trailing text: a done count among its children (\"2/5\"). Its node's [`TreeViewNodeProps::progress`] says it where the row gives none. Shown only when the branch is closed.",
           "type": {
             "option": "text"
           }
@@ -6743,9 +7078,23 @@
           }
         },
         {
+          "name": "above",
+          "doc": "The node the view shows just over this one under the same parent: the place the actions offered on it take when one reads a place (`above`). None for a first child.",
+          "type": {
+            "option": "resource"
+          }
+        },
+        {
           "name": "branch",
           "doc": "Whether it opens to show the nodes under it. A node with children says so unless it says otherwise.",
           "type": "bool"
+        },
+        {
+          "name": "progress",
+          "doc": "How far the branch got while it is folded (\"1/3\"), which the owner counts of its own children: the same count names a list row and an outline node, so both say one thing. The row's own [`TreeViewRowProps::progress`] says it instead where the row gives one.",
+          "type": {
+            "option": "text"
+          }
         },
         {
           "name": "selected",
@@ -6832,9 +7181,39 @@
           }
         },
         {
+          "name": "group_done",
+          "doc": "The group's day is the day the item was done on, not the day it is due: it reads as the day it happened (`Yesterday`, `Sunday`, `Jun 21`), never as a day gone by, and in no tone of its own.",
+          "type": "bool"
+        },
+        {
+          "name": "group_tone",
+          "doc": "How the group's heading and its count read: left to the platform, it reads the tone the date the heading holds asks for (a day gone by is overdue), unless the view names one.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "Tone",
+                "cases": [
+                  "neutral",
+                  "success",
+                  "warning",
+                  "danger",
+                  "info"
+                ]
+              }
+            }
+          }
+        },
+        {
           "name": "tail",
           "doc": "The row is one of the items done with: they stand after every group, under the list's tail title, closed until the person opens them.",
           "type": "bool"
+        },
+        {
+          "name": "above",
+          "doc": "The item the view shows just over this one in its group: the place the actions offered on the row take when one reads a place (`above`). None for the first of a group.",
+          "type": {
+            "option": "resource"
+          }
         },
         {
           "name": "removed",

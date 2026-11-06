@@ -141,6 +141,7 @@ impl<T: DeserializeOwned + Send + Sync + 'static> Landing for Arriving<T, ReadFa
     }
 
     fn begin(&self, from: Source) {
+        // ignored-failure: the restart's completion is the query's own; its lander publishes the answer
         let _ = Arriving::begin(self, from);
     }
 }

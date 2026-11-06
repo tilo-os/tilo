@@ -1,6 +1,7 @@
 //! The records every app of the window's workspace opens beside its own
 //! ([`ui_core::record::workspace`]): the workspace's emoji among them,
-//! which any view of any app draws for `:name:`.
+//! which any view of any app draws for `:name:`, and a conversation, which
+//! the two people it is between open from either side.
 //!
 //! Such a record is its owner's resource: the workspace's grants on the owner's
 //! node decide every change, here at the door as on the relay, whichever
@@ -23,6 +24,8 @@ use ui_core::record::workspace::WorkspaceRecords;
 use ui_core::wake::WakeHandle;
 
 use super::live::Live;
+
+use super::chain::{Chain, Chained};
 
 /// A record every app of the window's workspace opens, held for the window
 /// ([`RecordEnv::workspace`](super::RecordEnv::workspace)).
@@ -178,10 +181,57 @@ impl<P: Resource> WorkspaceRecord<P> {
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
     ) -> Option<Self> {
-        let record = records
-            .open_record(owner, P::KIND, &|doc| {
-                P::initialize(doc).map_err(|error| error.to_string())
-            })
+        let opened = records.open_record(owner, P::KIND, &|doc| {
+            P::initialize(doc).map_err(|error| error.to_string())
+        });
+        Self::hold(
+            opened,
+            owner,
+            app,
+            permissions,
+            wake,
+            records.author().0.clone(),
+        )
+    }
+
+    /// [`Self::open`] of the record `id` of `kind` `P` that `owner` keeps:
+    /// a record of the owner's that the workspace names otherwise than
+    /// [`Self::open`]'s, such as a conversation's, which the two people it
+    /// is between name. The workspace's grants decide its changes like any
+    /// other.
+    pub fn open_at(
+        records: &WorkspaceRecords,
+        owner: &'static str,
+        id: &str,
+        app: (&'static str, &'static str),
+        permissions: Option<LivePermissions>,
+        wake: Option<WakeHandle>,
+    ) -> Option<Self> {
+        let opened = records.open_record_at(owner, id, P::KIND, &|doc| {
+            P::initialize(doc).map_err(|error| error.to_string())
+        });
+        Self::hold(
+            opened,
+            owner,
+            app,
+            permissions,
+            wake,
+            records.author().0.clone(),
+        )
+    }
+
+    /// [`Self::open`]'s record, opened (or not) by the store it is kept in:
+    /// brought to the resource's version, read, and followed change by
+    /// change.
+    fn hold(
+        opened: Result<StoredRecord, ui_core::record::RecordOpenError>,
+        owner: &'static str,
+        app: (&'static str, &'static str),
+        permissions: Option<LivePermissions>,
+        wake: Option<WakeHandle>,
+        me: String,
+    ) -> Option<Self> {
+        let record = opened
             .map_err(|error| tracing::warn!(kind = P::KIND, %error, "workspace record unavailable"))
             .ok()?;
         if record.read(tilo_resource::evolution::needs_migrate::<P>)?
@@ -205,7 +255,7 @@ impl<P: Resource> WorkspaceRecord<P> {
                 owner,
                 app_id: app.0,
                 app_title: app.1,
-                me: records.author().0.clone(),
+                me,
                 permissions,
                 state: LocalState::new(live.get()),
                 live,
@@ -213,6 +263,18 @@ impl<P: Resource> WorkspaceRecord<P> {
                 waiting: RefCell::default(),
             }),
         })
+    }
+
+    /// The record's id, which names it in the workspace.
+    #[must_use]
+    pub fn id(&self) -> &ui_core::record::RecordId {
+        &self.shared.record.checkout().id
+    }
+
+    /// The record's state as the window follows it, for the chain kept
+    /// beside it ([`RecordEnv::chain_beside`](super::RecordEnv::chain_beside)).
+    pub(crate) fn live(&self) -> Live<P> {
+        self.shared.live.clone()
     }
 
     /// The current state.
@@ -344,8 +406,51 @@ fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
     }
 }
 
-/// A record open in a window: its owner and kind.
-type OpenKey = (&'static str, &'static str);
+/// The records of the window's workspace, for what settles after the view
+/// that asked for them: a reply, or a message another device sent
+/// ([`RecordEnv::workspace_handle`](super::RecordEnv::workspace_handle)).
+#[derive(Clone)]
+pub struct WorkspaceHandle {
+    state: Rc<WorkspaceState>,
+}
+
+impl WorkspaceHandle {
+    /// The record `id` of `P` that `owner` keeps: opened, created where
+    /// nothing holds it yet, and followed change by change. `None` where it
+    /// cannot be opened.
+    pub fn record<P: Resource>(&self, owner: &'static str, id: &str) -> Option<WorkspaceRecord<P>> {
+        self.state.open_at::<P>(owner, id)
+    }
+
+    /// Whether the record `id` of `P` that `owner` keeps is held already,
+    /// without opening or creating it.
+    #[must_use]
+    pub fn holds_record<P: Resource>(&self, owner: &'static str, id: &str) -> bool {
+        self.state.holds_record(owner, id, P::KIND)
+    }
+
+    /// The chain of `P` kept beside one of the workspace's records
+    /// ([`Chained::chain_beside`]): the messages of one direct conversation,
+    /// in parts of the record the two people share, opened in the store that
+    /// keeps that record. `None` where it cannot be opened.
+    pub fn chain_beside<P: Chained>(
+        &self,
+        owner: &'static str,
+        base: &WorkspaceRecord<P::Base>,
+    ) -> Option<Chain<P>> {
+        self.state.chain_beside::<P>(owner, base)
+    }
+
+    /// What wakes the window: for an answer that arrives later.
+    #[must_use]
+    pub fn wake(&self) -> Option<&WakeHandle> {
+        self.state.wake()
+    }
+}
+
+/// A record open in a window: its owner and kind, and which record of them
+/// (the workspace's one of the kind, or a pair's).
+type OpenKey = (&'static str, &'static str, String);
 
 /// The records every app of the workspace opens that a window's views opened:
 /// one [`WorkspaceRecord`] per kind.
@@ -357,6 +462,9 @@ pub(crate) struct WorkspaceState {
     /// Wakes the window when another replica's change arrives.
     wake: Option<WakeHandle>,
     opened: RefCell<HashMap<OpenKey, Rc<dyn Any>>>,
+    /// The chains kept beside the opened records (a chat's message parts,
+    /// [`WorkspaceHandle::chain_beside`]).
+    chains: super::chain::Chains,
     owners: RefCell<Vec<HistoryOwner>>,
     refreshers: RefCell<Vec<Box<dyn Fn() -> bool>>>,
 }
@@ -376,6 +484,7 @@ impl WorkspaceState {
             permissions,
             wake,
             opened: RefCell::default(),
+            chains: super::chain::Chains::default(),
             owners: RefCell::default(),
             refreshers: RefCell::default(),
         }
@@ -387,15 +496,72 @@ impl WorkspaceState {
         self.wake.as_ref()
     }
 
+    /// This state as the window's views hold it on
+    /// ([`RecordEnv::workspace_handle`](super::RecordEnv::workspace_handle)).
+    pub(crate) fn handle(self: &Rc<Self>) -> WorkspaceHandle {
+        WorkspaceHandle {
+            state: Rc::clone(self),
+        }
+    }
+
     /// The window's app.
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id
     }
 
+    /// Whether the record `id` of `kind` that `owner` keeps is held already,
+    /// without opening or creating it: what a list asks.
+    pub(crate) fn holds_record(&self, owner: &str, id: &str, kind: &str) -> bool {
+        self.records
+            .holds_record(owner, id, kind)
+            .is_ok_and(|held| held)
+    }
+
     /// The record `P` that `owner` keeps in the workspace, opened on first use
     /// and created with the resource's genesis where it does not exist yet.
     pub(crate) fn open<P: Resource>(&self, owner: &'static str) -> Option<WorkspaceRecord<P>> {
-        if let Some(open) = self.opened.borrow().get(&(owner, P::KIND)) {
+        let id = ui_core::record::workspace::record_id(P::KIND);
+        self.open_with::<P>(owner, &id, |records| {
+            WorkspaceRecord::open(
+                records,
+                owner,
+                (self.app_id, self.app_title),
+                self.permissions.clone(),
+                self.wake.clone(),
+            )
+        })
+    }
+
+    /// The record `id` of `P` that `owner` keeps, opened on first use and
+    /// created with the resource's genesis where it does not exist yet: a
+    /// conversation's record, named by the two people it is between.
+    pub(crate) fn open_at<P: Resource>(
+        &self,
+        owner: &'static str,
+        id: &str,
+    ) -> Option<WorkspaceRecord<P>> {
+        self.open_with::<P>(owner, id, |records| {
+            WorkspaceRecord::open_at(
+                records,
+                owner,
+                id,
+                (self.app_id, self.app_title),
+                self.permissions.clone(),
+                self.wake.clone(),
+            )
+        })
+    }
+
+    /// [`Self::open`]'s and [`Self::open_at`]'s record, opened once per
+    /// window: held for the views that ask again, and refreshed with them.
+    fn open_with<P: Resource>(
+        &self,
+        owner: &'static str,
+        id: &str,
+        open: impl FnOnce(&WorkspaceRecords) -> Option<WorkspaceRecord<P>>,
+    ) -> Option<WorkspaceRecord<P>> {
+        let key = (owner, P::KIND, id.to_owned());
+        if let Some(open) = self.opened.borrow().get(&key) {
             return Rc::clone(open)
                 .downcast::<Shared<P>>()
                 .ok()
@@ -404,15 +570,47 @@ impl WorkspaceState {
         // The owner's own window lists the record in its surface: its
         // changes are decided against the owner's surface.
         if owner == self.app_id {
-            super::controls::opened_in_workspace::<P>();
+            super::controls::opened_record::<P>();
         }
-        let WorkspaceRecord { shared } = WorkspaceRecord::<P>::open(
-            &self.records,
-            owner,
-            (self.app_id, self.app_title),
-            self.permissions.clone(),
-            self.wake.clone(),
-        )?;
+        let opened = open(&self.records);
+        self.held(key, opened)
+    }
+
+    /// The chain of `P` kept beside one of the workspace's records
+    /// ([`Chained::chain_beside`]), opened on first use in the store that keeps
+    /// that record: a conversation's messages, decided by the workspace's
+    /// grants on the app like the record they are kept beside. `None` where it
+    /// cannot be opened.
+    pub(crate) fn chain_beside<P: Chained>(
+        &self,
+        owner: &'static str,
+        base: &WorkspaceRecord<P::Base>,
+    ) -> Option<Chain<P>> {
+        super::controls::opened_record::<P>();
+        let workspace = super::chain::WorkspaceRecords {
+            store: self.records.store_of(owner).ok()?,
+            me: self.records.author().0.clone(),
+            permissions: self.permissions.clone(),
+            app_id: self.app_id,
+            app_title: self.app_title,
+        };
+        let live = base.live();
+        let chain = P::chain_beside(base.id());
+        let state = self
+            .chains
+            .open_at::<P>(&workspace, &chain, move || live.get())?;
+        Some(Chain::applying(&state, self.app_id, base.me()))
+    }
+
+    /// Keep an opened record for the window: its route reported to the
+    /// runtime, its changes followed, and the record held for the views that
+    /// ask for it again.
+    fn held<P: Resource>(
+        &self,
+        key: OpenKey,
+        opened: Option<WorkspaceRecord<P>>,
+    ) -> Option<WorkspaceRecord<P>> {
+        let WorkspaceRecord { shared } = opened?;
         self.owners.borrow_mut().push(shared.record.history_owner());
         let weak = Rc::downgrade(&shared);
         self.refreshers.borrow_mut().push(Box::new(move || {
@@ -420,16 +618,23 @@ impl WorkspaceState {
         }));
         self.opened
             .borrow_mut()
-            .insert((owner, P::KIND), Rc::clone(&shared) as Rc<dyn Any>);
+            .insert(key, Rc::clone(&shared) as Rc<dyn Any>);
         Some(WorkspaceRecord { shared })
     }
 
     /// Read every open record that moved. Whether one did.
     pub(crate) fn refresh(&self) -> bool {
-        self.refreshers
+        let moved = self
+            .refreshers
             .borrow()
             .iter()
-            .fold(false, |moved, refresh| refresh() | moved)
+            .fold(false, |moved, refresh| refresh() | moved);
+        // A part another device wrote into a chain kept beside a record is
+        // read here, so the app's views show it.
+        for chain in self.chains.doors() {
+            let _ = chain.revision();
+        }
+        moved
     }
 
     /// The routes of the open records, which the runtime syncs.

@@ -602,6 +602,8 @@ pub struct Ask {
     pub resource: String,
     pub action: String,
     pub arguments: BTreeMap<String, String>,
+    /// The resource the invocation is made from, when it is made from one.
+    pub from: Option<ui::tilo_actions::params::MadeFrom>,
 }
 
 /// How far from an output's edge the pointer resting there counts as at it: a bar or dock
@@ -709,6 +711,10 @@ pub struct SessionLink {
     /// The resources a view composed in a place read before their readings came in, by id,
     /// each with its type: what the session publishes next ([`SessionLink::take_wanted`]).
     wanted: RefCell<BTreeMap<String, String>>,
+    /// The apps whose package a view composed in a place read a resource of before it was
+    /// loaded, by app id, each with the type it read: what the session publishes next
+    /// ([`SessionLink::take_wanted_packages`]).
+    wanted_packages: RefCell<BTreeMap<String, String>>,
     asked: RefCell<VecDeque<Ask>>,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
@@ -1855,6 +1861,10 @@ impl Platform for ShellPlatform {
         i64::from(ui::clock::local_now().offset().local_minus_utc())
     }
 
+    fn zone_name(&self) -> Option<String> {
+        ui::time::local_zone_name()
+    }
+
     fn waker(&self) -> Waker {
         std::sync::Arc::clone(&self.waker)
     }
@@ -1942,6 +1952,9 @@ pub struct ShellPart {
     /// The output this part stands on: its connector name, and its logical rectangle
     /// `(x, y, w, h)`. `None` before the outputs are told, when it spans their bounding box.
     output: Option<(String, (i32, i32, u32, u32))>,
+    /// The scale the output it stands on draws at: what the part paints at so it is as crisp
+    /// as the display allows, rather than drawn at one scale and stretched over another.
+    output_scale: f64,
     /// The display the part stood on, which went (unplugged, turned off): while it is gone the
     /// part stands nowhere, draws nothing, takes no pointer and offers nothing on the door,
     /// until it is told a display again.
@@ -2061,6 +2074,7 @@ impl ShellPart {
             work: ShellWork::default(),
             refusals: Vec::new(),
             output: None,
+            output_scale: scale,
             gone: None,
             fullscreen: Vec::new(),
             cover: false,
@@ -2134,7 +2148,7 @@ impl ShellPart {
         let Some((name, (x, y, width, output_height))) = self.output.clone() else {
             return;
         };
-        let scale = self.widgets.placement().scale;
+        let scale = self.output_scale;
         if self.fullscreen.contains(&name) && !self.cover {
             // Nothing of the part stands there: the smallest placement keeps its layout cheap,
             // and `hidden` hands the compositor no layer and takes no pointer, so not a row of
@@ -2303,8 +2317,8 @@ impl ShellPart {
     /// the part is one display's, and follows that display as it is added, moved or turned
     /// off. Every part of one shell is told its own display; none spans them all. `None`: the
     /// display went, and the part stands nowhere until it is told one again.
-    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>) {
-        if self.output == output {
+    pub fn set_display(&mut self, output: Option<(String, (i32, i32, u32, u32))>, scale: f64) {
+        if self.output == output && self.output_scale.to_bits() == scale.to_bits() {
             return;
         }
         if output.is_some() {
@@ -2315,6 +2329,7 @@ impl ShellPart {
             self.cover = false;
         }
         self.output = output;
+        self.output_scale = scale;
         self.place();
     }
 
@@ -2345,6 +2360,12 @@ impl ShellPart {
     #[must_use]
     pub fn placement(&self) -> Option<(String, (i32, i32, u32, u32))> {
         self.output.clone()
+    }
+
+    /// The scale the part draws at: its display's.
+    #[must_use]
+    pub const fn part_scale(&self) -> f64 {
+        self.output_scale
     }
 
     /// Whether the part draws nothing now: it stands on a display a fullscreen window owns.
@@ -2528,11 +2549,17 @@ impl ShellPart {
             }
         }
         // What the views composed in places read of other apps' resources before their
-        // readings came: the session is asked to publish those.
+        // readings came: the session is asked to publish those. What they read of a type no
+        // loaded package declared: the session is asked for that app's package.
         if let Some(host) = self.instance.host() {
             let wanted = host.runtime().take_wanted();
             if !wanted.is_empty() {
                 self.origin.borrow().link.want(wanted);
+            }
+            let packages: BTreeMap<String, String> =
+                host.runtime().take_wanted_packages().into_iter().collect();
+            if !packages.is_empty() {
+                self.origin.borrow().link.want_packages(packages);
             }
         }
         // The exchanges ran until neither side had more to say, unless they ran out first:
@@ -2619,9 +2646,10 @@ impl crate::Published for ShellPart {
         &mut self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
+        look: &mut crate::Look<'_>,
     ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::DoorError> {
         self.input = true;
-        crate::Published::invoke(&mut self.widgets, address, arguments)
+        crate::Published::invoke(&mut self.widgets, address, arguments, look)
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -2714,6 +2742,7 @@ impl ShellPart {
             resource: DESK_RESOURCE.to_owned(),
             action: action.to_owned(),
             arguments,
+            from: None,
         });
     }
 

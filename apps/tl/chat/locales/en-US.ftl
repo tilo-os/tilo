@@ -176,36 +176,3 @@ d-dcprca6g = Thread typing here
 d-hjw5xd6b = Said
     .w-a-view-to-add-to-your = A view, to add to your own views
     .w-edited = edited
-
-d-5rkfnkg4-row0-row0 = Sidebar for ch
-
-d-5rkfnkg4-row0 = Sidebar for item
-    .w-notes-to-self = Notes to self
-
-d-5rkfnkg4-row1 = Sidebar for p
-
-d-ymtess4x-row0 = Channel for m
-    .w-pinned = Pinned
-    .w-edit-message = Edit message
-    .w-cancel = Cancel
-    .w-save = Save
-    .w-reply = Reply
-    .w-edit = Edit
-
-d-jbezqvlc-row0 = Direct for m
-    .w-pinned = Pinned
-    .w-edit-message = Edit message
-    .w-cancel = Cancel
-    .w-save = Save
-    .w-reply = Reply
-    .w-edit = Edit
-
-d-enkgjyn7-row0 = Thread for m
-    .w-pinned = Pinned
-    .w-edit-message = Edit message
-    .w-cancel = Cancel
-    .w-save = Save
-    .w-reply = Reply
-    .w-edit = Edit
-
-d-hjw5xd6b-row0 = Said for p

@@ -118,6 +118,7 @@ impl Published for Served {
         &mut self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
+        _look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
         if address.resource != RESOURCE {
             return Err(DoorError::Unknown(address.clone()));
@@ -195,7 +196,11 @@ mod tests {
         assert!(reading["heap_trim"]["trims"].is_u64());
         assert!(reading["heap_trim"]["startup_trimmed"].is_boolean());
         let status = served
-            .invoke(&ActionAddress::new(RESOURCE, "profile-status"), &Map::new())
+            .invoke(
+                &ActionAddress::new(RESOURCE, "profile-status"),
+                &Map::new(),
+                &mut tilo_surface_host::Look::none(),
+            )
             .expect("the reading");
         let ResourceOperationStart::Completed(output) = status else {
             panic!("a reading answers at once");
@@ -218,14 +223,16 @@ mod tests {
         assert!(matches!(
             Served.invoke(
                 &ActionAddress::new(RESOURCE, "profile-elsewhere"),
-                &Map::new()
+                &Map::new(),
+                &mut tilo_surface_host::Look::none()
             ),
             Err(DoorError::Unknown(_))
         ));
         assert!(matches!(
             Served.invoke(
                 &ActionAddress::new("session:devices", "profile-stop"),
-                &Map::new()
+                &Map::new(),
+                &mut tilo_surface_host::Look::none()
             ),
             Err(DoorError::Unknown(_))
         ));

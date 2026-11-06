@@ -572,6 +572,7 @@ impl SettingsRecords {
 /// The public id of the action whose encoded payload is `payload`.
 fn action_id(payload: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(payload)
+        // ignored-failure: a payload that does not read back is named by the generic label
         .ok()
         .and_then(|value| {
             let operation = value.get("op").unwrap_or(&value);

@@ -23,9 +23,9 @@ enum WriterTurn {
     Idle { live: bool },
 }
 
-/// The queues the session's reader and rooms feed its writer through.
+/// The queues the session's reader and workspaces feed its writer through.
 pub(super) struct WriterQueues<'s> {
-    /// Envelopes every room this peer is subscribed to queues for the wire.
+    /// Envelopes every workspace this peer is subscribed to queues for the wire.
     rx: &'s mut mpsc::Receiver<Envelope>,
     state_rx: &'s mut mpsc::Receiver<StateDelivery>,
     reply_rx: &'s mut mpsc::Receiver<ReplayWrite>,
@@ -47,7 +47,7 @@ impl<'s> WriterQueues<'s> {
 
 /// The writer state machine. It borrows the session's queues, its egress
 /// and its presence mailbox; what it owns (the fairness state and the
-/// connection's slot coding) ends with it.
+/// connection's delta coding) ends with it.
 pub(super) struct SessionWriter<'s, W> {
     rx: &'s mut mpsc::Receiver<Envelope>,
     state_rx: &'s mut mpsc::Receiver<StateDelivery>,
@@ -63,8 +63,8 @@ pub(super) struct SessionWriter<'s, W> {
     /// Once the session ends, how many more turns write what was queued
     /// then, before the stream is finished.
     ending: Option<usize>,
-    /// This connection's halves of its presence and delta slot coding:
-    /// they see every batch and coded delta this writer writes, in order.
+    /// This connection's half of its delta coding: it sees every coded
+    /// delta this writer writes, in order.
     coding: SessionCoding,
 }
 
@@ -230,27 +230,20 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
             .is_some_and(|due| due <= tokio::time::Instant::now())
         {
             self.wrote = "presence";
-            write_presence(
-                self.presence,
-                &mut self.coding.presence,
-                cx.peer,
-                cx.session,
-                self.write,
-            )
-            .await?;
+            write_presence(self.presence, cx.peer, cx.session, self.write).await?;
             return Ok(true);
         }
         Ok(false)
     }
 
-    /// `state` and what else is queued for the same room goes with it, up to
-    /// [`STATE_RUN`]; the first delivery for another room waits its turn.
+    /// `state` and what else is queued for the same workspace goes with it, up to
+    /// [`STATE_RUN`]; the first delivery for another workspace waits its turn.
     fn state_run(&mut self, state: StateDelivery) -> Vec<StateDelivery> {
-        let room = delivery_room(&state);
+        let workspace = delivery_room(&state);
         let mut run = vec![state];
         while run.len() < STATE_RUN {
             match self.state_rx.try_recv() {
-                Ok(next) if room.is_some() && delivery_room(&next) == room => {
+                Ok(next) if workspace.is_some() && delivery_room(&next) == workspace => {
                     run.push(next);
                 }
                 Ok(next) => {

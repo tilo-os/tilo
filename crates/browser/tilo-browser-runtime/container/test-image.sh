@@ -116,8 +116,14 @@ head_of() { curl -sS --max-time 20 -o /dev/null -D - "${@:2}" "http://127.0.0.1:
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
 entry TILO_WEB_HOME_NAME=X && fail "a home name without a host must refuse to start"
+entry TILO_WEB_HOME_DOOR=https://rooms.example/peer/v1/directory/ws/ \
+  && fail "a home door without a host must refuse to start"
 entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_FEEDBACK='c"x' \
   && fail "a feedback channel that is not an id must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=https://rooms.example/join \
+  && fail "a home door without a trailing / must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=http://rooms.example/ \
+  && fail "a home door that is not https must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
 for bad in http://site.example https://site.example/path "https://a b"; do
   entry "TILO_WEB_EMBEDDER=$bad" && fail "an embedder that is not an https:// origin must refuse to start: $bad"
@@ -147,8 +153,14 @@ csp=$(head_of / | grep '^content-security-policy:' || true)
   || fail "entry.json embedder: $(get /entry.json)"
 
 start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons TILO_WEB_HOME_APP=so.tilo.chat
-expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"admission":"https://rooms.example/","app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json: $(get /entry.json)"
+
+# A workspace its host lists is joined through the door the host lists it at.
+start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons \
+  TILO_WEB_HOME_DOOR=https://relay.example/peer/v1/directory/w1/
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://rooms.example/directory"}'
+[[ $(get /entry.json) == "$expected" ]] || fail "entry.json with a door: $(get /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of /entry.json) || fail "entry.json must revalidate"
 csp=$(head_of / | grep '^content-security-policy:' || true)
 [[ $csp == "content-security-policy: frame-ancestors 'self'" ]] \

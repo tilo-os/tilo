@@ -74,13 +74,7 @@ pub(crate) enum HostRequest {
     /// Have the workspace's host run an action of a workspace record for the person
     /// (`peer.actions`), and answer it with `desktop_record_action_answer`. The
     /// variant keeps its old name: it is the JSON key the page reads.
-    RoomAction(crate::desktop::RecordActionRequest),
-    /// Open Chat's direct conversation with this person, through Chat's own
-    /// action, as following a link to it does (`desktop_run_own_ask`).
-    Message(people::OwnAsk),
-    /// Send a direct message through Chat's own `send-direct-message`
-    /// (`desktop_run_own_ask`), and answer `id` with `desktop_message_answer`.
-    Send(people::OwnAsk),
+    WorkspaceAction(crate::desktop::RecordActionRequest),
     /// Keep what the person says they are doing, and how they share it, in
     /// their profile, which each of their devices reads
     /// (`desktop_set_own_status`): set here, it shows there too.
@@ -92,6 +86,18 @@ pub(crate) enum HostRequest {
     /// profile names them, and wears an account's picture until the person
     /// uploads their own (`onHostAction('set-linked', {accounts})`).
     Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
+    /// The directory's door let this person into a workspace
+    /// (`mountDesktop({onJoinGranted})`): the invitation it granted them, the
+    /// one-time token the page redeems it with at `origin`, and the workspace
+    /// to open.
+    Joined {
+        origin: String,
+        invitation: String,
+        #[serde(rename = "admissionToken")]
+        admission_token: String,
+        workspace: String,
+        name: String,
+    },
 }
 
 /// The page's host action that lets the person choose their name; the
@@ -99,9 +105,8 @@ pub(crate) enum HostRequest {
 const RENAME_ACTION: &str = "set-name";
 /// The avatar menu's "Report a problem…", which the page answers itself.
 const REPORT_PROBLEM: &str = "report-problem";
-/// Chat, which holds person-to-person conversations.
+/// Chat, which holds the conversation each pair of people shares.
 const CHAT_APP: &str = "so.tilo.chat";
-
 /// The popovers the bar opens, one at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BarPopover {
@@ -135,6 +140,10 @@ pub(crate) struct HostOffers {
     /// A linked-account offer's token the page arrived with: the profile
     /// card opens on it, asking the person to confirm.
     pub link_offer: Option<String>,
+    /// The workspace directory this page browses (`mountDesktop({directory})`):
+    /// a page has no community site, identity on disk or desk of its own to
+    /// read one from.
+    pub directory: Option<crate::directory::PageDirectoryConfig>,
 }
 
 /// Who this desktop's person is when they make something in the workspace,
@@ -224,8 +233,8 @@ impl DesktopChromeSource for PageChrome {
 
 impl PageChrome {
     /// Whether the bar offers its invite button: the page takes invitations
-    /// and the workspace lets this person write in it. Someone it lets only look,
-    /// a spectator among them, brings nobody in; until the workspace answered,
+    /// and the workspace lets this person write in it. Someone it lets only
+    /// look, a viewer among them, brings nobody in; until the workspace answered,
     /// the button stands, as for everyone it lets in.
     fn may_invite(&self) -> bool {
         self.invite
@@ -455,6 +464,9 @@ pub(crate) struct BrowserShell {
     people_open: bool,
     /// The roster pinned out of the popover, and following someone.
     pinned: people::PagePeople,
+    /// The workspace directory, over the page while it is up: the session's
+    /// own sheet, with this page's site, person and workspaces.
+    directory: crate::directory::PageDirectory,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -535,9 +547,14 @@ impl BrowserShell {
             || self.picker.needs_animation_frame()
             || (self.people_open && self.people.needs_animation_frame())
             || self.pinned.needs_animation_frame()
-            || [&self.desk as &dyn Widget, &self.top, &self.profile]
-                .iter()
-                .any(|child| child.needs_redraw())
+            || [
+                &self.desk as &dyn Widget,
+                &self.top,
+                &self.profile,
+                &self.directory,
+            ]
+            .iter()
+            .any(|child| child.needs_redraw())
     }
 
     pub fn new(
@@ -582,6 +599,7 @@ impl BrowserShell {
             Box::new(surface),
             handle.clone(),
             launchpad,
+            Rc::clone(&asks),
             vec![Box::new(hints.announcer())],
         );
         // The desktop's shortcut table keeps the native defaults: the page
@@ -593,6 +611,13 @@ impl BrowserShell {
             bar,
             tilo_menu,
             offers.mac,
+        );
+        // The page's directory: over the desk, from this page's own site,
+        // person and workspaces (`mountDesktop({directory})`).
+        let directory = crate::directory::PageDirectory::new(
+            Rc::clone(&requests),
+            offers.directory.as_ref(),
+            &chrome.wake,
         );
         Self {
             desk,
@@ -608,6 +633,7 @@ impl BrowserShell {
             people: CollaboratorsOverlay::default(),
             people_open: false,
             pinned: people::PagePeople::new(),
+            directory,
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -665,7 +691,6 @@ impl BrowserShell {
                 watching,
                 waved: &self.chrome.here.borrow().waved(now_ms()),
                 waved_until: self.chrome.here.borrow().waved_until(now_ms()),
-                spectating: self.chrome.shared.watching.get(),
             },
             self.cursor,
         );
@@ -700,19 +725,9 @@ impl BrowserShell {
         let followed = self.pinned.followed().map(str::to_owned);
         self.chrome.here.borrow_mut().set_following(followed);
         let (rows, _) = self.chrome.roster_rows(&people, theme);
-        // Whose device each row is: a row is someone's live publisher, a
-        // conversation is with the person.
-        let persons: Vec<(String, String)> = {
-            let here = self.chrome.here.borrow();
-            rows.iter()
-                .filter_map(|row| Some((row.id.clone(), here.user_of(&row.id)?.to_owned())))
-                .collect()
-        };
         // Every window here, by the record it shows as the live layer names
         // it: a window on someone's screen showing one of these is shared.
-        // A spectator only watches: nobody here reads them, so no row.
-        let own = (!self.chrome.shared.watching.get())
-            .then(|| own_row(&self.chrome.here.borrow(), theme));
+        let own = Some(own_row(&self.chrome.here.borrow(), theme));
         let records: Vec<(TabId, String, String)> = tree
             .workspaces
             .iter()
@@ -733,7 +748,6 @@ impl BrowserShell {
                 rect: self.rect,
                 rows: &rows,
                 own: own.as_ref(),
-                persons: &persons,
                 people: &people,
                 tree: &tree,
                 records: &records,
@@ -746,23 +760,11 @@ impl BrowserShell {
                     .fold(0.0, f64::max),
             },
         );
-        if let Some((name, reason)) = self.pinned.take_failed_send() {
-            let title = tilo_desktop_surface::i18n::t_args(
-                "people-overlay-message-failed",
-                &[("name", name.into()), ("reason", reason.into())],
-            );
-            self.chrome
-                .notifications
-                .post(tilo_desktop_surface::notifications::Notification::new(
-                    &title, "",
-                ));
-            (self.chrome.wake)();
-        }
     }
 
     /// The pinned roster's and following's share of `event`: what lands on
-    /// the overlay or the banner, the message box's keys, and the person's
-    /// own input, which takes their view back from whom they follow.
+    /// the overlay or the banner, its keys, and the person's own input,
+    /// which takes their view back from whom they follow.
     /// Returns whether the event was taken.
     fn pinned_people_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
         let (taken, hit) = self.pinned.key(event, ctx.modifiers);
@@ -803,12 +805,6 @@ impl BrowserShell {
         match hit {
             PeopleHit::ToggleFollow(id) => self.pinned.toggle_follow(&id),
             PeopleHit::Unpin => self.pinned.pin(false),
-            // Through Chat's own action, the one way a direct message goes.
-            PeopleHit::Send { to, text } => {
-                if let Some(outgoing) = self.pinned.send(&to, &text) {
-                    self.requests.borrow_mut().push(HostRequest::Send(outgoing));
-                }
-            }
             // The edge was kept as it moved.
             PeopleHit::Moved(_) => {}
             PeopleHit::ShowPerson { id, anchor } => self.show_person(&id, None, anchor),
@@ -1081,14 +1077,14 @@ impl BrowserShell {
             }
             ChromeIntent::ToggleProfile => self.toggle_profile(),
             // The bar asks for these only for what this page never shows it,
-            // so none reaches here: no clock overlay or clock activity in
-            // the snapshot (`HideClock`, `ClockCommand`), no continuity offer
-            // from another device (`AcceptContinuity`, `DismissContinuity`),
-            // and no tray items from running applications (`AppTray`).
-            // Listed rather than caught by a wildcard, so a new request is
-            // handled or explained here.
-            ChromeIntent::HideClock
-            | ChromeIntent::ClockCommand { .. }
+            // so none reaches here: no clock activity in the snapshot
+            // (`ExpandActivity`, `ShowActivity`), no continuity offer from
+            // another device (`AcceptContinuity`, `DismissContinuity`), and
+            // no tray items from running applications (`AppTray`). Listed
+            // rather than caught by a wildcard, so a new request is handled
+            // or explained here.
+            ChromeIntent::ExpandActivity { .. }
+            | ChromeIntent::ShowActivity(_)
             | ChromeIntent::AcceptContinuity
             | ChromeIntent::DismissContinuity
             | ChromeIntent::AppTray { .. } => {}
@@ -1111,11 +1107,23 @@ impl BrowserShell {
                 DesktopAsk::Intent(intent) => {
                     let _ = self.page_intent(intent);
                 }
+                // The workspace menu's "Join a workspace…", which the page
+                // offers with the session's host actions: the directory the
+                // session's shell opens, over the page's own site.
+                DesktopAsk::HostAction(id) if id == tilo_desktop::desktop_host::JOIN_WORKSPACE => {
+                    self.directory.open();
+                }
                 DesktopAsk::HostAction(id) => {
-                    self.requests.borrow_mut().push(HostRequest::Action(id));
+                    // The empty desk's welcome verbs are the desktop's own,
+                    // carried out here; every other host action goes to the
+                    // page that published it.
+                    if let Some(card) = LaunchpadAction::from_host_id(&id) {
+                        self.launchpad(card);
+                    } else {
+                        self.requests.borrow_mut().push(HostRequest::Action(id));
+                    }
                 }
                 DesktopAsk::ReportProblem => self.report_problem(),
-                DesktopAsk::Launchpad(action) => self.apply_launchpad(action),
                 DesktopAsk::Shortcut(ui::shortcut_table::ShortcutAction::QuickSettings) => {
                     let _ = self.page_intent(ChromeIntent::ToggleQuickSettings);
                 }
@@ -1123,8 +1131,17 @@ impl BrowserShell {
                 // Leaving a workspace is a session's to carry out and say.
                 // It places no desk widget, so no music control of one is
                 // here to press: steering a player is the session's, on the
-                // machine that runs it.
-                DesktopAsk::Shortcut(_) | DesktopAsk::LeftWorkspace(_) | DesktopAsk::Music(_) => {}
+                // machine that runs it. A window that stopped answering is
+                // waited for or quit where the compositor runs, which a page
+                // has none of.
+                // No Alt+Tab panel is up on a page's desk — nothing here sets
+                // the walk's switcher — so no card of one is under its pointer.
+                DesktopAsk::Shortcut(_)
+                | DesktopAsk::LeftWorkspace(_)
+                | DesktopAsk::Music(_)
+                | DesktopAsk::WaitWindow(_)
+                | DesktopAsk::ForceQuitApp(_)
+                | DesktopAsk::Switcher(_) => {}
             }
         }
         changed
@@ -1217,8 +1234,8 @@ impl BrowserShell {
             .user_of(id)
             .map(str::to_owned)
             .or_else(|| person.user.clone());
-        // Chat holds person-only conversations with people it lists; one
-        // without a known person (a guest before the host's line) has none.
+        // Chat holds the conversation each pair of people shares; one without
+        // a known person (a guest before the host's line) has none.
         let can_message =
             !person.agent && key.is_some() && crate::desktop::known_application(CHAT_APP).is_some();
         let linked = key
@@ -1227,13 +1244,17 @@ impl BrowserShell {
             .unwrap_or_default();
         Some(ProfileModel {
             name: row.label.clone(),
-            identity: person.id.clone(),
+            // The face's letters and colour are the person's: the same on
+            // every tab and device they are here on.
+            identity: key.clone().unwrap_or_else(|| person.id.clone()),
             colour: Some(row.color),
             key,
+            devices: person.devices.clone(),
             other: Some(tilo_desktop::profile_card::OtherPerson {
                 id: id.to_owned(),
                 status: row.status.clone(),
                 place: row.activity.clone(),
+                presence: (!person.agent).then_some(row.availability),
                 following: self.pinned.followed() == Some(id),
                 can_follow: row.followable && !person.agent,
                 can_message,
@@ -1274,7 +1295,9 @@ impl BrowserShell {
                 let group = match action.source? {
                     HostActionSource::Identity => ProfileGroup::Identity,
                     HostActionSource::Devices => ProfileGroup::Devices,
-                    HostActionSource::Workspaces | HostActionSource::Workspace => return None,
+                    HostActionSource::Workspaces
+                    | HostActionSource::Workspace
+                    | HostActionSource::Session => return None,
                 };
                 let icon = match action.id.as_str() {
                     "save-recovery-key" => ui::icons::Icon::Download,
@@ -1309,7 +1332,6 @@ impl BrowserShell {
             .borrow()
             .own_label()
             .map_or_else(tilo_desktop::here::guest_label, str::to_owned);
-        let watching = self.chrome.shared.watching.get();
         ProfileModel {
             identity: ui::collaboration::local_user_id().0,
             name,
@@ -1319,9 +1341,8 @@ impl BrowserShell {
             actions,
             linked: self.chrome.shared.linked.accounts(),
             // What the page shares of what the person is doing is theirs to
-            // choose here, beside their name; a spectator shares nothing,
-            // since nobody here sees them.
-            sharing: (!watching).then(|| self.chrome.here.borrow().sharing()),
+            // choose here, beside their name.
+            sharing: Some(self.chrome.here.borrow().sharing()),
             // What they are doing, in their own words: the card's field
             // beside how it is shared.
             status: self
@@ -1331,11 +1352,6 @@ impl BrowserShell {
                 .own_words()
                 .unwrap_or_default()
                 .to_owned(),
-            seen: if watching {
-                tilo_desktop::profile_card::Seen::Watching
-            } else {
-                tilo_desktop::profile_card::Seen::Here
-            },
             control_hints: Some(self.hints.enabled()),
             key: self.chrome.here.borrow().own_user().map(str::to_owned),
             // Status, colour and what people see are the desktop's to keep;
@@ -1372,11 +1388,15 @@ impl BrowserShell {
                 (self.chrome.wake)();
                 return;
             }
-            ProfileChoice::Message(key) => HostRequest::Message(people::ask_own(
-                &key,
-                "open-direct-conversation",
-                serde_json::Map::new(),
-            )),
+            // The conversation they have in Chat: the session opens Chat
+            // when it is not up, then hands it the action that shows the
+            // conversation with its composer ready.
+            ProfileChoice::Message(key) => {
+                self.chrome.shared.ask_app_action(
+                    tilo_desktop::launchpad::LaunchpadAppAction::message_person(&key),
+                );
+                return;
+            }
             ProfileChoice::Availability(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,
@@ -1501,7 +1521,7 @@ impl BrowserShell {
         let changed = offered || !asked.is_empty() || !opens.is_empty();
         self.requests
             .borrow_mut()
-            .extend(asked.into_iter().map(HostRequest::RoomAction));
+            .extend(asked.into_iter().map(HostRequest::WorkspaceAction));
         self.requests
             .borrow_mut()
             .extend(opens.into_iter().map(HostRequest::Open));
@@ -1514,7 +1534,10 @@ impl BrowserShell {
         changed
     }
 
-    fn apply_launchpad(&self, action: LaunchpadAction) {
+    /// A verb of the empty desk's launchpad, as its card, its host action
+    /// and its resource action all ask for it: the app action the verb
+    /// declares, what only the page can do, and else the app itself.
+    fn launchpad(&self, action: LaunchpadAction) {
         match action {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
@@ -1523,7 +1546,7 @@ impl BrowserShell {
                 // step, as on a native desktop: the session opens the app
                 // and hands it the action.
                 if let Some(target) = other.app_action()
-                    && crate::desktop::known_application(target.app_id).is_some()
+                    && crate::desktop::known_application(&target.app_id).is_some()
                 {
                     self.chrome.shared.ask_app_action(target);
                 } else if let Some((app, _)) = other.app_target() {
@@ -1587,6 +1610,7 @@ impl Widget for BrowserShell {
         changed |= self.top.update(state, path);
         changed |= self.desk.update(state, path);
         changed |= self.follow_asks();
+        changed |= self.directory.follow();
         self.update_hints();
         // Chosen while the surface updated (search, a banner): the page
         // performs them when it reads this frame's status.
@@ -1617,23 +1641,27 @@ impl Widget for BrowserShell {
         let top = self.top.build_layout(taffy, theme, map);
         let profile = self.profile.build_layout(taffy, theme, map);
         let pinned = self.pinned.build_layout(taffy, theme, map);
+        let directory = self.directory.build_layout(taffy, theme, map);
         let style = Style {
             display: Display::Flex,
             flex_direction: FlexDirection::Column,
             size: Size::from_percent(1.0, 1.0),
             ..Default::default()
         };
-        taffy.widget_node(style, &[desk, top, profile, pinned], map, self)
+        taffy.widget_node(style, &[desk, top, profile, pinned, directory], map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = ui::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
-        if let [desk, top, profile, pinned] = taffy.children(node).unwrap_or_default()[..] {
+        if let [desk, top, profile, pinned, directory] =
+            taffy.children(node).unwrap_or_default()[..]
+        {
             self.desk.apply_layout(taffy, desk, inner);
             self.top.apply_layout(taffy, top, inner);
             self.profile.apply_layout(taffy, profile, inner);
             self.pinned.apply_layout(taffy, pinned, inner);
+            self.directory.apply_layout(taffy, directory, inner);
         }
     }
 
@@ -1662,6 +1690,9 @@ impl Widget for BrowserShell {
             self.people.clear();
             self.pinned.set_panel(None);
         }
+        // Over everything but the picker, while the person browses the
+        // directory.
+        self.directory.draw(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);
@@ -1670,7 +1701,8 @@ impl Widget for BrowserShell {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        let [desk, top, profile, _] = ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
+        let [desk, top, profile, _, directory] =
+            ctx.taffy.children(ctx.node_id).unwrap_or_default()[..]
         else {
             return;
         };
@@ -1691,6 +1723,16 @@ impl Widget for BrowserShell {
                 self.picker
                     .handle_event(event, self.cursor, modifiers, self.desk.area(), &windows);
             return;
+        }
+        // The directory sheet, like the profile card: it takes what it
+        // covers, the keyboard and the press that dismisses it.
+        if self.directory.is_open() {
+            self.directory
+                .handle_event(event, &mut ctx.reborrow(ctx.path, directory));
+            if *ctx.handled {
+                self.directory.follow();
+                return;
+            }
         }
         self.hints.heard(event, ui::time::now());
         if self.people_event(event, ctx) {
@@ -1726,6 +1768,7 @@ impl Widget for BrowserShell {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         !self.people_open
             && !self.people.wants_pointer_capture()
+            && !self.directory.is_open()
             && !self.pinned.wants_pointer_capture()
             && self.cursor.is_none_or(|point| !self.pinned.contains(point))
             && !self.top.menu_open()
@@ -1742,7 +1785,13 @@ impl Widget for BrowserShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.desk, &self.top, &self.profile, &self.pinned]
+        vec![
+            &self.desk,
+            &self.top,
+            &self.profile,
+            &self.pinned,
+            &self.directory,
+        ]
     }
 
     fn visit_retained_components(
@@ -1768,6 +1817,7 @@ impl Widget for BrowserShell {
             &mut self.top,
             &mut self.profile,
             &mut self.pinned,
+            &mut self.directory,
         ]
     }
 
@@ -1803,9 +1853,14 @@ impl Widget for BrowserShell {
     /// child, says here that it moves.
     fn needs_animation_frame(&self) -> bool {
         self.hints.needs_animation_frame(ui::time::now())
-            || [&self.desk as &dyn Widget, &self.top, &self.profile]
-                .iter()
-                .any(|child| child.needs_animation_frame())
+            || [
+                &self.desk as &dyn Widget,
+                &self.top,
+                &self.profile,
+                &self.directory,
+            ]
+            .iter()
+            .any(|child| child.needs_animation_frame())
     }
 
     /// The earliest wake any part of the page asked for.
@@ -1845,7 +1900,7 @@ fn link_offer_ready(page: Rect, own_avatar: Rect, own_name: Option<&str>) -> boo
 
 /// The card of someone not here now, known by their root key `key` and the
 /// name they were shown by: no status or place, nothing to follow, and
-/// Message where Chat holds person-only conversations.
+/// Message where Chat holds the conversation between the two of them.
 fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
     let key = key.to_ascii_lowercase();
     if key.len() != 64 || !key.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -1860,6 +1915,7 @@ fn absent_person(key: &str, name: &str) -> Option<ProfileModel> {
             id: key.clone(),
             status: None,
             place: None,
+            presence: None,
             following: false,
             can_follow: false,
             can_message: crate::desktop::known_application(CHAT_APP).is_some(),
@@ -1896,6 +1952,8 @@ mod tests {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             })
             .collect::<Vec<_>>();
         let authors = [(tabs[0].id, GUEST), (tabs[1].id, OTHER_GUEST)]

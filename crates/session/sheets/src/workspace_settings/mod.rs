@@ -30,7 +30,7 @@ pub use agents::{
 };
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
-pub use general::{Archived, Device, General, Group, Public, PublicControls};
+pub use general::{Device, General, Group};
 pub use people::{Decision, Offers, People, Person, RoleChoice};
 pub use permissions::{Choice, Composer, Holders, Permission, Permissions};
 
@@ -83,31 +83,8 @@ pub enum WorkspaceSettingsEffect {
         #[param("-1 for earlier, 1 for later")]
         step: i32,
     },
-    /// List the workspace in its host's public directory, or take it out
-    #[effect(attended)]
-    SetPublic {
-        #[param("Whether the workspace is listed")]
-        public: bool,
-    },
-    /// Give people who join from the directory the next role
-    #[effect(attended)]
-    NextJoinRole,
-    /// Say what the public workspace is
-    #[effect(own_device, kind = "read")]
-    Describe,
-    /// Bring an archived workspace back
-    #[effect(own_device)]
-    Restore {
-        #[param("The archived workspace, by its key in the list")]
-        workspace: String,
-    },
-    /// Delete an archived workspace
-    #[effect(own_device, destructive, attended)]
-    DeleteArchived {
-        #[param("The archived workspace, by its key in the list")]
-        workspace: String,
-    },
-    /// Delete this workspace
+    /// Take this workspace off your device's desktop, leaving it to the
+    /// people in it
     #[effect(destructive, attended)]
     Delete,
     /// Give a member of the workspace another role
@@ -127,9 +104,6 @@ pub enum WorkspaceSettingsEffect {
     /// Look at what was done in the workspace
     #[effect(own_device, kind = "read")]
     ReviewActivity,
-    /// Transfer the workspace's ownership, or answer a transfer
-    #[effect(own_device, kind = "read")]
-    Ownership,
     /// Admit an agent to the workspace
     #[effect(own_device, kind = "read")]
     AddAgent,
@@ -201,9 +175,6 @@ pub enum WorkspaceSettingsEffect {
         #[param("The permission, by its key in the list")]
         grant: String,
     },
-    /// Open the workspace's saved roles
-    #[effect(own_device, kind = "read")]
-    SavedRoles,
     /// Have the next app open a kind of file or link for everyone here
     #[effect(attended)]
     NextWorkspaceDefault {

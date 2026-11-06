@@ -73,6 +73,13 @@ pub fn wall_to_utc(zone: &str, wall: NaiveDateTime) -> Option<(DateTime<Utc>, Re
     }
 }
 
+/// The instant `wall` names in `zone`, for a reader with no host clock to ask: `floating` (a
+/// wall time with no zone of its own) and a zone this build does not know read as UTC.
+#[must_use]
+pub fn wall_instant(zone: &str, wall: NaiveDateTime) -> DateTime<Utc> {
+    wall_to_utc(zone, wall).map_or_else(|| wall.and_utc(), |(instant, _)| instant)
+}
+
 /// Return the canonical wall time after applying the deterministic gap rule.
 /// Fold inputs remain textually unchanged; their earlier-instant choice is made
 /// by [`wall_to_utc`] whenever an instant is requested.
@@ -115,5 +122,24 @@ mod tests {
         // An invalid zone is refused instead of becoming floating.
         assert_eq!(canonical_zone("Mars/Olympus"), None);
         assert_eq!(wall_to_utc("Mars/Olympus", at((2026, 1, 1), 12, 0)), None);
+    }
+
+    /// A reminder of a record with no time of day counts from the start of its day in the
+    /// person's zone; a zone this build does not know reads as UTC rather than dropping it.
+    #[test]
+    fn a_wall_time_resolves_to_the_instant_a_reader_can_count_from() {
+        let midnight = at((2026, 10, 27), 0, 0);
+        assert_eq!(
+            wall_instant("America/Los_Angeles", midnight).to_string(),
+            "2026-10-27 07:00:00 UTC"
+        );
+        assert_eq!(
+            wall_instant("floating", midnight).to_string(),
+            "2026-10-27 00:00:00 UTC"
+        );
+        assert_eq!(
+            wall_instant("Mars/Olympus", midnight).to_string(),
+            "2026-10-27 00:00:00 UTC"
+        );
     }
 }

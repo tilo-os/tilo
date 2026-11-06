@@ -19,9 +19,6 @@ path = "src/main.rs"
 # same encode a share stream uses, written to a file instead of a peer.
 tilo-callstream = { path = "../../collab/tilo-callstream", features = ["recording"] }
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["realtime"] }
-# The recorder's process is one owner's: dropping the capture kills its whole
-# group, and the availability probe is bounded like every other helper run.
-bounded-command = { path = "../../system/bounded-command" }
 # The studio is an overlay app the session opens and closes: it shares that
 # presentation with the session the way every sheet does.
 tilo-sheets = { path = "../sheets" }

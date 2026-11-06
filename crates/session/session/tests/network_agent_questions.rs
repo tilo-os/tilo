@@ -120,7 +120,7 @@ fn question() -> PendingConfirmation {
         action_label: "Clear the history".into(),
         resource_label: "Calculator".into(),
         risk: "destructive".into(),
-        room: "The desk".into(),
+        workspace: "The desk".into(),
         expires_at_ns: tilo_clock::unix_now_ns().saturating_add(60_000_000_000),
     }
 }
@@ -181,7 +181,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
     )
     .expect("session");
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     let shown = loop {
         if let Some(shown) = questions
             .pending()
@@ -211,7 +211,7 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
         "the person answered the question"
     );
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = tilo_test_env::hang_deadline();
     while asked
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

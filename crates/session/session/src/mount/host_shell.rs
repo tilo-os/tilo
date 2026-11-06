@@ -180,7 +180,7 @@ fn answer(reply: &Arc<Mutex<UnixStream>>, app: &str, allowed: bool) {
                 .map_err(|error| error.to_string())
         });
     if let Err(error) = written {
-        tracing::debug!(%error, %app, "the answer about the device's own shell was not written");
+        tracing::warn!(%error, %app, "the answer about the device's own shell was not written");
     }
 }
 

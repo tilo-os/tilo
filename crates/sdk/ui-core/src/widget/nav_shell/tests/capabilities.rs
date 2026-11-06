@@ -1,4 +1,5 @@
 use super::*;
+use crate::component::Described;
 use crate::widget::{FilterCount, Filterable};
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
@@ -71,6 +72,63 @@ fn a_swap_waits_for_the_next_build() {
             .and_then(|node| node.name)
             .as_deref(),
         Some("Final")
+    );
+}
+
+/// The bar follows the actions it is given in place: a window that shows something else shows
+/// its actions from the first layout that sees them, each placed, never the ones before.
+#[test]
+fn a_header_takes_new_actions_in_place() {
+    let shell = NavShell::new()
+        .overview(Probe::boxed("overview").0)
+        .overview_header(
+            "Inbox",
+            vec![
+                labelled("one", "One", Icon::Plus),
+                icon("two", Icon::Send, "Two"),
+            ],
+        );
+    let mut h = harness(shell, 1024, 700, Theme::dark());
+    settle(&mut h, 1024, 700);
+    assert!(
+        (0..2).all(|i| part_rect(&h, Part::Action(Column::Overview, i)).width() > 0.0),
+        "the window's own actions stand in its bar"
+    );
+    let next = vec![
+        icon("three", Icon::Send, "Three"),
+        labelled("four", "Four", Icon::Plus),
+        Box::new(Button::new("five", "Five").in_menu().on_view(|| {})) as Element,
+        Box::new(Button::new("six", "Six").in_menu().on_view(|| {})) as Element,
+    ];
+    // The host changes the actions in place, by key, as it brings a slot to the ones it is
+    // given: the shell stages them for the next build and plans its parts from them there.
+    {
+        let mut shell = h.root_mut::<NavShell>();
+        let views = shell
+            .slot_views("overview_actions")
+            .expect("the shell changes its header's actions in place");
+        for index in (0..views.len()).rev() {
+            views.remove(index);
+        }
+        for (index, view) in next.into_iter().enumerate() {
+            views.insert(index, view);
+        }
+    }
+    settle(&mut h, 1024, 700);
+    for i in 0..2 {
+        assert!(
+            part_rect(&h, Part::Action(Column::Overview, i)).width() > 0.0,
+            "action {i} of the new set stands in the bar"
+        );
+    }
+    assert_eq!(
+        h.root::<NavShell>()
+            .part(Part::Action(Column::Overview, 0))
+            .and_then(Widget::accessibility)
+            .and_then(|node| node.name)
+            .as_deref(),
+        Some("Three"),
+        "the bar shows what arrived, not what it showed"
     );
 }
 
@@ -895,5 +953,42 @@ fn a_shell_that_searches_its_sidebar_hands_the_search_its_list() {
     assert!(
         crate::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
         "a shell answers for its sidebar's list only when it searches it"
+    );
+}
+
+/// The window has one bar over its columns: the column with something to say takes the room of
+/// the columns after it while they have nothing to say, so its actions stand at the window's
+/// trailing edge; a column that says something of its own keeps its room, and the one before it
+/// its own.
+#[test]
+fn a_headers_actions_stand_at_the_windows_end_while_the_columns_after_it_are_quiet() {
+    let shell = NavShell::new()
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
+    let mut h = harness(shell, 1024, 700, Theme::dark());
+    settle(&mut h, 1024, 700);
+    let alone = part_rect(&h, Part::Action(Column::Overview, 0));
+    assert!(
+        alone.width() > 0.0 && alone.x1 > 1024.0 - 40.0,
+        "the window's only section reaches the window's end: {alone:?}"
+    );
+    let shell = NavShell::new()
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")])
+        .content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
+    let mut h = harness(shell, 1024, 700, Theme::dark());
+    settle(&mut h, 1024, 700);
+    let before = part_rect(&h, Part::Action(Column::Overview, 0));
+    let after = part_rect(&h, Part::Action(Column::Content, 0));
+    let content = h.root::<NavShell>().geometry().content_column.x0;
+    assert!(
+        before.width() > 0.0 && before.x1 <= content,
+        "a column with a title after it keeps its own room: {before:?} before {content}"
+    );
+    assert!(
+        after.width() > 0.0 && after.x1 > 1024.0 - 40.0,
+        "and the last section reaches the window's end: {after:?}"
     );
 }

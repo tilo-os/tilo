@@ -13,7 +13,7 @@ use crate::view::{BindTarget, Binding, NodeBuild};
 use crate::view_state::{StateKey, StateLayer};
 
 /// The action id of `set(name, value)`: changes a view state slot. Its arguments are the
-/// window, the person (empty for window state), the declaration id and the value.
+/// window, the person, the layer (`window` or `lens`), the declaration id and the value.
 pub const SET_ACTION: &str = "$set";
 /// The action id of `open(r, view: v, front: f)`: its arguments are the resource, the view id
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
@@ -21,6 +21,11 @@ pub const OPEN_ACTION: &str = "$open";
 
 /// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
 pub const THEN_ACTION: &str = "$then";
+
+/// The prefix of the window state slot that names the view a window shows a resource through,
+/// the resource's id after it: what the bar's view switch sets. Empty until a person picks a
+/// view, so the resource's type's default view shows until then.
+pub const VIEW_STATE: &str = "$view:";
 
 /// The action of a change mark (`ui.ChangeMark`, and those the host places): show what the
 /// task run that made the change did. Its arguments are the run (its group) and the resource.
@@ -32,7 +37,10 @@ pub const REVIEW_ACTION: &str = "$review";
 pub const UNDO_ACTION: &str = "$undo";
 
 impl Core {
-    fn with_view<R>(&self, f: impl FnOnce(&mut ViewState) -> Result<R, String>) -> HResult<R> {
+    pub(crate) fn with_view<R>(
+        &self,
+        f: impl FnOnce(&mut ViewState) -> Result<R, String>,
+    ) -> HResult<R> {
         let mut frames = self.frames.borrow_mut();
         match &mut frames.top_mut()?.kind {
             FrameKind::View(vs) => Ok(f(vs)?),
@@ -71,39 +79,9 @@ impl Core {
         let mut offered = Vec::with_capacity(actions.len());
         let mut events = Vec::with_capacity(actions.len());
         for (index, action) in actions.into_iter().enumerate() {
-            // `host.Action`: label, icon, role, primary, destructive, on, key, params, run,
-            // group, frequent.
-            let Value::Tuple(fields) = action else {
-                return trap("an offered action is a host.Action");
-            };
-            let text = |at: usize| match fields.get(at) {
-                Some(Value::Text(text)) => Some(text.clone()),
-                Some(Value::Opt(Some(held))) => held.as_text().map(str::to_owned),
-                _ => None,
-            };
-            let flag = |at: usize| match fields.get(at) {
-                Some(Value::Bool(flag)) => Some(*flag),
-                Some(Value::Int(n)) => Some(*n != 0),
-                Some(Value::Opt(Some(held))) => match **held {
-                    Value::Bool(flag) => Some(flag),
-                    Value::Int(n) => Some(n != 0),
-                    _ => None,
-                },
-                _ => None,
-            };
-            let Some(run @ Value::Action(_)) = fields.get(8).cloned() else {
-                return trap("an offered action runs an action reference");
-            };
             let event = offered_event(&name, index);
-            offered.push(Value::Offered(Rc::new(tilolang::toolkit::Offered {
-                label: text(0).unwrap_or_default(),
-                icon: text(1),
-                primary: flag(3).unwrap_or(false),
-                destructive: flag(4).unwrap_or(false),
-                on: flag(5),
-                key: text(6),
-                event: event.clone(),
-            })));
+            let (shown, run) = offered_action(&action, &event)?;
+            offered.push(shown);
             events.push((event, run));
         }
         self.with_view(|vs| {
@@ -115,16 +93,45 @@ impl Core {
         ret_void()
     }
 
+    /// A prop `name` of `node` that is one offered action (`ui.NavSection(add: g.add)`): an
+    /// action, or nothing, as `host.Action` says of it; the node's event `name` runs it. An
+    /// action the view names (`add: new_project(t)`) is shown by what it declares.
+    fn offer_action(&self, node: i32, name: i32, value: i32) -> HResult<Option<Wasm>> {
+        let (at, name) = (self.node_index(node)?, self.text(name)?);
+        let offered = match self.val_whole(value)? {
+            Value::Opt(None) => return ret_void(),
+            Value::Opt(Some(held)) => (*held).clone(),
+            other => other,
+        };
+        let (shown, run) = match &offered {
+            Value::Action(reference) => {
+                let action = self.action_ref_value(reference)?;
+                offered_action(&action, &name)?
+            }
+            other => offered_action(other, &name)?,
+        };
+        self.with_view(|vs| {
+            let n = vs.nodes.get_mut(at).ok_or("unknown ui node")?;
+            n.props.insert(name.clone(), shown);
+            // A single action is one the component reads by its prop, and its event is the
+            // first of the prop's, as a control that offers a list of actions reports one.
+            n.events.insert(format!("{name}.0"), run);
+            Ok(())
+        })?;
+        ret_void()
+    }
+
     /// The slot a `window` or `lens` declaration of the running view names.
     fn state_key(&self, layer: i32, id: i32) -> HResult<StateKey> {
         let layer = StateLayer::from_code(layer)
             .map_or_else(|| trap(format!("unknown view state layer {layer}")), Ok)?;
         let state = self.text(id)?;
         self.with_view(|vs| {
-            Ok(StateKey {
-                window: vs.window.clone(),
-                principal: (layer == StateLayer::Lens).then(|| vs.viewer.0.clone()),
-                state,
+            Ok(match layer {
+                StateLayer::Window => {
+                    StateKey::window(vs.window.clone(), vs.viewer.0.clone(), state)
+                }
+                StateLayer::Lens => StateKey::lens(vs.window.clone(), vs.viewer.0.clone(), state),
             })
         })
     }
@@ -134,10 +141,14 @@ impl Core {
         let fallback = self.val_whole(a.h(2)?)?;
         let (value, generation) = {
             let states = self.view_states.borrow();
-            (
-                states.get(&key).cloned().unwrap_or(fallback),
-                states.generation(&key),
-            )
+            // What the person set, else what a scenario staged the declaration at, else what
+            // its view declares.
+            let held = states
+                .get(&key)
+                .or_else(|| states.seeded(&key))
+                .cloned()
+                .unwrap_or(fallback);
+            (held, states.generation(&key))
         };
         let seen = value.clone();
         self.with_view(|vs| {
@@ -205,10 +216,15 @@ impl Core {
             args: vec![
                 Value::Text(key.window),
                 Value::Text(key.principal.unwrap_or_default()),
+                Value::Int(i64::from(
+                    key.layer
+                        .map_or(StateLayer::Window.code(), StateLayer::code),
+                )),
                 Value::Text(key.state),
                 value,
             ],
             author,
+            from: None,
         }))
     }
 
@@ -226,6 +242,7 @@ impl Core {
             action: THEN_ACTION.to_owned(),
             args: vec![first, next],
             author,
+            from: None,
         }))
     }
 
@@ -250,6 +267,7 @@ impl Core {
             action: OPEN_ACTION.to_owned(),
             args: vec![target, Value::Text(view), Value::Bool(front)],
             author,
+            from: None,
         }))
     }
 
@@ -292,6 +310,7 @@ impl Core {
             action: UNDO_ACTION.to_owned(),
             args,
             author,
+            from: None,
         }))
     }
 
@@ -410,6 +429,7 @@ impl Core {
             }
             Imp::UiOn => self.ui_on(a),
             Imp::UiActions => self.offer_actions(a.h(0)?, a.h(1)?, a.h(2)?),
+            Imp::UiAction => self.offer_action(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::UiAnchor => {
                 let node = self.node_index(a.h(0)?)?;
                 let anchor = self.text(a.h(1)?)?;
@@ -470,6 +490,45 @@ fn float_to_class(v: f64) -> i64 {
 /// host's validator takes the same form (`tilo_render_protocol::patch::validate::offered_event`).
 fn offered_event(prop: &str, index: usize) -> String {
     format!("{prop}.{index}")
+}
+
+/// One `host.Action` (`label`, `icon`, `role`, `primary`, `destructive`, `on`, `key`,
+/// `params`, `run`, `group`, `frequent`) as its control shows it, and the action reference its
+/// event, `event`, runs.
+fn offered_action(action: &Value, event: &str) -> HResult<(Value, Value)> {
+    let Value::Tuple(fields) = action else {
+        return trap("an offered action is a host.Action");
+    };
+    let text = |at: usize| match fields.get(at) {
+        Some(Value::Text(text)) => Some(text.clone()),
+        Some(Value::Opt(Some(held))) => held.as_text().map(str::to_owned),
+        _ => None,
+    };
+    let flag = |at: usize| match fields.get(at) {
+        Some(Value::Bool(flag)) => Some(*flag),
+        Some(Value::Int(n)) => Some(*n != 0),
+        Some(Value::Opt(Some(held))) => match **held {
+            Value::Bool(flag) => Some(flag),
+            Value::Int(n) => Some(n != 0),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some(run @ Value::Action(_)) = fields.get(8).cloned() else {
+        return trap("an offered action runs an action reference");
+    };
+    Ok((
+        Value::Offered(Rc::new(tilolang::toolkit::Offered {
+            label: text(0).unwrap_or_default(),
+            icon: text(1),
+            primary: flag(3).unwrap_or(false),
+            destructive: flag(4).unwrap_or(false),
+            on: flag(5),
+            key: text(6),
+            event: event.to_owned(),
+        })),
+        run,
+    ))
 }
 
 /// A node `shown_nodes` makes: its kind, key, props and children.
@@ -535,6 +594,30 @@ fn chip_node(vs: &mut ViewState, key: String, label: Value, icon: Option<Value>)
 /// in the person's format, a person as their avatar and name, a case of an enum as its label
 /// and icon, a resource as its title, a flag as yes or no, nothing as a quiet "None", and the
 /// elements of a set side by side. Returns its index.
+/// A day or a time of day, as the text component shows it (`value:as`); a day the change moved
+/// with the time of day it holds reads as one fact, and carries it beside it (`value:time`).
+fn shown_moment(
+    vs: &mut ViewState,
+    key: &str,
+    kind: &str,
+    value: Value,
+    extra: Option<Value>,
+) -> usize {
+    let mut props = vec![("value", value), ("value:as", Value::Text(kind.to_owned()))];
+    if let (Some(Value::Text(at)), "date") = (extra, kind) {
+        props.push(("value:time", Value::Text(at)));
+    }
+    push_node(
+        vs,
+        Made {
+            kind: "ui.Text",
+            key: key.to_owned(),
+            props,
+            children: Vec::new(),
+        },
+    )
+}
+
 fn shown_nodes(
     vs: &mut ViewState,
     key: &str,
@@ -583,15 +666,7 @@ fn shown_nodes(
     };
     match kind {
         "none" => text_node(vs, key, Value::Text(phrase("tilolang-none-value")), true),
-        "date" | "time" => push_node(
-            vs,
-            Made {
-                kind: "ui.Text",
-                key: key.to_owned(),
-                props: vec![("value", value), ("value:as", Value::Text(kind.to_owned()))],
-                children: Vec::new(),
-            },
-        ),
+        "date" | "time" => shown_moment(vs, key, kind, value, extra),
         "principal" => {
             let avatar = push_node(
                 vs,

@@ -20,10 +20,12 @@
 //! person does on the glass is committed text, not keys an engine composes.
 //! Switching back to a keyboard layout brings the on-screen keyboard back.
 //!
-//! The engine also serves X11 clients on the session's Xwayland display: it
-//! opens that display over the session bus, after the display has started,
-//! and composes for the XIM windows there. Nothing else is needed on the X
-//! side — Xwayland accepts this login's clients.
+//! The engine also serves X11 clients, one workspace display at a time: for
+//! every display whose Xwayland server runs it opens that display over the
+//! session bus and composes for the XIM windows there. A display it opened
+//! after its server stopped is opened again when a fresh server starts on it.
+//! Nothing else is needed on the X side — the compositor accepts these
+//! clients.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -118,10 +120,10 @@ pub(crate) struct InputMethod {
     /// The private display the engine's connections are accepted on, while it
     /// runs: dropping it stops accepting them.
     display: Option<tilo_compositor::SurfaceDisplay>,
-    /// The X11 display the person's windows are on, while the session has one.
-    x11: Option<String>,
-    /// The X11 display the engine was already asked to serve.
-    opened: Option<String>,
+    /// The displays whose Xwayland servers run, which the engine serves.
+    x11: Vec<String>,
+    /// The displays the engine was already asked to serve.
+    opened: Vec<String>,
 }
 
 #[derive(Default)]
@@ -139,15 +141,16 @@ enum Run {
 }
 
 impl InputMethod {
-    /// The X11 display the session's apps show on, which the engine serves
-    /// once it runs.
-    pub(crate) fn serve_x11(&mut self, display: Option<String>) {
-        if self.x11 == display {
+    /// The displays whose Xwayland servers run, which the engine serves once
+    /// it runs.
+    pub(crate) fn serve_x11(&mut self, displays: Vec<String>) {
+        if self.x11 == displays {
             return;
         }
-        self.x11 = display;
-        // Another display is another display to open, whoever serves it.
-        self.opened = None;
+        // A display whose server stopped is served again when the next client
+        // starts one there, even though the number is the same.
+        self.opened.retain(|open| displays.contains(open));
+        self.x11 = displays;
     }
 
     /// Follow the active input source: run the engine it names, on a display
@@ -224,7 +227,9 @@ impl InputMethod {
         }
         self.run = Run::Down;
         self.display = None;
-        self.opened = None;
+        // A started engine serves no display yet: what ran before it is its
+        // own, and XIM goes with it.
+        self.opened.clear();
     }
 
     /// Start `engine` on a display of its own, typing on the source list's
@@ -311,44 +316,52 @@ impl InputMethod {
         self.run = Run::Running { engine, child };
     }
 
-    /// Ask the engine, over the session bus, to serve an X11 display the
-    /// session's X11 apps show on. Runs off the loop: the engine answers
-    /// after its X handshake.
+    /// Ask the engine, over the session bus, to serve each X11 display the
+    /// session's X11 apps show on and it does not serve yet. Runs off the
+    /// loop: the engine answers after its X handshake.
     fn open_x11(&mut self, runtime: &tokio::runtime::Runtime) {
-        let Some(x11) = self.x11.clone() else {
-            return;
-        };
-        if self.opened.as_deref() == Some(x11.as_str()) {
-            return;
-        }
-        self.opened = Some(x11.clone());
-        runtime.spawn(async move {
-            match ask_x11(x11.clone()).await {
-                Ok(()) => tracing::info!(x11_display = %x11, "the input method serves the X11 display"),
-                Err(error) => {
-                    tracing::warn!(x11_display = %x11, %error, "the input method could not serve the X11 display");
+        let pending: Vec<String> = self
+            .x11
+            .iter()
+            .filter(|served| !self.opened.contains(served))
+            .cloned()
+            .collect();
+        for number in pending {
+            self.opened.push(number.clone());
+            runtime.spawn(async move {
+                match ask_x11(number.clone()).await {
+                    Ok(()) => tracing::info!(x11_display = %number, "the input method serves the X11 display"),
+                    Err(error) => {
+                        tracing::warn!(x11_display = %number, %error, "the input method could not serve the X11 display");
+                    }
                 }
-            }
-        });
+            });
+        }
     }
 }
 
 impl crate::Session {
     /// Follow the composing input method of the active input source: run its
-    /// engine while a source names one, and serve the session's X11 display
-    /// from it.
+    /// engine while a source names one, and serve every display whose Xwayland
+    /// server runs from it.
     pub(crate) fn follow_input_method(&mut self) {
+        let running = self
+            .compositor
+            .x11_displays()
+            .map(|displays| {
+                displays
+                    .running()
+                    .into_iter()
+                    .map(|number| format!(":{number}"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.input_method.serve_x11(running);
         self.input_method.follow(
             &mut self.compositor,
             &self.sources,
             &self.automation_runtime,
         );
-    }
-
-    /// The X11 display this session's apps show on, which the composing
-    /// input method serves once it runs.
-    pub fn set_x11_display(&mut self, display: Option<String>) {
-        self.input_method.serve_x11(display);
     }
 }
 

@@ -61,6 +61,14 @@ pub struct Authorship {
     /// time of the versions it made (a scenario's `as who at time` sets it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
+    /// The resource the invocation was made from, when it was made from one: what the resources
+    /// it created were made from ([`tilolang_runtime::store::Version::from`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<tilolang_runtime::value::ResourceRef>,
+    /// Who proposed the action, when the person invoking it accepted their suggestion: what
+    /// history says while the change is theirs ([`tilolang_runtime::store::Version::suggested_by`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_by: Option<String>,
 }
 
 impl Authorship {

@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-_APP_UNIT = re.compile(r"/tilo-apps-\d+\.scope/app-((?:[^/-]|\\x2d)+)-\d+(?:/|$)")
+_APP_UNIT = re.compile(r"/app-tilo-((?:[^/-]|\\x2d)+)-\d+\.scope(?:/|$)")
 
 
 def script() -> str:

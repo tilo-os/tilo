@@ -110,6 +110,22 @@ impl Pacing {
         self.window.costs_us.push(micros(cost));
     }
 
+    /// When the frame after the queued one is due: the build point past the
+    /// blank the queued frame is shown at. `None` with nothing queued or an
+    /// off-grid build, and for a display that takes each frame as the last
+    /// is shown (adaptive, or frames that do not fit a refresh), whose flip
+    /// is the wakeup.
+    pub(crate) fn queued_next_frame(&self, interval: Duration, adaptive: bool) -> Option<Instant> {
+        let (_, target) = self.built?;
+        let target = target?;
+        if adaptive || self.render_bound(interval) {
+            return None;
+        }
+        target
+            .checked_add(interval)?
+            .checked_sub(self.lead(interval))
+    }
+
     /// The output showed a frame (or retired a flip) at `vblank`; when the
     /// next frame is due. `adaptive`: the display follows the content.
     pub(crate) fn shown(&mut self, vblank: Instant, interval: Duration, adaptive: bool) -> Instant {
@@ -168,9 +184,30 @@ impl Pacing {
             .unwrap_or(later)
     }
 
-    /// The log line's fields once [`WINDOW`] has passed since its first
-    /// shown frame; starts a new window.
-    pub(crate) fn take_summary(&mut self, now: Instant, interval: Duration) -> Option<Summary> {
+    /// Logs the frames shown since the last line as `frame pacing` once
+    /// [`WINDOW`] has passed, and starts a new window.
+    pub(crate) fn log(&mut self, output: &str, now: Instant, interval: Duration) {
+        let Some(summary) = self.take_summary(now, interval) else {
+            return;
+        };
+        tracing::debug!(
+            output,
+            shown = summary.shown,
+            missed = summary.missed,
+            interval_us = interval.as_micros(),
+            lead_us = summary.lead_us,
+            cost_p50_us = summary.cost.0,
+            cost_p99_us = summary.cost.1,
+            build_to_vblank_p50_us = summary.build_to_vblank.0,
+            build_to_vblank_p99_us = summary.build_to_vblank.1,
+            gap_max_us = summary.gap_max_us,
+            "frame pacing"
+        );
+    }
+
+    /// The measurements since the last line once [`WINDOW`] has passed since
+    /// its first shown frame; starts a new window.
+    fn take_summary(&mut self, now: Instant, interval: Duration) -> Option<Summary> {
         let started = self.window.started?;
         if now.saturating_duration_since(started) < WINDOW {
             return None;
@@ -271,6 +308,45 @@ mod tests {
         let mut light = Pacing::default();
         light.queued(t0, t0 + ms(1), INTERVAL);
         assert_eq!(light.shown(t0 + INTERVAL, INTERVAL, true), t0 + INTERVAL);
+    }
+
+    #[test]
+    fn the_frame_after_a_queued_one_is_due_past_its_blank() {
+        let mut pacing = Pacing::default();
+        let t0 = Instant::now();
+        let due = pacing.shown(t0, INTERVAL, false);
+        assert_eq!(
+            pacing.queued_next_frame(INTERVAL, false),
+            None,
+            "nothing queued"
+        );
+        pacing.queued(due, due + ms(1), INTERVAL);
+        // It is shown at the next blank; the one after it is built one lead
+        // before the blank after that.
+        let lead = pacing.lead(INTERVAL);
+        assert_eq!(
+            pacing.queued_next_frame(INTERVAL, false),
+            Some(t0 + INTERVAL * 2 - lead)
+        );
+        assert_eq!(
+            pacing.queued_next_frame(INTERVAL, true),
+            None,
+            "a following display takes it as the last is shown"
+        );
+        pacing.shown(t0 + INTERVAL, INTERVAL, false);
+        assert_eq!(
+            pacing.queued_next_frame(INTERVAL, false),
+            None,
+            "shown, nothing queued"
+        );
+        // A build that began off the grid aimed at no blank.
+        let late = t0 + INTERVAL + ms(2);
+        pacing.queued(late, late + ms(1), INTERVAL);
+        assert_eq!(pacing.queued_next_frame(INTERVAL, false), None);
+        // Frames that do not fit a refresh are built as each is shown.
+        let mut slow = Pacing::default();
+        slow.queued(t0, t0 + ms(20), INTERVAL);
+        assert_eq!(slow.queued_next_frame(INTERVAL, false), None);
     }
 
     #[test]

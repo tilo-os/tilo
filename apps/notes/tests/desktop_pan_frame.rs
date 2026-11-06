@@ -51,6 +51,8 @@ fn six_notes(
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
         .collect();
     let ids: Vec<TabId> = tabs.iter().map(|tab| tab.id).collect();

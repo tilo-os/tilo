@@ -36,7 +36,10 @@ impl Described for Scrollable {
         let mut scroll = if both {
             Self::new(super::ScrollAxis::Both)
         } else if across {
-            Self::new_horizontal()
+            // What scrolls sideways shares its width out by weight — a board's lanes — so it
+            // fills the view when it fits and grows past it when it needs more room, and the
+            // view's width is a size it can lay what it holds out in.
+            Self::new_horizontal().with_content_min_viewport_width()
         } else {
             Self::new_vertical()
         };

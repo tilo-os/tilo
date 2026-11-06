@@ -171,9 +171,18 @@ pub(crate) fn surfaces_at_rest(
         } else {
             fallback_width
         };
+        // A settled frame skips every surface's registration walk: a control
+        // replaced since composes again, and an owner that retired cannot
+        // read its frontier, which is asked below. A surface whose documents
+        // the witness follows need not read that frontier either.
         needed = if settled && history.owners_followed_by_frame_witness() {
             !history.sync_status_matches(None)
                 || history.refresh_without_owners(width).unwrap_or(false)
+        } else if settled {
+            !history.sync_status_matches(None)
+                || history
+                    .refresh_without_owners(width)
+                    .unwrap_or_else(|| history.heads_need_refresh(doc))
         } else {
             history.validate_root(live).is_err()
                 || !history.sync_status_matches(None)
@@ -194,12 +203,15 @@ pub(crate) fn settled_checks_hold(
 ) -> bool {
     let mut hold = true;
     crate::history_mode::capability::visit_framework_history(root, &mut |history, live| {
-        if hold && history.owners_followed_by_frame_witness() {
+        if hold {
             let width = if history.get_rect().width() > 0.0 {
                 history.get_rect().width()
             } else {
                 fallback_width
             };
+            // Every surface's walk, including the ones a settled frame skips
+            // it for, and the frontier of each whose documents the witness
+            // does not follow.
             hold = history.validate_root(live).is_ok()
                 && (history.refresh_without_owners(width).is_some()
                     || !history.heads_need_refresh(doc));

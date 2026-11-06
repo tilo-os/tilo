@@ -230,6 +230,15 @@ impl FlapState {
 
     /// Whether the reveal is still moving toward the resolved state.
     pub fn is_animating(&self, layout: SplitLayout) -> bool {
+        if self.last_layout.is_some_and(|last| last != layout) {
+            // A layout the flap has not been reconciled to yet shows the
+            // resolved reveal ([`Self::reveal_in`]) and does not slide: the
+            // drawn value belongs to the layout it is leaving. Reading it
+            // here would call the flap moving while it stands wide open, and
+            // a layout that keeps its columns wide while the flap moves
+            // would then place them past the window's edge.
+            return false;
+        }
         let target = if self.is_open(layout) { 1.0 } else { 0.0 };
         // Keep scheduling until advance has landed exactly: a threshold
         // here could stop the host before that last frame runs.
@@ -317,6 +326,43 @@ mod tests {
         );
         assert_eq!(flap.reveal(), 1.0);
         assert!(!flap.is_animating(layout));
+    }
+
+    /// A layout the flap has not been reconciled to shows its resolved
+    /// reveal and is not moving: the drawn value belongs to the layout it is
+    /// leaving. Reading it as movement there laid a docked pane out at the
+    /// whole window's width, past the window's edge, on the one frame a
+    /// window crossed the breakpoint.
+    #[test]
+    fn a_layout_the_flap_has_not_reconciled_to_does_not_move() {
+        let docked = SplitLayout::Docked;
+        let mut flap = FlapState::open_when_docked();
+        flap.reconcile(docked);
+        flap.close();
+        let (asked, _) = flap.asked.expect("asked");
+        // Mid-slide out of the docked layout.
+        flap.advance(docked, asked + Duration::from_millis(11), motion());
+        let drawn = flap.reveal();
+        assert!(drawn > 0.0 && drawn < 1.0, "sliding, got {drawn}");
+
+        // The window narrows: the flap is an overlay now, closed by default.
+        assert_eq!(flap.reveal_in(SplitLayout::Overlay), 0.0);
+        assert!(
+            !flap.is_animating(SplitLayout::Overlay),
+            "a layout it has not reconciled to stands at its resolved reveal"
+        );
+
+        // And the other way: a flap sliding open in an overlay that docks as
+        // the window widens shows wide open there, not as a slide.
+        let overlay = SplitLayout::Overlay;
+        let mut flap = FlapState::open_when_docked();
+        flap.reconcile(overlay);
+        flap.open();
+        let (asked, _) = flap.asked.expect("asked");
+        flap.advance(overlay, asked + Duration::from_millis(11), motion());
+        assert!(flap.reveal_in(overlay) > 0.0 && flap.reveal_in(overlay) < 1.0);
+        assert_eq!(flap.reveal_in(docked), 1.0);
+        assert!(!flap.is_animating(docked));
     }
 
     /// The panel slide is the same gesture both ways: closing no longer

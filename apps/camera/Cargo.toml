@@ -13,14 +13,23 @@ path = "src/lib.rs"
 name = "camera"
 path = "src/main.rs"
 
+# The page build, and an agent's host build, which mounts this app without a
+# screen: `live-capture` is the app's own code path, which the page serves
+# with getUserMedia; the device stack behind it is the desktop's.
+[package.metadata.tilo]
+web-features = ["live-capture"]
+
 [features]
 thin = ["dep:runtime-dylib"]
 # Live camera capture uses GStreamer's v4l2src. Sample storage used by shots and
 # tests does not enumerate or open a device.
-default = ["live-capture"]
+default = ["live-capture", "native-capture"]
 # Live capture through tilo-capture (GStreamer on the desktop, getUserMedia
 # on the web). See `src/capture.rs`.
-live-capture = ["tilo-capture/camera"]
+live-capture = []
+# The desktop's capture stack. Without it the app still opens and reports the
+# camera as unsupported in this build.
+native-capture = ["tilo-capture/camera"]
 
 [dependencies]
 tilo-files = { path = "../../crates/platform/tilo-files" }

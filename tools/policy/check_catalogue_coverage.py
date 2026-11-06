@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Every catalogue a unit ships says every word its source catalogue says.
+
+A unit's source language is `en-US`, the file its crate or package is written
+in; the files beside it are translations. A message a translation lacks reads
+in the source language for that string alone, which is the fallback every
+lookup has (docs/designs/app-language/i18n.md) — one string, never a surface.
+What this check finds is the other shape: a catalogue that is partly
+translated, so one window reads in two languages at once.
+
+A locale may add messages of its own: the arrival screen's German jokes are
+written for German speakers and have no English source. Those are not drift —
+only a key the source has and a translation lacks is.
+
+  check_catalogue_coverage.py            fail on every untranslated key
+  check_catalogue_coverage.py --list     print them, `unit locale key`, and pass
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from check_copy_language import messages  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE_LOCALE = "en-US"
+
+
+def catalogues(root: Path) -> list[Path]:
+    """Every catalogue in the tree, the source languages and the translations."""
+    return sorted(
+        path
+        for path in root.rglob("locales/*.ftl")
+        if "target" not in path.relative_to(root).parts
+        and not any(part.startswith(".") for part in path.relative_to(root).parts)
+    )
+
+
+def unit_of(root: Path, catalogue: Path) -> str:
+    """The crate or package that ships `catalogue`: the directory holding `locales/`."""
+    return catalogue.parents[1].relative_to(root).as_posix()
+
+
+def keys_of(catalogue: Path) -> dict[str, int]:
+    """The message and attribute keys `catalogue` defines, each by its line."""
+    return {message.key: message.line for message in messages(catalogue.read_text())}
+
+
+def untranslated(root: Path) -> list[tuple[str, str, Path, str, int]]:
+    """Per (unit, locale, catalogue, key, source line), the keys a translation lacks."""
+    units: dict[str, dict[str, Path]] = {}
+    for catalogue in catalogues(root):
+        units.setdefault(unit_of(root, catalogue), {})[catalogue.stem] = catalogue
+    missing = []
+    for unit, locales in sorted(units.items()):
+        defined = {locale: keys_of(path) for locale, path in locales.items()}
+        source = defined.get(SOURCE_LOCALE)
+        if source is None:
+            continue
+        for key, line in source.items():
+            for locale, keys in sorted(defined.items()):
+                if locale != SOURCE_LOCALE and key not in keys:
+                    missing.append((unit, locale, locales[locale], key, line))
+    return missing
+
+
+def named(root: Path, path: Path) -> str:
+    return path.relative_to(root).as_posix()
+
+
+def main(argv: list[str]) -> int:
+    if argv[1:] not in ([], ["--list"]):
+        print(__doc__.split("\n\n")[-1].strip(), file=sys.stderr)
+        return 2
+    missing = untranslated(ROOT)
+    listing = argv[1:] == ["--list"]
+    for unit, locale, _, key, line in missing:
+        if listing:
+            print(unit, locale, key)
+        else:
+            print(f"{unit}/locales/{SOURCE_LOCALE}.ftl:{line}: {key} has no {locale} text")
+    if listing:
+        return 0
+    if missing:
+        print(f"{len(missing)} keys are untranslated; a catalogue is translated whole or it "
+              "reads in two languages at once", file=sys.stderr)
+        return 1
+    print("catalogue coverage OK (every translation says every word of its source)",
+          file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

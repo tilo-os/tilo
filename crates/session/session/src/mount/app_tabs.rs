@@ -294,6 +294,9 @@ impl AppTabs {
         // What the person did in the windows' bars goes back to the app whose
         // connection declared the slots there.
         answered.deliver_bar_events();
+        // A control of a window's own content, pressed where the desk lists
+        // it, goes to the app drawing that window.
+        answered.deliver_target_presses();
         // The person may have answered a question about the device's own
         // shell since the last pass.
         self.host_shell.settle(services);
@@ -451,6 +454,17 @@ impl Answers<'_> {
                     None => refuse(&reply, &app, &name, NO_WINDOW),
                 }
             }
+            FloatingSurfaceClientMessage::WindowTargets { targets, .. } => {
+                // The controls of the window's own content, where its window
+                // is a tab of the desktop's, so a session names and presses
+                // them as it names the bar's.
+                match anchor {
+                    Some(tab) => self.desktop.with_policy(|policy| {
+                        policy.handle().declare_targets(tab, connection, targets);
+                    }),
+                    None => refuse(&reply, &app, &name, NO_WINDOW),
+                }
+            }
             FloatingSurfaceClientMessage::EditLocation { .. } => match anchor {
                 Some(tab) => self
                     .desktop
@@ -484,18 +498,22 @@ impl Answers<'_> {
                 Some(studio) => studio.open_asked(mode),
                 None => refuse(&reply, &app, &name, NO_CAPTURE),
             },
-            // A picture in a picture, an app's second surface of its own and
-            // the markers a presented frame carries belong to a shell that
-            // floats surfaces over the desktop. This session places every
-            // window of an app in a tab, and has no layer to float one in.
+            // A window paints its own action markers, at the control an agent
+            // would press, so nothing here draws a second one; and the session
+            // names none of them to assistive technology or opens what one
+            // points at, so the inventory is read and adds nothing.
+            FloatingSurfaceClientMessage::ActionMarkers { .. } => {}
+            // A picture in a picture and an app's second surface of its own
+            // belong to a shell that floats surfaces over the desktop. This
+            // session places every window of an app in a tab, and has no layer
+            // to float one in.
             FloatingSurfaceClientMessage::Present { .. }
             | FloatingSurfaceClientMessage::UpdateRegion { .. }
             | FloatingSurfaceClientMessage::SurfaceGeometry { .. }
             | FloatingSurfaceClientMessage::SourceCleared { .. }
             | FloatingSurfaceClientMessage::DestinationPresented { .. }
             | FloatingSurfaceClientMessage::Suspend { .. }
-            | FloatingSurfaceClientMessage::Dismiss { .. }
-            | FloatingSurfaceClientMessage::ActionMarkers { .. } => {
+            | FloatingSurfaceClientMessage::Dismiss { .. } => {
                 refuse(&reply, &app, &name, NO_FLOATING);
             }
             // What a window shares live, the embeds it draws of other apps'
@@ -531,6 +549,16 @@ impl Answers<'_> {
             // session keeps no model to describe them with.
             FloatingSurfaceClientMessage::DescribeHistory { .. } => {
                 refuse(&reply, &app, &name, NO_HISTORY);
+            }
+            // The app under the pointer did not scroll with a sideways wheel:
+            // the strip its window stands in pans by it, as a wheel over the
+            // strip's own canvas does. Nothing to answer — the app took what
+            // it scrolled with, and this is what it left.
+            FloatingSurfaceClientMessage::SidewaysWheel { travel } => {
+                if let Some(tab) = anchor {
+                    self.desktop
+                        .with_policy(|policy| policy.handle().sideways_wheel(tab, travel));
+                }
             }
             // The connection said its version when it opened; a second one
             // is answered with the one this session speaks.
@@ -569,7 +597,7 @@ impl Answers<'_> {
         let held = self
             .desktop
             .with_policy(|policy| policy.hold_beside(app, anchor, background));
-        if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(workspace)) {
+        if let Err(error) = apps.start_beside(&launch, &apps.workspace_named(workspace), None) {
             if held {
                 self.desktop.with_policy(|policy| policy.release_held(app));
             }
@@ -627,6 +655,26 @@ impl Answers<'_> {
                     event,
                     after_input: None,
                 },
+                &link.app,
+            );
+        }
+    }
+
+    /// Write the controls pressed in the windows' own content to the apps
+    /// whose connections described them
+    /// ([`ui::floating_surface::FloatingSurfaceClientMessage::WindowTargets`]),
+    /// which answer as an assistive technology's activation does.
+    fn deliver_target_presses(&self) {
+        let presses = self
+            .desktop
+            .with_policy(|policy| policy.handle().take_target_presses());
+        for (connection, name, role, action) in presses {
+            let Some(link) = self.links.get(&connection) else {
+                continue;
+            };
+            tell(
+                &link.writer,
+                &FloatingSurfaceHostMessage::PressTarget { name, role, action },
                 &link.app,
             );
         }
@@ -702,7 +750,7 @@ fn tell(reply: &Arc<Mutex<UnixStream>>, message: &FloatingSurfaceHostMessage, ap
     match written {
         Ok(()) => true,
         Err(error) => {
-            tracing::debug!(%error, %app, "a shell-ui answer was not written");
+            tracing::warn!(%error, %app, "a shell-ui answer was not written");
             false
         }
     }
@@ -819,9 +867,13 @@ impl Socket {
                 self.requests.clone(),
                 Arc::clone(&self.wake),
             );
-            let _ = std::thread::Builder::new()
+            if let Err(error) = std::thread::Builder::new()
                 .name(format!("tilo-shell-ui-{connection}"))
-                .spawn(move || serve_connection(connection, stream, &launches, &requests, &wake));
+                .spawn(move || serve_connection(connection, stream, &launches, &requests, &wake))
+            {
+                // Nobody serves this connection: the app it belongs to waits.
+                tracing::warn!(%error, connection, "a shell-ui connection worker could not start");
+            }
         }
     }
 }
@@ -871,6 +923,7 @@ struct Hello {
 /// The shell-ui version `frame` says, when it is a hello.
 fn hello_version(frame: &[u8]) -> Option<u16> {
     serde_json::from_slice::<Hello>(frame)
+        // ignored-failure: a frame that does not read back is not a hello
         .ok()
         .filter(|hello| hello.kind == "hello")
         .and_then(|hello| hello.version)
@@ -902,6 +955,8 @@ fn serve_connection(
     else {
         return;
     };
+    // A client that does not speak this protocol is dropped.
+    // ignored-failure: a handshake that does not read back is not one of ours
     let Ok(handshake) = serde_json::from_slice::<LauncherHandshake>(&handshake_frame) else {
         return;
     };
@@ -1027,12 +1082,14 @@ fn launched_workspace(launches: &Launches, peer: Option<u32>, app: &str) -> Opti
 /// Tell an app speaking another shell-ui version which one this session
 /// speaks, so the one behind can be updated.
 fn refuse_version(writer: &mut UnixStream, app: &str, app_version: Option<u16>) {
-    let _ = write_message(
+    if let Err(error) = write_message(
         writer,
         &FloatingSurfaceHostMessage::VersionMismatch {
             shell: FLOATING_SURFACE_PROTOCOL_VERSION,
         },
-    );
+    ) {
+        tracing::warn!(%error, app, "an app was not told this session speaks another shell-ui version");
+    }
     tracing::info!(
         %app,
         ?app_version,

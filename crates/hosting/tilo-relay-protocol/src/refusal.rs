@@ -20,8 +20,6 @@ pub const PLAIN_TOO_FAST: &str = "You're sending too fast; slow down a moment.";
 pub const PLAIN_TOO_MUCH: &str = "You've shared too much this hour; try again later.";
 /// The workspace's grants or its app's surface do not allow the change.
 pub const PLAIN_NOT_ALLOWED: &str = "This workspace doesn't allow that.";
-/// The person only watches the workspace.
-pub const PLAIN_WATCHING: &str = "You can only watch this workspace.";
 /// The person is no longer a member, or this device no longer counts as one.
 pub const PLAIN_NOT_A_MEMBER: &str = "You're no longer a member of this workspace.";
 /// The session was not ready for the change; sending it again may work.
@@ -44,12 +42,6 @@ const NOT_ALLOWED: &[&str] = &[
     "another app surface",
     "may not show the appearance",
     "may not",
-];
-const WATCHING: &[&str] = &[
-    "only watches",
-    "watching this room",
-    "watching this workspace",
-    "from those who only watch",
 ];
 const NOT_A_MEMBER: &[&str] = &[
     "membership changed",
@@ -79,9 +71,7 @@ pub fn plain_reason(raw: &str) -> &'static str {
         return PLAIN_TOO_MUCH;
     }
     let has = |needles: &[&str]| needles.iter().any(|needle| raw.contains(needle));
-    if has(WATCHING) {
-        PLAIN_WATCHING
-    } else if has(NOT_A_MEMBER) {
+    if has(NOT_A_MEMBER) {
         PLAIN_NOT_A_MEMBER
     } else if has(NOT_READY) {
         PLAIN_NOT_READY
@@ -140,10 +130,6 @@ mod tests {
     #[test]
     fn access_and_session_refusals() {
         assert_eq!(
-            plain_reason("a spectator only watches this room"),
-            PLAIN_WATCHING
-        );
-        assert_eq!(
             plain_reason("workspace membership changed"),
             PLAIN_NOT_A_MEMBER
         );
@@ -168,16 +154,11 @@ mod older_wording_tests {
     use super::*;
 
     // A host deployed before a workspace was called one everywhere still
-    // sends reasons that name the room. The device reading them classifies
+    // sends reasons that name the workspace. The device reading them classifies
     // them exactly as it classifies the wording it writes now.
     #[test]
     fn a_reason_written_before_the_wording_changed_reads_the_same() {
         for (old, new, plain) in [
-            (
-                "a spectator only watches this room",
-                "a spectator only watches this workspace",
-                PLAIN_WATCHING,
-            ),
             (
                 "the author is not delegated this room",
                 "the author is not delegated this workspace",

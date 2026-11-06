@@ -49,7 +49,7 @@ pub use neighbour_wire::PEER_PROTOCOL_VERSION;
 /// handshakes: it reads this device's [`Hello`] as its own unversioned one,
 /// cannot, and refuses it as malformed rather than answering with its
 /// version. It is behind every versioned device, so the person hears that
-/// the host has to update rather than seeing a room that never syncs.
+/// the host has to update rather than seeing a workspace that never syncs.
 pub const UNVERSIONED_PEER_PROTOCOL: u32 = 0;
 
 /// Domain tag bound into every mutual-authentication challenge signature.
@@ -225,8 +225,8 @@ pub enum HandshakeTrust<'a> {
     OwnerDeviceAdmitters,
     /// Any device whose certificate is valid and unrevoked, of any user.
     /// Authentication only: the endpoint must authorize every request
-    /// itself (room administration, whose owner-only verbs check the
-    /// relay's user and whose members' receipts check room membership).
+    /// itself (workspace administration, whose owner-only verbs check the
+    /// relay's user and whose members' receipts check workspace membership).
     AnyCertifiedDevice,
 }
 
@@ -487,7 +487,7 @@ fn verify_hello_ack_inner(
     })
 }
 
-/// Verify the exact primary device authorized by a signed, room-scoped
+/// Verify the exact primary device authorized by a signed, workspace-scoped
 /// interactive-owner hint. This exception does not grant host capability and
 /// cannot be reached from the generic pinned-host API.
 ///
@@ -514,11 +514,11 @@ pub fn verify_interactive_owner_ack(
     })
 }
 
-/// Verify the exact device of the client's own person that hosts rooms
+/// Verify the exact device of the client's own person that hosts workspaces
 /// itself: the ACK certificate chains to `own_user_public_key`, is the
 /// device `expected_device`, is current and unrevoked, and proves the
 /// challenge with its certified key. No host capability is asked of it: a
-/// person's device serves the rooms placed on it, and the session it opens
+/// person's device serves the workspaces placed on it, and the session it opens
 /// is the person's own.
 ///
 /// # Errors
@@ -1130,7 +1130,7 @@ mod tests {
             postcard::to_stdvec(&hello).unwrap()
         };
 
-        // The same version: the relay admits it, with the marker the room's
+        // The same version: the relay admits it, with the marker the workspace's
         // role cap reads.
         let peer = relay_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
         assert!(peer.cert.capabilities.foreign);

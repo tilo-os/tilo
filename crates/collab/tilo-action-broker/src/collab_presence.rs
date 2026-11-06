@@ -119,6 +119,7 @@ pub fn decode_peer(
         PeerPresencePayload::Chat { .. }
         | PeerPresencePayload::Reaction { .. }
         | PeerPresencePayload::Wave { .. }
+        | PeerPresencePayload::Person { .. }
         | PeerPresencePayload::Shell(_) => return Ok(None),
     };
     Ok(Some((key, payload)))

@@ -10,10 +10,16 @@
 //! The door ([`TaskDoor`]) is the task's connection: in the session the program connection to
 //! the agent door (`crates/platform/tilolang-host/src/task.rs`), whose caller is the task.
 //!
-//! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). In the session the task's
-//! host answers them itself from each app's record as the door hands it over, read with the
+//! **Reads** go to the door ([`TaskDoor::read`], [`TaskDoor::query`]). A tilolang app's the
+//! session's host answers itself from the app's record as the door hands it over, read with the
 //! app's package ([`crate::task_records::RecordReads`]): no app runs for them. One resource is
-//! read once per program.
+//! read once per program. A native app's record only the app knows how to read, so a read of it
+//! is the app's own `read` action through the door, as the task ([`crate::native`]).
+//!
+//! **Native apps.** A native app publishes what it offers, not how it runs: its verbs are actions
+//! of its catalogue, a field edit of its record is its own `field-edit` action, and both go to
+//! the app through the door as the task's invocation, which the broker decides as it decides
+//! `tilo_do`'s and runs the app for when it is not running.
 //!
 //! **Steps.** One program is one step. Run without `confirm`, it first runs provisionally: its
 //! invocations are listed, not sent, and nothing it bound is kept. One that changed nothing has
@@ -31,7 +37,7 @@ use tilolang_runtime::catalogue::SignatureKind;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::flow::Journal;
 use tilolang_runtime::ids::{DocId, RunId, TypeId};
-use tilolang_runtime::meta::{Meta, parse_ty};
+use tilolang_runtime::meta::{Meta, PackageMeta, parse_ty};
 use tilolang_runtime::program::{ProgramOutcome, Session};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::store::{
@@ -44,6 +50,7 @@ use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, R
 use crate::bundle::Bundle;
 use crate::host::{Host, argument_json};
 use crate::meta::MetaExt as _;
+use crate::native::Native;
 use crate::publish::{package_resource_id, resource_id};
 
 /// More resources than this changed by one program are many: it answers with a preview first.
@@ -51,12 +58,13 @@ pub const MANY_RESOURCES: usize = 3;
 
 /// What a task's host asks of its door. Each call waits for the door's answer.
 pub trait TaskDoor {
-    /// The fields of the resource `item` (its id in its record) of the app `app`, as
-    /// [`Host::read_values`] answers them.
+    /// The fields of the resource `item` (its id in its record) of the app `app`, its type `ty`,
+    /// as [`Host::read_values`] answers them. A native app's id names the item alone; `ty` says
+    /// which of the app's collections a program holds it by ([`crate::native`]).
     ///
     /// # Errors
     /// Why it cannot be read: the task may not, the app does not run, the resource is gone.
-    fn read(&self, app: &str, item: &str) -> Result<Json, String>;
+    fn read(&self, app: &str, item: &str, ty: &str) -> Result<Json, String>;
 
     /// Invoke `call` (`{app, resource, action, arguments}`) as the task.
     fn invoke(&self, call: &Json) -> Answered;
@@ -130,9 +138,13 @@ impl Authority for DecidesNothing {
 
 impl TaskSession {
     /// The session of a task reaching the workspace through `door`, with the packages `bundles`
-    /// (every installed app's, each after the packages it uses) and the platform's own (the
-    /// device's and the session's resources, Settings': [`crate::platform_apps`]), whose actions
-    /// a program invokes where the session publishes them.
+    /// (every tilolang app the session runs, each after the packages it uses), the native apps
+    /// `native` (what they publish, from their surfaces: [`crate::catalogue::NativeSurface`])
+    /// and the platform's own (the device's and the session's resources, Settings':
+    /// [`crate::platform_apps`]), whose actions a program invokes where the session publishes
+    /// them. A program names and type-checks every app of them; a native one it names the record
+    /// of, invokes and assigns fields of, and reads what it holds through the app
+    /// ([`crate::native::NativeReads`]), which `door` carries too.
     ///
     /// # Errors
     /// The runtime cannot start or a package does not load.
@@ -140,6 +152,7 @@ impl TaskSession {
         person: Option<&str>,
         door: &Rc<dyn TaskDoor>,
         bundles: &[Bundle],
+        native: Rc<Native>,
     ) -> Result<Self, String> {
         let reads = Rc::new(RefCell::new(Reads::default()));
         let packages = Rc::new(RefCell::new(HashMap::new()));
@@ -179,24 +192,19 @@ impl TaskSession {
             }
             apps.insert(bundle.meta.app.clone(), bundle.meta.clone());
         }
+        // The native apps, after the ones with code: what each publishes, and not how it runs.
+        load_apps(&runtime, &mut apps, native.packages().cloned())?;
         reads.borrow_mut().apps = apps.keys().cloned().collect();
         // The platform's packages, the session's own among them: no record holds their
         // resources, so they are read by no record read; their actions are invoked on the
         // resource the session publishes.
-        let mut published = std::collections::HashSet::new();
-        let mut platform = crate::platform_apps::platform_packages()?;
-        platform.push(crate::platform_apps::session_package()?);
-        for meta in platform {
-            if apps.contains_key(&meta.app) {
-                continue;
-            }
-            runtime
-                .load_foreign(meta.clone())
-                .map_err(|error| error.to_string())?;
-            meta.register_schemas();
-            published.insert(meta.app.clone());
-            apps.insert(meta.app.clone(), meta);
-        }
+        let platform = crate::platform_apps::platform_packages()?
+            .into_iter()
+            .chain(std::iter::once(crate::platform_apps::session_package()?));
+        let published: std::collections::HashSet<String> =
+            load_apps(&runtime, &mut apps, platform)?
+                .into_iter()
+                .collect();
         *packages.borrow_mut() = modules
             .iter()
             .map(|(app, module)| (app.clone(), module.0.clone()))
@@ -208,6 +216,7 @@ impl TaskSession {
             published,
             addresses: crate::platform_apps::session_addresses()?,
             steps: Rc::clone(&steps),
+            native,
         });
         let asked = Rc::clone(door);
         runtime.set_reader(move |request| {
@@ -232,7 +241,9 @@ impl TaskSession {
     /// Option<Int> = .none)`), a type by its name (`notes.Note`), every type in it named as a
     /// program names it. An action says what it acts on, so a listing tells it from another
     /// app's action of the same id: `on`, the package's own type its first parameter takes (a
-    /// resource of that type), or `at`, the resource the session publishes a loose one on.
+    /// resource of that type), or `at`, the resource the session publishes a loose one on. A
+    /// `root` is the resource a program names to reach an app the session does not run: the
+    /// record whose verbs are that app's.
     #[must_use]
     pub fn catalogue(&self) -> Json {
         let signatures = self.runtime.catalogue();
@@ -252,7 +263,7 @@ impl TaskSession {
             .filter(|s| s.kind == SignatureKind::Type)
             .map(|s| (s.app.clone(), s.name.clone()))
             .collect();
-        // optional-decode: a session without its description lists its actions by their ids
+        // ignored-failure: a session without its description lists its actions by their ids
         let addresses = crate::platform_apps::session_addresses().unwrap_or_default();
         let mut apps = serde_json::Map::new();
         for signature in signatures {
@@ -270,6 +281,7 @@ impl TaskSession {
                 SignatureKind::View => ("view", None),
                 SignatureKind::Flow => ("flow", None),
                 SignatureKind::Fn => ("fn", None),
+                SignatureKind::Root => ("root", Some(format!("{alias}.{}", signature.name))),
             };
             let action = signature.kind == SignatureKind::Action;
             let on = action
@@ -417,6 +429,8 @@ fn first_param_type(text: &str) -> Option<&str> {
 struct DoorInvoker {
     door: Rc<dyn TaskDoor>,
     apps: HashMap<String, Meta>,
+    /// The native apps among them, which a program invokes on their own records.
+    native: Rc<Native>,
     /// The platform's apps, whose resources the session publishes under their own ids.
     published: std::collections::HashSet<String>,
     /// The resource each of the session's loose actions is published on, by the action's id.
@@ -453,8 +467,13 @@ impl Invoker for DoorInvoker {
             return Invoked::Refused(format!("this task may use no app {app}"));
         };
         let published = self.published.contains(app);
+        // The record a native app publishes: where its steps are taken back, and what a
+        // program names to invoke it.
+        let record = self.native.record(app);
         let call = if published {
             published_call(meta, invocation, &self.addresses, |r| self.published_id(r))
+        } else if self.native.is(app) {
+            native_call(&self.apps, meta, record, invocation)
         } else {
             call_of(&self.apps, meta, invocation)
         };
@@ -462,11 +481,13 @@ impl Invoker for DoorInvoker {
             Ok(call) => call,
             Err(why) => return Invoked::Failed(why),
         };
+        // A native app's resources are the ids its own record holds; a tilolang app's are its
+        // record's, under the app.
         let resources: Vec<String> = invocation
             .resources()
             .iter()
             .map(|r| {
-                if published {
+                if published || self.native.is(app) {
                     r.id_string()
                 } else {
                     resource_id(app, &r.id_string())
@@ -501,11 +522,16 @@ impl Invoker for DoorInvoker {
                 steps.done = steps.done.saturating_add(1);
                 if !steps.apps.iter().any(|known| known == app) {
                     steps.apps.push(app.to_owned());
+                    // The resource the step is taken back on: the one the session published a
+                    // loose action on, the app's own record, or the record the task's change of
+                    // a tilolang app applied to.
                     let resource = if published {
                         call.get("resource")
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                             .to_owned()
+                    } else if let Some(record) = record {
+                        record.to_owned()
                     } else {
                         package_resource_id(app)
                     };
@@ -535,7 +561,7 @@ fn declared_flag(meta: &Meta, action: &str, name: &str) -> bool {
         .iter()
         .find(|declared| declared.id == action)
         .and_then(|declared| declared.params.iter().find(|param| param.name == name))
-        // optional-decode: a type this cannot read is no flag; the action still checks the value
+        // ignored-failure: a type this cannot read is no flag; the action still checks the value
         .and_then(|param| parse_ty(&param.ty, &meta.app).ok())
         .is_some_and(|ty| match ty {
             tilolang_runtime::meta::Ty::Bool => true,
@@ -574,6 +600,7 @@ fn published_call(
         action,
         args,
         subject,
+        from,
         ..
     } = invocation
     else {
@@ -613,6 +640,7 @@ fn published_call(
         };
         arguments.insert(name.clone(), json);
     }
+    made_from(from.as_ref(), &mut arguments, &published_id);
     Ok(json!({
         "app": app,
         "resource": resource,
@@ -620,6 +648,141 @@ fn published_call(
         "arguments": arguments,
         "published": true,
     }))
+}
+
+/// What the invocation is made from, when it is made from something, among the arguments the
+/// door takes: the key [`tilo_actions::params::FROM_ARGUMENT`], as the reference a caller names
+/// its source with.
+fn made_from(
+    from: Option<&ResourceRef>,
+    arguments: &mut serde_json::Map<String, Json>,
+    published: impl Fn(&ResourceRef) -> String,
+) {
+    if let Some(from) = from {
+        arguments.insert(
+            tilo_actions::params::FROM_ARGUMENT.to_owned(),
+            json!({"ref": published(from), "ty": from.ty}),
+        );
+    }
+}
+
+/// The `arguments` of the action `action` declared by `meta`: each of `args` (past the first
+/// one, when it is the resource the action is on) by its parameter's name, as the door takes it
+/// ([`argument_json`]). `apps` holds every package an argument's type may name.
+fn arguments_of(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    action: &str,
+    args: &[(String, Value)],
+    subject: bool,
+) -> Result<Json, String> {
+    let declared = meta
+        .actions
+        .iter()
+        .find(|declared| declared.id == action)
+        .ok_or_else(|| format!("{} declares no action {action}", meta.app))?;
+    let mut arguments = serde_json::Map::new();
+    for (name, value) in args.iter().skip(usize::from(subject)) {
+        let param = declared
+            .params
+            .iter()
+            .find(|param| param.name == *name)
+            .ok_or_else(|| format!("{action} takes no argument `{name}`"))?;
+        let ty = parse_ty(&param.ty, &meta.app)?;
+        let owner = |other: &str| {
+            apps.get(other)
+                .cloned()
+                .ok_or_else(|| format!("this task may use no app {other}"))
+        };
+        arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
+    }
+    Ok(Json::Object(arguments))
+}
+
+/// The door's call for `invocation` of the native app `meta`: its declared verb, as the app's
+/// own door names it, on the resource the program named (the action's own record, or an item of
+/// it), with the arguments the app takes. A field assignment is the app's own `field-edit` of
+/// its record. Either is the task's invocation of the app, decided and undone as every other
+/// call of its actions: the app keeps the step.
+fn native_call(
+    apps: &HashMap<String, Meta>,
+    meta: &Meta,
+    record: Option<&str>,
+    invocation: &Invocation,
+) -> Result<Json, String> {
+    let app = meta.app.as_str();
+    match invocation {
+        Invocation::Action {
+            action,
+            args,
+            subject,
+            from,
+            ..
+        } => {
+            let Some(record) = record else {
+                return Err(format!(
+                    "{app} publishes no record a program names its actions on"
+                ));
+            };
+            // The resource the app's own door takes: the one the program named the action on,
+            // else the record the app publishes.
+            let resource = subject
+                .as_ref()
+                .map_or_else(|| record.to_owned(), ResourceRef::id_string);
+            let mut arguments = arguments_of(apps, meta, action, args, subject.is_some())?;
+            if let Json::Object(arguments) = &mut arguments {
+                made_from(from.as_ref(), arguments, ResourceRef::id_string);
+            }
+            Ok(json!({
+                "app": app,
+                "resource": resource,
+                "action": crate::catalogue::published_verb(app, action),
+                "arguments": arguments,
+            }))
+        }
+        Invocation::Edit {
+            field,
+            field_id,
+            value,
+            target,
+            ..
+        } => {
+            let Some(record) = record else {
+                return Err(format!(
+                    "{app} publishes no record a program sets the fields of"
+                ));
+            };
+            if target.item.is_some() {
+                return Err(format!(
+                    "a program sets {app}'s own record fields; what its items hold changes through its actions"
+                ));
+            }
+            let key = field_id
+                .split_once('.')
+                .map_or(field_id.as_str(), |(_, key)| key);
+            // A text field takes the smallest splice of the text it holds; a flag is set whole.
+            let op = match value {
+                Value::Text(text) => json!({"op": "replace", "text": text}),
+                Value::Bool(flag) => json!({"op": "set", "value": flag}),
+                _ => {
+                    return Err(format!(
+                        "a program sets text and flag fields; `{field}` changes through {app}'s actions"
+                    ));
+                }
+            };
+            let mut arguments = serde_json::Map::new();
+            arguments.insert(
+                tilo_resource::EDIT_PARAM.to_owned(),
+                json!({"path": [{"field": key}], "op": op}),
+            );
+            Ok(json!({
+                "app": app,
+                "resource": record,
+                "action": tilo_resource::FIELD_EDIT,
+                "arguments": arguments,
+            }))
+        }
+    }
 }
 
 /// The door's call for `invocation` of the package `meta`: a declared action on its subject
@@ -632,32 +795,28 @@ fn call_of(
 ) -> Result<Json, String> {
     match invocation {
         Invocation::Action {
-            app, action, args, ..
+            app,
+            action,
+            args,
+            from,
+            ..
         } => {
-            let declared = meta
-                .actions
-                .iter()
-                .find(|declared| declared.id == *action)
-                .ok_or_else(|| format!("{app} declares no action {action}"))?;
-            let subject = meta.subject_of(&declared.params).and_then(|_| args.first());
+            let subject = meta.subject_of(
+                &meta
+                    .actions
+                    .iter()
+                    .find(|declared| declared.id == *action)
+                    .ok_or_else(|| format!("{app} declares no action {action}"))?
+                    .params,
+            );
+            let subject = subject.and_then(|_| args.first());
             let resource = match subject {
                 Some((_, Value::Ref(r))) => resource_id(app, &r.target.id_string()),
                 _ => package_resource_id(app),
             };
-            let mut arguments = serde_json::Map::new();
-            for (name, value) in args.iter().skip(usize::from(subject.is_some())) {
-                let param = declared
-                    .params
-                    .iter()
-                    .find(|param| param.name == *name)
-                    .ok_or_else(|| format!("{action} takes no argument `{name}`"))?;
-                let ty = parse_ty(&param.ty, app)?;
-                let owner = |other: &str| {
-                    apps.get(other)
-                        .cloned()
-                        .ok_or_else(|| format!("this task may use no app {other}"))
-                };
-                arguments.insert(name.clone(), argument_json(&owner, meta, value, &ty)?);
+            let mut arguments = arguments_of(apps, meta, action, args, subject.is_some())?;
+            if let Json::Object(arguments) = &mut arguments {
+                made_from(from.as_ref(), arguments, ResourceRef::id_string);
             }
             Ok(json!({
                 "app": app,
@@ -730,6 +889,29 @@ fn result_of(meta: &Meta, invocation: &Invocation, output: &Json) -> Result<Valu
     }
 }
 
+/// Load the packages of apps this runtime does not run ([`Runtime::load_foreign`]), passing over
+/// the ones an app here already has: what they publish, and not how they run. The apps it
+/// loaded.
+fn load_apps(
+    runtime: &Runtime,
+    apps: &mut HashMap<String, Meta>,
+    metas: impl IntoIterator<Item = PackageMeta>,
+) -> Result<Vec<String>, String> {
+    let mut loaded = Vec::new();
+    for meta in metas {
+        if apps.contains_key(&meta.app) {
+            continue;
+        }
+        runtime
+            .load_foreign(meta.clone())
+            .map_err(|error| error.to_string())?;
+        meta.register_schemas();
+        loaded.push(meta.app.clone());
+        apps.insert(meta.app.clone(), meta);
+    }
+    Ok(loaded)
+}
+
 /// What the door read of resources, per program.
 #[derive(Default)]
 struct Reads {
@@ -785,7 +967,10 @@ impl TaskStore {
             .map(|package| package.enter());
         // A read that did not reach the app fails the program; one the app answered that it
         // holds no such resource is a resource that is not there.
-        let answer = self.door.read(&app, &id).map_err(StoreError::Backend)?;
+        let answer = self
+            .door
+            .read(&app, &id, &at.ty)
+            .map_err(StoreError::Backend)?;
         if answer.get("missing").is_some() {
             return Err(StoreError::NotFound(format!("{app} holds no {id}")));
         }
@@ -949,7 +1134,7 @@ impl Store for TaskStore {
 // ---- the read, on both ends -----------------------------------------------------------------
 
 /// A field as `read-values` carries it.
-fn field_json(value: &FieldValue) -> Json {
+pub(crate) fn field_json(value: &FieldValue) -> Json {
     match value {
         FieldValue::Absent => json!({"absent": true}),
         FieldValue::Scalar(Scalar::Bool(flag)) => json!({"bool": flag}),
@@ -1101,5 +1286,164 @@ mod tests {
         assert!(wants_preview(&[
             json!({"resources": ["a"], "destructive": true})
         ]));
+    }
+
+    /// Chat, as its session hands the app's package to a task: its verbs named by the catalogue
+    /// (`so.tilo.chat#rename-channel`).
+    fn chat() -> Meta {
+        crate::catalogue::NativeSurface {
+            app: "so.tilo.chat".to_owned(),
+            title: "Chat".to_owned(),
+            surface: include_str!("../../../../apps/chat/surface.toml").to_owned(),
+        }
+        .package()
+        .expect("Chat's surface reads")
+    }
+
+    #[test]
+    fn a_catalogue_of_apps_names_each_ones_verbs_by_its_app() {
+        // Chat and the session both publish a `share-window` verb: in one catalogue they are
+        // two actions, and each app's own door takes its verb back.
+        let chat = chat();
+        let session = crate::platform_apps::session_package().expect("the session's reads");
+        assert!(
+            chat.actions
+                .iter()
+                .any(|action| action.id == "so.tilo.chat#share-window"),
+            "{:?}",
+            chat.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+        );
+        assert!(
+            session
+                .actions
+                .iter()
+                .any(|action| action.id == "share-window"),
+            "{:?}",
+            session.actions.iter().map(|a| &a.id).collect::<Vec<_>>()
+        );
+        for (app, id, verb) in [
+            ("so.tilo.chat", "so.tilo.chat#share-window", "share-window"),
+            ("so.tilo.chat", "create-channel", "create-channel"),
+            ("so.tilo.chat", "a1b2c3", "a1b2c3"),
+        ] {
+            assert_eq!(crate::catalogue::published_verb(app, id), verb);
+        }
+    }
+
+    /// A door that records the calls it is sent, and answers each as a done action.
+    #[derive(Default)]
+    struct Asked(RefCell<Vec<Json>>);
+
+    impl TaskDoor for Asked {
+        fn read(&self, _: &str, _: &str, _: &str) -> Result<Json, String> {
+            Err("no read reaches this door".to_owned())
+        }
+
+        fn invoke(&self, call: &Json) -> Answered {
+            self.0.borrow_mut().push(call.clone());
+            Answered::Done(json!({}))
+        }
+
+        fn query(&self, _: &str, _: &Json) -> Result<Json, String> {
+            Err("no query reaches this door".to_owned())
+        }
+    }
+
+    /// The door's invoker for the one native app `meta`, with the door `door`.
+    fn invoker_of(meta: Meta, door: Rc<dyn TaskDoor>) -> (DoorInvoker, Rc<RefCell<Steps>>) {
+        let steps = Rc::new(RefCell::new(Steps::default()));
+        let native = Rc::new(Native::of(&[], std::slice::from_ref(&meta)));
+        (
+            DoorInvoker {
+                door,
+                apps: HashMap::from([(meta.app.clone(), meta)]),
+                published: std::collections::HashSet::new(),
+                addresses: std::collections::BTreeMap::new(),
+                steps: Rc::clone(&steps),
+                native,
+            },
+            steps,
+        )
+    }
+
+    #[test]
+    fn a_native_apps_verb_is_its_own_on_the_record_it_publishes() {
+        let meta = chat();
+        let app = meta.app.clone();
+        let door = Rc::new(Asked::default());
+        let (invoker, steps) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
+        let record = ResourceRef {
+            doc: "chat.workspace".to_owned(),
+            item: None,
+            ty: "so.tilo.chat#Workspace".to_owned(),
+        };
+        let invocation = Invocation::Action {
+            app,
+            action: "so.tilo.chat#rename-channel".to_owned(),
+            name: "rename_channel".to_owned(),
+            args: vec![
+                ("workspace".to_owned(), Value::resource(&record)),
+                ("channel".to_owned(), Value::Text("general".to_owned())),
+                ("name".to_owned(), Value::Text("town".to_owned())),
+            ],
+            class: tilolang_runtime::meta::EffectClass::Undoable,
+            destructive: false,
+            author: None,
+            subject: Some(record),
+            from: None,
+        };
+        let answer = invoker.invoke(&invocation);
+        assert!(
+            matches!(answer, Invoked::Done(_)),
+            "Chat's verb runs: {answer:?}"
+        );
+        assert_eq!(
+            door.0.borrow().as_slice(),
+            [json!({
+                "app": "so.tilo.chat",
+                "resource": "chat.workspace",
+                "action": "rename-channel",
+                "arguments": {"channel": "general", "name": "town"},
+            })],
+            "the app's own verb, on the record it publishes, without the record among the arguments"
+        );
+        let steps = steps.borrow();
+        assert_eq!(steps.done, 1);
+        assert_eq!(
+            steps.history,
+            [json!({"app": "so.tilo.chat", "resource": "chat.workspace", "published": false})],
+            "the step is taken back on the record the app keeps it in"
+        );
+    }
+
+    #[test]
+    fn a_native_apps_field_is_its_own_field_edit() {
+        let meta = chat();
+        let door = Rc::new(Asked::default());
+        let (invoker, _) = invoker_of(meta, Rc::clone(&door) as Rc<dyn TaskDoor>);
+        let invocation = Invocation::Edit {
+            app: "so.tilo.chat".to_owned(),
+            target: ResourceRef {
+                doc: "chat.workspace".to_owned(),
+                item: None,
+                ty: "so.tilo.chat#Workspace".to_owned(),
+            },
+            field: "agent_names".to_owned(),
+            field_id: "Workspace.agent_names".to_owned(),
+            value: Value::Text("Reviewer".to_owned()),
+        };
+        assert!(matches!(invoker.invoke(&invocation), Invoked::Done(_)));
+        assert_eq!(
+            door.0.borrow().as_slice(),
+            [json!({
+                "app": "so.tilo.chat",
+                "resource": "chat.workspace",
+                "action": "field-edit",
+                "arguments": {"edit": {
+                    "path": [{"field": "agent_names"}],
+                    "op": {"op": "replace", "text": "Reviewer"},
+                }},
+            })]
+        );
     }
 }

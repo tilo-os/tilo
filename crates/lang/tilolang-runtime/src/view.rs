@@ -163,6 +163,9 @@ pub enum Patch {
     Move {
         parent: Vec<String>,
         key: String,
+        /// Where the node stood among its parent's children, as the patches before it left
+        /// them: a host that holds the children in order moves it from there.
+        from: usize,
         to: usize,
     },
     SetProp {
@@ -194,7 +197,7 @@ pub type EventEq<'a> = &'a dyn Fn(Retained, Retained) -> bool;
 pub(crate) enum RowStep {
     Remove(String),
     Insert(usize, Box<UiNode>),
-    Move(String, usize),
+    Move { key: String, from: usize, to: usize },
 }
 
 /// What became of the rows of a virtual list when the boundary holding it ran: the steps from
@@ -316,9 +319,10 @@ fn virtual_rows(
                 index: *index,
                 node: (**node).clone(),
             },
-            RowStep::Move(key, to) => Patch::Move {
+            RowStep::Move { key, from, to } => Patch::Move {
                 parent: path.to_vec(),
                 key: key.clone(),
+                from: *from,
                 to: *to,
             },
         });
@@ -393,6 +397,9 @@ fn diff_children(
         }
     }
     let survivors: HashMap<&str, &UiNode> = current.iter().map(|o| (o.key.as_str(), *o)).collect();
+    // The children as the patches so far leave them: each move names the place the host moves
+    // its child from.
+    let mut order: Vec<&str> = current.iter().map(|o| o.key.as_str()).collect();
     // Survivors moved ahead of their turn, which the walk over `current` then skips.
     let mut moved: HashSet<&str> = HashSet::new();
     let mut j = 0;
@@ -404,6 +411,7 @@ fn diff_children(
             j = j.saturating_add(1);
         }
         let Some(o) = survivors.get(n.key.as_str()) else {
+            order.insert(i.min(order.len()), n.key.as_str());
             out.push(Patch::Insert {
                 parent: path.to_vec(),
                 index: i,
@@ -427,14 +435,26 @@ fn diff_children(
                 index: i,
                 node: n.clone(),
             });
+            if let Some(at) = order.iter().position(|held| *held == n.key.as_str()) {
+                order.remove(at);
+            }
+            order.insert(i.min(order.len()), n.key.as_str());
             continue;
         }
         if current.get(j).is_some_and(|c| c.key == n.key) {
             j = j.saturating_add(1);
         } else {
+            // A child the walk holds is one of the children before, so it stands in the order.
+            let from = order
+                .iter()
+                .position(|held| *held == n.key.as_str())
+                .unwrap_or(i);
+            order.remove(from);
+            order.insert(i.min(order.len()), n.key.as_str());
             out.push(Patch::Move {
                 parent: path.to_vec(),
                 key: n.key.clone(),
+                from,
                 to: i,
             });
             moved.insert(n.key.as_str());
@@ -464,6 +484,9 @@ pub(crate) fn row_steps(
         }
     }
     let survivors: HashSet<&str> = current.iter().copied().collect();
+    // The rows as the steps so far leave them: each move names the place the host moves its
+    // row from.
+    let mut order: Vec<&str> = current.clone();
     let mut moved: HashSet<&str> = HashSet::new();
     let mut j = 0;
     for (i, key) in new.iter().enumerate() {
@@ -471,13 +494,25 @@ pub(crate) fn row_steps(
             j = j.saturating_add(1);
         }
         if !survivors.contains(key.as_str()) {
+            order.insert(i.min(order.len()), key.as_str());
             out.push(RowStep::Insert(i, Box::new(row(key))));
             continue;
         }
         if current.get(j).is_some_and(|c| *c == key.as_str()) {
             j = j.saturating_add(1);
         } else {
-            out.push(RowStep::Move(key.clone(), i));
+            // A row the walk holds is one of the rows before, so it stands in the order.
+            let from = order
+                .iter()
+                .position(|held| *held == key.as_str())
+                .unwrap_or(i);
+            order.remove(from);
+            order.insert(i.min(order.len()), key.as_str());
+            out.push(RowStep::Move {
+                key: key.clone(),
+                from,
+                to: i,
+            });
             moved.insert(key.as_str());
         }
     }

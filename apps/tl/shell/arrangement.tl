@@ -1,17 +1,16 @@
-/// The person's own arrangement: what is open where (docs/designs/app-language/shell.md §2,
-/// workspace-model.md §9). It is the person's, not the workspace's: it lives in their own record
-/// (`records: .own`), syncs to their devices that use the same shell, and has history and undo.
-/// No other member reads it.
+/// The person's arrangement: what is open where (docs/designs/app-language/shell.md §2,
+/// workspace-model.md §9). It is the desk itself — a row across a workspace, a strip of places in
+/// a row, a place showing a resource through a view — which the session keeps with the desk the
+/// workspace shares, with history and undo.
 ///
-/// The session holds it in `tilo_desktop_model::own_arrangement`'s `Strips` — a row across a
-/// workspace, a strip of places in a row, a place showing a resource through a view — and
-/// publishes its reading as `session.arrangement`. The shell's views read it (§9) and change it
-/// only through the arranging actions on `shell:arrangement` (`so.tilo.session`'s), so a person, an
-/// agent and a script arrange the same way, attributed and undoable.
+/// The session reads it off the live desk tree and publishes its reading as
+/// `session.arrangement`. The shell's views read it (§9) and change it only through the arranging
+/// actions on `shell:arrangement` (`so.tilo.session`'s), so a person, an agent and a script
+/// arrange the same way, attributed and undoable.
 ///
 /// Every entry names the shell that made it (`shell`): a shell that does not know an entry
 /// another shell made keeps it and never changes or removes it (§2).
-/// The person's desk as the session reads it out of their record: the workspaces it holds, its
+/// The person's desk as the session reads it off the desk: the workspaces it holds, its
 /// rows, its strips, and every place. Which preset it shows and which strip stands in front are
 /// the shell's own view of it (`viewing`), this package's record, so a shell is picked per
 /// person and device without changing what the arrangement holds.
@@ -141,7 +140,7 @@ default view viewing_settings for Viewing
 view viewing_settings(v: Viewing) {
     page {
         section("Desk") {
-            ui.Text("The same places, shown three ways. Switching keeps every window where it is.")
+            ui.Text("The same places, shown four ways. Switching keeps every window where it is.")
             preset_switch(v)
         }
     }

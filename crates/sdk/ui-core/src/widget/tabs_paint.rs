@@ -118,6 +118,7 @@ impl TabBar {
                     lifts: [
                         self.control_lifts[0].level(now),
                         self.control_lifts[1].level(now),
+                        self.control_lifts[2].level(now),
                     ],
                 },
             );

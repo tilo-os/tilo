@@ -5,8 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, Ty, TypeMeta, element_record, field_kind,
-    parse_ty,
+    EffectClass, FieldKind, FieldMeta, FieldRole, Meta, ParamMeta, Ty, TypeMeta, element_record,
+    field_kind, parse_ty,
 };
 
 use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -90,14 +90,23 @@ pub trait MetaExt {
     fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta>;
 }
 
-fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
+/// Whether a field's declared type names a resource: a record, or one inside an option.
+fn names_a_resource(ty: &Ty) -> bool {
+    match ty {
+        Ty::Record(_) | Ty::Union(_) => true,
+        Ty::Option(inner) => names_a_resource(inner),
+        _ => false,
+    }
+}
+
+fn field_schema(meta: &Meta, ty: &TypeMeta, field: &FieldMeta) -> FieldSchema {
     // A loaded package's field types all parse (`unreadable_types`, checked where it is
     // loaded); a hand-built one that does not is kept whole, as a composite register.
-    // optional-decode: checked where the package is loaded
-    let Ok(ty) = parse_ty(&field.ty, &meta.app) else {
+    // ignored-failure: checked where the package is loaded
+    let Ok(ty_of_field) = parse_ty(&field.ty, &meta.app) else {
         return FieldSchema::new(&field.id, MergeKind::Register).composite();
     };
-    let mut schema = match field_kind(field, &ty) {
+    let mut schema = match field_kind(field, &ty_of_field) {
         FieldKind::Counter => FieldSchema::new(&field.id, MergeKind::Counter),
         FieldKind::Text => FieldSchema::new(&field.id, MergeKind::Text),
         FieldKind::RichText => FieldSchema::new(&field.id, MergeKind::RichText),
@@ -105,7 +114,7 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
         FieldKind::Map => FieldSchema::new(&field.id, MergeKind::Map),
         FieldKind::Collection => {
             let schema = FieldSchema::new(&field.id, MergeKind::Collection);
-            let item = element_record(&ty).and_then(|key| {
+            let item = element_record(&ty_of_field).and_then(|key| {
                 if key.app == meta.app {
                     meta.type_named(&key.name)
                         .map(|declared| declared.id.clone())
@@ -119,9 +128,12 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
             }
         }
         FieldKind::Register => {
-            let schema = FieldSchema::new(&field.id, MergeKind::Register);
+            let mut schema = FieldSchema::new(&field.id, MergeKind::Register);
+            if names_a_resource(&ty_of_field) {
+                schema.refers = true;
+            }
             if matches!(
-                ty,
+                ty_of_field,
                 Ty::Int
                     | Ty::Float
                     | Ty::Bool
@@ -129,6 +141,8 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
                     | Ty::Date
                     | Ty::Time
                     | Ty::Identifier
+                    | Ty::Repeat
+                    | Ty::Reminder
                     | Ty::Choice(_)
             ) {
                 schema
@@ -137,17 +151,54 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
             }
         }
     };
+    schema = schema.of_ty(ty_of_field);
     if let Some(default) = &field.default {
         schema = schema.with_default(default.clone());
     }
     // Only text names a record: a non-text field declared `title` says nothing, as the row
     // it would name could not read it.
     if schema.kind.holds_text() {
-        schema = match field.role.as_deref() {
-            Some("title") => schema.titled(),
-            Some("body") => schema.bodied(),
+        schema = match &field.role {
+            Some(FieldRole::Title) => schema.titled(),
+            Some(FieldRole::Body) => schema.bodied(),
             _ => schema,
         };
+    }
+    // A role names the type's own fields; the record stores its values under their ids.
+    let id_of = |name: &str| {
+        ty.fields
+            .iter()
+            .find(|named| named.name == name)
+            .map(|named| named.id.clone())
+    };
+    match &field.role {
+        Some(FieldRole::Done) => {
+            schema = schema.finished();
+        }
+        Some(FieldRole::Parent) => {
+            schema.role = crate::schema::FieldRole::Parent;
+        }
+        Some(FieldRole::Repeats { date }) => {
+            if let Some(date) = id_of(date) {
+                schema = schema.repeating(date);
+            }
+        }
+        Some(FieldRole::Reminds { date, time, who }) => {
+            // A field the type does not declare leaves its part of the reminder out, as the
+            // type has none.
+            if let Some(date) = id_of(date) {
+                schema = schema.reminding(
+                    date,
+                    time.as_deref().and_then(id_of),
+                    who.as_deref().and_then(id_of),
+                );
+            }
+        }
+        _ => {}
+    }
+    // A derived key's expression names the type's fields; the index reads and writes them by id.
+    if let Some(derived) = &field.derived {
+        schema.derived = Some(derived.map(&|name| id_of(name).unwrap_or_else(|| name.to_owned())));
     }
     schema
 }
@@ -160,10 +211,12 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
         Ty::Bool => (ColumnKind::Bool, Vec::new()),
         Ty::Int => (ColumnKind::Int, Vec::new()),
         Ty::Float => (ColumnKind::Float, Vec::new()),
-        Ty::Text => (ColumnKind::Text, Vec::new()),
+        // A repeat and a reminder are text as they are held, and a picker writes them.
+        Ty::Text | Ty::Repeat | Ty::Reminder => (ColumnKind::Text, Vec::new()),
         Ty::Date => (ColumnKind::Date, Vec::new()),
         Ty::Time => (ColumnKind::Time, Vec::new()),
         Ty::Identifier => (ColumnKind::Ident, Vec::new()),
+        Ty::Principal => (ColumnKind::Principal, Vec::new()),
         Ty::Record(_) | Ty::Union(_) => (ColumnKind::Ref, Vec::new()),
         Ty::Enum(key) => {
             let cases = meta
@@ -183,15 +236,16 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
     for f in &ty.search.filters {
-        // A filter on the time it is asked at holds of different items as time passes: it is
-        // answered from the columns of the fields it reads, never kept as a column of its own.
+        // A filter on the time it is asked at, or on the person it is asked for, holds of
+        // different items as time passes or for each of them: it is answered from the columns of
+        // the fields it reads, never kept as a column of its own.
         if f.pred
             .as_ref()
-            .is_some_and(tilolang::pred::Pred::reads_clock)
+            .is_some_and(|pred| pred.reads_clock() || pred.reads_viewer())
         {
             continue;
         }
-        // optional-decode: a loaded package's filter types all parse (`unreadable_types`).
+        // ignored-failure: a loaded package's filter types all parse (`unreadable_types`).
         let parsed = parse_ty(&f.ty, &meta.app).ok();
         let (kind, cases) = match f.kind {
             FilterKind::Bool | FilterKind::Predicate => (ColumnKind::Bool, Vec::new()),
@@ -220,7 +274,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
         let columned = match schema.kind {
             MergeKind::Register => !matches!(
                 parse_ty(&field.ty, &meta.app),
-                Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..) | Ty::Principal)
+                Ok(Ty::List(_) | Ty::Tuple(_) | Ty::Map(_) | Ty::Result(..))
             ),
             // A counter is a column of its value. A set's members are one run per member
             // (`columns::values`), so membership and presence are runs of its column without
@@ -229,7 +283,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             MergeKind::Counter | MergeKind::Set => true,
             _ => false,
         };
-        // optional-decode: a loaded package's field types all parse (`unreadable_types`).
+        // ignored-failure: a loaded package's field types all parse (`unreadable_types`).
         let Some((kind, cases)) = parse_ty(&field.ty, &meta.app)
             .ok()
             .filter(|_| columned)
@@ -288,7 +342,7 @@ impl MetaExt for Meta {
                 let mut schema = TypeSchema::new(&ty.id, &self.app, &ty.name);
                 schema.origin.clone_from(&ty.origin);
                 for field in &ty.fields {
-                    schema.fields.push(field_schema(self, field));
+                    schema.fields.push(field_schema(self, ty, field));
                 }
                 schema.columns = columns(self, ty, &schema.fields);
                 schema
@@ -322,5 +376,86 @@ impl MetaExt for Meta {
 
     fn subject_of(&self, params: &[ParamMeta]) -> Option<&TypeMeta> {
         params.first().and_then(|param| self.type_named(&param.ty))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const REMINDING: &str = r#"app t.remind "Remind"
+
+type Task {
+    title: Text (title)
+    due: Option<Date> = .none
+    at: Option<Time> = .none
+    who: Option<Principal> = .none
+    repeat: Option<std.Repeat> (repeats: due) = .none
+    remind: Option<std.Reminder> (reminds: due, at, who: who) = .none
+}
+
+type Note {
+    title: Text (title)
+    body: Text (body)
+}
+"#;
+
+    fn meta() -> Meta {
+        let compiled = tilolang::compile_package_with(
+            REMINDING,
+            &tilolang::IdsLock::new(),
+            &[],
+            &mut tilolang::SeededEntropy(7),
+        )
+        .unwrap_or_else(|d| panic!("{d:#?}"));
+        compiled.meta
+    }
+
+    /// The id the schema of `ty` stores the field `name` under.
+    fn id_of(schema: &TypeSchema, name: &str) -> String {
+        let ty = meta();
+        let ty_name = schema.name.clone();
+        let declared = ty
+            .types
+            .iter()
+            .find(|ty| ty.name == ty_name)
+            .expect("the type");
+        declared
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .expect("the field")
+            .id
+            .clone()
+    }
+
+    #[test]
+    fn a_published_schema_names_the_fields_a_repeat_counts_from_and_a_reminder_reads() {
+        let schemas = meta().schemas();
+        let task = schemas
+            .iter()
+            .find(|schema| schema.name == "Task")
+            .expect("Task");
+        let repeats = task.repeats().expect("Task repeats");
+        assert_eq!(repeats.rule, id_of(task, "repeat"));
+        assert_eq!(repeats.date, id_of(task, "due"));
+        let reminds = task.reminds().expect("Task reminds");
+        assert_eq!(reminds.trigger, id_of(task, "remind"));
+        assert_eq!(reminds.date, id_of(task, "due"));
+        assert_eq!(reminds.time, Some(id_of(task, "at").as_str()));
+        assert_eq!(reminds.who, Some(id_of(task, "who").as_str()));
+        let note = schemas
+            .iter()
+            .find(|schema| schema.name == "Note")
+            .expect("Note");
+        assert_eq!(note.repeats(), None, "a type that declares none");
+        assert_eq!(note.reminds(), None);
+    }
+
+    #[test]
+    fn the_schema_an_index_is_built_for_carries_the_roles() {
+        let text = meta().schema_text();
+        assert!(text.contains("Repeats"), "{text}");
+        assert!(text.contains("Reminds"), "{text}");
     }
 }

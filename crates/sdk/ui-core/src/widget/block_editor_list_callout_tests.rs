@@ -92,6 +92,18 @@ fn access_names(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
     }
 }
 
+/// Every block row's kind, in its own words, from the document's tree.
+fn role_descriptions(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
+    if node.role == crate::a11y::Role::ListItem
+        && let Some(description) = &node.role_description
+    {
+        out.push(description.clone());
+    }
+    for child in &node.children {
+        role_descriptions(child, out);
+    }
+}
+
 #[test]
 fn bullet_x_height_is_the_top_of_the_faces_x() {
     let theme = Theme::dark();
@@ -244,17 +256,27 @@ fn nested_ordinals_follow_tex_enumerate_and_are_announced_as_shown() {
         .map(|(block, ordinal)| list_marker::ordinal_label(*ordinal, block.indent()))
         .collect();
     assert_eq!(labels, ["1.", "(a)", "i.", "ii.", "(b)"]);
+    // The row says what the block says, and the kind's own words — the
+    // ordinal as the page shows it — are what it is described as.
     let mut names = Vec::new();
     access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
-    for expected in [
-        "Numbered item 1. block 1",
-        "Numbered item (a) block 2",
-        "Numbered item i. block 3",
-        "Numbered item (b) block 5",
-    ] {
+    for expected in ["Top", "Letter", "Roman", "Letter two"] {
         assert!(
             names.iter().any(|name| name == expected),
             "{expected}: {names:?}"
+        );
+    }
+    let mut described = Vec::new();
+    role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
+    for expected in [
+        "Numbered item 1.",
+        "Numbered item (a)",
+        "Numbered item i.",
+        "Numbered item (b)",
+    ] {
+        assert!(
+            described.iter().any(|description| description == expected),
+            "{expected}: {described:?}"
         );
     }
     // Markdown keeps the digits.
@@ -327,9 +349,14 @@ fn a_callout_paints_its_wash_under_its_header_and_text() {
     );
     let mut names = Vec::new();
     access_names(&Widget::accessibility(&editor).unwrap(), &mut names);
+    assert!(names.iter().any(|name| name == "Mind the gap"), "{names:?}");
+    let mut described = Vec::new();
+    role_descriptions(&Widget::accessibility(&editor).unwrap(), &mut described);
     assert!(
-        names.iter().any(|name| name == "Warning callout block 2"),
-        "{names:?}"
+        described
+            .iter()
+            .any(|description| description == "Warning callout"),
+        "{described:?}"
     );
 
     // Without a callout, no wash.

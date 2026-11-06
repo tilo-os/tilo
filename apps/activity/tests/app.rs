@@ -22,12 +22,14 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
-/// Whether the window says `text`, as a name or description a screen
+/// Whether the window says `text`, as a name, value or description a screen
 /// reader reads.
 fn says(app: &mut TestApp<App>, text: &str) -> bool {
     app.harness().a11y_nodes().iter().any(|(_, node)| {
-        node.label().is_some_and(|label| label.contains(text))
-            || node.description().is_some_and(|said| said.contains(text))
+        [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+            .any(|said| said.contains(text))
     })
 }
 
@@ -203,6 +205,18 @@ fn a_refused_read_says_so_instead_of_showing_history() {
         "the refusal says why"
     );
     assert!(!shows(&mut app, "activity-brief-0"));
+}
+
+/// A change one device will not take says so on its own row: where it is not,
+/// and why, beside where it is.
+#[test]
+fn a_change_a_device_refused_says_where_it_is_not() {
+    english();
+    let mut app = TestApp::<App>::capture(Some("history")).expect("capture");
+    assert!(
+        says(&mut app, "not on Ada's laptop: no permission"),
+        "the row of the refused change says where it is not"
+    );
 }
 
 #[test]

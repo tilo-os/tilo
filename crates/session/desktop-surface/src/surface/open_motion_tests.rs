@@ -25,6 +25,8 @@ impl TileSource for Apps {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         })
     }
 }
@@ -49,6 +51,8 @@ impl Desk {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let tree = seed_tree(&mut minter, "Desk", vec![chat]);
         let (surface, handle) = DesktopSurface::new(tree, 9, Box::new(Apps));
@@ -72,7 +76,7 @@ impl Desk {
     fn frames(&mut self, n: usize) {
         for _ in 0..n {
             self.now = self.now.checked_add(Duration::from_millis(16)).unwrap();
-            tilo_clock::testing::with_monotonic_time(self.now, || self.frame.relayout());
+            ui::time::testing::with_monotonic_time(self.now, || self.frame.relayout());
         }
     }
 

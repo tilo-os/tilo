@@ -179,6 +179,9 @@ fn open_socket(addr: SocketAddrUnix) -> rustix::io::Result<UnixStream> {
     )?;
     // bind it to requested address
     rustix::net::bind(&fd, &addr)?;
-    rustix::net::listen(&fd, 1)?;
+    // Deep enough that several apps opening at once into a bound display are
+    // all queued while the server starts: a queued client waits, a refused
+    // one fails to open the display at all.
+    rustix::net::listen(&fd, 128)?;
     Ok(UnixStream::from(fd))
 }

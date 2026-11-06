@@ -67,6 +67,7 @@
 pub mod agents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod certification;
+mod channels;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
@@ -99,18 +100,18 @@ tilo_agent_participant::app_worker!();
 
 // The records and wire messages shared with relay clients live in
 // `tilo-relay-protocol`, the frame codec in `tilo-relay-client`, and the
-// session clients (relay, co-edit, anti-entropy, room administration and
+// session clients (relay, co-edit, anti-entropy, workspace administration and
 // workspace join) in `tilo-relay-session`, so clients need not link the
 // daemon. The daemon keeps addressing them here.
 #[cfg(feature = "web")]
 use tilo_room_host::timing;
 #[cfg(not(target_arch = "wasm32"))]
 pub use tilo_room_host::{
-    app_serving, compaction, host, member_limits, metrics, payloads, peer, presence_mailbox,
-    room_records, rooms, store, surfaces, workspace,
+    app_serving, compaction, host, member_limits, metrics, payloads, peer, presence_mailbox, store,
+    surfaces, workspace, workspace_records, workspaces,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use tilo_room_host::{authority_epoch, handshake, room_access};
+use tilo_room_host::{authority_epoch, handshake, workspace_access};
 
 pub use tilo_relay_client::frame;
 pub use tilo_relay_protocol::{
@@ -148,8 +149,6 @@ pub use mesh::{
 };
 pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
-#[cfg(not(target_arch = "wasm32"))]
-pub use room_access::Spectators;
 pub use transport::ContentPeerRegistration;
 pub use transport::{ALPN, Envelope};
 

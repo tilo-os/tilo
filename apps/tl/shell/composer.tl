@@ -25,7 +25,7 @@ view composer(d: Desk) {
         }
         body: {
             ui.TextInput(value: words, placeholder: "What should it do?", lines: 3) {
-                on submit: session.ask(title: words, agent: agent_key(agents))
+                on submit: session.ask(title: words, agent: agent_key(agents)).then(set(words, ""))
             }
             if live.is_empty() {
                 ui.EmptyState(

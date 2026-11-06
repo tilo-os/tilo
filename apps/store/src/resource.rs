@@ -974,6 +974,7 @@ mod tests {
         let scan = desktop_entry::scan::scan_dirs(
             &[exports.path().to_path_buf()],
             &desktop_entry::scan::current_desktops(),
+            &[],
         );
         let desktop_id = app_id.strip_prefix("host:").unwrap();
         let entry = scan

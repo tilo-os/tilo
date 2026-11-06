@@ -1,0 +1,48 @@
+[package]
+name = "tilo-workspace-directory"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The public workspaces a site lists, the door each one admits people through, and where a join stands: one implementation for the desktop session and for a browser page, async over `tilo-net`."
+
+[lib]
+name = "tilo_workspace_directory"
+path = "src/lib.rs"
+
+[dependencies]
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# A workspace's id, as an invitation and a link name it.
+tilo-desktop-model = { version = "0.1.0", path = "../desktop-model" }
+# HTTP on the desktop's connection pool and on a page's `fetch`.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["http", "json"] }
+# A pasted workspace link names its site and its workspace.
+tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
+tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-protocol" }
+# The reads and joins run as one app task.
+tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt" }
+# What the sheet shows: the list as plain data.
+tilo-sheets = { version = "0.1.0", path = "../sheets" }
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
+# Invitations are verified for the person they were granted to.
+tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
+tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+test-http = { path = "../../dev/test-http" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

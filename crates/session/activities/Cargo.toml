@@ -1,0 +1,26 @@
+[package]
+name = "tilo-activities"
+description = "The floating layer as an app: the activity cards over the desk, their controls, and the feed the session lends them."
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tilo-activities"
+path = "src/main.rs"
+
+[dependencies]
+# The cards' frame, painting, input and accessibility.
+tilo-desktop-surface = { path = "../desktop-surface" }
+# A framework app: the layer's resource, effects and surface.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
+vello.workspace = true
+winit.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
+
+[lints]
+workspace = true

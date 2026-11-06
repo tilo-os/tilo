@@ -131,10 +131,11 @@ impl Core {
             let registry = self.registry.borrow();
             registry.type_info(&coll.item).and_then(|(pkg, info)| {
                 let ty = pkg.meta.types.iter().find(|t| t.id == info.id)?;
-                let field = ty
-                    .fields
-                    .iter()
-                    .find(|f| f.role.as_deref() == Some("title"))?;
+                let field = ty.fields.iter().find(|f| {
+                    f.role
+                        .as_ref()
+                        .is_some_and(crate::meta::FieldRole::is_title)
+                })?;
                 info.fields
                     .iter()
                     .find(|f| f.id == field.id)

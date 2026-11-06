@@ -316,7 +316,7 @@ fn a_bad_declaration_is_an_error_that_names_the_type_by_its_doc() {
         (
             "        filter done (colour: .red)",
             "E090",
-            "takes the option `icon:`",
+            "takes the options `icon:` and `count:`",
         ),
         ("        filter done (icon: .nope)", "E090", "not an icon"),
         (
@@ -519,12 +519,17 @@ fn a_query_that_does_not_fit_the_types_filters_is_an_error() {
             "{q}: expected {code} saying {says:?}, got:\n{got}"
         );
     }
-    // A length of time is a number of seconds where a value is one (a view moves a moment by
-    // it), so `7d` in a function returning an Int is an Int.
+    // A length of time is a value of its own, so `7d` is no Int; a stored number of seconds is
+    // read as one with `Duration(n)`.
     let compile_at = |body: &str| compile_with(&format!("app t.x \"X\"\n{body}\n"), &[]);
+    let got = first_message("fn f() -> Int {\n    return 7d\n}");
     assert!(
-        compile_at("fn f() -> Int {\n    return 7d\n}").is_ok(),
-        "`7d` is an Int where a value is a number of seconds"
+        got.contains("E020") && got.contains("found Duration") && got.contains("`.seconds()`"),
+        "`7d` is a Duration where an Int goes, got:\n{got}"
+    );
+    assert!(
+        compile_at("fn f(n: Int) -> Duration {\n    return Duration(n)\n}").is_ok(),
+        "`Duration(n)` reads a number of seconds as a length of time"
     );
     let got = first_message("fn f(a: Int) -> Int {\n    return a..3\n}");
     assert!(got.contains("E105") && got.contains("a range"), "{got}");
@@ -613,5 +618,337 @@ type Todos {
             Operand::Field(field_id(todo, "seen")),
             Operand::Lit(Lit::Time("2026-10-29T09:00:00Z".into()))
         )
+    );
+}
+
+const PLACES: &str = r#"/// A thing to do.
+type Task {
+    title: Text (title)
+    done: Bool (done) = false
+    due: Option<Date> = .none
+    project: Option<Project> = .none
+
+    search {
+        filter "Inbox" = project == .none and due == .none and not done (icon: .inbox, count: true)
+        filter "Today" = due <= today and not done (icon: .star, count: true)
+        filter "Upcoming" = due > today and not done (icon: .calendar)
+        filter "Done" = done (icon: .circle_check)
+        filter project
+        sort due oldest
+    }
+}
+
+/// What tasks are filed under.
+type Project {
+    name: Text (title)
+    tasks: Collection<Task>
+}
+
+/// Tasks, in one place.
+type Board {
+    tasks: Collection<Task>
+}
+"#;
+
+#[test]
+fn a_named_filter_is_the_predicate_it_writes_and_says_whether_its_place_counts() {
+    let meta = compile_body(PLACES).meta;
+    let task = type_meta(&meta, "Task");
+    let keys: Vec<&str> = task.search.filters.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, ["inbox", "today", "upcoming", "done", "project"]);
+    let due = field_id(task, "due");
+    let done = field_id(task, "done");
+    let project = field_id(task, "project");
+    let open = Pred::Cmp(
+        CmpOp::Eq,
+        Operand::Field(done.clone()),
+        Operand::Lit(Lit::Bool(true)),
+    );
+    let place = |key: &str| {
+        let filter = task
+            .search
+            .filter(key)
+            .unwrap_or_else(|| panic!("no filter {key}"));
+        assert_eq!(filter.kind, FilterKind::Predicate, "{key}");
+        assert!(filter.field.is_none(), "{key} is on no field");
+        (
+            filter.count,
+            filter.pred.clone().unwrap_or_else(|| panic!("{key}")),
+        )
+    };
+    // What is not sorted yet: open, filed under nothing and for no day.
+    assert_eq!(
+        place("inbox"),
+        (
+            true,
+            Pred::And(vec![
+                Pred::And(vec![
+                    Pred::Not(Box::new(Pred::Present(project))),
+                    Pred::Not(Box::new(Pred::Present(due.clone()))),
+                ]),
+                Pred::Not(Box::new(open.clone())),
+            ])
+        )
+    );
+    let today = Operand::Clock {
+        day: true,
+        offset: 0,
+    };
+    assert_eq!(
+        place("today"),
+        (
+            true,
+            Pred::And(vec![
+                Pred::Cmp(CmpOp::Le, Operand::Field(due.clone()), today.clone()),
+                Pred::Not(Box::new(open.clone())),
+            ])
+        )
+    );
+    assert_eq!(
+        place("upcoming"),
+        (
+            false,
+            Pred::And(vec![
+                Pred::Cmp(CmpOp::Gt, Operand::Field(due), today),
+                Pred::Not(Box::new(open)),
+            ])
+        )
+    );
+    assert_eq!(
+        place("done"),
+        (
+            false,
+            Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(done),
+                Operand::Lit(Lit::Bool(true))
+            )
+        )
+    );
+    // A field filter written beside them is still a field filter, counting nothing.
+    let project_filter = task.search.filter("project").expect("project");
+    assert!(!project_filter.count);
+    assert_eq!(project_filter.kind, FilterKind::Reference);
+}
+
+#[test]
+fn a_filter_takes_the_options_icon_and_count() {
+    let meta = compile_body(PLACES).meta;
+    let task = type_meta(&meta, "Task");
+    assert_eq!(
+        task.search.filter("today").and_then(|f| f.icon.clone()),
+        Some("star".to_owned())
+    );
+    let first = first_message(
+        r#"/// Something to do.
+type Todo {
+    title: Text (title)
+    done: Bool = false
+
+    search {
+        filter "Maybe" = not done (count: 3)
+    }
+}
+"#,
+    );
+    assert!(
+        first.contains("E090") && first.contains("`count:` takes `true` or `false`"),
+        "{first}"
+    );
+    let unknown = first_message(
+        r"/// Something to do.
+type Todo {
+    title: Text (title)
+    done: Bool = false
+
+    search {
+        filter done (tone: .danger)
+    }
+}
+",
+    );
+    assert!(
+        unknown.contains("E090")
+            && unknown.contains("a filter takes the options `icon:` and `count:`"),
+        "{unknown}"
+    );
+}
+
+#[test]
+fn a_field_is_read_as_the_field_it_is_whatever_it_is_called() {
+    let meta = compile_body(
+        r#"/// A thing to do.
+type Task {
+    title: Text (title)
+    inbox: Bool = false
+
+    search {
+        filter "Filed" = inbox
+    }
+}
+"#,
+    )
+    .meta;
+    let task = type_meta(&meta, "Task");
+    let filed = task.search.filter("filed").expect("filed");
+    assert!(!filed.count);
+    assert_eq!(
+        filed.pred,
+        Some(Pred::Cmp(
+            CmpOp::Eq,
+            Operand::Field(field_id(task, "inbox")),
+            Operand::Lit(Lit::Bool(true))
+        )),
+        "a field called `inbox` is a field"
+    );
+}
+
+/// A field naming who an item belongs to is a filter of its own: `assignee:me` reads the same
+/// in every app that has one.
+const MEMBERS: &str = r"
+/// A task someone does.
+type Task {
+    title: Text (title)
+    done: Bool (done) = false
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+}
+
+/// The tasks a workspace shares.
+type Board {
+    tasks: Collection<Task>
+}
+";
+
+#[test]
+fn a_field_naming_a_member_is_a_filter_without_declaring_one() {
+    // `me` reads as the person looking rather than as a binding, so the view compiles.
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+view mine(b: Board) {{
+    for t in query(Task, in: b.tasks, assignee: me) {{
+        text(t.title)
+    }}
+}}
+"
+    ))
+    .meta;
+    let task = type_meta(&meta, "Task");
+    let assignee = task
+        .search
+        .filter("assignee")
+        .expect("the member field is a filter");
+    assert_eq!(assignee.kind, FilterKind::Person);
+    assert!(assignee.optional, "nobody may hold it");
+    assert_eq!(assignee.label, "Assignee");
+    assert_eq!(
+        assignee.field.as_deref(),
+        Some(field_id(task, "assignee").as_str())
+    );
+}
+
+#[test]
+fn a_named_filter_reads_the_person_it_is_asked_for() {
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+/// What the people of a workspace hold between them.
+type Shared {{
+    title: Text (title)
+    done: Bool (done) = false
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+
+    search {{
+        filter \"Mine\" = assignee == workspace.me and not done (count: true)
+    }}
+}}
+"
+    ))
+    .meta;
+    let shared = type_meta(&meta, "Shared");
+    let mine = shared.search.filter("mine").expect("mine");
+    assert!(mine.count);
+    let pred = mine.pred.as_ref().expect("a predicate");
+    let done = field_id(shared, "done");
+    assert_eq!(
+        pred,
+        &Pred::And(vec![
+            Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(shared, "assignee")),
+                Operand::Viewer
+            ),
+            Pred::Not(Box::new(Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(done),
+                Operand::Lit(Lit::Bool(true))
+            ))),
+        ]),
+        "the filter asks which item's assignee is the person looking"
+    );
+    assert!(pred.reads_viewer(), "it is asked for someone");
+    assert_eq!(
+        pred.viewer("ben"),
+        Pred::And(vec![
+            Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(shared, "assignee")),
+                Operand::Lit(Lit::Principal("ben".to_owned()))
+            ),
+            Pred::Not(Box::new(Pred::Cmp(
+                CmpOp::Eq,
+                Operand::Field(field_id(shared, "done")),
+                Operand::Lit(Lit::Bool(true))
+            ))),
+        ]),
+        "and reads for whoever it is asked for"
+    );
+}
+
+#[test]
+fn the_member_filter_is_declared_once_or_hidden_away() {
+    // Declaring it names it, without making a second one.
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+type Named {{
+    title: Text (title)
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+
+    search {{
+        filter assignee
+    }}
+}}
+"
+    ))
+    .meta;
+    let named = type_meta(&meta, "Named");
+    let people: Vec<&tilolang::meta::FilterMeta> = named
+        .search
+        .filters
+        .iter()
+        .filter(|f| f.kind == FilterKind::Person)
+        .collect();
+    assert_eq!(people.len(), 1, "one member filter, declared: {people:?}");
+    assert_eq!(people[0].key, "assignee");
+    // Hiding it keeps it out, as hiding any field does.
+    let meta = compile_body(&format!(
+        "{MEMBERS}
+type Quiet {{
+    title: Text (title)
+    /// Who is doing it.
+    assignee: Option<Principal> = .none
+
+    search {{
+        hide assignee
+    }}
+}}
+"
+    ))
+    .meta;
+    let quiet = type_meta(&meta, "Quiet");
+    assert!(
+        quiet.search.filter("assignee").is_none(),
+        "a hidden member field is no filter"
     );
 }

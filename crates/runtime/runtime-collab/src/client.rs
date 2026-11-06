@@ -22,7 +22,7 @@ use crate::{
     ExportedAction, NearbyTransferCommand, NearbyTransferReply, PresencePayload, SpeakerCommand,
     SpeakerReply, SurfaceDelta, TaskRunEnvelope, TaskRunUpdate, WifiContinuityCommand,
     WifiContinuityReply, WorkspaceControlEvent, WorkspaceControlInput, audio_output,
-    committed_document, file_clipboard, native_media, open_selected, private_draft,
+    committed_document, file_clipboard, native_media, open_selected,
 };
 use crate::{
     MAX_NEARBY_TRANSFER_WIRE_BYTES, MAX_SPEAKER_WIRE_BYTES, MAX_WIFI_CONTINUITY_WIRE_BYTES,
@@ -555,71 +555,6 @@ impl ChannelHandle {
             channel: Arc::clone(&self.channel),
             subscription: tokio::sync::Mutex::new(subscription),
         })))
-    }
-
-    /// Open a body-free private change lane, authorized as the original person.
-    ///
-    /// # Errors
-    /// Returns unavailable if certification or the private subscription fails.
-    pub async fn subscribe_person_chat(
-        &self,
-        peer: &str,
-        original: &[u8],
-    ) -> Result<PersonChatStream, NotAvailable> {
-        if peer.len() != 64 || !matches!(original.len(), 0 | 16) {
-            return Err(refused("invalid private subscription"));
-        }
-        Ok(PersonChatStream(
-            self.feed(Topic::PersonChat {
-                peer: peer.to_owned(),
-                on_behalf_of: original.to_vec(),
-            })
-            .await?,
-        ))
-    }
-
-    /// Fetch or acknowledge an ephemeral editor on the certified native channel.
-    /// The private command lane carries this separate closed envelope; no
-    /// editor body enters the action protocol or person-message persistence.
-    ///
-    /// # Errors
-    /// Refuses a missing original invocation, denied transport or oversized reply.
-    pub async fn private_draft(
-        &self,
-        request: &private_draft::Request,
-        original: &[u8],
-    ) -> Result<Vec<u8>, NotAvailable> {
-        if original.len() != 16 {
-            return Err(refused("private draft requires original invocation"));
-        }
-        let command =
-            serde_json::to_vec(request).map_err(|_| refused("invalid private draft request"))?;
-        let reply = self.command(Service::PersonChat, command, original).await?;
-        if reply.len() > 128 * 1024 {
-            return Err(refused("private draft reply exceeds bound"));
-        }
-        Ok(reply)
-    }
-
-    /// Invoke the person-only private host door; unsupported hosts fail closed.
-    ///
-    /// # Errors
-    /// Returns unavailable if certification or the private owner command fails.
-    pub async fn person_chat(
-        &self,
-        command: &[u8],
-        original: &[u8],
-    ) -> Result<Vec<u8>, NotAvailable> {
-        if command.len() > 24 * 1024 || !matches!(original.len(), 0 | 16) {
-            return Err(refused("invalid private conversation request"));
-        }
-        let reply = self
-            .command(Service::PersonChat, command.to_vec(), original)
-            .await?;
-        if reply.len() > 1024 * 1024 {
-            return Err(refused("private conversation reply exceeds bound"));
-        }
-        Ok(reply)
     }
 
     /// Send PCM or controls to this launched application's output-only service.
@@ -1808,34 +1743,6 @@ impl RealtimeStream {
     }
 }
 
-/// The app's private conversation with one person, as it stands and then
-/// on each change.
-#[derive(Clone)]
-pub struct PersonChatStream(Feed);
-
-impl PersonChatStream {
-    /// The conversation's next generation and its body, in the person chat
-    /// reply encoding.
-    ///
-    /// # Errors
-    ///
-    /// The subscription ended, or the body is oversized.
-    pub async fn read(&self) -> Result<(u64, Vec<u8>), NotAvailable> {
-        match self.0.event().await? {
-            Event::PersonChat {
-                generation,
-                conversation,
-            } => {
-                if conversation.len() > 1024 * 1024 {
-                    return Err(refused("private conversation reply exceeds bound"));
-                }
-                Ok((generation, conversation))
-            }
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
 /// The task runs the workspace hands this agent.
 #[derive(Clone)]
 pub struct TaskRunStream(Feed);
@@ -2314,6 +2221,9 @@ impl ContextStream {
                 );
             }
             ContextUpdate::RecordsArrived(records) => context.records_arrived = records,
+            // Retired: a conversation is an ordinary record, carried by the
+            // workspace like any other and never named here.
+            ContextUpdate::RetiredPersonPairs => {}
         }
         Ok(context)
     }

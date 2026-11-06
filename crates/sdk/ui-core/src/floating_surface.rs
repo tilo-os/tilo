@@ -187,7 +187,7 @@ pub fn paint_app_owned_content(
 /// Geometry is encoded as plain logical-pixel arrays rather than renderer
 /// types so sandbox services, Wayland protocol shims, and test transports
 /// can all carry the same messages.
-pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 21;
+pub const FLOATING_SURFACE_PROTOCOL_VERSION: u16 = 23;
 pub const FLOATING_SURFACE_SERVICE: &str = "shell-ui";
 
 /// What a model may know about one change it is asked to describe: the
@@ -524,6 +524,27 @@ pub enum FloatingSurfaceClientMessage {
     SharedWindows {
         shared: Vec<crate::window_share::SharedWindow>,
     },
+    /// The controls of this window's own content, as the app's accessibility
+    /// tree exports them (`crate::window_targets`), at most
+    /// [`crate::window_targets::MAX_TARGETS`]: what a session, a test or an
+    /// agent finds them by name and presses
+    /// ([`FloatingSurfaceHostMessage::PressTarget`]). Sent whenever the tree
+    /// they come from changes, never per frame. `instance` names the tab, as
+    /// for [`Self::Toolbar`].
+    WindowTargets {
+        targets: Vec<crate::window_targets::WindowTarget>,
+        instance: Option<u64>,
+    },
+    /// The app under the pointer could not scroll sideways with this wheel
+    /// event: the shell pans the window strip under it by `travel` logical
+    /// pixels, positive toward later windows, by the same rules it applies
+    /// to a wheel over its own canvas. Sent for every event of a gesture the
+    /// app left to the shell, and never for one it took, so a gesture is
+    /// never split between app and strip. An app outside a session's shell
+    /// has no such connection and keeps every wheel.
+    SidewaysWheel {
+        travel: f64,
+    },
 }
 
 /// One control of an app's window as the shell names it when a person
@@ -739,6 +760,16 @@ pub enum FloatingSurfaceHostMessage {
     Unanswered {
         message: String,
         reason: String,
+    },
+    /// The person, an agent or a test pressed the control `name` of `role`
+    /// in this window's content, which the app described in
+    /// [`FloatingSurfaceClientMessage::WindowTargets`]. The app answers it as
+    /// an assistive technology does on that control, through the same path; a
+    /// control its window no longer shows presses nothing.
+    PressTarget {
+        name: String,
+        role: String,
+        action: crate::window_targets::TargetAction,
     },
 }
 
@@ -1944,7 +1975,10 @@ fn clamp_rect(rect: Rect, bounds: Rect, reachable: f64) -> Rect {
     rect + Vec2::new(dx, dy)
 }
 
-fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
+/// `rect` moved onto an edge of `bounds` it stands within 32 px of, `gap` in
+/// from it: the settle every floating thing uses, cards and windows alike.
+#[must_use]
+pub fn snap_to_edges(rect: Rect, bounds: Rect, gap: f64) -> Rect {
     let mut out = rect;
     let threshold = 32.0;
     if (rect.x0 - bounds.x0).abs() < threshold {

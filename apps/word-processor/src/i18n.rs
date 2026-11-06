@@ -8,9 +8,9 @@
 //! session.
 //!
 //! Panic-free: a missing key/locale/pattern degrades to the English string,
-//! then the key itself, never panics. The locale comes from the environment
-//! (`LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG`, read as POSIX — `de_DE.UTF-8`
-//! resolves the `de` catalog) and falls back to `en-US`.
+//! then the key itself, never panics. The language is the desktop's one answer
+//! — the person's language, else the system locale (`de_DE.UTF-8` resolves the
+//! `de` catalog) — and falls back to `en-US`.
 
 use ui::i18n::ArgValue;
 

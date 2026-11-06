@@ -12,9 +12,8 @@
  * is what a device that fell behind asks for.
  *
  * What the encoder writes is one picture's coded bytes and its place in the
- * source's stream; the call seals it and puts it in a tilo-video/1 object
- * (tilo-call-lane `page`), so the page never speaks that format for what it
- * sends. What arrives is already such an object, and the app decodes it.
+ * source's stream: the page publishes it on its call's plane as it is made,
+ * and the app draws the objects the plane delivers.
  */
 import {SOURCES, base64Of, encodeVideoObject, fitted} from './video-profile.mjs';
 

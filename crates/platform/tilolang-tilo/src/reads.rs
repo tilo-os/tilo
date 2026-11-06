@@ -105,7 +105,7 @@ pub fn locate_ref(
     })
 }
 
-fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
+pub(crate) fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
     if composite {
         return Scalar::Json(value.clone());
     }
@@ -120,7 +120,7 @@ fn scalar_of_json(value: &Json, composite: bool) -> Scalar {
     }
 }
 
-fn element_key(value: &Json) -> String {
+pub(crate) fn element_key(value: &Json) -> String {
     match value {
         Json::String(text) => text.clone(),
         other => other.to_string(),
@@ -730,7 +730,7 @@ fn own_text(
             continue;
         }
         let text: String = read_key(doc, obj, field.id.as_str()).ok()?;
-        let text = if field.role == crate::schema::FieldRole::Body {
+        let text = if matches!(field.role, crate::schema::FieldRole::Body) {
             text.lines()
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or_default()

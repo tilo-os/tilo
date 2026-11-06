@@ -711,6 +711,8 @@ fn duplicate_tab(
         title,
         tile: content,
         app_title: None,
+        view: String::new(),
+        pinned: false,
     };
     group_at_mut(workspace, strip, group)?
         .tabs
@@ -860,20 +862,7 @@ pub fn apply_command(
             return apply_command(workspace, &resolved, mint, create);
         }
         DesktopCommand::OpenTab { app, placement } => {
-            validate_placement(workspace, placement)?;
-            let id = mint()?;
-            let group = mint()?;
-            let (title, content) = create(app, id)?;
-            let strip = matches!(placement, TabPlacement::EmptyWorkspace)
-                .then(&mut *mint)
-                .transpose()?;
-            let tab = Tab {
-                id,
-                title,
-                tile: content,
-                app_title: None,
-            };
-            place(workspace, tab, placement, group, strip)?;
+            open_tab(workspace, app, placement, mint, create)?;
         }
         DesktopCommand::DuplicateTab { location: at } => {
             duplicate_tab(workspace, at, mint, create)?;
@@ -945,6 +934,33 @@ pub fn apply_command(
     }
     free_closed_places(workspace);
     Ok(())
+}
+
+/// Open `app` into the workspace as `placement` says, under ids `mint` gives
+/// and a title `create` makes the window with.
+fn open_tab(
+    workspace: &mut Workspace,
+    app: &str,
+    placement: &TabPlacement,
+    mint: &mut impl FnMut() -> Result<u64, String>,
+    create: &mut impl FnMut(&str, u64) -> Result<(String, TileContent), String>,
+) -> Result<(), String> {
+    validate_placement(workspace, placement)?;
+    let id = mint()?;
+    let group = mint()?;
+    let (title, content) = create(app, id)?;
+    let strip = matches!(placement, TabPlacement::EmptyWorkspace)
+        .then(&mut *mint)
+        .transpose()?;
+    let tab = Tab {
+        id,
+        title,
+        tile: content,
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    place(workspace, tab, placement, group, strip)
 }
 
 /// A window closed or moved out of the workspace leaves its canvas place

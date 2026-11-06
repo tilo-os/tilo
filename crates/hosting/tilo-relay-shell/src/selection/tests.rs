@@ -174,7 +174,7 @@ fn producer_frames(meta: &serde_json::Value, group: &str, time: u64) -> Vec<Vec<
 /// A store bound to `authority` at its current workspace id.
 fn bound_store(authority: RetentionAuthority) -> (tempfile::TempDir, WorkspaceStore) {
     let tmp = tempfile::tempdir().unwrap();
-    let id = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let id = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let mut store = WorkspaceStore::open(tmp.path(), id, true).unwrap();
     store.bind_shell_authority(authority).unwrap();
     (tmp, store)
@@ -209,7 +209,7 @@ fn reopen_bound(tmp: &Path, id: u64, authority: RetentionAuthority) -> Workspace
     store
 }
 
-const SYNTHETIC_ROOM: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const SYNTHETIC_WORKSPACE_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 fn synthetic_cert(
     root: u8,
@@ -230,14 +230,14 @@ fn synthetic_cert(
     cert
 }
 fn seeded_owner(
-    room: &str,
+    workspace: &str,
     cert: &tilo_user_identity::DeviceCert,
     key: &ed25519_dalek::SigningKey,
     documents: Vec<tilo_peer_state::SeedDocument>,
     now: web_time::SystemTime,
 ) -> StatePeer {
     let mut peer = StatePeer::new(
-        room,
+        workspace,
         cert.clone(),
         vec![],
         tilo_user_identity::RevocationList::new(),
@@ -247,7 +247,7 @@ fn seeded_owner(
     peer.install_seed(
         tilo_peer_state::SeedState {
             workspace_changes: tilo_peer_state::seed_workspace(
-                room,
+                workspace,
                 cert,
                 std::slice::from_ref(cert),
             )
@@ -279,10 +279,10 @@ fn synthetic_owner() -> (
         kind: "test".into(),
         bytes: doc.save(),
     };
-    let peer = seeded_owner(SYNTHETIC_ROOM, &cert, &key, vec![document], now);
+    let peer = seeded_owner(SYNTHETIC_WORKSPACE_ID, &cert, &key, vec![document], now);
     (
         key,
-        RetentionAuthority::new(SYNTHETIC_ROOM, cert).unwrap(),
+        RetentionAuthority::new(SYNTHETIC_WORKSPACE_ID, cert).unwrap(),
         peer,
         now,
     )
@@ -293,16 +293,16 @@ fn synthetic_owner() -> (
 )]
 fn synthetic_signed(
     key: &ed25519_dalek::SigningKey,
-    room: &str,
+    workspace: &str,
     mutation: collab_types::DocumentMutation,
     seq: u64,
     now: web_time::SystemTime,
 ) -> NeighbourMsg {
-    synthetic_signed_record(key, room, "one", &mutation, (seq, now))
+    synthetic_signed_record(key, workspace, "one", &mutation, (seq, now))
 }
 fn synthetic_signed_record(
     key: &ed25519_dalek::SigningKey,
-    room: &str,
+    workspace: &str,
     record: &str,
     mutation: &collab_types::DocumentMutation,
     (seq, now): (u64, web_time::SystemTime),
@@ -310,9 +310,9 @@ fn synthetic_signed_record(
     let source = key.verifying_key().to_bytes();
     let mut envelope = collab_types::SignedOp::new_unsigned(
         mutation.encode().unwrap(),
-        collab_types::document_artifact_id("selector.app", room, record),
+        collab_types::document_artifact_id("selector.app", workspace, record),
         collab_types::Ed25519PublicKey::from_bytes(source),
-        collab_types::document_attestation_id("selector.app", room, record),
+        collab_types::document_attestation_id("selector.app", workspace, record),
         collab_types::OpKind::Change,
         now,
         seq,
@@ -321,7 +321,7 @@ fn synthetic_signed_record(
     NeighbourMsg::AppDocument {
         peer: tilo_peer_state::peer_handle(&source),
         app_id: "selector.app".into(),
-        cluster_id: room.into(),
+        cluster_id: workspace.into(),
         record_id: record.into(),
         envelope: Box::new(envelope),
     }
@@ -343,7 +343,7 @@ fn synthetic_frame(
         _ => authority.governor().device_public_key,
     };
     tilo_relay::transport::encode(&Envelope::Delta {
-        workspace_id: tilo_relay::room_workspace_id(authority.room()).unwrap(),
+        workspace_id: tilo_relay::room_workspace_id(authority.workspace()).unwrap(),
         author_device_public_key: source,
         authored_at_ns: 1,
         signature: [0; 64],
@@ -399,7 +399,7 @@ fn incremental(
 ) -> NeighbourMsg {
     synthetic_signed(
         key,
-        authority.room(),
+        authority.workspace(),
         collab_types::DocumentMutation::Incremental(bytes),
         seq,
         now,
@@ -451,7 +451,7 @@ fn changed_snapshot_frame(raw: &[u8], change: &str) -> Vec<u8> {
 fn captured_shell_store_selection_replays_exact_current_pairs() {
     let tmp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let store = reopen_bound(tmp.path(), workspace, authority);
     // Trusted test-store import of the public authenticated-ingress capture.
     copy_tree(&fixture().join("retained"), &store.root().join("retained"));
@@ -499,15 +499,15 @@ fn captured_shell_store_selection_replays_exact_current_pairs() {
 fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is_recoverable() {
     let tmp = tempfile::tempdir().unwrap();
     let authority = binding();
-    let id = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let id = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let store = reopen_bound(tmp.path(), id, authority.clone());
     copy_tree(&fixture().join("retained"), &store.root().join("retained"));
-    let room = store.root().join("retained/v2").join(format!(
+    let workspace = store.root().join("retained/v2").join(format!(
         "{}-{}",
         hex::encode(authority.governor().device_public_key),
         hex::encode(blake3::hash(b"shell-tree").as_bytes())
     ));
-    let active = durable::current(&room).unwrap().unwrap();
+    let active = durable::current(&workspace).unwrap().unwrap();
     assert!(fs::read_dir(&active).unwrap().count() > 0);
     let mut build = store
         .start_replay_capture(ReplayId(rand::random()), [2; 32])
@@ -549,7 +549,7 @@ fn shell_selection_interrupted_gc_preserves_historical_proof_until_retirement_is
             .sequence,
         governed_sequence()
     );
-    assert_eq!(durable::current(&room).unwrap().unwrap(), active);
+    assert_eq!(durable::current(&workspace).unwrap().unwrap(), active);
     assert_eq!(
         active_retained_count(&reopened),
         0,
@@ -592,14 +592,14 @@ fn producer_fixture_replays_through_real_retained_admission() {
 #[test]
 fn shell_selection_missing_half_both_orders_keeps_previous_receipts() {
     let meta = producer_metadata();
-    for room_first in [true, false] {
+    for workspace_first in [true, false] {
         let (_tmp, store) = baseline_store(&meta);
         let before = replay_frames(&store);
-        let (first, second) = if room_first { (0, 1) } else { (1, 0) };
+        let (first, second) = if workspace_first { (0, 1) } else { (1, 0) };
         retain(&store, &producer_frame(&meta, &meta["tail"][first], 2));
         assert!(
             replay_frames(&store) == before,
-            "an incomplete pair must remain staged, room_first={room_first}"
+            "an incomplete pair must remain staged, workspace_first={workspace_first}"
         );
         retain(&store, &producer_frame(&meta, &meta["tail"][second], 3));
         let peer = admit_frames(
@@ -794,7 +794,7 @@ fn shell_selection_preserves_unproved_coedit_wrapper() {
 #[test]
 fn retained_authority_accepts_only_its_exact_room_binding() {
     let authority = binding();
-    let workspace = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let workspace = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let store = reopen_bound(tmp.path(), workspace, authority.clone());
     assert_eq!(store.workspace_id(), workspace);
@@ -855,7 +855,7 @@ fn fallback_original_proof_reuse_is_limited_to_exact_proved_incoming_slots() {
         while !matches!(selector.phase, Phase::Check) {
             selector.step_projection(WorkLimit::default()).unwrap();
         }
-        assert!(selector.fallback && selector.basis.room.is_some());
+        assert!(selector.fallback && selector.basis.workspace.is_some());
         assert_eq!(selector.incoming_verified, vec![change != "unproved"]);
         let mut inventory = File::open(selector.inventory.as_ref().unwrap()).unwrap();
         let path = loop {
@@ -945,8 +945,8 @@ fn replacement_room_does_not_inherit_old_snapshot_proofs_before_pairing() {
             .all(|route| route.verified_input.is_some())
     );
     assert_ne!(
-        selector.old.room.as_ref().unwrap().heads(),
-        selector.basis.room.as_ref().unwrap().heads()
+        selector.old.workspace.as_ref().unwrap().heads(),
+        selector.basis.workspace.as_ref().unwrap().heads()
     );
     assert!(!selector.basis.routes.is_empty());
     assert!(
@@ -1174,7 +1174,7 @@ fn rejected_checkpoint_fixture(serial: bool) {
     branch_a.commit_edit("fixture", "candidate");
     let candidate = synthetic_signed(
         &key,
-        authority.room(),
+        authority.workspace(),
         collab_types::DocumentMutation::Snapshot(branch_a.save()),
         next_sequence,
         now,
@@ -1298,7 +1298,7 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
             ed25519_dalek::SigningKey::from_bytes(&[u8::try_from(document_count).unwrap(); 32]);
         let cert = synthetic_cert(41, &key, format!("{document_count} route prefix fixture"));
         let now = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_secs(3000);
-        let room = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        let workspace = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
         let documents = (0..document_count)
             .map(|index| {
                 let mut document = automerge::AutoCommit::new();
@@ -1313,8 +1313,8 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
                 }
             })
             .collect();
-        let mut owner = seeded_owner(room, &cert, &key, documents, now);
-        let authority = RetentionAuthority::new(room, cert).unwrap();
+        let mut owner = seeded_owner(workspace, &cert, &key, documents, now);
+        let authority = RetentionAuthority::new(workspace, cert).unwrap();
         let baseline = owner
             .publication_mut()
             .durable_bootstrap_messages(&key, now, 1)
@@ -1330,24 +1330,24 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
         retain_synthetic(&store, &authority, &baseline, true);
         select_all(&store);
 
-        // Native publication commits the newly signed room recovery checkpoint
+        // Native publication commits the newly signed workspace recovery checkpoint
         // before the capped run of per-record checkpoints reaches the relay.
-        let room_frame = synthetic_frame(&authority, &next[0], true);
-        retain(&store, &room_frame);
-        let mut room_selection = Selection::new(
+        let workspace_frame = synthetic_frame(&authority, &next[0], true);
+        retain(&store, &workspace_frame);
+        let mut workspace_selection = Selection::new(
             &store,
             scratch(&store),
-            incoming_identity(&room_frame, store.workspace_id()),
+            incoming_identity(&workspace_frame, store.workspace_id()),
         )
         .unwrap();
-        let room_publication = loop {
-            match room_selection.step(WorkLimit::default()).unwrap() {
+        let workspace_publication = loop {
+            match workspace_selection.step(WorkLimit::default()).unwrap() {
                 Step::More => {}
                 Step::Done(SelectionOutcome::Published(publication)) => break publication,
                 Step::Done(other) => panic!("unexpected room checkpoint result: {other:?}"),
             }
         };
-        assert_eq!(room_publication, Publication::Suppress);
+        assert_eq!(workspace_publication, Publication::Suppress);
 
         let (root, stages, incoming) = stage_checkpoints(
             &store,
@@ -1982,7 +1982,7 @@ fn shell_selection_uncovered_tail_blocks_new_floor_until_complete_successor_cont
     );
     let next = synthetic_signed(
         &key,
-        authority.room(),
+        authority.workspace(),
         collab_types::DocumentMutation::Snapshot(branch.save()),
         100,
         now,
@@ -2033,7 +2033,7 @@ fn shell_selection_preserves_invalid_foreign_and_unknown_records() {
     let foreign_key = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
     let foreign = synthetic_signed(
         &foreign_key,
-        authority.room(),
+        authority.workspace(),
         collab_types::DocumentMutation::Snapshot(owner.document("selector.app", "one").unwrap()),
         1,
         now,
@@ -2101,7 +2101,7 @@ fn initial_shell_basis_replays_independent_reversed_author_tails_in_exact_sequen
     let tmp = tempfile::tempdir().unwrap();
     let mut store = WorkspaceStore::open(
         tmp.path(),
-        tilo_relay::room_workspace_id(authority.room()).unwrap(),
+        tilo_relay::room_workspace_id(authority.workspace()).unwrap(),
         true,
     )
     .unwrap();
@@ -2155,7 +2155,7 @@ fn reopened_shell_basis_replays_dependent_tails_cumulatively_in_signed_sequence_
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let workspace_id = tilo_relay::room_workspace_id(authority.room()).unwrap();
+    let workspace_id = tilo_relay::room_workspace_id(authority.workspace()).unwrap();
     let store = WorkspaceStore::open(tmp.path(), workspace_id, true).unwrap();
     retain_synthetic(&store, &authority, &cp, true);
     for msg in tails.iter().rev() {
@@ -2226,7 +2226,7 @@ fn initial_shell_conflict_or_t2_without_t1_remains_unselected() {
         let tmp = tempfile::tempdir().unwrap();
         let mut store = WorkspaceStore::open(
             tmp.path(),
-            tilo_relay::room_workspace_id(authority.room()).unwrap(),
+            tilo_relay::room_workspace_id(authority.workspace()).unwrap(),
             true,
         )
         .unwrap();

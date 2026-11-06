@@ -14,7 +14,7 @@
 //! the list a host collected, so it never reads a workspace's state itself.
 
 use ui::record::{RecordCheckout, RecordId, RecordKind};
-use ui::search::system::ResourceKind;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{DESKTOP_APP, Hit, InvokeTarget, Source, Target};
 
@@ -31,6 +31,10 @@ pub const PACKAGE_PARAM: &str = "package";
 /// Rows one query contributes; a long tail here only costs memory, not the
 /// palette's shared row budget.
 const MAX_RESULTS: usize = 20;
+/// Records the empty palette lists: the few of the other workspaces this
+/// device holds, each one Enter away from here. The rest are a typed name
+/// away, so the list stays short enough to read unasked.
+const LISTED: usize = 6;
 
 /// A record a workspace holds, as that workspace's record index names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -142,8 +146,8 @@ impl Records {
         }
     }
 
-    fn hit(&self, needle: &str, record: &HeldRecord) -> Option<Hit> {
-        let score = crate::rank::record_match_score(needle, &record.title(), &record.id)?;
+    /// The row of `record`, ranked `score`.
+    fn hit(&self, record: &HeldRecord, score: i32) -> Option<Hit> {
         let facts = record.facts();
         let checkout = record.checkout()?;
         let target =
@@ -167,6 +171,31 @@ impl Records {
             target: Target::Invoke(Box::new(target)),
         })
     }
+
+    /// The records of the other workspaces, each saying where it lives, in
+    /// the order a person reads them: first those of a workspace this desk
+    /// shows, by name, then those whose workspace it cannot name. They stand
+    /// in this order while nothing is typed, and what the person brought
+    /// here before rises above them.
+    fn browse(&self) -> Vec<Hit> {
+        let mut records: Vec<&HeldRecord> =
+            self.held.iter().filter(|record| !record.here).collect();
+        records.sort_by(|a, b| {
+            b.workspace
+                .is_some()
+                .cmp(&a.workspace.is_some())
+                .then_with(|| a.title().cmp(&b.title()))
+        });
+        records
+            .into_iter()
+            .take(LISTED)
+            .enumerate()
+            .filter_map(|(at, record)| {
+                let at = i32::try_from(at).unwrap_or(MAX_PROVIDER_SCORE);
+                self.hit(record, MAX_PROVIDER_SCORE.saturating_sub(at))
+            })
+            .collect()
+    }
 }
 
 impl Source for Records {
@@ -174,20 +203,31 @@ impl Source for Records {
         "records"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_RECORDS
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-source-records")
     }
 
+    /// The browse set is what the other workspaces hold, not what this one
+    /// does: a record this workspace already names needs no reference to it,
+    /// so its row would do nothing when chosen. What the person worked in
+    /// here is where they left their windows
+    /// ([`crate::providers::places::Continue`]) and in what the open apps
+    /// publish.
     fn query(&self, needle: &str) -> Vec<Hit> {
-        // A blank query asks for the browse set, and a record's name is
-        // what a person knows it by: there is nothing to browse here.
         if needle.trim().is_empty() {
-            return Vec::new();
+            return self.browse();
         }
         let mut hits: Vec<Hit> = self
             .held
             .iter()
-            .filter_map(|record| self.hit(needle, record))
+            .filter_map(|record| {
+                let score = crate::rank::record_match_score(needle, &record.title(), &record.id)?;
+                self.hit(record, score)
+            })
             .collect();
         hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.title.cmp(&b.title)));
         hits.truncate(MAX_RESULTS);
@@ -252,7 +292,39 @@ mod tests {
             "and it is brought into this workspace"
         );
         assert!(records.query("zzz").is_empty());
-        assert!(records.query("").is_empty());
+    }
+
+    /// Nothing typed lists the records of the other workspaces, each saying
+    /// where it lives, and never one this workspace already holds: its row
+    /// has no reference to add, so choosing it would do nothing.
+    #[test]
+    fn nothing_typed_lists_the_records_of_the_other_workspaces() {
+        let records = Records::new(
+            "here",
+            vec![
+                held("file:/work/notes.md", "document", true, None),
+                held(
+                    "file:/work/Quarterly plan.odt",
+                    "document",
+                    false,
+                    Some("Lounge"),
+                ),
+                held("file:/other/budget.ods", "document", false, None),
+            ],
+        );
+        let hits = records.query("");
+        let titles: Vec<&str> = hits.iter().map(|hit| hit.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Quarterly plan.odt", "budget.ods"],
+            "the named workspace's record first, this workspace's never"
+        );
+        assert_eq!(hits[0].facts[0], "in Lounge");
+        assert_eq!(hits[1].facts[0], "in another workspace");
+        assert!(
+            hits[0].score > hits[1].score,
+            "they stand in this order while nothing is typed"
+        );
     }
 
     #[test]

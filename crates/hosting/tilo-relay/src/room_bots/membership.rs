@@ -1,12 +1,12 @@
-//! An installed bot as a governed member of its room, kept current.
+//! An installed bot as a governed member of its workspace, kept current.
 //!
-//! The room's governance records each bot: its device, its installer's
+//! The workspace's governance records each bot: its device, its installer's
 //! delegation to that device, its grants and its program, so every member
 //! can read what runs and enforce what it may do. A delegation is issued
-//! for at most 30 days. In a hosted room whose owner root this host holds
+//! for at most 30 days. In a hosted workspace whose owner root this host holds
 //! nobody else is there to renew it, so the host does: it signs the bot's
 //! device certificate and delegation with the root itself and commits the
-//! renewal as a governed change, visible in the room's history, once less
+//! renewal as a governed change, visible in the workspace's history, once less
 //! than a third of the delegation is left.
 
 use ed25519_dalek::SigningKey;
@@ -18,7 +18,7 @@ use tilo_relay_protocol::delegation::{Delegate, DelegateScope, Delegation};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::installed::InstalledBot;
-use crate::rooms::Rooms;
+use crate::workspaces::Workspaces;
 
 /// How long a bot's delegation lasts.
 pub const DELEGATION_LIFETIME_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
@@ -30,8 +30,8 @@ pub const fn renewal_due(expires_at_ns: u64, now_ns: u64) -> bool {
     expires_at_ns.saturating_sub(now_ns) < DELEGATION_LIFETIME_NS / 3
 }
 
-/// Signs bot devices and delegations with a room root this host holds.
-/// Only for hosted rooms whose root the operator generated and mounted
+/// Signs bot devices and delegations with a workspace root this host holds.
+/// Only for hosted workspaces whose root the operator generated and mounted
 /// into this host.
 pub struct HostRootCertifier {
     root: SigningKey,
@@ -67,13 +67,18 @@ impl HostRootCertifier {
         ))
     }
 
-    /// The bot's device and a fresh delegation to it in `room` from
+    /// The bot's device and a fresh delegation to it in `workspace` from
     /// `now_ns`. The certificate is the same on every call, as a renewal
     /// on the same device requires.
     ///
     /// # Errors
     /// Signing failed or the bot's name does not fit a delegation label.
-    pub fn device(&self, room: &str, bot: &InstalledBot, now_ns: u64) -> Result<BotDevice, String> {
+    pub fn device(
+        &self,
+        workspace: &str,
+        bot: &InstalledBot,
+        now_ns: u64,
+    ) -> Result<BotDevice, String> {
         let device_public_key = self
             .device_key(&bot.installation)
             .verifying_key()
@@ -109,7 +114,7 @@ impl HostRootCertifier {
             bot.name.clone(),
             color,
             DelegateScope {
-                rooms: vec![room.to_owned()],
+                rooms: vec![workspace.to_owned()],
                 apps: Vec::new(),
             },
             now_ns,
@@ -124,7 +129,7 @@ impl HostRootCertifier {
 fn installation_row(bot: &InstalledBot, installer: &str) -> Result<Installation, String> {
     let shortcut = bot.shortcut()?;
     // A program that posts as other names (a bridge relaying people from
-    // elsewhere) needs the room to allow it; anything else keeps its own.
+    // elsewhere) needs the workspace to allow it; anything else keeps its own.
     let personas = tilo_automation::requirements::requirements(&shortcut).appearance;
     Ok(Installation {
         id: InstallationId::parse(&bot.installation)
@@ -150,9 +155,9 @@ fn installation_row(bot: &InstalledBot, installer: &str) -> Result<Installation,
 /// What [`keep_member`] did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kept {
-    /// The room now has the bot, with a fresh delegation.
+    /// The workspace now has the bot, with a fresh delegation.
     Installed,
-    /// The room's row now carries the program this host runs.
+    /// The workspace's row now carries the program this host runs.
     Updated,
     /// The delegation was running out and is renewed.
     Renewed,
@@ -160,13 +165,13 @@ pub enum Kept {
     Current,
 }
 
-/// Make `bot` a current governed member of `room`, governed by `host` (a
-/// device of `certifier`'s root): install it when the room lacks it,
+/// Make `bot` a current governed member of `workspace`, governed by `host` (a
+/// device of `certifier`'s root): install it when the workspace lacks it,
 /// update its row when its program changed, renew its delegation when due.
 /// Answers what it did and when the delegation now ends.
 pub async fn keep_member(
-    rooms: &Rooms,
-    room: &str,
+    workspaces: &Workspaces,
+    workspace: &str,
     host: &DeviceCert,
     certifier: &HostRootCertifier,
     bot: &InstalledBot,
@@ -175,19 +180,19 @@ pub async fn keep_member(
     let row = installation_row(bot, &installer)?;
     let now = tilo_clock::unix_now_ns();
     let govern = |command| async move {
-        rooms
-            .govern_bot(room, host, command)
+        workspaces
+            .govern_bot(workspace, host, command)
             .await
             .map(drop)
             .map_err(|error| error.to_string())
     };
-    let live = rooms
-        .installed_bot(room, &bot.installation)
+    let live = workspaces
+        .installed_bot(workspace, &bot.installation)
         .await
         .map_err(|error| error.to_string())?
         .filter(|live| live.withdrawn_at_ns.is_none());
     let Some(live) = live else {
-        let device = certifier.device(room, bot, now)?;
+        let device = certifier.device(workspace, bot, now)?;
         let expires = device.delegation.expires_at_ns;
         govern(WorkspaceMembershipCommand::InstallBot(Box::new(
             BotInstall {
@@ -214,7 +219,7 @@ pub async fn keep_member(
     if !renewal_due(live.delegation_expires_at_ns, now) {
         return Ok((kept, live.delegation_expires_at_ns));
     }
-    let device = certifier.device(room, bot, now)?;
+    let device = certifier.device(workspace, bot, now)?;
     let expires = device.delegation.expires_at_ns;
     govern(WorkspaceMembershipCommand::RenewBot(Box::new(BotRenewal {
         installation: row.id,
@@ -224,19 +229,19 @@ pub async fn keep_member(
     Ok((Kept::Renewed, expires))
 }
 
-/// Keep `bot` a current member of `room` for as long as the host runs:
+/// Keep `bot` a current member of `workspace` for as long as the host runs:
 /// [`keep_member`] now, then again whenever the delegation is due, and
-/// after a refusal or an unreachable room a little later.
+/// after a refusal or an unreachable workspace a little later.
 pub async fn keep_renewed(
-    rooms: Rooms,
-    room: String,
+    workspaces: Workspaces,
+    workspace: String,
     host: DeviceCert,
     certifier: HostRootCertifier,
     bot: InstalledBot,
 ) {
     const RETRY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
     loop {
-        let wait = match keep_member(&rooms, &room, &host, &certifier, &bot).await {
+        let wait = match keep_member(&workspaces, &workspace, &host, &certifier, &bot).await {
             Ok((kept, expires)) => {
                 if kept != Kept::Current {
                     tracing::info!(installation = %bot.installation, ?kept, expires_at_ns = expires, "bot membership kept");

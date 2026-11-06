@@ -1,6 +1,6 @@
 //! Phase timings for capacity runs.
 //!
-//! A room host under load is a queue of queues: the room's lock, its
+//! A workspace host under load is a queue of queues: the workspace's lock, its
 //! persistence owner, the replay slots, the blocking workers. Which one a
 //! crowd waits in is invisible from outside, so the phases a join, a commit
 //! and an owner turn pass through report how long they took, on the
@@ -8,7 +8,7 @@
 //!
 //! - [`event`]: one `TIMING <step> <microseconds> <size>` line per
 //!   occurrence, for phases that happen about once per newcomer or commit,
-//!   so a cost that grows with the room shows in arrival order;
+//!   so a cost that grows with the workspace shows in arrival order;
 //! - [`window`]: phases that happen per frame or per lock acquisition are
 //!   summed instead, one `TIMING_WINDOW <unix second> <step> <count>
 //!   <total µs> <max µs>` line per step and second.

@@ -265,6 +265,7 @@ fn a_strip_of_choices_is_a_slot_of_segments_and_reports_the_one_chosen() {
     let group = ToggleGroup::from_props("arrange", props);
     assert_eq!(group.count(), 3);
     assert_eq!(group.selected(), 1);
+    assert!(group.is_enabled(), "a strip nothing disabled is choosable");
 }
 
 #[test]
@@ -294,6 +295,7 @@ fn tabs_are_a_slot_of_segments_and_show_the_one_chosen() {
     let tabs = ViewTabs::from_props("views", props);
     assert_eq!(tabs.count(), 3);
     assert_eq!(tabs.selected(), 2);
+    assert!(tabs.is_enabled(), "tabs nothing disabled are choosable");
 }
 
 #[test]

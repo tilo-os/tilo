@@ -55,6 +55,9 @@ image = { workspace = true, features = ["png"] }
 # An application's themed icon is an SVG as often as a PNG.
 resvg = { version = "0.47", default-features = false }
 tilo-surface-host = { path = "../surface-host" }
+# A joined workspace's records are untrusted bytes: a worker process of this
+# executable decodes them, and `main` serves that worker.
+tilo-automerge-isolate.workspace = true
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
@@ -88,6 +91,9 @@ greetd-client = { path = "../greetd-client" }
 # The host's own filesystem moves a paste depends on: a rename that never
 # overwrites a name, and the Trash a replaced name goes to.
 host-fs = { path = "../../system/host-fs" }
+# The filesystem daemon's content store, as this desktop session reaches it:
+# what names an agent as the cause of the writes Files made for a person.
+runtime-fs = { package = "tilo-fs-client", version = "0.1.0", path = "../../runtime/tilo-fs-client" }
 # What the person picks in the emoji picker is remembered between sessions.
 emoji = { path = "../../text/emoji" }
 tilo-durable-writer = { path = "../../platform/tilo-durable-writer" }
@@ -115,9 +121,12 @@ tilo-quick-settings = { path = "../quick-settings" }
 # The capture studio the session shows over the desktop, and the recorder
 # that feeds it the compositor's frames.
 tilo-capture-studio = { path = "../capture-studio" }
+tilo-activities = { path = "../activities" }
 tilo-notification-banners = { path = "../notification-banners" }
 tilo-onboarding-host = { path = "../onboarding-host" }
 tilo-sheets = { path = "../sheets" }
+# The public workspaces sites list, their doors, and where a join stands.
+tilo-workspace-directory = { path = "../workspace-directory" }
 # The wireless display sheet speaks the projector service's control socket; the
 # sender stacks themselves (Miracast, GStreamer) stay in the service.
 tilo-projector = { path = "../../system/projector", default-features = false }
@@ -139,7 +148,6 @@ tilo-model-client = { path = "../../agent/model-client", features = ["runtime-cl
 tilo-rt = { workspace = true }
 # The sanctioned blocking HTTP client, which installs the crypto provider.
 tilo-net = { path = "../../platform/tilo-net", features = ["blocking", "json"] }
-reqwest = { workspace = true, features = ["blocking", "json"] }
 toml.workspace = true
 url.workspace = true
 # Who is here: the session's own membership of each workspace, on the
@@ -169,6 +177,13 @@ tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 # The device's certificate authority the broker admits a join with: the
 # identity store's selected identity and the devices it certifies now.
 tilo-identity-authority = { path = "../identity-authority" }
+# The person's accounts and the vault their secrets are sealed in: the session
+# is the only holder of either, and answers Browser, Settings and Mail from
+# them on the apps' own routes.
+accounts = { path = "../../system/accounts" }
+account-custody = { path = "../../system/account-custody" }
+# The website session a selected custody entry holds, and what it opens.
+browser-continuity = { path = "../../browser/browser-continuity" }
 # The identity record the launcher bound and the person's own: the directories
 # whose changes a worker follows.
 runtime-identity = { path = "../../runtime/runtime-identity" }
@@ -234,6 +249,9 @@ tilo-session-power = { path = "../power-service" }
 tilo-power-mgmt = { path = "../../system/power" }
 # The records of a session that stopped, and the news of one that did.
 tilo-crash-records = { path = "../crash-records" }
+# The session's own log: its stderr, filtered as `RUST_LOG` says, and a crash
+# record for every panic.
+tilo-session-logging = { path = "../session-logging" }
 # The runs of what people ask this session's agents to do: what the agent
 # composer and a run's window follow, and what the broker delivers a run on.
 tilo-agent-runs = { path = "../agent-runs" }
@@ -259,8 +277,6 @@ tilo-portal = { path = "../portal", features = ["pipewire"] }
 # portal grants through, so every launcher finds an app's view to bind.
 tilo-documents = { path = "../../system/documents", features = ["mount"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-# What a private message is sent and refused with, as the endpoint lane names it.
-tilo-messaging = { path = "../../platform/tilo-messaging" }
 tilo-notifications-service = { path = "../notifications-service" }
 tilo-polkit-agent = { path = "../polkit-agent" }
 tilo-network-secret-agent = { path = "../network-secret-agent" }
@@ -292,15 +308,10 @@ tilo-tray-host = { path = "../tray-host" }
 tilo-bluez = { path = "../../system/tilo-bluez" }
 # The desktop's event sounds (a notification's ring, a screenshot's click).
 media = { package = "tilo-media", path = "../../platform/tilo-media", features = ["voice", "pipewire", "realtime"] }
-# A call's frames, sealed with the channel's keys and carried as datagrams on
-# this session's own endpoint.
-tilo-call-lane = { path = "../../collab/tilo-call-lane" }
 # The workspaces' live plane: a sealed `moq-lite` session per workspace over
 # this session's own endpoint, and the relay role a member serves for the
 # others.
 tilo-live = { path = "../../collab/tilo-live", features = ["native", "plane"] }
-# One-shot `PipeWire` registry custody for a call's microphone and output.
-pipewire = "0.10.1"
 
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }
@@ -316,11 +327,14 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros", "time"] }
 pollster.workspace = true
 tracing.workspace = true
-# The session's own log: the filter `RUST_LOG` sets, written to its stderr.
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 xkeysym = "0.2.1"
 zbus = { workspace = true, features = ["tokio"] }
 workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# The events the actor hands the session, which its own tests hand the sync
+# directly: the membership epoch on them is the actor's to mint.
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # A paste killed mid-transfer: the crash test's child process ends on a
@@ -336,6 +350,8 @@ tilo-app-launch = { path = "../app-launch", features = ["test-support"] }
 tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros"] }
 zbus = { workspace = true, features = ["tokio", "p2p"] }
 tilo-test-env = { path = "../../dev/test-env" }
+# The log a test's people write while it runs.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # A site's entry and directory served over loopback, for what joins list.
 test-http = { path = "../../dev/test-http" }
 # The broker's certified-connection context, for driving a service the way
@@ -346,8 +362,6 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["te
 # and the page of its person that recorded there first.
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web"] }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer" }
-# The worker a host admits the records of its members through.
-tilo-automerge-isolate.workspace = true
 # What `NetworkManager` says, fed in rather than read from a bus.
 tilo-nm = { path = "../../system/tilo-nm" }
 # The other device's tunnel and this one's, in memory, for what a route
@@ -373,6 +387,9 @@ wayland-client.workspace = true
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+# The input method a text field's client runs for the seat, as the person's
+# on-screen keyboard does.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # The action host a test's answering device runs its actions through, and the
 # certified workspace two of one person's devices ask each other in.
 tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
@@ -380,6 +397,11 @@ tilo-peer-state = { path = "../../collab/tilo-peer-state", features = ["test-sup
 # A change another device's app wrote, read back into a record: a receiver's
 # way of taking changes, which the session's own code uses too.
 tilo-automerge = { path = "../../doc/tilo-automerge" }
+# A `wl_shm` client that commits once per key and times each key on its own
+# clock: the app side of the key-latency measurement, which a compositor
+# without a GPU import can still show.
+smithay-client-toolkit = "0.20.0"
+gbm = { version = "0.18", default-features = false, features = ["drm-support"] }
 
 [lints]
 workspace = true

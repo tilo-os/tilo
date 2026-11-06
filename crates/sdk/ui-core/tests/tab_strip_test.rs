@@ -133,3 +133,60 @@ fn the_strip_lays_out_as_the_window_bars_does() {
     let rect = harness.inspection().root.rect;
     assert!(rect[3] > 0.0, "the strip stands a bar tall: {rect:?}");
 }
+
+/// A press on a pill is the view's own event in the pass that took it: the strip reports what
+/// its bar marked, so a view hears the pill it was pressed for without asking for reports.
+#[test]
+fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
+    use tilo_ui::component::{Fired, Intent, Value};
+    use tilo_ui::widget::{Column, Element};
+
+    let queue: tilo_ui::Intents<Fired> = tilo_ui::Intents::default();
+    let mut given = props(vec![tab("a", "A"), tab("b", "B")], 0);
+    given.activate = Event::View(Intent::new(&queue, "frame", "activate"));
+    let strip = TabStrip::from_props("frame", given);
+    let column = Column::new().push(Box::new(strip) as Element);
+    let mut harness = tilo_ui::headless::FrameHarness::new_with_theme(
+        tilo_ui::State::new(),
+        Box::new(column),
+        (400, 200),
+        tilo_ui::Theme::light(),
+    );
+    harness.relayout();
+    let pill = {
+        let strip = harness.root_widget().children()[0];
+        let mut names = Vec::new();
+        let found = strip
+            .test_rects()
+            .into_iter()
+            .find(|(name, rect)| {
+                names.push(name.clone());
+                name == "tab:B" && rect.area() > 0.0
+            })
+            .map(|(_, rect)| rect);
+        found.unwrap_or_else(|| panic!("the second pill is a target; the bar answers to {names:?}"))
+    };
+    let device_id = tilo_ui::winit::event::DeviceId::dummy();
+    harness.send_host_event(&tilo_ui::winit::event::WindowEvent::CursorMoved {
+        device_id,
+        position: tilo_ui::winit::dpi::PhysicalPosition::new(pill.center().x, pill.center().y),
+    });
+    for state in [
+        tilo_ui::winit::event::ElementState::Pressed,
+        tilo_ui::winit::event::ElementState::Released,
+    ] {
+        harness.send_host_event(&tilo_ui::winit::event::WindowEvent::MouseInput {
+            device_id,
+            state,
+            button: tilo_ui::winit::event::MouseButton::Left,
+        });
+    }
+    let fired = queue.take();
+    assert_eq!(fired.len(), 1, "one press is one event: {fired:?}");
+    assert_eq!(fired[0].event, "activate");
+    assert_eq!(
+        fired[0].value,
+        Some(Value::Resource("@notes.Note:b".to_owned())),
+        "the event carries the resource of the pill pressed"
+    );
+}

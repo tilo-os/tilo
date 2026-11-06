@@ -18,7 +18,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use super::HostChrome;
 use super::model::{CommandGroup, HostCommand};
 use crate::i18n::I18nManager;
 use crate::icons::Icon;
@@ -447,18 +446,6 @@ impl Widget for HeaderBar {
     }
 }
 
-/// Whether the app draws its own frame, once the first configure has
-/// settled `xdg-decoration` (`server_side`); `None` until then. Only a host
-/// with no chrome of its own that also leaves decorations to the client
-/// gets the bar.
-pub(crate) fn app_draws_frame(chrome: HostChrome, server_side: Option<bool>) -> Option<bool> {
-    match (chrome, server_side) {
-        (HostChrome::InWindow, None) => None,
-        (HostChrome::InWindow, Some(server_side)) => Some(!server_side),
-        (HostChrome::TiloShell | HostChrome::Native, _) => Some(false),
-    }
-}
-
 /// Which window edge a pointer at `point` grabs for resizing, for a window
 /// that draws its own frame. The grab band is one related-row step wide.
 pub(crate) fn resize_edge(
@@ -487,10 +474,9 @@ pub(crate) fn resize_edge(
 
 #[cfg(test)]
 mod tests {
-    use super::{HeaderBar, HeaderRequest, app_draws_frame, resize_edge};
+    use super::{HeaderBar, HeaderRequest, resize_edge};
     use crate::app::App;
     use crate::headless::FrameHarness;
-    use crate::host_chrome::HostChrome;
     use crate::host_chrome::model::{CommandGroup, HostCommand};
     use crate::widget::Widget;
 
@@ -701,32 +687,6 @@ mod tests {
             driver.root_mut::<HeaderBar>().take_requests(),
             [HeaderRequest::Move, HeaderRequest::ToggleMaximize]
         );
-    }
-
-    #[test]
-    fn only_client_side_decoration_outside_tilo_gets_the_bar() {
-        assert_eq!(
-            app_draws_frame(HostChrome::InWindow, None),
-            None,
-            "wait for the first configure"
-        );
-        assert_eq!(
-            app_draws_frame(HostChrome::InWindow, Some(false)),
-            Some(true),
-            "GNOME leaves the frame to the app"
-        );
-        assert_eq!(
-            app_draws_frame(HostChrome::InWindow, Some(true)),
-            Some(false),
-            "KDE and X11 window managers draw it"
-        );
-        for server_side in [None, Some(false), Some(true)] {
-            assert_eq!(
-                app_draws_frame(HostChrome::TiloShell, server_side),
-                Some(false),
-                "the Tilo shell owns the chrome"
-            );
-        }
     }
 
     #[test]

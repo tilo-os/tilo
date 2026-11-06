@@ -35,6 +35,148 @@ fn line_gap(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.rhythm.tight) / 2.0
 }
 
+/// One line of words in a role, measured and centred on a point or aligned
+/// in a box: the bar's clock reading, a live activity's headline, an
+/// overlay's timer. It is the shared way to put a single string on a
+/// surface; a host never draws a bare text run of its own.
+#[derive(Clone, Copy, Debug)]
+pub struct TextLineFace<'a> {
+    text: &'a str,
+    style: &'a TextStyle,
+    role: TextRole,
+    weight: Option<TextWeight>,
+    align: TextLineAlign,
+}
+
+/// Where a [`TextLineFace`] stands in the rect it is given.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextLineAlign {
+    /// Centred on the rect's middle line and middle column.
+    #[default]
+    Center,
+    /// Starting at the rect's leading edge, centred on its middle line.
+    Start,
+}
+
+impl<'a> TextLineFace<'a> {
+    /// `text` in `style`, which carries the role's size and family.
+    #[must_use]
+    pub fn styled(text: &'a str, style: &'a TextStyle, role: TextRole) -> Self {
+        Self {
+            text,
+            style,
+            role,
+            weight: None,
+            align: TextLineAlign::Center,
+        }
+    }
+
+    /// Set it in `weight` rather than its style's own.
+    #[must_use]
+    pub fn weight(mut self, weight: TextWeight) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    /// Stand at the rect's leading edge rather than its centre.
+    #[must_use]
+    pub fn start(mut self) -> Self {
+        self.align = TextLineAlign::Start;
+        self
+    }
+
+    fn resolved(&self) -> TextStyle {
+        match self.weight {
+            Some(weight) => self.style.clone().with_weight(weight),
+            None => self.style.clone(),
+        }
+    }
+
+    /// The line's measured width and height in its style.
+    #[must_use]
+    pub fn measure(&self, text: &mut TextRenderer) -> (f64, f64) {
+        let style = self.resolved();
+        let (w, h) = text.measure_style(self.text, None, &style);
+        (f64::from(w), f64::from(h))
+    }
+
+    /// Paint the line in `rect`, in `ink`, elided to the rect's width. The
+    /// `role` the face was built with is what its style already carries, so
+    /// nothing is scaled twice.
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ink: vello::peniko::Color) {
+        let _ = self.role;
+        let style = self.resolved();
+        if self.text.is_empty() || rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        let room = crate::num::f32_of_f64(rect.width());
+        let shown = ctx.text.elide_to_width_style(self.text, room, &style);
+        let (w, h) = ctx.text.measure_style(&shown, None, &style);
+        let x = match self.align {
+            TextLineAlign::Center => rect.center().x - f64::from(w) / 2.0,
+            TextLineAlign::Start => rect.x0,
+        };
+        ctx.text.draw_style(
+            ctx.scene,
+            &shown,
+            ink,
+            ctx.transform
+                .pre_translate((x, rect.center().y - f64::from(h) / 2.0).into()),
+            None,
+            &style,
+        );
+    }
+}
+
+/// A block of wrapped text in one style, starting at its rect's leading top
+/// corner and wrapping to the rect's width: a reader's body, a page's
+/// paragraph, a note's prose. The shared way to paint running text on a
+/// surface a host owns; the host never draws it run by run.
+#[derive(Clone, Copy, Debug)]
+pub struct TextBlockFace<'a> {
+    text: &'a str,
+    style: &'a TextStyle,
+}
+
+impl<'a> TextBlockFace<'a> {
+    /// `text` in `style` (which carries its role's size, family and leading).
+    #[must_use]
+    pub fn new(text: &'a str, style: &'a TextStyle) -> Self {
+        Self { text, style }
+    }
+
+    /// The block's height at `width`.
+    #[must_use]
+    pub fn height(&self, text: &mut TextRenderer, width: f64) -> f64 {
+        if self.text.is_empty() {
+            return 0.0;
+        }
+        f64::from(
+            text.measure_style(
+                self.text,
+                Some(crate::num::f32_of_f64(width.max(0.0))),
+                self.style,
+            )
+            .1,
+        )
+    }
+
+    /// Paint the block with its top-left at the rect's, wrapped to its width.
+    pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect, ink: vello::peniko::Color) {
+        if self.text.is_empty() || rect.width() <= 0.0 {
+            return;
+        }
+        ctx.text.draw_style(
+            ctx.scene,
+            self.text,
+            ink,
+            ctx.transform.pre_translate((rect.x0, rect.y0).into()),
+            Some(crate::num::f32_of_f64(rect.width())),
+            self.style,
+        );
+    }
+}
+
 /// How prominent a stack's title is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StackSize {

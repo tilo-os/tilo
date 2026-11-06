@@ -33,6 +33,7 @@ fn retries() -> MutexGuard<'static, Retries> {
 fn activated(uri: &str) {
     let Some(id) = uri
         .strip_prefix(RETRY)
+        // ignored-failure: an activation that names no retry belongs to another notification
         .and_then(|id| id.parse::<u64>().ok())
     else {
         return;

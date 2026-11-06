@@ -4,7 +4,7 @@ use super::{Checker, Ctx, Ex, Written, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
-use crate::ir::{self, Conv, Ek};
+use crate::ir::{self, Conv, Ek, LocalId};
 use crate::types::Ty;
 
 impl Checker<'_> {
@@ -58,6 +58,10 @@ impl Checker<'_> {
         let hint = match (want, &ex.ty) {
             (Ty::Float, Ty::Int) => "; convert with `.to_float()`",
             (Ty::Int, Ty::Float) => "; convert with `.to_int()`",
+            (Ty::Int, Ty::Duration) => "; read the number of seconds with `.seconds()`",
+            (Ty::Duration, Ty::Int) => {
+                "; a length of time is written `2h`, or read from a number of seconds with `Duration(n)`"
+            }
             _ => "",
         };
         self.err("E020", span, format!("expected {w}, found {f}{hint}"));
@@ -96,11 +100,11 @@ impl Checker<'_> {
             ExprKind::Int(v) => Ex::int(*v),
             ExprKind::Float(v) => Ex::new(Ek::Float(*v), Ty::Float),
             ExprKind::Length(v, u) => Ex::new(Ek::Float(*v), Ty::Length(*u)),
-            // A length of time is a number of seconds where a value is one: a moment moved by
-            // it (`now + 10s`, the moment an outside effect is held until). In a filter it is
-            // the filter's (`query(T, received: -7d)`).
+            // A length of time, as its number of seconds: a moment or a day moves by it
+            // (`now + 10s`, `today + 3d`), and what two of them are apart is one. In a filter
+            // it is the filter's (`query(T, received: -7d)`).
             ExprKind::Duration(n, u) => match crate::duration::seconds(*n, u) {
-                Some(secs) => Ex::new(Ek::Duration(secs), Ty::Int),
+                Some(secs) => Ex::new(Ek::Duration(secs), Ty::Duration),
                 None => {
                     self.err("E105", e.span, "the duration is too long");
                     Ex::error()
@@ -113,6 +117,10 @@ impl Checker<'_> {
             ExprKind::Calendar(text) => match text.len() {
                 10 => Ex::str(text).typed(Ty::Date),
                 20 => Ex::str(text).typed(Ty::Time),
+                // A time of no zone is the person's own time of day: the instant it names is
+                // read in their zone where the value is built, so seed data says 09:00 and
+                // shows 09:00 wherever it runs.
+                19 => Ex::host(crate::abi::Imp::WallClock, vec![Ex::str(text)], Ty::Time),
                 _ => {
                     self.err("E105", e.span, format!("a month is the value of a filter (`query(T, due: {text})`); a day is written `{text}-01`"));
                     Ex::error()
@@ -135,6 +143,7 @@ impl Checker<'_> {
                 self.if_value(cond, then, els.as_deref(), exp, e.span)
             }
             ExprKind::Block(b) => self.block_value(b, exp),
+            ExprKind::MadeFrom { of, body } => self.made_from(of, body, e.span, exp),
             ExprKind::Match { scrutinee, arms } => self.match_value(scrutinee, arms, exp, e.span),
             ExprKind::Variant { name, args } => self.variant(name, args.as_deref(), exp, e.span),
             ExprKind::Lambda { .. } => {
@@ -185,11 +194,18 @@ impl Checker<'_> {
                     self.not_a_value_of_import(&alias, &name.name, e.span);
                     return Ex::error();
                 }
+                // `Task.today`: a filter the type declares, as the value a query takes.
+                if let Some(Ty::Record(key)) = self.type_named(base)
+                    && let Some(ex) = self.filter_value(&key, name, None, e.span)
+                {
+                    return ex;
+                }
                 let b = self.expr(base, None);
                 self.field_read(b, name)
             }
             ExprKind::Call { callee, args } => self.call(callee, args, e.span),
             ExprKind::Try(inner) => self.try_expr(inner, e.span),
+            ExprKind::Suggest(inner) => self.suggest_expr(inner, e.span),
             ExprKind::Root(t) => self.root_of(t, e.span),
         }
     }
@@ -222,6 +238,45 @@ impl Checker<'_> {
                 "E044",
                 span,
                 "`try` must be followed by a call of an action, not of a fn",
+            );
+            return Ex::error();
+        }
+        ex
+    }
+
+    /// `suggest act(args)`: records the action as a proposal that waits on the resource it is
+    /// about, instead of applying it. An action or a flow records one where it runs; a block is
+    /// the proposal itself, the action its value says, and records it when the host runs it.
+    fn suggest_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
+        let value = if self.st.ctx == Ctx::Block && self.st.proposes {
+            true
+        } else if matches!(self.st.ctx, Ctx::Action | Ctx::Flow) {
+            false
+        } else {
+            let who = self.st.ctx.word();
+            self.err(
+                "E044",
+                span,
+                format!("`suggest` proposes an action, and only an action, a flow or an agent's block may do that; {who} cannot"),
+            );
+            return Ex::error();
+        };
+        if !matches!(inner.kind, ExprKind::Call { .. }) {
+            self.err(
+                "E044",
+                span,
+                "`suggest` must be followed by an action call, such as `suggest archive(m)`",
+            );
+            return Ex::error();
+        }
+        self.st.suggested_at = Some(span);
+        self.st.suggest = Some(value);
+        let ex = self.expr(inner, None);
+        if self.st.suggest.take().is_some() {
+            self.err(
+                "E044",
+                span,
+                "`suggest` must be followed by a call of an action, not of a fn",
             );
             return Ex::error();
         }
@@ -262,6 +317,19 @@ impl Checker<'_> {
                 "E049",
                 span,
                 "`now` is the time of this invocation, which only an action has; pass a Time to anything else",
+            );
+            return Ex::error();
+        }
+        // `today`: the day this invocation falls on for the person, read in their zone as the
+        // filter's `today` reads it.
+        if name == "today" {
+            if self.st.ctx == Ctx::Action {
+                return Ex::host(Imp::Today, vec![], Ty::Date);
+            }
+            self.err(
+                "E049",
+                span,
+                "`today` is the day of this invocation, which only an action has; pass a Date to anything else",
             );
             return Ex::error();
         }
@@ -427,6 +495,8 @@ impl Checker<'_> {
             Ty::Date | Ty::Time | Ty::Identifier => v.typed(Ty::Text),
             Ty::Int => Ex::host(Imp::IntToStr, vec![v], Ty::Text),
             Ty::Float => Ex::host(Imp::FloatToStr, vec![v], Ty::Text),
+            // Its length in the largest unit that divides it: `2h`, `90m`.
+            Ty::Duration => Ex::host(Imp::DurationText, vec![v], Ty::Text),
             Ty::Bool => Ex::new(
                 Ek::If(
                     Box::new(v),
@@ -437,9 +507,15 @@ impl Checker<'_> {
             ),
             Ty::Record(_) | Ty::Union(_) => Ex::host(Imp::RefId, vec![v], Ty::Text),
             Ty::Principal => Ex::host(Imp::PrincipalName, vec![v], Ty::Text),
+            // Its words, which only the runtime's locale knows.
+            Ty::Repeat | Ty::Reminder => {
+                let t = self.show(&v.ty);
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; write its label, `….label()`, to show it in words"));
+                Ex::error()
+            }
             other => {
                 let t = self.show(other);
-                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Date, a Time, a Principal or a record"));
+                self.err("E020", span, format!("a value of type {t} cannot be shown as text; interpolate Text, Int, Float, Bool, a Duration, a Date, a Time, a Principal or a record"));
                 Ex::error()
             }
         }
@@ -626,7 +702,7 @@ impl Checker<'_> {
                 // `-7d`, a length of time moved backwards.
                 if let ExprKind::Duration(n, u) = &operand.kind {
                     return match crate::duration::seconds(n.checked_neg().unwrap_or(*n), u) {
-                        Some(secs) => Ex::new(Ek::Duration(secs), Ty::Int),
+                        Some(secs) => Ex::new(Ek::Duration(secs), Ty::Duration),
                         None => {
                             self.err("E105", span, "the duration is too long");
                             Ex::error()
@@ -690,14 +766,21 @@ impl Checker<'_> {
     /// it holds itself.
     pub(super) fn same(&mut self, l: Ex, r: Ex, span: Span) -> Ex {
         match l.ty.clone() {
-            Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) => {
+            Ty::Int | Ty::Float | Ty::Bool | Ty::Choice(_) | Ty::Duration => {
                 Ex::new(Ek::Bin(ir::BinOp::Eq, Box::new(l), Box::new(r)), Ty::Bool)
             }
             // Enums, options, results, tuples and lists compare by value, payloads included.
             Ty::Enum(_) | Ty::Option(_) | Ty::Result(..) | Ty::Tuple(_) | Ty::List(_) => {
                 Ex::host(Imp::ValueEq, vec![l, r], Ty::Bool)
             }
-            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => {
+            // Filters compare by the query they ask: the filter `Task.inbox` and the entry
+            // `filters(Task)` lists for it are the same.
+            Ty::Filter(_) => Ex::host(
+                Imp::StrEq,
+                vec![Self::filter_query(l), Self::filter_query(r)],
+                Ty::Bool,
+            ),
+            Ty::Text | Ty::Date | Ty::Time | Ty::Identifier | Ty::Repeat | Ty::Reminder => {
                 Ex::host(Imp::StrEq, vec![l, r], Ty::Bool)
             }
             Ty::Principal => Ex::host(Imp::PrincipalEq, vec![l, r], Ty::Bool),
@@ -720,7 +803,9 @@ impl Checker<'_> {
         };
         let r = self.coerce(r, &l.ty, span);
         match l.ty.clone() {
-            Ty::Int | Ty::Float => Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Bool),
+            Ty::Int | Ty::Float | Ty::Duration => {
+                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Bool)
+            }
             // ISO dates and times order chronologically as text.
             Ty::Text | Ty::Date | Ty::Time => {
                 let cmp = Ex::host(Imp::StrCmp, vec![l, r], Ty::Bool);
@@ -733,7 +818,7 @@ impl Checker<'_> {
                     "E024",
                     span,
                     format!(
-                        "`{}` orders Int, Float, Text, Date or Time, not {t}",
+                        "`{}` orders Int, Float, Text, Date, Time or a Duration, not {t}",
                         op.text()
                     ),
                 );
@@ -752,17 +837,34 @@ impl Checker<'_> {
         };
         match (&l.ty, &r.ty) {
             (Ty::Int, Ty::Int) => Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Int),
+            // Two lengths of time add and subtract as the seconds they are.
+            (Ty::Duration, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Duration)
+            }
             (Ty::Float, Ty::Float) if op != BinOp::Rem => {
                 Ex::new(Ek::Bin(bop, Box::new(l), Box::new(r)), Ty::Float)
             }
             (Ty::Text, Ty::Text) if op == BinOp::Add => {
                 Ex::host(Imp::StrConcat, vec![l, r], Ty::Text)
             }
-            // A moment moved by a number of seconds (`now + 10s`, `now - 30s`): the moment is
-            // a handle, the seconds an `i64`, and `back` an `i32`.
-            (Ty::Time, Ty::Int) if matches!(op, BinOp::Add | BinOp::Sub) => {
+            // A moment moved by a length of time (`now + 2h`, `now - 30s`): the moment is a
+            // handle, the seconds an `i64`, and `back` an `i32`.
+            (Ty::Time, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
                 let back = Ex::new(Ek::I32(i32::from(op == BinOp::Sub)), Ty::Bool);
                 Ex::host(Imp::TimeShift, vec![l, r, back], Ty::Time)
+            }
+            (Ty::Duration, Ty::Time) if op == BinOp::Add => {
+                let back = Ex::new(Ek::I32(0), Ty::Bool);
+                Ex::host(Imp::TimeShift, vec![r, l, back], Ty::Time)
+            }
+            // A day moved by whole days (`today + 3d`, `today - 1w`).
+            (Ty::Date, Ty::Duration) if matches!(op, BinOp::Add | BinOp::Sub) => {
+                self.day_move(l, r, op == BinOp::Sub, span)
+            }
+            (Ty::Duration, Ty::Date) if op == BinOp::Add => self.day_move(r, l, false, span),
+            // How far apart two days, or two moments, are.
+            (Ty::Date | Ty::Time, Ty::Date | Ty::Time) if op == BinOp::Sub && l.ty == r.ty => {
+                Ex::host(Imp::TimeSpan, vec![l, r], Ty::Duration)
             }
             _ => {
                 let (a, b) = (self.show(&l.ty), self.show(&r.ty));
@@ -770,12 +872,29 @@ impl Checker<'_> {
                     (Ty::Int, Ty::Float) | (Ty::Float, Ty::Int) => {
                         "; convert the Int with `.to_float()` first"
                     }
+                    (Ty::Time | Ty::Date | Ty::Duration, Ty::Int) | (Ty::Int, Ty::Duration) => {
+                        "; a length of time is written `2h` or `3d`, or read from a number of seconds with `Duration(n)`"
+                    }
                     _ => "",
                 };
-                self.err("E024", span, format!("`{}` needs two Int or two Float operands (or two Text for `+`); found {a} and {b}{hint}", op.text()));
+                self.err("E024", span, format!("`{}` needs two Int or two Float operands (or two Text for `+`, two Durations, or a Date or a Time moved by a Duration or by another of its kind, subtracted); found {a} and {b}{hint}", op.text()));
                 Ex::error()
             }
         }
+    }
+
+    /// `day + duration`: a day moves by whole days, so a length of time that is no whole day
+    /// cannot move one. A written length is told here; one code holds is told where it moves
+    /// the day (`day_shift`).
+    fn day_move(&mut self, day: Ex, by: Ex, back: bool, span: Span) -> Ex {
+        if let Ek::Duration(secs) = &by.kind
+            && secs % crate::calendar::DAY != 0
+        {
+            self.err("E024", span, format!("a day moves by whole days (`3d`, `1w`); {} is no whole day. Move a moment by it (`now + 2h`), or write the days it makes", crate::duration::text(*secs)));
+            return Ex::error();
+        }
+        let back = Ex::new(Ek::I32(i32::from(back)), Ty::Bool);
+        Ex::host(Imp::DayShift, vec![day, by, back], Ty::Date)
     }
 
     /// Reads field `name` of the record value `b`.
@@ -784,6 +903,14 @@ impl Checker<'_> {
             Ty::Error => Ex::error(),
             Ty::Identifier => self.identifier_part(b, name),
             Ty::RichText => self.rich_part(b, name),
+            // A filter's fields: what a query names it by, what a control shows, what it asks.
+            Ty::Filter(_) => {
+                let key = super::platform::host_ty("Filter");
+                let Ty::Record(key) = key else {
+                    return Ex::error();
+                };
+                self.value_field(b, &key, name).unwrap_or_else(Ex::error)
+            }
             Ty::Record(key) => {
                 if crate::host::value_type(&key.name).is_some() && key.app == crate::host::HOST_APP
                 {
@@ -822,7 +949,9 @@ impl Checker<'_> {
                     );
                     return Ex::error();
                 };
-                if f.role.as_deref() == Some("previously")
+                if f.role
+                    .as_ref()
+                    .is_some_and(crate::types::FieldRole::is_previously)
                     && self.st.role.as_deref() != Some("migration")
                 {
                     self.err("E114", name.span, format!("`{}` is what `{}` held previously: only a `migration action` reads it, to bring it to where the type keeps it now", f.name, key.name));
@@ -878,6 +1007,90 @@ impl Checker<'_> {
                 let t = self.show(&other);
                 self.err("E021", name.span, format!("`.{}` needs a record, but the value has type {t}, which has no fields; methods are called `.{}(...)`", name.name, name.name));
                 Ex::error()
+            }
+        }
+    }
+
+    /// The time of day the day value `ex` is due at, when the field it came from declares one
+    /// (`at: Option<Time> (time of: due)`): the declaration pairs the two, so the time of day
+    /// travels with the day wherever the value flows — through a local, and through the
+    /// branches of an `if` — and a row shows them as one fact (`Today 09:00`). `None` for a
+    /// day no type pairs a time of day with.
+    ///
+    /// A branch's condition is read again for the time of day the branch picks: a view's
+    /// condition is a pure read, so it reads the same.
+    pub(super) fn day_time(&mut self, ex: &Ex, span: Span) -> Option<Ex> {
+        let opt = Ty::Option(Box::new(Ty::Time));
+        let day = match &ex.ty {
+            Ty::Date => true,
+            Ty::Option(inner) => **inner == Ty::Date,
+            _ => false,
+        };
+        if !day {
+            return None;
+        }
+        match &ex.kind {
+            Ek::Local(id) => self.st.day_times.get(id).map(|time| Ex::local(*time, opt)),
+            Ek::Seq(_, value) => self.day_time(value, span),
+            Ek::If(cond, then, els) => {
+                let then = self.day_time(then, span);
+                let els = self.day_time(els, span);
+                if then.is_none() && els.is_none() {
+                    return None;
+                }
+                let none = Ex::host(Imp::NoneV, Vec::new(), opt.clone());
+                Some(Ex::new(
+                    Ek::If(
+                        cond.clone(),
+                        Box::new(then.unwrap_or_else(|| none.clone())),
+                        Box::new(els.unwrap_or(none)),
+                    ),
+                    opt,
+                ))
+            }
+            Ek::Host(Imp::ResGetH, args) => {
+                let [base, field] = args.as_slice() else {
+                    return None;
+                };
+                let Ek::Str(field) = &field.kind else {
+                    return None;
+                };
+                // The read names the field's id; the type declares it by name.
+                let Ty::Record(key) = base.ty.clone() else {
+                    return None;
+                };
+                let env = self.env;
+                let info = env.type_info(&key)?;
+                let day = info.fields.iter().find(|f| &f.id == field)?.name.clone();
+                let time = info.time_of(&day)?.name.clone();
+                let read = self.field_read(base.clone(), &ast::Ident { name: time, span });
+                match &read.ty {
+                    Ty::Option(inner) if **inner == Ty::Time => Some(read),
+                    Ty::Time => Some(Ex::host(Imp::SomeH, vec![read], opt)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Take the time of day `time` `ex` carries, when it carries one, beside the local `id`
+    /// that holds the day, and leave the local without one where the value carries none.
+    pub(super) fn set_day_time(&mut self, id: LocalId, time: Option<Ex>) {
+        let companion = self.st.day_times.get(&id).copied();
+        match time {
+            Some(time) => {
+                let local = if let Some(companion) = companion {
+                    companion
+                } else {
+                    let local = self.fresh(Ty::Option(Box::new(Ty::Time)));
+                    self.st.day_times.insert(id, local);
+                    local
+                };
+                self.emit(ir::Stmt::Set(local, time));
+            }
+            None => {
+                self.st.day_times.remove(&id);
             }
         }
     }

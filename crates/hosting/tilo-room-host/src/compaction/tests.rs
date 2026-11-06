@@ -1248,7 +1248,7 @@ async fn a_sealed_compaction_statement_from_a_device_not_asked_removes_nothing()
     drop(ask);
 }
 
-/// A device removed from the room loses its subscription at once, while its
+/// A device removed from the workspace loses its subscription at once, while its
 /// session lives until the next access audit: an answer it sends in between
 /// removes nothing.
 #[tokio::test]

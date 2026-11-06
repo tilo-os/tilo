@@ -61,8 +61,9 @@ that it ran. A migration is never offered. It cannot delete anything; moving ite
 collections keeps their ids and history.
 
 An `internal action` is never offered either: it is an ordinary action that only the app's own
-gestures run, described as such so that no header, menu or action bar lists it beside the
-commands a person chooses from. It is how an app says what a drag means:
+gestures run — a drag, an entry, a lane's button — so no surface that lists a subject's actions
+shows it: not the header, not an item's menu, not the palette. It is how an app says what a drag
+means:
 
 ```
 internal action place(t: Task, s: Option<Section>, at: Int) { ... }
@@ -74,6 +75,12 @@ The action is reachable from the description a gesture names it by — `reorder:
 `add:`, a key a control runs — and from `run(place(...))` in the app's own code. It cannot also
 be a `primary`, `destructive` or `migration` action, which are the other side of the same
 question: what a surface offers.
+
+`internal` is not how an action stays out of the header. Where a surface draws an offered action
+is not a property of the action's role: `frequent: true` puts it in the header row as a button,
+every other offered action sits in the header's menu beside the same commands an item's menu
+lists. Marking a command a person chooses `internal` takes it out of the header *and* out of
+every menu and the palette.
 
 To start a package, make a directory next to the others with one file:
 
@@ -101,7 +108,9 @@ view counter(c: Counter) {
 ```
 
 `root Counter` makes `Counter` a root type: one resource of it per room, which the launcher
-opens through the type's default view (`default view counter for Counter`).
+opens through the type's default view (`default view counter for Counter`). A type whose window
+switches between views names them (`views project_list, project_board for Project`), its default
+view first; a view it does not name is a helper its own views place.
 
 `use other.app as other` imports another package. Imports are found among the package's sibling
 directories (for `apps/tl/today`, the other directories of `apps/tl`); `--path <dir>` adds a
@@ -112,10 +121,22 @@ written. Another package's actions are applied or invoked, never called.
 
 A package may also `use` a native app: `use so.tilo.chat as chat` reads what Chat publishes, the
 resources, records and enums of its committed `surface.toml`, as types (`chat.Workspace`,
-`chat.Channel`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
+`chat.Conversation`, `chat.ChannelKind`) and its verbs as actions, and checks field reads and action
 signatures against them. The language's tool (`tilolang check`) finds native apps among the
-`--path` directories (`--path apps/chat`, or `--path apps`). Reading native records at runtime and
-invoking native actions come later; for now this is compile-time only.
+`--path` directories (`--path apps/chat`, or `--path apps`), and an agent's task is handed the
+same catalogue by the session it runs in: every installed app's surface for its workspace, read
+by one loader. Invoking a native app's verb, or setting a field of its record, is the app's own
+action: it goes to the app through the session's broker, which decides it as it decides the
+agent's own call and starts the app when it is not running, and the step sits in the task's
+history with every other. Reading a native record goes the same way: `find(chat.Conversation)` lists
+the resources under the app's record as its directory does, and reading one, or a field of one,
+asks the app for it — the resource's own `read` view where its directory offers one, else the
+record's with the resource as its item, which is the read a window and `tilo_read` take too — as
+the task's caller, starting the app when it is not running. One app code over one record answers a
+person's window, an agent's `tilo_read` and a program, and a field reads as the type the app's
+surface declares it (`Option<Text>` as the text it holds or `.none`, a case of its enum, a set as
+its members). What the app keeps in the layout of its own model is never read here: no byte of a
+native record is.
 
 ## Syntax reference
 
@@ -200,6 +221,21 @@ view board(b: Board) {
 A template's `Option<View>` parameter placed as a statement shows what it was given, and nothing
 when it was left out.
 
+**Text and numbers.** A text and a number are asked what they are and what to become as methods, on the value itself, in one surface and with no namespace or global beside it:
+
+```
+let parts = t.trim().split(",")           // List<Text>
+let shown = parts.join(", ")              // Text
+let n = " 42 ".to_int() ?? 0              // Option<Int>
+let half = n.to_float() / 2.0             // Float
+let price = total.round(2)                // Float, two places
+let sum = items.map(i -> i.price).sum()
+```
+
+`Text` has `len` and `is_empty`; `slice(from, to)`, a range of graphemes clamped to the text; `find(what)`, an `Option<Int>`; `starts_with`, `ends_with`, `contains` and `matches(pattern)`, where `*` stands for any run (the same pattern search's identifiers use); `trim`, `lower` and `upper`; `split(sep)`, which with an empty separator gives what a reader sees as one thing, and `replace(from, to)`, which replaces every occurrence; and `to_int`, an `Option<Int>` taking a decimal number written with an optional sign, around any outer space. A text is counted in what a reader sees: `len`, `find` and `slice` count graphemes, so a family emoji, a flag or a letter with an accent is one and a cut never splits one, and a text column's `len` in a filter counts the same way. Case changes are Unicode case mapping and not locale tailoring (`upper("straße")` is `STRASSE`).
+
+`Int` and `Float` have `min`, `max`, `clamp(lo, hi)` and `abs`; a `Float`'s `round`, `floor` and `ceil` give an `Int`, or, given the places to keep (`f.round(2)`), a `Float`. `Int.to_float()` and `Float.to_int()` convert between them (dropping the fraction), and `.to_text()` writes any number as `Bool.to_text()` writes `true` or `false`. A `List<Text>` has `join(sep)`; a `List<Int>` or `List<Float>` has `sum()` (the items' type) and `avg()` (a `Float`, 0.0 for an empty list); `contains` asks whether an item is one of a list, set or collection, as `index_of` finds it. All of them are pure — no clock, no workspace, no effect — so a view, an `fn`, an action and a flow write them alike.
+
 **Key paths.** Where a lambda would only read a field, `.field` (or `.a.b`) is that lambda:
 `items.sort_by(.due)`, `items.count(.done)`, `items.remove_where(.done)`. `sort_by` takes
 Int, Float, Text, Bool, Date or Time keys, and `desc` for the largest or latest first:
@@ -216,11 +252,20 @@ oldest first. `v.is(edit)` asks whether the action `edit` made it, by the action
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
 `actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
 `host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource
-keeps its versions) and which `.fields` it changed. `changes(of: run)` is every version a run
+keeps its versions) and which `.fields` it changed. A resource can be made from another one:
+an invocation carries the resource it is made from when the host or the invoker names one, the
+change records it, and the resource it created says so, `created(r)?.from` — an
+`Option<host.Resource>`. `changes(of: run)` is every version a run
 made, of every resource, and `unseen(r)` the versions of `r` an agent's run made that the
 person looking has not seen yet. The UI host marks those where views show them, with no code
 of the app's; `ui.ChangeMark(r)` places the mark where the default spot is wrong
 (task-legibility.md).
+
+**What links to a resource.** `linked(r)` is every resource that links to `r`, a
+`List<host.Link>`: `.of` is the resource and `.how` how it links, a `host.LinkHow`:
+`.created_from` for one made from `r`, `.field` for one whose reference field points at it, and
+`.mention` for one whose rich text names it. It is read from the index, at the cost of what links to `r` and not of the
+workspace's size, and a view that reads it runs again when what links to `r` changes.
 
 **Members.** Who is in the workspace is the platform's membership, read and never copied:
 `workspace.members` is everyone in it, people and agents, a `List<Principal>`, and `members(r)`
@@ -248,7 +293,9 @@ reference to it. An item cannot go inside itself. A place may count only a run o
 collection, the items a board's lane shows: `items.move(x, to: i, among: items.filter(t ->
 t.section == s))` puts `x` at the place `i` among that run's other items, beside the one it
 then comes before, or after the run's last. Where an item stands among them is
-`items.index_of(x)`, an `Option<Int>`: none when it is not one. A board lane's drop says both
+`items.index_of(x)`, an `Option<Int>`: none when it is not one, and the item just before it is
+`items.previous(x)`, an `Option<T>`: the row over the one a list is drawing, which the host
+knows without reading the items before it. A board lane's drop says both
 what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
 edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
@@ -291,7 +338,7 @@ their units and flags stay bare words. An anchor follows the call as `as name`:
 
 ```
 view notebook(nb: Notebook) {
-    window order: NoteOrder = .created     // shared by everyone looking at this window
+    window order: NoteOrder = .created     // how my window shows the notes
     lens expanded: Option<Note> = .none    // one per person per window
     page {
         stack(gap: .section) {
@@ -332,10 +379,11 @@ ladder of how far a view may go — options, composing `ui.*`, drawing, native w
 [components.md](../../../docs/designs/app-language/components.md#4-customizing-a-component-a-ladder).
 
 **View state** (workspace-model.md, "In the language") is declared at the top of a view:
-`window name: T = default` is the window's and shared, `lens name: T = default` is each
-person's own in that window. The view reads them like variables; they change only through a
-control bound to them (`input(bind: query)`, `checkbox("Open", bind: open)`) or the platform
-action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
+`window name: T = default` is how each person looking at the window shows its resource, and
+`lens name: T = default` is where each person is in it; both are each person's own, so one
+person's window setting or draft never moves another's view. The view reads them like
+variables; they change only through a control bound to them (`input(bind: query)`,
+`checkbox("Open", bind: open)`) or the platform action `set(name, value)` on a control. `open(r)` and `open(r, view: v)` are platform actions
 too: they go to the window of `r`. An action's arguments are evaluated when it is invoked, on
 what the invoker sees, as its parameter defaults are: an action a view applies reads the view
 state its arguments use when the control fires (`send(c, draft)`, `set(open, not open)`,
@@ -389,20 +437,77 @@ type Message {
 ```
 
 A named filter reads only the type's own fields and literals (`not done`, `due != .none`,
-`effort > 2`, `tags.len() > 0`), so the index keeps it as fields change. A `std.Identifier`
+`effort > 2`, `tags.len() > 0`), and the two a filter is asked at and for: `today`/`now` and
+`workspace.me`, which is each person it is asked by (`filter "Assigned to me" = assignee ==
+workspace.me and not done`). The index keeps it as fields change.
+
+**Derived keys** (DECISIONS.md, "Derived keys"). A value that follows from the other records of
+a collection is declared on the type, not written: a branch is finished when it and everything
+under it are, a task's row says how many of its subtasks are done. The store's index works it
+out, keeps it where a view reads fields from, and reads, sorts, filters and groups by it as by
+any field; no action writes it.
+
+```
+type Task {
+    title: Text (title)
+    done: Bool = false
+    parent: Option<Task> (parent) = .none     // what the items under it nest by
+    // Finished: done itself, and so is every task under it.
+    derive finished: Bool = children.all(finished) and (done or children.count > 0)
+    // Folded away: finished, and so is every task it is under.
+    derive folded: Bool = finished and parent.all(folded)
+    derive subtasks: Int = children.count
+    derive subtasks_done: Int = children.count(done)
+}
+```
+
+A key is a `Bool` or an `Int`, read from the type's own fields of those types and from
+`children` — the items naming it in its parent field — with `count`, `count(x)`, `all(x)` and
+`any(x)`, from the items above it with `parent.all(x)`, and from two counts compared
+(`children.count > 0`), combined with `not`, `and` and `or`. A key reads one way, the items
+under an item or the items above it, never both: `finished` reads down the steps, `folded`
+reads up the chain. It reads itself and the keys declared before it in the type body. A write
+of one (an assignment, or a record made with one) is refused: two people checking the last two
+steps of a branch at once each derive it from what they hold, and both agree once the changes
+meet.
+
+A `std.Identifier`
 is an account of any service held as its URI: `std.Identifier("mailto:jane@x.com")`, a bare
 `jane@x.com` or `+4930…` taken as `mailto:` or `tel:`; `.scheme` and `.value` read its parts.
+
+`std.Repeat` and `std.Reminder` are held as their RFC 5545 text too: a repeat is its rule
+(`std.Repeat("FREQ=WEEKLY;INTERVAL=2")`, `…;X-FROM=DONE` to count from the day it was
+completed) and a reminder its trigger duration (`std.Reminder("-PT15M")`), both from a string
+literal. `.next(from, done_on)`, `.next_at(at, day)` and `.at(due, at)` read them in the
+person's zone, so a wall time of day survives a change of clocks, and `.label()` says what they
+do in the reader's words ("Every 2 weeks", "15 minutes before"). An action completes a repeating
+item in one call: `let again = std.complete(t, done)` adds the day to the item's
+`completed: Set<Date>` and moves `due` and `at` to the next occurrence.
 
 `query(T, in: x, filter: value, sort: .field_order)` lists the resources of `T` inside `x`
 that the filters hold of, a lazy list the index answers. Its arguments are `T`'s filters,
 checked against what each compares: a Bool; a case, or several (`[.open, .blocked]`); a Date
-or Time, `today`, `now`, either plus or minus a duration, a duration from now (`-7d`), or a
-range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a resource; an
-identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no value. Without
-`sort:`, the type's own order. Outside a view (an action, a flow) a query may leave out `in:`
-and look across the workspace. `items.matching("is:done due:-7d")` asks the same of a list,
-written as people type it in search, and `filters(T)` gives a type's filters as places and
-chips show them (`host.Filter`).
+or Time, `today`, `now`, either plus or minus a duration, a duration from now (`-7d`), a month
+(`2026-10`), or a range of them (`today..today + 7d`, `2026-10-01..`); a number or a range; a
+resource; an identifier or a pattern (`"*@x.com"`); `none` or `any` where a filter may hold no
+value. Without `sort:`, the type's own order. Outside a view (an action, a flow) a query may
+leave out `in:` and look across the workspace. A filter is a value: `Task.today` names the one
+the type declares, `Task.project(p)` one with its value, and `items.matching(Task.today)`,
+`items.matching(Task.project(p), Task.done)` and `query(Task, in: x, Task.today)` ask them, no
+search text written. `filters(T)` lists the type's filters (`host.Filter`), each with the query
+choosing it asks, its label, icon, whether it is on or off and whether its place shows how many
+it holds; the filters that are on or off are what a list's places are, and a `ui.NavItem` given
+one, or a `ui.NavList` given the chosen one (`selected: place`), is keyed by it without the app
+writing a key. `items.matching("is:done due:-7d")` still asks the same of a list, written as
+people type it in search. A filter's fields also read as text (`f.query` is `is:today`), so a
+window's search box and a query's own words stay one language. What a window shows beside its
+places is the app's own, drawn by its view: the projects a root holds under a heading that adds
+one, or any other list of it, in the window's own `ui.NavList`.
+
+A filter is a predicate over the type's own fields, and nothing more: what a place holds is
+what its predicate says (`filter "Today" = due <= today and not done`), how its list reads is
+the app's (`std.rows(group:, tail:)`, each answered per item where the place decides so
+itself), and its order is the app's (`sort_by`).
 
 **Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
 door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across
@@ -435,6 +540,34 @@ print(xs, fields: [.title, .due])
   `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
   type the host holds.
 
+**Time.** A `Date` is a calendar day (`2026-10-24`), a `Time` an instant
+(`2026-10-24T09:30Z`; `2026-10-24T09:30` is the person's own time of day, read in their zone),
+both held as ISO text that compares with the ordering operators. `Date("2026-10-24")` and
+`Time("2026-10-24T09:30:00Z")` read one from text, and `ui.DateField(bind: t.due)` edits one.
+
+A `Duration` is a length of time: `30m`, `2h`, `3d`, `1w` (`s`, `m`, `h`, `d`, `w`), or
+`Duration(n)` for `n` seconds — a value of its own and not an `Int`. It shows as the largest unit
+that divides it (`Duration(7200)` reads `2h`, `Duration(5400)` reads `90m`), `.seconds()` gives the
+number back, and two of them compare.
+A `Time` moves by any length (`now + 2h`, `at - 30m`) and two are a `Duration` apart
+(`end - start`). A `Date` moves by whole days only (`today + 3d`, `today - 1w`), and two are
+apart in days: a length that spans part of a day is refused where it is written, and where code
+holds it, where it is applied.
+
+What a day and a moment are made of reads on them. On a `Date`: `d.weekday()` is the day of the
+week, matched as `.monday` … `.sunday`; `d.day()`, `d.month()` and `d.year()` are its parts;
+`d.start_of_week()` is the first day of the week it stands in, the day the person's region
+starts one on. On a `Time`: `t.day()` is the `Date` it falls on for the person, in their zone
+as `today` reads it, and `t.time_of_day()` the `Duration` since their midnight.
+
+An action reads the moment it is invoked at, `now`, and the day that falls on for the person,
+`today`; nothing else does, because a moment is a fact of the invocation, recorded with the
+change. Words name a day or a moment when they are read against one: `Date.parse(t, near: at)`
+and `Time.parse(t, near: at)` read their text — "tomorrow" is the day, "tomorrow 9am" the moment,
+a day's start when the words name no time of day — or `none` for words no phrase reads. A stored
+day or moment is a `Date` or a `Time` field; a stored length of time is the number the app
+measures it in, read as one with `Duration(n)`.
+
 **Native vocabulary.** Some smaller pieces of syntax:
 
 - An enum case takes an icon: `all (icon: .file_text)`.
@@ -445,28 +578,36 @@ print(xs, fields: [.title, .due])
   the subject as an `if` does; over another argument it is read where the action is applied
   with it, `button(move_to(b, card, col))`. `button(pin(n))` reads its `label:`, `icon:` and
   `on:` with the arguments it applies, as the view draws: Pin turns into Unpin, toggled.
+- An action says what it did, as history reads it after who did it: `did: "moved this"` or
+  `did: "added a subtask"`. A history row is then one sentence in a person's terms — "Ana
+  moved this", "You added a subtask" — rather than a label beside a paragraph about the
+  command.
 - An action declares its shortcut: `key: "Ctrl+Enter"`, `key: "Ctrl+Shift+M"`, `key: "Delete"` —
   modifiers in any order, then one key. The command modifier is the platform's own, so
   `Ctrl+Enter` is Command+Enter on a Mac. Where the action is offered its key runs it: an
   action on an item while that item has the keyboard, an action on the app's root window-wide.
-  `std`'s menus and buttons show it, and so does the palette. The key is checked when the app
+  The host's bar and menus show it, and so does the palette. The key is checked when the app
   compiles, and two actions of one subject cannot answer the same keys.
 - A slot that holds a component (`ui.BoardLane` holds `ui.BoardCard`s) takes a view of the
   package whose body is that component: views are components.
 - `require <condition> "<reason>"` lines head an action's body: when the action is available
-  on its subject. Where it would be offered on the subject (`actions(r)`: `std`'s headers and
-  menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
+  on its subject. Where it would be offered on the subject (`actions(r)`: the host's bar and a
+  window's menus, agents' choices) it is not offered while one does not hold; invoked anyway, it is
   refused with the reason before anything changes. A condition reads only the subject and is
   pure, as the presentation is (it is checked in the action's presentation view):
   `primary action send(d: Draft) { require not d.sent "It went already" ... }`.
-- `2026-10-24` is a Date and `2026-10-24T09:30Z` a Time (UTC), held as ISO text that compares
-  with the ordering operators; `2026-10` is a month, a filter's value. `Date("2026-10-24")` and
-  `Time(...)` read the same from text. `ui.DateField(bind: t.due)` edits one. In an action, `now` is the
-  invocation's Time, recorded with the change.
 - A scenario names people with `let mia = person("Mia")`. Inside
   `as mia at 2026-06-29T07:02Z { post(t, "Hi") }`, the actions called run with `invoker` = mia
   and `now` = that time, and the block is a change of its own, so history and reflection show
-  it as mia's at that time.
+  it as mia's at that time. `made from r { ... }` makes the block's change from `r`, as an
+  action invoked on `r` is, so what it creates shows what it was made from (`created(r)?.from`,
+  `std.origin`, `std.linked`); it is a change of its own too, and only a scenario writes it.
+  `window place = Task.done` and `lens picked = .some(1)` say what state the window the
+  scenario shows stands on, where a view declares it (`window place: Filter<Task> = ...`);
+  `window home.place = ...` names the view where two declare the same name. The value is
+  typed and checked as the declaration's, a person's own choice stands over it, and only a
+  scenario writes it, so `layout-check` captures a place that is not the declaration's
+  default without saving anything as anyone's change.
 - `root T` (or `root alias.T`) is the workspace's resource of a root type, anywhere code may
   read it; until the host makes it, it reads as it would start.
 - An item block names a template's other slots beside the item's view; they do not see the

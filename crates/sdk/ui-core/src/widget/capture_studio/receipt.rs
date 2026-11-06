@@ -8,9 +8,10 @@
     reason = "receipt geometry is bounded logical-pixel arithmetic over a tiny fixed set of actions"
 )]
 
+use super::bar::{studio_text, ui_count};
 use super::{
     CapturePreview, CaptureStudio, RECORDING_RECEIPT_DURATION, SCREENSHOT_RECEIPT_DURATION,
-    ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress, studio_text, ui_count,
+    ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress,
 };
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
@@ -156,12 +157,28 @@ impl CaptureStudio {
 
     pub(super) fn recording_receipt_layout(&self) -> ReceiptLayout {
         let center = self.status_rect().center();
-        self.receipt_layout_at(
-            1.0,
-            center,
-            None,
-            &[ReceiptAction::Play, ReceiptAction::Reveal],
-        )
+        self.receipt_layout_at(1.0, center, None, &self.recording_actions())
+    }
+
+    /// Whether the word of the last recording has been up long enough to be
+    /// gone. A recording that could not be finished stays until the person
+    /// puts it away: it is the only account of what happened to the file, and
+    /// the way to it.
+    pub(super) fn recording_receipt_over(&self) -> bool {
+        self.recording_failure.is_none()
+            && self.recording_finished_at.is_some_and(|at| {
+                crate::time::now().saturating_duration_since(at) >= RECORDING_RECEIPT_DURATION
+            })
+    }
+
+    /// How strongly the word of the last recording is drawn: a saved one
+    /// fades out as it goes, one that could not be finished stays whole.
+    pub(super) fn recording_receipt_alpha(&self, reduce_motion: bool) -> f32 {
+        if reduce_motion || self.recording_failure.is_some() {
+            return 1.0;
+        }
+        self.recording_finished_at
+            .map_or(1.0, |at| leaving_opacity(at, RECORDING_RECEIPT_DURATION))
     }
 
     /// A receipt at `p` of its way from what was captured (`0`) to its place
@@ -487,21 +504,17 @@ impl CaptureStudio {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(finished_at) = self.recording_finished_at else {
+        if self.recording_finished_at.is_none() {
             return;
-        };
-        if crate::time::now().saturating_duration_since(finished_at) >= RECORDING_RECEIPT_DURATION {
-            self.recording_finished_at = None;
+        }
+        if self.recording_receipt_over() {
+            self.end_recording_receipt();
             self.open = self.shows_status();
             return;
         }
-        let status = studio_text("widget-recording-saved");
+        let status = self.recording_status();
         self.measure_receipt(&status, tr, theme);
-        let alpha = if theme.reduce_motion {
-            1.0
-        } else {
-            leaving_opacity(finished_at, RECORDING_RECEIPT_DURATION)
-        };
+        let alpha = self.recording_receipt_alpha(theme.reduce_motion);
         let layout = self.recording_receipt_layout();
         self.paint_receipt(
             &mut PaintCtx::new(scene, transform, tr, theme),

@@ -147,7 +147,6 @@ struct Fake<const ORDER: u8> {
 
 const LINK_THEN_GRANT: u8 = 0;
 const CHOOSE_THEN_GRANT: u8 = 2;
-const GRANT: u8 = 3;
 
 struct Linking(Arc<AtomicUsize>, Arc<Mutex<bool>>);
 
@@ -159,7 +158,6 @@ impl<const ORDER: u8> Provider for Fake<ORDER> {
     const ORDER: Order = match ORDER {
         LINK_THEN_GRANT => Order::LinkThenGrant,
         CHOOSE_THEN_GRANT => Order::ChooseThenGrant,
-        GRANT => Order::Grant,
         _ => Order::GrantThenLink,
     };
 
@@ -384,7 +382,7 @@ fn a_sim_is_chosen_from_this_scan_only_and_closing_the_chooser_answers_nothing()
 }
 
 #[test]
-fn each_order_offers_only_its_own_first_step() {
+fn a_service_that_links_first_offers_only_its_own_first_step() {
     let rig = rig();
     let Driven { flow: link, .. } = drive::<LINK_THEN_GRANT>(&rig);
     assert_eq!(link.prepare().err(), Some(SendError::Unavailable));
@@ -392,16 +390,6 @@ fn each_order_offers_only_its_own_first_step() {
         rig.runtime.block_on(link.choices()).err(),
         Some(SendError::Unavailable)
     );
-    let Driven {
-        flow: grant, begun, ..
-    } = drive::<GRANT>(&rig);
-    let review = grant.prepare().unwrap();
-    assert_eq!(phase(&grant, &review.account), EnrollmentPhase::Review);
-    assert_eq!(
-        rig.runtime.block_on(grant.begin()).err(),
-        Some(SendError::Unavailable)
-    );
-    assert_eq!(begun.load(Atomic::SeqCst), 0);
 }
 
 #[test]

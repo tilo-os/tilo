@@ -342,6 +342,36 @@ pub fn read_exact(
     }))
 }
 
+/// Every installed app's signed `surface.toml`: its package id, the name people call it, and
+/// the bytes its signed package ships ([`package_store::integrity::signed_surface`]), for each
+/// app that publishes one. What a task's programs may name of the native apps this device has.
+#[must_use]
+pub fn signed_surfaces(catalog: &Catalog) -> Vec<(String, String, Vec<u8>)> {
+    let Ok(rows) = catalog.list() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for row in &rows {
+        let Some(surface) = package_store::integrity::signed_surface(row) else {
+            continue;
+        };
+        let Some(app) = InstalledApp::from_package(row) else {
+            continue;
+        };
+        out.push((app.package_id, app.display_name, surface));
+    }
+    out
+}
+
+/// [`signed_surfaces`] over the stores the environment names.
+///
+/// # Errors
+///
+/// See [`Catalog::from_env`].
+pub fn signed_surfaces_from_env() -> Result<Vec<(String, String, Vec<u8>)>, CatalogError> {
+    Ok(signed_surfaces(&Catalog::from_env()?))
+}
+
 /// [`read`] over the stores the environment names.
 ///
 /// # Errors

@@ -393,13 +393,25 @@ fn entry_row(
             )
         },
     );
-    let mut place: Vec<&str> = Vec::new();
+    let mut place: Vec<String> = Vec::new();
     if feed.scope == wire::Scope::AllWorkspaces
         && let Some(workspace) = &entry.workspace
     {
-        place.push(workspace);
+        place.push(workspace.clone());
     }
-    place.extend(entry.resource.as_deref().or(entry.app.as_deref()));
+    place.extend(entry.resource.clone().or_else(|| entry.app.clone()));
+    // Where the change is not, and why: a device that refused it says so on
+    // the change's own row, so its author reads which of their devices hold
+    // it.
+    place.extend(entry.refused.iter().map(|refusal| {
+        trf(
+            "activity-entry-not-on",
+            &[
+                ("device", refusal.label.clone().into()),
+                ("reason", refusal.reason.clone().into()),
+            ],
+        )
+    }));
     let mut row = ListRow::new(
         format!("activity-entry-{}", entry.id),
         entry.summary.clone(),

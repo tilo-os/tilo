@@ -601,6 +601,9 @@ pub fn activate(
     if session.login.is_some() {
         return activate_login(apply, &session, uid, layers, restarts, change);
     }
+    if record.kind == SlotKind::Device {
+        return activate_board(apply, &session, uid, layers, change);
+    }
     if session.stand_in {
         actions.push(Action::EnsureUser {
             user: session.user.clone(),
@@ -659,6 +662,44 @@ pub fn activate(
             actions.push(Action::StartUnit { unit: session.unit });
         }
         SessionChange::Restart => actions.extend(restart_session(apply, &session, uid)?),
+        SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
+            reason:
+                "app-only change: live at next app launch; other layers at next session restart"
+                    .into(),
+        }),
+    }
+    Ok(actions)
+}
+
+/// [`activate`] for a board's own session. Its seat supervisor starts the
+/// compositor as a system transient unit in the host's mount namespace, and a
+/// transient unit neither reads a drop-in nor can be reached by the view a
+/// drop-in binds. So the layers merge into the host `/usr` with
+/// `systemd-sysext`, the one set a laptop's login gets, and a drop-in an
+/// earlier activation bound into these units is removed so it cannot hide the
+/// merge.
+fn activate_board(
+    apply: &mut dyn Apply,
+    session: &Session,
+    uid: u32,
+    layers: &[PathBuf],
+    change: SessionChange,
+) -> Result<Vec<Action>, DaemonError> {
+    apply.link_sysext(layers)?;
+    apply.sysext_refresh()?;
+    let mut actions = vec![Action::SysextRefresh];
+    for unit in layered_units(session, uid) {
+        apply.remove_dropin(&unit, LAYERS_DROPIN)?;
+    }
+    apply.reload()?;
+    match change {
+        SessionChange::Ensure => {
+            apply.start_unit(&session.unit)?;
+            actions.push(Action::StartUnit {
+                unit: session.unit.clone(),
+            });
+        }
+        SessionChange::Restart => actions.extend(restart_session(apply, session, uid)?),
         SessionChange::Keep | SessionChange::Stage => actions.push(Action::Deferred {
             reason:
                 "app-only change: live at next app launch; other layers at next session restart"
@@ -837,9 +878,13 @@ pub struct RecordingApply {
     pub prepared_session_layers: Vec<(String, Vec<PathBuf>)>,
     /// The kernel layer the next boot runs; `None` for the image's.
     pub next_kernel: Option<PathBuf>,
-    /// Answers for the next `control` calls, in order; an echo of the
-    /// arguments once they run out.
+    /// Answers for the next `control` calls, in order; past them the call
+    /// is answered by its op (see [`RecordingApply::control`]).
     pub control_replies: std::collections::VecDeque<ControlResult>,
+    /// The controls a session lists, page by page: a press on a control of
+    /// the current page moves to the next, and the last page stands for the
+    /// desktop past onboarding.
+    pub pages: std::collections::VecDeque<Vec<String>>,
     /// Scripted readiness observations, consumed once per restarted session.
     pub readiness_replies: std::collections::VecDeque<Result<(), String>>,
 
@@ -902,6 +947,47 @@ impl RecordingApply {
             calls.push(text.clone());
         }
         self.calls.push(text);
+    }
+
+    /// What an unscripted `control` call answers, from its op: the controls a
+    /// session lists, a settled desktop, and a press that turns the page.
+    fn answer_control(&mut self, args: &[String]) -> String {
+        let request: Option<serde_json::Value> =
+            args.iter().find_map(|arg| serde_json::from_str(arg).ok());
+        let field = |name: &str| {
+            request
+                .as_ref()
+                .and_then(|request| request.get(name))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        match field("op").as_deref() {
+            Some("list_targets") => {
+                let targets: Vec<_> = self
+                    .pages
+                    .front()
+                    .map(|page| {
+                        page.iter()
+                            .map(|name| serde_json::json!({ "name": name }))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                serde_json::json!({ "targets": targets }).to_string()
+            }
+            // `chrome.in_transition`: the desktop is at rest between pages.
+            Some("state_dump") => "{}".to_owned(),
+            Some("click_named") => {
+                let pressed = field("name");
+                if self.pages.front().is_some_and(|page| {
+                    page.iter()
+                        .any(|name| Some(name.as_str()) == pressed.as_deref())
+                }) {
+                    self.pages.pop_front();
+                }
+                "{}".to_owned()
+            }
+            _ => format!("{}\n", args.join(" ")),
+        }
     }
 }
 
@@ -1105,7 +1191,7 @@ impl Apply for RecordingApply {
         }
         Ok(ControlResult {
             exit_code: 0,
-            stdout: format!("{}\n", args.join(" ")),
+            stdout: self.answer_control(args),
             stderr: String::new(),
         })
     }
@@ -1751,6 +1837,15 @@ mod tests {
             device.device = apply.device.clone();
             let g = generation(1, &[("shell", "h1", Scope::Session, &[])]);
             let layers = [PathBuf::from("/var/lib/tilo-vm/layers/h1")];
+            let unit = "tilo-board-headless-session@tester.service";
+            // An earlier activation bound a view into these units; a bound view
+            // would keep the merged `/usr` from reaching the compositor.
+            for bound in ["user@1000.service", unit, "tilo-board-drm-session.service"] {
+                apply.dropins.insert(
+                    (bound.to_string(), LAYERS_DROPIN.to_string()),
+                    "BindReadOnlyPaths=-/var/lib/tilo-vm/views/device/usr:/usr\n".into(),
+                );
+            }
             let actions = activate(
                 &mut apply,
                 &mut device,
@@ -1761,14 +1856,15 @@ mod tests {
                 SessionChange::Keep,
             )
             .unwrap();
-            let unit = "tilo-board-headless-session@tester.service";
             assert_eq!(
                 apply.calls,
                 [
                     "account_uid tester",
-                    "write_dropin user@1000.service 50-tilo-vm-layers.conf",
-                    &format!("write_dropin {unit} 50-tilo-vm-layers.conf"),
-                    "write_dropin tilo-board-drm-session.service 50-tilo-vm-layers.conf",
+                    "link_sysext 1",
+                    "sysext_refresh",
+                    "remove_dropin user@1000.service 50-tilo-vm-layers.conf",
+                    &format!("remove_dropin {unit} 50-tilo-vm-layers.conf"),
+                    "remove_dropin tilo-board-drm-session.service 50-tilo-vm-layers.conf",
                     "reload",
                     &format!("stop {unit}"),
                     "restart user@1000.service",
@@ -1781,13 +1877,8 @@ mod tests {
                     .any(|a| matches!(a, Action::EnsureUser { .. })),
                 "the account is not a slot user: {actions:?}"
             );
-            assert!(
-                apply
-                    .dropins
-                    .values()
-                    .all(|text| !text.contains("TILO_IDENTITY_ROOT")),
-                "a real device retains its existing identity environment"
-            );
+            assert!(apply.dropins.is_empty());
+            assert_eq!(apply.sysext, layers);
             let session = device.session().unwrap();
             assert!(!session.stand_in);
             assert_eq!(session.user, "tester");

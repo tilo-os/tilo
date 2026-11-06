@@ -5,7 +5,7 @@
 //! Enter keeps the words (the host publishes them, and they lead what
 //! everyone here reads of them), Escape puts back what was there, and the
 //! clear button takes their words away, so an automatic description shows
-//! again. Like the message box, it holds the keyboard only once pressed.
+//! again. It holds the keyboard only once pressed.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

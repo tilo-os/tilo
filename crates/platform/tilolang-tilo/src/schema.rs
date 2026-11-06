@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use tilo_action_policy::EarlierIds;
+use tilolang::types::Ty;
 
 /// The key holding a resource's type id.
 pub const TYPE_KEY: &str = "$type";
@@ -94,14 +95,30 @@ pub struct FieldSchema {
     /// A register holding a structured runtime value (an option, a list, a reference) rather
     /// than an integer, float, flag or text: the runtime reads such a value as JSON.
     pub composite: bool,
+    /// A register naming a resource, of a record type the field declares: what links a resource
+    /// to another (`linked(r)`, [`tilolang_runtime::store::LinkHow::Field`]).
+    pub refers: bool,
+    /// The type the field declares (`Option<Text>`), for a reader that holds a value the app
+    /// wrote in a layout of its own (`crate::native`): what turns it into a value of the type a
+    /// program reads. `None` for a field whose declared type does not read.
+    pub ty: Option<Ty>,
     /// What the field is to the platform (`title: Text (title)`): the record's
     /// [`FieldRole`]. The language's `title` and `body` roles name the record and are the
     /// field search reads it by; a type declares at most one of each.
     pub role: FieldRole,
+    /// What the store works the field out from, for a `derive` key
+    /// (`derive folded: Bool = done and children.all(folded)`): a value no record holds, read
+    /// as any other field and written by nothing ([`tilolang::derived`]). Its expression names
+    /// the type's fields by id.
+    pub derived: Option<tilolang::derived::Derived<String>>,
 }
 
-/// What a field is to the platform, as the package declares it (`(title)`, `(body)`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// What a field is to the platform, as the package declares it (`(title)`, `(body)`,
+/// `(repeats: due)`, `(reminds: due, at, who: assignee)`).
+///
+/// The fields a role names are ids here, the keys the record stores its fields under: a reader
+/// holding the record finds what repeats and what reminds whom without the app's code.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FieldRole {
     /// Text for people to read, or data with no role of its own.
     #[default]
@@ -112,6 +129,46 @@ pub enum FieldRole {
     /// The record's substance, for a record the person does not name by a word of its own (a
     /// message, an article): search shows its first line where a title would stand.
     Body,
+    /// The flag saying the record is finished (`done: Bool (done)`): the items a place leaves
+    /// out of its count and folds into its foot.
+    Done,
+    /// The field holds a repeat, counting from the field `date` (a `Date` or `Option<Date>`).
+    Repeats { date: String },
+    /// The field holds a reminder of the day `date`, at the time of day `time` where the type
+    /// has one, for the person `who` where it names one; `None` for either means the type has
+    /// no such field.
+    Reminds {
+        date: String,
+        time: Option<String>,
+        who: Option<String>,
+    },
+    /// The field holds the item this one stands under (`parent: Option<Task> (parent)`): the
+    /// item a type's items nest by, which its derived keys read the items under it through.
+    Parent,
+}
+
+/// What a type publishes for its repeat (`(repeats: due)`): the field holding the rule and the
+/// day it counts from, by id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Repeats<'a> {
+    /// The `std.Repeat` field: its text is the rule, `FREQ=WEEKLY;INTERVAL=2`.
+    pub rule: &'a str,
+    /// The day it counts from.
+    pub date: &'a str,
+}
+
+/// What a type publishes for its reminder (`(reminds: due, at, who: assignee)`), by id: the
+/// trigger, the day it is due on, the time of day where the type has one, and who it reminds
+/// where it names one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reminds<'a> {
+    /// The `std.Reminder` field: its text is the trigger, `-PT15M`.
+    pub trigger: &'a str,
+    /// The day it is due on: a reminder of a record with no day is one that never comes.
+    pub date: &'a str,
+    pub time: Option<&'a str>,
+    /// The person field; a record naming nobody there reminds its creator.
+    pub who: Option<&'a str>,
 }
 
 impl FieldSchema {
@@ -123,21 +180,56 @@ impl FieldSchema {
             record: None,
             default: serde_json::Value::Null,
             composite: false,
+            refers: false,
+            ty: None,
             role: FieldRole::Plain,
+            derived: None,
         }
     }
 
     /// The field is the record's name (`title: Text (title)`).
     #[must_use]
-    pub const fn titled(mut self) -> Self {
+    pub fn titled(mut self) -> Self {
         self.role = FieldRole::Title;
         self
     }
 
     /// The field is the record's substance (`body: RichText (body)`).
     #[must_use]
-    pub const fn bodied(mut self) -> Self {
+    pub fn bodied(mut self) -> Self {
         self.role = FieldRole::Body;
+        self
+    }
+
+    /// The field says the record is finished (`done: Bool (done)`).
+    #[must_use]
+    pub fn finished(mut self) -> Self {
+        self.role = FieldRole::Done;
+        self
+    }
+
+    /// The field holds a repeat counting from the field `date` (`repeats: std.Repeat (repeats:
+    /// due)`).
+    #[must_use]
+    pub fn repeating(mut self, date: impl Into<String>) -> Self {
+        self.role = FieldRole::Repeats { date: date.into() };
+        self
+    }
+
+    /// The field holds a reminder of the day `date`, at the time of day `time` and for the
+    /// person `who` where the type has them (`(reminds: due, at, who: assignee)`).
+    #[must_use]
+    pub fn reminding(
+        mut self,
+        date: impl Into<String>,
+        time: Option<String>,
+        who: Option<String>,
+    ) -> Self {
+        self.role = FieldRole::Reminds {
+            date: date.into(),
+            time,
+            who,
+        };
         self
     }
 
@@ -152,6 +244,13 @@ impl FieldSchema {
     #[must_use]
     pub const fn composite(mut self) -> Self {
         self.composite = true;
+        self
+    }
+
+    /// The type the field declares.
+    #[must_use]
+    pub fn of_ty(mut self, ty: Ty) -> Self {
+        self.ty = Some(ty);
         self
     }
 
@@ -179,6 +278,8 @@ pub enum ColumnKind {
     Ref,
     /// An identifier, `scheme:value`, without regard to case.
     Ident,
+    /// A person or agent of the workspace, by the id the host names them with.
+    Principal,
 }
 
 /// A filter column of a type (search.md, "Who indexes"): the index keeps, per collection of the
@@ -266,12 +367,61 @@ impl TypeSchema {
         self.fields.iter().find(|field| field.id == id)
     }
 
+    /// The field holding the item this type's items stand under (`(parent)`), by id: the one
+    /// their derived keys read the items under each item through.
+    #[must_use]
+    pub fn parent(&self) -> Option<&str> {
+        self.fields.iter().find_map(|field| match field.role {
+            FieldRole::Parent => Some(field.id.as_str()),
+            _ => None,
+        })
+    }
+
     /// The column of the field `id`.
     #[must_use]
     pub fn column_of(&self, id: &str) -> Option<&ColumnSchema> {
         self.columns
             .iter()
             .find(|column| column.field.as_deref() == Some(id))
+    }
+
+    /// The field saying its records are finished, by id (`done: Bool (done)`), when it declares
+    /// one: what a place leaves out of its count and folds into its foot.
+    #[must_use]
+    pub fn done(&self) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|field| field.role == FieldRole::Done)
+            .map(|field| field.id.as_str())
+    }
+
+    /// What the type publishes for its repeat, when it declares one: the rule's field and the
+    /// day it counts from, by id (`(repeats: due)`).
+    #[must_use]
+    pub fn repeats(&self) -> Option<Repeats<'_>> {
+        self.fields.iter().find_map(|field| match &field.role {
+            FieldRole::Repeats { date } => Some(Repeats {
+                rule: field.id.as_str(),
+                date,
+            }),
+            _ => None,
+        })
+    }
+
+    /// What the type publishes for its reminder, when it declares one: the trigger, the day it
+    /// is due on, the time of day and who it reminds, by id (`(reminds: due, at, who:
+    /// assignee)`).
+    #[must_use]
+    pub fn reminds(&self) -> Option<Reminds<'_>> {
+        self.fields.iter().find_map(|field| match &field.role {
+            FieldRole::Reminds { date, time, who } => Some(Reminds {
+                trigger: field.id.as_str(),
+                date,
+                time: time.as_deref(),
+                who: who.as_deref(),
+            }),
+            _ => None,
+        })
     }
 
     /// The column `name`.
@@ -290,7 +440,7 @@ impl TypeSchema {
         fields.sort_by_key(|field| match field.role {
             FieldRole::Title => 0_u8,
             FieldRole::Body => 1,
-            FieldRole::Plain => 2,
+            _ => 2,
         });
         fields
     }

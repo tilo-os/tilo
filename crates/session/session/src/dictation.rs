@@ -444,7 +444,13 @@ impl OwnFields for DesktopHandle {
                 TypedRefusal::Secret => FieldRefusal::Secret,
                 TypedRefusal::NoField => FieldRefusal::NoField,
             })),
-            Err(_) => None,
+            Err(refusal) => {
+                tracing::warn!(
+                    ?refusal,
+                    "typing was refused for a reason no field of this desk answers; the words are dropped"
+                );
+                None
+            }
         }
     }
 

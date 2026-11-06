@@ -187,6 +187,15 @@ impl RecordId {
         ))
     }
 
+    /// The record of the pair two people share in a workspace
+    /// ([`collab_types::direct_pair_id`]): an ordinary record of the
+    /// workspace, named by the two people so either derives it. `None` for a
+    /// key that names no pair.
+    #[must_use]
+    pub fn of_direct(pair: &str) -> Option<Self> {
+        collab_types::canonical_pair(pair).then(|| Self(collab_types::direct_record(pair)))
+    }
+
     /// Identity of the record that plays `role` for `of` — "the annotations
     /// of this document". Distinct from its target so the two can be
     /// shared separately: handing over the document doesn't hand the notes.
@@ -214,7 +223,7 @@ impl RecordId {
             && index.bytes().all(|byte| byte.is_ascii_digit())
             && (index == "0" || !index.starts_with('0'));
         canonical
-            // optional-decode: a probe of the id's shape; digits only, so only an index past u64 fails, which is no part
+            // ignored-failure: a probe of the id's shape; digits only, so only an index past u64 fails, which is no part
             .then(|| index.parse().ok())
             .flatten()
             .map(|index| (Self(base.to_owned()), index))
@@ -228,7 +237,6 @@ impl RecordId {
     pub fn part_of_storage_key(&self, storage_key: &str) -> Option<u64> {
         let index = storage_key.strip_prefix("derived_part.")?;
         let digits = index.bytes().take_while(u8::is_ascii_digit).count();
-        // optional-decode: a probe of a storage key's shape; digits only, so only an index past u64 fails, which names no part
         let index: u64 = index.get(..digits)?.parse().ok()?;
         (self.part(index).storage_key() == storage_key).then_some(index)
     }
@@ -311,7 +319,7 @@ impl RecordId {
     pub fn file_record(&self) -> Option<uuid::Uuid> {
         self.0
             .strip_prefix(FILE_RECORD_PREFIX)
-            // optional-decode: a probe of the identity's kind; a malformed id is no filesystem record
+            // ignored-failure: a probe of the identity's kind; a malformed id is no filesystem record
             .and_then(|id| uuid::Uuid::parse_str(id).ok())
     }
 

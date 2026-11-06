@@ -3,7 +3,7 @@
 //! host keeps.
 //!
 //! This is the host's own side of the offer round
-//! ([`tilo_room_host::rooms::HostJobs`]). A device of a workspace the host
+//! ([`tilo_room_host::workspaces::HostJobs`]). A device of a workspace the host
 //! governs offers it a transform; the host answers with its standing and the
 //! inputs it already keeps, and the device that decides sends the invocation
 //! to whichever device wins. When that is this host, the invocation runs here
@@ -28,7 +28,7 @@ use neighbour_wire::offer::{MAX_WORK_INPUTS, Work};
 use tilo_actions::remote::{ActionHostError, InvokeRequest, Pending, pending};
 use tilo_actions::{ActionOutput, InvocationId, Offload};
 use tilo_clock::unix_now_ms;
-use tilo_room_host::rooms::HostJobs;
+use tilo_room_host::workspaces::HostJobs;
 
 use crate::compute::{
     COMPUTE_JOB_SCHEMA_VERSION, ComputeContentStore, ComputeJobPhase, ComputeJobSpec,
@@ -350,7 +350,7 @@ fn job_spec(
     let mut job_id = [0; 16];
     rand::Rng::fill_bytes(&mut rand::rng(), &mut job_id);
     let issued_at_ms = unix_now_ms();
-    // Room to read the inputs and run the declared CPU time, never past a
+    // Workspace to read the inputs and run the declared CPU time, never past a
     // job's ceiling.
     let lifetime = offload
         .cpu_time_ms

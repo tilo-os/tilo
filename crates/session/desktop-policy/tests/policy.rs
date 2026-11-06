@@ -85,6 +85,19 @@ fn shown(layout: &Layout) -> Vec<u64> {
     layout.shown.iter().map(|(id, _)| *id).collect()
 }
 
+/// The tabs the desk holds, in order: each tab's id and what it shows.
+fn tabs(policy: &DesktopPolicy) -> Vec<(u64, TileContent)> {
+    policy.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .map(|tab| (tab.id, tab.tile.clone()))
+            .collect()
+    })
+}
+
 #[test]
 fn a_mapped_window_opens_focused_and_in_view_beside_the_last() {
     let (mut driver, mut policy) = mount();
@@ -544,7 +557,13 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
     policy.handle().dispatch(launch).unwrap();
     settle(&mut driver);
 
-    assert_eq!(policy.take_launches(), ["host:org.example.Probe.desktop"]);
+    let asked = policy.take_launches();
+    assert_eq!(asked.len(), 1, "one launch for one open");
+    assert_eq!(asked[0].app, "host:org.example.Probe.desktop");
+    assert!(
+        asked[0].tab.is_some(),
+        "the desk holds the tab the app's window takes"
+    );
     assert!(
         policy.take_launches().is_empty(),
         "a launch is handed over once"
@@ -553,6 +572,63 @@ fn a_launch_with_no_window_behind_it_is_queued_for_the_session() {
         policy.layout(),
         Layout::default(),
         "nothing appeared before the app did"
+    );
+}
+
+#[test]
+fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
+    let (mut driver, mut policy) = mount();
+    let launch = ChromeEffect::OpenApp {
+        app: "so.tilo.notes".into(),
+        beside: None,
+        background: None,
+    };
+    policy.handle().dispatch(launch).unwrap();
+    settle(&mut driver);
+
+    let asked = policy.take_launches();
+    assert_eq!(asked.len(), 1, "one launch for one open");
+    let tab = asked[0]
+        .tab
+        .expect("the desk holds the tab the window takes");
+    assert_eq!(
+        tabs(&policy),
+        vec![(
+            tab,
+            TileContent::AppPlaceholder {
+                kind: tilo_desktop_model::AppKind::Other("so.tilo.notes".into()),
+                label: "so.tilo.notes".into(),
+            },
+        )],
+        "the app's place is there from this frame, in the tab the launch names"
+    );
+    assert_eq!(
+        policy.layout(),
+        Layout::default(),
+        "and no window is here before the app's is"
+    );
+}
+
+#[test]
+fn a_launch_that_opens_no_window_takes_its_held_tab_back() {
+    let (mut driver, mut policy) = mount();
+    let launch = ChromeEffect::OpenApp {
+        app: "so.tilo.notes".into(),
+        beside: None,
+        background: None,
+    };
+    policy.handle().dispatch(launch).unwrap();
+    settle(&mut driver);
+    let tab = policy.take_launches()[0].tab.expect("a held tab");
+
+    // The session started nothing for it: the place it held goes.
+    policy.release_tab(tab);
+    settle(&mut driver);
+    assert!(tabs(&policy).is_empty(), "the held tab is not left behind");
+    assert_eq!(policy.layout(), Layout::default());
+    assert!(
+        policy.take_launches().is_empty(),
+        "and nothing is started for it again"
     );
 }
 
@@ -586,9 +662,17 @@ fn a_crashed_app_leaves_a_notice_that_asks_for_it_again() {
         )
         .unwrap();
     settle(&mut driver);
+    let reopened = policy.take_launches();
     assert_eq!(
-        policy.take_launches(),
+        reopened
+            .iter()
+            .map(|ask| ask.app.as_str())
+            .collect::<Vec<_>>(),
         [asked],
         "Reopen asks for the same thing that was launched"
+    );
+    assert_eq!(
+        reopened[0].tab, None,
+        "the notice keeps its tab, so the launch names no other"
     );
 }

@@ -99,6 +99,7 @@ pub fn seed_workspace(
             admission: None,
             admissions: vec![],
             delegate: None,
+            workspace_delegations: Vec::new(),
         };
         doc.put(
             &identities,

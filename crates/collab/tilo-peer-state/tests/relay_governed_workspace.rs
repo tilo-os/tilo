@@ -30,8 +30,8 @@ use tilo_peer_state::owner::session::{Connect, Scope};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::coedit::{Inbound, RelayCoeditSession};
-use tilo_relay::rooms::IssueInvitationRequest;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
+use tilo_relay::workspaces::IssueInvitationRequest;
 use tilo_relay::{Relay, RelayClient, RelayConfig};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -62,7 +62,7 @@ fn certificate(
 /// the relay governing it issues for the workspace's owner `issuer`.
 async fn invite(relay: &Relay, issuer: &DeviceCert, workspace: &str, person: [u8; 32]) -> String {
     let invitation = relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .issue(
             workspace,
@@ -279,13 +279,16 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_workspace() {
 
     // Alice's workspace on her relay, her device in it as its owner's, and Bob's
     // person invited.
-    let workspaces = relay.rooms().unwrap();
+    let workspaces = relay.workspaces().unwrap();
     let workspace = workspaces.create("Design review").await.unwrap();
-    workspaces.enter(&workspace.room, &laptop).await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &laptop)
+        .await
+        .unwrap();
     let invitation = invite(
         &relay,
         &laptop,
-        &workspace.room,
+        &workspace.workspace,
         bob.verifying_key().to_bytes(),
     )
     .await;
@@ -300,7 +303,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_workspace() {
         workspace.workspace_id,
     )
     .await;
-    assert_eq!(bob_native.workspace.to_string(), workspace.room);
+    assert_eq!(bob_native.workspace.to_string(), workspace.workspace);
     let role = |native: &Native, device: [u8; 32]| {
         native
             .owner
@@ -334,7 +337,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_workspace() {
     )
     .unwrap();
     let mut alice_peer = StatePeer::new(
-        &workspace.room,
+        &workspace.workspace,
         host.clone(),
         vec![host.clone()],
         RevocationList::new(),
@@ -452,13 +455,16 @@ async fn the_owners_native_device_holds_its_relay_governed_workspace() {
     )
     .await
     .unwrap();
-    let workspaces = relay.rooms().unwrap();
+    let workspaces = relay.workspaces().unwrap();
     let workspace = workspaces.create("Mine").await.unwrap();
-    workspaces.enter(&workspace.room, &laptop).await.unwrap();
+    workspaces
+        .enter(&workspace.workspace, &laptop)
+        .await
+        .unwrap();
     let invitation = invite(
         &relay,
         &laptop,
-        &workspace.room,
+        &workspace.workspace,
         alice.verifying_key().to_bytes(),
     )
     .await;

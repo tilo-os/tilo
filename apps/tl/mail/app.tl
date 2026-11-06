@@ -195,9 +195,9 @@ fn as_lines(body: Text) -> Text {
 }
 
 /// Where the quotation in what a message says begins: the blank line above the line naming who
-/// wrote it and when ("On 30 Jun 2026, Ada wrote:"), as Gmail and Apple Mail read one. -1 when
+/// wrote it and when ("On 30 Jun 2026, Ada wrote:"), as Gmail and Apple Mail read one. None when
 /// it quotes nothing.
-fn quote_begins(body: Text) -> Int {
+fn quote_begins(body: Text) -> Option<Int> {
     body.find("\n\nOn ")
 }
 
@@ -332,7 +332,7 @@ action to_inbox(t: Thread) (icon: .inbox, label: "Move to inbox", key: "i") {
 }
 
 /// Moves the conversation to another mailbox of its account.
-action move_to(t: Thread, to: Mailbox) (label: "Move to…", icon: .folder) {
+action move_to(t: Thread, to: Mailbox) (label: "Move to", icon: .folder) {
     require not t.boxes.any(b -> b == to.key) "It is in {to.name} already"
     for m in t.messages {
         if m.mailbox != "sent" {
@@ -392,7 +392,7 @@ action snooze_an_hour(t: Thread) (icon: .clock, label: "Snooze an hour") {
 
 /// Puts the conversation away until tomorrow morning, at nine, in the person's own zone.
 action snooze_until_tomorrow(t: Thread) (icon: .clock, label: "Snooze until tomorrow") {
-    snooze(t, dated("tomorrow 9am", now).at ?? now + 18h)
+    snooze(t, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
 /// Brings a snoozed conversation back now, whatever its moment was: it is in the inbox again.
@@ -464,7 +464,7 @@ action send_later(d: Draft, at: Time) (icon: .clock, label: "Send later") {
 /// Sends the message at nine tomorrow, the moment people reach for most when they write in the
 /// evening and do not want it to arrive then.
 action send_in_the_morning(d: Draft) (icon: .clock, label: "Send tomorrow morning") {
-    send_later(d, dated("tomorrow 9am", now).at ?? now + 18h)
+    send_later(d, Time.parse("tomorrow 9am", near: now) ?? now + 18h)
 }
 
 /// Marks every conversation of the account read.
@@ -514,7 +514,7 @@ action send_from(d: Draft, a: Account) (icon: .user) {
 }
 
 /// Throws a message being written away.
-destructive action discard(m: Mail, d: Draft) (icon: .trash) {
+destructive action discard(m: Mail, d: Draft) (icon: .trash, label: "Delete draft") {
     m.drafts.remove(d)
 }
 
@@ -526,7 +526,7 @@ primary action send(d: Draft) proposal compose(d) (icon: .send) {
     require not d.sent or d.recalled "This message went already"
     require d.to != "" "It goes to nobody yet"
     let m = root Mail
-    let at = now + m.hold
+    let at = now + Duration(m.hold)
     outside(
         "smtp.send",
         (d.from, d.to, d.cc, d.subject, d.body, d.in_reply_to, d.references),
@@ -656,9 +656,6 @@ view unified(m: Mail) {
                     }
                 }
             }
-            overview_actions: {
-                std.header(actions(m))
-            }
             overview: {
                 if shown.is_empty() {
                     ui.EmptyState("Nothing here", icon: .inbox)
@@ -667,19 +664,7 @@ view unified(m: Mail) {
                         on select(x: Thread): open(x, front: false).then(mark_read(x, false))
                         on activate(x: Thread): open(x).then(mark_read(x, false))
                         for x in shown {
-                            let offered = actions(x)
                             ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                                menu: {
-                                    for o in offered {
-                                        ui.MenuItem(
-                                            o.label,
-                                            icon: o.icon,
-                                            destructive: o.destructive,
-                                        ) {
-                                            on choose: o.run
-                                        }
-                                    }
-                                }
                                 thread_row(x)
                             }
                         }
@@ -742,9 +727,6 @@ view mailboxes(a: Account) {
                 }
             }
         }
-        overview_actions: {
-            std.header(actions(a))
-        }
         overview: {
             thread_list(shown, fill)
         }
@@ -788,22 +770,7 @@ view thread_list(shown: List<Thread>) {
             on select(x: Thread): open(x, front: false).then(mark_read(x, false))
             on activate(x: Thread): open(x).then(mark_read(x, false))
             for x in shown {
-                let offered = actions(x)
                 ui.ListItem(item: x, presence: lenses(x).find(l -> not l.mine)?.who) {
-                    menu: {
-                        for o in offered {
-                            ui.MenuItem(o.label, icon: o.icon, destructive: o.destructive) {
-                                on choose: o.run
-                            }
-                        }
-                    }
-                    swipe: {
-                        if let o = offered.find(.destructive) {
-                            ui.SwipeAction(o.label, icon: o.icon, destructive: true) {
-                                on swipe: o.run
-                            }
-                        }
-                    }
                     thread_row(x)
                 }
             }
@@ -861,9 +828,6 @@ fn can_undo(d: Draft) -> Bool {
 view conversation(t: Thread) {
     lens draft: Text
     ui.NavShell(content_kind: .page, title: t.subject) {
-        actions: {
-            std.header(actions(t))
-        }
         content: {
             ui.Docked {
                 foot: {
@@ -896,8 +860,8 @@ view message(m: Message) {
     lens quoting: Bool
     let body = as_lines(m.body)
     let at = quote_begins(body)
-    let said = if at >= 0 { body.slice(0, at) } else { body }
-    let quoted_part = if at >= 0 { body.slice(at + 2, body.len()) } else { "" }
+    let said = if let i = at { body.slice(0, i) } else { body }
+    let quoted_part = if let i = at { body.slice(i + 2, body.len()) } else { "" }
     stack(gap: .related) {
         row(gap: .related, align: .center) {
             ui.Text(if m.from_name == "" { m.from } else { m.from_name }, role: .subheading)
@@ -927,7 +891,7 @@ view message(m: Message) {
         }
         ui.Text("to {m.to}", role: .caption, secondary: true)
         ui.Text(said, role: .reading)
-        if at >= 0 {
+        if at != .none {
             ui.DisclosureRow(
                 if quoting { "Hide quoted text" } else { "Show quoted text" },
                 icon: .quote,
@@ -1013,7 +977,7 @@ scenario "a busy inbox" -> Thread {
             key: "launch@rivera.example",
             account: a.key,
             subject: "Launch plan for the autumn release",
-            latest: 2026-06-30T13:40Z,
+            latest: 2026-06-30T13:40,
             snippet: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.",
             senders: "Ada Lovelace, Grace Hopper",
             count: 3,
@@ -1029,7 +993,7 @@ scenario "a busy inbox" -> Thread {
             from: "grace@hopper.example",
             from_name: "Grace Hopper",
             to: "sam@rivera.example, ada@analytical.example",
-            received: 2026-06-30T09:12Z,
+            received: 2026-06-30T09:12,
             snippet: "Here is the draft plan.",
             body: "Hi both,\n\nHere is the draft plan for the autumn release. The beta goes out on the fifth, the release on the twelfth if nothing turns up.\n\nCould you each look at your part by Wednesday?\n\nGrace",
             message_id: "launch@rivera.example",
@@ -1044,7 +1008,7 @@ scenario "a busy inbox" -> Thread {
             from: "sam@rivera.example",
             from_name: "Sam Rivera",
             to: "grace@hopper.example, ada@analytical.example",
-            received: 2026-06-30T11:02Z,
+            received: 2026-06-30T11:02,
             snippet: "The fifth works for the beta.",
             body: "The fifth works for the beta. I would move the release to the fourteenth so the docs can catch up.\n\nSam",
             message_id: "launch-2@rivera.example",
@@ -1060,7 +1024,7 @@ scenario "a busy inbox" -> Thread {
             from: "ada@analytical.example",
             from_name: "Ada Lovelace",
             to: "sam@rivera.example, grace@hopper.example",
-            received: 2026-06-30T13:40Z,
+            received: 2026-06-30T13:40,
             snippet: "Agreed on the twelfth.",
             body: "Agreed on the twelfth. I will tell support today so they can prepare the help pages.\n\nAda",
             message_id: "launch-3@rivera.example",
@@ -1075,7 +1039,7 @@ scenario "a busy inbox" -> Thread {
             key: "lease@lettings.example",
             account: a.key,
             subject: "Your lease renewal",
-            latest: 2026-06-30T10:25Z,
+            latest: 2026-06-30T10:25,
             snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.",
             senders: "Mill Lane Lettings",
             count: 1,
@@ -1092,7 +1056,7 @@ scenario "a busy inbox" -> Thread {
             from: "office@lettings.example",
             from_name: "Mill Lane Lettings",
             to: "sam@rivera.example",
-            received: 2026-06-30T10:25Z,
+            received: 2026-06-30T10:25,
             snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
             message_id: "lease@lettings.example",
@@ -1107,7 +1071,7 @@ scenario "a busy inbox" -> Thread {
             key: "dinner@bo.example",
             account: a.key,
             subject: "Dinner on Friday?",
-            latest: 2026-06-30T08:51Z,
+            latest: 2026-06-30T08:51,
             snippet: "Shall we try the new place on Mill Lane? I can book for eight.",
             senders: "Bo Chen",
             count: 1,
@@ -1123,7 +1087,7 @@ scenario "a busy inbox" -> Thread {
             from: "bo@chen.example",
             from_name: "Bo Chen",
             to: "sam@rivera.example",
-            received: 2026-06-30T08:51Z,
+            received: 2026-06-30T08:51,
             snippet: "Shall we try the new place?",
             body: "Shall we try the new place on Mill Lane? I can book for eight.\n\nBo",
             message_id: "dinner@bo.example",
@@ -1136,7 +1100,7 @@ scenario "a busy inbox" -> Thread {
             key: "review@code.example",
             account: a.key,
             subject: "Review requested: importer handles merged cells",
-            latest: 2026-06-29T17:05Z,
+            latest: 2026-06-29T17:05,
             snippet: "Chen asked you to review the change to the table importer.",
             senders: "Forge",
             count: 1,
@@ -1151,7 +1115,7 @@ scenario "a busy inbox" -> Thread {
             from: "notifications@code.example",
             from_name: "Forge",
             to: "sam@rivera.example",
-            received: 2026-06-29T17:05Z,
+            received: 2026-06-29T17:05,
             snippet: "Chen asked you to review.",
             body: "Chen asked you to review the change to the table importer: merged cells are kept, and the column widths follow the source.",
             message_id: "review@code.example",
@@ -1163,7 +1127,7 @@ scenario "a busy inbox" -> Thread {
             key: "library@city.example",
             account: a.key,
             subject: "Two books due next week",
-            latest: 2026-06-29T09:30Z,
+            latest: 2026-06-29T09:30,
             snippet: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.",
             senders: "City Library",
             count: 1,
@@ -1178,7 +1142,7 @@ scenario "a busy inbox" -> Thread {
             from: "loans@city.example",
             from_name: "City Library",
             to: "sam@rivera.example",
-            received: 2026-06-29T09:30Z,
+            received: 2026-06-29T09:30,
             snippet: "Two books are due.",
             body: "Piranesi and The Dispossessed are due on the seventh. You can renew them twice more.",
             message_id: "library@city.example",
@@ -1190,7 +1154,7 @@ scenario "a busy inbox" -> Thread {
             key: "photos@mia.example",
             account: a.key,
             subject: "Photos from the lake",
-            latest: 2026-06-28T19:44Z,
+            latest: 2026-06-28T19:44,
             snippet: "The sunset ones came out best. I put the rest in the shared album.",
             senders: "Mia Novak",
             count: 1,
@@ -1205,7 +1169,7 @@ scenario "a busy inbox" -> Thread {
             from: "mia@novak.example",
             from_name: "Mia Novak",
             to: "sam@rivera.example",
-            received: 2026-06-28T19:44Z,
+            received: 2026-06-28T19:44,
             snippet: "The sunset ones came out best.",
             body: "The sunset ones came out best. I put the rest in the shared album.\n\nMia",
             message_id: "photos@mia.example",
@@ -1218,7 +1182,7 @@ scenario "a busy inbox" -> Thread {
             key: "invoice@studio.example",
             account: a.key,
             subject: "Invoice for June",
-            latest: 2026-06-27T08:00Z,
+            latest: 2026-06-27T08:00,
             snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             senders: "North Studio",
             count: 1,
@@ -1233,7 +1197,7 @@ scenario "a busy inbox" -> Thread {
             from: "accounts@studio.example",
             from_name: "North Studio",
             to: "sam@rivera.example",
-            received: 2026-06-27T08:00Z,
+            received: 2026-06-27T08:00,
             snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             message_id: "invoice@studio.example",
@@ -1246,7 +1210,7 @@ scenario "a busy inbox" -> Thread {
             key: "offer@deals.example",
             account: a.key,
             subject: "You have won a cruise",
-            latest: 2026-06-26T03:12Z,
+            latest: 2026-06-26T03:12,
             snippet: "Claim your prize within 24 hours by confirming your card details.",
             senders: "Prize Desk",
             count: 1,
@@ -1261,7 +1225,7 @@ scenario "a busy inbox" -> Thread {
             from: "win@deals.example",
             from_name: "Prize Desk",
             to: "sam@rivera.example",
-            received: 2026-06-26T03:12Z,
+            received: 2026-06-26T03:12,
             snippet: "Claim your prize.",
             body: "Claim your prize within 24 hours by confirming your card details.",
             message_id: "offer@deals.example",
@@ -1324,7 +1288,7 @@ scenario "a mailbox on its own" -> Mailbox {
             key: "lease@lettings.example",
             account: a.key,
             subject: "Your lease renewal",
-            latest: 2026-06-30T10:25Z,
+            latest: 2026-06-30T10:25,
             snippet: "The new lease is attached. Please sign by Friday so we can register it before the month ends.",
             senders: "Mill Lane Lettings",
             count: 1,
@@ -1341,7 +1305,7 @@ scenario "a mailbox on its own" -> Mailbox {
             from: "office@lettings.example",
             from_name: "Mill Lane Lettings",
             to: "sam@rivera.example",
-            received: 2026-06-30T10:25Z,
+            received: 2026-06-30T10:25,
             snippet: "The new lease is attached.",
             body: "Dear Sam,\n\nThe new lease is attached. Please sign by Friday so we can register it before the month ends.\n\nKind regards,\nMill Lane Lettings",
             message_id: "lease@lettings.example",
@@ -1355,7 +1319,7 @@ scenario "a mailbox on its own" -> Mailbox {
             key: "invoice@studio.example",
             account: a.key,
             subject: "Invoice for June",
-            latest: 2026-06-27T08:00Z,
+            latest: 2026-06-27T08:00,
             snippet: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             senders: "North Studio",
             count: 1,
@@ -1370,7 +1334,7 @@ scenario "a mailbox on its own" -> Mailbox {
             from: "accounts@studio.example",
             from_name: "North Studio",
             to: "sam@rivera.example",
-            received: 2026-06-27T08:00Z,
+            received: 2026-06-27T08:00,
             snippet: "The invoice is attached.",
             body: "Thanks for the work this month. The invoice is attached, payable within thirty days.",
             message_id: "invoice@studio.example",

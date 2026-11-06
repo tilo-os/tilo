@@ -38,7 +38,7 @@ fn answered<T: Send + 'static>(session: &mut Session, asking: std::thread::JoinH
     let started = std::time::Instant::now();
     while !asking.is_finished() {
         assert!(
-            started.elapsed() < Duration::from_secs(60),
+            started.elapsed() < tilo_test_env::hang_bound(),
             "the session never answered"
         );
         session.step(Duration::from_millis(5)).expect("step");

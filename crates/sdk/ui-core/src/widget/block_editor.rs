@@ -2602,6 +2602,24 @@ impl BlockEditor {
         self.checkbox_hit_test(self.last_mouse_pos)
     }
 
+    /// Where `block`'s checklist box is drawn, while it is one.
+    fn checklist_box_rect(&self, block: &Block) -> Option<Rect> {
+        if !matches!(block.kind, BlockKind::Checklist { .. }) {
+            return None;
+        }
+        let gutter = prefix_gutter_for(&block.kind) * self.text_scale;
+        let prefix_x0 = content_edge(
+            block.line.get_rect(),
+            gutter,
+            block.line.text_inset(&self.layout_theme),
+        );
+        Some(list_marker::checklist_box(
+            &block.line,
+            prefix_x0,
+            self.text_scale,
+        ))
+    }
+
     fn checkbox_hit_test(&self, p: Point) -> Option<usize> {
         for (idx, b) in self.blocks.iter().enumerate() {
             if !matches!(b.kind, BlockKind::Checklist { .. }) {
@@ -3755,15 +3773,40 @@ impl BlockEditor {
             block_children.push((control.build)(&block.id, line));
         }
         let level = usize::from(indent).saturating_add(1);
-        let group = AccessNode::new(Role::Group)
-            .with_name(crate::i18n!(
+        // What the block says is its name, so a reader hears the document by
+        // rows; an empty one is named by its kind and place. The kind stays
+        // in the kind's own words, which the role alone does not say.
+        let said = block.text().lines().next().unwrap_or_default().trim();
+        let name = if said.is_empty() {
+            crate::i18n!(
                 "block-a11y-block",
                 "kind" => accessible_block_name(&block.kind, Some(ordinal)),
                 "position" => position
-            ))
-            .with_semantic_key(format!("notes.block:{}", block.id))
-            .with_state(AccessState::new().selected(selected))
-            .with_hashed_key(format!("notes.block:group:{}", block.id))
+            )
+        } else {
+            said.to_owned()
+        };
+        let checked = match block.kind {
+            BlockKind::Checklist { done, .. } => Some(done),
+            _ => None,
+        };
+        if let Some(checked) = checked {
+            // The checklist's box, as the control a reader can toggle: the
+            // same one the pointer presses, through the same edit.
+            let mut checkbox = AccessNode::new(Role::Checkbox)
+                .with_name(name.clone())
+                .with_action_target(format!("notes.block-check:{}", block.id))
+                .with_state(AccessState::new().checked(checked).focusable(true));
+            if let Some(bounds) = self.checklist_box_rect(block) {
+                checkbox = checkbox.with_bounds(bounds);
+            }
+            block_children.push(checkbox);
+        }
+        let group = AccessNode::new(Role::ListItem)
+            .with_name(name)
+            .with_action_target(format!("notes.block:{}", block.id))
+            .with_role_description(accessible_block_name(&block.kind, Some(ordinal)))
+            .with_state(AccessState::new().selected(selected).focusable(true))
             .with_position(position, total)
             .with_level(level)
             .with_bounds(line)
@@ -10489,6 +10532,46 @@ impl Widget for BlockEditor {
             }
             return handled;
         }
+        if let Some(id) = target.strip_prefix("notes.block-check:") {
+            let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
+                return false;
+            };
+            return match action {
+                // The box a checklist block draws: a reader toggles it exactly
+                // as a press on it does.
+                crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck => {
+                    if self.try_toggle_check(index).is_none() {
+                        return false;
+                    }
+                    self.commit_pending = true;
+                    let ops = self.take_edit_ops();
+                    self.pending_semantic_ops.extend(ops);
+                    true
+                }
+                crate::a11y::Action::Focus => {
+                    self.focus_block(index, CursorPlacement::Start);
+                    true
+                }
+                _ => false,
+            };
+        }
+        if let Some(id) = target.strip_prefix("notes.block:") {
+            let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
+                return false;
+            };
+            return match action {
+                // Opening a block puts the caret in it, the same place a press
+                // in its text does.
+                crate::a11y::Action::Activate | crate::a11y::Action::Focus => {
+                    self.focus_block(index, CursorPlacement::Start);
+                    true
+                }
+                crate::a11y::Action::ScrollIntoView => {
+                    self.blocks[index].line.get_rect().height() > 0.0
+                }
+                _ => false,
+            };
+        }
         if let Some(id) = target.strip_prefix("notes.block-text:") {
             let Some(index) = self.blocks.iter().position(|block| {
                 block.id == id && block.kind.is_editable() && block.line.get_rect().height() > 0.0
@@ -13063,6 +13146,10 @@ impl BlockEditor {
 #[cfg(test)]
 #[path = "block_editor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "block_editor_access_tests.rs"]
+mod access_tests;
 
 #[cfg(test)]
 #[path = "block_editor_find_tests.rs"]

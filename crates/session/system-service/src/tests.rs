@@ -233,6 +233,48 @@ fn an_update_reports_what_it_needs() {
 }
 
 #[test]
+fn a_pending_desktop_restart_is_offered_only_while_the_desktop_waits() {
+    let fake = Fake::new();
+    let mut service = service(&fake);
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
+            Err(DoorError::Unavailable { .. })
+        ),
+        "no part of the update waits for the desktop"
+    );
+    *fake.update.lock().unwrap() = Update {
+        desktop_pending: true,
+        ..Update::default()
+    };
+    service.refresh();
+    service.settle();
+    assert!(
+        service
+            .invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new())
+            .is_ok()
+    );
+    service.settle();
+    assert_eq!(fake.changes(), [Change::RestartDesktop]);
+    // Once the machine itself must restart, restarting the desktop would not
+    // finish anything.
+    *fake.update.lock().unwrap() = Update {
+        desktop_pending: true,
+        restart_needed: true,
+        ..Update::default()
+    };
+    service.refresh();
+    service.settle();
+    assert!(
+        matches!(
+            service.invoke(SYSTEM_UPDATE, "restart-desktop", &Map::new()),
+            Err(DoorError::Unavailable { .. })
+        ),
+        "only the machine finishing the update is offered"
+    );
+}
+
+#[test]
 fn the_zone_follows_the_device_only_while_chosen_and_never_guesses() {
     let fake = Fake::new();
     let mut service = service(&fake);

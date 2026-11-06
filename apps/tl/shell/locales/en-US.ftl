@@ -356,7 +356,7 @@ d-mfyylqsl = Key
 d-6ehy2qwa = Label
 
 d-qhf2pyze = Arrangement
-    .doc = The person's own arrangement: what is open where (docs/designs/app-language/shell.md §2, workspace-model.md §9).
+    .doc = The person's arrangement: what is open where (docs/designs/app-language/shell.md §2, workspace-model.md §9).
     .noun = { $count ->
         [one] arrangement
        *[other] arrangements
@@ -710,16 +710,16 @@ d-poagvor7 = The traditional desktop: frames on a floating desk, the focused win
     .doc = The traditional desktop: frames on a floating desk, the focused window's own commands in the top bar, and a floating dock at the foot, the shape macOS and GNOME people know.
 
 d-q7rxwd72 = Bar room
-    .doc = How much room the top bar has for the focused window's commands.
+    .doc = How much room the top bar has: for the focused window's menu, and for its parts.
 
-d-w3dorpbd = The frequent commands as controls, every run as a menu
-    .doc = The frequent commands as controls, every run as a menu.
+d-w3dorpbd = The most: the menu by its window's name, the tasks and who is here too
+    .doc = The most: the menu by its window's name, the tasks and who is here too.
 
-d-qqg4smi5 = Every run as a menu; the frequent commands within them
-    .doc = Every run as a menu; the frequent commands within them.
+d-qqg4smi5 = The menu by its window's name, but not the tasks and who is here
+    .doc = The menu by its window's name, but not the tasks and who is here.
 
-d-7caakb5b = One menu, named by the window, with every run in it
-    .doc = One menu, named by the window, with every run in it.
+d-7caakb5b = The least: the menu stands as the window's icon, and only what a phone keeps stays
+    .doc = The least: the menu stands as the window's icon, and only what a phone keeps stays.
 
 d-jpu3iwft = Show as
     .doc = Shows the desk through `shown` (§6): the scrolling strips, the framed canvas or the spaces canvas.
@@ -838,8 +838,6 @@ d-vidcax4k = Workspace menu
     .w-workspace-settings = Workspace settings
     .w-overview = Overview
 
-d-k7lksxkj = Status icons
-
 d-hac3p23j = Volume status
     .w-volume-muted = Volume, muted
     .w-volume = Volume, { $percent }%
@@ -852,7 +850,7 @@ d-moh3hzne = Bell
 
 d-fniigjed = Viewing settings
     .w-desk = Desk
-    .w-the-same-places-shown-three-ways = The same places, shown three ways. Switching keeps every window where it is.
+    .w-the-same-places-shown-four-ways = The same places, shown four ways. Switching keeps every window where it is.
 
 d-j2fnnt4g = Show preset~present
 
@@ -925,6 +923,10 @@ d-2u2ny6gr = Outcome badge
 d-gctjtdv7 = Desk
 
 d-6jkhhsvr = Desk around
+
+d-w3f6bqf5 = Screen
+
+d-gb3g4lte = Dock ground
     .w-dock = Dock
 
 d-bhxvwkho = Shown preset
@@ -1122,30 +1124,47 @@ d-r34xb7ak = Preset switch
     .w-spaces = Spaces
     .w-desktop = Desktop
 
+d-i6kntbiy = Preset menu
+    .w-showing = Showing { $preset_title }
+    .w-strips = Strips
+    .w-frames = Frames
+    .w-spaces = Spaces
+    .w-desktop = Desktop
+
 d-qrahog47 = Strips view
 
-d-xwdhqtyz = Row of
+d-4qeo26jr = Workspace rows
+
+d-7qrrtifg = Rows of the desk
     .w-no-window-here-yet = No window here yet
     .w-open-something-into-this-strip = Open something into this strip.
 
-d-7oiz3phb = Strip column
-    .w-nothing-here = Nothing here
+d-7sxqbtn2 = Row window
 
-d-scru4wch = Strip controls
-    .w-width = Width
+d-2fofsa7f = Strip window
+    .w-nothing-here = Nothing here
+    .w-open-something-into-this-strip = Open something into this strip.
+
+d-p5wzoqr5 = Window controls
+    .w-this-window = This window
     .w-narrow = Narrow
     .w-normal = Normal
     .w-wide = Wide
-
-d-so5z33zr = Tab chip
-
-d-43am22do = Place view
+    .w-bring-to-front = Bring to front
+    .w-unpin-window = Unpin window
+    .w-pin-window = Pin window
+    .w-restore = Restore
+    .w-maximize = Maximize
+    .w-close = Close
 
 d-z4vc77e6 = Place controls
-    .w-pinned = Pinned
-    .w-pin = Pin
-    .w-close-place = Close place
+    .w-pin-place = Pin place
     .w-move-to-row = Move to row
+    .w-close = Close
+
+d-oyjbbzbk = Place content
+
+d-43am22do = Place view
 
 d-fziuz57n = Switcher
     .w-no-windows = No windows
@@ -1174,92 +1193,8 @@ d-efc4bnyi = Frame buttons
 
 d-u55srubm = Action bar
 
-d-ysqdgpzc = Action run
-
-d-35o7co3i = Action control
-
 d-cijhlzxf = Window commands
     .w-close = Close
 
 d-yx7doxgr = Traditional bar
     .w-tilo = Tilo
-
-d-3ezewqgy-row0 = Bar for part
-
-d-pvl6wwx6-row0 = Bar part for t
-
-d-pvl6wwx6-row1 = Bar part for item
-
-d-vidcax4k-row0 = Workspace menu for w
-
-d-m4owmri7-row0-row0 = Framed canvas for p
-
-d-m4owmri7-row0 = Framed canvas for s
-
-d-nt2inbrl-row0-row0 = Spaces canvas for p
-
-d-nt2inbrl-row0 = Spaces canvas for s
-
-d-dz2lhlbc-row0 = Conversation for e
-
-d-ojxyofwa-row0 = Program step for x
-
-d-lwre5gd7-row0 = Dock run for item
-
-d-lwre5gd7-row1 = Dock run for item
-
-d-lwre5gd7-row2 = Dock run for item
-
-d-p7ismolp-row0 = Bar parts for part
-
-d-clgbrhsn-row0 = Notices for g
-
-d-t3ywtwqj-row0 = Notice row for a
-
-d-wh7n4fhq-row0 = Banner row for a
-
-d-f5tl6n63-row0 = Rooms here for r
-
-d-7nxhynyj-row0-row0 = Picture for v
-
-d-7nxhynyj-row0 = Picture for w
-
-d-7nxhynyj-row1-row0 = Picture for v
-
-d-7nxhynyj-row1 = Picture for w
-
-d-6l3wldtm-row0 = Window menu for s
-    .w-move-to = Move to { $strip_name }
-
-d-6l3wldtm-row1 = Window menu for r
-    .w-move-to = Move to { $name }
-
-d-qrahog47-row0 = Strips view for workspace
-
-d-7oiz3phb-row0 = Strip column for p
-
-d-z4vc77e6-row0 = Place controls for r
-
-d-4hp326dv-row0-row0 = Traditional desktop for p
-
-d-4hp326dv-row0 = Traditional desktop for s
-
-d-4hp326dv-row1-row0 = Traditional desktop for p
-
-d-4hp326dv-row1 = Traditional desktop for s
-
-d-efc4bnyi-row0 = Frame buttons for r
-
-d-ysqdgpzc-row0 = Action run for c
-
-d-ysqdgpzc-row1 = Action run for c
-
-d-ysqdgpzc-row2 = Action run for c
-
-d-ysqdgpzc-row3-row0 = Action run for b
-
-d-ysqdgpzc-row3 = Action run for c
-
-d-cijhlzxf-row0 = Window commands for r
-
-d-yx7doxgr-row0 = Traditional bar for t

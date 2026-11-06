@@ -3,6 +3,7 @@
 //! and the writes it asks for, each addressed by history id rather than by
 //! a row on a screen.
 
+use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
 
 use tilo_actions::remote::workspace_activity as wire;
@@ -323,6 +324,7 @@ impl WorkspaceActivityPane {
             self.reinstall_filter();
         }
         let groups_by_entry = self.groups_by_entry();
+        let refused = self.refusals_by_change();
         let entries = self.timeline.entries();
         wire::Feed {
             workspace: self.workspace_name.clone(),
@@ -333,7 +335,10 @@ impl WorkspaceActivityPane {
                 .enumerate()
                 .rev()
                 .take(query.page())
-                .map(|(index, entry)| self.wire_entry(entry, groups_by_entry.get(index)))
+                .map(|(index, entry)| {
+                    let refused = refused.get(&hex(&entry.id)).map(Vec::as_slice);
+                    self.wire_entry(entry, groups_by_entry.get(index), refused)
+                })
                 .collect(),
             groups: self
                 .named
@@ -372,7 +377,26 @@ impl WorkspaceActivityPane {
         groups
     }
 
-    fn wire_entry(&self, entry: &HistoryEntry, group: Option<&Option<String>>) -> wire::Entry {
+    /// What each change's writes were refused, by the change's history id: a
+    /// verdict names the changes one write would have brought, and this
+    /// device's own writes are its own history.
+    fn refusals_by_change(&self) -> HashMap<String, Vec<wire::Refusal>> {
+        let mut by_change: HashMap<String, Vec<wire::Refusal>> = HashMap::new();
+        for refusal in self.host.refusals(&self.workspace) {
+            by_change
+                .entry(refusal.change.clone())
+                .or_default()
+                .push(refusal);
+        }
+        by_change
+    }
+
+    fn wire_entry(
+        &self,
+        entry: &HistoryEntry,
+        group: Option<&Option<String>>,
+        refused: Option<&[wire::Refusal]>,
+    ) -> wire::Entry {
         let context = entry.context.as_ref();
         wire::Entry {
             id: hex(&entry.id),
@@ -397,6 +421,7 @@ impl WorkspaceActivityPane {
                 .map(str::to_owned),
             group: group.cloned().flatten(),
             redacted: entry.redaction.is_some(),
+            refused: refused.unwrap_or_default().to_vec(),
         }
     }
 

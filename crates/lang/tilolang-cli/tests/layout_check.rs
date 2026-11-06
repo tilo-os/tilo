@@ -63,8 +63,23 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             Kind::ClippedText | Kind::SmallHitTarget | Kind::LostContent => "",
             Kind::ScrollsSideways => "sideways",
             // Layout snaps every edge, broken or not; and a window gives a view that composes
-            // no shell its page, so no page anywhere is one bare row.
-            Kind::OffPixel | Kind::BareRow => "(no view)",
+            // no shell its page, so no page anywhere is one bare row. The fixtures write no
+            // rows, no cards and no field names: the rules read off a window's own composition
+            // hold nothing to find in them.
+            Kind::OffPixel
+            | Kind::BareRow
+            | Kind::RaggedColumns
+            | Kind::DoubleSelection
+            | Kind::CrampedGutter
+            | Kind::SeveralAdds
+            | Kind::CodedName
+            | Kind::UnsharedVerb
+            | Kind::NestedCard
+            | Kind::LoneDoor
+            | Kind::EmptyHeading
+            // No window in this fixture draws a count.
+            | Kind::ZeroCount
+            | Kind::RepeatedCount => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -203,28 +218,6 @@ fn the_apps_show_no_layout_problem_their_allow_list_does_not_name() {
     );
 }
 
-/// Whether `source` names the component `name` as `ui.<name>`, not as the start of a longer
-/// name (`ui.Card` is not `ui.CardGrid`).
-fn names_component(source: &str, name: &str) -> bool {
-    let wanted = format!("ui.{name}");
-    source.match_indices(&wanted).any(|(at, _)| {
-        !source
-            .get(at.saturating_add(wanted.len())..)
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-    })
-}
-
-/// The gallery app shows every component of the toolkit, as tilolang reaches it (`ui.<Name>`,
-/// from the toolkit's generated catalogue), and lays out headlessly with each of them built:
-/// so every public component compiles and renders from tilolang, and a component added to the
-/// toolkit fails here until the gallery shows it. (The check fails on a component that did
-/// not build; the apps' check above holds the gallery's layout to the others' bar.)
-///
-/// A component the gallery cannot meaningfully show — one that draws nothing where a view puts
-/// it, such as a place's window well — says so where it is declared
-/// (`#[component(not_in_gallery = "…")]`, carried into the catalogue as `not_in_gallery`), so
-/// the exemption is the toolkit's own declaration, never a name list kept here.
 #[test]
 fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
     let dir = manifest().join("../../../apps/tl/gallery");
@@ -235,44 +228,11 @@ fn the_gallery_shows_every_component_of_the_toolkit_and_each_builds() {
             source.push_str(&std::fs::read_to_string(&path).expect("the gallery reads"));
         }
     }
-    let catalogue = tilolang::toolkit::catalogue();
-    let missing: Vec<&str> = catalogue
-        .names()
-        .into_iter()
-        .filter(|name| !names_component(&source, name))
-        .filter(|name| {
-            // Shown nowhere, and its declaration says why the gallery cannot show it: not a
-            // gap. A component marked so is exempt; one marked so *and* shown is not an error
-            // (a view may still place it), but a marker on a component the gallery does show
-            // would be a lie, so it is refused below.
-            catalogue
-                .get(name)
-                .is_none_or(|component| component.semantics.not_in_gallery.is_none())
-        })
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "the gallery (apps/tl/gallery) shows no `ui.{{Name}}` for: {}. Show it there, or say \
-         at its declaration why the gallery cannot (`#[component(not_in_gallery = \"…\")]` on \
-         its props).",
-        missing.join(", ")
-    );
-    let shown_but_exempt: Vec<&str> = catalogue
-        .names()
-        .into_iter()
-        .filter(|name| names_component(&source, name))
-        .filter(|name| {
-            catalogue
-                .get(name)
-                .is_some_and(|component| component.semantics.not_in_gallery.is_some())
-        })
-        .collect();
-    assert!(
-        shown_but_exempt.is_empty(),
-        "these say the gallery cannot show them, and the gallery shows them: take \
-         `not_in_gallery` off their declaration, or stop showing them: {}",
-        shown_but_exempt.join(", ")
-    );
+    // Which components the gallery shows, and whether a component's declaration exempts it, is
+    // the toolkit's own check (`tilo_ui::component::gallery`), which a widget's author runs in
+    // the toolkit's tests; this app is laid out below as well.
+    let problems = ui::component::gallery::coverage(&source).problems();
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
     let report = layout_check::check(&Options {
         dirs: vec![dir],
         ..Options::default()

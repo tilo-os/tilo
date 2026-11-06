@@ -618,6 +618,7 @@ fn place_param(decl: &tilo_resource::effect::EffectDecl) -> Option<&str> {
 /// every app.
 #[inline(never)]
 fn place_from(value: serde_json::Value) -> Option<tilo_resource::Place> {
+    // ignored-failure: an argument that is not a place names no place, and the effect runs without one
     serde_json::from_value(value).ok()
 }
 
@@ -822,7 +823,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         match self.inv.custody.as_ref()?.attribute_writes(paths) {
             Ok(receipt) => receipt,
             Err(error) => {
-                tracing::debug!(%error, "these writes stay their person's in file history");
+                // The write stays its person's in file history, which reads
+                // as if they typed it: say so where the app's log will keep it.
+                tracing::warn!(%error, "these writes stay their person's in file history");
                 None
             }
         }

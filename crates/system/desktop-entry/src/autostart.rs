@@ -44,7 +44,6 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::entry::{DesktopEntry, EntryType, parse, unlocalised_groups};
-use crate::locale::locale_candidates;
 
 /// The desktop names an autostart entry's `OnlyShowIn`/`NotShowIn` are matched
 /// against. Deliberately not the whole `XDG_CURRENT_DESKTOP`; see the module docs.
@@ -189,9 +188,13 @@ pub struct AutostartScan {
     pub skipped: Vec<(PathBuf, Skipped)>,
 }
 
-/// Scan `dirs` for the entries a Tilo session starts.
-pub fn scan_autostart(dirs: &[PathBuf], probe: &impl AutostartProbe) -> AutostartScan {
-    let locales = locale_candidates();
+/// Scan `dirs` for the entries a Tilo session starts, naming them in the
+/// language `locales` names ([`crate::locale::language_candidates`]).
+pub fn scan_autostart(
+    dirs: &[PathBuf],
+    probe: &impl AutostartProbe,
+    locales: &[String],
+) -> AutostartScan {
     let desktops: Vec<String> = AUTOSTART_DESKTOPS
         .iter()
         .map(|desktop| (*desktop).to_string())
@@ -221,7 +224,7 @@ pub fn scan_autostart(dirs: &[PathBuf], probe: &impl AutostartProbe) -> Autostar
                 continue;
             };
             let id = file_name.trim_end_matches(".desktop");
-            let Some(entry) = parse(&text, id, &path, &locales) else {
+            let Some(entry) = parse(&text, id, &path, locales) else {
                 continue;
             };
             let keys = AutostartKeys::read(&text);
@@ -458,7 +461,7 @@ mod tests {
             programs: vec!["present"],
             ..Probe::default()
         };
-        let scan = scan_autostart(&[user, system], &probe);
+        let scan = scan_autostart(&[user, system], &probe, &[]);
         assert_eq!(
             started(&scan),
             vec![
@@ -528,7 +531,7 @@ mod tests {
             config_files: vec!["app/enabled"],
             ..Probe::default()
         };
-        let scan = scan_autostart(&[dir], &probe);
+        let scan = scan_autostart(&[dir], &probe, &[]);
         for (id, condition, starts) in cases {
             assert_eq!(
                 started(&scan).contains(&id),
@@ -555,6 +558,7 @@ mod tests {
         let scan = scan_autostart(
             &[PathBuf::from("/nonexistent/autostart")],
             &Probe::default(),
+            &[],
         );
         assert!(scan.start.is_empty() && scan.skipped.is_empty());
     }

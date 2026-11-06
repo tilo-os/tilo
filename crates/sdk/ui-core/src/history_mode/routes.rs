@@ -271,6 +271,11 @@ pub(crate) struct OwnerDocumentRoutes {
     pub(crate) primary: PendingRemote,
     pub(crate) primary_generation: u64,
     pub(crate) status: Option<String>,
+    /// Whether the primary route was given the window's document whole since
+    /// it opened on this witness: a route's first publication is the
+    /// document whole, and only the changes made after it go out one by one
+    /// ([`Self::observe_witness`] starts a new route over).
+    pub(crate) primary_whole: bool,
     /// Why local changes on the primary or workspace-index route are not reaching
     /// peers. Cleared by the next accepted change.
     pub(crate) outbound: Option<String>,
@@ -407,6 +412,7 @@ impl OwnerDocumentRoutes {
             self.owners.clear();
             self.retired.clear();
             self.primary = PendingRemote::default();
+            self.primary_whole = false;
             self.witness = witness;
             self.primary_generation = generation;
         }

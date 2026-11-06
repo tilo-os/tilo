@@ -729,9 +729,11 @@ dies by signal rather than exiting. It first asserts no adapter is reachable, so
 vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
 
 **Current source.** The fallible constructor is taken in
-`crates/sdk/ui-core/src/native/warmup.rs`, `crates/session/session/src/run.rs` and
-`crates/session/compositor/src/backend/headless.rs`, and the compositor reaches
-`ui::warmup::spawn_warmup` from `crates/session/session/src/linux_main.rs`. `[profile.release]` has
+`crates/session/session/src/run.rs` and
+`crates/session/compositor/src/backend/headless.rs`; the startup warmup no longer builds an
+offscreen renderer at all — it only shapes on the shared font system — so
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` went with the stage it pinned. The
+compositor reaches `ui::warmup::spawn_warmup` from `crates/session/session/src/main.rs`. `[profile.release]` has
 since changed to `panic = "unwind"` so the compositor can restart its collaboration broker, but
 `tilo-rt` installs a hook that aborts every panic outside
 `tilo_rt::panic_boundary::isolate` (`crates/platform/tilo-rt/src/panic_boundary.rs`), so a bare

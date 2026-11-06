@@ -23,7 +23,7 @@ use tilolang_runtime::meta::{Meta, Ty, parse_ty};
 use tilolang_runtime::store::NewRecord;
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{
-    InvokeOutcome, ModuleHash, PackageId, Principal, Runtime, RuntimeError, StoreError,
+    InvokeOutcome, ModuleHash, PackageId, Principal, Reading, Runtime, RuntimeError, StoreError,
     ViewInstance,
 };
 
@@ -584,6 +584,51 @@ impl HostInner {
         };
     }
 
+    /// Whether the action `action` can run on the published resource `resource` now: the
+    /// requirements its subject alone decides, as its app says them, in the person at the
+    /// window's eyes. `None` when the app keeps none, or when one of them cannot be read.
+    fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
+        self.availability_reading(resource, action)
+            .map(|(availability, _)| availability)
+    }
+
+    /// Whether the action `action` can run on `resource` now, and what reading that read of the
+    /// workspace: what a caller keeps to know when to ask again ([`Reading`]).
+    fn availability_reading(
+        &self,
+        resource: &str,
+        action: &str,
+    ) -> Option<(tilo_actions::Availability, Reading)> {
+        let package = self
+            .packages
+            .borrow()
+            .iter()
+            .find(|package| package.meta.actions.iter().any(|held| held.id == action))
+            .cloned()?;
+        let meta = package.meta.actions.iter().find(|held| held.id == action)?;
+        if !meta.guard {
+            return None;
+        }
+        let declared = package.meta.subject_of(&meta.params)?;
+        let id = resource
+            .strip_prefix(&crate::publish::resource_id(&package.meta.app, ""))
+            .unwrap_or(resource);
+        let target = ResourceRef::parse_id(id, declared.id.clone())?;
+        match self.runtime.refusal_reading(action, &target, &self.viewer) {
+            Ok((Some(reason), read)) => Some((
+                tilo_actions::Availability::Unavailable {
+                    code: "unmet".to_owned(),
+                    reason,
+                },
+                read,
+            )),
+            Ok((None, read)) => Some((tilo_actions::Availability::Available, read)),
+            // A requirement that cannot be read says nothing of the action: it is offered, and
+            // refuses with its reason when it runs.
+            Err(_) => None,
+        }
+    }
+
     fn plan_in_mirror(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         let package = self.package_of(request.app)?;
         let action = package
@@ -592,46 +637,7 @@ impl HostInner {
             .iter()
             .find(|action| action.id == request.action_id)
             .ok_or_else(|| format!("no action {}", request.action_id))?;
-        let mut given: Vec<Option<Value>> = Vec::new();
-        let mut params = action.params.iter();
-        if let (Some(subject), Some(declared)) =
-            (request.resource, package.meta.subject_of(&action.params))
-        {
-            let target = ResourceRef::parse_id(subject, declared.id.clone())
-                .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
-            given.push(Some(Value::resource(&target)));
-            params.next();
-        }
-        // An argument left out that has a default gets it now, on the invoker's state: what
-        // the person saw is the argument, and the invocation records it.
-        let mut defaulted = Vec::new();
-        for param in params {
-            match request.args.get(&param.name) {
-                None if param.default.is_some() => {
-                    defaulted.push(param);
-                    given.push(None);
-                }
-                json => {
-                    let json = json.cloned().unwrap_or(Json::Null);
-                    given.push(Some(value_of(self, &package.meta, &json, &param.ty)?));
-                }
-            }
-        }
-        let args = self
-            .runtime
-            .complete_args(request.action_id, given)
-            .map_err(|error| error.to_string())?;
-        let mut recorded = request.args.clone();
-        for param in defaulted {
-            let index = action
-                .params
-                .iter()
-                .position(|declared| declared.name == param.name);
-            if let Some(value) = index.and_then(|index| args.get(index)) {
-                let json = self.recorded(&package.meta, param, value)?;
-                recorded.insert(param.name.clone(), json);
-            }
-        }
+        let (args, recorded) = self.planned_args(&package, action, request)?;
         // The runtime sees the invoker the door admitted: an agent's task delegate for itself,
         // the person at the window otherwise.
         let invoker = request.caller.map_or_else(
@@ -642,10 +648,16 @@ impl HostInner {
             self.admit_agent(caller);
         }
         let first = self.store.next_ticket();
-        let outcome = self
-            .runtime
-            .invoke_action(&invoker, (request.action_id, args.clone()))
-            .map_err(|error| error.to_string())?;
+        let outcome = match request.from {
+            Some(from) => {
+                self.runtime
+                    .invoke_action_from(&invoker, (request.action_id, args.clone()), from)
+            }
+            None => self
+                .runtime
+                .invoke_action(&invoker, (request.action_id, args.clone())),
+        }
+        .map_err(|error| error.to_string())?;
         self.returned_by(request.action_id, &outcome);
         match outcome {
             InvokeOutcome::Done(Value::Ref(made))
@@ -677,6 +689,8 @@ impl HostInner {
                 chain: Vec::new(),
                 module: package.id.0.clone(),
                 at: None,
+                from: request.from.cloned(),
+                suggested_by: None,
             },
             edits: Vec::new(),
         };
@@ -693,6 +707,56 @@ impl HostInner {
             }
         }
         Ok(planned)
+    }
+
+    /// The action's arguments as its invocation records them: those the door was given, and
+    /// each left out that has a default computed now, on the invoker's state, since what the
+    /// person saw is the argument.
+    fn planned_args(
+        &self,
+        package: &Package,
+        action: &tilolang::meta::ActionMeta,
+        request: &PlanRequest<'_>,
+    ) -> Result<(Vec<Value>, serde_json::Map<String, Json>), String> {
+        let mut given: Vec<Option<Value>> = Vec::new();
+        let mut params = action.params.iter();
+        if let (Some(subject), Some(declared)) =
+            (request.resource, package.meta.subject_of(&action.params))
+        {
+            let target = ResourceRef::parse_id(subject, declared.id.clone())
+                .ok_or_else(|| format!("`{subject}` is not a resource id"))?;
+            given.push(Some(Value::resource(&target)));
+            params.next();
+        }
+        let mut defaulted = Vec::new();
+        for param in params {
+            match request.args.get(&param.name) {
+                None if param.default.is_some() => {
+                    defaulted.push(param);
+                    given.push(None);
+                }
+                json => {
+                    let json = json.cloned().unwrap_or(Json::Null);
+                    given.push(Some(value_of(self, &package.meta, &json, &param.ty)?));
+                }
+            }
+        }
+        let args = self
+            .runtime
+            .complete_args(request.action_id, given)
+            .map_err(|error| error.to_string())?;
+        let mut recorded = request.args.clone();
+        for param in defaulted {
+            let index = action
+                .params
+                .iter()
+                .position(|declared| declared.name == param.name);
+            if let Some(value) = index.and_then(|index| args.get(index)) {
+                let json = self.recorded(&package.meta, param, value)?;
+                recorded.insert(param.name.clone(), json);
+            }
+        }
+        Ok((args, recorded))
     }
 }
 
@@ -898,6 +962,26 @@ impl Host {
     #[must_use]
     pub fn authority(&self) -> &TiloAuthority {
         &self.inner.authority
+    }
+
+    /// Whether the action `action` can run on the published resource `resource` now, as its app
+    /// says: the requirements its subject alone decides hold for the person at the window, or the
+    /// first that does not and why. `None` when the app keeps no requirement its subject could
+    /// decide, and the action is offered as it is.
+    #[must_use]
+    pub fn availability(&self, resource: &str, action: &str) -> Option<tilo_actions::Availability> {
+        self.inner.availability(resource, action)
+    }
+
+    /// As [`Host::availability`], with what reading the requirement read: the resources it read,
+    /// so a caller keeping the answer knows what has to move for it to be read again.
+    #[must_use]
+    pub fn availability_reading(
+        &self,
+        resource: &str,
+        action: &str,
+    ) -> Option<(tilo_actions::Availability, Reading)> {
+        self.inner.availability_reading(resource, action)
     }
 
     /// The resource `action` returned when the person last ran it here, once: a window opens
@@ -1222,7 +1306,11 @@ impl Host {
                 let previously: Vec<&str> = ty
                     .fields
                     .iter()
-                    .filter(|f| f.role.as_deref() == Some("previously"))
+                    .filter(|f| {
+                        f.role
+                            .as_ref()
+                            .is_some_and(tilolang_runtime::meta::FieldRole::is_previously)
+                    })
                     .map(|f| f.id.as_str())
                     .collect();
                 for doc in self.inner.store.resources_of(&package.meta.app, &ty.id) {

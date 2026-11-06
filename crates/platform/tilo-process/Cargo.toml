@@ -14,9 +14,6 @@ workspace = true
 
 [features]
 native-editor = ["dep:runtime-portal"]
-# Independent jobs (`job`): a child process in a cgroup of its own below its
-# app's, through the session's app spawner.
-jobs = ["dep:runtime-portal"]
 # The host inputs' native fallback (`environment::process_environment`): what
 # a launcher passes through the process environment.
 native = ["dep:hex"]

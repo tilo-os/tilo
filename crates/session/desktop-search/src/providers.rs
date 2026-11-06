@@ -18,8 +18,8 @@ pub mod records;
 pub mod settings;
 pub mod waiting;
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::sync::{Mutex, PoisonError};
 
 use tilo_actions::{ActionAddress, Availability, ResourceSpec};
 use ui::search::{PagePoll, PendingToken, SearchQuery};
@@ -183,12 +183,20 @@ impl Source for Windows {
     }
 }
 
-/// A host command the palette offers (close the focused window, …).
+/// A host command the palette offers (new a workspace, close the focused
+/// window, …).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSpec {
     pub id: String,
     pub title: String,
     pub subtitle: Option<String>,
+    /// The command's own picture, as the action that declares it gives one:
+    /// the same glyph its menu row wears.
+    pub icon: Option<ui::icons::Icon>,
+    /// Whether the empty card lists it: what a person may want to do from
+    /// here without having asked for anything (making a workspace, joining
+    /// one), never closing a window or leaving the workspace.
+    pub unasked: bool,
 }
 
 pub struct Commands(pub Vec<CommandSpec>);
@@ -198,31 +206,43 @@ impl Source for Commands {
         "desktop-commands"
     }
 
+    fn browse_rank(&self) -> u8 {
+        crate::model::BROWSE_RANK_ACTIONS
+    }
+
     fn name(&self) -> String {
         crate::i18n::t("search-source-commands")
     }
 
     fn query(&self, needle: &str) -> Vec<Hit> {
-        // The empty palette is about what is happening now, never a list of
-        // verbs: closing a window, switching workspace or leaving it on this
-        // computer are things a person goes looking for, and a default list
-        // of them takes the place of what they came for.
-        if needle.trim().is_empty() {
-            return Vec::new();
-        }
+        // Nothing typed lists the commands that stand unasked, in the order
+        // the desk offers them: what makes something first, and what only
+        // takes something away or is looked for by name never. Typing finds
+        // every one of them. Each stands below the one before it, and one
+        // the person chose before rises above the rest.
+        let browsing = needle.trim().is_empty();
         self.0
             .iter()
-            .filter_map(|command| {
-                let score = rank_fields(
-                    needle,
-                    &[
-                        (&command.title, ui::search::FieldWeight::TITLE),
-                        (
-                            command.subtitle.as_deref().unwrap_or_default(),
-                            ui::search::FieldWeight::SUBTITLE,
-                        ),
-                    ],
-                )?;
+            .enumerate()
+            .filter_map(|(at, command)| {
+                let score = if browsing {
+                    if !command.unasked {
+                        return None;
+                    }
+                    let at = i32::try_from(at).unwrap_or(MAX_PROVIDER_SCORE);
+                    MAX_PROVIDER_SCORE.saturating_sub(at)
+                } else {
+                    rank_fields(
+                        needle,
+                        &[
+                            (&command.title, ui::search::FieldWeight::TITLE),
+                            (
+                                command.subtitle.as_deref().unwrap_or_default(),
+                                ui::search::FieldWeight::SUBTITLE,
+                            ),
+                        ],
+                    )?
+                };
                 Some(Hit {
                     row: None,
                     preview: None,
@@ -235,7 +255,7 @@ impl Source for Commands {
                     subtitle: command.subtitle.clone(),
                     facts: Vec::new(),
                     score,
-                    icon: None,
+                    icon: command.icon,
                     target: Target::Command {
                         id: command.id.clone(),
                     },
@@ -600,8 +620,9 @@ pub struct Content {
     /// Whether nothing typed asks the providers for what they list unasked
     /// (a file manager's places, a notebook's notes).
     browse: bool,
-    /// The answers still coming, by provider.
-    pending: RefCell<Vec<(usize, PendingToken)>>,
+    /// The answers still coming, by provider. Held behind a lock so the
+    /// source is `Send + Sync` however a frame and a worker share one.
+    pending: Mutex<Vec<(usize, PendingToken)>>,
 }
 
 impl Content {
@@ -615,7 +636,7 @@ impl Content {
             scope: None,
             limit: 16,
             browse: false,
-            pending: RefCell::default(),
+            pending: Mutex::default(),
         }
     }
 
@@ -638,7 +659,9 @@ impl Content {
     /// Ask the providers whose answers were still coming. Returns whether
     /// one arrived, so the query should run again.
     pub fn poll(&self) -> bool {
-        let waiting = std::mem::take(&mut *self.pending.borrow_mut());
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let waiting = std::mem::take(&mut *pending);
+        drop(pending);
         let mut arrived = false;
         let mut still = Vec::new();
         for (at, token) in waiting {
@@ -650,13 +673,17 @@ impl Content {
                 PagePoll::Ready(_) | PagePoll::Answered(_) => arrived = true,
             }
         }
-        *self.pending.borrow_mut() = still;
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = still;
         arrived
     }
 
     /// Whether an answer is still coming.
     pub fn waiting(&self) -> bool {
-        !self.pending.borrow().is_empty()
+        !self
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
     }
 }
 
@@ -761,7 +788,7 @@ impl Source for Content {
                 });
             }
         }
-        *self.pending.borrow_mut() = pending;
+        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = pending;
         hits
     }
 }
@@ -1508,8 +1535,22 @@ mod tests {
         assert!(groups.iter().any(|g| g.kind.label() == WINDOWS_KIND));
     }
 
+    /// The verbs a person may do from an empty card, in the order the desk
+    /// offers them: making something and bringing someone in, then locking
+    /// the screen. What only takes something away or closes the computer is
+    /// not listed unasked, and typing still finds every one of them.
+    fn verb(id: &str, title: &str, icon: ui::icons::Icon, unasked: bool) -> CommandSpec {
+        CommandSpec {
+            id: id.into(),
+            title: title.into(),
+            subtitle: None,
+            icon: Some(icon),
+            unasked,
+        }
+    }
+
     #[test]
-    fn empty_query_browses_applications_and_windows_but_not_actions() {
+    fn empty_query_browses_apps_windows_and_the_workspaces_own_verbs() {
         let actions = Actions(vec![resource_with_action(
             "p1",
             "Groceries",
@@ -1523,23 +1564,122 @@ mod tests {
             app: None,
             place: vec!["Workspace".into()],
         }]);
-        let commands = Commands(vec![CommandSpec {
-            id: "session-host-leave-workspace".into(),
-            title: "Leave this workspace on this computer".into(),
-            subtitle: None,
-        }]);
+        let commands = Commands(vec![
+            verb(
+                "session-host-new-workspace",
+                "New workspace",
+                ui::icons::Icon::Plus,
+                true,
+            ),
+            verb(
+                "session-host-join-workspace",
+                "Join a workspace",
+                ui::icons::Icon::Link,
+                true,
+            ),
+            verb(
+                "session-host-leave-workspace",
+                "Leave workspace",
+                ui::icons::Icon::ArrowUpRight,
+                false,
+            ),
+            verb(
+                "desktop.close-window",
+                "Close window",
+                ui::icons::Icon::X,
+                false,
+            ),
+            verb("session-host-lock", "Lock", ui::icons::Icon::Lock, true),
+        ]);
         let groups = search("", &[&apps(), &windows, &actions, &commands], 0, &|_| 0.0);
         let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
         assert!(kinds.contains(&"Apps"));
         assert!(kinds.contains(&WINDOWS_KIND));
-        assert!(!kinds.contains(&"Actions"));
+        assert!(kinds.contains(&"Actions"));
+        let listed: Vec<&str> = groups
+            .iter()
+            .flat_map(|group| &group.results)
+            .map(|hit| hit.title.as_str())
+            .collect();
         assert!(
-            groups
-                .iter()
-                .flat_map(|group| &group.results)
-                .all(|hit| !hit.title.starts_with("Leave this workspace")),
-            "nothing typed offers no workspace housekeeping: {groups:?}"
+            !listed.contains(&"Open page"),
+            "an open app's actions take no room unasked: {listed:?}"
         );
+        let verbs = groups
+            .iter()
+            .find(|group| group.kind.label() == "Actions")
+            .map(|group| {
+                group
+                    .results
+                    .iter()
+                    .map(|hit| (hit.title.as_str(), hit.icon))
+                    .collect::<Vec<_>>()
+            });
+        assert_eq!(
+            verbs.as_deref(),
+            Some(
+                [
+                    ("New workspace", Some(ui::icons::Icon::Plus)),
+                    ("Join a workspace", Some(ui::icons::Icon::Link)),
+                    ("Lock", Some(ui::icons::Icon::Lock)),
+                ]
+                .as_slice()
+            ),
+            "the empty card offers making and joining, then locking, each wearing its own glyph"
+        );
+        // Typed, the verbs the empty card keeps back are found like any other.
+        let typed = |needle: &str| -> Vec<String> {
+            commands
+                .query(needle)
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect()
+        };
+        assert_eq!(typed("leave"), ["Leave workspace"]);
+        assert_eq!(typed("close"), ["Close window"]);
+        assert_eq!(typed("new workspace"), ["New workspace"]);
+    }
+
+    /// Nothing typed offers the workspace's own verbs in the order the desk
+    /// gives them; one the person chose before rises above the rest.
+    #[test]
+    fn the_workspaces_verbs_keep_the_desks_order_under_what_was_chosen() {
+        let commands = Commands(vec![
+            verb(
+                "session-host-new-workspace",
+                "New workspace",
+                ui::icons::Icon::Plus,
+                true,
+            ),
+            verb(
+                "session-host-workspace-settings",
+                "Workspace settings",
+                ui::icons::Icon::Settings,
+                true,
+            ),
+        ]);
+        let titles = |commands: &Commands| -> Vec<String> {
+            commands
+                .query("")
+                .into_iter()
+                .map(|hit| hit.title)
+                .collect()
+        };
+        assert_eq!(titles(&commands), ["New workspace", "Workspace settings"]);
+        let chosen = |hit: &Hit| {
+            if hit.title == "Workspace settings" {
+                0.5
+            } else {
+                0.0
+            }
+        };
+        let groups = search("", &[&commands], 0, &chosen);
+        let listed: Vec<&str> = groups
+            .iter()
+            .flat_map(|group| &group.results)
+            .map(|hit| hit.title.as_str())
+            .collect();
+        assert_eq!(listed, ["Workspace settings", "New workspace"]);
     }
 
     #[test]
@@ -1652,7 +1792,7 @@ mod tests {
     /// framework app's do: it takes the query in on its next frame, then
     /// offers to search its service for it ("Search `YouTube` for …").
     /// Each query the app was asked, with the part of it it was narrowed to.
-    type Asked = std::rc::Rc<RefCell<Vec<(String, Option<String>)>>>;
+    type Asked = std::rc::Rc<std::cell::RefCell<Vec<(String, Option<String>)>>>;
 
     struct Service {
         arrived: std::rc::Rc<std::cell::Cell<bool>>,
@@ -1814,18 +1954,17 @@ mod tests {
 
     #[test]
     fn commands_match_their_title() {
-        let commands = Commands(vec![CommandSpec {
-            id: "desktop.close-window".into(),
-            title: "Close window".into(),
-            subtitle: Some("The focused window".into()),
-        }]);
+        let commands = Commands(vec![verb(
+            "desktop.close-window",
+            "Close window",
+            ui::icons::Icon::X,
+            false,
+        )]);
         assert_eq!(commands.query("close").len(), 1);
         assert!(commands.query("launch").is_empty());
-        // Nothing typed lists no verbs at all: closing a window, changing
-        // workspace or leaving it on this computer are things a person goes
-        // looking for, never what the empty palette leads with.
-        assert!(commands.query("").is_empty());
-        assert!(commands.query("  ").is_empty());
+        // Nothing typed leaves it out: closing this window is looked for by
+        // name, it is not offered to someone who typed nothing.
+        assert!(commands.query(" ").is_empty());
     }
 
     /// Every app of the manifest registry, as the portable desktop lists them.

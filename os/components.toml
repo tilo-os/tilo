@@ -928,6 +928,12 @@ layer = "dev-tools"
 files = [
   { from = "tilo-vmd", to = "/usr/libexec/tilo/tilo-vmd", mode = "0755" },
   { link = "../libexec/tilo/tilo-vmd", to = "/usr/bin/tilo-vmd" },
+  # The manifest this daemon admits a cohort by: which components a tree has,
+  # and each one's scope, units and build profile. A device updated from a
+  # newer tree than its image otherwise refuses the cohort's new components as
+  # absent, the way a swapped session would read a declaration in another
+  # format. The daemon is the one reader, so the file ships with it.
+  { from = "@manifest/components.toml", to = "/usr/share/tilo/components.toml", mode = "0644" },
 ]
 
 # tilo-vmd's requests over the peer network, for a device beyond the LAN

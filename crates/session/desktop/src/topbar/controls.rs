@@ -3,8 +3,8 @@
 //! activates, and the focus ring that says the keyboard is here.
 
 use super::{
-    Affine, AppTrayRequest, BAR_CONTROL_PX, ChromeIntent, Fill, Point, Rect, RoundedRect, Scene,
-    Theme, TopBarChrome, WindowEvent, pointer_coordinates, t, t_args,
+    Affine, AppTrayRequest, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, Theme, TopBarChrome,
+    WindowEvent, pointer_coordinates, t, t_args,
 };
 
 impl TopBarChrome {
@@ -233,14 +233,23 @@ impl TopBarChrome {
     /// The click half of [`Widget::handle_event`]'s `MouseInput`
     /// branch, split out to keep that function under the line budget.
     pub(super) fn handle_left_click(&mut self, handled: &mut bool) {
-        if self.activity_is_visible()
-            && self
-                .last_cursor
-                .is_some_and(|p| self.center_rect.contains(p))
+        let pill = self.center_pill();
+        if self
+            .last_cursor
+            .is_some_and(|p| self.center_rect.contains(p))
             && let Some(chrome) = self.chrome.as_ref()
+            && (pill.heading.is_some() || self.activity_is_visible())
         {
-            let focus = chrome.snapshot().activity_glance.focus;
-            chrome.intent(ChromeIntent::ShowActivity(focus));
+            // An activity the pill names is pulled out as its card; the
+            // reading on its own opens the board.
+            if let Some(summary) = pill.heading {
+                chrome.intent(ChromeIntent::ExpandActivity {
+                    activity: summary.id,
+                });
+            } else {
+                let focus = chrome.snapshot().activity_glance.focus;
+                chrome.intent(ChromeIntent::ShowActivity(focus));
+            }
             self.activity_started = None;
             *handled = true;
             return;
@@ -304,16 +313,14 @@ impl TopBarChrome {
         if rect.is_zero_area() {
             return;
         }
-        let ring = RoundedRect::from_rect(
-            rect.inset(-2.0),
-            ui::chrome::ChromeRole::Selector.radius(theme, rect.height() + 4.0),
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(2.0),
+        // The shared focus ring: the bar's controls show the same ring every
+        // other focusable control does, on the keyboard only.
+        ui::widget::paint_focus_ring(
+            scene,
             transform,
-            theme.border_focus,
-            None,
-            &ring,
+            rect,
+            ui::chrome::ChromeRole::Selector.radius(theme, rect.height()),
+            theme,
         );
     }
 
@@ -422,40 +429,19 @@ impl TopBarChrome {
         }
     }
 
-    /// Pointer motion: where the pointer is, for clicks, and a floating
-    /// clock being dragged. A wheel over the bar is
-    /// nobody's: the bar has nothing to scroll and nothing to cycle.
+    /// Pointer motion: where the pointer is, for clicks. A wheel over the
+    /// bar is nobody's: the bar has nothing to scroll and nothing to cycle.
     pub(super) fn handle_pointer_motion(
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        handled: &mut bool,
+        _handled: &mut bool,
     ) -> bool {
         let WindowEvent::CursorMoved { position, .. } = event else {
             return false;
         };
         let point = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.last_cursor = Some(point);
-        if self.clock_touch_id.is_none() && self.move_clock_drag_to(point) {
-            *handled = true;
-        }
-        true
-    }
-
-    pub(super) fn handle_left_release(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
-        if !matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-                ..
-            }
-        ) {
-            return false;
-        }
-        if self.clock_touch_id.is_none() && self.clock_drag_offset.take().is_some() {
-            *handled = true;
-        }
         true
     }
 
@@ -467,20 +453,24 @@ impl TopBarChrome {
                 button: winit::event::MouseButton::Left,
                 ..
             }
-        ) || self.clock_touch_id.is_some()
-        {
-            return;
-        }
-        let Some(point) = self.last_cursor else {
-            self.handle_left_click(handled);
-            return;
-        };
-        if self.activate_clock_control_at(point) || self.begin_clock_drag_at(point) {
-            *handled = true;
+        ) {
             return;
         }
         self.handle_left_click(handled);
     }
+}
+
+/// A left button release on the bar, which the bar takes so no window under
+/// it sees the release of a press the bar answered.
+pub(super) fn is_left_release(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::MouseInput {
+            state: winit::event::ElementState::Released,
+            button: winit::event::MouseButton::Left,
+            ..
+        }
+    )
 }
 
 /// How the bar's focus last arrived, which decides whether its ring shows
@@ -506,27 +496,6 @@ pub(super) struct TrayBell {
     /// The host has no quick settings, so the cluster is the bell itself:
     /// always shown, and what the cluster is named.
     pub(super) only: bool,
-}
-
-/// Paint a bar control's lift at `shape` in `state`: the design system's
-/// bar control ([`ui::widget::BarControlFace::fill`]), plain at rest, half a
-/// lift under the pointer, a whole lift while pressed or open. The bar has
-/// no surface of its own: its controls stand on the desktop ground and lift
-/// off that.
-pub(super) fn paint_bar_selector(
-    scene: &mut Scene,
-    transform: Affine,
-    shape: &RoundedRect,
-    state: ui::chrome::SelectionState,
-    theme: &Theme,
-) {
-    let face = ui::widget::BarControlFace::new("")
-        .open(state.active)
-        .pressed(state.pressed)
-        .hovered(state.hover);
-    if let Some(fill) = face.fill(theme, theme.tokens.colors.surfaces.base) {
-        scene.fill(Fill::NonZero, transform, fill, None, shape);
-    }
 }
 
 /// Whether `key` moves keyboard focus through the bar: the keys whose use

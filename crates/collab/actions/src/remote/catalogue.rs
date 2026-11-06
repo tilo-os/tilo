@@ -239,6 +239,27 @@ impl CatalogueRow {
         }
     }
 
+    /// A row offering `action` in the row it stands in: the resource of the
+    /// level above it, and whether its own resource holds rows below it, so a
+    /// reader that asks a level at a time knows where the listing continues.
+    #[must_use]
+    pub fn for_placed_action(
+        provider: impl Into<String>,
+        app_id: impl Into<String>,
+        placed: crate::door::PlacedAction,
+    ) -> Self {
+        let crate::door::PlacedAction {
+            parent,
+            has_children,
+            action,
+        } = placed;
+        Self {
+            parent_resource: parent,
+            has_children,
+            ..Self::for_action(provider, app_id, action)
+        }
+    }
+
     /// The target that invokes this row's action.
     #[must_use]
     pub fn target(&self) -> Option<RemoteActionTarget> {

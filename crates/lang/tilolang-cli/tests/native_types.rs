@@ -34,18 +34,19 @@ fn native_chat_describes_as_tilolang_types() {
     let workspace = block(&text, "type Workspace {");
     for line in [
         "    categories: Collection<Category>",
-        "    channels: Collection<Channel>",
+        "    channels: Collection<Conversation>",
         "    people: Collection<Person>",
         "    agent_names: Map<Text>",
     ] {
         assert!(workspace.contains(line), "`{line}` in:\n{workspace}");
     }
-    let channel = block(&text, "type Channel {");
+    let channel = block(&text, "type Conversation {");
     for line in [
         "    category: Option<Text>",
         "    name: Text",
         "    kind: ChannelKind",
         "    archived: Bool",
+        "    participants: List<Text>",
     ] {
         assert!(channel.contains(line), "`{line}` in:\n{channel}");
     }
@@ -127,7 +128,7 @@ fn a_field_chat_does_not_publish_is_an_error() {
     std::fs::write(
         dir.join("app.tl"),
         "app so.tilo.test.wrong \"Wrong\"\n\nuse so.tilo.chat as chat\n\n\
-         fn topic(c: chat.Channel) -> Int {\n    c.topic\n}\n\n\
+         fn topic(c: chat.Conversation) -> Int {\n    c.topic\n}\n\n\
          fn color(w: chat.Workspace) -> Text {\n    w.colour\n}\n",
     )
     .expect("source");

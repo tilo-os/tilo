@@ -103,12 +103,21 @@ impl SurfaceHost for ShellPart {
         self.widgets.pointer_button(button, pressed);
     }
 
+    /// A press landed somewhere else — a window over the shell, or another surface of the
+    /// session's: the field the person left gives the keyboard up, so what they type next
+    /// reaches whatever they pressed on. The shell keeps its record (what was typed stands);
+    /// only the caret goes.
+    fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {
+        self.input = true;
+        self.widgets.clear_focus();
+    }
+
     fn pointer_axis(&mut self, horizontal: f64, vertical: f64) {
         self.input = true;
         self.widgets.pointer_axis(horizontal, vertical);
     }
 
-    fn outputs_changed(&mut self, outputs: &[(i32, i32, i32, i32)]) {
+    fn outputs_changed(&mut self, outputs: &[tilo_compositor::HostedOutput]) {
         // A part not yet told which output it stands on covers all of them, the tightest
         // bounding box there is.
         if self.output.is_some() || self.retired() {
@@ -116,7 +125,10 @@ impl SurfaceHost for ShellPart {
         }
         let Some((x0, y0, x1, y1)) = outputs
             .iter()
-            .map(|&(x, y, w, h)| (x, y, x.saturating_add(w), y.saturating_add(h)))
+            .map(|output| {
+                let (x, y, w, h) = output.rect;
+                (x, y, x.saturating_add(w), y.saturating_add(h))
+            })
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
         else {
             return;
@@ -127,6 +139,13 @@ impl SurfaceHost for ShellPart {
         ) else {
             return;
         };
+        self.output_scale = tilo_compositor::HostedOutput::scale_at(
+            outputs,
+            (
+                f64::from(x0) + f64::from(width) / 2.0,
+                f64::from(y0) + f64::from(height) / 2.0,
+            ),
+        );
         self.output = Some((String::new(), (x0, y0, width, height)));
         self.place();
     }
@@ -135,7 +154,15 @@ impl SurfaceHost for ShellPart {
         // While a surface of the desk's is up it answers the keyboard: the switcher walks,
         // every surface closes on Esc, and a field in one takes what is typed. A modifier's
         // release reaches it this way too, since its press came before the surface was up.
-        self.cover || SurfaceHost::wants_keyboard(&self.widgets)
+        if self.cover {
+            return true;
+        }
+        // A field of the part's that the person put the caret in takes what is typed next: the
+        // canvas's entry, a conversation's line, the launcher's search, and every other field
+        // the shell draws. The part reports the same field as its [`Self::text_input`], so a
+        // field the input method composes into is a field the part's keys reach. A part with no
+        // such field leaves the keys to the window in front, as the desk under the windows does.
+        self.text_input().is_some()
     }
 
     /// The regions the shell's translucent material records: the compositor blurs what lies
@@ -198,12 +225,20 @@ impl SurfaceHost for ShellPart {
         if self.origin.borrow().due() || self.origin.borrow().link.wants() {
             return Some(std::time::Instant::now());
         }
+        // A package a view read a type of and the session has not been asked for yet.
+        if self.origin.borrow().link.wants_packages() {
+            return Some(std::time::Instant::now());
+        }
         // The session's own deadline (the switcher's panel coming up) is due as soon as it is.
         self.widgets
             .next_deadline()
             .into_iter()
             .chain(self.deadline)
             .min()
+    }
+
+    fn set_frame_interval(&mut self, interval: std::time::Duration) {
+        self.widgets.set_frame_interval(interval);
     }
 
     fn prepare_frame(&mut self) -> bool {

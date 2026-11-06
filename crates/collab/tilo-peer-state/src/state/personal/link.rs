@@ -111,11 +111,24 @@ impl PersonalSync {
             SystemTime,
         ) -> Result<NeighbourMsg, String>,
     ) -> Result<NeighbourMsg, String> {
-        let message = self
+        let now = SystemTime::now();
+        let message = self.0.store.write(|store| publish(store, &self.0.key, now));
+        self.publish_refusals();
+        Ok(self.published(message?))
+    }
+
+    /// Send every refusal set this device's verdicts moved into since the
+    /// last message, the ones it no longer names included: a sibling that
+    /// was refused a write hears of it, and hears when it stands.
+    fn publish_refusals(&self) -> bool {
+        let updates = self
             .0
             .store
-            .write(|store| publish(store, &self.0.key, SystemTime::now()))?;
-        Ok(self.published(message))
+            .write(super::PersonalStore::take_refusal_updates);
+        for update in &updates {
+            let _ = self.0.outgoing.send(update.clone());
+        }
+        !updates.is_empty()
     }
 
     /// Admit a write this device signed itself and send it to every open
@@ -126,11 +139,11 @@ impl PersonalSync {
         record: &str,
         envelope: collab_types::SignedOp,
     ) -> Result<NeighbourMsg, String> {
-        let message = self
-            .0
-            .store
-            .write(|store| store.admit_local(app, record, envelope, SystemTime::now()))?;
-        Ok(self.published(message))
+        let message = self.0.store.write(|store| {
+            store.admit_local(app, record, envelope, &self.0.key, SystemTime::now())
+        });
+        self.publish_refusals();
+        Ok(self.published(message?))
     }
 
     /// Apply a change to the store that is not a document of it: the devices
@@ -145,6 +158,7 @@ impl PersonalSync {
             .0
             .store
             .write(|store| admit(store, SystemTime::now()))?;
+        self.publish_refusals();
         if changed {
             self.published(self.0.store.read(super::PersonalStore::hello));
         }
@@ -191,14 +205,10 @@ impl PersonalSync {
     /// ends, whichever side dialled.
     async fn run(&self, connection: &Connection) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
-        if let Err(reason) = self.admits(remote) {
-            connection.close(REFUSED.into(), reason.as_bytes());
-            return Err(reason);
-        }
         // Subscribe before taking the catch-up, so a write published in
         // between is sent after it rather than lost.
         let live = self.0.outgoing.subscribe();
-        let catch_up = self.catch_up()?;
+        let catch_up = self.catch_up(remote)?;
         let send = connection
             .open_uni()
             .await
@@ -211,22 +221,13 @@ impl PersonalSync {
         }
     }
 
-    /// Whether `device` is admitted to a link at all: one this store revoked
-    /// is not. A device it has not met is admitted to the connection alone, so
-    /// it can present the certificate its first frame carries.
-    fn admits(&self, device: [u8; 32]) -> Result<(), String> {
-        self.0
-            .store
-            .read(|store| store.admits_device(&device, SystemTime::now()))
-    }
-
     /// What the other device may lack: this device's certificate, the
-    /// revocations its identity signed, and a snapshot of every document it
-    /// holds.
-    fn catch_up(&self) -> Result<Vec<NeighbourMsg>, String> {
+    /// revocations its identity signed, what was refused of its own writes,
+    /// and a snapshot of every document it holds.
+    fn catch_up(&self, remote: [u8; 32]) -> Result<Vec<NeighbourMsg>, String> {
         self.0
             .store
-            .write(|store| store.catch_up(&self.0.key, SystemTime::now()))
+            .write(|store| store.catch_up(&self.0.key, remote, SystemTime::now()))
     }
 
     /// Admit every frame `remote` sends until its stream ends. A document the
@@ -244,7 +245,12 @@ impl PersonalSync {
             let admitted = self
                 .0
                 .store
-                .write(|store| store.receive(remote, message, SystemTime::now()));
+                .write(|store| store.receive(&self.0.key, remote, message, SystemTime::now()));
+            // Whatever the store decided, what it now refuses of this
+            // device's writes is sent: the verdict reaches its author, live.
+            if self.publish_refusals() {
+                self.0.changed.send_modify(bump);
+            }
             match admitted {
                 Ok(outcome) => {
                     if outcome.changed || outcome.metadata_changed {
@@ -262,7 +268,12 @@ impl PersonalSync {
                     connection.close(REFUSED.into(), reason.as_bytes());
                     return Err(reason);
                 }
-                Err(_) => {}
+                Err(reason) => {
+                    // The store's verdict on this one write, not on the
+                    // link: it stays out of this device, and the store filed
+                    // a refusal the author is told of.
+                    tracing::warn!(remote = %hex::encode(remote), %reason, "a peer's write was refused");
+                }
             }
         }
         Ok(())

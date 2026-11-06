@@ -425,8 +425,11 @@ impl PowerService {
                     }
                 }
                 changed = next_or_pending(&mut streams.lid), if streams.lid.is_some() => {
-                    if changed.is_some() {
-                        self.poll_lid().await;
+                    if let Some(changed) = changed {
+                        match changed.get().await {
+                            Ok(closed) => self.follow_lid(closed).await,
+                            Err(error) => debug!(target: "tilo::power", %error, "lid change could not be read"),
+                        }
                     } else {
                         debug!(target: "tilo::power", "lid stream ended; scheduling resubscription");
                         streams.lid = None;
@@ -656,8 +659,8 @@ impl PowerService {
         }
     }
 
-    /// Read the lid and, on the open→closed edge, apply the lid policy. Edge-triggered so we
-    /// act once per close, not on every reading while it stays shut.
+    /// Read the lid and apply the lid policy to it, as the reading taken when
+    /// the loop starts or resubscribes.
     async fn poll_lid(&mut self) {
         let closed = match self.upower.lid_is_closed().await {
             Ok(c) => c,
@@ -666,6 +669,18 @@ impl PowerService {
                 return;
             }
         };
+        self.follow_lid(closed).await;
+    }
+
+    /// The lid as `closed` says it is: on the open→closed edge, apply the lid
+    /// policy. Edge-triggered so we act once per close, not on every reading
+    /// while it stays shut.
+    ///
+    /// The reading is the one the change carried, never read again here: two
+    /// changes that arrive while the machine was busy would otherwise both
+    /// read the lid as it stands *after* them, and the open between them would
+    /// be lost — closing the lid again would then act on nothing.
+    async fn follow_lid(&mut self, closed: bool) {
         let prev = self.last_lid_closed;
         self.last_lid_closed = Some(closed);
         match lid_edge_effect(prev, closed, &self.policy) {

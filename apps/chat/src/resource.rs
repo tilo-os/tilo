@@ -38,7 +38,7 @@ impl Chat {
         let channels = self
             .channels
             .iter()
-            .filter(|(_, channel)| channel.conversation_with.is_none())
+            .filter(|(_, channel)| channel.is_channel())
             .map(|(id, channel)| {
                 SearchEntry::new(channel.name.clone(), channel.topic.clone())
                     .anchored(anchor("channels", id))
@@ -71,9 +71,7 @@ impl Chat {
         let Some(item) = item else {
             return Ok(serde_json::json!({
                 "channels": self.channels.iter()
-                    .filter(|(_, channel)| {
-                        !channel.archived && channel.conversation_with.is_none()
-                    })
+                    .filter(|(_, channel)| !channel.archived && channel.is_channel())
                     .map(|(id, channel)| serde_json::json!({
                         "id": id,
                         "name": channel.name,
@@ -641,42 +639,42 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
 /// agent or a script, from and on the window `chat`.
 fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> EffectAnswer {
     match &effect {
-        ChatEffect::AdoptPrivateDraft { token } => {
-            let invocation = cx
-                .invocation()
-                .ok_or("private draft requires original person invocation")?;
-            return ui::person_chat::with_invocation(Some(invocation), || {
-                chat.borrow_mut().adopt_private_draft(token, invocation)
-            });
+        // A direct conversation is one of the chat's own: its id names the
+        // two people it is between, so opening, reading and sending all read
+        // and write the same record and the same parts as a channel's.
+        ChatEffect::OpenDirectConversation { public_key } => {
+            let (_, id) = chat
+                .borrow()
+                .direct_conversation(public_key, &cx.live().get())?;
+            let state = cx.live().get();
+            let mut chat = chat.borrow_mut();
+            chat.open_conversation(&id, &state);
+            return Ok(chat.read_direct_answer(public_key, &id, &state));
         }
-        ChatEffect::OpenDirectConversation { .. } => {
-            return ui::person_chat::with_invocation(cx.invocation(), || {
-                chat.borrow_mut().answer_effect(effect)
-            });
-        }
-        // The workspace answers these: at once from the native host, later in
-        // a page. Either way the effect answers when it has.
         ChatEffect::SendDirectMessage { public_key, text } => {
-            let reply = ui::person_chat::with_invocation(cx.invocation(), || {
-                chat.borrow_mut().send_person_message(public_key, text)
-            })?;
-            let public_key = public_key.clone();
-            let chat = Rc::clone(chat);
-            return Ok(cx.spawn(
-                |_| reply,
-                move |(), answer, _| chat.borrow_mut().sent_person_answer(&public_key, answer),
+            let state = cx.live().get();
+            let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            if text.trim().is_empty() {
+                return Err(crate::i18n::t("chat-person-chat-empty"));
+            }
+            chat.borrow().post_to_conversation(&id, text)?;
+            let mut chat = chat.borrow_mut();
+            if chat.active_channel == id.as_str() {
+                let held = chat.held_messages();
+                chat.messages = state.message_rows(&held, id.as_str());
+                chat.scroll = 0.0;
+                chat.request_relayout();
+            }
+            return Ok(ui::framework::Effected::value(
+                serde_json::json!({"peer": peer, "accepted": true}),
             ));
         }
         ChatEffect::ReadDirectConversation { public_key } => {
-            let reply = ui::person_chat::with_invocation(cx.invocation(), || {
-                chat.borrow_mut().read_person_conversation(public_key)
-            })?;
-            let public_key = public_key.clone();
-            let chat = Rc::clone(chat);
-            return Ok(cx.spawn(
-                |_| reply,
-                move |(), answer, _| chat.borrow_mut().read_person_answer(&public_key, answer),
-            ));
+            let state = cx.live().get();
+            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            return Ok(chat
+                .borrow_mut()
+                .read_direct_answer(public_key, &id, &state));
         }
         _ => {}
     }
@@ -748,7 +746,7 @@ impl ChatApp {
         let found = chat
             .channels
             .get(&id)
-            .filter(|found| found.conversation_with.is_none())
+            .filter(|found| found.is_channel())
             .ok_or_else(|| format!("there is no channel `{channel}` in this chat"))?;
         let held = self.held_messages();
         let mut messages: Vec<_> = held

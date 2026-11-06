@@ -1,22 +1,16 @@
 //! Live plane: bounded, inert values for ephemeral multiplayer state —
-//! presence (focus, pointer, selection anchors, drags) and ordered text
-//! previews — carried in [`Envelope::RetiredLive`](crate::Envelope::RetiredLive).
+//! pointer anchors and an app's ordered record previews — as a device
+//! publishes them on its own live track.
 //!
 //! Live frames are never durable and never authority. Documents change only
-//! through signed durable deltas; a preview or drag is an overlay a receiver
-//! drops once the record's durable change lands.
+//! through signed durable deltas; a preview is an overlay a receiver drops
+//! once the record's durable change lands.
 //!
 //! A live frame travels only as a [`SealedLiveFrame`]: the frame sealed with
 //! the content keys of the channel of the record it names. Its kind,
-//! sequence and record digest are in the clear so the host can rate-limit,
-//! order latest-value presence and route a record's previews; the content
-//! never is. A frame that names no record has no channel and is never sent.
-//! The host checks the sealed form with this codec, rate-limits each
-//! publisher, stamps the sender from the authenticated connection, forwards
-//! the bytes unchanged and never stores a frame.
-//!
-//! The vocabulary is `LIVE_V1` from the qOS runtime (PR 541) without its
-//! carrier's grants and early-forwarded durable changes.
+//! sequence and record digest are in the clear so a carrier can rate-limit
+//! and route a record's previews; the content never is. A frame that names
+//! no record has no channel and is never sent.
 
 use collab_types::{
     ArtifactId, ChannelId, ContentRetention, EncryptionMetadata, EncryptionScheme, live_artifact_id,
@@ -41,10 +35,6 @@ pub const MAX_SEALED_PRESENCE_FRAME_BYTES: usize =
     MAX_PRESENCE_FRAME_BYTES + SEALED_LIVE_OVERHEAD_BYTES;
 /// Largest sealed ordered frame.
 pub const MAX_SEALED_OPS_FRAME_BYTES: usize = MAX_OPS_FRAME_BYTES + SEALED_LIVE_OVERHEAD_BYTES;
-/// Presence frames per publisher per second the host forwards.
-pub const MAX_PRESENCE_RATE: u32 = 120;
-/// Ordered frames per publisher per second the host forwards.
-pub const MAX_OPS_RATE: u32 = 240;
 /// Text preview payload ceiling per operation.
 pub const MAX_PREVIEW_TEXT_BYTES: usize = 1024;
 /// Text preview operations per frame.
@@ -120,14 +110,6 @@ fn object_id(bytes: &[u8]) -> Result<()> {
     }
 }
 
-fn finite(values: &[f32]) -> Result<()> {
-    if values.iter().all(|value| value.is_finite()) {
-        Ok(())
-    } else {
-        Err(LiveWireError::Invalid)
-    }
-}
-
 /// Record reference shared by every member: application and record id.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -157,17 +139,6 @@ impl LiveRecord {
             Ok(())
         }
     }
-}
-
-/// Object inside a record or on the desktop (window, shape, block).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LiveObject {
-    /// Owning record, or `None` for desktop-level objects such as windows.
-    pub record: Option<LiveRecord>,
-    /// Application-defined identifier, 1..=[`MAX_OBJECT_ID_BYTES`] bytes.
-    #[serde(with = "object_bytes")]
-    pub id: Vec<u8>,
 }
 
 /// Text position as a stable, application-encoded CRDT anchor.
@@ -253,291 +224,6 @@ fn read_uvarint(bytes: &[u8]) -> Option<(u64, &[u8])> {
         }
     }
     None
-}
-
-/// Drag lifecycle; `End` is followed by the durable change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DragPhase {
-    /// Pointer captured.
-    Start,
-    /// Intermediate position.
-    Move,
-    /// Released; receivers keep the preview until the durable change or a
-    /// timeout.
-    End,
-    /// Aborted; receivers restore the durable position.
-    Cancel,
-}
-
-/// A live drag: object, phase, position and optional size.
-pub type LiveDrag = (LiveObject, DragPhase, [f32; 2], Option<[f32; 2]>);
-
-/// Largest participant label.
-pub const MAX_PARTICIPANT_LABEL_BYTES: usize = 64;
-/// Largest participant activity line.
-pub const MAX_PARTICIPANT_ACTIVITY_BYTES: usize = 96;
-
-/// What kind of participant publishes a presence frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ParticipantKind {
-    /// A person's device (a browser tab, a desktop session).
-    Person,
-    /// A delegated agent acting under a person's root.
-    Agent,
-}
-
-/// How a publisher asks to be drawn: kind, label, cursor colour and what it
-/// is doing now.
-///
-/// Self-asserted and cosmetic. Who a publisher is comes from the host-stamped
-/// device; that a device is an agent, and on whose behalf, comes from its
-/// root-signed [`Delegation`](crate::delegation::Delegation).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LiveParticipant {
-    /// Person or agent.
-    pub kind: ParticipantKind,
-    /// Display name, 1..=[`MAX_PARTICIPANT_LABEL_BYTES`] bytes.
-    pub label: String,
-    /// Cursor colour, sRGB.
-    pub color: [u8; 3],
-    /// Short activity line ("Editing Note"), at most
-    /// [`MAX_PARTICIPANT_ACTIVITY_BYTES`] bytes.
-    pub activity: Option<String>,
-}
-
-impl LiveParticipant {
-    fn validate(&self) -> Result<()> {
-        if self.label.is_empty()
-            || self.label.len() > MAX_PARTICIPANT_LABEL_BYTES
-            || self
-                .activity
-                .as_ref()
-                .is_some_and(|activity| activity.len() > MAX_PARTICIPANT_ACTIVITY_BYTES)
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Latest-value presence of one publisher.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PresenceFrame {
-    /// Monotonic per-publisher sequence; receivers drop older frames.
-    pub seq: u64,
-    /// Publisher wall clock, for interpolation only (never ordering).
-    pub sent_at_ms: u64,
-    /// Record the publisher is focused on.
-    pub focus: Option<LiveRecord>,
-    /// Where the pointer is, relative to the window or strip it is over, so
-    /// every member places it in their own layout ([`PointerLayout`]).
-    pub pointer: Option<LivePointer>,
-    /// Text selection as (anchor, head).
-    pub selection: Option<(LiveAnchor, LiveAnchor)>,
-    /// Object being dragged or resized.
-    pub drag: Option<LiveDrag>,
-    /// How the publisher asks to be drawn.
-    pub participant: Option<LiveParticipant>,
-    /// Where within its focus the publisher is, in the focused
-    /// application's own terms: the strip a desktop shows, so members can
-    /// see who is in which part of a shared workspace even where nothing
-    /// is focused. 1..=[`MAX_PLACE_BYTES`] bytes.
-    #[serde(default)]
-    pub place: Option<String>,
-    /// What the publisher is saying beside its pointer (cursor chat): shown
-    /// live while it types and for a moment after it sends. Never stored.
-    #[serde(default)]
-    pub chat: Option<CursorChat>,
-    /// The publisher's latest reaction, floating up from its pointer. A
-    /// receiver plays it once per new [`LiveReaction::seq`]; restating the
-    /// frame restates the same reaction, which plays nothing.
-    #[serde(default)]
-    pub reaction: Option<LiveReaction>,
-    /// The publisher's latest wave at someone in the room. Only the person
-    /// waved at shows it, once per new [`LiveWave::seq`]; restating the
-    /// frame restates the same wave, which shows nothing.
-    #[serde(default)]
-    pub wave: Option<LiveWave>,
-    /// Where the publisher's windows are on its screen, by app and record
-    /// digest only: others draw a mini view of it from what they hold.
-    /// Sent under the same rule as [`Self::focus`].
-    #[serde(default)]
-    pub layout: Option<LiveLayout>,
-    /// Whose view the publisher follows: their live publisher, lower-case
-    /// hex, 1..=[`MAX_WAVE_TARGET_BYTES`] bytes. Restated with every frame
-    /// while it lasts, so every member's roster can say who follows whom.
-    #[serde(default)]
-    pub following: Option<String>,
-}
-
-/// Largest presence place.
-pub const MAX_PLACE_BYTES: usize = 64;
-/// Longest cursor-chat message, in characters.
-pub const MAX_CURSOR_CHAT_CHARS: usize = 120;
-/// Largest cursor-chat message, in bytes: with every other field at its
-/// ceiling the frame still fits [`MAX_PRESENCE_FRAME_BYTES`] for ordinary
-/// text, and a sender trims to both bounds before it publishes.
-pub const MAX_CURSOR_CHAT_BYTES: usize = 360;
-/// Largest reaction: one emoji, however many code points it joins.
-pub const MAX_REACTION_BYTES: usize = 32;
-
-/// A short message beside a pointer: talking, not chat. Nothing keeps it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CursorChat {
-    /// What is typed so far, at most [`MAX_CURSOR_CHAT_CHARS`] characters
-    /// and [`MAX_CURSOR_CHAT_BYTES`] bytes; empty while the bubble is open
-    /// with nothing typed yet.
-    pub text: String,
-    /// The publisher pressed Enter: receivers keep the message a moment,
-    /// then fade it, rather than showing it as being typed.
-    pub sent: bool,
-}
-
-impl CursorChat {
-    /// Whether this message is within the bounds every receiver holds it
-    /// to, whichever route carries it.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        self.validate().is_ok()
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.text.len() > MAX_CURSOR_CHAT_BYTES
-            || self.text.chars().count() > MAX_CURSOR_CHAT_CHARS
-            || (self.sent && self.text.trim().is_empty())
-            || self.text.chars().any(char::is_control)
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Largest wave target: a member's live publisher, as hex.
-pub const MAX_WAVE_TARGET_BYTES: usize = 64;
-
-/// A wave at one member of the room: "hello", to them, from the publisher.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LiveWave {
-    /// Per-publisher counter; a new value is a new wave.
-    pub seq: u32,
-    /// Whom it is for: their live publisher, lower-case hex,
-    /// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
-    pub target: String,
-}
-
-impl LiveWave {
-    fn validate(&self) -> Result<()> {
-        publisher(&self.target)
-    }
-}
-
-/// A member named by their live publisher: lower-case hex,
-/// 1..=[`MAX_WAVE_TARGET_BYTES`] bytes.
-fn publisher(id: &str) -> Result<()> {
-    if id.is_empty()
-        || id.len() > MAX_WAVE_TARGET_BYTES
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        Err(LiveWireError::Invalid)
-    } else {
-        Ok(())
-    }
-}
-
-/// One emoji sent as a reaction from the publisher's pointer.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LiveReaction {
-    /// Per-publisher counter; a new value is a new reaction.
-    pub seq: u32,
-    /// The emoji, 1..=[`MAX_REACTION_BYTES`] bytes with no whitespace.
-    pub emoji: String,
-}
-
-impl LiveReaction {
-    /// Whether this reaction is within the bounds every receiver holds it
-    /// to, whichever route carries it.
-    #[must_use]
-    pub fn is_valid(&self) -> bool {
-        self.validate().is_ok()
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.emoji.is_empty()
-            || self.emoji.len() > MAX_REACTION_BYTES
-            || self
-                .emoji
-                .chars()
-                .any(|character| character.is_whitespace() || character.is_control())
-        {
-            Err(LiveWireError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl PresenceFrame {
-    fn validate(&self) -> Result<()> {
-        if let Some(participant) = &self.participant {
-            participant.validate()?;
-        }
-        if let Some(chat) = &self.chat {
-            chat.validate()?;
-        }
-        if let Some(reaction) = &self.reaction {
-            reaction.validate()?;
-        }
-        if let Some(wave) = &self.wave {
-            wave.validate()?;
-        }
-        if let Some(layout) = &self.layout {
-            layout.validate()?;
-        }
-        if let Some(following) = &self.following {
-            publisher(following)?;
-        }
-        if self
-            .place
-            .as_ref()
-            .is_some_and(|place| place.is_empty() || place.len() > MAX_PLACE_BYTES)
-        {
-            return Err(LiveWireError::Invalid);
-        }
-        if let Some(record) = &self.focus {
-            record.validate()?;
-        }
-        if let Some(pointer) = &self.pointer {
-            pointer.validate()?;
-        }
-        if let Some((anchor, head)) = &self.selection {
-            object_id(&anchor.cursor)?;
-            object_id(&head.cursor)?;
-        }
-        if let Some((object, _, position, size)) = &self.drag {
-            object_id(&object.id)?;
-            if let Some(record) = &object.record {
-                record.validate()?;
-            }
-            finite(position)?;
-            if let Some(size) = size {
-                finite(size)?;
-                if size.iter().any(|value| *value < 0.0) {
-                    return Err(LiveWireError::Invalid);
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Ephemeral text preview operation, superseded by the durable change.
@@ -627,20 +313,13 @@ impl OpsFrame {
     }
 }
 
-/// One live frame, the payload of [`Envelope::RetiredLive`](crate::Envelope::RetiredLive).
+/// One sealed live frame's content: an ordered per-record frame, or nothing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-// With 32-bit pointers (wasm32) the variants are close enough in size that
-// the lint does not fire.
-#[cfg_attr(
-    target_pointer_width = "64",
-    expect(
-        clippy::large_enum_variant,
-        reason = "presence is the frame sent at pointer rate and decoded on every receipt; boxing it would allocate per frame to shrink the rarer ops frame"
-    )
-)]
 pub enum LiveFrame {
-    /// Latest-value presence; a receiver keeps only the newest per publisher.
-    Presence(PresenceFrame),
+    /// Retired: latest-value presence. Presence travels per device on the
+    /// workspace's live plane; the variant stays only so every later one
+    /// keeps its postcard position, and a frame written under it is dropped.
+    RetiredPresence,
     /// Ordered per-record frame.
     Ops(OpsFrame),
 }
@@ -648,14 +327,14 @@ pub enum LiveFrame {
 impl LiveFrame {
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Presence(frame) => frame.validate(),
+            Self::RetiredPresence => Ok(()),
             Self::Ops(frame) => frame.validate(),
         }
     }
 
     fn cap(&self) -> usize {
         match self {
-            Self::Presence(_) => MAX_PRESENCE_FRAME_BYTES,
+            Self::RetiredPresence => MAX_PRESENCE_FRAME_BYTES,
             Self::Ops(_) => MAX_OPS_FRAME_BYTES,
         }
     }
@@ -686,8 +365,9 @@ impl LiveFrame {
 /// What a sealed live frame says in the clear about its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LiveKind {
-    /// Latest-value presence.
-    Presence,
+    /// Retired: latest-value presence. It stays only so `Ops` keeps its
+    /// postcard position.
+    RetiredPresence,
     /// An ordered per-record frame.
     Ops,
 }
@@ -695,14 +375,14 @@ pub enum LiveKind {
 impl LiveKind {
     const fn tag(self) -> u8 {
         match self {
-            Self::Presence => 0,
+            Self::RetiredPresence => 0,
             Self::Ops => 1,
         }
     }
 
     const fn cap(self) -> usize {
         match self {
-            Self::Presence => MAX_SEALED_PRESENCE_FRAME_BYTES,
+            Self::RetiredPresence => MAX_SEALED_PRESENCE_FRAME_BYTES,
             Self::Ops => MAX_SEALED_OPS_FRAME_BYTES,
         }
     }
@@ -752,10 +432,7 @@ impl LiveFrame {
     /// `None` when the frame names no record.
     pub fn seal_tags(&self) -> Option<(LiveKind, u64, &LiveRecord)> {
         match self {
-            Self::Presence(presence) => presence
-                .focus
-                .as_ref()
-                .map(|record| (LiveKind::Presence, presence.seq, record)),
+            Self::RetiredPresence => None,
             Self::Ops(OpsFrame::Preview { seq, record, .. }) => Some((LiveKind::Ops, *seq, record)),
             Self::Ops(OpsFrame::End { record }) => Some((LiveKind::Ops, 0, record)),
             Self::Ops(OpsFrame::Semantic { record, event }) => {
@@ -777,13 +454,13 @@ impl SealedLiveFrame {
     /// authentication or canonical-frame failure from [`Self::open`].
     pub fn open_in_record<E: std::fmt::Display>(
         &self,
-        room: &str,
+        workspace: &str,
         record: &LiveRecord,
         open: impl FnOnce(ArtifactId, &EncryptionMetadata, &[u8]) -> std::result::Result<Vec<u8>, E>,
     ) -> std::result::Result<LiveFrame, LiveSealError> {
         if self.record != record.digest()
             || self.channel_id()
-                != collab_types::document_channel_id(&record.app, room, &record.record)
+                != collab_types::document_channel_id(&record.app, workspace, &record.record)
         {
             return Err(LiveSealError::Mismatch);
         }
@@ -1003,8 +680,8 @@ mod tests {
     #[test]
     fn opening_for_a_mounted_record_refuses_a_different_record_or_channel() {
         let expected = record();
-        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&expected.app, room, &expected.record);
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&expected.app, workspace, &expected.record);
         let bytes = SealedLiveFrame::seal(&semantic(), |_, retention, cleartext: &[u8]| {
             Ok::<_, String>((
                 EncryptionMetadata::content_key(3, channel, retention),
@@ -1013,7 +690,7 @@ mod tests {
         })
         .unwrap();
         let sealed = SealedLiveFrame::decode(&bytes).unwrap();
-        let opened = sealed.open_in_record(room, &expected, |_, _, bytes| {
+        let opened = sealed.open_in_record(workspace, &expected, |_, _, bytes| {
             Ok::<_, String>(bytes.to_vec())
         });
         assert_eq!(opened.unwrap(), semantic());
@@ -1021,10 +698,10 @@ mod tests {
             record: "other".into(),
             ..expected.clone()
         };
-        for (room, record) in [(room, other), ("another-room", expected.clone())] {
+        for (workspace, record) in [(workspace, other), ("another-room", expected.clone())] {
             assert!(matches!(
                 sealed.open_in_record(
-                    room,
+                    workspace,
                     &record,
                     |_, _, _| -> std::result::Result<Vec<u8>, String> {
                         panic!("a different mounted audience must be refused before opening")
@@ -1039,7 +716,7 @@ mod tests {
         wrong_channel.channel = [9; 16];
         assert!(
             wrong_channel
-                .open_in_record(room, &expected, |_, _, _| {
+                .open_in_record(workspace, &expected, |_, _, _| {
                     Err::<Vec<u8>, String>("must not open".into())
                 })
                 .is_err()
@@ -1077,52 +754,28 @@ mod tests {
         Ok(sealed.iter().map(|byte| byte ^ 0x5a).collect())
     }
 
-    fn focused(seq: u64) -> LiveFrame {
-        LiveFrame::Presence(PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-            seq,
-            sent_at_ms: 1,
-            focus: Some(record()),
-            pointer: Some(LivePointer::Strip {
-                strip: 1,
-                at: [1.0, 2.0],
-            }),
-            selection: None,
-            drag: None,
-            participant: None,
-        })
+    /// A frame that names [`record`], the way a preview does.
+    fn named() -> LiveFrame {
+        LiveFrame::Ops(OpsFrame::End { record: record() })
     }
 
     #[test]
-    fn package_primary_presence_is_sealed_and_bound_to_its_exact_record() {
+    fn a_live_frame_is_sealed_and_bound_to_its_exact_record() {
         let primary = LiveRecord {
             app: "so.tilo.chat".into(),
             record: String::new(),
         };
-        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let channel = collab_types::document_channel_id(&primary.app, room, &primary.record);
-        let frame = LiveFrame::Presence(PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
+        let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let channel = collab_types::document_channel_id(&primary.app, workspace, &primary.record);
+        let frame = LiveFrame::Ops(OpsFrame::Preview {
             seq: 1,
-            sent_at_ms: 1,
-            focus: Some(primary.clone()),
-            pointer: Some(LivePointer::Strip {
-                strip: 1,
-                at: [1.0, 2.0],
-            }),
-            selection: None,
-            drag: None,
-            participant: None,
+            record: primary.clone(),
+            ops: vec![PreviewOp::Insert {
+                at: LiveAnchor {
+                    cursor: vec![ANCHOR_TAG_SCOPED, 4, 0],
+                },
+                text: "hi".into(),
+            }],
         });
         let bytes = SealedLiveFrame::seal(&frame, |_, retention, cleartext: &[u8]| {
             Ok::<_, String>((
@@ -1134,7 +787,7 @@ mod tests {
         let sealed = SealedLiveFrame::decode(&bytes).unwrap();
         assert_eq!(
             sealed
-                .open_in_record(room, &primary, |_, _, bytes| {
+                .open_in_record(workspace, &primary, |_, _, bytes| {
                     Ok::<_, String>(bytes.to_vec())
                 })
                 .unwrap(),
@@ -1146,7 +799,7 @@ mod tests {
         };
         assert!(matches!(
             sealed.open_in_record(
-                room,
+                workspace,
                 &named,
                 |_, _, _| -> std::result::Result<Vec<u8>, String> {
                     panic!("a different record must be refused before opening")
@@ -1166,13 +819,13 @@ mod tests {
 
     #[test]
     fn a_live_frame_travels_sealed_and_opens_only_under_its_tags() {
-        let frame = focused(9);
+        let frame = named();
         let cleartext = frame.encode().unwrap();
         let bytes = SealedLiveFrame::seal(&frame, seal).unwrap();
         let sealed = SealedLiveFrame::decode(&bytes).unwrap();
         assert_eq!(
             (sealed.kind, sealed.seq, sealed.record, sealed.channel_id()),
-            (LiveKind::Presence, 9, record().digest(), channel())
+            (LiveKind::Ops, 0, record().digest(), channel())
         );
         assert!(
             !bytes
@@ -1194,49 +847,26 @@ mod tests {
                 ..sealed.clone()
             },
             SealedLiveFrame {
-                kind: LiveKind::Ops,
+                kind: LiveKind::RetiredPresence,
                 ..sealed
             },
         ] {
             assert!(tampered.open(open).is_err());
         }
-
-        let preview = LiveFrame::Ops(OpsFrame::End { record: record() });
-        let sealed =
-            SealedLiveFrame::decode(&SealedLiveFrame::seal(&preview, seal).unwrap()).unwrap();
-        assert_eq!((sealed.kind, sealed.seq), (LiveKind::Ops, 0));
-        assert_eq!(sealed.open(open).unwrap(), preview);
     }
 
     #[test]
     fn a_live_frame_without_a_record_or_cipher_is_never_sealed() {
-        let unfocused = PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-            seq: 1,
-            sent_at_ms: 1,
-            focus: None,
-            pointer: Some(LivePointer::Strip {
-                strip: 1,
-                at: [1.0, 2.0],
-            }),
-            selection: None,
-            drag: None,
-            participant: None,
-        };
+        // A presence frame is retired: it names no record, so it is dropped.
         assert_eq!(
-            SealedLiveFrame::seal(&LiveFrame::Presence(unfocused), seal),
+            SealedLiveFrame::seal(&LiveFrame::RetiredPresence, seal),
             Err(LiveSealError::NoRecord)
         );
-        let refused = SealedLiveFrame::seal(&focused(1), |_, _, _| {
+        let refused = SealedLiveFrame::seal(&named(), |_, _, _| {
             Err::<(EncryptionMetadata, Vec<u8>), _>("no key")
         });
         assert!(matches!(refused, Err(LiveSealError::Crypto(_))));
-        let mls = SealedLiveFrame::seal(&focused(1), |_, _, cleartext: &[u8]| {
+        let mls = SealedLiveFrame::seal(&named(), |_, _, cleartext: &[u8]| {
             Ok::<_, String>((
                 EncryptionMetadata::mls_application(1, channel()),
                 cleartext.to_vec(),
@@ -1247,243 +877,37 @@ mod tests {
 
     #[test]
     fn a_cleartext_live_frame_is_not_a_sealed_one() {
-        for frame in [
-            focused(1),
-            LiveFrame::Ops(OpsFrame::End { record: record() }),
-        ] {
-            assert!(SealedLiveFrame::decode(&frame.encode().unwrap()).is_err());
-        }
+        assert!(SealedLiveFrame::decode(&named().encode().unwrap()).is_err());
     }
 
     #[test]
     fn frames_round_trip_canonically() {
-        let presence = LiveFrame::Presence(PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-            seq: 3,
-            sent_at_ms: 10,
-            focus: Some(record()),
-            pointer: Some(LivePointer::Strip {
-                strip: 1,
-                at: [1.5, 2.0],
-            }),
-            selection: Some((
-                LiveAnchor {
-                    cursor: vec![ANCHOR_TAG_SCOPED, 4, 0],
-                },
-                LiveAnchor {
-                    cursor: vec![ANCHOR_TAG_SAME_SCOPE, 6],
-                },
-            )),
-            drag: None,
-            participant: Some(LiveParticipant {
-                kind: ParticipantKind::Agent,
-                label: "Writer helper".into(),
-                color: [0x7c, 0x3a, 0xed],
-                activity: Some("Editing Note".into()),
-            }),
-        });
-        let preview = LiveFrame::Ops(OpsFrame::Preview {
-            seq: 1,
-            record: record(),
-            ops: vec![PreviewOp::Insert {
-                at: LiveAnchor { cursor: vec![1] },
-                text: "hi".into(),
-            }],
-        });
-        let placed = LiveFrame::Presence(PresenceFrame {
-            seq: 2,
-            sent_at_ms: 0,
-            focus: Some(record()),
-            pointer: None,
-            selection: None,
-            drag: None,
-            participant: None,
-            place: Some("4242".into()),
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-        });
         for frame in [
-            presence,
-            placed,
-            preview,
-            LiveFrame::Ops(OpsFrame::End { record: record() }),
-        ] {
-            let bytes = frame.encode().unwrap();
-            assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
-        }
-    }
-
-    /// Cursor chat and a reaction ride the presence frame, sealed with it:
-    /// a message at the character ceiling fits, one past it or a sent empty
-    /// one does not, and a reaction is one emoji, never text with spaces.
-    #[test]
-    fn cursor_chat_and_reactions_ride_presence_within_their_bounds() {
-        let chatting = |text: &str, sent: bool| {
-            LiveFrame::Presence(PresenceFrame {
-                seq: 4,
-                sent_at_ms: 1,
-                focus: Some(record()),
-                pointer: Some(LivePointer::Strip {
-                    strip: 1,
-                    at: [10.0, 20.0],
-                }),
-                chat: Some(CursorChat {
-                    text: text.into(),
-                    sent,
-                }),
-                reaction: Some(LiveReaction {
-                    seq: 2,
-                    emoji: "\u{1f44b}\u{1f3fd}".into(),
-                }),
-                ..PresenceFrame::default()
-            })
-        };
-        let longest = "a".repeat(MAX_CURSOR_CHAT_CHARS);
-        for frame in [
-            chatting("", false),
-            chatting("hi there", true),
-            chatting(&longest, true),
-        ] {
-            let bytes = frame.encode().unwrap();
-            assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
-            let sealed =
-                SealedLiveFrame::decode(&SealedLiveFrame::seal(&frame, seal).unwrap()).unwrap();
-            assert_eq!(sealed.open(open).unwrap(), frame, "it travels sealed");
-        }
-        let too_long = "a".repeat(MAX_CURSOR_CHAT_CHARS + 1);
-        let too_wide = "\u{1f600}".repeat(MAX_CURSOR_CHAT_BYTES / 4 + 1);
-        for refused in [
-            chatting(&too_long, false),
-            chatting(&too_wide, false),
-            chatting("  ", true),
-            chatting("line\nbreak", false),
-        ] {
-            assert_eq!(refused.encode(), Err(LiveWireError::Invalid));
-        }
-        for emoji in ["", "two words", &"\u{1f600}".repeat(9)] {
-            let LiveFrame::Presence(mut frame) = chatting("", false) else {
-                panic!("chatting builds a presence frame")
-            };
-            frame.reaction = Some(LiveReaction {
+            named(),
+            LiveFrame::Ops(OpsFrame::Preview {
                 seq: 1,
-                emoji: emoji.into(),
-            });
-            assert_eq!(
-                LiveFrame::Presence(frame).encode(),
-                Err(LiveWireError::Invalid)
-            );
-        }
-    }
-
-    /// A wave rides the presence frame to one member, named by their
-    /// publisher in hex; anything else is refused.
-    #[test]
-    fn a_wave_rides_presence_to_one_member() {
-        let waving = |target: &str| {
-            LiveFrame::Presence(PresenceFrame {
-                seq: 9,
-                sent_at_ms: 1,
-                wave: Some(LiveWave {
-                    seq: 3,
-                    target: target.into(),
-                }),
-                ..PresenceFrame::default()
-            })
-        };
-        let frame = waving(&"ab".repeat(32));
-        let bytes = frame.encode().unwrap();
-        assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
-        for refused in [
-            "",
-            "not hex",
-            "ABCD",
-            &"a".repeat(MAX_WAVE_TARGET_BYTES + 1),
+                record: record(),
+                ops: vec![PreviewOp::Insert {
+                    at: LiveAnchor { cursor: vec![1] },
+                    text: "hi".into(),
+                }],
+            }),
+            LiveFrame::RetiredPresence,
         ] {
-            assert_eq!(
-                waving(refused).encode(),
-                Err(LiveWireError::Invalid),
-                "{refused:?}"
-            );
+            let bytes = frame.encode().unwrap();
+            assert_eq!(LiveFrame::decode(&bytes).unwrap(), frame);
         }
     }
 
     #[test]
     fn out_of_bounds_frames_are_refused() {
-        let nan = LiveFrame::Presence(PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-            seq: 1,
-            sent_at_ms: 0,
-            focus: None,
-            pointer: Some(LivePointer::Strip {
-                strip: 1,
-                at: [f32::NAN, 0.0],
-            }),
-            selection: None,
-            drag: None,
-            participant: None,
-        });
-        assert_eq!(nan.encode(), Err(LiveWireError::Invalid));
-        let unnamed = LiveFrame::Presence(PresenceFrame {
-            place: None,
-            chat: None,
-            reaction: None,
-            wave: None,
-            layout: None,
-            following: None,
-            seq: 1,
-            sent_at_ms: 0,
-            focus: None,
-            pointer: None,
-            selection: None,
-            drag: None,
-            participant: Some(LiveParticipant {
-                kind: ParticipantKind::Agent,
-                label: String::new(),
-                color: [0; 3],
-                activity: None,
-            }),
-        });
-        assert_eq!(unnamed.encode(), Err(LiveWireError::Invalid));
-        for place in [String::new(), "s".repeat(MAX_PLACE_BYTES + 1)] {
-            let placed = LiveFrame::Presence(PresenceFrame {
-                seq: 1,
-                sent_at_ms: 0,
-                focus: None,
-                pointer: None,
-                selection: None,
-                drag: None,
-                participant: None,
-                place: Some(place),
-                chat: None,
-                reaction: None,
-                wave: None,
-                layout: None,
-                following: None,
-            });
-            assert_eq!(placed.encode(), Err(LiveWireError::Invalid));
-        }
         let empty = LiveFrame::Ops(OpsFrame::Preview {
             seq: 1,
             record: record(),
             ops: Vec::new(),
         });
         assert_eq!(empty.encode(), Err(LiveWireError::Invalid));
-        let mut trailing = LiveFrame::Ops(OpsFrame::End { record: record() })
-            .encode()
-            .unwrap();
+        let mut trailing = named().encode().unwrap();
         trailing.push(0);
         assert_eq!(LiveFrame::decode(&trailing), Err(LiveWireError::Codec));
         assert_eq!(LiveFrame::decode(&[]), Err(LiveWireError::Codec));

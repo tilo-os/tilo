@@ -8,6 +8,13 @@ use crate::backend::allocator::{
 
 /// Returns (internal_format, read_format, type)
 pub const fn fourcc_to_gl_formats(value: Fourcc) -> Option<(GLenum, GLenum, GLenum)> {
+    // The opaque 10-bit RGB format has no transparent counterpart to look up,
+    // and its unused high bits must not be read as alpha: the opaque shader
+    // variant supplies alpha 1.
+    if matches!(value, Fourcc::Xrgb2101010) {
+        return Some((ffi::RGB10_A2, ffi::RGBA, ffi::UNSIGNED_INT_2_10_10_10_REV));
+    }
+
     let Some(value) = (if has_alpha(value) {
         Some(value)
     } else {

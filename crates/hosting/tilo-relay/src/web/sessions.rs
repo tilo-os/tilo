@@ -23,12 +23,12 @@ use tokio::sync::{Notify, watch};
 use crate::auth::{AuthenticatedPeer, Hello, HelloAck2, PendingServer};
 use crate::daemon::WebContext;
 use crate::handshake::EndpointTrust;
-use crate::room_access::{self, RoomOperation};
 use crate::transport::Envelope;
 use crate::web::protocol::{
     Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
     SessionRefusal, envelope_bytes,
 };
+use crate::workspace_access::{self, WorkspaceOperation};
 use tilo_lock::MutexRecover as _;
 
 /// A handshake must be finished within this.
@@ -42,7 +42,7 @@ const IDLE_TTL: Duration = Duration::from_secs(45);
 const SWEEP: Duration = Duration::from_secs(5);
 /// Event bytes the host holds for a session until the device acknowledges
 /// them. Past it the session stops taking envelopes from its peer loop, whose
-/// live deliveries then stay on disk until the device reads and its room
+/// live deliveries then stay on disk until the device reads and its workspace
 /// resumes (`crate::peer::Lag`): a slow reader costs latency, not its session.
 const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
 /// Duplex buffer between the HTTPS side and the peer loop.
@@ -84,7 +84,7 @@ enum Admit {
 
 pub(crate) struct Session {
     pub(crate) peer: AuthenticatedPeer,
-    /// The page keeps it beside the room it is in, only to deliver for it
+    /// The page keeps it beside the workspace it is in, only to deliver for it
     /// ([`super::SessionFinish::background`]): nobody is online by it.
     background: bool,
     token: [u8; 32],
@@ -429,7 +429,7 @@ impl Sessions {
 
     /// End idle and expired sessions every [`SWEEP`] until the host stops: a
     /// page that vanished stops counting as here and its device's deliveries
-    /// return to the room.
+    /// return to the workspace.
     pub(crate) async fn janitor(self: Arc<Self>) {
         let mut sweep = tokio::time::interval(SWEEP);
         sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -465,9 +465,9 @@ impl Sessions {
     }
 
     /// Open sessions per person (user root). A public host counts people
-    /// from it (its seats, faces and counts), and tells its one spectator
-    /// person's sessions apart. A background session counts nobody: a page
-    /// keeps it here while its person is in a room elsewhere.
+    /// from it (its faces and counts), and tells its one visitor person's
+    /// sessions apart. A background session counts nobody: a page
+    /// keeps it here while its person is in a workspace elsewhere.
     pub(crate) fn online_users(&self) -> std::collections::BTreeMap<[u8; 32], usize> {
         let mut online = std::collections::BTreeMap::new();
         for session in lock(&self.live)
@@ -499,7 +499,7 @@ impl Sessions {
     }
 
     /// Whether `peer` may take part in `workspace_id` now: its certificate
-    /// current relay-wide and admitted by the room.
+    /// current relay-wide and admitted by the workspace.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "the guard only lives for the lookup; the value kept is a clone"
@@ -511,7 +511,8 @@ impl Sessions {
             return false;
         };
         let workspace = workspace.lock().await;
-        room_access::decide(&workspace, &relay.trust(), peer, RoomOperation::Live).admitted()
+        workspace_access::decide(&workspace, &relay.trust(), peer, WorkspaceOperation::Live)
+            .admitted()
     }
 
     pub(crate) fn context(&self) -> &WebContext {

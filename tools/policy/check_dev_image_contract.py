@@ -275,10 +275,59 @@ def check_production_policy(repo: Path) -> list[Finding]:
     return findings
 
 
+COPY = re.compile(r"^\s*COPY\s+(?P<arguments>.+)$", re.IGNORECASE)
+
+
+def copy_instructions(text: str) -> list[list[str]]:
+    """The arguments of every COPY a Containerfile spells, with line continuations joined."""
+    instructions: list[list[str]] = []
+    pending = ""
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.lstrip().startswith("#"):
+            continue
+        if pending:
+            line = pending + line.strip()
+            pending = ""
+        if line.endswith("\\"):
+            pending = line[:-1] + " "
+            continue
+        match = COPY.match(line)
+        if match:
+            instructions.append(match.group("arguments").split())
+    return instructions
+
+
+def production_installs(repo: Path) -> dict[str, str]:
+    """Each path a production Containerfile copies into the image, by the source it copies."""
+    installed: dict[str, str] = {}
+    for path in production_containerfiles(repo):
+        for arguments in copy_instructions(path.read_text(encoding="utf-8")):
+            if len(arguments) != 2:
+                continue
+            source, destination = arguments
+            if destination.startswith("/"):
+                installed.setdefault(destination, source)
+    return installed
+
+
+def dev_only_entry_source(entry: object) -> str | None:
+    """The file in this tree a dev-only entry installs, when it installs a checked-in one."""
+    source = getattr(entry, "source", None) or ""
+    if source.startswith("@manifest/"):
+        return f"os/{source.removeprefix('@manifest/')}"
+    return None
+
+
 def dev_only_needles(repo: Path) -> list[tuple[re.Pattern[str], str]]:
     installer = load("install_components_for_dev_contract", repo / "os/scripts/install-components.py")
     manifest = installer.load_manifest(repo / "os/components.toml")
     production_packages = {p for c in manifest.production_components() for p in c.packages}
+    # A dev-only component may carry a file the production image installs itself
+    # from the same source (the daemon's component manifest is the image's own):
+    # the layer then holds production content, and production names no dev-only
+    # piece to get it. Only that exact source-to-destination pair is spared.
+    installed = production_installs(repo)
     needles: dict[str, tuple[re.Pattern[str], str]] = {}
 
     def add(pattern: str, label: str) -> None:
@@ -302,6 +351,8 @@ def dev_only_needles(repo: Path) -> list[tuple[re.Pattern[str], str]]:
             continue
         what = f"dev-only component {component.name!r}"
         for entry in component.files:
+            if installed.get(entry.to) == dev_only_entry_source(entry):
+                continue
             add(rf"(?<![\w.-]){re.escape(entry.to)}(?![\w.-])", f"{what} (it installs {entry.to})")
         for binary in component.bins:
             add(rf"(?:--bin\s+|target/[a-z-]+/|/out/){re.escape(binary)}(?![\w-])", f"{what} (bin {binary!r})")

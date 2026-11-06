@@ -105,15 +105,16 @@ action add(tasks: Tasks, title: Text) -> Task {
 }
 
 /// Adds what was typed in a quick add entry as a task, to the inbox or to `p`. When it says
-/// when ("Call the landlord tomorrow 9am"), that is its due day and moment and the rest its
-/// title; without, a task added `today` is due today. An empty entry adds nothing.
+/// when ("Call the landlord tomorrow 9am"), that is its due day and moment; without, a task
+/// added `today` is due today. An empty entry adds nothing.
 action quick_add(tasks: Tasks, entry: Text, p: Option<Project> = .none, today: Bool = false) {
-    let said = dated(entry, now)
-    let due: Option<Date> = if let day = said.day {
+    let due: Option<Date> = if let day = Date.parse(entry, near: now) {
         .some(day)
-    } else if today { dated("today", now).day } else { .none }
-    if said.text != "" {
-        tasks.items.insert(Task(title: said.text, due: due, at: said.at, project: p))
+    } else if today { .some(now.day()) } else { .none }
+    if entry != "" {
+        tasks.items.insert(
+            Task(title: entry, due: due, at: Time.parse(entry, near: now), project: p),
+        )
     }
 }
 
@@ -336,7 +337,7 @@ view home(t: Tasks) {
             }
         }
         overview_actions: {
-            std.header(actions(t))
+            std.header()
         }
         overview: {
             ui.Docked {
@@ -354,7 +355,7 @@ view home(t: Tasks) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks here", .none, .some("list-checks")) { x ->
+                std.rows(shown, "No tasks here", .some("list-checks")) { (x, under) ->
                     task_row(x)
                 }
             }
@@ -381,7 +382,7 @@ view project_list(p: Project, draft: State<Text>) {
     let shown = tasks_of(p)
     ui.NavShell(content_kind: .document, overview_title: p.name, overview_count: shown.len()) {
         overview_actions: {
-            std.header(actions(p))
+            std.header()
         }
         overview: {
             ui.Docked {
@@ -392,7 +393,7 @@ view project_list(p: Project, draft: State<Text>) {
                         }
                     }
                 }
-                std.rows(shown, "No tasks yet", .none, .some("folder")) { x ->
+                std.rows(shown, "No tasks yet", .some("folder")) { (x, under) ->
                     task_row(x)
                 }
             }
@@ -450,11 +451,6 @@ view task_card(t: Task, sections: List<Section>) {
                     ui.MenuItem("Move to {s.name}", icon: .arrow_right) {
                         on choose: place(t, .some(s), 0)
                     }
-                }
-            }
-            for a in actions(t) {
-                ui.MenuItem(a.label, icon: a.icon, destructive: a.destructive) {
-                    on choose: a.run
                 }
             }
         }

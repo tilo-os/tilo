@@ -92,7 +92,12 @@ fn validate_resource<S: BuildHasher>(
                 ));
             }
         }
-        let encoded = action.encode_immediate();
+        // An action bound to its target is encoded when it is invoked, not when a surface is
+        // validated: checking a surface of ten thousand items must build none of their
+        // actions. What such a builder returns is checked where it is built ([`crate::door`],
+        // [`crate::ActionSpec::build_args`]), and the effect or view it declares is checked
+        // below, against the handlers the host registered.
+        let encoded = action.published_encoding();
         if let Err(error) = action.validate_deferred_shape() {
             violations.push(issue(&address, &error.to_string()));
         }

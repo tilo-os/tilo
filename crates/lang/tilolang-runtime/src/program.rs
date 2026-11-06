@@ -348,6 +348,10 @@ impl Core {
                     .collect();
                 self.ret_h(Value::List(kept))
             }
+            Imp::Abort => {
+                let msg = self.text(a.h(0)?)?;
+                trap(format!("abort: {msg}"))
+            }
             _ => trap("not a program import"),
         }
     }
@@ -397,7 +401,14 @@ impl Core {
             ty: None,
             ..query
         };
-        let resolved = resolve(&filters, declared, &pkg.meta.enums, &self.program_clock()?)?;
+        let viewer = self.looking().ok();
+        let resolved = resolve(
+            &filters,
+            declared,
+            &pkg.meta.enums,
+            &self.program_clock()?,
+            viewer.as_deref(),
+        )?;
         let Some(pred) = crate::colls::field_reads(&resolved.pred, &info) else {
             return trap(format!(
                 "find: {} cannot be read as its filters ask",

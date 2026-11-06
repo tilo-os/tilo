@@ -71,17 +71,18 @@ impl TopBarChrome {
             x + control,
             center_y + control / 2.0,
         );
-        paint_bar_selector(
-            scene,
-            transform,
-            &RoundedRect::from_rect(self.tilo_mark_rect, f64::from(theme.tokens.radii.control)),
-            ui::chrome::SelectionState::new(
-                open,
-                self.hovered_control().as_deref() == Some(Self::CONTROL_TILO_MARK),
-                false,
-            ),
-            theme,
-        );
+        // The mark's seat is one bar control: its own lift from its face,
+        // painted nowhere by hand.
+        ui::widget::BarControlFace::new(&self.control_name(Self::CONTROL_TILO_MARK))
+            .open(open)
+            .hovered(self.hovered_control().as_deref() == Some(Self::CONTROL_TILO_MARK))
+            .paint_lift(
+                scene,
+                transform,
+                self.tilo_mark_rect,
+                theme,
+                theme.tokens.colors.surfaces.base,
+            );
         let side = f64::from(theme.tokens.metrics.icon_md);
         paint_tilo_mark(
             scene,

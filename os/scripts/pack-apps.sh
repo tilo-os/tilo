@@ -15,6 +15,9 @@
 # Envs:
 #   REPO           repo root, holding apps/*/tilo-app.toml   [default: /build]
 #   BIN_DIR        directory of built release binaries      [default: /out]
+#   COHORT_APPS    the app directories this cohort ships, space separated; an
+#                  app left out of the cohort is neither packed nor installed
+#                  [default: every app with a built binary]
 #   TAPP_DIR       install these already-verified release tapps instead of
 #                  packing BIN_DIR (optional)
 #   EXPECTED_PUBKEY require every prebuilt tapp to use this publisher (64 hex)
@@ -53,10 +56,11 @@
 # it afterwards would leave every row pointing at a directory that does not
 # exist on the booted system.
 #
-# Exit status is non-zero if any app with a built binary fails to pack or
-# install. An app whose binary is absent from BIN_DIR is reported and skipped
-# — that is the "not built for this image" case, and the caller decides
-# whether that is acceptable via REQUIRE_MIN.
+# Exit status is non-zero if any app in the cohort fails to pack or install.
+# An app outside COHORT_APPS is not considered at all; one in the cohort whose
+# binary is absent from BIN_DIR is reported and skipped — that is the "not
+# built for this image" case, and the caller decides whether that is
+# acceptable via REQUIRE_MIN.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -89,6 +93,7 @@ PKG_BIN="${PKG_BIN:-$BIN_DIR/tilo-app-package}"
 INSTALL_BIN="${INSTALL_BIN:-$BIN_DIR/tilo-install}"
 BUNDLE_BIN="${BUNDLE_BIN:-$BIN_DIR/tilo-runtime-bundle}"
 SHIM_BIN="${SHIM_BIN:-$BIN_DIR/tilo-cli-shim}"
+COHORT_APPS="${COHORT_APPS:-}"
 TAPP_DIR="${TAPP_DIR:-}"
 RUNTIME_ID="${RUNTIME_ID:-}"
 EXPECTED_PUBKEY="${EXPECTED_PUBKEY:-}"
@@ -268,9 +273,9 @@ else
     || die "RUNTIME_ID must name the runtime build the apps link (tilo-runtime/<release>+native.<digest>)"
 
 for manifest in "$REPO"/apps/*/tilo-app.toml; do
-    if [ -n "${APP_DIR:-}" ] && [ "$(basename "$(dirname "$manifest")")" != "$APP_DIR" ]; then continue; fi
-    [ -e "$manifest" ] || continue
     app="$(basename "$(dirname "$manifest")")"
+    if [ -n "$COHORT_APPS" ] && [[ " $COHORT_APPS " != *" $app "* ]]; then continue; fi
+    [ -e "$manifest" ] || continue
 
     id="$(sed -n 's/^id  *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
     entry_bin="$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
@@ -355,7 +360,8 @@ for manifest in "$REPO"/apps/*/tilo-app.toml; do
     fi
 
     if [ -n "${TAPP_OUT:-}" ]; then
-        [ -n "${APP_DIR:-}" ] || die "TAPP_OUT requires a selected APP_DIR"
+        [ -n "$COHORT_APPS" ] && [[ "$COHORT_APPS" != *" "* ]] \
+            || die "TAPP_OUT requires a single-app cohort"
         cp "$tapp" "$TAPP_OUT"
     fi
     shipped+=("$id ($tapp_bytes bytes)")

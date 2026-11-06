@@ -62,10 +62,8 @@ mod native_media;
 mod native_task_confirmation;
 mod native_task_execution;
 mod native_task_launch;
-mod person_chat;
 #[cfg(test)]
 mod policy_turn_tests;
-mod private_draft;
 #[cfg(target_os = "linux")]
 mod process_binding;
 mod published;
@@ -227,7 +225,7 @@ fn cap_applies_in(
     device: Option<&[u8; 32]>,
 ) -> bool {
     let governs = authority
-        .zip(uuid::Uuid::parse_str(workspace).ok()) // optional-decode: a non-uuid workspace is governed by no authority: the stricter bound applies
+        .zip(uuid::Uuid::parse_str(workspace).ok()) // ignored-failure: a non-uuid workspace is governed by no authority: the stricter bound applies
         .is_some_and(|(authority, workspace)| authority.governs(workspace, device));
     // A foreign device is held to the bound only in a workspace it does not govern.
     foreign && !governs
@@ -3438,7 +3436,6 @@ pub struct AppBrokerState {
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     action_catalogue_subscribers: Mutex<HashMap<u64, ActionCatalogueSubscriber>>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
-    private_drafts: Mutex<private_draft::Drafts>,
     approved_check_jobs: Mutex<approved_checks::Registry>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
@@ -3620,7 +3617,6 @@ impl AppBrokerState {
         clear!(self.invocation_subscribers);
         clear!(self.action_catalogue_subscribers);
         clear!(self.pending_invocations);
-        clear!(self.private_drafts);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_membership_peers);
         clear!(self.workspace_governance_peers);
@@ -3765,20 +3761,12 @@ impl AppBrokerState {
             Self::CANCELLATION_GRACE,
         );
         self.expire_workspace_opens(now);
-        if let Ok(mut drafts) = self.private_drafts.lock() {
-            drafts.retain(|_, entry| entry.expires > now);
-        }
     }
 
     /// When the next pending invocation can expire. `None` while nothing is
     /// in flight, so the accept loop parks instead of waking every 100 ms.
     fn next_invocation_deadline(&self) -> Option<std::time::Instant> {
         let opens = self.workspace_opens.next_deadline();
-        let drafts = self
-            .private_drafts
-            .lock()
-            .ok()
-            .and_then(|drafts| drafts.values().map(|entry| entry.expires).min());
         let pending = self.pending_invocations.lock().ok()?;
         pending
             .values()
@@ -3795,7 +3783,6 @@ impl AppBrokerState {
                 })
             })
             .chain(opens)
-            .chain(drafts)
             .min()
     }
 
@@ -4214,7 +4201,6 @@ impl AppBrokerState {
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 action_catalogue_subscribers: Mutex::new(HashMap::new()),
                 pending_invocations: Mutex::new(HashMap::new()),
-                private_drafts: Mutex::new(HashMap::default()),
                 approved_check_jobs: Mutex::default(),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLedger::default()),
@@ -6931,7 +6917,7 @@ impl AppBrokerState {
         // Task transport carries a JSON argument map directly; the contract
         // evaluator also accepts the action door's prefixed map encoding.
         let contract_argument = argument.and_then(|text| {
-            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // optional-decode: a JSON-map probe; other text is evaluated as it is
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(text) // ignored-failure: a JSON-map probe; other text is evaluated as it is
                 .ok()
                 .map(|_| format!("{}{text}", tilo_actions::ARGUMENTS_JSON_PREFIX))
         });
@@ -8127,21 +8113,24 @@ impl AppBrokerState {
     }
 
     fn refresh_workspace_context_services(&self) -> Result<(), String> {
-        fn same_roster(
-            left: &[ui::collaboration::Collaborator],
-            right: &[ui::collaboration::Collaborator],
-        ) -> bool {
-            left.len() == right.len()
-                && left.iter().zip(right).all(|(left, right)| {
-                    left.id == right.id
-                        && left.name == right.name
-                        && left.packed_colour() == right.packed_colour()
-                        && left.is_agent == right.is_agent
-                        && left.is_self == right.is_self
-                })
+        for (channel, peer_id, admitted) in self.native_context_targets()? {
+            let route = CrdtRoute::from_channel_key(&channel);
+            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
+                self.drop_context_subscriber(&channel, peer_id, &admitted)?;
+                self.publish_certified_people(&route.cluster_id);
+                continue;
+            };
+            if self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)? {
+                self.publish_certified_people(&route.cluster_id);
+            }
         }
+        Ok(())
+    }
 
-        let targets = self
+    /// Every native context subscription as its channel, its subscriber and
+    /// the admission it was let in by.
+    fn native_context_targets(&self) -> Result<Vec<(String, u64, AdmittedJoinIdentity)>, String> {
+        Ok(self
             .channels
             .lock()
             .map_err(|_| "native context subscriptions unavailable")?
@@ -8158,65 +8147,93 @@ impl AppBrokerState {
                     })
                     .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>();
-        for (channel, peer_id, admitted) in targets {
-            let route = CrdtRoute::from_channel_key(&channel);
-            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
-                let mut channels = self
-                    .channels
-                    .lock()
-                    .map_err(|_| "native context subscriptions unavailable")?;
-                if let Some(subscribers) = channels.get_mut(&channel) {
-                    subscribers.context.retain(|subscriber| {
-                        subscriber.peer_id != peer_id
-                            || subscriber
-                                .native
-                                .as_ref()
-                                .is_none_or(|native| native.admitted != admitted)
-                    });
-                }
-                drop(channels);
-                self.publish_certified_people(&route.cluster_id);
-                continue;
-            };
-            let roster = self.native_membership_roster(&route, &current)?;
-            let mut channels = self
-                .channels
-                .lock()
-                .map_err(|_| "native context subscriptions unavailable")?;
-            let mut changed = false;
-            if let Some(subscribers) = channels.get_mut(&channel) {
-                subscribers.context.retain_mut(|subscriber| {
-                    let Some(native) = subscriber.native.as_mut() else {
-                        return true;
-                    };
-                    if subscriber.peer_id != peer_id || native.admitted != admitted {
-                        return true;
-                    }
-                    if same_roster(&native.roster, &roster) {
-                        return true;
-                    }
-                    changed = true;
-                    if subscriber
-                        .tx
-                        .send(ContextUpdate::Snapshot {
-                            collaborators: roster.clone(),
-                            permissions: Vec::new(),
-                        })
-                        .is_err()
-                    {
-                        return false;
-                    }
-                    native.roster.clone_from(&roster);
-                    true
-                });
-            }
-            drop(channels);
-            if changed {
-                self.publish_certified_people(&route.cluster_id);
-            }
+            .collect())
+    }
+
+    /// Drop a subscriber of `channel` whose admission `admitted` no longer
+    /// revalidates, and leave any other subscriber that joined under another
+    /// admission of the same peer alone.
+    fn drop_context_subscriber(
+        &self,
+        channel: &str,
+        peer_id: u64,
+        admitted: &AdmittedJoinIdentity,
+    ) -> Result<(), String> {
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?;
+        if let Some(subscribers) = channels.get_mut(channel) {
+            subscribers.context.retain(|subscriber| {
+                subscriber.peer_id != peer_id
+                    || subscriber
+                        .native
+                        .as_ref()
+                        .is_none_or(|native| native.admitted != *admitted)
+            });
         }
+        drop(channels);
         Ok(())
+    }
+
+    /// Tell one native context subscriber what its workspace's governance now
+    /// admits: the roster. Returns whether the roster changed.
+    fn tell_context_subscriber(
+        &self,
+        route: &CrdtRoute,
+        channel: &str,
+        peer_id: u64,
+        admitted: &AdmittedJoinIdentity,
+        current: &AdmittedJoinIdentity,
+    ) -> Result<bool, String> {
+        fn same_roster(
+            left: &[ui::collaboration::Collaborator],
+            right: &[ui::collaboration::Collaborator],
+        ) -> bool {
+            left.len() == right.len()
+                && left.iter().zip(right).all(|(left, right)| {
+                    left.id == right.id
+                        && left.name == right.name
+                        && left.packed_colour() == right.packed_colour()
+                        && left.is_agent == right.is_agent
+                        && left.is_self == right.is_self
+                })
+        }
+
+        let roster = self.native_membership_roster(route, current)?;
+        let mut channels = self
+            .channels
+            .lock()
+            .map_err(|_| "native context subscriptions unavailable")?;
+        let mut changed = false;
+        if let Some(subscribers) = channels.get_mut(channel) {
+            subscribers.context.retain_mut(|subscriber| {
+                let Some(native) = subscriber.native.as_mut() else {
+                    return true;
+                };
+                if subscriber.peer_id != peer_id || native.admitted != *admitted {
+                    return true;
+                }
+                if same_roster(&native.roster, &roster) {
+                    return true;
+                }
+                changed = true;
+                if subscriber
+                    .tx
+                    .send(ContextUpdate::Snapshot {
+                        collaborators: roster.clone(),
+                        permissions: Vec::new(),
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+                native.roster.clone_from(&roster);
+                true
+            });
+        }
+        drop(channels);
+        Ok(changed)
     }
 
     /// Re-check every membership surface and native context subscriber,
@@ -8245,14 +8262,14 @@ impl AppBrokerState {
         let surface_failed = self
             .refresh_workspace_membership_services()
             .inspect_err(|error| {
-                tracing::debug!(%error, "native membership surface could not be refreshed");
+                tracing::warn!(%error, "native membership surface could not be refreshed");
             })
             .is_err();
         self.answer_membership_surface_waiters(waiting);
         let context_failed = self
             .refresh_workspace_context_services()
             .inspect_err(|error| {
-                tracing::debug!(%error, "native membership context could not be refreshed");
+                tracing::warn!(%error, "native membership context could not be refreshed");
             })
             .is_err();
         let clocked = surface_failed || context_failed;
@@ -8517,7 +8534,6 @@ fn joined_record_kind(kind: &str) -> Result<Option<String>, BrokerError> {
 /// Per-channel handle established by `join_channel`; every subsequent
 /// method call inherits its (`channel_id`, `peer_id`, identity) context.
 struct JoinedChannel {
-    person_chat_views: RefCell<person_chat::SelectedViews>,
     committed_read: Rc<RefCell<committed_document::Slot>>,
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
@@ -9499,17 +9515,25 @@ impl AppBrokerState {
     /// Nothing about the workspace joins or their rosters is involved — a
     /// record of that scope has no workspace — and a record of any other
     /// route is none of the store's.
-    pub(crate) fn keep_personally(&self, route: &CrdtRoute, envelope: &SignedOp) {
+    pub(crate) fn keep_personally(
+        &self,
+        route: &CrdtRoute,
+        envelope: &SignedOp,
+    ) -> Result<(), BrokerError> {
         let Some(personal) = self.services.personal.as_ref() else {
-            return;
+            return Ok(());
         };
         if personal.read(tilo_peer_state::PersonalStore::store_key) != route.cluster_id {
-            return;
+            return Ok(());
         }
-        if let Err(error) = personal.admit_local(&route.app_id, &route.record_id, envelope.clone())
-        {
-            tracing::warn!(%error, "a record of the person's own was not kept");
-        }
+        personal
+            .admit_local(&route.app_id, &route.record_id, envelope.clone())
+            .map(|_| ())
+            .map_err(|error| {
+                BrokerError::failed(format!(
+                    "send: the person's own store did not keep the record: {error}"
+                ))
+            })
     }
 }
 
@@ -9547,26 +9571,28 @@ fn handle_authorized_signed_op_send(
 }
 
 /// Read a page of scrollback ops for `artifact`, each encoded as postcard
-/// bytes as the wire carries them.
+/// bytes as the wire carries them, with the oldest sequence in it: where the
+/// channel's other devices are asked to go on from.
 fn read_scrollback(
     broker_channels: &Arc<Mutex<BrokerChannels>>,
     artifact: ArtifactId,
     before_seq: u64,
     max: u32,
-) -> (Vec<Vec<u8>>, bool) {
+) -> (Vec<Vec<u8>>, Option<u64>, bool) {
     let Ok(mut ch) = broker_channels.lock() else {
-        return (Vec::new(), true);
+        return (Vec::new(), None, true);
     };
     // `max` is a peer-supplied page size; clamp rather than wrap so an
     // oversized request degrades to "as many as the u16 cap allows"
     // instead of silently truncating to an unrelated smaller number.
     let capped_max = u16::try_from(max).unwrap_or(u16::MAX);
     let (ops, exhausted) = ch.scrollback_page(artifact, before_seq, capped_max);
+    let oldest = ops.iter().map(|op| op.seq).min();
     let encoded: Vec<Vec<u8>> = ops
         .into_iter()
         .filter_map(|op| postcard::to_stdvec(&op).ok())
         .collect();
-    (encoded, exhausted)
+    (encoded, oldest, exhausted)
 }
 
 // Presence handle + streams
@@ -10128,6 +10154,7 @@ impl Drop for SocketStage {
         if !self.published
             && let Some(identity) = self.identity
         {
+            // ignored-failure: the next bind proves a stale socket and unlinks it
             let _ = remove_socket_if_owned(&self.socket, identity);
         } else if !self.published
             && self.bound
@@ -10199,6 +10226,7 @@ struct SocketCustody {
 
 impl Drop for SocketCustody {
     fn drop(&mut self) {
+        // ignored-failure: the next bind proves a stale socket and unlinks it
         let _ = remove_socket_if_owned(&self.path, self.identity);
     }
 }
@@ -12280,7 +12308,6 @@ pub mod tests {
         ) -> runtime_collab::ChannelHandle {
             wire_channel(JoinedChannel {
                 as_app: None,
-                person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state: Arc::clone(&self.state),
                 directories: Rc::clone(&self.directories),

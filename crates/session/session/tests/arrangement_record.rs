@@ -1,11 +1,12 @@
-//! The shell's arrangement is the person's own typed record (shell.md §2,
-//! workspace-model.md §9): what is open where, kept in their record with
-//! history and undo, synced to their devices that use the same shell, and
-//! shared with no other member.
+//! The arrangement is the desk's own record (shell.md §2, workspace-model.md
+//! §9): what is open where, kept with the desk the workspace shares, with
+//! history and undo. No second record of it exists, and what the desk's windows
+//! do not carry — the view a place shows and whether it is pinned — is kept
+//! with the desk too.
 //!
-//! Each test here fails before the arrangement is a record: the desk keeps
-//! its own tree, nothing attributes a move to anyone, nothing undoes one,
-//! and an agent's move lands under the person's hands.
+//! Each test here fails without it: nothing attributes a move to anyone,
+//! nothing undoes one, an agent's move lands under the person's hands, and a
+//! place's view and pin are gone after a restart.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -19,8 +20,8 @@
 
 use std::time::Duration;
 
+use automerge::ReadDoc as _;
 use tilo_compositor::{InputEvent, OutputConfig};
-use tilo_desktop_model::own_arrangement::{self, Strips};
 use tilo_session::{Options, Session};
 
 const WIDTH: i32 = 1280;
@@ -68,14 +69,42 @@ fn step(session: &mut Session) {
     session.step(Duration::from_millis(1)).expect("a frame");
 }
 
-/// The arrangement the session's record holds now.
-fn arrangement(session: &Session) -> Strips {
-    session.arrangement().borrow().strips()
+/// The arrangement the session's desk holds now, as a shell reads it.
+fn arrangement(session: &Session) -> tilo_session::arrangement::Reading {
+    session.arrangement().borrow().reading()
+}
+
+/// An id as the arrangement reads it out: its whole number.
+fn number(key: &str) -> u64 {
+    key.parse().expect("an id reads as its number")
 }
 
 /// The strip `tab` stands in, by its id.
 fn strip_of(session: &Session, tab: u64) -> Option<u64> {
-    arrangement(session).strip_of(tab).map(|strip| strip.id)
+    let key = tab.to_string();
+    arrangement(session)
+        .places
+        .iter()
+        .find(|place| place.key == key)
+        .map(|place| number(&place.strip))
+}
+
+/// The place `tab` is, as the arrangement reads it.
+fn place_of(session: &Session, tab: u64) -> Option<tilo_session::arrangement::PlaceReading> {
+    let key = tab.to_string();
+    arrangement(session)
+        .places
+        .into_iter()
+        .find(|place| place.key == key)
+}
+
+/// The strip `strip` is, as the arrangement reads it.
+fn strip_at(session: &Session, strip: u64) -> Option<tilo_session::arrangement::StripReading> {
+    let key = strip.to_string();
+    arrangement(session)
+        .strips
+        .into_iter()
+        .find(|held| held.key == key)
 }
 
 /// A window of `app` on the desk, its tab's id.
@@ -108,6 +137,8 @@ fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         }],
         active_tab: tab,
         width: tilo_desktop_model::WindowWidth::Normal,
@@ -136,11 +167,11 @@ fn add_strip(session: &Session, name: &str) -> u64 {
 
 /// The row `strip` (a column of places) stands in, in the arrangement.
 fn row_of(session: &Session, strip: u64) -> u64 {
-    arrangement(session)
-        .strip(strip)
-        .expect("the strip is in the record")
-        .row
-        .0
+    number(
+        &strip_at(session, strip)
+            .expect("the strip is in the record")
+            .row,
+    )
 }
 
 // (1) The person drags a window to another strip: the record holds the move,
@@ -169,9 +200,11 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
     step(&mut session);
 
     // The record holds the move, attributed to the person.
-    let held = arrangement(&session);
-    let strip = held.strip_of(window).expect("the place is in the record");
-    assert_eq!(strip.row.0, row, "the record holds the move");
+    assert_eq!(
+        strip_of(&session, window).map(|strip| row_of(&session, strip)),
+        Some(row),
+        "the record holds the move"
+    );
     let (who, verb) = session
         .arrangement()
         .borrow_mut()
@@ -184,9 +217,7 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
     session.undo_arrangement().unwrap();
     step(&mut session);
     assert_eq!(
-        arrangement(&session)
-            .strip_of(window)
-            .map(|strip| strip.row.0),
+        strip_of(&session, window).map(|strip| row_of(&session, strip)),
         Some(from),
         "undo restored the place to its row"
     );
@@ -239,11 +270,8 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     let window = open_window(&mut session, "org.example.Notes");
     let second = add_strip(&session, "Second");
     step(&mut session);
-    let from = arrangement(&session)
-        .strip_of(window)
-        .expect("it has a strip")
-        .row
-        .0;
+    let from = strip_of(&session, window).map(|strip| row_of(&session, strip));
+    let from = from.expect("it has a strip");
 
     // The place's own resource publishes the actions a press names it by, so the
     // catalogue, tilo-control and an agent see them.
@@ -267,9 +295,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     step(&mut session);
 
     assert_eq!(
-        arrangement(&session)
-            .strip_of(window)
-            .map(|strip| strip.row.0),
+        strip_of(&session, window).map(|strip| row_of(&session, strip)),
         Some(second),
         "the agent's move is in the record"
     );
@@ -284,20 +310,21 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     session.undo_arrangement().unwrap();
     step(&mut session);
     assert_eq!(
-        arrangement(&session)
-            .strip_of(window)
-            .map(|strip| strip.row.0),
+        strip_of(&session, window).map(|strip| row_of(&session, strip)),
         Some(from),
         "undo restored it to its row"
     );
 }
 
-// (3) A second device with the same shell gets the arrangement; another
-// member does not.
+// (3) One record answers what the arrangement is: the desk's own, which the
+// workspace shares. Nothing is kept beside it, and another member of the
+// workspace reads none of it.
 #[test]
-fn a_second_device_gets_the_arrangement_and_another_member_does_not() {
+fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
-    let mut here = session();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    let mut here = session_in(Some(state.clone()));
     step(&mut here);
     let window = open_window(&mut here, "org.example.Notes");
     let second = add_strip(&here, "Second");
@@ -307,72 +334,215 @@ fn a_second_device_gets_the_arrangement_and_another_member_does_not() {
         .ask_person(&move_to(window, second))
         .unwrap();
     step(&mut here);
-
-    // A second device of the person's places the same desk from the same
-    // record.
-    let state = tempfile::tempdir().expect("a state directory");
-    let mut other = session_in(Some(state.path().to_path_buf()));
-    step(&mut other);
-    let shared = here.arrangement().borrow().shared_record().clone();
-    other.arrangement().borrow_mut().adopt(&shared);
-    step(&mut other);
     assert_eq!(
-        other.handle().read(|tree| tree
-            .workspaces
-            .iter()
-            .filter(|w| !w.strips.is_empty())
-            .count()),
-        1,
-        "the other device shows the arrangement"
-    );
-
-    // What this person's devices share: the record, on the route only their
-    // devices hold the key to.
-    let id = own_arrangement::record_id(ADA);
-    assert_eq!(
-        tilo_action_policy::member_record(&id),
-        Some((ADA, own_arrangement::KIND)),
-        "the record is the person's own"
-    );
-    // Another member's record of the same kind is another record, which this
-    // arrangement's changes never reach.
-    assert_ne!(id, own_arrangement::record_id(BO));
-
-    // The other device reads the arrangement from the same record.
-    let brought: Strips = own_arrangement::read(&shared);
-    assert_eq!(
-        brought.strip_of(window).map(|strip| strip.row.0),
+        strip_of(&here, window).map(|strip| row_of(&here, strip)),
         Some(second),
-        "the other device has the arrangement"
+        "the desk holds the move"
+    );
+    drop(here);
+
+    // The desk's one document is what keeps it: no record of the arrangement's
+    // own is written beside it.
+    assert!(
+        state.join("tilo").join("desk.automerge").exists(),
+        "the desk's document keeps the arrangement"
+    );
+    assert!(
+        !state.join("tilo").join("arrangement.automerge").exists(),
+        "no second record of the arrangement is kept"
     );
 
-    // Another member of the workspace runs the same shell on their own
-    // device: their arrangement is their own record, and holds none of this
-    // one's places.
+    // Another member of the workspace runs a desk of their own: nothing of this
+    // one's arrangement is theirs.
     let mut theirs = session_as(BO);
     step(&mut theirs);
-    assert_eq!(
-        theirs.arrangement().borrow().record_id(),
-        own_arrangement::record_id(BO),
-        "their record is their own"
-    );
     assert!(
-        theirs
-            .arrangement()
-            .borrow()
-            .strips()
-            .place(window)
-            .is_none(),
+        place_of(&theirs, window).is_none(),
         "nothing of this person's arrangement is theirs"
     );
-    // And what they share of theirs contains none of it.
-    let theirs_record = theirs.arrangement().borrow().shared_record().clone();
-    assert!(
-        own_arrangement::read(&theirs_record)
-            .place(window)
-            .is_none(),
-        "their record, read, holds none of this person's places"
+}
+
+// (5) What a place shows and whether it is pinned are the window's own, so
+// they survive a restart with the desk — and nothing is kept beside it.
+#[test]
+fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    let place = {
+        let mut session = session_in(Some(state.clone()));
+        step(&mut session);
+        let window = open_window(&mut session, "org.example.Notes");
+        step(&mut session);
+        // A shell showing the window through a view sets it on the window.
+        let handle = session.handle().clone();
+        let mut tree = handle.read(Clone::clone);
+        for tab in tree
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| &mut workspace.strips)
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+            .filter(|tab| tab.id == window)
+        {
+            tab.view = "editor".into();
+        }
+        handle.replace_tree(tree);
+        invoke_as(
+            &mut session,
+            &place_resource(window),
+            "pin",
+            &serde_json::json!({"pinned": true}),
+        );
+        let held = place_of(&session, window).expect("the place is in the arrangement");
+        assert_eq!(
+            held.shown_as, "editor",
+            "the arrangement holds the view it shows"
+        );
+        assert!(held.pinned, "and the pin on it");
+        // The desk's own window carries both now: nothing is kept beside it.
+        let desk = ui::automerge::AutoCommit::load(
+            &std::fs::read(state.join("tilo").join("desk.automerge")).expect("the desk's document"),
+        )
+        .expect("the desk's document reads");
+        assert!(
+            desk.get(ui::automerge::ROOT, "arrangement_marks_v1")
+                .ok()
+                .flatten()
+                .is_none(),
+            "the view and the pin are the window's own"
+        );
+        window
+    };
+
+    let mut next = session_in(Some(state));
+    step(&mut next);
+    let back = place_of(&next, place).expect("the place came back");
+    assert_eq!(back.shown_as, "editor", "the view the place shows");
+    assert!(back.pinned, "the place is still pinned");
+}
+
+// (6) The arrangement a build before this one kept beside the desk comes into
+// the desk once: the windows it held are open on the desk again, and the file
+// it was kept in is gone. A window it kept as a live surface comes back as the
+// app it showed, as every window of the desk does.
+#[test]
+fn the_record_a_build_before_this_one_kept_comes_into_the_desk_once() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    // The desk this device had before the build that keeps the arrangement in
+    // it: where its workspace's windows stand.
+    let (workspace, row) = {
+        let mut session = session_in(Some(state.clone()));
+        step(&mut session);
+        session.handle().read(|tree| {
+            (
+                tree.active.0,
+                tree.active_workspace()
+                    .and_then(|workspace| workspace.strips.first())
+                    .expect("a row")
+                    .id
+                    .0,
+            )
+        })
+    };
+    let (strip, place) = (7u64, 9u64);
+    let file = kept_arrangement(&state, workspace, row, strip, place);
+
+    let mut session = session_in(Some(state));
+    step(&mut session);
+    let back = place_of(&session, place).expect("the place came into the desk");
+    assert_eq!(back.shows, "org.example.Notes", "the app it showed");
+    assert_eq!(back.shown_as, "editor", "through the view it showed it in");
+    assert!(back.pinned, "and pinned");
+    assert_eq!(
+        strip_of(&session, place),
+        Some(strip),
+        "in the strip it stood in"
     );
+    let tile = session.handle().read(|tree| {
+        tree.workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == place)
+            .map(|tab| tab.tile.clone())
+    });
+    assert!(
+        matches!(
+            tile,
+            Some(tilo_desktop_model::TileContent::LocalApp { ref app_id, .. })
+                if app_id == "org.example.Notes"
+        ),
+        "a live window comes back as the app it showed: {tile:?}"
+    );
+    assert!(!file.exists(), "the record it came from is gone");
+}
+
+/// The arrangement a build before this one kept beside the desk under
+/// `state`, as it wrote it: a workspace, a row, a strip and a place, each an
+/// entry of the document under its own id. The place shows Notes through its
+/// `editor` view, pinned, with a live window of it.
+fn kept_arrangement(
+    state: &std::path::Path,
+    workspace: u64,
+    row: u64,
+    strip: u64,
+    place: u64,
+) -> std::path::PathBuf {
+    use automerge::transaction::Transactable as _;
+    use automerge::{ObjType, ROOT, ReadDoc as _};
+    let mut doc = ui::automerge::AutoCommit::new();
+    let entry = |doc: &mut ui::automerge::AutoCommit, key: &str, id: u64| {
+        let container = match doc.get(&ROOT, key).ok().flatten() {
+            Some((automerge::Value::Object(ObjType::Map), container)) => container,
+            _ => doc
+                .put_object(&ROOT, key, ObjType::Map)
+                .expect("the document takes a map"),
+        };
+        doc.put_object(container, id.to_string(), ObjType::Map)
+            .expect("the document takes an entry")
+    };
+    let held = entry(&mut doc, "workspaces", workspace);
+    doc.put(&held, "order", 0.0).expect("the entry");
+    doc.put(&held, "name", "Home").expect("the entry");
+    let held = entry(&mut doc, "rows", row);
+    doc.put(&held, "order", 0.0).expect("the entry");
+    doc.put(&held, "name", "Writing").expect("the entry");
+    doc.put(&held, "workspace", workspace.to_string())
+        .expect("the entry");
+    let held = entry(&mut doc, "strips", strip);
+    doc.put(&held, "order", 0.0).expect("the entry");
+    doc.put(&held, "workspace", workspace.to_string())
+        .expect("the entry");
+    doc.put(&held, "row", row.to_string()).expect("the entry");
+    doc.put(&held, "active", place.to_string())
+        .expect("the entry");
+    let held = entry(&mut doc, "places", place);
+    doc.put(&held, "strip", strip.to_string())
+        .expect("the entry");
+    doc.put(&held, "order", 0.0).expect("the entry");
+    doc.put(&held, "shows", "org.example.Notes")
+        .expect("the entry");
+    doc.put(&held, "view", "editor").expect("the entry");
+    doc.put(
+        &held,
+        "state",
+        serde_json::json!({
+            "Foreign": {"app_id": "org.example.Notes", "surface_id": 3},
+        })
+        .to_string(),
+    )
+    .expect("the entry");
+    doc.put(&held, "title", "Notes").expect("the entry");
+    doc.put(&held, "pinned", true).expect("the entry");
+    let path = state.join("tilo");
+    std::fs::create_dir_all(&path).expect("the state directory");
+    let file = path.join("arrangement.automerge");
+    std::fs::write(&file, doc.save()).expect("the record is kept");
+    file
 }
 
 // (4) While the person types or drags, an agent's move waits, not drops, and
@@ -387,7 +557,9 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     step(&mut session);
     let from = strip_of(&session, window).expect("it has a strip");
 
-    // The person types: nothing moves under their hands.
+    // The person types, and the agent asks while they do: the pass that takes the keystroke in is
+    // the pass that tells the agent's action the person is busy, so the move waits rather than
+    // landing under their hands.
     session
         .compositor()
         .input(InputEvent::Key {
@@ -396,8 +568,6 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         })
         .unwrap();
     step(&mut session);
-    assert!(session.compositor().underway().typing, "they are typing");
-
     session
         .invoke_with_actor(
             "agent-task:reading",
@@ -406,7 +576,6 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
             &serde_json::json!({"row": row_resource(second)}),
         )
         .expect("the action is taken");
-    step(&mut session);
     assert_eq!(
         strip_of(&session, window),
         Some(from),
@@ -418,7 +587,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
         "and it waits rather than dropping"
     );
 
-    // The typing ends; what waited runs by itself.
+    // The typing ends; what waited runs by itself, once the product's own pause on typing is over.
     session
         .compositor()
         .input(InputEvent::Key {
@@ -426,19 +595,16 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
             pressed: false,
         })
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = tilo_test_env::hang_deadline();
     while session.arrangement().borrow().waiting() > 0 {
         assert!(
             std::time::Instant::now() < deadline,
             "the waiting move never ran"
         );
-        std::thread::sleep(Duration::from_millis(1100));
-        step(&mut session);
+        session.step(Duration::from_millis(50)).expect("a frame");
     }
     assert_eq!(
-        arrangement(&session)
-            .strip_of(window)
-            .map(|strip| strip.row.0),
+        strip_of(&session, window).map(|strip| row_of(&session, strip)),
         Some(second),
         "it applies once the person is done"
     );
@@ -468,7 +634,7 @@ fn a_pinned_place_stays_where_the_person_put_it() {
         "pin",
         &serde_json::json!({"pinned": true}),
     );
-    assert!(arrangement(&session).place(window).unwrap().pinned);
+    assert!(place_of(&session, window).unwrap().pinned);
 
     // The agent's move is refused, and the place stands.
     let refused = session.invoke_with_actor(
@@ -628,9 +794,8 @@ fn resizing_a_strip_is_one_step_and_undone() {
     let window = open_window(&mut session, "org.example.Notes");
     step(&mut session);
     let strip = strip_of(&session, window).expect("it has a strip");
-    let was = arrangement(&session)
-        .strip(strip)
-        .map(|strip| strip.width.permille())
+    let was = strip_at(&session, strip)
+        .map(|strip| strip.width)
         .expect("the strip is in the record");
 
     invoke_as(
@@ -639,20 +804,63 @@ fn resizing_a_strip_is_one_step_and_undone() {
         "resize",
         &serde_json::json!({"permille": 333}),
     );
-    let now = arrangement(&session)
-        .strip(strip)
-        .map(|strip| strip.width.permille())
+    let now = strip_at(&session, strip)
+        .map(|strip| strip.width)
         .expect("the strip is in the record");
     assert_ne!(now, was.max(333), "the width changed");
     assert_eq!(now, 333, "the strip stands narrow");
 
     session.undo_arrangement().unwrap();
     step(&mut session);
-    let back = arrangement(&session)
-        .strip(strip)
-        .map(|strip| strip.width.permille())
+    let back = strip_at(&session, strip)
+        .map(|strip| strip.width)
         .expect("the strip is in the record");
     assert_eq!(back, was, "undo restores the width");
+}
+
+// A window is maximized through the published action, so the desk shows the one window it is,
+// and one undo brings the others back beside it.
+#[test]
+fn maximizing_a_window_is_one_step_and_undone() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let other = open_window_called(&mut session, "org.example.Notes", "Other");
+    step(&mut session);
+    let strip = strip_of(&session, window).expect("it has a strip");
+    let other_strip = strip_of(&session, other).expect("the other place is in a strip");
+    assert!(
+        arrangement(&session)
+            .strips
+            .iter()
+            .all(|strip| !strip.maximized),
+        "the desk starts beside itself"
+    );
+
+    invoke_as(
+        &mut session,
+        &strip_resource(strip),
+        "maximize-strip",
+        &serde_json::json!({}),
+    );
+    let maximized = |session: &Session, strip: u64| {
+        strip_at(session, strip)
+            .map(|strip| strip.maximized)
+            .expect("the strip is in the record")
+    };
+    assert!(maximized(&session, strip), "the window fills the desk");
+    assert!(
+        !maximized(&session, other_strip),
+        "and no other window does"
+    );
+
+    session.undo_arrangement().unwrap();
+    step(&mut session);
+    assert!(
+        !maximized(&session, strip),
+        "undo restores the windows beside each other"
+    );
 }
 
 /// A session on a device whose salt is the top of an id's high bits: every place, strip and
@@ -701,14 +909,12 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
         &serde_json::json!({"pinned": true}),
     );
     assert_eq!(
-        arrangement(&session)
-            .place(window)
-            .map(|place| place.pinned),
+        place_of(&session, window).map(|place| place.pinned),
         Some(true),
         "pin reached the place it named"
     );
     assert_eq!(
-        arrangement(&session).place(other).map(|place| place.pinned),
+        place_of(&session, other).map(|place| place.pinned),
         Some(false),
         "and no other place"
     );
@@ -721,9 +927,7 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
         &serde_json::json!({"permille": 333}),
     );
     assert_eq!(
-        arrangement(&session)
-            .strip(strip)
-            .map(|strip| strip.width.permille()),
+        strip_at(&session, strip).map(|strip| strip.width),
         Some(333),
         "resize reached the strip it named"
     );
@@ -736,9 +940,7 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
         &serde_json::json!({"row": row_resource(second)}),
     );
     assert_eq!(
-        arrangement(&session)
-            .strip_of(window)
-            .map(|strip| strip.row.0),
+        strip_of(&session, window).map(|strip| row_of(&session, strip)),
         Some(second),
         "move reached the place it named, into the row it named"
     );

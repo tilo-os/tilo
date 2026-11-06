@@ -76,13 +76,10 @@ fn ask(questions: &Questions, app: Option<&str>, label: &str, kind: &str, detail
 /// Let the session run until `done` holds.
 #[track_caller]
 fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
-    for _ in 0..500 {
+    tilo_test_env::wait_for("what the test asked for", || {
         session.step(Duration::from_millis(2)).expect("step");
-        if done(session) {
-            return;
-        }
-    }
-    panic!("condition not reached");
+        done(session).then_some(())
+    });
 }
 
 /// The dialog the portal sheet shows, once the question went up.
@@ -1086,7 +1083,7 @@ fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
 fn door_client(socket: &std::path::Path, answers: &std::sync::mpsc::Sender<Vec<Value>>) {
     let stream = UnixStream::connect(socket).expect("the agent door's socket");
     stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
         .expect("the client waits for the person");
     let mut writer = stream.try_clone().expect("a second handle on the door");
     let mut reader = BufReader::new(stream);
@@ -1134,7 +1131,7 @@ fn door_answers(
 ) -> Vec<Value> {
     pump(session, |_| questions.pending().is_empty());
     let read = answers
-        .recv_timeout(Duration::from_secs(30))
+        .recv_timeout(tilo_test_env::hang_bound())
         .expect("the program at the door is served");
     client.join().expect("the program's thread");
     read

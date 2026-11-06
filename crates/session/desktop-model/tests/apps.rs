@@ -47,6 +47,8 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,

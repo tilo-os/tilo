@@ -1,9 +1,9 @@
-//! Local immutable publication custody and current-authorized history recovery.
+//! Local immutable publication custody: the signed frames this device still
+//! owes the workspace, and when the workspace has retired them.
 //! Nothing here admits remote historical wire data or commits an owner's storage.
 use super::{
-    AdmissionError, ArtifactKind, BTreeMap, ChannelState, Document, DocumentAdmission,
-    DocumentMutation, Duration, Ed25519PublicKey, MemberAuthority, NeighbourMsg, OpKind, ReadDoc,
-    Route, SignedOp, SigningKey, StatePeer, SystemTime, Transactable, err, peer_handle, workspace,
+    AdmissionError, DocumentAdmission, DocumentMutation, NeighbourMsg, Route, SignedOp, SigningKey,
+    StatePeer, SystemTime, err, peer_handle,
 };
 use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 
@@ -12,16 +12,12 @@ use crate::state::facades::{PeerOutbox, PeerOutboxMut};
 pub type Reseal<'a> =
     dyn FnMut(&SignedOp) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String> + 'a;
 
-const MAX_PUBLICATIONS: usize = 64;
-const MAX_PUBLICATION_BYTES: usize = 4 * 1024 * 1024;
-
 struct LocalDocument {
     admission: DocumentAdmission,
     route: Route,
     /// `None` for a sealed write: this replica holds only its ciphertext, so
-    /// it has no history to check or project, only the channel's key holder
-    /// can renew it, and it is retired by the governor's signed sequence
-    /// watermark alone.
+    /// it has no history to check, only the channel's key holder can renew it,
+    /// and only a durable receipt naming it retires it.
     mutation: Option<DocumentMutation>,
 }
 
@@ -56,7 +52,11 @@ impl StatePeer {
             record: record_id.clone(),
         };
         let Some(document) = self.core.documents.get(&route) else {
-            return Err("retained local publication route is not admitted".into());
+            return Err(format!(
+                "retained local publication route {}/{} is not admitted",
+                route.app, route.record
+            )
+            .into());
         };
         let mutation = match collab_types::validate_whole_document_payload_route(
             app_id, cluster_id, record_id, envelope,
@@ -101,7 +101,8 @@ impl StatePeer {
     // record. Comparing resulting change hashes distinguishes equal text from
     // genuine causal inclusion, and permits equivalent document/change encodings.
     /// `local` with every change it depends on from the admitted record:
-    /// what a recovery re-sends for it (see [`history`]).
+    /// what a receipt has to cover before it retires the frame (see
+    /// [`history`]).
     fn publication_history(
         &self,
         local: &LocalDocument,
@@ -120,138 +121,6 @@ impl StatePeer {
             mutation,
             current.doc.committed_document(),
         )
-    }
-
-    fn fresh_local_recovery_checkpoint(
-        &self,
-        route: &Route,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        if !self.fresh_checkpoint_for(&route.app, &route.record, now) {
-            return Ok(false);
-        }
-        let document = self
-            .core
-            .documents
-            .get(route)
-            .ok_or("recovery record missing")?;
-        if document.encryption_required {
-            return Err("recovery needs actual cleartext record custody".into());
-        }
-        let Some(snapshot) = &document.covered_snapshot else {
-            return Ok(false);
-        };
-        let coverage = crate::coverage::entries(
-            self.core
-                .workspace_doc
-                .as_deref()
-                .ok_or("missing workspace governance")?,
-        )?;
-        let Some(coverage) = coverage.get(&crate::coverage::route_key(&route.app, &route.record))
-        else {
-            return Ok(false);
-        };
-        let accepted = snapshot.decoded()?;
-        Ok(coverage.workspace == self.core.workspace
-            && coverage.app == route.app
-            && coverage.record == route.record
-            && self.signed_by_owner(&coverage.author)
-            && accepted.heads == coverage.heads
-            && accepted.payload_hash == coverage.payload_hash
-            && coverage.watermarks.iter().all(|(author, sequence)| {
-                document.covered.get(author).copied().unwrap_or(0) >= *sequence
-            }))
-    }
-
-    // A successor may rely only on changes the governor has acknowledged, not
-    // missing ancestors held solely in our local document. Otherwise a fresh
-    // dependent frame would indefinitely suppress recovery of its predecessor.
-    fn recovery_publication_history(
-        &self,
-        local: &LocalDocument,
-    ) -> Result<Option<automerge::Automerge>, String> {
-        let Some(DocumentMutation::Incremental(bytes)) = &local.mutation else {
-            return Ok(None);
-        };
-        let mut history = automerge::Automerge::new();
-        history.load_incremental(bytes).map_err(err)?;
-        let checkpoint = self
-            .core
-            .documents
-            .get(&local.route)
-            .ok_or("recovery route is not admitted")?
-            .covered_snapshot
-            .as_ref()
-            .ok_or("recovery checkpoint missing")?
-            .decoded()?;
-        loop {
-            let missing = history.get_missing_deps(&[]);
-            if missing.is_empty() {
-                return Ok(Some(history));
-            }
-            let Some(dependencies) = missing
-                .iter()
-                .map(|hash| checkpoint.doc.get_change_by_hash(hash))
-                .collect::<Option<Vec<_>>>()
-            else {
-                return Ok(None);
-            };
-            history.apply_changes(dependencies).map_err(err)?;
-            if history.get_missing_deps(&[]) == missing {
-                return Err("recovery publication dependencies did not advance".into());
-            }
-        }
-    }
-
-    fn validate_retained_history(&self, history: &StatePeer) -> Result<(), String> {
-        if !self.core.admission_v5 || !history.core.admission_v5 {
-            return Err("retained history requires selected native v5".into());
-        }
-        self.admissions_since(history).map_err(err)?;
-        for (route, old) in &history.core.documents {
-            let current = self
-                .core
-                .documents
-                .get(route)
-                .ok_or("retained history record missing")?;
-            if old.encryption_required
-                || current.encryption_required
-                || !old
-                    .doc
-                    .base_heads()
-                    .iter()
-                    .all(|head| current.doc.get_change_by_hash(head).is_some())
-            {
-                return Err("retained history route or causal custody mismatch".into());
-            }
-        }
-        Ok(())
-    }
-
-    fn retained_history_route_retired(
-        &self,
-        route: &Route,
-        old: &Document,
-    ) -> Result<bool, String> {
-        let Some((receipt, accepted)) =
-            self.durable_receipt_checkpoint(&route.app, &route.record)?
-        else {
-            return Ok(false);
-        };
-        Ok(old
-            .doc
-            .base_heads()
-            .iter()
-            .all(|head| accepted.doc.get_change_by_hash(head).is_some())
-            && old.channel.last_seq_per_author.iter().all(|(author, seq)| {
-                receipt
-                    .coverage
-                    .watermarks
-                    .get(&hex::encode(author.as_bytes()))
-                    .copied()
-                    .unwrap_or(0)
-                    >= *seq
-            }))
     }
 }
 impl PeerOutbox<'_> {
@@ -272,13 +141,33 @@ impl PeerOutbox<'_> {
             None => Ok(None),
         }
     }
-    /// Only actual durable governor acknowledgement may retire retained bytes.
+    /// Whether the workspace this replica holds retired the write:
+    /// a participant or store refused that very write for good, or holds a
+    /// durable receipt that names it. Either is the workspace's answer that
+    /// the frame is spent, and only those: a refusal that waits for another
+    /// write retires nothing.
     pub fn retained_local_document_retired(
         self,
         message: &NeighbourMsg,
         selected: [u8; 32],
     ) -> Result<bool, String> {
         let local = self.peer.retained_document(message, selected)?;
+        if self
+            .peer
+            .workspace()
+            .write_refusals()
+            .into_iter()
+            .any(|refusal| {
+                refusal.workspace == self.peer.core.workspace
+                    && refusal.reason.permanent()
+                    && refusal.app == local.route.app
+                    && refusal.record == local.route.record
+                    && refusal.author == local.admission.author()
+                    && refusal.seq == local.admission.sequence()
+            })
+        {
+            return Ok(true);
+        }
         let covered = |receipt: &crate::durability::DurableReceipt| {
             receipt
                 .coverage
@@ -310,18 +199,6 @@ impl PeerOutbox<'_> {
             .get_heads()
             .iter()
             .all(|head| accepted.get_change_meta_by_hash(head).is_some()))
-    }
-    /// Compare retained real history with the admitted durable governor checkpoint.
-    /// A test oracle for the recovery projection.
-    #[cfg(test)]
-    pub fn retained_local_history_retired(self, history: &StatePeer) -> Result<bool, String> {
-        self.peer.validate_retained_history(history)?;
-        for (route, old) in &history.core.documents {
-            if !self.peer.retained_history_route_retired(route, old)? {
-                return Ok(false);
-            }
-        }
-        Ok(true)
     }
 }
 impl PeerOutboxMut<'_> {
@@ -402,25 +279,9 @@ impl PeerOutboxMut<'_> {
     }
 }
 
-// Count the closed wire DTO before cloning the caller's prefix. These are encoded
-// refusal limits, not a native CRDT heap qualification or a durable barrier.
-fn publication_size(messages: &[NeighbourMsg]) -> Result<usize, String> {
-    if messages.len() > MAX_PUBLICATIONS {
-        return Err("local publication count limit".into());
-    }
-    messages.iter().try_fold(0usize, |total, message| {
-        let workspace = MAX_PUBLICATION_BYTES.saturating_sub(total);
-        crate::postcard_sink::encoded_len(message, workspace)
-            .map(|size| total.saturating_add(size))
-            .map_err(|_| "local publication byte limit".into())
-    })
-}
-
 #[cfg(test)]
 mod sealed_renewal_tests;
 #[cfg(test)]
 mod tests;
 
 mod history;
-mod projection;
-pub use projection::LocalRecoveryReservation;

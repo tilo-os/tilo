@@ -10,7 +10,7 @@ use tilo_desktop_model::ownership::{Authors, DESKTOP_APP, DESKTOP_RECORD, Shared
 use tilo_desktop_model::{
     DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
 };
-use tilo_relay::rooms::SetMemberRoleRequest;
+use tilo_relay::workspaces::SetMemberRoleRequest;
 use tilo_relay::{CoeditPayload, RelayClient};
 
 use super::*;
@@ -30,6 +30,8 @@ fn desktop(windows: &[(u64, u64, String)]) -> SharedDesktop {
                 note: String::new(),
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         match strip.window_groups.iter_mut().find(|g| g.id == *group) {
             Some(existing) => existing.tabs.push(entry),
@@ -69,7 +71,7 @@ fn person(user: &TestUser) -> String {
 /// `(tab, group)` in order; empty while it holds none.
 async fn windows(relay: &Relay, room: &str) -> Vec<(u64, u64)> {
     let Some(bytes) = relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .record_document(room, DESKTOP_APP, DESKTOP_RECORD)
         .await
@@ -119,7 +121,7 @@ impl Page<'_> {
     /// carry it: one, or one per segment of a larger write.
     async fn write_frames(&mut self, relay: &Relay, desktop: &SharedDesktop) -> Vec<NeighbourMsg> {
         let held = relay
-            .rooms()
+            .workspaces()
             .unwrap()
             .record_document(&self.room, DESKTOP_APP, DESKTOP_RECORD)
             .await
@@ -298,7 +300,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     admit(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&ada, &ada_browser),
         MemberRole::Editor,
         31,
@@ -307,7 +309,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     admit(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&ben, &ben_browser),
         MemberRole::Editor,
         32,
@@ -316,7 +318,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     admit(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&mo, &mo_browser),
         MemberRole::Editor,
         33,
@@ -325,7 +327,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     admit(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&cy, &cy_laptop),
         MemberRole::Editor,
         35,
@@ -337,10 +339,10 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     let mo_client = page_client(&relay, &mo_browser, workspace).await;
     // Mo is made the room's moderator while his page is in it.
     relay
-        .rooms()
+        .workspaces()
         .unwrap()
         .set_member_role(
-            &room.room,
+            &room.workspace,
             &laptop.cert,
             SetMemberRoleRequest {
                 request_id: [34; 32],
@@ -351,7 +353,7 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         .await
         .unwrap();
     // His page goes on taking the room's changes, live.
-    let probe = ada_page_probe(&relay, &ada_browser, &room.room).await;
+    let probe = ada_page_probe(&relay, &ada_browser, &room.workspace).await;
     commit(&ada_client, &ada_browser, workspace, &probe)
         .await
         .unwrap();
@@ -370,25 +372,25 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     .await;
     // What each page asks before it offers a close on someone else's window.
     let moderates = |device: &TestDevice| {
-        let rooms = relay.rooms().unwrap();
+        let workspaces = relay.workspaces().unwrap();
         let cert = device.cert.clone();
-        let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
-            room: room.room.clone(),
-            node: tilo_desktop_model::ownership::moderation_node(&room.room).to_string(),
+        let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+            workspace: room.workspace.clone(),
+            node: tilo_desktop_model::ownership::moderation_node(&room.workspace).to_string(),
         };
-        async move { rooms.page_rooms(&cert, request).await }
+        async move { workspaces.page_rooms(&cert, request).await }
     };
     assert_eq!(
         moderates(&mo_browser).await,
-        tilo_relay_protocol::rooms::RoomsReply::Permits(true)
+        tilo_relay_protocol::workspaces::WorkspacesReply::Permits(true)
     );
     assert_eq!(
         moderates(&ada_browser).await,
-        tilo_relay_protocol::rooms::RoomsReply::Permits(false)
+        tilo_relay_protocol::workspaces::WorkspacesReply::Permits(false)
     );
     let page = |device, actor| Page {
         device,
-        room: room.room.clone(),
+        room: room.workspace.clone(),
         actor,
         seq: 1_000,
     };
@@ -407,13 +409,13 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     commit(&ada_client, &ada_browser, workspace, &opens)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(1, 100)]).await;
+    wait_for_windows(&relay, &room.workspace, &[(1, 100)]).await;
     let both = desktop(&[(1, 100, a.clone()), (2, 200, b.clone())]);
     let opens = ben_page.write(&relay, &both).await;
     commit(&ben_client, &ben_browser, workspace, &opens)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(1, 100), (2, 200)]).await;
+    wait_for_windows(&relay, &room.workspace, &[(1, 100), (2, 200)]).await;
 
     // Ada may not close Ben's window, nor move it into hers.
     let closes = ada_page
@@ -468,17 +470,17 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
         .await;
     publish(&cy_session, &cy_closes);
     publish(&cy_session, &cy_opens);
-    wait_for_windows(&relay, &room.room, &[(1, 100), (2, 200), (3, 300)]).await;
+    wait_for_windows(&relay, &room.workspace, &[(1, 100), (2, 200), (3, 300)]).await;
     let cy_closes_his = cy_page.write(&relay, &both).await;
     publish(&cy_session, &cy_closes_his);
-    wait_for_windows(&relay, &room.room, &[(1, 100), (2, 200)]).await;
+    wait_for_windows(&relay, &room.workspace, &[(1, 100), (2, 200)]).await;
     // She may move her own window past his.
     let reordered = desktop(&[(2, 200, b.clone()), (1, 100, a.clone())]);
     let hers = ada_page.write(&relay, &reordered).await;
     commit(&ada_client, &ada_browser, workspace, &hers)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(2, 200), (1, 100)]).await;
+    wait_for_windows(&relay, &room.workspace, &[(2, 200), (1, 100)]).await;
 
     // Ben closes his own window.
     let closes = ben_page
@@ -487,14 +489,14 @@ async fn guests_close_and_move_only_their_own_windows_and_a_moderator_any() {
     commit(&ben_client, &ben_browser, workspace, &closes)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[(1, 100)]).await;
+    wait_for_windows(&relay, &room.workspace, &[(1, 100)]).await;
 
     // Mo moderates the room: he closes Ada's.
     let clears = mo_page.write(&relay, &desktop(&[])).await;
     commit(&mo_client, &mo_browser, workspace, &clears)
         .await
         .unwrap();
-    wait_for_windows(&relay, &room.room, &[]).await;
+    wait_for_windows(&relay, &room.workspace, &[]).await;
     relay.shutdown().await;
 }
 
@@ -515,37 +517,37 @@ async fn a_public_rooms_guest_is_answered_the_role_it_was_admitted_with() {
     admit(
         &relay,
         &laptop,
-        &room.room,
+        &room.workspace,
         (&ada, &ada_browser),
         MemberRole::Editor,
         41,
     )
     .await;
-    let rooms = relay.rooms().unwrap();
-    rooms
+    let workspaces = relay.workspaces().unwrap();
+    workspaces
         .set_layout(
-            &room.room,
+            &room.workspace,
             tilo_desktop_model::projection::WorkspaceLayout::Personal,
         )
         .await
         .unwrap();
     let answered = |device: &TestDevice| {
-        let rooms = relay.rooms().unwrap();
+        let workspaces = relay.workspaces().unwrap();
         let cert = device.cert.clone();
-        let room = room.room.clone();
+        let room = room.workspace.clone();
         async move {
             let mut answers = [false; 3];
             for (answer, node) in answers
                 .iter_mut()
                 .zip(tilo_action_policy::roles::telling_nodes(&room))
             {
-                let request = tilo_relay_protocol::rooms::RoomsRequest::Permits {
-                    room: room.clone(),
+                let request = tilo_relay_protocol::workspaces::WorkspacesRequest::Permits {
+                    workspace: room.clone(),
                     node: node.to_string(),
                 };
                 *answer = matches!(
-                    rooms.page_rooms(&cert, request).await,
-                    tilo_relay_protocol::rooms::RoomsReply::Permits(true)
+                    workspaces.page_rooms(&cert, request).await,
+                    tilo_relay_protocol::workspaces::WorkspacesReply::Permits(true)
                 );
             }
             tilo_action_policy::roles::role_answered(answers)

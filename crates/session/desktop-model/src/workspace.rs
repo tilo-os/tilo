@@ -54,20 +54,6 @@ pub struct Workspace {
     /// control socket's state dump.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
-    /// One exact, owner-signed offer awaiting the named recipient's consent.
-    /// Persisted with the workspace so restart cannot erase, extend, or retarget
-    /// the ceremony.
-    #[serde(default)]
-    pub pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    /// Completed transfers retaining the outgoing owner's signed authorization
-    /// and the exact recipient's signed acceptance. This is append-only audit
-    /// evidence, not a second source of current ownership.
-    #[serde(default, skip_serializing_if = "crate::history::omitted")]
-    pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    /// Owner-signed cancellations retained so a cancelled proposal cannot be
-    /// replayed after restart.
-    #[serde(default, skip_serializing_if = "crate::history::omitted")]
-    pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
     /// Who may do what in this workspace: its owner (structural, `None` until the
     /// local user adopts it on load), each member's role preset, and every
     /// grant on the workspace's tree. Changed only through governance actions.
@@ -139,12 +125,6 @@ struct StoredWorkspace {
     #[serde(skip_deserializing)]
     collaborators: Vec<Collaborator>,
     #[serde(default)]
-    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    #[serde(default)]
-    ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    #[serde(default)]
-    ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
-    #[serde(default)]
     policy: Option<WorkspacePolicy>,
     #[serde(default)]
     sandbox: Vec<CapOverride>,
@@ -186,9 +166,6 @@ impl From<StoredWorkspace> for Workspace {
             strips: stored.strips,
             arrangement: stored.arrangement,
             collaborators: stored.collaborators,
-            pending_ownership_transfer: stored.pending_ownership_transfer,
-            ownership_transfer_audit: stored.ownership_transfer_audit,
-            ownership_transfer_cancellations: stored.ownership_transfer_cancellations,
             policy,
             sandbox: stored.sandbox,
             presets: stored.presets,
@@ -760,27 +737,6 @@ impl Workspace {
         self.policy.owner = Some(user);
     }
 
-    /// Transfer the structural owner role.
-    ///
-    /// Stricter than ordinary governance: only the current owner transfers,
-    /// and the recipient must already be a member, so transfer is an
-    /// explicit ceremony and never hands the workspace to a mistyped identity.
-    pub fn transfer_owner_as_at(
-        &mut self,
-        current_owner: &UserId,
-        new_owner: &UserId,
-        _now: u64,
-    ) -> bool {
-        if current_owner == new_owner
-            || self.owner() != Some(current_owner)
-            || !self.policy.members.contains_key(new_owner)
-        {
-            return false;
-        }
-        self.set_owner(new_owner.clone());
-        true
-    }
-
     /// Give up governance because this workspace joined a workspace it did not
     /// mint: drops the recorded owner and every grant of governance actions,
     /// so this machine answers for nothing it does not own.
@@ -1176,9 +1132,6 @@ impl Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: Vec::new(),
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
             policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
@@ -1195,10 +1148,9 @@ impl Workspace {
 
     /// A copy holding what authority decisions read — identity, the workspace's
     /// policy, sandbox, presets, defaults — and none of the layout or
-    /// history: no strips, effect receipts, shortcuts, schedule
-    /// claims or ownership-transfer records. For a caller that must not hold
-    /// the tree while it asks [`Self::answer_at`] and its kin, so the copy
-    /// costs the policy, not the workspace's past.
+    /// history: no strips, effect receipts, shortcuts or schedule claims. For
+    /// a caller that must not hold the tree while it asks [`Self::answer_at`]
+    /// and its kin, so the copy costs the policy, not the workspace's past.
     #[must_use]
     pub fn policy_view(&self) -> Self {
         // Destructured, so a new field has to be sorted into one side.
@@ -1209,9 +1161,6 @@ impl Workspace {
             strips: _,
             arrangement: _,
             collaborators,
-            pending_ownership_transfer,
-            ownership_transfer_audit: _,
-            ownership_transfer_cancellations: _,
             policy,
             sandbox,
             presets,
@@ -1231,9 +1180,6 @@ impl Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: collaborators.clone(),
-            pending_ownership_transfer: pending_ownership_transfer.clone(),
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
             policy: policy.clone(),
             sandbox: sandbox.clone(),
             presets: presets.clone(),
@@ -1295,9 +1241,6 @@ impl Default for Workspace {
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             collaborators: Vec::new(),
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
             policy: WorkspacePolicy::unowned(identity.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),

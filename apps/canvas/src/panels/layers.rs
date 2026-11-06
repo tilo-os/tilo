@@ -4,13 +4,18 @@
 //! a layer in any medium. Every control is one of the artwork's actions.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::prelude::*;
+use ui::selection::KeySelection;
 use ui::widget::ButtonRole;
-use ui::widget::{Badge, ChipStyle, ControlRow, EditableLabel, Tone};
+use ui::widget::{
+    Badge, ChipStyle, ControlRow, EditableLabel, ListRow, Tone, TreeMarks, VecListModel,
+    VirtualList,
+};
 
 use super::{caption, icon_button, percent};
 use crate::model::Artwork;
@@ -130,68 +135,118 @@ pub fn panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
     )
 }
 
+/// One row of a tree in this panel: a layer or a mark, or the folder its group files it
+/// under. Choosing the row picks `picks`; a folder's row picks every mark filed under it.
+struct TreeRowNode {
+    key: u64,
+    label: String,
+    parent: Option<u64>,
+    picks: Vec<String>,
+    /// The fact on the row's trailing edge.
+    trailing: Option<String>,
+}
+
+/// The panel's tree over `nodes`, `viewport` tall: the list's tree mode owns collapse,
+/// keyboard navigation, virtualisation and accessibility; the panel owns the rows and what
+/// choosing one picks.
+fn tree(
+    nodes: Vec<TreeRowNode>,
+    viewport: f32,
+    row_height: f32,
+    selected: Option<u64>,
+    id: &str,
+    on_pick: impl FnMut(Vec<String>) + 'static,
+) -> Element {
+    let picks: HashMap<u64, Vec<String>> = nodes
+        .iter()
+        .filter(|node| !node.picks.is_empty())
+        .map(|node| (node.key, node.picks.clone()))
+        .collect();
+    let Ok(model) = VecListModel::new(nodes, |node| node.key)
+        .map(|model| model.with_parents(|node| node.parent))
+    else {
+        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0));
+    };
+    let marks = Rc::new(TreeMarks::default());
+    let depths = Rc::clone(&marks);
+    let mut selection = KeySelection::new();
+    if let Some(selected) = selected {
+        selection.select_only(selected);
+    }
+    let pick = Rc::new(RefCell::new(on_pick));
+    let chosen = Rc::clone(&pick);
+    let mut list = VirtualList::new(model, row_height, move |model, index, key| {
+        let Some(node) = model.item(index) else {
+            return Box::new(ListRow::new(key.to_string(), "")) as Element;
+        };
+        let mut row = ListRow::new(key.to_string(), node.label.as_str()).depth(depths.depth(key));
+        if let Some(trailing) = &node.trailing {
+            row = row.value(trailing.as_str());
+        }
+        Box::new(row)
+    })
+    .with_tree(marks)
+    .with_selection(selection)
+    .with_semantic_key(ToString::to_string)
+    .with_viewport_height(viewport);
+    list = list.on_view(id, move |key| {
+        if let Some(picks) = picks.get(&key) {
+            (chosen.borrow_mut())(picks.clone());
+        }
+    });
+    Box::new(list)
+}
+
 /// Folder branches keep paint order: non-contiguous runs stay separate rather
-/// than suggesting a different composite order. The shared tree owns collapse,
-/// keyboard navigation, virtualisation and accessibility.
+/// than suggesting a different composite order.
 fn layer_tree(rows: &[LayerRow], tools: &Tools) -> Element {
-    use ui::widget::{TreeNode, TreeRowDecoration, TreeView};
-    let mut children: Vec<TreeNode<()>> = Vec::new();
-    let mut targets = std::collections::HashMap::new();
-    let mut media = std::collections::HashMap::new();
+    let mut nodes: Vec<TreeRowNode> = Vec::with_capacity(rows.len());
     let mut next = u64::try_from(rows.len()).unwrap_or(0).saturating_add(1);
-    let mut previous = "";
+    let mut group = String::new();
     let mut folder = None;
     for (index, row) in rows.iter().enumerate() {
-        let id = u64::try_from(index).unwrap_or(0).saturating_add(1);
-        let leaf = TreeNode::leaf(id, &row.name, ());
-        media.insert(id, row.medium.clone());
-        targets.insert(id, row.id.clone());
-        if row.group != previous {
-            previous = &row.group;
+        if row.group != group {
+            group.clone_from(&row.group);
             folder = if row.group.is_empty() {
                 None
             } else {
-                let at = children.len();
-                children.push(TreeNode::branch(next, &row.group, (), Vec::new()));
+                let key = next;
                 next = next.saturating_add(1);
-                Some(at)
+                nodes.push(TreeRowNode {
+                    key,
+                    label: row.group.clone(),
+                    parent: None,
+                    picks: Vec::new(),
+                    trailing: None,
+                });
+                Some(key)
             };
         }
-        if let Some(branch) = folder.and_then(|at| children.get_mut(at)) {
-            branch.children.push(leaf);
-        } else {
-            children.push(leaf);
-        }
+        nodes.push(TreeRowNode {
+            key: u64::try_from(index).unwrap_or(0).saturating_add(1),
+            label: row.name.clone(),
+            parent: folder,
+            picks: vec![row.id.clone()],
+            trailing: Some(row.medium.clone()),
+        });
     }
-    let expanded = children
+    let chosen_layer = tools.layer.get();
+    let selected = nodes
         .iter()
-        .filter(|node| node.is_branch())
-        .map(|node| node.id)
-        .collect::<Vec<_>>();
-    let selected = targets
-        .iter()
-        .find_map(|(node, id)| (*id == tools.layer.get()).then_some(*node));
+        .find(|node| node.picks.first() == Some(&chosen_layer))
+        .map(|node| node.key);
     let chosen = tools.layer.clone();
-    Box::new(
-        TreeView::new(TreeNode::branch(0, "", (), children))
-            .hide_root()
-            .with_row_decoration(move |_, row, _| {
-                media
-                    .get(&row.id)
-                    .map_or_else(TreeRowDecoration::new, |medium| {
-                        TreeRowDecoration::new()
-                            .trailing(medium)
-                            .description(medium)
-                    })
-            })
-            .with_selected(selected)
-            .with_expanded(expanded)
-            .with_viewport(LIST, ui::tokens::Metrics::BASE.panel_row_height)
-            .on_view("canvas-layer-tree", move |node| {
-                if let Some(id) = targets.get(&node) {
-                    chosen.set(id.clone());
-                }
-            }),
+    tree(
+        nodes,
+        LIST,
+        ui::tokens::Metrics::BASE.panel_row_height,
+        selected,
+        "canvas-layer-tree",
+        move |picks| {
+            if let Some(id) = picks.first() {
+                chosen.set(id.clone());
+            }
+        },
     )
 }
 
@@ -598,7 +653,6 @@ pub fn objects_panel(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
 }
 
 fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
-    use ui::widget::{TreeNode, TreeView};
     let layer = layer.to_owned();
     let marks = cx.value(move |art: &Artwork| {
         art.marks_of(&layer)
@@ -607,51 +661,53 @@ fn objects(cx: &ViewCx<Artwork>, layer: &str, tools: &Tools) -> Element {
     });
     let tools = tools.clone();
     cx.switch(&marks, move |_cx, marks| {
-        let mut children: Vec<TreeNode<()>> = Vec::new();
-        let mut targets: std::collections::HashMap<u64, Vec<String>> =
-            std::collections::HashMap::new();
+        let mut nodes: Vec<TreeRowNode> = Vec::with_capacity(marks.len());
         let mut folders: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         let mut next = u64::try_from(marks.len()).unwrap_or(0).saturating_add(1);
         for (index, (id, name, group)) in marks.iter().rev().enumerate() {
-            let node = u64::try_from(index).unwrap_or(0).saturating_add(1);
+            let key = u64::try_from(index).unwrap_or(0).saturating_add(1);
             let label = if name.is_empty() {
                 id.clone()
             } else {
                 name.clone()
             };
-            let leaf = TreeNode::leaf(node, label, ());
-            targets.insert(node, vec![id.clone()]);
-            if group.is_empty() {
-                children.push(leaf);
+            let parent = if group.is_empty() {
+                None
             } else {
-                let folder = if let Some(index) = folders.get(group) {
-                    *index
-                } else {
-                    let at = children.len();
-                    folders.insert(group.clone(), at);
-                    children.push(TreeNode::branch(next, group, (), Vec::new()));
+                let at = *folders.entry(group.clone()).or_insert_with(|| {
+                    let at = nodes.len();
+                    nodes.push(TreeRowNode {
+                        key: next,
+                        label: group.clone(),
+                        parent: None,
+                        picks: Vec::new(),
+                        trailing: None,
+                    });
                     next = next.saturating_add(1);
                     at
-                };
-                if let Some(branch) = children.get_mut(folder) {
-                    targets.entry(branch.id).or_default().push(id.clone());
-                    branch.children.push(leaf);
-                }
-            }
+                });
+                nodes.get_mut(at).map(|folder| {
+                    folder.picks.push(id.clone());
+                    folder.key
+                })
+            };
+            nodes.push(TreeRowNode {
+                key,
+                label,
+                parent,
+                picks: vec![id.clone()],
+                trailing: None,
+            });
         }
         let picked = tools.pick_objects.clone();
-        Box::new(
-            TreeView::new(TreeNode::branch(0, "", (), children))
-                .hide_root()
-                .with_viewport(232.0, 28.0)
-                .with_heading(ui::i18n::I18nManager::lookup_plain("canvas-objects"))
-                .on_view("canvas-objects", move |node| {
-                    if let Some(ids) = targets.get(&node) {
-                        picked.set(Some(ids.clone()));
-                    }
-                }),
-        )
+        let listed = tree(nodes, 232.0, 28.0, None, "canvas-objects", move |picks| {
+            picked.set(Some(picks));
+        });
+        Box::new(ui::widget::Section::titled(
+            ui::i18n::I18nManager::lookup_plain("canvas-objects"),
+            vec![listed],
+        ))
     })
 }
 

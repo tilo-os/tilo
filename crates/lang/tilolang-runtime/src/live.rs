@@ -288,6 +288,9 @@ struct Pending {
     holder: BoundId,
     rows: Rc<LoopRows>,
     steps: Steps,
+    /// The change is the viewer's own: a row of theirs that its steps take out of a query
+    /// lingers where it is (see [`crate::live::virtual_rows`]).
+    mine: bool,
 }
 
 /// `pending`, the items several changes moved in one query's rows taken as one step: where each
@@ -300,7 +303,9 @@ fn coalesce_moved(pending: Vec<Pending>) -> Vec<Pending> {
             && let Some(Steps::Moved(held)) = out
                 .iter_mut()
                 .find(|held| {
-                    Rc::ptr_eq(&held.rows, &step.rows) && matches!(held.steps, Steps::Moved(_))
+                    Rc::ptr_eq(&held.rows, &step.rows)
+                        && held.mine == step.mine
+                        && matches!(held.steps, Steps::Moved(_))
                 })
                 .map(|held| &mut held.steps)
         {
@@ -327,6 +332,9 @@ enum Steps {
 struct Reach {
     hit: Vec<BoundId>,
     steps: Vec<Pending>,
+    /// The items the person looking changed, when the change is theirs: a list of values keeps
+    /// the rows of those items where they stand ([`crate::live::virtual_rows`]).
+    mine: std::collections::BTreeSet<String>,
 }
 
 /// What a view instance counts, for tests and the benchmark.
@@ -371,6 +379,10 @@ pub(crate) struct Live {
     state_clock: u64,
     /// Steps heard for the rows of loops, applied at the next poll.
     pending: Vec<Pending>,
+    /// The items the person looking changed in this window since the last poll: the rows of a
+    /// list of values their own change took out of it stand where they are until the view is
+    /// left ([`crate::live::virtual_rows`]).
+    mine_items: std::collections::BTreeSet<String>,
     /// The virtual lists, by key: lists whose rows are built when the host shows them.
     lists: HashMap<String, Virtual>,
     /// What became of the rows of the virtual lists met by the render under way, for its diff.
@@ -423,6 +435,7 @@ impl Live {
             found_paths: RefCell::default(),
             state_clock: core.view_states.borrow().clock(),
             pending: Vec::new(),
+            mine_items: std::collections::BTreeSet::new(),
             lists: HashMap::new(),
             row_changes: VirtualLists::new(),
         };
@@ -466,6 +479,16 @@ impl Live {
     /// built again by their boundary.
     fn reached(&self, core: &Core, change: &ChangeSummary) -> Reach {
         let mut reach = Reach::default();
+        // What the person looking did in this window, as opposed to anyone else's change:
+        // the rows of a list they changed themselves linger ([`crate::live::virtual_rows`]).
+        let mine = change.by.as_deref() == Some(self.viewer.0.as_str());
+        if mine {
+            for key in &change.fields {
+                if let Some((_, item)) = key.resource.split_once('/') {
+                    reach.mine.insert(item.to_owned());
+                }
+            }
+        }
         // A window's change mark counts every version in its document: any change there is a
         // new one.
         reach
@@ -492,6 +515,7 @@ impl Live {
                                 holder: id,
                                 rows: Rc::clone(rows),
                                 steps: Steps::Splices(splices.to_vec()),
+                                mine,
                             });
                         }
                         // The steps are the collection's; a filtered or sorted one's rows are
@@ -505,6 +529,7 @@ impl Live {
                                 holder: id,
                                 rows: Rc::clone(rows),
                                 steps: Steps::Moved(moved),
+                                mine,
                             });
                         }
                         _ => reach.hit.push(id),
@@ -528,6 +553,7 @@ impl Live {
                                 holder: id,
                                 rows: Rc::clone(rows),
                                 steps: Steps::Moved(BTreeSet::from([item.clone()])),
+                                mine,
                             });
                         } else {
                             reach.hit.push(id);
@@ -595,6 +621,7 @@ impl Live {
         let reach = self.reached(core, change);
         self.dirty.extend(reach.hit);
         self.pending.extend(reach.steps);
+        self.mine_items.extend(reach.mine);
     }
 
     /// Mark the boundaries whose view state moved since they read it.
@@ -606,6 +633,10 @@ impl Live {
         }
         self.state_clock = clock;
         let mut hit = Vec::new();
+        // The window state a view shows is what the rows stand in: moving it leaves that view,
+        // and the rows the person kept for looking at it settle. A lens is the person's own
+        // input (a draft they are typing), not where the view is ([`crate::live::virtual_rows`]).
+        let mut left = Vec::new();
         for (key, ids) in &self.index.states {
             let now = states.generation(key);
             for id in ids {
@@ -616,10 +647,14 @@ impl Live {
                 });
                 if moved {
                     hit.push(*id);
+                    if key.is_window() {
+                        left.push(*id);
+                    }
                 }
             }
         }
         drop(states);
+        self.settle_kept(&left);
         self.dirty.extend(hit);
     }
 
@@ -916,6 +951,7 @@ impl Live {
         while let Some(id) = self.next_dirty() {
             self.rerender(core, id, &mut patches)?;
         }
+        self.mine_items.clear();
         Ok(patches)
     }
 
@@ -1060,8 +1096,10 @@ impl Live {
             // are checked even when their holder runs again.
             let check = !self.dirty.contains(&holder) || self.lists.contains_key(&rows.parent);
             if check && !self.rows_fit(core, holder, &rows) {
+                // The rows the host holds are the ones the list built, unchanged: the holder
+                // runs again and gives the host the steps between them and the listing as it
+                // is now, so its rows move rather than being read anew.
                 self.dirty.insert(holder);
-                self.lose_rows(&rows.parent);
             }
         }
         self.release(core);
@@ -1111,6 +1149,7 @@ impl Live {
                     Patch::Move {
                         parent: parent.clone(),
                         key,
+                        from: *index,
                         to: *to,
                     }
                 }
@@ -1191,7 +1230,8 @@ impl Live {
                 .insert(index, rows.rows.fragment(key, Vec::new()));
         }
         if !lazy {
-            self.render_row(core, id)?;
+            let place = Some((Rc::clone(&rows.coll), index));
+            self.render_row(core, id, place)?;
             if rows.rows.lazy {
                 self.shown
                     .entry(rows.parent.clone())
@@ -1202,10 +1242,18 @@ impl Live {
         Ok(self.node_at(&path).cloned())
     }
 
-    /// Render the row `id` into its `fragment`, at its path.
-    fn render_row(&mut self, core: &Rc<Core>, id: BoundId) -> Result<(), RuntimeError> {
+    /// Render the row `id` into its `fragment`, at its path, telling the view where it stands
+    /// among the rows of `place`: the list's rows and the row's place in them.
+    fn render_row(
+        &mut self,
+        core: &Rc<Core>,
+        id: BoundId,
+        place: Option<(Rc<crate::value::CollRef>, usize)>,
+    ) -> Result<(), RuntimeError> {
         self.reused.clear();
+        let outer = core.row_place.replace(place);
         let content = self.render(core, id);
+        core.row_place.replace(outer);
         self.reused.clear();
         // A row's first render has nothing to diff: lists inside it start as they are.
         self.row_changes.clear();
@@ -1407,7 +1455,7 @@ impl Live {
             path.push(index);
             b.path = path;
         }
-        if let Err(e) = self.render_row(core, id) {
+        if let Err(e) = self.render_row(core, id, None) {
             self.release(core);
             return Err(e);
         }

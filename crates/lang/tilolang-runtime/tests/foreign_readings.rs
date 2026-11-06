@@ -289,6 +289,145 @@ view state(m: desktop.MenuState) {
         assert!(why.contains("not a list"), "{why}");
     }
 
+    /// A note made from another app's record, as the session's store keeps it: the link names
+    /// the record, whose type is the other app's.
+    const LINK_SOURCE: &str = r#"app test.cards "Cards"
+
+type Board {
+    notes: Collection<Note>
+}
+
+type Note {
+    title: Text (title)
+}
+
+root Board
+
+default view board for Board
+
+/// The board: its notes.
+view board(b: Board) {
+    list(b.notes) { n ->
+        row(n.title)
+    }
+}
+
+/// Adds a note.
+action add_note(b: Board, title: Text) -> Note {
+    b.notes.insert(Note(title: title))
+}
+
+/// What the note was made from, drawn as its app titles it.
+view from(n: Note) {
+    stack {
+        text("note")
+        if let made = created(n), f = made.from {
+            text(meta(f).title)
+        }
+    }
+}
+"#;
+
+    /// The desk's description with a menu a view can read the title of.
+    fn titled_desktop() -> Meta {
+        meta(json!({
+            "app": "desktop",
+            "types": [
+                {"id": "WindowMenu", "name": "WindowMenu", "fields": [
+                    {"id": "WindowMenu.title", "name": "title", "type": "Text",
+                     "role": "title"},
+                ]},
+            ],
+        }))
+    }
+
+    /// A note on a board made from the desk's menu, as a view over it would read what it was
+    /// made from; the view and the note.
+    fn note_from_the_desk(desk: &Meta) -> (Runtime, String, ResourceRef) {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let app = App::compile(LINK_SOURCE, std::slice::from_ref(desk));
+        app.load(&rt);
+        let board = rt.create("Board").expect("a board");
+        let menu = menu();
+        rt.set_reading(&menu, r#"{"title": "Book the van"}"#)
+            .expect("a reading of the menu");
+        let id = app.action("add_note");
+        let made = rt
+            .invoke_action_from(
+                &me(),
+                (
+                    id.as_str(),
+                    vec![Value::resource(&board), Value::text("Book it")],
+                ),
+                &menu,
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+        let tilolang_runtime::InvokeOutcome::Done(Value::Ref(note)) = made else {
+            panic!("a note was made: {made:?}");
+        };
+        (rt, app.view("from"), ResourceRef::clone(&note.target))
+    }
+
+    #[test]
+    fn a_view_reading_an_apps_type_asks_for_that_apps_package() {
+        let desk = titled_desktop();
+        let (rt, view, note) = note_from_the_desk(&desk);
+        let mut opened = rt
+            .open_view(&me(), &view, vec![Value::resource(&note)])
+            .unwrap_or_else(|why| panic!("the view waits, rather than failing: {why}"));
+        assert!(
+            rt.wants_packages(),
+            "the view waits for the desk's package, not on a fault"
+        );
+        assert_eq!(
+            rt.take_wanted_packages(),
+            [("desktop".to_owned(), "desktop#WindowMenu".to_owned())],
+            "the host is asked for the desk's package"
+        );
+        assert!(
+            rt.take_wanted_packages().is_empty(),
+            "an app is asked for once"
+        );
+        assert!(
+            !of_kind(opened.tree(), "ui.Skeleton").is_empty(),
+            "the view draws its waiting state: {}",
+            dump(opened.tree())
+        );
+
+        // The host loads the desk's package: the view runs again and reads the menu's title.
+        rt.load_foreign(desk).unwrap();
+        opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
+        assert_eq!(
+            drawn(&opened),
+            ["note", "Book the van"],
+            "the note reads what it was made from through the desk's own declaration"
+        );
+    }
+
+    /// A type of an app whose package this runtime holds, which that package does not declare,
+    /// is a fault: no package can come with it.
+    #[test]
+    fn a_type_its_loaded_app_does_not_declare_is_a_fault() {
+        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let elsewhere = meta(json!({
+            "app": "desktop",
+            "types": [{"id": "Elsewhere", "name": "Elsewhere", "fields": []}],
+        }));
+        rt.load_foreign(elsewhere).unwrap();
+        let why = rt
+            .read(&menu(), "title")
+            .expect_err("the desk's package declares no menu");
+        assert!(why.to_string().contains("is not declared"), "{why}");
+        assert!(
+            !rt.waiting(&why.to_string()),
+            "nothing is waited for: {why}"
+        );
+        assert!(
+            rt.take_wanted_packages().is_empty(),
+            "no package is asked for"
+        );
+    }
+
     /// Opening the view over the desk's menu reading `text`, as it went.
     fn opening(text: &str) -> Result<(), String> {
         let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();

@@ -125,6 +125,7 @@ impl Workspace {
                 resource: Some(subject),
                 args: &args,
                 caller: None,
+                from: None,
             })
             .unwrap_or_else(|e| panic!("{name}: {e}"));
         replica.apply(&planned);

@@ -20,7 +20,7 @@
 //! ```
 //!
 //! A request the host itself queued for a delegate device (an agent it
-//! supervises, or a bot) carries a [`DelegateProposal`]: the label, colour, rooms, apps and expiry the person
+//! supervises, or a bot) carries a [`DelegateProposal`]: the label, colour, workspaces, apps and expiry the person
 //! asked for. `ApproverRequest::DelegateProposals` lists them, and the one
 //! consent step is `ApproverDecision::IssueDelegate`, a capability-less
 //! certificate together with the root-signed delegation of exactly that
@@ -249,8 +249,9 @@ pub struct PendingConfirmation {
     /// (`none`, `low`, `destructive`, `privileged`, `sensitive`), for the
     /// sheet to state. An approver reads an unknown name as the gravest.
     pub risk: String,
-    /// The room the agent acts in.
-    pub room: String,
+    /// The workspace the agent acts in.
+    #[serde(rename = "room")]
+    pub workspace: String,
     /// Unanswered by then, the question is a refusal; ns since the epoch.
     pub expires_at_ns: u64,
 }

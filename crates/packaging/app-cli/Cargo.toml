@@ -26,6 +26,9 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../../system/bounded-command" }
+# The person's interface language, for the catalogue's localized names: the
+# same one answer every surface resolves its language from.
+settings-store = { path = "../../system/settings-store" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
 # Read side of the `tilo-install` registry — the same list the desktop

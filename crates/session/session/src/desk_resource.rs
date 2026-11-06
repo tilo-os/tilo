@@ -156,6 +156,13 @@ pub(crate) enum DeskEffect {
         )]
         scope: Option<String>,
     },
+    /// Choose the window the walk reached, without crossing the ones between: `at` is its place
+    /// among the windows the walk crosses, `0` the first of them and `-1` the last. Home, End
+    /// and a card under the pointer choose by place.
+    SelectSwitcher {
+        #[param("The window's place among the ones the walk crosses; -1 for the last")]
+        at: i64,
+    },
     /// Go to the window the switcher's walk reached, and close the switcher.
     CommitSwitcher,
 }
@@ -251,7 +258,7 @@ pub(crate) struct Desk {
     pub(crate) sync: Option<Rc<crate::sync::Client>>,
     /// The apps' live activities: Clocks' timer is the bar's clock beside the time, and the
     /// person putting the floating one away hides it until Clocks shows something new.
-    pub(crate) clock: Rc<crate::chrome::Clock>,
+    pub(crate) activities: Rc<crate::chrome::Activities>,
     /// The running applications' tray items, when their watcher serves: the bar shows them,
     /// and the person's clicks go back through it.
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
@@ -440,6 +447,7 @@ fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<shell_part::Window
         }
     }
     let rank = |key: &str| -> i64 {
+        // ignored-failure: a key that is no tab number sorts after every tab
         let tab: u64 = key.parse().unwrap_or(u64::MAX);
         if Some(tab) == focused_tab {
             return 0;
@@ -503,6 +511,79 @@ fn walked(
     (walked, front)
 }
 
+/// The window the walk has reached, of `windows`: its place among them, where it stands to be
+/// lifted and where Alt let go lands. `None` while no walk is up.
+fn reaching(
+    overlays: &crate::overlays::Overlays,
+    windows: &[shell_part::WindowReading],
+) -> Option<usize> {
+    let (walked, front) = walked(windows, overlays.scope());
+    overlays
+        .reached(walked.len(), front)
+        .and_then(|at| walked.get(at).copied())
+}
+
+/// Each window's client, by the tab it is: what the compositor pictures where a card shows it.
+fn window_surfaces(tree: &DesktopTree) -> std::collections::HashMap<u64, u64> {
+    use tilo_desktop_model::TileContent;
+    tree.workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter_map(|tab| match &tab.tile {
+            TileContent::Foreign { surface_id, .. } => Some((tab.id, *surface_id)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What the switcher's panel shows while the walk is up: the windows it crosses, in its order,
+/// and the one it has reached. `None` when no walk is up.
+pub(crate) fn switcher_view(
+    handle: &DesktopHandle,
+    overlays: &crate::overlays::Overlays,
+    sizes: &std::collections::HashMap<u64, (u32, u32)>,
+) -> Option<tilo_desktop::window_switcher::SwitcherView> {
+    let (windows, reached, surfaces) = handle.read(|tree| {
+        let windows = windows(tree, handle);
+        let reached = reaching(overlays, &windows);
+        (windows, reached, window_surfaces(tree))
+    });
+    let reached = reached?;
+    let (walked, _) = walked(&windows, overlays.scope());
+    let selected = walked.iter().position(|at| *at == reached)?;
+    let cards = walked
+        .iter()
+        .filter_map(|at| windows.get(*at))
+        .map(|window| {
+            // A window whose app holds secrets from the desk, or one this device does not run,
+            // has no picture: its card shows the app's own face. A key that is no tab is such
+            // a window, and so is one whose host pictures nothing.
+            // ignored-failure: a window that is no tab has no client to picture
+            let client = window
+                .key
+                .parse::<u64>()
+                .ok()
+                .and_then(|tab| surfaces.get(&tab).copied());
+            let window_id = (window.preview == "live").then_some(client).flatten();
+            tilo_desktop::window_switcher::SwitcherCard {
+                window: window_id,
+                // The shape of the window's own pixels, as the compositor lays
+                // it out: the card takes it, so the picture fills the card.
+                size: client.and_then(|client| sizes.get(&client).copied()),
+                title: window.title.clone(),
+                app_key: window.app_key.clone(),
+            }
+        })
+        .collect();
+    Some(tilo_desktop::window_switcher::SwitcherView {
+        cards,
+        selected,
+        app_scope: overlays.scope() == crate::overlays::SwitcherScope::App,
+    })
+}
+
 impl Desk {
     /// What the reading is made from, without making it: the tree's revision, the minute,
     /// what the notifications say and who is here. The reading changes only when this does.
@@ -516,7 +597,7 @@ impl Desk {
                 self.sync
                     .as_ref()
                     .map_or(0, |sync| sync.here().borrow().revision()),
-                self.clock.board().revision(),
+                self.activities.board().revision(),
                 self.handle.personal_ask_revision(),
                 self.tray.as_ref().map_or(0, |tray| tray.revision()),
                 self.notices.revision(),
@@ -558,17 +639,11 @@ impl Desk {
         now: std::time::Instant,
     ) -> Vec<shell_part::WindowReading> {
         let mut windows = windows(tree, &self.handle);
-        if self.surfaces.overlays.revealed(now) {
-            let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
-            if let Some(at) = self
-                .surfaces
-                .overlays
-                .reached(walked.len(), front)
-                .and_then(|at| walked.get(at).copied())
-            {
-                for (index, window) in windows.iter_mut().enumerate() {
-                    window.focused = index == at;
-                }
+        if self.surfaces.overlays.revealed(now)
+            && let Some(at) = reaching(&self.surfaces.overlays, &windows)
+        {
+            for (index, window) in windows.iter_mut().enumerate() {
+                window.focused = index == at;
             }
         }
         windows
@@ -664,37 +739,44 @@ impl Desk {
         })
     }
 
+    /// The floating timer as the web shell reads it: Clocks' summary while
+    /// it floats over the windows.
     fn timer(&self) -> Option<shell_part::TimerReading> {
-        let activity = self.clock.board().activity(crate::chrome::CLOCKS_APP)?;
-        let activity: ClocksActivity = serde_json::from_value(activity).ok()?;
-        (activity.active && self.clock.floating(activity.overlay)).then_some(
-            shell_part::TimerReading {
-                activity_id: activity.activity_id,
-                label: activity.label,
-                remaining_secs: activity.remaining_secs,
-                stopwatch: activity.stopwatch,
-                paused: activity.paused,
-            },
-        )
+        let published = self.activities.published(crate::chrome::CLOCKS_APP)?;
+        if !published.overlay {
+            return None;
+        }
+        let summary = published.summary?;
+        let countdown = summary.countdown.unwrap_or_default();
+        Some(shell_part::TimerReading {
+            activity_id: (!summary.id.is_empty()).then(|| summary.id.clone()),
+            label: summary.title.clone(),
+            remaining_secs: u64::try_from(countdown).unwrap_or_default(),
+            stopwatch: summary.kind == ui::live_activity::Kind::Stopwatch,
+            // A paused timer is one with time still to run before it is due.
+            paused: summary.tone == ui::live_activity::Tone::Neutral && countdown > 0,
+        })
     }
 
-    /// The due timer Clocks wants announced, by its id and in the app's own words when it has
-    /// them (the desktop's otherwise): what the bar announces once.
+    /// The due event Clocks wants announced, by its id and in the app's own
+    /// words when it has them (the desktop's otherwise): what the bar
+    /// announces once.
     pub(crate) fn due_timer(&self) -> Option<(String, String, String)> {
-        let activity = self.clock.board().activity(crate::chrome::CLOCKS_APP)?;
-        let activity: ClocksActivity = serde_json::from_value(activity).ok()?;
-        let id = activity.notification_id?;
-        let title = if activity.notification_title.is_empty() {
+        let announced = self
+            .activities
+            .published(crate::chrome::CLOCKS_APP)?
+            .announce?;
+        let title = if announced.title.is_empty() {
             crate::i18n::t("clock-due-title")
         } else {
-            activity.notification_title
+            announced.title
         };
-        let body = if activity.notification_body.is_empty() {
+        let body = if announced.body.is_empty() {
             crate::i18n::t("clock-due-body")
         } else {
-            activity.notification_body
+            announced.body
         };
-        Some((id, title, body))
+        Some((announced.id, title, body))
     }
 
     /// The running applications' tray items, in the order they registered: each's key, the
@@ -769,45 +851,6 @@ fn notice_actions(
                 })
         })
         .collect()
-}
-
-/// What the clocks app puts on its live activity, as the bar reads it: the timer or stopwatch
-/// running.
-#[derive(serde::Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "active, stopwatch, paused and overlay are independent fields of the activity Clocks shows"
-)]
-struct ClocksActivity {
-    #[serde(default = "active_unless_told")]
-    active: bool,
-    #[serde(default)]
-    activity_id: Option<String>,
-    /// Its label, such as `Tea`; absent from an activity that is not a timer.
-    #[serde(default)]
-    label: String,
-    /// What the timer has left, or the stopwatch has run, in seconds.
-    #[serde(default)]
-    remaining_secs: u64,
-    #[serde(default)]
-    stopwatch: bool,
-    #[serde(default)]
-    paused: bool,
-    /// An overlay the person may have put away.
-    #[serde(default)]
-    overlay: bool,
-    /// The due timer Clocks wants announced, by id, and in its own words when it has them.
-    #[serde(default)]
-    notification_id: Option<String>,
-    #[serde(default)]
-    notification_title: String,
-    #[serde(default)]
-    notification_body: String,
-}
-
-/// An app that names no `active` shows its activity.
-fn active_unless_told() -> bool {
-    true
 }
 
 /// The runs of the session's agents as the desk names them: each run, each entry of its
@@ -942,18 +985,51 @@ impl Desk {
     /// walk counts from the window in front, over the windows its scope crosses, wrapping.
     fn commit_switcher(&self) {
         let windows = self.handle.read(|tree| windows(tree, &self.handle));
-        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
-        let reached = self
-            .surfaces
-            .overlays
-            .reached(walked.len(), front)
-            .and_then(|at| walked.get(at).copied())
-            .and_then(|at| windows.get(at));
+        let reached = reaching(&self.surfaces.overlays, &windows).and_then(|at| windows.get(at));
+        // ignored-failure: a reached window whose key is no tab focuses nothing
         if let Some(tab) = reached.and_then(|window| window.key.parse::<u64>().ok()) {
             self.handle.focus_tab(tab);
         }
         self.surfaces.overlays.forget_walk();
         self.surfaces.overlays.show(crate::overlays::Overlay::Rest);
+    }
+
+    /// Open the switcher on the window before the one in front, or walk it `steps` windows on.
+    /// A walk over fewer than two windows has nowhere to go, and opens nothing: Alt+Tab with
+    /// one window open does what it always has, which is nothing.
+    fn walk_switcher(&self, scope: Option<&str>, steps: i64) {
+        let scope = scope
+            .and_then(crate::overlays::SwitcherScope::named)
+            .unwrap_or_default();
+        // Opening the walk is one window on, as Alt+Tab goes to the window before the one in
+        // front whichever way its press names.
+        let steps = if steps == 0 { 1 } else { steps };
+        if !self.surfaces.overlays.is_up() {
+            let windows = self.handle.read(|tree| windows(tree, &self.handle));
+            let (walked, _) = walked(&windows, scope);
+            if walked.len() < 2 {
+                return;
+            }
+        }
+        self.surfaces.overlays.walk(Some(scope.name()), steps);
+    }
+
+    /// Choose the window `at` in the walk's order: `0` the first of them, `-1` the last. Home,
+    /// End and a card under the pointer choose by place, without crossing the ones between.
+    fn select_switcher(&self, at: i64) {
+        if !self.surfaces.overlays.is_up() {
+            return;
+        }
+        let windows = self.handle.read(|tree| windows(tree, &self.handle));
+        let (walked, front) = walked(&windows, self.surfaces.overlays.scope());
+        let count = i64::try_from(walked.len()).unwrap_or(1).max(1);
+        let at = if at < 0 {
+            count.saturating_add(at)
+        } else {
+            at.min(count.saturating_sub(1))
+        };
+        let front = i64::try_from(front.unwrap_or(0)).unwrap_or(0);
+        self.surfaces.overlays.select(at.saturating_sub(front));
     }
 }
 
@@ -1150,9 +1226,11 @@ impl Service for Desk {
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if let DeskEffect::WalkSwitcher { steps, scope } = &effect {
-            self.surfaces
-                .overlays
-                .walk(scope.as_deref(), steps.unwrap_or(1));
+            self.walk_switcher(scope.as_deref(), steps.unwrap_or(1));
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
+        if let DeskEffect::SelectSwitcher { at } = &effect {
+            self.select_switcher(*at);
             return Ok(Started::Done(tilo_actions::ActionOutput::default()));
         }
         if matches!(effect, DeskEffect::CommitSwitcher) {
@@ -1232,6 +1310,8 @@ mod tests {
                 surface_id: 77,
             },
             app_title: None,
+            view: String::new(),
+            pinned: false,
         };
         let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![tab]);
         let (_surface, handle) =

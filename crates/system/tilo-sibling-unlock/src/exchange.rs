@@ -55,9 +55,13 @@ pub struct Transcript {
     pub outcome: String,
 }
 
-/// Reports progress (the approval code) to the person at the boot screen.
+/// Reports what the person at the boot screen needs: the code to compare
+/// while they are being asked, and the answer once a sibling has one.
 pub trait Progress: Sync {
     fn pending(&self, sibling: &Sibling, approval_code: &str);
+    /// A sibling answered this boot: `allowed` released the half, otherwise
+    /// the owner denied the unlock and nobody is asked for it again.
+    fn decided(&self, sibling: &Sibling, allowed: bool);
 }
 
 /// The real siblings, over iroh.
@@ -162,11 +166,15 @@ async fn ask(
                     progress.pending(sibling, &approval_code);
                 }
                 SiblingFrame::Released(release) => {
+                    progress.decided(sibling, true);
                     return open_release(&ephemeral, &digest, &release)
                         .map(Ok)
                         .map_err(|error| anyhow!("the released half does not open: {error}"));
                 }
-                SiblingFrame::Denied => return Ok(Err(Refusal::Denied)),
+                SiblingFrame::Denied => {
+                    progress.decided(sibling, false);
+                    return Ok(Err(Refusal::Denied));
+                }
                 SiblingFrame::Refused(reason) => return Ok(Err(Refusal::Refused(reason))),
                 SiblingFrame::Challenge(_) => bail!("the sibling challenged twice"),
             }

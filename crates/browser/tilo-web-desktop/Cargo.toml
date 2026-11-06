@@ -36,18 +36,12 @@ tilo-spellcheck = { path = "../../text/spellcheck", features = ["lazy-dictionari
 tilo-ui = { path = "../../sdk/ui-core", default-features = false, features = ["lazy-hyphenation", "lazy-image-decode", "lazy-emoji", "lazy-history", "lazy-palettes"] }
 wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
-# Messages' messaging service in the page (src/messaging.rs): Tilo messages
-# through the room's private conversations, and the Tilo account's sign-up.
-tilo-messaging = { path = "../../platform/tilo-messaging", features = ["room"] }
-tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
-accounts = { path = "../../system/accounts", features = ["person"] }
-hex.workspace = true
 # generated apps: begin (tools/web/generate_web_desktop.py)
 activity = { path = "../../../apps/activity" }
 api-tester = { path = "../../../apps/api-tester" }
 calculator = { path = "../../../apps/calculator" }
 calendar = { path = "../../../apps/calendar", default-features = false, features = [] }
-camera = { path = "../../../apps/camera" }
+camera = { path = "../../../apps/camera", default-features = false, features = ["live-capture"] }
 canvas = { path = "../../../apps/canvas" }
 chat = { path = "../../../apps/chat", default-features = false, features = [] }
 chip-design = { path = "../../../apps/chip-design" }
@@ -75,10 +69,10 @@ speed-test = { path = "../../../apps/speed-test" }
 tasks = { path = "../../../apps/tasks" }
 themes = { path = "../../../apps/themes" }
 totp = { path = "../../../apps/totp" }
-tube = { path = "../../../apps/tube", default-features = false, features = ["media"] }
+tube = { path = "../../../apps/tube", default-features = false, features = [] }
 typst-editor = { path = "../../../apps/typst-editor" }
 video-editor = { path = "../../../apps/video-editor", default-features = false, features = [] }
-video-player = { path = "../../../apps/video-player" }
+video-player = { path = "../../../apps/video-player", default-features = false, features = [] }
 weather = { path = "../../../apps/weather" }
 word-processor = { path = "../../../apps/word-processor" }
 # generated apps: end

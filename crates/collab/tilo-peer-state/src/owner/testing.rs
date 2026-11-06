@@ -20,6 +20,13 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 
 pub mod governor;
 
+/// The record at `path` as the disk holds it: the index and one file per
+/// workspace, sorted by path.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) fn record_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    crate::owner::file_store::record_files(path).unwrap()
+}
+
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
 
@@ -143,6 +150,12 @@ pub fn raw_fixture() -> (
 ) {
     raw_fixture_at(SystemTime::now())
 }
+/// The joining device's own key the raw fixture enrolls.
+#[must_use]
+pub fn member_key() -> SigningKey {
+    SigningKey::from_bytes(&[63; 32])
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one linear signed-enrollment fixture; splitting it would scatter the protocol \
@@ -169,7 +182,7 @@ pub fn raw_fixture_at(
         &governor_key,
         "Governor",
     );
-    let device_key = SigningKey::from_bytes(&[63; 32]);
+    let device_key = member_key();
     let device = certificate(&SigningKey::from_bytes(&[64; 32]), &device_key, "Member");
     let workspace_id = tilo_relay_protocol::room_workspace_id(WORKSPACE).unwrap();
     let hint = IrohWorkspaceHostHintV1 {
@@ -366,17 +379,6 @@ pub fn entries(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
         .map(|entry| entry.bytes.clone())
         .collect())
 }
-/// The exact bytes of every recovery projection entry.
-///
-/// # Errors
-/// The workspace has no publication state.
-pub fn projection(view: &NativeCommittedView) -> Result<Vec<Vec<u8>>, String> {
-    Ok(publication::state(view)?
-        .projection
-        .iter()
-        .map(|entry| entry.bytes.clone())
-        .collect())
-}
 /// # Errors
 /// As the owner's own outgoing encoding.
 pub fn prepare(request: &OwnerCommitRequest) -> Result<Vec<u8>, String> {
@@ -393,11 +395,6 @@ pub fn metadata(message: &NeighbourMsg) -> Result<(u64, [u8; 32], bool), String>
 /// As the owner's own local append.
 pub fn append_local(view: &mut NativeCommittedView, bytes: Vec<u8>) -> Result<(), String> {
     publication::append_local(view, bytes)
-}
-/// # Errors
-/// The actual projection outgrew the reserve admitted for it.
-pub fn check_actual_projection_bound(view: &NativeCommittedView) -> Result<(), String> {
-    publication::check_actual_projection_bound(view)
 }
 pub fn peer_mut(view: &mut NativeCommittedView) -> &mut StatePeer {
     &mut view.peer

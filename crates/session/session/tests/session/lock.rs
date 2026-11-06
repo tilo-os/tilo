@@ -21,9 +21,6 @@ use tilo_session::surfaces::Surface;
 /// The resource the session publishes the lock as.
 const LOCK: &str = "lock";
 
-/// How long the lock screen may take to show itself: a whole app starts here.
-const OPENING: Duration = Duration::from_secs(90);
-
 /// One display's refresh, while waiting for the lock screen to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
@@ -148,6 +145,21 @@ impl tilo_session::unlock::PasswordVerifier for Held {
     }
 }
 
+/// The options a session that starts its lock screen locks with, `verifier`
+/// answering the password it is given.
+fn locking_options(
+    verifier: std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
+) -> Options {
+    Options {
+        presentation: ui::headless::fixture_runner_inputs,
+        user: "ada".to_owned(),
+        verifier,
+        collab: false,
+        surfaces: vec![lock_screen()],
+        ..Options::default()
+    }
+}
+
 /// A session that starts its lock screen when it locks, serving its services
 /// on `socket` and showing on `outputs`.
 pub(super) fn lockable_session(
@@ -157,13 +169,8 @@ pub(super) fn lockable_session(
 ) -> Session {
     Session::headless(
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            user: "ada".to_owned(),
-            verifier,
-            collab: false,
             action_plane: ActionPlane::At(socket.to_path_buf()),
-            surfaces: vec![lock_screen()],
-            ..Options::default()
+            ..locking_options(verifier)
         },
         outputs,
     )
@@ -195,7 +202,7 @@ pub(super) fn until_drawn(
     displays: &[&str],
     was: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
@@ -233,7 +240,7 @@ pub(super) fn until_back(
     displays: &[&str],
     was: &[Vec<f64>],
 ) -> Vec<Vec<f64>> {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         let now = pictures(session, displays);
@@ -354,6 +361,122 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
         publisher(&session, "overview").is_some(),
         "the unlocked session publishes the desktop's actions again"
     );
+}
+
+/// The colours `frame` is drawn in.
+fn colours(frame: &image::RgbaImage) -> std::collections::BTreeSet<[u8; 4]> {
+    frame.pixels().map(|pixel| pixel.0).collect()
+}
+
+/// The displays as the door's snapshot draws them: the PNG the session writes
+/// under `home` for `name`, read back.
+#[track_caller]
+fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> image::RgbaImage {
+    let path = home.join(format!("{name}.png"));
+    let asked = super::common::control(
+        session,
+        door,
+        &serde_json::json!({
+            "op": "snapshot",
+            "path": path.to_str().expect("a path the socket carries"),
+        }),
+    );
+    assert_eq!(
+        asked,
+        serde_json::json!({"ok": {"frame": 0}}),
+        "the door draws {name}"
+    );
+    image::open(&path)
+        .unwrap_or_else(|error| panic!("{name}: {error}"))
+        .to_rgba8()
+}
+
+/// The lock the session holds is what the displays show, and a check reads it
+/// there: the door's snapshot draws the lock screen the app put on the display,
+/// while a copy of the display that leaves the session is the one placeholder.
+/// Unlocking puts the desk back in both.
+#[test]
+fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_back() {
+    const DISPLAY: &str = "HEADLESS-1";
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let door = home.path().join("test-control.sock");
+    let mut session = Session::headless(
+        Options {
+            action_plane: ActionPlane::At(home.path().join("collab.sock")),
+            test_control: Some(door.clone()),
+            ..locking_options(std::sync::Arc::new(Sesame))
+        },
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    session.step(Duration::from_millis(1)).expect("a turn");
+
+    // The desk, as the door draws it before anything locks.
+    let desk = door_picture(&mut session, &door, home.path(), "desk");
+    assert!(colours(&desk).len() > 8, "the desk, not a flat frame");
+
+    invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
+    pump(&mut session, &mut [], |session, _| {
+        session.compositor().lock_drawn()
+    });
+    // The screen arrives on its own motion: what a person sees is the frame
+    // it settles at, not the first one the app drew on its way in.
+    until_still(&mut session, DISPLAY);
+    assert!(
+        session.surfaces().running("lock"),
+        "the session locked with the lock screen it starts: {:?}",
+        session.surfaces().names()
+    );
+
+    // The lock screen is on the display, drawn by the app: more than a
+    // placeholder's one colour, and not the placeholder a copy gets.
+    let locked = door_picture(&mut session, &door, home.path(), "lock-screen");
+    assert!(
+        colours(&locked).len() > 8,
+        "the lock screen is on the display: {} colours in it",
+        colours(&locked).len()
+    );
+    assert_ne!(
+        colours(&locked),
+        colours(&desk),
+        "the display shows the lock screen, not the desk it covered"
+    );
+    let copy: std::collections::BTreeSet<[u8; 4]> = session
+        .compositor()
+        .read_back_region(DISPLAY, (0, 0, WIDTH, HEIGHT))
+        .expect("a copy of the display")
+        .rgba
+        .chunks_exact(4)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+        .collect();
+    assert_eq!(copy.len(), 1, "a copy withholds the lock screen: {copy:?}");
+    assert_ne!(
+        colours(&locked),
+        copy,
+        "the door draws the display, not the copy's placeholder"
+    );
+
+    // The right password unlocks it, and the desk comes back to the door and
+    // to a copy of the display alike.
+    type_and_enter(&mut session, "sesame");
+    pump(&mut session, &mut [], |session, _| {
+        !session.compositor().locked()
+    });
+    let back = door_picture(&mut session, &door, home.path(), "desk-again");
+    assert!(
+        colours(&back).len() > 8,
+        "the desk is back on the display, not the lock screen"
+    );
+    let copy: std::collections::BTreeSet<[u8; 4]> = session
+        .compositor()
+        .read_back_region(DISPLAY, (0, 0, WIDTH, HEIGHT))
+        .expect("a copy of the display")
+        .rgba
+        .chunks_exact(4)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+        .collect();
+    assert!(copy.len() > 8, "a copy is the desk again");
 }
 
 /// A session whose lock screen's app is not installed still locks, and its
@@ -790,7 +913,7 @@ fn redrawn(
 /// changing at, not the first one that differs.
 #[track_caller]
 fn until_still(session: &mut Session, display: &str) -> tilo_compositor::Screenshot {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     let mut last = session
         .compositor()
@@ -828,7 +951,7 @@ fn until_redrawn(
     display: &str,
     was: &tilo_compositor::Screenshot,
 ) -> tilo_compositor::Screenshot {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     let mut last = was.clone();
     let mut since = Instant::now();
@@ -860,7 +983,7 @@ fn until_redrawn(
 /// session publishes for the screen: the reading any app of it reads.
 #[track_caller]
 fn until_media(session: &mut Session, media: impl Fn(&serde_json::Value) -> bool) {
-    let deadline = Instant::now() + OPENING;
+    let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
     loop {
         if session
@@ -1199,19 +1322,21 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
         "Speakers, Muted",
         "the locked session answers the device key, naming the output"
     );
-    // The frame the answer is drawn in, over the lock's own: step until it
-    // is drawn, rather than counting the turns it takes.
+    // The frame the answer is drawn in, over the lock's own: step until a
+    // frame differs from the lock's and the next one is the same, so what is
+    // measured is the readout at rest rather than a frame of its arrival.
+    let mut last: Option<tilo_compositor::Screenshot> = None;
     pump(&mut session, &mut [], |session, _| {
-        let after = session
+        let now = session
             .compositor()
             .screenshot(DISPLAY)
             .expect("screenshot");
-        changed(&before, &after).is_some()
+        let drawn = changed(&before, &now).is_some();
+        let settled = last.as_ref().is_some_and(|last| last.rgba == now.rgba);
+        last = Some(now);
+        drawn && settled
     });
-    let after = session
-        .compositor()
-        .screenshot(DISPLAY)
-        .expect("screenshot");
+    let after = last.expect("the readout's frame");
     assert!(
         !asked.borrow().is_empty(),
         "the key reached the sound service while locked"
@@ -1220,8 +1345,11 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     // across the middle of the display's foot.
     let (left, top, right, bottom) =
         changed(&before, &after).expect("the readout paints over the lock");
+    // The readout stands on the middle of the screen, as one band: its frame
+    // is what the system settings draw, so what is held is that it is centred
+    // and of the readout's size, never the width of a frame of its arrival.
     assert!(
-        (500..=780).contains(&left) && (500..=780).contains(&right),
+        left.midpoint(right).abs_diff(WIDTH as usize / 2) <= 24 && right - left <= 500,
         "the readout is across the middle of the screen: {left}..{right}"
     );
     assert!(

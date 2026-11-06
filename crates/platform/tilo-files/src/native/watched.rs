@@ -1,8 +1,11 @@
 //! A value read from files, kept current by a worker, for a thread that must
 //! never wait on the disk: the compositor's main loop.
 //!
-//! A [`Watched`] value is read once when it is started (at startup), then
-//! again on a worker of its own whenever one of its directories changes
+//! A [`Watched`] value is read once when it is started (at startup) — on the
+//! starting thread with [`Watched::start`], where the value must be there
+//! before anything else runs, or on its worker with
+//! [`Watched::start_unread`], which costs the starting thread nothing — then
+//! again on that worker whenever one of its directories changes
 //! ([`watch_changes`]). The reader only ever takes the latest value, an
 //! [`Arc`], and never opens, stats or lists a path to find out whether it is
 //! stale: a stamp checked on every read (a directory's modification time, a
@@ -103,16 +106,49 @@ impl<T: Send + Sync + 'static> Watched<T> {
         directories: Vec<PathBuf>,
         read: impl Fn() -> T + Send + Sync + 'static,
     ) -> std::io::Result<Self> {
+        let first = read();
+        Self::spawn(name, directories, first, true, read)
+    }
+
+    /// Watch `directories` and read `read` on a worker named `name`, never on
+    /// this thread: `unread` stands for the value until its first read lands,
+    /// and [`Self::on_change`] tells whoever shows the value that it did.
+    ///
+    /// For a value nothing waits on before the loop runs — a list a query
+    /// reads later. The watches are armed before the worker starts, so a
+    /// write landing during the first read is read again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::start`].
+    pub fn start_unread(
+        name: &str,
+        directories: Vec<PathBuf>,
+        unread: T,
+        read: impl Fn() -> T + Send + Sync + 'static,
+    ) -> std::io::Result<Self> {
+        Self::spawn(name, directories, unread, false, read)
+    }
+
+    /// Keep `first` as the value — read on this thread, or standing in for a
+    /// read still to come — and read `read` again on a worker named `name`
+    /// after any change in `directories`.
+    fn spawn(
+        name: &str,
+        directories: Vec<PathBuf>,
+        first: T,
+        read_first: bool,
+        read: impl Fn() -> T + Send + Sync + 'static,
+    ) -> std::io::Result<Self> {
         let (changed, wakes) = mpsc::channel::<()>();
         let mut watches = Watches::new(directories, changed.clone());
         watches.arm()?;
-        let first = Arc::new(read());
         let shared = Arc::new(Shared {
             read: Box::new(read),
-            value: RwLock::new((0, first)),
-            tickets: AtomicU64::new(1),
+            value: RwLock::new((0, Arc::new(first))),
+            tickets: AtomicU64::new(u64::from(read_first)),
             listeners: Mutex::new(Vec::new()),
-            wake: Mutex::new(changed),
+            wake: Mutex::new(changed.clone()),
         });
         let worker = Arc::downgrade(&shared);
         std::thread::Builder::new()
@@ -133,6 +169,11 @@ impl<T: Send + Sync + 'static> Watched<T> {
                     }
                 }
             })?;
+        if !read_first {
+            // The first read is the worker's: wake it as a change would, so
+            // the value arrives the one way values arrive.
+            let _ = changed.send(());
+        }
         Ok(Self { shared })
     }
 
@@ -313,6 +354,23 @@ mod tests {
         }));
         std::fs::write(&file, "changed").unwrap();
         assert!(within(|| *watched.get() == "changed"));
+    }
+
+    #[test]
+    fn a_value_started_unread_arrives_from_the_worker() {
+        // A read this test holds open until it lets go: starting must not
+        // wait for it, and the value given stands in until the read lands.
+        let held = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let read = std::sync::Arc::clone(&held);
+        let watched =
+            Watched::start_unread("watched-test", Vec::new(), "unread".to_owned(), move || {
+                read.wait();
+                "read".to_owned()
+            })
+            .unwrap();
+        assert_eq!(*watched.get(), "unread");
+        held.wait();
+        assert!(within(|| *watched.get() == "read"), "the read never landed");
     }
 
     #[test]

@@ -44,6 +44,8 @@ mod workspace_activity {
                     note: String::new(),
                 },
                 app_title: None,
+                view: String::new(),
+                pinned: false,
             });
             let mut layout = tilo_desktop_model::Workspace::in_workspace(
                 tilo_desktop_model::WorkspaceSlot(1),
@@ -60,6 +62,7 @@ mod workspace_activity {
                     mine: &|id| id >> 48 == 7,
                     retained: &|_| true,
                     carried: tilo_desktop_model::shared_record::device::Writer::NOTHING_CARRIED,
+                    records: tilo_desktop_model::shared_record::device::Writer::NOTHING_NOTED,
                 },
             )
             .unwrap();
