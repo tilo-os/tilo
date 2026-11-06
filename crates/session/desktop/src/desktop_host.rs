@@ -2250,6 +2250,20 @@ impl DesktopChrome {
                 self.step_strip(isize::try_from(*steps).unwrap_or_default());
                 return Ok(true);
             }
+            // The workspace edit path of the strip switcher's own button,
+            // so an agent or a page makes a strip the way the person does.
+            ChromeEffect::NewStrip { name } => {
+                let name = name.clone().unwrap_or_else(|| {
+                    crate::strip_switcher::default_strip_name(self.handle.read(|tree| {
+                        tree.active_workspace()
+                            .map_or(0, |workspace| workspace.strips.len())
+                    }))
+                });
+                if !self.add_strip(name) {
+                    return Err(crate::i18n::t("strip-switcher-refused"));
+                }
+                return Ok(true);
+            }
             ChromeEffect::NewWorkspace { workspace, name } => {
                 self.new_workspace(workspace.as_deref(), name.as_deref());
                 return Ok(true);
@@ -2297,7 +2311,6 @@ impl DesktopChrome {
                 | ChromeEffect::Maximize { .. }
                 | ChromeEffect::Fullscreen { .. }
                 | ChromeEffect::Rename { .. }
-                | ChromeEffect::NewStrip { .. }
                 | ChromeEffect::ReopenClosed
                 | ChromeEffect::ShareWindow { .. }
                 | ChromeEffect::StopDesktopControl { .. }

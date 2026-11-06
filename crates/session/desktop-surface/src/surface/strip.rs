@@ -5,10 +5,13 @@
 use super::{GroupRow, STRIP_EDGE_GUTTER_PX, Style, WindowGroup};
 use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX};
 
-/// The shown strip's node style over the row's `own`: tiled windows keep
-/// wallpaper above and below them, so the strip reads as its own row under
-/// the bar and their borders and corners show; a window filling the strip
-/// or taken across the display takes both bands instead.
+/// The strip's node style over the row's `own`: every strip stands on the
+/// whole surface, its displays' lanes placing its windows, so the strips the
+/// other displays show lie over it rather than beside it in a share of the
+/// height. Tiled windows keep wallpaper above and below them, so the strip
+/// reads as its own row under the bar and their borders and corners show; a
+/// window filling the strip or taken across the display takes both bands
+/// instead.
 pub(super) fn strip_style(row: &GroupRow, own: Style) -> Style {
     // A window taken across the display stands on no wallpaper, from the
     // bar's band down to the screen's bottom edge.
@@ -18,6 +21,18 @@ pub(super) fn strip_style(row: &GroupRow, own: Style) -> Style {
     // edge and rounded corners stand on wallpaper.
     let top = if fills { 0.0 } else { STRIP_TOP_GAP_PX };
     let mut style = own;
+    style.position = ui::taffy::Position::Absolute;
+    let edge = || ui::taffy::LengthPercentageAuto::length(0.0);
+    style.inset = ui::taffy::Rect {
+        left: edge(),
+        top: edge(),
+        right: edge(),
+        bottom: edge(),
+    };
+    style.size = ui::taffy::Size {
+        width: ui::taffy::Dimension::auto(),
+        height: ui::taffy::Dimension::auto(),
+    };
     style.margin.top = ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(top));
     style.margin.bottom = ui::taffy::LengthPercentageAuto::length(ui::num::f32_of_f64(bottom));
     style

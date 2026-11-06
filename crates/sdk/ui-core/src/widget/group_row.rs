@@ -1787,6 +1787,20 @@ impl GroupRow {
         self.focus_lane = self.focus_lane.min(self.lanes.len().saturating_sub(1));
     }
 
+    /// Show this strip on `outputs` only: its lane on every other display is
+    /// moved off that display, so it neither draws there nor takes input
+    /// there while another strip fills it. The lanes keep their places, so a
+    /// display coming back draws the strip where it was left.
+    pub fn set_shown_outputs(&mut self, outputs: &[u32]) {
+        for lane in &mut self.lanes {
+            lane.shift = if outputs.contains(&lane.spec.output) {
+                0.0
+            } else {
+                lane.area().height()
+            };
+        }
+    }
+
     /// The lanes this strip is partitioned into; empty for one continuous
     /// row.
     pub fn lanes(&self) -> Vec<StripLane> {
