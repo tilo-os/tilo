@@ -199,6 +199,27 @@ fn listing(session: &Session, name: &str) -> Listing {
         .unwrap_or_else(|| panic!("the sheet lists {name}"))
 }
 
+/// Write what the session shows where a person can look at it, when the run
+/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+fn capture(session: &mut Session, name: &str) {
+    let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
+    else {
+        return;
+    };
+    let frame = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame of the session");
+    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
+        .expect("the frame's pixels fill it");
+    let mut png = Vec::new();
+    pixels
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .expect("the shot");
+    std::fs::create_dir_all(&directory).expect("the directory for shots");
+    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
+}
+
 fn page_of(entries: Vec<DirectoryEntry>) -> String {
     serde_json::to_string(&DirectoryPage {
         workspaces: entries,
@@ -555,7 +576,7 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
     let _config = community_site(&mut env, &responder.url());
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    let (held_id, held_name, held_room) = held(&session)
+    let (_held_id, held_name, held_room) = held(&session)
         .into_iter()
         .next()
         .expect("the desk holds one workspace");
@@ -583,21 +604,21 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
                 ListingAction::Join,
                 COMMUNITY_WORKSPACE.to_owned()
             ),
-            (held_name, ListingAction::Open, held_id),
             (
                 "Book club".to_owned(),
                 ListingAction::Join,
                 CLUB_WORKSPACE.to_owned()
             ),
         ],
-        "the community's own first, then the liveliest, and the held workspace opens rather than joins"
+        "the community's own first, then the liveliest, and none this computer holds"
     );
     asserts_the_communitys_row(&session);
     asserts_the_clubs_row(&session);
+    capture(&mut session, "join-sheet");
 }
 
 #[test]
-fn a_site_that_cannot_be_read_says_so_and_still_lists_what_is_held() {
+fn a_site_that_cannot_be_read_says_so_and_offers_nothing_to_join() {
     let _settled = ui::motion::testing::settled();
     // A site with nothing at its entry.
     let responder = Responder::handle(|_| Some(Reply::status(404)));
@@ -605,7 +626,6 @@ fn a_site_that_cannot_be_read_says_so_and_still_lists_what_is_held() {
     let _config = community_site(&mut env, &responder.url());
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    let kept = held(&session);
     open_directory(&mut session);
     let sheet = session
         .workspace_directory()
@@ -615,23 +635,19 @@ fn a_site_that_cannot_be_read_says_so_and_still_lists_what_is_held() {
         Status::Failed(tilo_sheets::word("directory-error-no-workspace")),
         "the sheet says why nothing was listed"
     );
-    assert_eq!(
-        rows(&session),
-        kept.iter()
-            .map(|(id, name, _)| (name.clone(), ListingAction::Open, id.clone()))
-            .collect::<Vec<_>>(),
-        "and the workspaces this computer holds are still there to open"
+    assert!(
+        rows(&session).is_empty(),
+        "and it offers nothing: the workspaces this computer holds are not ones to join"
     );
 }
 
 #[test]
-fn no_community_site_lists_the_workspaces_this_computer_holds() {
+fn a_computer_with_no_community_site_has_nothing_to_join() {
     let _settled = ui::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _config = community_site(&mut env, "");
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
-    let kept = held(&session);
     open_directory(&mut session);
     let sheet = session
         .workspace_directory()
@@ -641,12 +657,9 @@ fn no_community_site_lists_the_workspaces_this_computer_holds() {
         Status::Listed,
         "a computer with no community site has nothing to read, not a failure"
     );
-    assert_eq!(
-        rows(&session),
-        kept.iter()
-            .map(|(id, name, _)| (name.clone(), ListingAction::Open, id.clone()))
-            .collect::<Vec<_>>(),
-        "it lists what it holds"
+    assert!(
+        rows(&session).is_empty(),
+        "and nothing to join: it holds no one else's workspace"
     );
 }
 
@@ -713,12 +726,12 @@ fn joining_a_listed_workspace_asks_its_door_and_lands_in_it() {
         "as this person, by the name they go by rather than their device's"
     );
     wait_until_the_directory_is_done(&mut session);
-    // Opening the directory again shows the club as one this computer holds.
+    // Opening the directory again does not offer the club to join: this
+    // computer holds it now.
     open_directory(&mut session);
-    assert_eq!(
-        listing(&session, "Book club").action,
-        ListingAction::Open,
-        "the club is no longer one to join: it is one to open"
+    assert!(
+        !rows(&session).iter().any(|(name, ..)| name == "Book club"),
+        "the club is no longer one to join"
     );
 }
 
