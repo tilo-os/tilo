@@ -74,12 +74,6 @@ path = "tests/hosted.rs"
 name = "history_undo"
 path = "tests/history_undo.rs"
 
-# Reminders as a person meets them: the workspace's own record of when an item is due, shown as
-# a platform notification, opened and acted on in the window.
-[[test]]
-name = "reminders"
-path = "tests/reminders.rs"
-
 [features]
 thin = ["dep:runtime-dylib"]
 

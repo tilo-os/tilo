@@ -170,7 +170,7 @@ impl Notice {
 
     /// Show it to the person, and say which notification went out: a producer
     /// whose notice the person acts on needs its id to know what they meant.
-    fn tell_as(self, notifications: &Notifications) -> u32 {
+    pub(crate) fn tell_as(self, notifications: &Notifications) -> u32 {
         let notification = self.into_notification(notifications);
         let id = notification.id;
         notifications.push(notification);
