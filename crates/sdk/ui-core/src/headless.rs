@@ -10509,9 +10509,12 @@ mod tests {
         }
     }
 
+    /// A view that replaces its composition on every sync while a control
+    /// invocation is pending: a frame that answered its own sync with another
+    /// frame nested them until the harness gave up. Each frame now lays out
+    /// and admits the composition its sync replaced, so one frame settles it.
     #[test]
-    #[should_panic(expected = "`NeverSettles` never settles")]
-    fn a_view_that_never_settles_fails_instead_of_overflowing_the_stack() {
+    fn a_view_that_replaces_its_composition_on_every_sync_settles_in_its_frame() {
         let restless = std::rc::Rc::new(std::cell::Cell::new(false));
         let mut driver = FrameHarness::new(
             State::new(),
@@ -10525,6 +10528,12 @@ mod tests {
         );
         restless.set(true);
         driver.relayout();
+        restless.set(false);
+        driver.relayout();
+        assert!(
+            !driver.layout_node_ids().is_empty(),
+            "the frame after the one that kept replacing its composition is laid out"
+        );
     }
 
     #[test]
