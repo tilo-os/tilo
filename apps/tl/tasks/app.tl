@@ -332,11 +332,20 @@ action duplicate(tasks: Tasks, t: Task) -> Task (
     icon: .copy,
     key: "Ctrl+Shift+D",
 ) {
+    let under = tasks.items.descendants(t, .parent)
     let copy = tasks.items.insert(copied(t, t.parent))
     if let last = last_below(tasks.items, t) {
         tasks.items.move(copy, after: last)
     } else { tasks.items.move(copy, after: t) }
-    copy_below(tasks, t, copy)
+    // The copies stand in the shape of the tasks they copy, in the order they are made: a task's
+    // copy hangs under the copy of the task it stands under, at the place it takes itself.
+    for x in under {
+        let under_copy = under.index_of(x.parent ?? t) ?? -1
+        let at = tasks.items.descendants(copy, .parent).at(under_copy) ?? copy
+        let below = last_below(tasks.items, at) ?? at
+        let made = tasks.items.insert(copied(x, .some(at)))
+        tasks.items.move(made, after: below)
+    }
     copy
 }
 
@@ -456,21 +465,6 @@ fn copied(t: Task, parent: Option<Task>) -> Task {
 /// `t` itself when none does.
 fn last_below(items: List<Task>, t: Task) -> Option<Task> {
     items.filter(x -> x == t or items.ancestors(x, .parent).any(a -> a == t)).last()
-}
-
-/// Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it
-/// copies did; answers the last task the copies end with. Duplicate runs it for every branch
-/// under what it copies, and a person may copy the steps of one task under another with it.
-action copy_below(tasks: Tasks, t: Task, copy: Task) -> Task {
-    for k in tasks.items.filter(x -> x.parent == .some(t)) {
-        // Where the copy of this one goes: after the run the copies under `copy` make so far,
-        // read before it is inserted, since it would end that run itself.
-        let after = last_below(tasks.items, copy)
-        let made = tasks.items.insert(copied(k, .some(copy)))
-        if let last = after { tasks.items.move(made, after: last) }
-        copy_below(tasks, k, made)
-    }
-    last_below(tasks.items, copy) ?? copy
 }
 
 /// How many of a task's subtasks are done, of all of them ("1/3"): its row in a list and its

@@ -204,9 +204,6 @@ d-scjlkb6d = Place in board
 d-kjbukd2o = Rename
     .doc = Renames a project.
 
-d-m2xarbfd = Copy below
-    .doc = Copies the tasks under `t` under `copy`, each in its place, so a copy reads as the task it copies did; answers the last task the copies end with.
-
 d-qwizihx4 = Check~present
 
 d-mdzqe3gc = Due today~present
@@ -232,6 +229,8 @@ d-day53wfn = Unfile~present
 d-mg3c777a = Move to~present
 
 d-tpvjqy5m = Clear done~present
+
+d-rxpe5yqk = Place in board~present
 
 d-i2mhsb3h = Home
     .w-tasks = Tasks

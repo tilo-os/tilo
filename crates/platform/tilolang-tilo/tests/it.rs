@@ -58,6 +58,7 @@ mod sync;
 mod task;
 mod task_door;
 mod tasks;
+mod tasks_places;
 mod tasks_today;
 mod triggers;
 #[cfg(feature = "record")]
