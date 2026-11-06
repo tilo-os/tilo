@@ -112,12 +112,12 @@ place says and never a walk over the list. Only the rows in view are built and a
 group, so a heading costs nothing on a long list. `tail:` names the items done with: they stand
 last under `tail_title`, folded away until the person presses the band, and a list that folds
 nothing away answers `tail: x -> false`, giving no heading and no clause. The block names the
-item and the item it stands under, so a row leaves out what its parent already says:
+item and who else is at it; the row names the item it stands under (`parent:`) and the one just
+over it (`above:`), so a child leaves out what its parent already says:
 
 ```
 std.list(shown, tree: true, ungrouped: .some("No day")) { (t, at) ->
-    ui.ListItem(item: t, presence: at, group: t.due, tail: t.folded,
-                parent: t.parent, above: shown.previous(t)) {
+    ui.ListItem(item: t, presence: at, group: t.due, tail: t.folded, parent: t.parent) {
         task_row(t, t.parent)
     }
 }
