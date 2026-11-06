@@ -819,9 +819,9 @@ view task_outline_row(t: Task, project: Option<Project>, under: Option<Task>) {
     )
 }
 
-/// A task's window: its title and whether it is done, where it came from, what is written about
-/// it, its subtasks, what was made from it, its facts — when it is due, its project, how much it
-/// matters, who is doing it — as chips, and what happened to it.
+/// A task's window: what it is and whether it is done, where it came from, what is written
+/// about it, its facts — when it is due, its project, how much it matters, who is doing it — as
+/// chips under them, then its subtasks, what was made from it, and what happened to it.
 view task_page(t: Task) {
     state step: Text
     std.document(t) {
@@ -833,6 +833,20 @@ view task_page(t: Task) {
         std.body() {
             // What an agent proposed about the task: nothing shows while nothing waits.
             std.suggestions(t)
+            // Its facts stand under what it is and says, over the steps it was broken into: the
+            // page reads what it is, its facts, its steps, and its conversation.
+            facts(t) {
+                ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
+                    ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
+                        on choose: unfile(t)
+                    }
+                    for p in tasks.projects {
+                        ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
+                            on choose: file(t, p)
+                        }
+                    }
+                }
+            }
             section("Subtasks") {
                 // A task with no subtasks puts no tree up, and the walk over the tasks under
                 // this one is made only once there is one.
@@ -862,18 +876,6 @@ view task_page(t: Task) {
                 }
             }
             std.linked(t, without: discussion.said_about(t))
-            facts(t) {
-                ui.MenuButton(t.project?.name ?? "Inbox", icon: .folder) {
-                    ui.MenuItem("Inbox", icon: .inbox, checked: t.project == .none) {
-                        on choose: unfile(t)
-                    }
-                    for p in tasks.projects {
-                        ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
-                            on choose: file(t, p)
-                        }
-                    }
-                }
-            }
             discussion.thread(t)
             std.history(t)
         }
