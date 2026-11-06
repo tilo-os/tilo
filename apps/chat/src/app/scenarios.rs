@@ -247,6 +247,7 @@ impl ChatApp {
             "floating-call-attached"
             | "floating-call"
             | "floating-call-crowd"
+            | "floating-call-muted"
             | "floating-call-hover"
             | "floating-call-returning"
             | "floating-call-returned" => {
@@ -257,11 +258,16 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call.join("c_huddle");
                 self.call.expanded = false;
+                if scenario == "floating-call-muted" {
+                    // The microphone off: the card's mute control wears its
+                    // engaged face and names what the click takes back.
+                    self.call.muted = true;
+                }
                 self.stage_connected_call();
                 if scenario == "floating-call-crowd" {
                     // A call with two people beside this one, one of them
                     // muted, as the workspace reports them: the card's hero
-                    // stacks three people above its controls.
+                    // stacks their faces beside their names.
                     let me = self.me.id.clone();
                     self.native_voice.snapshot.rosters = vec![ui::native_media::Roster {
                         channel_id: self.call.channel.clone(),

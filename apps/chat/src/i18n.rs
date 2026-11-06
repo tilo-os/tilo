@@ -52,7 +52,7 @@ mod tests {
         "chat-call-status",
         "chat-call-people-two",
         "chat-call-people-many",
-        "chat-call-people-more",
+        "chat-call-only-you",
         "chat-call-open-window",
         "chat-call-untitled",
         "chat-call-camera-on",

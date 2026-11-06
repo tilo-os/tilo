@@ -1176,6 +1176,67 @@ fn the_call_panel_says_who_is_in_the_call_where_it_paints_it() {
 }
 
 #[test]
+fn a_call_with_several_people_names_two_and_counts_the_rest() {
+    let (mut app, _doc) = app_with_doc();
+    service_streams(&mut app, "c_huddle", 4);
+    render_frame(&mut app, 1280.0, 800.0);
+    let me = app.me.id.clone();
+    let names: Vec<String> = app
+        .voice_people("c_huddle")
+        .iter()
+        .filter(|user| **user != me)
+        .map(|user| app.user_name(user))
+        .collect();
+    assert_eq!(names.len(), 4);
+    let label = app.call_people_label();
+    let listed: Vec<&String> = names
+        .iter()
+        .filter(|name| label.contains(name.as_str()))
+        .collect();
+    assert_eq!(listed.len(), 2, "two of them are named: {label}");
+    let named_two = |first: &str, second: &str| {
+        crate::i18n::t_args(
+            "chat-call-people-many",
+            &[
+                ("first", first.into()),
+                ("second", second.into()),
+                ("count", 2.into()),
+            ],
+        )
+    };
+    assert!(
+        label == named_two(listed[0], listed[1]) || label == named_two(listed[1], listed[0]),
+        "two names and the people left, so the card's hero stays one line: {label}"
+    );
+}
+
+#[test]
+fn a_muted_or_deafened_call_shows_it_on_its_microphone() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    app.call.muted = false;
+    assert!(
+        !app.call_control_engaged(&Hit::CallMute),
+        "a call you can speak in shows a resting microphone"
+    );
+    app.call.muted = true;
+    assert!(
+        app.call_control_engaged(&Hit::CallMute),
+        "muted: the control shows its state"
+    );
+    assert!(!app.call_control_engaged(&Hit::CallCamera));
+    app.call.muted = false;
+    app.call.deafened = true;
+    assert!(
+        app.call_control_engaged(&Hit::CallMute) && app.call_control_engaged(&Hit::CallDeafen),
+        "hearing nothing also means speaking nothing"
+    );
+    app.call.deafened = false;
+    app.call.sharing = true;
+    assert!(app.call_control_engaged(&Hit::CallScreen));
+}
+
+#[test]
 fn a_call_that_ended_for_a_reason_no_longer_counts_you_in_it() {
     use ui::presence::capability::PublishesPresence;
     let (mut app, _doc) = app_with_doc();

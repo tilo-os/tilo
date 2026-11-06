@@ -55,12 +55,12 @@ chat-call-issue-screen-lost = Screen sharing stopped
 chat-call-issue-unsupported = This browser can't join calls. Use a current Chrome, Edge, Firefox or Safari.
 
 chat-call-title = Call: { $channel }
-# Who a call is with, as the bar's pill names it: the people in it, never the
-# channel's slug.
+# Who a call is with, as the bar's pill and the card's hero name them: the
+# people in it, never the channel's slug.
 chat-call-people-two = { $first } and { $second }
-chat-call-people-many = { $first } and { $count } others
-# The last row of a call's card when more people are in it than it names.
-chat-call-people-more = { $count } others
+# A call nobody else has joined yet, as the card's hero names it.
+chat-call-only-you = Just you
+chat-call-people-many = { $first }, { $second } and { $count } others
 chat-call-open = Open call conversation
 chat-call-join = Join muted
 chat-call-leave-action = Leave call

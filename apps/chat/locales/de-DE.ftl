@@ -55,12 +55,12 @@ chat-call-issue-screen-lost = Bildschirmfreigabe gestoppt
 chat-call-issue-unsupported = Dieser Browser kann nicht an Anrufen teilnehmen. Nutze eine aktuelle Version von Chrome, Edge, Firefox oder Safari.
 
 chat-call-title = Anruf: { $channel }
-# Mit wem ein Anruf läuft, wie die Pille der Leiste es nennt: die Menschen
-# darin, nie die Kennung des Kanals.
+# Mit wem ein Anruf läuft, wie die Pille der Leiste und die Kopfzeile der
+# Karte sie nennen: die Menschen darin, nie die Kennung des Kanals.
 chat-call-people-two = { $first } und { $second }
-chat-call-people-many = { $first } und { $count } weitere
-# Die letzte Zeile der Karte eines Anrufs, wenn mehr Menschen darin sind, als sie nennt.
-chat-call-people-more = { $count } weitere
+# Ein Anruf, dem noch niemand beigetreten ist, wie die Kopfzeile der Karte ihn nennt.
+chat-call-only-you = Nur du
+chat-call-people-many = { $first }, { $second } und { $count } weitere
 chat-call-open = Anrufunterhaltung öffnen
 chat-call-join = Stumm beitreten
 chat-call-leave-action = Anruf verlassen

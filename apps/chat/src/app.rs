@@ -313,9 +313,8 @@ pub struct ChatApp {
     pub(crate) huddle_chip_rows: usize,
     pub(crate) pending_floating: Option<ui::floating_surface::FloatingSurfaceRequest>,
     /// The channel whose call this app already asked the shell to draw as a
-    /// card, and the height it asked for: presenting is the app's request,
-    /// the place is the shell's.
-    presented_call: Option<(String, f64)>,
+    /// card: presenting is the app's request, the place is the shell's.
+    presented_call: Option<String>,
     /// Authoritative combined-output bounds supplied by the shell. Standalone
     /// app/test hosts leave this empty and fall back to the app rect.
     pub(crate) floating_surface_bounds: Rect,
@@ -904,9 +903,9 @@ impl ChatApp {
         self.present_call_card();
     }
 
-    /// Ask the shell for the call's card, once per call and per headcount:
-    /// whether it stands, and where, is the shell's to decide — while Chat's
-    /// own window shows the call, Chat draws it there.
+    /// Ask the shell for the call's card, once per call: whether it stands,
+    /// and where, is the shell's to decide — while Chat's own window shows
+    /// the call, Chat draws it there.
     fn present_call_card(&mut self) {
         if !self.call.active || self.call.channel.is_empty() {
             // A call that ended asks for its card again when the next one
@@ -920,14 +919,13 @@ impl ChatApp {
         let Some(request) = self.call_card_request() else {
             return;
         };
-        // One request per call and headcount: the card's height follows the
-        // people it names, and the layer keeps the column's width.
-        let presented = (self.call.channel.clone(), request.preferred_size.height);
-        if self.presented_call.as_ref() == Some(&presented) {
+        // One request per call: the card's body is one height, and the layer
+        // keeps the column's width.
+        if self.presented_call.as_ref() == Some(&self.call.channel) {
             return;
         }
         self.pending_floating = Some(request);
-        self.presented_call = Some(presented);
+        self.presented_call = Some(self.call.channel.clone());
     }
 
     /// The card the call asks the shell for: the body it draws at, inside the
@@ -938,12 +936,7 @@ impl ChatApp {
         // asks for the width it is placed at, so what it draws and what the
         // layer hands it are one number.
         let width = f64::from(ui::tokens::Metrics::BASE.panel_width_utility);
-        let body = Rect::new(
-            0.0,
-            0.0,
-            width,
-            self.chrome.call_card_height(self.call_participants().len()),
-        );
+        let body = Rect::new(0.0, 0.0, width, self.chrome.call_card_height());
         let mut request = self.call.floating_request(self.call_video_rect(), body)?;
         request.presentation_rect = Some(body.inflate(8.0, 8.0));
         Some(request)
