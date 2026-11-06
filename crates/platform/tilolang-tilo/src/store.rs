@@ -702,22 +702,26 @@ fn holds_heads(doc: &Doc, heads: &[ChangeHash]) -> bool {
 /// it is: every view of it reads the document anew.
 fn name_version_changes(ends: &Ends, docs: &mut BTreeMap<DocId, Vec<FieldKey>>) {
     for resource in ends.keys() {
-        let doc = doc_of(resource);
-        match docs.get_mut(doc) {
-            Some(fields) if fields.is_empty() => {}
-            Some(fields) => fields.push(FieldKey {
+        note_derived(
+            docs,
+            doc_of(resource),
+            vec![FieldKey {
                 resource: resource.clone(),
                 field: VERSIONS.to_owned(),
-            }),
-            None => {
-                docs.insert(
-                    doc.to_owned(),
-                    vec![FieldKey {
-                        resource: resource.clone(),
-                        field: VERSIONS.to_owned(),
-                    }],
-                );
-            }
+            }],
+        );
+    }
+}
+
+/// Note what a change named in `doc`: the fields that changed there, which sets aside the
+/// listings of it reading one. A document the change reached as a whole keeps the empty list
+/// that says so: narrower fields would leave the listings they do not name on the old index.
+fn note_derived(docs: &mut BTreeMap<DocId, Vec<FieldKey>>, doc: &str, keys: Vec<FieldKey>) {
+    match docs.get_mut(doc) {
+        Some(fields) if fields.is_empty() => {}
+        Some(fields) => fields.extend(keys),
+        None => {
+            docs.insert(doc.to_owned(), keys);
         }
     }
 }
@@ -942,13 +946,7 @@ impl TiloStore {
         // and the records derived anew whole.
         let mut docs = changed.docs;
         for key in items.keys() {
-            match docs.get_mut(key.doc()) {
-                Some(fields) if fields.is_empty() => {}
-                Some(fields) => fields.push(key.clone()),
-                None => {
-                    docs.insert(key.doc().to_owned(), vec![key.clone()]);
-                }
-            }
+            note_derived(&mut docs, key.doc(), vec![key.clone()]);
         }
         for doc in wholes {
             docs.insert(doc, Vec::new());
@@ -956,7 +954,7 @@ impl TiloStore {
         // A value the index derives may have moved on an item the change did not name: a
         // branch that folds because its last task was checked elsewhere.
         for (doc, keys) in derived {
-            docs.entry(doc).or_default().extend(keys);
+            note_derived(&mut docs, &doc, keys);
         }
         name_version_changes(&ends, &mut docs);
         for fields in docs.values_mut() {
