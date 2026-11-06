@@ -82,13 +82,13 @@ pub trait Host {
     /// A [`HostFail`] traps or suspends the guest.
     fn guest_import(
         &self,
-        _module: &str,
-        _name: &str,
+        module: &str,
+        name: &str,
         _memory: &[u8],
         _args: &[Wasm],
     ) -> Result<GuestAnswer, HostFail> {
         Err(HostFail::Trap(format!(
-            "this host imports no {_module}::{_name}"
+            "this host imports no {module}::{name}"
         )))
     }
 
@@ -116,21 +116,6 @@ pub enum GuestAnswer {
         bytes: Vec<u8>,
         result: Option<Wasm>,
     },
-}
-
-/// A signature [`Host::guest_abi`] writes, as the parameters and the result each one's signs.
-pub(crate) fn signs(signature: &'static str) -> (Vec<u8>, Vec<u8>) {
-    let bytes = signature.as_bytes();
-    let split = bytes
-        .iter()
-        .position(|sign| !sign.is_ascii_alphabetic())
-        .unwrap_or(bytes.len());
-    let (params, _) = bytes.split_at(split);
-    // The result names the sign it is, and nothing after it.
-    (
-        params.to_vec(),
-        bytes.get(split).copied().into_iter().collect(),
-    )
 }
 
 /// Why a call into a module failed.
@@ -757,15 +742,13 @@ impl<B: Backend> Pools<B> {
                 .ok_or_else(|| CallError::Link(format!("module {module} is not compiled")))?;
             (c.module.clone(), c.idle.pop())
         };
-        match idle {
-            Some(instance) => Ok(instance),
-            None => {
-                let linker = self.linker()?;
-                self.compiler
-                    .backend
-                    .instantiate(&linker, &compiled, limits)
-            }
+        if let Some(instance) = idle {
+            return Ok(instance);
         }
+        let linker = self.linker()?;
+        self.compiler
+            .backend
+            .instantiate(&linker, &compiled, limits)
     }
 
     fn call(
