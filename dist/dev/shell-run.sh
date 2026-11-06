@@ -14,12 +14,15 @@
 # it started, its FUSE mount and the scratch directory go with it.
 #
 # Usage:
-#   dist/dev/shell-run.sh [--no-build] [--size WxH] [--no-apps]
+#   dist/dev/shell-run.sh [--no-build] [--size WxH] [--no-apps] [--dev-rust-views]
 #
 # Options:
 #   --no-build    use the binaries already in target/debug
 #   --no-apps     start without the seeded apps, as a bare session does
 #   --size WxH    the headless output's size (default 1280x800)
+#   --dev-rust-views  seed a Rust app's sample resources and views too (Tube's channels and
+#                     videos), so a shell draws their views live: a shot of a Rust view on the
+#                     canvas. Development builds only.
 #
 # Drive it from another terminal with the commands it prints:
 #   target/debug/tilolang repl --door "$TILO_AGENT_DOOR"
@@ -33,12 +36,14 @@ die() { printf 'shell-run: %s\n' "$*" >&2; exit 1; }
 build=1
 size=1280x800
 apps=(--seed-apps)
+rust_views=0
 while (($#)); do
     case $1 in
         --no-build) build=0; shift ;;
-        --no-apps) apps=(); shift ;;
+        --no-apps) apps=(); rust_views=0; shift ;;
         --size) size=${2:?--size needs WxH}; shift 2 ;;
-        -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
+        --dev-rust-views) rust_views=1; shift ;;
+        -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p' "$0"; exit 0 ;;
         *) die "unknown option $1 (see --help)" ;;
     esac
 done
@@ -46,7 +51,12 @@ done
 bin=$repo_root/target/debug
 if ((build)); then
     say "building tilo-session, tilolang and tilo-control"
+    # A shot of a Rust app's view on the canvas builds the session with Tube's sample
+    # resources and views linked (`--dev-rust-views`, development builds only).
+    session_features=()
+    ((rust_views)) && session_features=(--features dev-rust-views)
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
+        "${session_features[@]}" \
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control)
 fi
 for tool in tilo-session tilolang tilo-control; do
