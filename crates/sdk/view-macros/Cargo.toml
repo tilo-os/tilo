@@ -15,6 +15,7 @@ proc-macro = true
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
+workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
