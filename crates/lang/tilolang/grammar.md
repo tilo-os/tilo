@@ -56,7 +56,7 @@ flow       = "flow" ident params [ "->" type ] [ uses ] block ;
 uses       = "uses" effect { "," effect } ;                        (* what the body reads that a replay cannot compute again *)
 effect     = "web" | "random" | "time" ;
 fn         = "fn" ident params "->" type block ;
-view       = "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
+view       = [ "template" ] "view" ident [ "<" Ident { "," Ident } ">" ] params ui_block ;
 scenario   = "scenario" string [ "->" type ] block ;
 params     = "(" [ param { "," param } ] ")" ;
 param      = ident ":" type [ "=" expr ] ;                         (* defaults: action parameters only *)
@@ -114,8 +114,8 @@ Tokens:
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
   Keywords: `app use as type enum action flow view fn let if else match for in return and or not
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
-  `primary`, `destructive`, `migration`, `views` and `personal` are keywords only where the
-  grammar above uses them.
+  `primary`, `destructive`, `migration`, `views`, `personal` and `template` are keywords only
+  where the grammar above uses them.
 - `length` is a number with `rem`, `dp` or `fr` (`11rem`); `duration` an integer with `s`, `m`,
   `h`, `d` or `w` (`-7d`).
 - `calendar` is a day `2026-06-29` (a Date), an instant `2026-06-29T07:02Z` or
