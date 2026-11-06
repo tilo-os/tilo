@@ -147,6 +147,7 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_local_image_epoch.py",
+  "os/tests/os_image_gc_sandbox.sh",
   "os/tests/security_audit_kconfig.sh",
   "os/tests/env_runtime_fingerprint.sh",
   "os/tests/boot_chain_source.sh",
