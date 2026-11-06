@@ -722,3 +722,36 @@ fn a_settled_menu_asks_for_no_frame() {
     menu.close();
     assert!(menu.needs_redraw(), "it is going away");
 }
+
+/// A menu is as wide as its longest label and its longest trailing text
+/// together. A row that carries both used to pay for its trailing text twice —
+/// once against the label it sits beside and once more in the column every row
+/// shares — so one sentence beside a disabled row grew the panel across half
+/// the strip.
+#[test]
+fn a_menu_is_as_wide_as_its_longest_label_and_longest_trailing_text_together() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let label = "Aurora Skies, the whole discography";
+    let detail = "No other workspace to move this window to";
+    let mut both =
+        ContextMenu::with_items(vec![MenuItem::action(label, || {}).with_detail(detail)]);
+    let mut label_only = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
+    let mut detail_only =
+        ContextMenu::with_items(vec![MenuItem::action("Go", || {}).with_detail(detail)]);
+    for menu in [&mut both, &mut label_only, &mut detail_only] {
+        menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), viewport);
+        menu.layout_within(&mut text, &theme);
+    }
+    let (label_alone, detail_alone) = (label_only.measured_width, detail_only.measured_width);
+    assert!(
+        both.measured_width < label_alone + detail_alone,
+        "the row with a sentence beside it is {} px wide, more than its label's menu \
+         ({label_alone} px) and its sentence's menu ({detail_alone} px) together",
+        both.measured_width
+    );
+    assert!(both.measured_width >= label_alone.max(detail_alone));
+}

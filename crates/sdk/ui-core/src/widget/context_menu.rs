@@ -843,12 +843,12 @@ impl ContextMenu {
                 } else {
                     0.0
                 };
-                // A shortcut sits at the row's end, a gap after the label.
-                let keys = item.trailing_text(self.platform).map_or(0.0, |keys| {
-                    let (k, _) = text.measure_style(&keys, None, &style);
-                    f64::from(k) + f64::from(theme.tokens.spacing.s6)
-                });
-                width = width.max(f64::from(w) + check_width + keys);
+                // The row's trailing text stands in the column measured below,
+                // once for the whole menu: counting it here as well made a menu
+                // as wide as its longest label with that row's own shortcut
+                // added twice, which is how a row with a sentence beside it
+                // grew the panel across half the strip.
+                width = width.max(f64::from(w) + check_width);
                 height = height.max(f64::from(h));
             }
             if let Some(label) = item.trailing_text(self.platform) {
