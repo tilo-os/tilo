@@ -57,7 +57,7 @@ class Budgets(unittest.TestCase):
             "profile": "arriving",
             "build_us": 3900,
             "first_frame_us": 280,
-            "steady": {"p95_us": 210, "allocs_per_frame": 660, "draw_p95_us": 180},
+            "steady": {"p95_us": 210, "allocs_per_frame": 329, "draw_p95_us": 180},
             "pan": {"p95_us": 2000},
             "idle_working_frames": 0,
             "idle_us_per_frame": 90,
