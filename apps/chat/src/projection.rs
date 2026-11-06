@@ -161,8 +161,11 @@ impl Chat {
     /// else the names of the people it is with, `me`'s left out when they
     /// are one of them and someone else is. A person the workspace has no
     /// name for goes by their tag, never blank.
+    ///
+    /// The one place a conversation is named, for the window and for whatever
+    /// else names it (an agent's run on a turn in it).
     #[must_use]
-    fn display_names(&self, id: &Id, me: Option<&str>) -> String {
+    pub fn display_names(&self, id: &Id, me: Option<&str>) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.participants.is_empty()
             && !conversation.name.trim().is_empty()

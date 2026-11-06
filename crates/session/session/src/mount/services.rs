@@ -256,7 +256,7 @@ pub(crate) fn start_action_plane(
     handle: &DesktopHandle,
     shortcuts: std::sync::Arc<ShortcutLibrary>,
     activity: &activity::Activity,
-    agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
+    turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     tools: Option<crate::mount::tools::Handle>,
     collaboration: Collaboration<'_>,
 ) -> Result<Option<Plane>, Error> {
@@ -323,9 +323,9 @@ pub(crate) fn start_action_plane(
             desk: std::sync::Arc::clone(&desk),
             shortcuts,
             activity: activity_wire,
-            // The runs the broker delivers to the agents admitted here, and
+            // The turns the broker delivers to the agents admitted here, and
             // hears back what they report of them.
-            agent_runs: Some(agent_runs),
+            turns,
             sealed,
             own_device,
             record_content: content,

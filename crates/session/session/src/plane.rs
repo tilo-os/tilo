@@ -320,7 +320,9 @@ pub struct Hosted {
     pub desk: std::sync::Arc<DeskAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
-    pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
+    /// The turns this session's agents answer, which the broker delivers
+    /// as runs.
+    pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
     /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
@@ -730,7 +732,7 @@ fn seams(
         desk,
         shortcuts,
         activity,
-        agent_runs,
+        turns,
         sealed,
         own_device,
         engine,
@@ -818,9 +820,10 @@ fn seams(
             "the sound service publishes its outputs as a resource of its own",
         ),
         workspace_memberships: Seam::when(memberships),
-        // What people ask this session's agents to do: a run is the broker's
-        // to deliver, and its reports come back to the run.
-        tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
+        // What people ask this session's agents to do: a turn a person's
+        // message in a conversation started. A run is the broker's to
+        // deliver, and its reports come back to the turn.
+        tracker_runs: Seam::when(turns.map(|turns| turns as std::sync::Arc<dyn TrackerRuns>)),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -1243,7 +1246,7 @@ mod tests {
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
-            agent_runs: None,
+            turns: None,
             native_media: None,
             sealed: Sealed {
                 broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
