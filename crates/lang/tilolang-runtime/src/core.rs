@@ -345,8 +345,8 @@ impl Core {
             StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
             TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
             UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
-            UiPropH, UiPropI, UiPropPic, Unseen, UnseenCount, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
-            Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
+            UiPropH, UiPropI, UiPropPic, Unseen, UnseenCount, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, Viewer, WallClock, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -406,13 +406,8 @@ impl Core {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
-<<<<<<< HEAD
-            | RunChanges | Unseen | FirstUnseen | Mentions | Steps | VersionEnd | Phrase | Word
-            | EntryParts | Viewer => self.platform_import(imp, a),
-=======
             | RunChanges | Unseen | FirstUnseen | UnseenCount | Mentions | Steps | VersionEnd
-            | Phrase | Word | Dated | EntryParts | Viewer => self.platform_import(imp, a),
->>>>>>> ae836edcd81 (feat(tilolang): count what a place holds unseen, from the reader's marks)
+            | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
