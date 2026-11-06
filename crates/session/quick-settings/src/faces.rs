@@ -92,7 +92,7 @@ impl Sliders {
                 .sound_outputs
                 .iter()
                 .find(|output| output.current)
-                .map(|output| output.name.clone()),
+                .map(|output| crate::sound::short_output(&output.name)),
             value: if muted { t("qs-muted") } else { percent(level) },
             // A muted output is silent at any level: its track is empty, as
             // the volume readout's is.

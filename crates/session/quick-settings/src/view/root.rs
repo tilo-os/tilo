@@ -98,6 +98,7 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
         track = track.push(Box::new(
             Text::new(device)
                 .with_role(TextRole::Caption)
+                .with_truncate(true)
                 .with_id(format!("{}-device", face.id)),
         ));
     }
