@@ -803,6 +803,9 @@ d-utk4ewgf = Pin to the dock
 d-5yz5iwzs = Remove from the dock
     .doc = Takes an item off the dock.
 
+d-aitkuflo = Open item
+    .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
+
 d-3edhzcjk = Seed run
     .doc = The run a conversation starts from: what Ada asked, the agent's words between its steps, a program it ran that printed two notes, one that changed a note, one of Ada's own that did not compile, and the agent's answer.
 
