@@ -1,0 +1,40 @@
+[Unit]
+Description=Prepare the store volume once the person has signed in
+Documentation=file:///usr/libexec/tilo-store-volume
+# The workspace's owner is the local person, and a boot prepares the store
+# before anybody can sign in: tilo-store-volume.service runs before fs.service
+# (which the store is for), and the person's sign-in is what names them. A
+# boot without one is the state "waiting for the person", which
+# tilo-store-volume.service reports and succeeds in — a failed unit is not that
+# state.
+#
+# This watches both things a sign-in changes and re-runs the preparation, with
+# no timer and no polling:
+#
+#   * the proof the account writes — the account that holds the device's
+#     identity signs one at sign-in, and `tilo-identity local-person` reads it
+#     (it is the answer that survives a later sign-out);
+#   * an active session on the seat — the other answer the helper accepts, for
+#     a device where no account has proved itself yet.
+#
+# The preparation finds the person, mounts and prepares the store, and (as
+# fs.service is already running) restarts it onto the native data plane. The
+# paths stay armed, so another account proving itself — after a join, or on a
+# shared device — prepares it again.
+ConditionKernelCommandLine=!tilo.install
+ConditionPathExists=/dev/fuse
+
+[Path]
+# local_person::PROOF_FILE, one per account that has signed in.
+PathExistsGlob=/var/home/*/.config/tilo/identity/local-person.sig
+PathExistsGlob=/home/*/.config/tilo/identity/local-person.sig
+# logind's per-seat state: its ActiveSession is what the helper asks, so its
+# creation, every change to it and the seat record itself are a sign-in or a
+# sign-out. The directory is watched as well as the file, because logind
+# replaces the records in it rather than rewriting them in place.
+PathChanged=/run/systemd/seats
+PathChanged=/run/systemd/seats/seat0
+Unit=tilo-store-volume.service
+
+[Install]
+WantedBy=multi-user.target

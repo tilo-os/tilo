@@ -305,7 +305,9 @@ is_store_mounted() {
 #      ignored;
 #   3. the person signed in at the login screen (seat0's active session).
 #
-# Prints "name uid:gid". Without one, prints why on stderr and fails.
+# Prints "name uid:gid". Without one, says why on stderr and exits 1 when the
+# device names an owner it cannot use, 2 when nothing has proved itself yet
+# (the person's sign-in ends that).
 IDENTITY_ROOT="${TILO_STORE_IDENTITY:-/var/lib/tilo}"
 IDENTITY_TOOL="${TILO_STORE_IDENTITY_TOOL:-/usr/libexec/tilo/tilo-identity}"
 LOGINCTL="${TILO_STORE_LOGINCTL:-loginctl}"
@@ -369,16 +371,28 @@ local_person() {
     person_entry "$name" && return 0
   fi
   log "No account here proves it holds this device's identity, and nobody is signed in." >&2
-  log "Name the account whose files the workspace holds with owner=<account> in $ETC/tilo/store-volume.conf, or sign in to that account: signing in proves it holds the device's identity." >&2
-  return 1
+  log "The person's next sign-in writes that proof and re-runs this preparation; set owner=<account> in $ETC/tilo/store-volume.conf to name them without it." >&2
+  # 2: nothing has proved itself yet, which is a state the person's sign-in
+  # ends. Everything else is a device that names what it cannot use.
+  return 2
 }
 
 # What fs.service appends to its command line. Written fresh on every boot
 # into a root-only runtime directory, so nothing stale or session-writable
 # can reach the root daemon's arguments.
 publish_data_plane() {
+  local held
   install -d -m 0755 "$RUNTIME"
+  held="$(sed -n 's/^TILO_FS_DATA_PLANE_ARGS="\(.*\)"$/\1/p' "$RUNTIME/fs.env" 2>/dev/null || true)"
   printf 'TILO_FS_DATA_PLANE_ARGS="%s"\n' "$1" | write_atomic "$RUNTIME/fs.env" 0644
+  # A preparation that ran while fs.service was already up (a sign-in re-ran
+  # this unit) has to make the daemon pick up what it announced; at boot the
+  # daemon reads the file as it starts, so this does nothing.
+  if [ "$held" != "$1" ] && "$SYSTEMCTL" is-active --quiet fs.service 2>/dev/null; then
+    log "fs.service restarts onto the data plane this preparation announced."
+    "$SYSTEMCTL" try-restart fs.service 2>/dev/null \
+      || log "fs.service could not be restarted; it picks the data plane up at the next boot."
+  fi
 }
 
 # The local person's "uid:gid", once known: FUSE presents the files as
@@ -468,12 +482,23 @@ retry_configured() {
 }
 
 cmd_ensure() {
-  local kind person name owner
+  local kind person name owner status
   install -d -m 0755 "$ETC/tilo"
   kind="$(conf_get kind)"
-  if ! person="$(local_person)"; then
-    # Loud: the unit fails, and the files keep being served, as root's,
-    # until the person is named.
+  person="$(local_person)" && status=0 || status=$?
+  if [ "$status" -ne 0 ]; then
+    if [ "$status" -eq 2 ]; then
+      # Nobody has signed in since this device was bound: the account proves
+      # it holds the device's identity by signing in (the proof
+      # `tilo-identity local-person` reads), and the store is prepared before
+      # anyone can on a first boot. That is a state, not a failure — the files
+      # keep being served by FUSE, and the sign-in re-runs this preparation
+      # (tilo-store-volume-after-signin.path) to set the store up then.
+      serve_fuse "The person has not signed in yet, so the workspace has no owner." >&2
+      return 0
+    fi
+    # A device that names an owner it cannot use, or that two accounts both
+    # prove, is misconfigured: fail loudly and say what to set.
     serve_fuse "There is no local person to own the workspace's files." >&2
     return 1
   fi
