@@ -288,9 +288,10 @@ mod tests {
                         whole,
                         "{query} {word} {distance}"
                     );
-                    let prefixed = if w.len() < q.len() && w.len() < SUBSTITUTION_SCALARS {
-                        false
-                    } else if w.len().saturating_add(distance) < q.len() {
+                    let prefixed = if w.len() < q.len()
+                        && (w.len() < SUBSTITUTION_SCALARS
+                            || w.len().saturating_add(distance) < q.len())
+                    {
                         false
                     } else if q.len() <= distance {
                         true

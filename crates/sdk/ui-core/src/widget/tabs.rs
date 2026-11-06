@@ -5546,6 +5546,7 @@ impl TabBar {
     /// does. A pinned tab keeps its place, and one another device holds is
     /// not this pointer's to close.
     fn on_middle_press(&mut self, handled: &mut bool) {
+        self.touch();
         let Some(index) = self
             .tab_rects
             .iter()
