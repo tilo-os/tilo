@@ -81,6 +81,92 @@ def diff_bbox(a: Path | None, b: Path | None) -> list[int] | None:
     return list(box) if box else None
 
 
+# A menu is a panel that fits beside the window it is for. One as wide as the
+# strip holding paragraph-long hints at the rows' ends is not a menu a person
+# reads as one, whatever its overlay says.
+MENU_WIDTH_MAX = 460
+MENU_HEIGHT_MAX = 760
+# A menu offers this many rows at least: a single line that came up is a hint,
+# a toast or the window's own text, not the list of what can be done.
+MENU_ROWS_MIN = 4
+
+
+def menu_frame(before: Path, shot: Path, pressed, rows_min: int = MENU_ROWS_MIN) -> dict:
+    """What a menu story's frame shows, measured on the pixels: the panel that
+    came up, the rows of text standing in it, and whether a person reading the
+    screen would find a menu there, at the point they pressed.
+
+    The rows are the bright text bands the frame did not have before, and a
+    menu's rows start at one inset: their left edges line up in a column."""
+    found: dict = {"ok": False, "why": None}
+    if before is None or shot is None or not (Path(before).exists() and Path(shot).exists()):
+        found["why"] = "no frame to read"
+        return found
+    first = Image.open(before).convert("RGB")
+    second = Image.open(shot).convert("RGB")
+    if first.size != second.size:
+        found["why"] = "the frames are not the same size"
+        return found
+    difference = ImageChops.difference(first, second).convert("L")
+    box = difference.getbbox()
+    if not box:
+        found["why"] = "nothing drew where the story pressed"
+        return found
+    found["box"] = list(box)
+    found["width"], found["height"] = box[2] - box[0], box[3] - box[1]
+    mask = difference.load()
+    frame = second.load()
+
+    def lit(x: int, y: int) -> bool:
+        red, green, blue = frame[x, y]
+        return mask[x, y] > 6 and 0.299 * red + 0.587 * green + 0.114 * blue > 90
+
+    bands: list[list[int]] = []
+    for y in range(box[1], box[3]):
+        xs = [x for x in range(box[0], box[2]) if lit(x, y)]
+        # A window edge lighting one column of every row is not a row of text:
+        # a line of words has several lit pixels across it.
+        if len(xs) < 6:
+            continue
+        if bands and y - bands[-1][1] <= 2:
+            bands[-1][1] = y
+            bands[-1][2] = min(bands[-1][2], xs[0])
+            bands[-1][3] = max(bands[-1][3], xs[-1])
+        else:
+            bands.append([y, y, xs[0], xs[-1]])
+    found["rows"] = len(bands)
+    if len(bands) >= rows_min:
+        lefts = [band[2] for band in bands]
+        common = max(set(lefts), key=lefts.count)
+        aligned = sum(1 for left in lefts if abs(left - common) <= 3)
+        found["label_x"] = common
+        found["aligned"] = aligned
+    if pressed is not None:
+        x, y = pressed
+        inside = box[0] - 8 <= x <= box[2] + 8 and box[1] - 8 <= y <= box[3] + 8
+        found["at_pointer"] = inside
+        if not inside:
+            found["why"] = (f"the panel ({box}) does not stand at the press "
+                            f"({x:.0f}, {y:.0f})")
+            return found
+    if len(bands) < rows_min:
+        found["why"] = f"{len(bands)} row(s) of text came up where a menu's list belongs"
+        return found
+    if found["aligned"] * 2 < len(bands):
+        found["why"] = (f"the {len(bands)} rows do not line up: their left edges "
+                        f"spread from {min(lefts)} to {max(lefts)}")
+        return found
+    if found["width"] > MENU_WIDTH_MAX:
+        found["why"] = (f"the panel is {found['width']} px wide, as wide as the strip: "
+                        f"a menu stands beside its window, not across it")
+        return found
+    if found["height"] > MENU_HEIGHT_MAX:
+        found["why"] = f"the panel is {found['height']} px tall, taller than a menu goes"
+        return found
+    found["ok"] = True
+    return found
+
+
 # --- the catalogue -----------------------------------------------------------
 
 
@@ -289,6 +375,7 @@ class Run:
             before = None
             row["frames"] = f"no frame before the story: {str(error)[:300]}"
         started = time.monotonic()
+        self.doors.pressed = None
         print(f"  [{name}] {scenario.get('story', '')}"[:150], flush=True)
         for index, step in enumerate(scenario["steps"]):
             step_started = time.monotonic()
@@ -362,9 +449,14 @@ class Run:
             row["overlays"] = self.side.overlays()
             # An action that answered without the desk changing may have been
             # answered before its surface drew: ask once more, later, so the
-            # pair tells "slow to draw" apart from "nothing drew".
+            # pair tells "slow to draw" apart from "nothing drew". An overlay
+            # the desk starts as a program of its own (a window's menu, quick
+            # settings) paints its first frame seconds after the door opened,
+            # whatever the story waited: its story says so, and the frame that
+            # drew is the one the story is judged on.
             showing = [key for key, value in row["overlays"].items() if value]
-            if (row.get("changed_px") or 0) < QUIET and showing:
+            answered_early = (row.get("changed_px") or 0) < QUIET
+            if showing and (answered_early or scenario.get("drawn_late")):
                 # The surface answered before it drew. Look for the whole window
                 # and keep the frame that drew the most: the first seconds can
                 # hold a press highlight or a hover, and stopping at the first
@@ -378,9 +470,13 @@ class Run:
                     if drawn > late_px:
                         late_px, late_s = drawn, waited
                         shutil.copy2(frame, late)
+                    if late_px > (row.get("changed_px") or 0) + QUIET and drawn <= late_px:
+                        # Something drew and the frame now stands still: this
+                        # is the picture the person is left looking at.
+                        break
                 row["late_px"] = late_px
                 row["late_s"] = late_s
-                if late_px >= QUIET:
+                if late_px > (row.get("changed_px") or 0) + QUIET:
                     # What the story drew is this frame, not the empty desk the
                     # action answered on: it is the picture the pair is judged
                     # on, and the early one is kept beside it.
@@ -399,6 +495,23 @@ class Run:
                     else row.get("changed_px")
                 print(f"    nothing drew yet ({drew} px); "
                       f"{late_px} px after {late_s} s", flush=True)
+
+            # What the story says a person must see is read off the frame, not
+            # off the manifest: an overlay listed as showing is not a menu on
+            # the screen until its rows stand in the picture.
+            if scenario.get("see") == "menu":
+                desk = row.get("mid", {}).get("menu-before")
+                seen = menu_frame(Path(desk) if desk else before, Path(row["png"]),
+                                  self.doors.pressed,
+                                  int(scenario.get("menu_rows", MENU_ROWS_MIN)))
+                row["menu"] = seen
+                if seen["ok"]:
+                    print(f"    menu: {seen['rows']} rows at x {seen.get('label_x')}, "
+                          f"{seen['width']}x{seen['height']} at the press", flush=True)
+                else:
+                    print(f"    no menu a person sees: {seen['why']}", flush=True)
+                    if row["outcome"] == "captured":
+                        row["outcome"] = "no_menu"
 
         # Back to a clean desk for the next story, and what was left behind.
         keeps_windows = scenario.get("desk", "empty") == "keep"

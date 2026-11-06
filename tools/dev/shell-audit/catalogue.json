@@ -969,6 +969,9 @@
        "wait": 0.7
       },
       {
+       "snapshot": "menu-before"
+      },
+      {
        "door": "window.menu"
       },
       {
@@ -979,6 +982,8 @@
       "a menu opened",
       "items it offers"
      ],
+     "drawn_late": true,
+     "see": "menu",
      "capture": "the window menu"
     },
     {
@@ -993,6 +998,9 @@
        "wait": 0.7
       },
       {
+       "snapshot": "menu-before"
+      },
+      {
        "door": "window.tab-menu"
       },
       {
@@ -1003,6 +1011,8 @@
       "a menu opened",
       "items it offers"
      ],
+     "drawn_late": true,
+     "see": "menu",
      "capture": "the tab's right-click menu"
     },
     {
@@ -2212,6 +2222,9 @@
        "wait": 0.7
       },
       {
+       "snapshot": "menu-before"
+      },
+      {
        "door": "desk.shortcut",
        "action": "tab_menu"
       },
@@ -2223,6 +2236,8 @@
       "a menu opened",
       "what it offers"
      ],
+     "drawn_late": true,
+     "see": "menu",
      "capture": "the tab menu"
     },
     {

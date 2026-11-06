@@ -747,6 +747,9 @@ class NewSide(Side):
         self.root.mkdir(parents=True, exist_ok=True)
         self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         started = time.monotonic()
+        # The session script finds a build given this way too, and needs it
+        # while it prepares the profile, before the session starts.
+        os.environ["TILO_NESTED_SESSION_BUILD"] = str(build)
         remote = os.environ.get("SHELL_AUDIT_NEW_BUILD_EXEC") or None
         self.real_apps.prepare(self.state_dir, apps=self.apps, built=False, remote=remote)
         self.seed_home(self.state_dir / "home")
