@@ -332,6 +332,13 @@ action search(yt: YouTube, query: Text = yt.search_text) (icon: .search) {
     outside("youtube.search", query)
 }
 
+/// Leaves the search the feed is showing for the place the person chose: the results stay where
+/// the service wrote them (found again by the query that found them), and the client shows the
+/// place chosen.
+internal action end_search(yt: YouTube) {
+    yt.search_state = ""
+}
+
 /// Names the client, so a root that holds nothing of its own yet is called by its app rather
 /// than by the first thing it comes to hold.
 internal action name_client(yt: YouTube) {
@@ -364,28 +371,29 @@ action load_trending(yt: YouTube) (icon: .flame, label: "Trending") {
 /// with search over the service's catalogue.
 view feed(yt: YouTube) {
     window place: Text = "subscriptions"
-    window query: Text = ""
     let subs = subscribed_videos(yt)
     let trending = trending_videos(yt)
     let later = yt.videos.filter(.watch_later).sort_by(.published, desc)
     let liked = yt.videos.filter(.liked).sort_by(.published, desc)
+    // A search shows its own place until the person chooses another: choosing a place closes the
+    // search (`end_search`), so the feed they pick is the one that shows.
     let searched = yt.search_state != ""
     let here = if searched { "search" } else { place }
     ui.NavShell(content_kind: .grid, sidebar_title: .some("YouTube")) {
         sidebar: {
             ui.NavList(selected: here) {
                 ui.NavItem("search", "Search YouTube", icon: .search) {
-                    on select: set(place, "search").then(set(query, ""))
+                    on select: set(place, "search")
                 }
                 ui.NavItem("subscriptions", "Subscriptions", icon: .rss, count: .some(subs.len())) {
-                    on select: set(place, "subscriptions").then(set(query, ""))
+                    on select: set(place, "subscriptions").then(end_search(yt))
                 }
                 ui.NavItem("trending", "Trending", icon: .flame, count: .some(trending.len())) {
-                    on select: set(place, "trending").then(set(query, ""))
+                    on select: set(place, "trending").then(end_search(yt))
                 }
                 ui.NavSection("You", collapsible: true) {
                     ui.NavItem("later", "Watch later", icon: .bookmark, count: .some(later.len())) {
-                        on select: set(place, "later").then(set(query, ""))
+                        on select: set(place, "later").then(end_search(yt))
                     }
                     ui.NavItem(
                         "liked",
@@ -393,7 +401,7 @@ view feed(yt: YouTube) {
                         icon: .thumbs_up,
                         count: .some(liked.len()),
                     ) {
-                        on select: set(place, "liked").then(set(query, ""))
+                        on select: set(place, "liked").then(end_search(yt))
                     }
                     ui.NavItem(
                         "history",
@@ -401,7 +409,7 @@ view feed(yt: YouTube) {
                         icon: .history,
                         count: .some(yt.history.len()),
                     ) {
-                        on select: set(place, "history").then(set(query, ""))
+                        on select: set(place, "history").then(end_search(yt))
                     }
                 }
                 if not yt.subscriptions.is_empty() {
@@ -413,7 +421,7 @@ view feed(yt: YouTube) {
                                 icon: .users,
                                 count: .some(yt.videos.count(v -> v.channel_key == c.key)),
                             ) {
-                                on select: set(place, "channel").then(open(c))
+                                on select: set(place, "channel").then(end_search(yt)).then(open(c))
                             }
                         }
                     }
@@ -683,7 +691,6 @@ view channel_page(c: Channel) {
 /// it says, and what YouTube plays next.
 view video_page(v: Video) {
     lens playing: Bool = false
-    lens about: Bool = false
     let yt = root YouTube
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = watched_before(yt, v)?.progress ?? 0.0
