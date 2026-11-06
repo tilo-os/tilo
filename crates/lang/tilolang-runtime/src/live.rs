@@ -970,6 +970,26 @@ impl Live {
         }
     }
 
+    /// Whether the `fragment` of boundary `id`, at `path`, is still the node the tree holds
+    /// there for it: a `fragment` keyed by the boundary's own key, and whose key this boundary
+    /// is the one that stands for. False for a boundary whose branch of the view has since
+    /// left the tree, which has nowhere to write.
+    ///
+    /// The key alone is not enough. Two calls of one view can stand at once (a view drawn in
+    /// two branches, a row called twice), and a boundary freed and handed to another call can
+    /// keep a key the tree now holds elsewhere. Asking [`Self::by_key`] whose the fragment is,
+    /// and refusing when it is not this boundary's, keeps a stale boundary from writing over
+    /// the content the boundary standing there now owns.
+    fn placed(&self, id: BoundId, path: &[usize]) -> bool {
+        let Some(b) = self.bound(id) else {
+            return false;
+        };
+        self.by_key.get(&b.key) == Some(&id)
+            && self
+                .node_at(path)
+                .is_some_and(|node| node.kind == "fragment" && node.key == b.key)
+    }
+
     /// Re-run every boundary that is stale, outermost first, and return the patches that
     /// bring the tree up to date.
     pub fn poll(&mut self, core: &Rc<Core>) -> Result<Vec<Patch>, RuntimeError> {
@@ -1012,6 +1032,20 @@ impl Live {
         let Some(path) = self.bound(id).map(|b| b.path.clone()) else {
             return Ok(());
         };
+        // A boundary writes into its own `fragment`, and nowhere else. Its path is a cached
+        // trail of child indices, so it can outlive the node it named: when a branch of the
+        // view swaps (a preset that lays the desk another way), the `fragment` the boundary
+        // was made for leaves the tree while the boundary itself stays behind, rendered and
+        // reading what changed. Its path is then the empty trail of a boundary that was never
+        // placed, and an empty path names the root: writing there would put this one call's
+        // content where the whole view's belongs, and the screen would show that call alone.
+        // A boundary whose fragment the tree no longer holds has nothing to update; what is
+        // drawn is drawn by whichever boundary holds the branch now, and the call makes a
+        // boundary anew when the branch comes back.
+        if id != ROOT && !self.placed(id, &path) {
+            self.drop_bound(id);
+            return Ok(());
+        }
         self.reused.clear();
         self.row_changes.clear();
         let new_content = match self.render(core, id) {
