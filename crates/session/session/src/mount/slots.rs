@@ -195,6 +195,13 @@ impl Slots {
         }
     }
 
+    /// What drew `slot` ended on its own: nothing runs for it any more, so
+    /// the next time the part comes up the view is started again rather than
+    /// trusted to a process that is gone.
+    pub fn forget(&mut self, slot: &str) {
+        self.running.remove(slot);
+    }
+
     /// The view that drew `slot` could not start here: the slot keeps what it
     /// had, and this binding is not tried again.
     pub fn failed(&mut self, slot: &str, binding: Binding) {
