@@ -42,6 +42,15 @@ pub enum ConfineError {
     Unsupported,
 }
 
+/// The variable a spawner sets to its own process id: the parent its helper
+/// watches for.
+///
+/// A helper with no parent but its process namespace's init is not a helper
+/// whose parent exited — a host that runs helpers inside a container is PID 1
+/// there — so the spawner names itself and [`detach`] compares against it
+/// instead of reading `getppid() == 1` as "already gone".
+pub const PARENT_ENV: &str = "TILO_SANDBOX_PARENT";
+
 /// Close inherited descriptors above stderr and die with the parent.
 ///
 /// # Errors
@@ -50,7 +59,12 @@ pub enum ConfineError {
 /// the parent has already exited.
 pub fn detach() -> Result<(), ConfineError> {
     sys::close_inherited_descriptors().map_err(ConfineError::Setup)?;
-    sys::die_with_parent().map_err(ConfineError::Setup)
+    sys::die_with_parent(named_parent()).map_err(ConfineError::Setup)
+}
+
+/// The parent the spawner named in [`PARENT_ENV`], when it named one.
+fn named_parent() -> Option<i32> {
+    std::env::var(PARENT_ENV).ok()?.trim().parse().ok()
 }
 
 /// Disable core dumps and cap open descriptors at `max_open_files`.
@@ -160,15 +174,20 @@ mod sys {
 
     use super::{ConfineError, Policy};
 
-    pub fn die_with_parent() -> Result<(), String> {
+    pub fn die_with_parent(parent: Option<i32>) -> Result<(), String> {
         // SAFETY: prctl with integer arguments.
         let rc = unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) };
         if rc != 0 {
             return Err(format!("PR_SET_PDEATHSIG: {}", io::Error::last_os_error()));
         }
-        // The parent may have exited before the call took effect.
+        // The parent may have exited before the call took effect. A spawner
+        // that named itself ([`super::PARENT_ENV`]) is compared exactly: its
+        // helper sees the same pid even when that pid is the namespace's
+        // init.
         // SAFETY: getppid has no failure mode.
-        if unsafe { libc::getppid() } == 1 {
+        let actual = unsafe { libc::getppid() };
+        let gone = parent.map_or(actual == 1, |parent| i64::from(actual) != i64::from(parent));
+        if gone {
             return Err("the parent exited".to_string());
         }
         Ok(())
@@ -251,10 +270,13 @@ mod sys {
 
     /// macOS has no parent-death signal: a thread waits on a kqueue for the
     /// parent's exit and ends the process.
-    pub fn die_with_parent() -> Result<(), String> {
+    pub fn die_with_parent(parent: Option<i32>) -> Result<(), String> {
         // SAFETY: getppid has no failure mode.
-        let parent = unsafe { libc::getppid() };
-        if parent == 1 {
+        let actual = unsafe { libc::getppid() };
+        // A spawner that named itself is compared exactly: its helper sees
+        // the same pid even when that pid is the namespace's init
+        // ([`super::PARENT_ENV`]).
+        if parent.map_or(actual == 1, |parent| i64::from(actual) != i64::from(parent)) {
             return Err("the parent exited".to_string());
         }
         // SAFETY: kqueue has no arguments; the descriptor is owned below.
@@ -263,7 +285,7 @@ mod sys {
             return Err(format!("kqueue: {}", io::Error::last_os_error()));
         }
         let ident =
-            usize::try_from(parent).map_err(|_| "the parent pid is negative".to_string())?;
+            usize::try_from(actual).map_err(|_| "the parent pid is negative".to_string())?;
         let watch = libc::kevent {
             ident,
             filter: libc::EVFILT_PROC,
@@ -427,7 +449,7 @@ mod sys {
 mod sys {
     use super::{ConfineError, Policy};
 
-    pub fn die_with_parent() -> Result<(), String> {
+    pub fn die_with_parent(_parent: Option<i32>) -> Result<(), String> {
         Err(ConfineError::Unsupported.to_string())
     }
 
@@ -493,6 +515,52 @@ mod tests {
     }
 
     const NO_EXEC_PROBE_ENV: &str = "TILO_SANDBOX_NO_EXEC_PROBE_DIR";
+
+    /// A helper whose spawner names itself ([`PARENT_ENV`]) keeps running even
+    /// when that pid is the process namespace's init — a container runs one
+    /// program, and the workers it starts are its children — and still stops
+    /// when the named pid is not its parent. The probe calls [`detach`] and
+    /// reports through its exit status.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_helper_watches_the_parent_its_spawner_names() {
+        if std::env::var_os(NAMED_PARENT_PROBE_ENV).is_some() {
+            let refused = i32::from(detach().is_err());
+            #[allow(
+                clippy::exit,
+                reason = "the re-executed probe reports through its exit status"
+            )]
+            std::process::exit(refused);
+        }
+        let probe = |parent: String| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "confine::tests::a_helper_watches_the_parent_its_spawner_names",
+                ])
+                .env(PARENT_ENV, parent)
+                .env(NAMED_PARENT_PROBE_ENV, "1")
+                .status_locked()
+                .unwrap()
+                .code()
+        };
+        assert_eq!(
+            probe(std::process::id().to_string()),
+            Some(0),
+            "a helper whose spawner named itself was refused"
+        );
+        // A container's init when this test is not itself PID 1: the helper
+        // has no such parent and stops rather than outliving it.
+        if std::process::id() != 1 {
+            assert_eq!(
+                probe("1".into()),
+                Some(1),
+                "a helper outlived the parent it was named"
+            );
+        }
+    }
+
+    const NAMED_PARENT_PROBE_ENV: &str = "TILO_SANDBOX_NAMED_PARENT_PROBE";
 
     fn no_exec_probe(root: &std::path::Path) -> i32 {
         let policy = Policy {
