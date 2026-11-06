@@ -559,7 +559,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             nonce: [43; 16],
             recipient_user_public_key: Some(guest_cert.user_public_key),
             invitee_name: Some("Independent guest".into()),
-            expires_at_ns: now_ns + 10_000_000_000,
+            expires_at_ns: now_ns.saturating_add(10_000_000_000),
             transport: vec![],
         },
         &authority_key,
@@ -577,7 +577,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         &guest_cert,
         [44; 32],
         [45; 32],
-        now_ns + 1_000_000_000,
+        now_ns.saturating_add(1_000_000_000),
         now_ns,
     )
     .unwrap();
@@ -647,7 +647,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         &guest_cert,
         [47; 32],
         [48; 32],
-        now_ns + 1_000_000_000,
+        now_ns.saturating_add(1_000_000_000),
         now_ns,
     )
     .unwrap();
@@ -717,7 +717,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         &replay_cert,
         [55; 32],
         [56; 32],
-        now_ns + 1_000_000_000,
+        now_ns.saturating_add(1_000_000_000),
         now_ns,
     )
     .unwrap();
@@ -882,7 +882,7 @@ fn concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation() {
             nonce: [70; 16],
             recipient_user_public_key: None,
             invitee_name: None,
-            expires_at_ns: now_ns + 10_000_000_000,
+            expires_at_ns: now_ns.saturating_add(10_000_000_000),
             transport: vec![],
         },
         &authority_key,
@@ -1026,7 +1026,7 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
         nonce: [nonce; 16],
         recipient_user_public_key: Some(guest.user_public_key),
         invitee_name: None,
-        expires_at_ns: now_ns + 10_000_000_000,
+        expires_at_ns: now_ns.saturating_add(10_000_000_000),
         transport: vec![],
     };
     let signed_a = issue_invitation(
@@ -2761,7 +2761,7 @@ fn admitted_guest(
             nonce: [63; 16],
             recipient_user_public_key: Some(cert.user_public_key),
             invitee_name: Some("Guest".into()),
-            expires_at_ns: now_ns + 10_000_000_000,
+            expires_at_ns: now_ns.saturating_add(10_000_000_000),
             transport: vec![],
         },
         authority_key,
@@ -2779,7 +2779,7 @@ fn admitted_guest(
         &cert,
         [64; 32],
         [65; 32],
-        now_ns + 1_000_000_000,
+        now_ns.saturating_add(1_000_000_000),
         now_ns,
     )
     .unwrap();

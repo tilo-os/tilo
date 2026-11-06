@@ -360,17 +360,25 @@ pub fn steps(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>
     let after: BTreeMap<&GrantId, &Grant> =
         to.grants.iter().map(|grant| (&grant.id, grant)).collect();
     for (id, grant) in &before {
+        // A grant naming a member who leaves leaves with them: their removal
+        // drops it, so the operation does not name it again.
+        if matches!(&grant.subject, tilo_action_policy::Subject::Person(person)
+            if from.members.contains_key(person) && !to.members.contains_key(person))
+        {
+            continue;
+        }
         match after.get(id) {
-            None => steps.push(Change::Revoke((*id).clone())),
-            Some(held) if held != grant => {
-                return Err(format!("the grant {id} is rewritten under its own id"));
-            }
-            Some(_) => {}
+            Some(held) if held == grant => {}
+            // A grant kept under the id it had with different terms is one
+            // revoked and given again: a grant is the terms it names, not the
+            // id it was kept under.
+            _ => steps.push(Change::Revoke((*id).clone())),
         }
     }
-    for grant in after.values() {
-        if !before.contains_key(&grant.id) {
-            steps.push(Change::Grant((*grant).clone()));
+    for (id, grant) in &after {
+        match before.get(id) {
+            Some(held) if held == grant => {}
+            _ => steps.push(Change::Grant((*grant).clone())),
         }
     }
     // A member's admission time is recorded once, when they are written in;

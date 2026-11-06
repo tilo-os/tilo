@@ -551,7 +551,7 @@ fn grants_are_the_operations_they_name() {
         vec![genesis.id().unwrap()],
         vec![Change::Grant(grant.clone())],
     );
-    let held = holding(&start, &[op.clone()]);
+    let held = holding(&start, std::slice::from_ref(&op));
     // The member may not give itself a grant: only the owner and those the
     // grant's reach allows hand out authority.
     assert_eq!(replay(&held, WORKSPACE), base);
@@ -561,7 +561,7 @@ fn grants_are_the_operations_they_name() {
         vec![genesis.id().unwrap()],
         vec![Change::Grant(grant.clone())],
     );
-    let held = holding(&start, &[op.clone()]);
+    let held = holding(&start, std::slice::from_ref(&op));
     let granted = replay(&held, WORKSPACE);
     assert!(granted.grants.iter().any(|held| held.id == grant.id));
     assert_eq!(granted.grants.len(), base.grants.len() + 1);
@@ -572,7 +572,7 @@ fn grants_are_the_operations_they_name() {
         &owner,
         &owner_key,
         vec![op.id().unwrap()],
-        vec![Change::Revoke(grant.id.clone())],
+        vec![Change::Revoke(grant.id)],
     );
     let held = holding(&held, &[revoke]);
     assert_eq!(replay(&held, WORKSPACE), base);
@@ -961,7 +961,7 @@ mod arrival {
         let start = holding(&doc, std::slice::from_ref(&genesis));
         let mut ops = Vec::new();
         for (index, (author, on_parent, step)) in plan.iter().enumerate() {
-            let (_, cert) = device(*author + 1);
+            let (_, cert) = device(author.saturating_add(1));
             let parent = if index > 0 && *on_parent == 0 {
                 ops.last().map(|op: &SignedMembershipOp| op.id().unwrap())
             } else {
@@ -996,9 +996,9 @@ mod arrival {
     fn shuffled(length: usize, bytes: &[u8]) -> Vec<usize> {
         let mut order: Vec<usize> = (0..length).collect();
         for (turn, byte) in bytes.iter().enumerate() {
-            let at = usize::from(*byte) % length;
+            let at = usize::from(*byte).checked_rem(length).unwrap_or_default();
             let to = length.saturating_sub(1);
-            order.swap(at, turn % to.max(1));
+            order.swap(at, turn.checked_rem(to.max(1)).unwrap_or_default());
         }
         order
     }
@@ -1013,8 +1013,8 @@ mod arrival {
         ) {
             let (mut start, ops) = build(&plan);
             let expected = arrived(&start, &ops, &(0..ops.len()).collect::<Vec<_>>());
-            for turn in 0..3 {
-                let seed = &orders[turn * 16..(turn + 1) * 16];
+            for turn in 0..3usize {
+                let seed = &orders[turn.saturating_mul(16)..turn.saturating_add(1).saturating_mul(16)];
                 let order = shuffled(ops.len(), seed);
                 prop_assert_eq!(arrived(&start, &ops, &order), expected.clone());
             }
