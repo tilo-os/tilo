@@ -185,9 +185,13 @@ every device.
 
 Units sealed before scopes keep their groups. A device that holds one reads
 its history as before, merging that group's keys with the scope's; new
-content for those units seals under the scope, so a device has to hold both,
-and a device that never held the old group reads the old content once it is
-re-sealed under the scope.
+content for those units seals under the scope, so a device has to hold both.
+The holder of an old group hands its content keys to the scope — the scope's
+next commit carries them to every member, and every admission after that
+passes them on in the joiner's key history — so a device that never held the
+old group reads the unit's whole history as soon as the scope has them, with
+no holder of the old group online. A unit a Read Deny narrows keeps a group
+of its own and is never handed to the broader scope.
 
 A store never enters the group and never holds a key. It keeps and forwards
 sealed ops, and refuses ones that are not signed by a member's device. To
