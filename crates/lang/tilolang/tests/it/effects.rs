@@ -44,7 +44,8 @@ fn a_flow_reading_the_clock_declares_uses_time() {
 fn a_time_of_no_zone_and_a_phrase_read_in_the_zone_are_time() {
     let wall = "action stamp(m: Mail) {\n    m.at = 2026-06-30T09:00\n}\n";
     assert_eq!(codes(&with_mail(wall)), ["E121"]);
-    let phrase = "action stamp(m: Mail, text: Text) {\n    m.at = Time.parse(text, near: now) ?? now\n}\n";
+    let phrase =
+        "action stamp(m: Mail, text: Text) {\n    m.at = Time.parse(text, near: now) ?? now\n}\n";
     let got = codes(&with_mail(phrase));
     assert!(
         !got.is_empty() && got.iter().all(|c| c == "E121"),
@@ -94,7 +95,7 @@ fn an_effect_word_is_one_of_web_random_and_time() {
 #[test]
 fn a_scenario_reads_every_effect_and_declares_none() {
     // Seed data runs where a developer runs it, and is never replayed.
-    let seed = "scenario \"seed\" {\n    let m = Mail(at: now, hold: 0s)\n}\n";
+    let seed = "scenario \"seed\" {\n    let m = Mail(at: now, hold: 0)\n}\n";
     assert_eq!(codes(&with_mail(seed)), Vec::<String>::new());
 }
 

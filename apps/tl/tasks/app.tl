@@ -179,7 +179,7 @@ internal action quick_add(
     at: Option<Time> = .none,
     assignee: Option<Principal> = .none,
     title: Text (entry) = "",
-) -> Task (
+) -> Task uses time (
     label: "Add a task",
     icon: .plus,
 ) {

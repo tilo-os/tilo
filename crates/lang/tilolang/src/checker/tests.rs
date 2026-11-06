@@ -1294,9 +1294,9 @@ fn a_length_of_time_is_a_value_of_its_own() {
     // A day and a moment move by one, and two of a kind are one apart.
     let (m, _) = lower(
         "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n    at: Time = Time(\"1970-01-01T00:00:00Z\")\n}\n\
-         action soon(n: Note) -> Time { n.at = now + 2h \n now }\n\
-         action tomorrow(n: Note) -> Date { n.stamp = today + 1d \n today }\n\
-         action last_week(n: Note) -> Date { today - 1w }\n\
+         action soon(n: Note) -> Time uses time { n.at = now + 2h \n now }\n\
+         action tomorrow(n: Note) -> Date uses time { n.stamp = today + 1d \n today }\n\
+         action last_week(n: Note) -> Date uses time { today - 1w }\n\
          fn apart(a: Time, b: Time) -> Duration { b - a }\n\
          fn days(a: Date, b: Date) -> Duration { b - a }",
     );
@@ -1375,8 +1375,8 @@ fn a_day_and_a_moment_are_read_by_their_parts() {
 #[test]
 fn a_day_or_a_moment_is_read_from_a_text() {
     let (m, _) = lower(
-        "action day(t: Text) -> Option<Date> { Date.parse(t, near: now) }\n\
-         action at(t: Text) -> Option<Time> { Time.parse(t, near: now) }",
+        "action day(t: Text) -> Option<Date> uses time { Date.parse(t, near: now) }\n\
+         action at(t: Text) -> Option<Time> uses time { Time.parse(t, near: now) }",
     );
     assert_eq!(returned(func(&m, "day")).ty, Ty::Option(Box::new(Ty::Date)));
     assert_eq!(returned(func(&m, "at")).ty, Ty::Option(Box::new(Ty::Time)));
@@ -1413,7 +1413,7 @@ fn only_an_action_reads_the_day_it_is() {
     }
     // The action's day and moment read as one: the day is the one the moment falls on.
     let (m, _) = lower(
-        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) { n.stamp = now.day() }",
+        "type Note {\n    stamp: Date = Date(\"1970-01-01\")\n}\naction mark(n: Note) uses time { n.stamp = now.day() }",
     );
     assert!(imports(func(&m, "mark")).contains(&Imp::TimeDay));
 }
