@@ -475,7 +475,7 @@ pub struct FetchAssetOp {
     pub inline: bool,
 }
 
-/// A Chat attachment as `chat.post` takes it (`AttachmentUpdate`).
+/// A file an op imported, as the bridge describes it before posting it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "resource", derive(JsonSchema))]
 pub struct InAttachment {
