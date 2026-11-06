@@ -145,6 +145,8 @@ default view video_page for Video
 
 default view playlist_page for Playlist
 
+default view watched_page for WatchEntry
+
 row view video_row for Video
 
 row view channel_row for Channel
@@ -561,44 +563,44 @@ view search_results(yt: YouTube, query: Text) {
     }
 }
 
-/// What the person watched, newest first, with how far they got.
-view history_list(yt: YouTube) {
+/// How much of a video was watched, as a percentage.
+fn share_text(share: Float) -> Text {
+    "{share * 100.0}%"
+}
+
+/// What the person watched, newest first, with how far they got. This is the history's place in
+/// the feed, and a watched video's own page: the same list, whether the person opened History or
+/// the video they watched.
+view watched_page(h: WatchEntry) {
+    let yt = root YouTube
     let entries = yt.history.sort_by(.watched, desc)
-    if entries.is_empty() {
-        ui.EmptyState(
-            "Nothing watched yet",
-            message: .some("The videos you watch are listed here"),
-            icon: .history,
-        )
-    } else {
-        stack(gap: .section) {
-            row(distribute: .between) {
-                text("History", role: .title)
+    ui.NavShell(content_kind: .list, title: .some("History"), count: .some(entries.len())) {
+        actions: {
+            std.header {
                 button(delete_history(yt)) as clear
             }
-            ui.VirtualList(selection_follows_focus: true, in_column: true) {
-                for h in entries {
-                    ui.ListItem(item: h, time: h.watched) {
-                        ui.ListRow(
-                            title: h.title,
-                            secondary: h.channel_name,
-                            meta: h.watched,
-                            badge: if h.progress > 0.0 {
-                                "{share_text(h.progress)} watched"
-                            } else { "" },
-                        ) {
-                            on activate: play_again(yt, h)
-                        }
-                    }
-                }
+        }
+        content: {
+            std.rows(
+                entries,
+                "Nothing watched yet",
+                .some("The videos you watch are listed here"),
+            ) { (entry, _) ->
+                watch_row(entry)
             }
         }
     }
 }
 
-/// How much of a video was watched, as a percentage.
-fn share_text(share: Float) -> Text {
-    "{share * 100.0}%"
+/// The history in the feed's content: the same rows as its own place draws.
+view history_list(yt: YouTube) {
+    std.rows(
+        yt.history.sort_by(.watched, desc),
+        "Nothing watched yet",
+        .some("The videos you watch are listed here"),
+    ) { (entry, _) ->
+        watch_row(entry)
+    }
 }
 
 /// Plays the video a history entry names, from where the person left off.
@@ -668,86 +670,91 @@ view video_page(v: Video) {
     let yt = root YouTube
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = watched_before(yt, v)?.progress ?? 0.0
-    std.page(v, canvas: true) {
+    std.page(v, canvas: true, fill: true) {
         header: {
             button(like(v)) as like
             button(watch_later(v)) as later
         }
-        if v.stream == "" {
-            row {
+        // The player takes the room the page leaves it, so the picture is the largest thing on
+        // the page and the controls under it stay in view. It keeps a height of its own on a
+        // phone. Until the service answered with where the bytes play from, the poster and Play
+        // stand in the same box.
+        layers(fill, min: 11rem) {
+            if v.stream == "" {
                 if v.thumbnail != "" {
-                    ui.Image(v.thumbnail, alt: v.title, fit: .cover, aspect: 16.0 / 9.0)
+                    ui.Image(v.thumbnail, alt: v.title, fit: .cover, fill)
                 }
                 ui.Button("Play", icon: .play, role: .primary) {
                     on press: progress(v, left)
                 }
-            }
-        } else {
-            // The player fills the box it is given, so the box is the video's own shape: a 16:9
-            // picture under the page's controls, not a strip of one.
-            ui.VideoPlayer(
-                title: v.title,
-                poster: v.thumbnail,
-                source: v.stream,
-                playing: playing,
-                position: left * v.duration.to_float(),
-                duration: v.duration.to_float(),
-                fill,
-                aspect: 16.0 / 9.0,
-            ) {
-                on set_playing(now_playing: Bool): set(playing, now_playing)
-                on seek(place: Float): progress(v, place)
+            } else {
+                ui.VideoPlayer(
+                    title: v.title,
+                    poster: v.thumbnail,
+                    source: v.stream,
+                    playing: playing,
+                    position: left * v.duration.to_float(),
+                    duration: v.duration.to_float(),
+                    fill,
+                ) {
+                    on set_playing(now_playing: Bool): set(playing, now_playing)
+                    on seek(place: Float): progress(v, place)
+                }
             }
         }
-        stack(gap: .related) {
-            text(v.title, role: .title)
-            row(gap: .related, align: .center, wrap: true) {
-                if let c = channel {
-                    ui.Avatar(name: c.name)
-                    ui.Button(c.name, icon: .users) {
-                        on press: open(c)
+        // What the video is: its name, who made it and what people did with it, under the
+        // player, scrolling within the room it has left so the picture keeps its place.
+        scroll(fill) {
+            stack(gap: .related) {
+                text(v.title, role: .title)
+                row(gap: .related, align: .center, wrap: true) {
+                    if let c = channel {
+                        ui.Avatar(name: c.name)
+                        ui.Button(c.name, icon: .users) {
+                            on press: open(c)
+                        }
+                        ui.Button(
+                            if subscribed(yt, c) { "Unsubscribe" } else { "Subscribe" },
+                            icon: if subscribed(yt, c) { .check } else { .bell },
+                        ) {
+                            on press: toggle_subscription(c)
+                        }
+                    } else {
+                        ui.Avatar(name: v.channel_name)
+                        text(v.channel_name, role: .subheading)
+                    }
+                    spacer()
+                    ui.Button(
+                        if v.liked { "Liked" } else { "Like" },
+                        icon: .thumbs_up,
+                        toggled: v.liked,
+                        count: v.likes,
+                    ) {
+                        on press: like(v)
                     }
                     ui.Button(
-                        if subscribed(yt, c) { "Unsubscribe" } else { "Subscribe" },
-                        icon: if subscribed(yt, c) { .check } else { .bell },
+                        "Watch later",
+                        icon: .bookmark,
+                        toggled: v.watch_later,
+                        icon_only: false,
                     ) {
-                        on press: toggle_subscription(c)
+                        on press: watch_later(v)
                     }
-                } else {
-                    ui.Avatar(name: v.channel_name)
-                    text(v.channel_name, role: .subheading)
                 }
-                spacer()
-                ui.Button(
-                    if v.liked { "Liked" } else { "Like" },
-                    icon: .thumbs_up,
-                    toggled: v.liked,
-                    count: v.likes,
-                ) {
-                    on press: like(v)
+                ui.Facts {
+                    ui.Fact(views_text(v.views), icon: .eye)
+                    ui.Fact(v.published, icon: .calendar)
+                    if v.live {
+                        ui.Fact("Live", icon: .rss)
+                    }
+                    ui.Fact(clock(v.duration), icon: .clock)
                 }
-                ui.Button(
-                    "Watch later",
-                    icon: .bookmark,
-                    toggled: v.watch_later,
-                    icon_only: false,
-                ) {
-                    on press: watch_later(v)
+                ui.Section("Description") {
+                    text(v.description, role: .reading)
                 }
-            }
-            ui.Facts {
-                ui.Fact(views_text(v.views), icon: .eye)
-                ui.Fact(v.published, icon: .calendar)
-                if v.live {
-                    ui.Fact("Live", icon: .rss)
+                if v.found_for != "" {
+                    ui.Chip("Found for {v.found_for}", icon: .search)
                 }
-                ui.Fact(clock(v.duration), icon: .clock)
-            }
-            ui.Section("Description") {
-                text(v.description, role: .reading)
-            }
-            if v.found_for != "" {
-                ui.Chip("Found for {v.found_for}", icon: .search)
             }
         }
     }
@@ -794,7 +801,12 @@ view channel_row(c: Channel) {
 
 /// A video in the history: its name, who made it and when the person watched it.
 view watch_row(h: WatchEntry) {
-    row(h.title, secondary: h.channel_name, meta: h.watched)
+    row(
+        h.title,
+        secondary: h.channel_name,
+        value: if h.progress > 0.0 { "{share_text(h.progress)}" } else { "" },
+        meta: h.watched,
+    )
 }
 
 /// A subscriptions feed as a person's first afternoon on the client leaves it: five channels
@@ -1175,4 +1187,85 @@ scenario "search results" -> YouTube {
 scenario "no subscriptions yet" {
     let yt = root YouTube
     yt.title = "YouTube"
+}
+
+/// The watch history on its own: three videos watched, two of them left part way, as a place on
+/// a canvas shows it.
+scenario "a watch history" -> WatchEntry {
+    let yt = root YouTube
+    yt.title = "YouTube"
+    let mkbhd = yt.channels.insert(
+        Channel(
+            key: "UCmkbhd",
+            name: "MKBHD",
+            handle: "@mkbhd",
+            subscribers: 19800000,
+            verified: true,
+        ),
+    )
+    let phone = yt.videos.insert(
+        Video(
+            key: "v-phone",
+            title: "The phone that finally lasts a week",
+            channel_key: mkbhd.key,
+            channel_name: mkbhd.name,
+            views: 1840000,
+            published: 2026-10-28T14:00Z,
+            duration: 921,
+            likes: 96000,
+        ),
+    )
+    let watch = yt.videos.insert(
+        Video(
+            key: "v-watch",
+            title: "The watch that needs no winding",
+            channel_key: mkbhd.key,
+            channel_name: mkbhd.name,
+            views: 2740000,
+            published: 2026-10-24T15:00Z,
+            duration: 688,
+            likes: 148000,
+        ),
+    )
+    let laptop = yt.videos.insert(
+        Video(
+            key: "v-laptop",
+            title: "A week with the quiet laptop",
+            channel_key: mkbhd.key,
+            channel_name: mkbhd.name,
+            views: 910000,
+            published: 2026-10-20T11:00Z,
+            duration: 1104,
+            likes: 41000,
+        ),
+    )
+    let watched = now
+    yt.history.insert(
+        WatchEntry(
+            key: phone.key,
+            title: phone.title,
+            channel_name: phone.channel_name,
+            watched: watched,
+            progress: 0.35,
+        ),
+    )
+    yt.history.insert(
+        WatchEntry(
+            key: watch.key,
+            title: watch.title,
+            channel_name: watch.channel_name,
+            watched: watched,
+            progress: 0.0,
+        ),
+    )
+    let entry = yt.history.insert(
+        WatchEntry(
+            key: laptop.key,
+            title: laptop.title,
+            channel_name: laptop.channel_name,
+            watched: watched,
+            progress: 0.72,
+        ),
+    )
+    entry
 }
