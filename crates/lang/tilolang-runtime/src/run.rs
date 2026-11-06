@@ -76,6 +76,14 @@ pub struct Step {
     /// action makes were made from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<crate::value::ResourceRef>,
+    /// Who runs the call, when a scenario named them with `invoke(..., by:)`: the callee runs as
+    /// that person rather than as the run's own invoker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who: Option<Principal>,
+    /// The moment the call acts at, when the same `invoke` named one: the callee reads `now` as
+    /// that moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
 }
 
 /// What a suspended run waits for.
@@ -180,6 +188,10 @@ pub struct Journal {
     /// actions create were made from, kept across a suspension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<crate::value::ResourceRef>,
+    /// The moment a scenario's `invoke(..., at:)` made this run act at: what its clock reads,
+    /// so the call it is happens at the time the scenario says and a resume still does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
     /// Who proposed the run, when the person running it accepted a suggestion: recorded in the
     /// changes its actions make, so history says who suggested it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

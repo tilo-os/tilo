@@ -53,6 +53,8 @@ pub struct ExecCtx {
     /// The resource the invocation was made from, when it was made from one: what the resources
     /// it creates were made from, recorded in the change ([`crate::store::Version::from`]).
     pub from: Option<ResourceRef>,
+    /// The moment the invocation acts at, when a scenario named one: what its clock reads.
+    pub at: Option<String>,
     /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
     /// its change, so history says who suggested it.
     pub suggested_by: Option<Principal>,
@@ -818,6 +820,7 @@ impl Core {
                     invoker: ctx.invoker,
                     chain: ctx.chain,
                     from: ctx.from,
+                    at: ctx.at,
                     suggested_by: ctx.suggested_by.map(|who| who.0),
                     entries: Vec::new(),
                     pending: Some(Pending::Ask(suggestion.clone())),
@@ -886,6 +889,7 @@ impl Core {
             suggested_by: None,
             origin: None,
             from: None,
+            at: None,
         };
         self.start_ctx(
             &ctx,
@@ -903,6 +907,7 @@ impl Core {
             invoker: ctx.invoker.clone(),
             chain: ctx.chain.clone(),
             from: ctx.from.clone(),
+            at: ctx.at.clone(),
             suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
             entries: Vec::new(),
             pending: None,
@@ -990,6 +995,13 @@ impl Core {
         // Only code that calls another action is run again, so only it journals its reads.
         // Anything else commits one change and is never replayed.
         let journaled = program || meta.reaches.iter().any(|reached| reached.action != action);
+        // A run a scenario made act at a moment reads its clock as that moment, in the person's
+        // zone: `now`, `today` and the time its change is recorded at all follow it.
+        let clock = journal.at.clone().map(|now| crate::run::Clock {
+            now,
+            zone: self.zone_name.borrow().as_ref().and_then(|name| name()),
+            offset: self.zone.borrow().as_ref().map_or(0, |zone| zone()),
+        });
         let mut journal = journal;
         loop {
             let state = RunState {
@@ -997,7 +1009,7 @@ impl Core {
                 cursor: 0,
                 invoker: journal.invoker.clone(),
                 suggested_by: journal.suggested_by.clone().map(Principal),
-                clock: None,
+                clock: clock.clone(),
                 journaled,
                 journal,
             };
@@ -1064,6 +1076,7 @@ impl Core {
             suggested_by: journal.suggested_by.clone().map(Principal),
             origin: journal.origin.clone(),
             from: journal.from.clone(),
+            at: journal.at.clone(),
         }
     }
 
@@ -1183,12 +1196,15 @@ impl Core {
         let mut chain = journal.chain.clone();
         push_chain(&mut chain, aref.author.as_ref());
         let ctx = ExecCtx {
-            invoker: journal.invoker.clone(),
+            // A scenario's `invoke(..., by:)` names who runs the call: the callee is decided and
+            // recorded as that person, not as the run's own invoker.
+            invoker: step.who.clone().unwrap_or_else(|| journal.invoker.clone()),
             chain,
             approved_by: None,
             suggested_by: journal.suggested_by.clone().map(Principal),
             origin: None,
             from: step.from.clone().or_else(|| journal.from.clone()),
+            at: step.at.clone(),
         };
         // A host that holds no records sends the invocation on to the app that does.
         if self.invoker.borrow().is_some() {
@@ -1246,6 +1262,7 @@ impl Core {
             invoker: ctx.invoker.clone(),
             chain: ctx.chain.clone(),
             from: ctx.from.clone(),
+            at: ctx.at.clone(),
             suggested_by: ctx.suggested_by.as_ref().map(|p| p.0.clone()),
             entries: Vec::new(),
             pending: None,
@@ -1320,6 +1337,7 @@ impl Core {
             // suggestion on two devices queues them once.
             origin: Some(format!("{run}:{}", journal.entries.len())),
             from: journal.from.clone(),
+            at: journal.at.clone(),
         };
         let aref = ActionRef::new(suggestion.action.clone(), suggestion.args.clone());
         // A run that is only a suggestion waits no further: what it approves is its whole
@@ -1395,17 +1413,23 @@ impl Core {
         let Value::Action(aref) = self.val(h)? else {
             return trap("expected an action reference");
         };
-        // What the resources the call makes are made from: the invocation the scenario runs it
-        // under, else what the run itself was made from.
-        let from = {
+        // What the call runs under: the invocation a scenario pushed for it, else the run's own.
+        // The invocation names who runs it and the moment it acts at; the resource its changes
+        // are made from is the invocation's, else the run's.
+        let (from, who, at) = {
             let frames = self.frames.borrow();
             match frames.top().map(|f| &f.kind) {
-                Ok(FrameKind::Action(state)) => state
-                    .invocations
-                    .last()
-                    .and_then(|inv| inv.from.clone())
-                    .or_else(|| state.note.from.clone()),
-                _ => aref.from.clone(),
+                Ok(FrameKind::Action(state)) => {
+                    let invocation = state.invocations.last();
+                    (
+                        invocation
+                            .and_then(|inv| inv.from.clone())
+                            .or_else(|| state.note.from.clone()),
+                        invocation.map(|inv| inv.who.clone()),
+                        invocation.and_then(|inv| inv.at.clone()),
+                    )
+                }
+                _ => (aref.from.clone(), None, None),
             }
         };
         let replayed = {
@@ -1423,6 +1447,8 @@ impl Core {
                     args: aref.args.clone(),
                     author: aref.author,
                     from,
+                    who,
+                    at,
                 }));
                 None
             }
