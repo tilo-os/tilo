@@ -2506,6 +2506,13 @@ impl ShellPart {
             if let Some(window) = self.window() {
                 window.flush();
             }
+            // An index built off the frame is taken in here, as a window's turn takes it in: the
+            // shell's own views read what it holds, so the turn that takes it in draws them. A
+            // shell whose indexes are all read from (every frame after the open) asks nothing.
+            if self.index_building() {
+                let record = self.record.borrow();
+                self.instance.sync(Some(&record));
+            }
             let updated = self.instance.update();
             self.work.updating = self.work.updating.saturating_add(lap(&mut at));
             let committed = self.commit();
@@ -2625,7 +2632,20 @@ impl ShellPart {
     }
 
     fn due(&self) -> bool {
-        self.input || self.again || self.owes() || self.origin.borrow().due() || self.record_moved()
+        self.input
+            || self.again
+            || self.owes()
+            || self.origin.borrow().due()
+            || self.record_moved()
+            || self.index_building()
+    }
+
+    /// Whether the shell's instance still waits for the index its packages' load builds off the
+    /// frame: until a frame takes it in the views read nothing, and nothing else wakes the part
+    /// for it — a hosted app's window is asked for its index's frame, and the shell, which draws
+    /// its own, asks for the frames itself.
+    fn index_building(&self) -> bool {
+        self.instance.host().is_some_and(|host| !host.index_ready())
     }
 
     /// Whether the shell's record holds changes this part has not drawn: another part of the
