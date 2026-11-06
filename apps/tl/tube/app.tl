@@ -344,7 +344,7 @@ action refresh_feed(yt: YouTube) (icon: .refresh, label: "Refresh") {
     name_client(yt)
     yt.feed_state = "loading"
     yt.feed_trouble = ""
-    outside("youtube.subscriptions", yt.subscriptions.len())
+    outside("youtube.subscriptions", yt.subscriptions.map(s -> s.key))
 }
 
 /// Asks the service for the channel's videos.

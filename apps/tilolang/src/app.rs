@@ -218,6 +218,19 @@ impl ResourceApp for TlApp {
             );
             window = window.with_origin(origin);
         }
+        // Types whose origin is YouTube are kept in step with it, in a live window: the client
+        // asks, and this origin, in native code with the network, writes what YouTube answers.
+        if cx.mode() == ui::framework::RunMode::Live
+            && tilolang_tilo::origin::uses_origin(meta, "youtube")
+        {
+            let wake = ui::wake::WakeHandle::new();
+            let origin = tilolang_youtube::origin(
+                std::sync::Arc::new(tilolang_youtube::service::Live::new()),
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            );
+            let waker = std::sync::Arc::new(move || wake.wake());
+            window = window.with_origin(tilolang_youtube::waking(origin, waker));
+        }
         // A search hit, or an agent's `open`, shows the resource it names.
         let opens = window.open_requests();
         cx.on_open(move |anchor: &str| {

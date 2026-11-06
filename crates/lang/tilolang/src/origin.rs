@@ -85,8 +85,9 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     ),
     (
         "youtube.subscriptions",
-        "Asks YouTube for the newest videos of the channels the person follows: (how many \
-         channels), so a feed of a person with none asks nothing.",
+        "Asks YouTube for the newest videos of the channels the person follows: (the keys of \
+         the channels followed, in the feed's order), so a feed of a person who follows none \
+         asks nothing.",
     ),
     (
         "youtube.trending",
