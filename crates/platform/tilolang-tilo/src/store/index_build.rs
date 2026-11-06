@@ -241,9 +241,6 @@ impl Inner {
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
         self.versions = None;
         self.nested.clear();
-        // What it committed before it had the record reaches nobody through a change note: the
-        // mirror starts at the record's heads.
-        self.own.clear();
         let mirror = mirror_of(doc);
         self.chunks
             .set_seen(chunk, mirror.committed_document().get_heads());

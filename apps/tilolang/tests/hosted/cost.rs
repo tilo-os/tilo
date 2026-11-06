@@ -905,44 +905,31 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     }
 }
 
-/// A step of the person's reaches the window once: checking a task off runs the window's root
-/// once and sends the tree once. The record takes the same change in a moment later, and the
-/// store has already told the window of it.
+/// A step of the person's reaches the window's tree once: checking a task off sends what changed
+/// in one frame, however many changes the record names for it.
 #[test]
-fn a_step_reaches_the_window_once() {
+fn a_step_reaches_the_window_in_one_frame() {
     let _motion = ui::motion::testing::settled();
     let doc = seeded_tasks(100);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_in(&route, doc, None);
-    let counted = |session: &Session| -> (u64, u64) {
-        let instance = session
+    let sent = |session: &Session| -> u64 {
+        session
             .host
             .instances()
             .next()
-            .expect("the window's instance");
-        let view = instance
+            .expect("the window's instance")
             .instance()
-            .view(tilo_render_protocol::patch::Lane::Root)
-            .expect("the root view");
-        (
-            view.borrow().stats().root_runs,
-            instance.instance().patches_sent(),
-        )
+            .patches_sent()
     };
     let (title, x, y) = first_check(&mut session);
-    let (runs, sent) = counted(&session);
+    let before = sent(&session);
     session.window.click_at(x, y);
     session.settle();
-    let (ran, published) = counted(&session);
-    let published = published - sent;
+    let published = sent(&session) - before;
     assert_eq!(
         published, 1,
         "checking {title} sends the tree {published} times, not once"
-    );
-    let ran = ran - runs;
-    assert_eq!(
-        ran, 1,
-        "checking {title} runs the window's root {ran} times, not once"
     );
     assert!(
         checked_off(&mut session, &title),

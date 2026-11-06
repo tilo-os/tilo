@@ -1,9 +1,8 @@
 //! Bringing the store up to date with the workspace record: its new changes applied to the
-//! mirror and derived into every index read from, and what they changed told to those who
-//! read it — once, for a change the store committed itself, which they heard of when the
-//! action committed.
+//! mirror and derived into every index read from, and what they changed told to those who read
+//! it.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use tilo_automerge::ApplyIncoming as _;
@@ -68,13 +67,12 @@ impl TiloStore {
         // copy below.
         let mut items = inner.drop_committed_local(chunk);
         inner.rollback(chunk);
-        let (changed, ends, heard_here) = inner.apply_new_changes(chunk, doc, &before);
+        let (changed, ends) = inner.apply_new_changes(chunk, doc, &before);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
             inner.versions = None;
             inner.nested.clear();
-            inner.own.clear();
             inner.stats.full_syncs = inner.stats.full_syncs.saturating_add(1);
             inner.chunks.insert(chunk, mirror_of(doc));
             if chunk == chunk::FIRST {
@@ -115,12 +113,6 @@ impl TiloStore {
         // the mirror again: derive it over the indexes as the record's changes left them, so a
         // later write into one of its collections sees the items it holds, at their places.
         inner.rebuild_overlay();
-        // The record brought back changes of this store alone: those who read the mirror heard
-        // of them when the action committed, and once is enough.
-        if heard_here {
-            inner.changed();
-            return true;
-        }
         for (key, ids) in moved {
             items.entry(key).or_default().extend(ids);
         }
@@ -155,24 +147,23 @@ impl TiloStore {
 impl Inner {
     /// Apply the changes of `source` since the mirror's heads to the mirror of `chunk`, when it
     /// holds no change of its own: what they changed, and the versions they made of each
-    /// resource they changed ([`idx::reflect::ends_of`]), and whether every one of them is a change this
-    /// store made itself. `None` when the mirror must be copied anew.
+    /// resource they changed ([`idx::reflect::ends_of`]). `None` when the mirror must be copied
+    /// anew.
     fn apply_new_changes(
         &mut self,
         chunk: ChunkNo,
         source: &Doc,
         before: &BTreeMap<DocId, (AppId, TypeId)>,
-    ) -> (Option<Changed>, Ends, bool) {
+    ) -> (Option<Changed>, Ends) {
         let seen = self.chunks.seen(chunk);
         let caught_up = self
             .chunks
             .mirror(chunk)
             .is_some_and(|mirror| mirror.committed_document().get_heads() == seen);
         if !caught_up {
-            return (None, Ends::new(), false);
+            return (None, Ends::new());
         }
         let changes = source.committed_document().get_changes(seen);
-        let heard_here = self.take_own(&changes);
         let applied = self.chunks.mirror_mut(chunk).map(|mirror| {
             let applied = mirror.apply_incoming(changes.iter().cloned());
             write_as_a_known_actor(mirror);
@@ -193,42 +184,8 @@ impl Inner {
             Some(mirror) => idx::reflect::ends_of(&changes, mirror, before),
             None => Ends::new(),
         };
-        (what, ends, heard_here)
+        (what, ends)
     }
-    /// Take in the record's changes `changes` that name a run this store committed, and say
-    /// whether every one of them does: those who read the mirror heard of them when the action
-    /// committed ([`Inner::enqueue`]), and a record that brings back a run's changes one at a
-    /// time leaves the rest for the sync that brings them.
-    fn take_own(&mut self, changes: &[automerge::Change]) -> bool {
-        if self.own.is_empty() {
-            return false;
-        }
-        let mut ours: HashMap<tilo_actions::InvocationId, usize> = HashMap::new();
-        for run in changes.iter().filter_map(run_of) {
-            if self.own.contains_key(&run) {
-                let seen = ours.entry(run).or_default();
-                *seen = seen.saturating_add(1);
-            }
-        }
-        let counted: usize = ours.values().sum();
-        for (run, count) in ours {
-            if let Some(left) = self.own.get_mut(&run) {
-                *left = left.saturating_sub(count);
-            }
-        }
-        self.own.retain(|_, left| *left > 0);
-        counted > 0 && counted == changes.len()
-    }
-
-    /// An action queued that a failed run will never commit: the record brings nothing of it
-    /// back, so nothing of it is heard of twice.
-    pub(super) fn own_dropped(&mut self, run: &tilo_actions::InvocationId) {
-        if let Some(left) = self.own.get_mut(run) {
-            *left = left.saturating_sub(1);
-        }
-        self.own.retain(|_, left| *left > 0);
-    }
-
     /// The steps each listed collection took from the indexes `before` (with the overlay
     /// `overlay` over them) to the indexes now, for the items `items`; per document.
     fn splices_since(
@@ -255,14 +212,6 @@ impl Inner {
         }
         out
     }
-}
-
-/// The run the change `change` of a record was made in, as the change's message names it.
-fn run_of(change: &automerge::Change) -> Option<tilo_actions::InvocationId> {
-    change
-        .message()
-        .and_then(tilo_actions::ActionContext::from_change_message)
-        .and_then(|context| context.source_invocation)
 }
 
 /// The documents a sync tells those who read the mirror of, per document: the fields the

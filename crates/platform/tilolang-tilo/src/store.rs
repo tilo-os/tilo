@@ -385,11 +385,6 @@ struct Inner {
     /// What changed during the trial runs under way, told to nobody: a trial run is taken back.
     held: Vec<ChangeSummary>,
     committed: VecDeque<Committed>,
-    /// The runs of the actions this store committed itself, with how many of their changes the
-    /// record has not brought back yet: a change of the record naming one is the store's own,
-    /// heard of by everyone who reads the mirror when the action committed
-    /// ([`Inner::enqueue`], [`TiloStore::sync_from`]).
-    own: HashMap<tilo_actions::InvocationId, usize>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
@@ -688,7 +683,6 @@ impl TiloStore {
                 trials: 0,
                 held: Vec::new(),
                 committed: VecDeque::new(),
-                own: HashMap::new(),
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
@@ -1826,15 +1820,6 @@ impl Inner {
     }
 
     fn enqueue(&mut self, action: DynAction) {
-        // The record applies what it is handed, and brings its change back naming the run it
-        // was made in: the store reads it as a change of its own, not a second one.
-        if let Some(run) = &action.authorship.invocation {
-            let left = self
-                .own
-                .entry(crate::action::invocation_id(run))
-                .or_default();
-            *left = left.saturating_add(1);
-        }
         let ticket = self.next_ticket;
         self.next_ticket = self.next_ticket.wrapping_add(1);
         self.committed.push_back(Committed { ticket, action });
