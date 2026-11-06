@@ -59,6 +59,8 @@ pub enum RustEvent {
         ty: String,
         view: Option<String>,
     },
+    /// Show the resource the event carries (a list's `activate(x)`): the row that was pressed.
+    OpenEvent { view: Option<String> },
     /// Set the view's own state `name` to the event's value.
     State { name: String },
 }
@@ -241,6 +243,16 @@ fn action(
             args: vec![
                 ResourceRef::parse_id(target, ty.clone())
                     .map_or(Value::Unit, |at| Value::resource(&at)),
+                view.clone().map_or_else(Value::none, Value::text),
+                Value::Bool(true),
+            ],
+            author,
+            from: None,
+        },
+        RustEvent::OpenEvent { view } => ActionRef {
+            action: crate::host_ui::OPEN_ACTION.to_owned(),
+            args: vec![
+                Value::Event,
                 view.clone().map_or_else(Value::none, Value::text),
                 Value::Bool(true),
             ],
