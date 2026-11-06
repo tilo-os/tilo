@@ -1317,13 +1317,13 @@ fn the_assignee_is_one_person_field_whose_chip_shows_each_pick() {
     // assignee as a chip, with no label beside it.
     let shown = texts(page.tree());
     assert!(
-        shown.iter().any(|text| text == "You unassigned this"),
+        shown.join(" ").contains("You unassigned this"),
         "clearing the assignee last, the step says so: {shown:?}"
     );
     pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
     let shown = texts(page.tree());
     assert!(
-        shown.iter().any(|text| text == "You assigned this to"),
+        shown.join(" ").contains("You assigned this to"),
         "assigned last, the step says that instead: {shown:?}"
     );
     assert!(
