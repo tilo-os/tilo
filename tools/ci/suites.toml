@@ -1453,6 +1453,11 @@ inputs = [
   # fails if the list grows.
   "apps/*/Cargo.toml",
   "crates/session/session/tests/baselines/app-side-records.txt",
+  # The app's model, its module and the ABI the host answers: the fixture the record test runs
+  # is that model built for wasm32, so a change to any of them is a change to what it proves.
+  "crates/sdk/tilo-model-abi/",
+  "crates/sdk/tilo-model-guest/",
+  "crates/sdk/tilo-model-host/",
 ]
 readers = [
   "crates/session/session/src/channels/vault.rs",
