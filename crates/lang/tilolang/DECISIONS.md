@@ -167,12 +167,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
-- **A role says what an action is; only `internal` and `scenario` keep it from being listed.**
-  `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
-  skips the `scenario` actions and those with a hiding role, so a gesture-only action
-  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in
-  the host's bar or a window's menus, or in an agent's choices, while the app can still name it
-  where the gesture wants it.
+- **A role says what an action is; only a `scenario` keeps it from being listed.**
+  `primary`, `destructive` and `migration` are the three words. `offered_actions()` skips the
+  `scenario` actions (the bodies scenarios run) and the migrations, which the platform runs
+  itself; every other action is in `actions(r)`, in the host's bar and a window's menus, and in
+  an agent's choices. An action is never hidden from people to reserve it for a gesture: a
+  helper nobody chooses is a `fn`, and one that writes is a command like any other.
 - **A window's bar shows its primary action and the commands the app marks `frequent` as
   buttons, and every other action behind the bar's one menu.** The host builds them that way
   from the declarations of the type the window shows: a button per primary and per `frequent`

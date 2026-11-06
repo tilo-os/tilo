@@ -113,7 +113,7 @@ d-ifftrju4 = Its project, as a project's list is of one
 d-rs3ubifz = New task
     .doc = Adds a task: under the title a program or an agent gives it, or the words typed in the entry at the end of a list, to the inbox or to `p`, in the lane `s` of its board.
 
-d-boggc6yt = Add a task
+d-boggc6yt = New task due today
     .doc = Adds a task that is due today: what the entry of the Today place runs, so a task typed there stands in Today.
 
 d-zjuy7y7f = New project
@@ -198,7 +198,7 @@ d-vi6srojh = Delete section
 d-pcn3xgni = New task
     .doc = Adds a task to a project, at the end of the lane `s` of its board (none for the first), under a title a program or an agent gives it.
 
-d-scjlkb6d = Place
+d-scjlkb6d = Place in board
     .doc = Puts a task into a lane of its project's board, `s` (none for the first lane), at the place `at` among the tasks already there.
 
 d-kjbukd2o = Rename

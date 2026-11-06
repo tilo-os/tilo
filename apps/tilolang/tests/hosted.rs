@@ -2284,10 +2284,9 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
 ) {
     // Unasked, an empty window lists the app itself once and each command a
     // person can take now, drawn from what the action declares. An action that
-    // asks for a pick a row cannot collect (Open, Remove, Move to, Delete
-    // project outside a project) is not a row, and neither is one the app keeps
-    // for agents: a task is made by one action, whose title the list's entry
-    // takes, so the window offers it once.
+    // asks for more than a row collects (Open, Remove, Place in board, Move to,
+    // Delete project outside a project) is not a row, but every action is
+    // offered: the app keeps none back from the lists.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -2310,6 +2309,11 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(vec![command, "N".to_owned()]),
             ),
             (
+                "New task due today".to_owned(),
+                Some(ui::icons::Icon::Plus),
+                None,
+            ),
+            (
                 "New project".to_owned(),
                 Some(ui::icons::Icon::FolderPlus),
                 None,
@@ -2325,7 +2329,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         "the empty window's palette"
     );
     let labels: Vec<&str> = empty.iter().map(|(title, ..)| title.as_str()).collect();
-    for internal in [
+    for not_a_row in [
         "tilolang",
         "Submit",
         "Edit a text field",
@@ -2339,10 +2343,12 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         "Quick add",
         "Add subtask",
         "Move to",
+        "Place in board",
+        "Copy below",
     ] {
         assert!(
-            !labels.contains(&internal),
-            "{internal} is never a person's row: {labels:?}"
+            !labels.contains(&not_a_row),
+            "{not_a_row} asks for more than a row collects: {labels:?}"
         );
     }
     // Typed, only what it names.
@@ -2352,7 +2358,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         .collect();
     assert_eq!(
         new,
-        ["New task", "New project"],
+        ["New task", "New task due today", "New project"],
         "the query narrows the list to what it names"
     );
 }
@@ -2364,8 +2370,8 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     let command = command_modifier(conventions);
     // The window lists the app, the task the entry made and that stands on
     // screen as a resource, and the actions a person can take on it, once each.
-    // Picks a row cannot collect (Assign to…, Move to, Open) stay where they
-    // live, and no row repeats another.
+    // An action that asks for more than a row collects (Assign to…, Place in
+    // board, Move to, Open) stays where it lives, and no row repeats another.
     session
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
@@ -2387,6 +2393,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Water the plants",
             "Open",
             "New task",
+            "New task due today",
             "New project",
             "Task summary",
             "Complete",
@@ -2396,7 +2403,6 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Pick date…",
             "Low",
             "Medium",
-            "High",
         ],
         "the window's palette"
     );
@@ -2440,8 +2446,9 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "{not_now} cannot run now, so it is no row: {asked:?}"
         );
     }
-    // A task is made by one action, whose title the list's entry takes, so the window offers it
-    // once, and the task's own picks fill the room the app's two rows leave.
+    // A task is made by an action whose title the list's entry takes, and one more that pins it
+    // to today; their rows fill the room at this height, so the task's last pick (High) stands
+    // below it.
     // The commands a task opens with run in the task's own window, which the
     // live session covers; this window offers the ones above.
     session

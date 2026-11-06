@@ -509,26 +509,27 @@ fn only_a_migration_reads_what_a_type_held_previously() {
 }
 
 #[test]
-fn an_internal_action_is_an_action_no_surface_offers() {
+fn every_action_is_offered_and_no_word_hides_one() {
+    // An action is a thing somebody does: a person from a menu, an agent from its choices, a
+    // program by name. None of them is kept out of the list to reserve it for a gesture.
     let compiled = crate::common::compile_body(
         "type Task {\n    title: Text (title)\n    at: Int\n}\n\n\
-         internal action place(t: Task, at: Int) {\n    t.at = at\n}\n\n\
+         action place(t: Task, at: Int) {\n    t.at = at\n}\n\n\
          action rename(t: Task, title: Text) {\n    t.title = title\n}\n",
     );
-    let place = compiled
+    let offered: Vec<&str> = compiled
         .meta
-        .actions
-        .iter()
-        .find(|a| a.name == "place")
-        .unwrap();
-    assert!(place.is_internal());
-    assert!(
-        compiled.meta.offered_actions().all(|a| a.name != "place"),
-        "an internal action runs from the app's gestures, not from a list of commands"
-    );
-    assert!(
-        compiled.meta.offered_actions().any(|a| a.name == "rename"),
-        "the actions beside it are offered"
+        .offered_actions()
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(offered, ["place", "rename"], "both are offered as they are");
+    // `internal` is no word an action is marked with: it names nothing at the start of an item.
+    assert_eq!(
+        crate::common::codes(
+            "type Task {\n    title: Text (title)\n    at: Int\n}\n\n\
+             internal action place(t: Task, at: Int) {\n    t.at = at\n}\n"
+        ),
+        ["E003"]
     );
 }
 

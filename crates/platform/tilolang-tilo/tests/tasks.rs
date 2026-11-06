@@ -2424,10 +2424,11 @@ fn adding_a_subtask_from_a_menu_asks_for_its_title_and_names_it_under_its_row() 
     );
 }
 
-/// What a person can do to a task is offered wherever actions are listed; the one gesture alone
-/// runs (`place`, and the moves the app makes itself) is listed nowhere.
+/// Every action the app declares is offered wherever actions are listed: a person chooses it from
+/// a menu or the palette, an agent from its choices, and a program names it. Nothing is reserved
+/// for a gesture alone.
 #[test]
-fn the_offered_actions_are_the_person_facing_ones() {
+fn every_declared_action_is_offered() {
     let (ada, _) = workspace();
     let meta = &ada.host.package(APP).unwrap().meta;
     let offered: Vec<&str> = meta
@@ -2447,18 +2448,27 @@ fn the_offered_actions_are_the_person_facing_ones() {
         "indent",
         "outdent",
         "remove",
+        "new_task_today",
+        "place",
+        "move_to",
+        "copy_below",
     ] {
         assert!(
             offered.contains(&wanted),
             "{wanted} is offered: {offered:?}"
         );
     }
-    for gesture in ["place", "move_to", "copy_below"] {
-        assert!(
-            !offered.contains(&gesture),
-            "{gesture} runs from the app's own gestures alone: {offered:?}"
-        );
-    }
+    let meta = &ada.host.package(APP).unwrap().meta;
+    let declared: Vec<&str> = meta
+        .actions
+        .iter()
+        .filter(|a| !a.scenario)
+        .map(|a| a.name.as_str())
+        .collect();
+    assert_eq!(
+        offered, declared,
+        "every action is offered, in declaration order"
+    );
 }
 
 /// The places under each heading of the sidebar, in order.

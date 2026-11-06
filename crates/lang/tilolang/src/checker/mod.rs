@@ -337,7 +337,7 @@ pub fn check_module(env: &Env, module: &ast::Module, diags: &mut Vec<Diagnostic>
         if let Item::Action(a) = item
             && !matches!(
                 a.role.as_ref().map(|(role, _)| *role),
-                Some(ast::ActionRole::Internal | ast::ActionRole::Migration)
+                Some(ast::ActionRole::Migration)
             )
             && !c.last_writes.is_empty()
         {
