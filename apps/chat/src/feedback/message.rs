@@ -55,7 +55,7 @@ pub(crate) fn message(report: &FeedbackReport) -> Option<crate::record::Message>
             w: picture.width,
             h: picture.height,
         })
-        .filter(|attached| crate::record::valid_attached(attached))
+        .filter(crate::record::valid_attached)
         .into_iter()
         .collect();
     Some(crate::record::Message {

@@ -501,6 +501,16 @@ impl ChatApp {
         });
     }
 
+    /// Note which of `m`'s attachments open, so the ladder names the chips
+    /// this row draws.
+    fn note_shown_attachments(&self, m: &Message) {
+        for (index, attached) in m.attachments.iter().enumerate() {
+            if attached.at().is_some() {
+                self.resource_navigation.shown(&m.id, index);
+            }
+        }
+    }
+
     /// Paint the row `rm` with its top at `*y`, from its kept scene when
     /// nothing it was painted from changed; advances `*y` past it.
     pub(crate) fn paint_row(
@@ -538,11 +548,7 @@ impl ChatApp {
             self.message_rows.push((row, m.id.clone()));
         }
         if m.share.is_none() && rm.resource_h > 0.0 {
-            for (index, attached) in m.attachments.iter().enumerate() {
-                if matches!(attached, tilo_reference::Attached::Resource { .. }) {
-                    self.resource_navigation.shown(&m.id, index);
-                }
-            }
+            self.note_shown_attachments(&m);
         }
         if self.row_is_live(&m, rm) {
             let mut at = *y;

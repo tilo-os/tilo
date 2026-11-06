@@ -460,7 +460,7 @@ fn a_message_part_of_version_three_keeps_the_record_it_was_written_by() {
             tilo_reference::ResourceAt {
                 app: "so.tilo.notes".into(),
                 record: Some("plan".into()),
-                reference: reference.clone(),
+                reference,
             },
             None,
             "Plan",

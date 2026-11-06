@@ -77,8 +77,9 @@ pub(crate) fn kind_of(att: &Attached) -> AttachmentKind {
     match att {
         Attached::Image { .. } => AttachmentKind::Image,
         Attached::Video { .. } => AttachmentKind::Video,
-        Attached::File { .. } => AttachmentKind::File,
-        Attached::Resource { .. } | Attached::Text { .. } => AttachmentKind::File,
+        Attached::File { .. } | Attached::Resource { .. } | Attached::Text { .. } => {
+            AttachmentKind::File
+        }
     }
 }
 
