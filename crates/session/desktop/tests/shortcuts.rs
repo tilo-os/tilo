@@ -12,7 +12,6 @@
 )]
 use std::rc::Rc;
 
-use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use tilo_desktop::about::{AboutLinks, AboutVariant, TiloMenu};
 use tilo_desktop::desk_verbs::chrome_resource;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, DesktopRules};
@@ -24,7 +23,7 @@ use tilo_desktop_model::{
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use ui::headless::FrameHarness;
-use ui::shortcut_table::ShortcutHome;
+use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome};
 use ui::synthetic_input::key_press;
 use ui::widget::TileHost;
 use winit::event::{Modifiers, WindowEvent};
@@ -129,30 +128,38 @@ fn two_windows() -> DesktopTree {
 /// holding nine windows, so numbering a strip or a window lands somewhere
 /// and moving to the strip above or below does too.
 fn every_place() -> DesktopTree {
-    let groups: Vec<WindowGroup> = (0..9)
+    let groups: Vec<WindowGroup> = (0..9_u64)
         .map(|index| {
-            let id = u64::from(index) + 1;
+            let id = index + 1;
             group(
                 id,
                 vec![
-                    window(100 + u64::from(index) * 2, "Left", "so.tilo.notes"),
-                    window(101 + u64::from(index) * 2, "Right", "so.tilo.mail"),
+                    window(100 + index * 2, "Left", "so.tilo.notes"),
+                    window(101 + index * 2, "Right", "so.tilo.mail"),
                 ],
             )
         })
         .collect();
-    let mut strips: Vec<Strip> = (1..9)
+    // Nine strips: the shown one holds the nine windows, and the eight
+    // below it one window each.
+    let mut strips: Vec<Strip> = (1..9_u64)
         .map(|index| Strip {
-            id: StripId(index + 1),
+            id: StripId(10 + index),
             name: format!("Strip {index}"),
             window_groups: vec![group(
-                20 + u64::from(index),
-                vec![window(200 + u64::from(index), "Window", "so.tilo.notes")],
+                20 + index,
+                vec![window(200 + index, "Window", "so.tilo.notes")],
             )],
         })
         .collect();
-    strips[0].window_groups = groups;
-    strips[0].id = StripId(2);
+    strips.insert(
+        0,
+        Strip {
+            id: StripId(2),
+            name: "Main".into(),
+            window_groups: groups,
+        },
+    );
     desk_tree(strips)
 }
 
@@ -180,14 +187,6 @@ fn desk_and_chrome(tree: &DesktopTree) -> (FrameHarness, FrameHarness, DesktopHa
     );
     frame.relayout();
     (desk, frame, handle)
-}
-
-/// The chrome's own reading of itself, and what it asked its host for.
-fn take_asks(frame: &mut FrameHarness) -> Vec<DesktopAsk> {
-    frame
-        .widget_mut::<DesktopChrome>()
-        .expect("the chrome is the frame's root")
-        .take_asks()
 }
 
 fn hold(frame: &mut FrameHarness, mods: ModifiersState) {
@@ -299,22 +298,6 @@ fn width_in_front(handle: &DesktopHandle) -> Option<u32> {
     })
 }
 
-/// Every app of the desk's windows, in reading order.
-fn apps(handle: &DesktopHandle) -> Vec<String> {
-    handle.read(|tree| {
-        tree.workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .filter_map(|tab| match &tab.tile {
-                TileContent::LocalApp { app_id, .. } => Some(app_id.clone()),
-                _ => None,
-            })
-            .collect()
-    })
-}
-
 /// Every shortcut of the table is carried out by one side or handed to the
 /// other: the desk answers the shortcuts of its own windows and asks its host
 /// for nothing, and the session's are passed on whole — none falls between
@@ -394,6 +377,12 @@ fn the_chords_move_tabs_windows_and_strips() {
     let after = groups_of_shown_strip(&handle);
     assert_ne!(before, after, "the window moved along its strip");
     assert_eq!(after, [4, 3], "one place right: {after:?}");
+    press_chord(&mut desk, &mut frame, ShortcutAction::MoveGroupLeft);
+    assert_eq!(
+        groups_of_shown_strip(&handle),
+        before,
+        "and back the other way"
+    );
 
     // Nowhere to go keeps the window where it is, and the desk says so
     // rather than passing the chord on.
@@ -435,27 +424,26 @@ fn a_window_moves_to_the_strip_below() {
 
     let strip = in_front_group(&handle).map(|(_, strip)| strip);
     assert_eq!(strip, Some(5), "the window is in the strip below");
-    assert!(
-        windows_of(&handle, "3").is_empty(),
-        "its old strip is empty"
-    );
-}
-
-/// The windows a chord opens are the app's, beside the ones already shown.
-#[test]
-fn the_chords_open_the_session_s_own_apps() {
-    let (mut desk, mut frame, handle) = desk_and_chrome(&two_windows());
-    press_chord(&mut desk, &mut frame, ShortcutAction::OpenFiles);
-    assert!(
-        apps(&handle).contains(&"so.tilo.file-explorer".to_owned()),
-        "the files app opened: {:?}",
-        apps(&handle)
-    );
-    press_chord(&mut desk, &mut frame, ShortcutAction::OpenTerminal);
-    assert!(
-        apps(&handle).contains(&"so.tilo.terminal".to_owned()),
-        "the terminal opened: {:?}",
-        apps(&handle)
+    let strips = handle.read(|tree| {
+        tree.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| {
+                (
+                    strip.id.0,
+                    strip
+                        .window_groups
+                        .iter()
+                        .map(|group| group.id)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        strips,
+        [(2, vec![]), (5, vec![6, 3])],
+        "the window left its strip for the one below"
     );
 }
 
@@ -504,8 +492,9 @@ fn a_row_a_chord_reaches_shows_the_chord_the_table_binds() {
         )
         .expect("a free chord");
     let reads = shown(&rebound);
+    let rebound_chord = KeyChord::parse("Super+Ctrl+R").expect("a chord").display();
     assert!(
-        reads.contains(&("reopen-closed".to_owned(), "Super+Ctrl+R".to_owned())),
+        reads.contains(&("reopen-closed".to_owned(), rebound_chord)),
         "the row reads the new chord: {reads:?}"
     );
     assert!(

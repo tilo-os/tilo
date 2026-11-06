@@ -353,6 +353,9 @@ pub(crate) struct BarFeeds {
 pub(crate) struct ChromeWiring {
     pub(crate) intents: Rc<RefCell<Vec<ChromeIntent>>>,
     pub(crate) asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    /// The desktop's one shortcut table, shared with the session: what the
+    /// chrome matches a press against and what it shows beside its rows.
+    pub(crate) shortcuts: crate::mount::panels::Shortcuts,
     pub(crate) feeds: BarFeeds,
 }
 
@@ -758,6 +761,7 @@ pub(crate) fn host(
     let ChromeWiring {
         intents,
         asks,
+        shortcuts,
         feeds,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
@@ -794,7 +798,7 @@ pub(crate) fn host(
     chrome.set_overlays(overlays.clone());
     chrome.set_switcher(switcher.clone());
     chrome.set_reveals(reveals);
-    chrome.set_shortcuts(options.config.shortcuts.clone());
+    chrome.set_shortcuts(shortcuts);
     // Keys come to the chrome while one of the surfaces it draws holds the
     // keyboard: the stack says which, and it says the window's again as soon
     // as the top surface closes.

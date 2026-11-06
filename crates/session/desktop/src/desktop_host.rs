@@ -31,7 +31,7 @@ use tilo_desktop_surface::{DesktopHandle, HostActionSource};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
-use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
+use ui::shortcut_table::ShortcutAction;
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -776,8 +776,9 @@ pub struct DesktopChrome {
     handle: DesktopHandle,
     generation: String,
     rules: Rc<dyn DesktopRules>,
-    /// The desktop's shortcut table.
-    shortcuts: ShortcutConfig,
+    /// The desktop's shortcut table, shared with the session: the chords
+    /// the desk answers and the ones its rows show are one table.
+    shortcuts: crate::shortcuts::Shared,
     /// Chords read the host's stand-in for Super as a Mac's.
     mac: bool,
     /// The pointer, in logical pixels.
@@ -908,7 +909,7 @@ impl DesktopChrome {
             handle,
             generation,
             rules,
-            shortcuts: ShortcutConfig::default(),
+            shortcuts: crate::shortcuts::Shared::default(),
             mac,
             cursor: None,
             content: Rect::ZERO,
@@ -968,7 +969,7 @@ impl DesktopChrome {
     }
 
     /// Use `shortcuts` for the desktop's chords (the person's bindings).
-    pub fn set_shortcuts(&mut self, shortcuts: ShortcutConfig) {
+    pub fn set_shortcuts(&mut self, shortcuts: crate::shortcuts::Shared) {
         self.shortcuts = shortcuts;
     }
 
@@ -1834,7 +1835,7 @@ impl DesktopChrome {
             return false;
         }
         let action = page_shortcut_action(
-            &self.shortcuts,
+            &self.shortcuts.borrow(),
             &event.logical_key,
             event.physical_key,
             *modifiers,
@@ -2263,9 +2264,9 @@ impl DesktopChrome {
                 ) else {
                     return Ok(false);
                 };
-                if !self.shortcut(action) {
-                    self.asks.borrow_mut().push(DesktopAsk::Shortcut(action));
-                }
+                // The desk carries out its own and asks its host for the
+                // rest, once: the shortcut's own answer is the whole of it.
+                self.shortcut(action);
                 return Ok(true);
             }
             _ => return Ok(false),
@@ -2387,7 +2388,7 @@ impl DesktopChrome {
 
 impl ui::resources::PublishesResources for DesktopChrome {
     fn resources(&self, _: &ui::automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        vec![chrome_resource(&self.shortcuts)]
+        vec![chrome_resource(&self.shortcuts.borrow())]
     }
 }
 
@@ -2661,7 +2662,7 @@ impl Widget for DesktopChrome {
             let own = matches!(event, WindowEvent::KeyboardInput { event: key, .. }
                 if key.state == ElementState::Pressed
                     && page_shortcut_action(
-                        &self.shortcuts,
+                        &self.shortcuts.borrow(),
                         &key.logical_key,
                         key.physical_key,
                         *ctx.modifiers,

@@ -1397,12 +1397,17 @@ impl Session {
         // and the bar says each display's number and name on it.
         let numbers = display_identify::Numbers::default();
         let published_displays = shared_displays::Publisher::default();
+        // One table for the keys the session answers and the guide that
+        // explains them: a chord that works is a chord the guide and the
+        // menus show, and a person's rebinding reaches every one of them.
+        let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
         let chrome = Rc::new(RefCell::new(chrome::host(
             &handle,
             &options,
             chrome::ChromeWiring {
                 intents: Rc::clone(&intents),
                 asks: Rc::clone(&asks),
+                shortcuts: Rc::clone(&shortcuts),
                 feeds: chrome::BarFeeds {
                     signals: Rc::clone(&notice_signals),
                     readings: Rc::clone(&readings),
@@ -1558,9 +1563,6 @@ impl Session {
             capture_notes,
         );
 
-        // One table for the keys the session answers and the guide that
-        // explains them: a chord that works is a chord the guide shows.
-        let shortcuts = Rc::new(RefCell::new(std::mem::take(&mut options.config.shortcuts)));
         // The desktop's own chords win over every app's: the portal's
         // bindings step aside for the table the session answers first.
         let portal_shortcuts = options
@@ -1589,7 +1591,7 @@ impl Session {
             mount_controls(
                 &mut compositor,
                 &mut doors,
-                shortcuts,
+                Rc::clone(&shortcuts),
                 portal_shortcuts,
                 guide_keys,
                 KeyContext {
@@ -1827,7 +1829,7 @@ impl Session {
             )));
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
-        mount::shell::Shell::mount(&services, &handle, overlays.clone());
+        mount::shell::Shell::mount(&services, &handle, overlays.clone(), Rc::clone(&shortcuts));
         services
             .borrow_mut()
             .add(Box::new(lock_service::LockService::new(lock.clone())));

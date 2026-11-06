@@ -601,6 +601,12 @@ fn move_to_strip(
             )
             .is_ok()
         });
+    if moved {
+        // The person stays with the window they moved: the desk shows the
+        // strip it landed in, with it in front, as dragging it there does.
+        tree.active_strip.insert(ids.workspace, strip);
+        tree.set_active_group(strip, ids.group);
+    }
     // The windows were rearranged, so the rows follow the tree they are in
     // now rather than the one they were built from.
     shared.replaced |= moved;
@@ -636,6 +642,23 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
             )
             .is_ok()
         });
+    if moved {
+        // The window the tab joined is the one in front, showing the tab
+        // that just arrived: the window it left may have gone with its last
+        // tab, so the desk would be left with nothing in front.
+        tree.active_strip.insert(ids.workspace, ids.strip);
+        tree.set_active_group(ids.strip, into);
+        if let Some(group) = tree
+            .workspaces
+            .iter_mut()
+            .flat_map(|workspace| &mut workspace.strips)
+            .filter(|strip| strip.id == ids.strip)
+            .flat_map(|strip| &mut strip.window_groups)
+            .find(|group| group.id == into)
+        {
+            group.activate_tab(ids.tab);
+        }
+    }
     shared.replaced |= moved;
     moved
 }

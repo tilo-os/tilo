@@ -117,7 +117,8 @@ pub struct Destination {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
     /// The window group of `strip` to stand before; the strip's end when
-    /// absent. A group standing first reorders within its own strip.
+    /// absent, which in the window's own strip moves it to the last place.
+    /// Any place in the strip it already stands on reorders it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before: Option<String>,
     /// The window group of the tab's own strip to put the tab in, its tab
@@ -1207,9 +1208,10 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
                         && strip.window_groups.iter().any(|group| group.id == before)
                 })
             });
-        // A place in the strip the window already stands on reorders it;
-        // any other strip of its workspace carries it there.
-        let there = strip_held && (target != ids.strip || before.is_some());
+        // A place in the strip the window already stands on reorders it —
+        // the strip's end when no window is named before it; any other
+        // strip of its workspace carries it there.
+        let there = strip_held;
         return there
             .then_some(Admitted::MoveToStrip(ids, target, before))
             .ok_or_else(|| "Strip unavailable".into());

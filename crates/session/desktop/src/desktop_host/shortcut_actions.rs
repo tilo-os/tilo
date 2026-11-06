@@ -76,6 +76,7 @@ impl DesktopChrome {
                     }
                 } else if other.home() == ShortcutHome::Session {
                     self.asks.borrow_mut().push(DesktopAsk::Shortcut(other));
+                    return false;
                 } else {
                     return false;
                 }
@@ -176,6 +177,10 @@ impl DesktopChrome {
         let Some(route) = self.focused_route() else {
             return;
         };
+        // The window stands before the one it lands in front of: the window
+        // that was before it when it goes left, the one after the window it
+        // passes when it goes right, and the strip's end when that was the
+        // last window.
         let before = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
             let strip = workspace
@@ -186,9 +191,18 @@ impl DesktopChrome {
                 .window_groups
                 .iter()
                 .position(|group| group.id.to_string() == route.group)?;
-            let index = isize::try_from(at).ok()?.checked_add(direction)?;
-            let group = strip.window_groups.get(usize::try_from(index).ok()?)?;
-            Some(group.id.to_string())
+            let passed = isize::try_from(at).ok()?.checked_add(direction)?;
+            strip.window_groups.get(usize::try_from(passed).ok()?)?;
+            let land = if direction < 0 {
+                at.checked_sub(1)?
+            } else {
+                at.checked_add(2)?
+            };
+            let before = strip
+                .window_groups
+                .get(land)
+                .map(|group| group.id.to_string());
+            Some(before)
         });
         let Some(before) = before else {
             return;
@@ -197,14 +211,14 @@ impl DesktopChrome {
             tab: route.tab,
             to: Destination {
                 strip: Some(route.strip),
-                before: Some(before),
+                before,
                 ..Destination::default()
             },
         });
     }
 
     /// Carry the window in front into the strip above (`steps < 0`) or below,
-    /// landing after that strip's window in front; focus follows it.
+    /// landing last there; focus follows it.
     fn move_focused_group_to_strip(&mut self, steps: isize) {
         let Some(route) = self.focused_route() else {
             return;
