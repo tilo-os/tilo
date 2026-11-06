@@ -31,6 +31,7 @@ mod activity;
 mod activity_models;
 mod activity_provider;
 pub mod agent_door;
+mod agents;
 mod ambient_brightness;
 mod app_icons;
 mod app_liveness;
@@ -350,6 +351,10 @@ struct Shared {
     /// conversation the agent takes part in, read every pass from Chat's
     /// record of each workspace.
     conversations: conversations::Conversations,
+    /// The agents each workspace keeps, read every pass from its record of
+    /// them: who keeps an agent is that record's word, and what the broker
+    /// admits an agent's session on.
+    agents: agents::Agents,
     /// Each run's program host, reached by the agent's calls and by the
     /// person's lines in its conversation alike (shell.md §8.1).
     run_programs: run_programs::Shared,
@@ -1490,6 +1495,9 @@ impl Session {
         // the agents and admits what they do there.
         let conversations =
             conversations::Conversations::new(cli::data_home(), options.wake.handle());
+        // The agents each workspace keeps, read from its record of them: who
+        // keeps an agent, and so whose session runs it.
+        let agents = agents::Agents::new(cli::data_home(), options.wake.handle());
         // The typed opens an app asks this session for: one service, made
         // here so the broker below serves Files' waits for its lists'
         // changes, and started from the doors table.
@@ -1503,8 +1511,11 @@ impl Session {
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
-            Some(conversations.runs()),
-            Some(tools.clone()),
+            mount::services::Knitted {
+                turns: Some(conversations.runs()),
+                agents: Some(agents.roster()),
+                tools: Some(tools.clone()),
+            },
             mount::services::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
@@ -1766,6 +1777,7 @@ impl Session {
             fs_authority: fs_authority::Publisher::for_session(),
             workspace_tabs,
             conversations,
+            agents,
             directory,
             invite,
             invite_made: RefCell::default(),

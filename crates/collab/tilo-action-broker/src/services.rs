@@ -6,7 +6,7 @@ mod workspace_nodes;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use published::{Caller, Granted, PublishedResources, Reading, ResourceWatch};
 pub use task_execution::{
-    NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
+    AgentRoster, NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
     TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
     TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
     tracker_written,
@@ -1875,6 +1875,9 @@ pub struct HostServices {
     /// The Tasks app's tracker, whose issues assigned to an agent are its
     /// runs. Without it agents run no tasks.
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
+    /// The workspaces' agents, as their records name them: what the broker
+    /// admits an agent's session with. Without it no agent joins.
+    pub agents: Option<Arc<dyn AgentRoster>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub record_changes: Option<Arc<dyn RecordChangeServices>>,

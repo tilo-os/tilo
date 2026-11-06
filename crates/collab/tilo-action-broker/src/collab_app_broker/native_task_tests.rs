@@ -54,6 +54,25 @@ const ISSUE: &str = "tasks.tracker/issues/release";
 fn workspace_id() -> tilo_desktop_model::WorkspaceId {
     tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
+impl crate::services::AgentRoster for Native {
+    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+        let mut kept = None;
+        self.with_tree(&mut |tree| {
+            if let Some(held) = crate::services::workspace_in(tree, workspace)
+                && held.policy.grants.iter().any(|grant| {
+                    grant.node == held.node()
+                        && grant.answer == Answer::Allow
+                        && matches!(&grant.subject, Subject::Agent(named) if named == agent)
+                })
+            {
+                kept = held.owner().cloned();
+            }
+        })
+        .ok()?;
+        kept
+    }
+}
+
 impl WorkspaceAuthority for Native {
     fn with_tree(
         &self,
@@ -369,6 +388,7 @@ impl Fixture {
                 launcher,
                 app_action_grants: Some(native.clone()),
                 tracker_runs: Some(native.clone()),
+                agents: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 host_steps,
                 record_changes,
@@ -526,13 +546,12 @@ impl Fixture {
             .admitted;
         let route = CrdtRoute::record(app, workspace, "main");
         if agent {
-            admit_agent_delegation(
-                &WorkspaceAuthority::snapshot(self.native.as_ref()).unwrap(),
-                &route,
-                &mut admitted,
+            let kept = crate::test_support::KeptAgents::default().keeping(
+                &route.cluster_id,
                 "scribe",
-            )
-            .unwrap();
+                &admitted.principal_id,
+            );
+            admit_kept_agent(&kept, &route.cluster_id, &mut admitted, "scribe").unwrap();
         }
         self.admitted_handle(peer, &route, admitted)
     }

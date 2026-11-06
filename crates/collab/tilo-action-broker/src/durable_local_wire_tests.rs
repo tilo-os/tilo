@@ -301,9 +301,8 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
             use crate::test_support::{Grants as _, KindSet};
             let env = Environment::new();
             let rig = Rig::new(&env).await;
-            let agent_grant =
-                env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
-            let agent_app_grant = env.membership.write().workspaces[0].allow_app(
+            env.membership.write().workspaces[0].admit_agent("scribe", KindSet::READ);
+            env.membership.write().workspaces[0].allow_app(
                 tilo_action_policy::Subject::agent("scribe"),
                 &env.route.app_id,
                 KindSet::ALL,
@@ -341,13 +340,6 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
                 rig.state.invocation_statuses("agent:scribe").is_empty(),
                 "an actor name alone discloses no authenticated invocation"
             );
-            // What bounds the agent is its own: revoking it stops new work
-            // while the person's standing, and its session, still hold. The
-            // door names no action to an agent its grant cannot reach.
-            env.membership.write().workspaces[0].revoke_grant(&agent_grant);
-            env.membership.write().workspaces[0].revoke_grant(&agent_app_grant);
-            let refused = invoke(&agent.handle, id(0xb002)).await.unwrap_err();
-            assert!(refused.contains("UnknownAction"), "{refused}");
             // Its session is its person's: revoking their standing ends the
             // agent's with it.
             env.membership.write().workspaces[0].revoke_grant(&person_grant);

@@ -1,5 +1,6 @@
 //! The runs the session's apps ask of its agents, fed every pass the facts a
-//! run is decided against: who sits here, and what each workspace admits.
+//! run is decided against: who sits here, what each workspace admits, and who
+//! keeps the agents its record names.
 
 use crate::Shared;
 
@@ -50,15 +51,21 @@ impl Shared {
         // The turns the conversations in front of every workspace give this
         // session's agents: read from Chat's record of each, and handed to the
         // broker's run channel.
+        let governed: Vec<(String, tilo_action_policy::WorkspacePolicy)> = workspaces
+            .iter()
+            .filter_map(|facts| Some((facts.workspace.clone(), facts.policy.clone()?)))
+            .collect();
+        // Who keeps each workspace's agents, read from the workspace's own
+        // record of them: an agent's session joins as its keeper's, and is
+        // delivered the turns of the conversations it takes part in.
+        self.agents.feed(&self.person, &governed);
         self.conversations.feed(
             &self.person,
-            workspaces
+            governed
                 .into_iter()
-                .filter_map(|facts| {
-                    Some(crate::conversations::WorkspaceFacts {
-                        workspace: facts.workspace,
-                        policy: facts.policy?,
-                    })
+                .map(|(workspace, policy)| crate::conversations::WorkspaceFacts {
+                    workspace,
+                    policy,
                 })
                 .collect(),
         );

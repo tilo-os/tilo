@@ -102,6 +102,10 @@ impl WorkspaceTreeHandle {
     pub fn services(&self) -> crate::services::HostServices {
         crate::services::HostServices {
             legacy_workspace: Some(Arc::new(self.clone())),
+            // The workspaces' `chat.agent` records, as these fixtures keep
+            // them: every agent a workspace grants anything works there,
+            // kept by the workspace's owner.
+            agents: Some(Arc::new(TreeAgents(self.clone()))),
             ..Default::default()
         }
     }
@@ -160,5 +164,74 @@ impl LegacyWorkspaceProjection for WorkspaceTreeHandle {
         }
         drop(tree);
         Ok(())
+    }
+}
+
+/// A workspace's `chat.agent` record as a test holds it: which agents it
+/// names, and who keeps each.
+#[derive(Clone, Default)]
+pub struct KeptAgents {
+    kept: Vec<(String, String, String)>,
+}
+
+impl KeptAgents {
+    /// The record of `workspace` naming `agent`, kept by `keeper`.
+    #[must_use]
+    pub fn keeping(mut self, workspace: &str, agent: &str, keeper: &str) -> Self {
+        self.kept
+            .push((workspace.to_owned(), agent.to_owned(), keeper.to_owned()));
+        self
+    }
+}
+
+impl crate::services::AgentRoster for KeptAgents {
+    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+        self.kept
+            .iter()
+            .find(|(held, named, _)| held == workspace && named == agent)
+            .map(|(_, _, keeper)| keeper.clone())
+    }
+}
+
+/// The workspaces' agents, read off the grants a fixture gave them: an agent
+/// works in a workspace whose grants name it, kept by whoever owns the
+/// workspace.
+struct TreeAgents(crate::test_support::WorkspaceTreeHandle);
+
+impl crate::services::AgentRoster for TreeAgents {
+    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+        let held = {
+            let tree = self.0.read();
+            crate::services::workspace_in(&tree.desktop, workspace)?.clone()
+        };
+        let node = held.node();
+        let kept = held.policy.grants.iter().any(|grant| {
+            grant.node == node
+                && grant.answer == Answer::Allow
+                && matches!(&grant.subject, Subject::Agent(named) if named == agent)
+        });
+        if !kept {
+            return None;
+        }
+        // A fixture workspace names its owner, or — where it has none — is
+        // kept by the one person its grants speak for.
+        if let Some(owner) = held.owner() {
+            return Some(owner.clone());
+        }
+        let mut people: Vec<&str> = held
+            .policy
+            .grants
+            .iter()
+            .filter_map(|grant| match &grant.subject {
+                Subject::Person(person) => Some(person.as_str()),
+                _ => None,
+            })
+            .collect();
+        people.sort_unstable();
+        people.dedup();
+        match people.as_slice() {
+            [only] => Some((*only).to_owned()),
+            _ => None,
+        }
     }
 }
