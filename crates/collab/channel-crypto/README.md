@@ -75,11 +75,19 @@ history.
   `collab_types::history::HistoryPager` issues pages as a view nears its
   oldest loaded op, or until an older version or search hit is reached.
 - **Granularity: per channel.** A channel is one document route (app,
-  workspace, record), so per-channel keys are already per-resource. A
-  finer split would add key-management state without narrowing who can read
-  what, because channel membership is the access boundary. Membership is
-  decided per record: a Read Deny on a record, its app or any pattern over it
-  keeps the denied devices out of that record's channel alone.
+  workspace, record), so per-channel keys are already per-resource. Membership
+  is decided per record: a Read Deny on a record, its app or any pattern over
+  it keeps the denied devices out of that record's channel alone.
+
+  Per channel is also what makes the cost of membership linear in the
+  workspace, which `benches/per_channel.rs` measures: admitting one device
+  costs about 1.9 ms and 3.1 KiB of governance frames per channel, removing one
+  about 0.8 ms and 700 B, and a device's sealed state 760 B per channel —
+  flat at 1, 10, 100 and 1000 channels. A workspace of a thousand records
+  therefore pays about two seconds and 3 MiB to join, and repeats it for every
+  change. Keys per reader set (the workspace, not the record) make that one
+  commit for the whole workspace; `benches/instructions.rs` gives the same
+  operations in CPU instructions, which do not vary with the machine.
 
 ### Security properties
 

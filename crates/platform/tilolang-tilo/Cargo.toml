@@ -82,6 +82,11 @@ path = "tests/budgets.rs"
 name = "words"
 path = "tests/words.rs"
 
+[[bench]]
+name = "index_units"
+path = "benches/index_units.rs"
+harness = false
+
 [lints]
 workspace = true
 
