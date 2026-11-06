@@ -105,8 +105,9 @@ pub struct Card {
     /// ([`crate::floating_surface::FLOATING_SURFACE_APP_ID_PREFIX`]): the
     /// layer reserves the card's place and draws nothing of it.
     pub rich: bool,
-    /// The size a rich card asked for; `None` is the size the summary's
-    /// rows take.
+    /// The size the card's app asked for; `None` is the size the summary's
+    /// rows take. A card with a size is one its app draws, whether or not
+    /// its window is up yet.
     pub size: Option<Size>,
 }
 
@@ -346,14 +347,16 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
         }
     }
     if narrow(work) {
-        // The pill is the only resting form on a phone, but a rich card is
-        // the activity's own surface: it stands, full width, whether or not
-        // the person pulled anything out of the bar. Anything else drops
-        // only when they expand it.
+        // The pill is the only resting form on a phone, but a card its app
+        // presents is the activity's own surface: it stands, full width,
+        // whether or not the person pulled anything out of the bar — and
+        // whether or not its window has come up yet, which the place this
+        // gives it is what brings about. Anything else drops only when the
+        // person expands it.
         let dropped = docked
             .iter()
-            .position(|card| card.rich)
-            .or_else(|| expanded.then_some(0));
+            .position(|card| card.size.is_some())
+            .or_else(|| (!docked.is_empty() && expanded).then_some(0));
         let mut rest = docked.clone();
         if let Some(at) = dropped {
             let first = rest.remove(at);
