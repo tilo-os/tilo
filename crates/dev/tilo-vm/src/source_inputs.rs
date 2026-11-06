@@ -188,11 +188,13 @@ pub(crate) fn verify(root: &Path, inventory: &Path) -> Result<String, CliError> 
             || !Path::new(&path)
                 .components()
                 .all(|part| matches!(part, Component::Normal(_)))
-            || input_hash(root, &root.join(&path))? != hash
         {
             return Err(CliError::InvalidInput(
-                "remote source bytes differ from the requested inventory".into(),
+                "source inventory names a path outside the worktree".into(),
             ));
+        }
+        if input_hash(root, &root.join(&path))? != hash {
+            return Err(CliError::SourceChanged { path });
         }
     }
     Ok(build::sha256_hex(&bytes))
