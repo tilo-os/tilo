@@ -1007,7 +1007,7 @@ scenario "what got done this week" {
     window place = Task.done
 }
 
-/// Today: what is due, what went by, and what is done with it.
+/// Today: what is due, what went by, what is done with it, and what I picked for today.
 scenario "today" {
     let flat = tasks.projects.insert(Project(name: "Move flat"))
     tasks.items.insert(Task(title: "Buy oat milk and eggs", due: 2026-06-30))
@@ -1022,7 +1022,10 @@ scenario "today" {
     tasks.items.insert(Task(title: "Book a haircut", due: 2026-06-29))
     tasks.items.insert(Task(title: "Pack the kitchen", project: flat, due: 2026-06-30))
     tasks.items.insert(Task(title: "Order boxes and tape", project: flat, due: 2026-07-02))
-    tasks.items.insert(Task(title: "Sort the paper mail"))
+    // Mine, with no day of its own: it stands in my Today because I picked it, under the pick
+    // it is there for, after the days it is due on.
+    let mail = tasks.items.insert(Task(title: "Sort the paper mail"))
+    pick(mail, true)
     window place = Task.today
 }
 
