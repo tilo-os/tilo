@@ -1159,6 +1159,14 @@ answer-reopen = Reopen
 answer-why-unknown-app = No app here opens it.
 answer-why-not-opened = It was stopped before a window appeared.
 answer-why-cannot-start = Apps cannot be started right now.
+# A chord of the desktop's a browser page has no surface for: it says so,
+# rather than doing nothing.
+answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer
+answer-why-capture-not-in-browser = It needs the whole screen, which a browser page does not have.
+answer-guide-not-in-browser = The shortcut guide runs in Tilo on a computer
+answer-why-guide-not-in-browser = It opens over the whole system, which a browser page is not.
+answer-remote-not-in-browser = Remote control runs in Tilo on a computer
+answer-why-remote-not-in-browser = Nothing here is under someone else's control.
 
 # The menu behind the top bar's Tilo mark, and the About sheet it opens
 tilo-menu-about = About this computer

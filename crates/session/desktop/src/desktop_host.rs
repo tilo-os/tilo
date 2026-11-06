@@ -55,7 +55,7 @@ use crate::overlays::{Overlays, Slot};
 use crate::overview::{OverviewHost, workspace_cards};
 use crate::overview_panel::{OverviewDesk, OverviewPanel, OverviewPick};
 use crate::search_overlay::SearchOverlay;
-use crate::shortcuts::{page_chord, page_shortcut_action};
+use crate::shortcuts::{page_fixed_action, page_shortcut_action};
 use crate::strip_navigator::{StripFrame, StripNavigation, StripNavigator, Viewer};
 use crate::strip_switcher::Command as StripCommand;
 use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome};
@@ -1726,10 +1726,22 @@ impl DesktopChrome {
 
     /// A desktop chord, applied; false when `event` is not one. The chord
     /// is looked up in the desktop's one shortcut table, with a host's
-    /// stand-in for Super counting as Super ([`page_shortcut_action`]).
+    /// stand-in for Super counting as Super
+    /// ([`page_shortcut_action`] and [`page_fixed_action`]).
     pub fn chord(&mut self, event: &winit::event::KeyEvent, modifiers: &Modifiers) -> bool {
         if event.state != ElementState::Pressed {
             return false;
+        }
+        // The chords Settings cannot rebind come before any program's, as on
+        // the native desktop: each runs the verb its menu row, its palette
+        // row and an agent's invocation name, and the ones the desk has no
+        // part in are asked of the page. The desk claims the press either
+        // way, so the browser's own key for it is not run too.
+        if let Some(action) =
+            page_fixed_action(&event.logical_key, event.physical_key, *modifiers, self.mac)
+        {
+            self.fixed_shortcut(action);
+            return true;
         }
         let action = page_shortcut_action(
             &self.shortcuts.borrow(),
@@ -1741,18 +1753,7 @@ impl DesktopChrome {
         if let Some(action) = action {
             return self.shortcut(action);
         }
-        // Super+S opens the strip switcher for the keyboard, fixed rather
-        // than rebindable.
-        let strips = page_chord(&event.logical_key, event.physical_key, *modifiers, self.mac)
-            .is_some_and(|(key, held)| {
-                held.state() == winit::keyboard::ModifiersState::SUPER
-                    && key == winit::keyboard::Key::Character("s".into())
-            });
-        if strips {
-            self.navigator
-                .toggle_from_keyboard(&self.navigator_frame, ui::time::now());
-        }
-        strips
+        false
     }
 
     /// Read where the person is into the navigator, when the tree, the
