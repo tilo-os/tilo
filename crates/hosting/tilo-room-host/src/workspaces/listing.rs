@@ -282,7 +282,6 @@ impl Workspaces {
         Ok(())
     }
 
-    #[must_use]
     /// Settle whether `workspace`'s door admits only people invited or
     /// pre-admitted, as the host's operator asked. Its directory listing is
     /// untouched: the workspace stays listed either way.

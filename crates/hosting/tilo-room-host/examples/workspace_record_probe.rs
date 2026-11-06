@@ -1,7 +1,8 @@
 //! Read a workspace record a relay wrote, field by field, to say exactly
 //! which field a build's decoder stops at.
 //!
-//! usage: workspace_record_probe FILE
+//! usage: `workspace_record_probe FILE`
+#![allow(clippy::expect_used, reason = "an example fails loudly")]
 
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -25,7 +26,6 @@ struct Record {
 }
 
 #[derive(Deserialize)]
-#[expect(dead_code, reason = "read to prove the bytes decode")]
 struct Ledger {
     invitations: Vec<InvitationRecord>,
     join_challenges: Vec<JoinChallengeRecord>,
@@ -170,7 +170,7 @@ fn main() {
         step!(Option<CancellationRecord>, "cancellation");
     }
     if before == rest.len() {
-        println!("  ({} invitations took no bytes?)", count);
+        println!("  ({count} invitations took no bytes?)");
     }
     step!(Vec<JoinChallengeRecord>, "ledger.join_challenges");
     step!(Vec<JoinCompletionRecord>, "ledger.join_completions");

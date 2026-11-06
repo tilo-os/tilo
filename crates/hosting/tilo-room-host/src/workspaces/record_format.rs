@@ -82,8 +82,8 @@ fn v2_to_v3(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
             let request_digest: [u8; 32] = field!([u8; 32], "invitation request_digest");
             let issued: IssuedInvitation = field!(IssuedInvitation, "invitation issued");
             // The grant's layout is the invitation's own version's.
-            let (grant, consumed) = take_grant(rest, &issued)?;
-            rest = &rest[consumed..];
+            let (grant, tail) = take_grant(rest, &issued)?;
+            rest = tail;
             let cancellation: Option<CancellationRecord> =
                 field!(Option<CancellationRecord>, "invitation cancellation");
             invitations.push(InvitationRecord {
@@ -185,17 +185,22 @@ fn v2_to_v3(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     .map_err(|error| error.to_string())
 }
 
-/// The grant version 2 kept beside `issued`, in this build's layout, and how
-/// many bytes it took.
-fn take_grant(bytes: &[u8], issued: &IssuedInvitation) -> Result<(InviteGrant, usize), String> {
+/// The grant version 2 kept beside `issued`, in this build's layout, and the
+/// bytes after it.
+fn take_grant<'a>(
+    bytes: &'a [u8],
+    issued: &IssuedInvitation,
+) -> Result<(InviteGrant, &'a [u8]), String> {
     let (version, _) = postcard::take_from_bytes::<u32>(&issued.signed_invitation)
         .map_err(|error| format!("an issued invitation has no version: {error}"))?;
     if previous::is_invitation_version(version) {
-        previous::take_stored_grant(bytes)
+        let (grant, taken) = previous::take_stored_grant(bytes)?;
+        let tail = bytes
+            .get(taken..)
+            .ok_or_else(|| "a stored grant took more than its record holds".to_string())?;
+        Ok((grant, tail))
     } else {
-        let (grant, tail): (InviteGrant, &[u8]) =
-            postcard::take_from_bytes(bytes).map_err(|error| error.to_string())?;
-        Ok((grant, bytes.len() - tail.len()))
+        postcard::take_from_bytes(bytes).map_err(|error| error.to_string())
     }
 }
 
@@ -321,16 +326,15 @@ mod tests {
     /// takes exactly its own bytes, so the record after it still reads.
     #[test]
     fn a_grant_stored_in_the_earlier_layout_reads_back() {
-        let (signed, ledger_copy, grant) = earlier_invitation();
+        let (signed, mut record, grant) = earlier_invitation();
         let issued = IssuedInvitation {
             invite_id: *blake3::hash(&signed).as_bytes(),
             signed_invitation: signed,
         };
-        let mut record = ledger_copy.clone();
         record.extend_from_slice(b"after");
-        let (read, taken) = take_grant(&record, &issued).unwrap();
+        let (read, tail) = take_grant(&record, &issued).unwrap();
         assert_eq!(read, grant);
-        assert_eq!(&record[taken..], b"after");
+        assert_eq!(tail, b"after");
     }
 
     /// A whole version 2 record, its ledger holding one invitation of the
@@ -394,8 +398,8 @@ mod tests {
         };
         let mut record = postcard::to_stdvec(&grant).unwrap();
         record.extend_from_slice(b"after");
-        let (read, taken) = take_grant(&record, &issued).unwrap();
+        let (read, tail) = take_grant(&record, &issued).unwrap();
         assert_eq!(read, grant);
-        assert_eq!(&record[taken..], b"after");
+        assert_eq!(tail, b"after");
     }
 }

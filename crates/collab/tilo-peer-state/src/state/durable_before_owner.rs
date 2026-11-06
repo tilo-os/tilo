@@ -209,7 +209,7 @@ mod tests {
             base: DurableV3 {
                 version: 3,
                 room: "302d59e0-f586-42e1-a59e-3aa613f0f866".into(),
-                authority: authority.clone(),
+                authority,
                 room_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
                 documents: Vec::new(),
                 receipts: BTreeMap::new(),
