@@ -1677,7 +1677,6 @@ impl DesktopChrome {
     /// it, which needs no workspace of the person's own to make).
     fn new_workspace(&self, join: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
-        let name = Self::name_of(name, tree.workspaces.len());
         let joining = join.is_some();
         let mut workspace = if let Some(id) = join {
             let Some(joined) = WorkspaceId::parse(id) else {
@@ -1694,12 +1693,19 @@ impl DesktopChrome {
                 self.handle.replace_tree(tree);
                 return;
             }
-            Workspace::in_workspace(WorkspaceSlot::of_workspace(joined), joined, name)
+            Workspace::in_workspace(
+                WorkspaceSlot::of_workspace(joined),
+                joined,
+                name.map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map_or_else(|| Self::numbered(&tree.workspaces), str::to_owned),
+            )
         } else {
             if let Err(refusal) = self.rules.may_create_workspace() {
                 self.handle.acknowledge(refusal);
                 return;
             }
+            let name = Self::name_of(name, &tree.workspaces);
             Workspace::new(WorkspaceSlot(self.handle.mint_id()), name)
         };
         // A workspace a site lets this computer into comes with the strips
@@ -1719,16 +1725,37 @@ impl DesktopChrome {
     }
 
     /// What a workspace made with `name` is called: that name, or one
-    /// numbered by how many workspaces `held` there are here.
-    fn name_of(name: Option<&str>, held: usize) -> String {
-        name.map_or_else(
-            || {
-                tilo_desktop_surface::i18n::t_args(
-                    "browser-new-workspace-name",
-                    &[("number", held.saturating_add(1).into())],
-                )
-            },
-            str::to_owned,
+    /// numbered by how many workspaces `held` there are here. A workspace's
+    /// name is how a person tells it apart in the bar, the menu and the
+    /// overview, so a name already held is numbered: two workspaces of one
+    /// name are two a person cannot choose between.
+    fn name_of(name: Option<&str>, held: &[Workspace]) -> String {
+        let wanted = name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map_or_else(|| Self::numbered(held), str::to_owned);
+        let taken = |candidate: &str| held.iter().any(|workspace| workspace.name == candidate);
+        if !taken(&wanted) {
+            return wanted;
+        }
+        // Each number names one more candidate, so fewer of them are held
+        // than there are numbers: the first free one is found.
+        let mut number: usize = 2;
+        loop {
+            let candidate = format!("{wanted} {number}");
+            if !taken(&candidate) {
+                return candidate;
+            }
+            number = number.saturating_add(1);
+        }
+    }
+
+    /// The name of a workspace the desk numbers itself: the next one after
+    /// those `held` here.
+    fn numbered(held: &[Workspace]) -> String {
+        tilo_desktop_surface::i18n::t_args(
+            "browser-new-workspace-name",
+            &[("number", held.len().saturating_add(1).into())],
         )
     }
 
@@ -2922,5 +2949,57 @@ impl Widget for DesktopChrome {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `names` held as workspaces here, the way a desk keeps them.
+    fn held(names: &[&str]) -> Vec<Workspace> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let slot = u64::try_from(index.saturating_add(1)).expect("a small index");
+                Workspace::new(WorkspaceSlot(slot), *name)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_second_workspace_of_one_name_is_numbered() {
+        let tree = held(&["Home", "Later"]);
+        assert_eq!(
+            DesktopChrome::name_of(Some("Later"), &tree),
+            "Later 2",
+            "a name already held is numbered, so the two can be told apart"
+        );
+        assert_eq!(
+            DesktopChrome::name_of(Some(" Later "), &tree),
+            "Later 2",
+            "the name as it would be stored decides it"
+        );
+        assert_eq!(
+            DesktopChrome::name_of(Some("Reading"), &tree),
+            "Reading",
+            "a name nobody holds is the name asked for"
+        );
+    }
+
+    #[test]
+    fn a_blank_name_is_the_next_numbered_one() {
+        let tree = held(&["Home"]);
+        assert_eq!(
+            DesktopChrome::name_of(None, &tree),
+            "Workspace 2",
+            "a workspace made without a name is numbered by the desk"
+        );
+        assert_eq!(
+            DesktopChrome::name_of(Some("   "), &tree),
+            "Workspace 2",
+            "a blank name is no name"
+        );
     }
 }
