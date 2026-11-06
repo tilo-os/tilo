@@ -45,7 +45,6 @@ wasmi = { version = "1.1", default-features = false, features = ["std"] }
 # docs/tilolang-engines.md).
 wasmtime = { version = "50.0.0", optional = true, default-features = false, features = [
     "cranelift",
-    "parallel-compilation",
     "runtime",
     "std",
     "winch",
