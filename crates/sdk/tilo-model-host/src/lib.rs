@@ -39,6 +39,17 @@ pub mod service;
 mod store;
 
 pub use module::{Module, ModuleError};
+
+/// The model module a host's tests run: `tasks-model` built for `wasm32` by this crate's build
+/// script, the same code the app ships.
+///
+/// `None` when this build could not build it — a machine with no Rust that has the wasm32
+/// target — which the build script said when it ran.
+#[must_use]
+pub fn fixture_module() -> Option<Vec<u8>> {
+    let dir = env!("TILO_MODEL_FIXTURE_DIR");
+    std::fs::read(std::path::Path::new(dir).join("tasks_model.wasm")).ok()
+}
 pub use record::{Invoker, Opened, Record, RecordError};
 pub use service::ModelService;
 #[cfg(feature = "store")]

@@ -70,6 +70,20 @@ fn refused_door(error: impl std::fmt::Display) -> Refusal {
 /// A [`Refusal`] when the model or the door refused; the host reports it as the call's
 /// failure and keeps no change.
 pub fn serve<R: Resource>(request: &Request) -> Result<Answer, Refusal> {
+    // The module has no clock: the time a change is made at is the host's, read once for the
+    // invocation and carried by the request. Both readings are pinned to it — the resource
+    // layer's origin clock, which stamps what a verb builds, and the wall clock itself, which
+    // stamps the change the envelope records — so nothing here asks the machine what time it
+    // is. A bare wasm module has no clock to ask, and the answer has to be the host's anyway
+    // for a replay to reproduce the change.
+    tilo_resource::with_origin_clock(request.now_ms, || {
+        tilo_clock::with_wall_ms(u64::try_from(request.now_ms).unwrap_or(0), || {
+            serve_at::<R>(request)
+        })
+    })
+}
+
+fn serve_at<R: Resource>(request: &Request) -> Result<Answer, Refusal> {
     let kind = ResourceKind::of::<R>();
     if kind.kind() != request.kind {
         return Err(Refusal {
@@ -316,6 +330,11 @@ fn decode(text: &str) -> Result<Vec<u8>, Refusal> {
 /// Serve `R`'s records for the call the host made: pull the request, run the model, publish
 /// the answer.
 pub fn serve_export<R: Resource>() {
+    // A panic in the model would trap the module with no word of why; the host's log has one.
+    std::panic::set_hook(Box::new(|panic| {
+        let message = format!("the model panicked: {panic}");
+        unsafe { host::log(message.as_ptr(), message.len()) };
+    }));
     let bytes = pull(|pointer, capacity| unsafe { host::request(pointer, capacity) });
     let request: Request = match serde_json::from_slice(&bytes) {
         Ok(request) => request,
@@ -416,10 +435,7 @@ mod entropy_source {
         if usize::try_from(filled) == Ok(len) {
             Ok(())
         } else {
-            Err(getrandom::Error::new_custom(
-                1,
-                "the document host supplied no entropy",
-            ))
+            Err(getrandom::Error::new_custom(1))
         }
     }
 }

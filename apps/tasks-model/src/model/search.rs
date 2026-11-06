@@ -1,7 +1,7 @@
 //! What system search finds of the tracker: each issue, by its number
 //! (`#12`, typed as it reads), its title, its description and its labels.
 
-use ui::tilo_resource::{SearchEntry, SearchWeight};
+use tilo_resource::{SearchEntry, SearchWeight};
 
 use crate::model::record::Tracker;
 

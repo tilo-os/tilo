@@ -27,6 +27,7 @@ path = "src/lib.rs"
 store = ["dep:tilo-app-state", "dep:durable-store"]
 
 [dependencies]
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -49,9 +50,11 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional 
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
 
 [dev-dependencies]
-# The record kind the tests run: an app's model crate, the same one the app's
-# process links, so a test runs the real model rather than a stand-in.
+# The record kind the tests run, as a crate their own assertions read: the module the host runs
+# is that same crate built for wasm32 by this package's build script.
 tasks-model = { path = "../../../apps/tasks-model" }
+tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+automerge.workspace = true
 
 [lints]
 workspace = true

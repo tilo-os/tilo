@@ -118,21 +118,6 @@ pub enum GuestAnswer {
     },
 }
 
-/// A signature [`Host::guest_abi`] writes, as the parameters and the result each one's signs.
-pub(crate) fn signs(signature: &'static str) -> (Vec<u8>, Vec<u8>) {
-    let bytes = signature.as_bytes();
-    let split = bytes
-        .iter()
-        .position(|sign| !sign.is_ascii_alphabetic())
-        .unwrap_or(bytes.len());
-    let (params, _) = bytes.split_at(split);
-    // The result names the sign it is, and nothing after it.
-    (
-        params.to_vec(),
-        bytes.get(split).copied().into_iter().collect(),
-    )
-}
-
 /// Why a call into a module failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CallError {

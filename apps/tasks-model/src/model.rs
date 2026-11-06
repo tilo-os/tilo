@@ -46,22 +46,22 @@ pub const APP_ID: &str = "so.tilo.tasks";
 /// The resource address of `issue` in the tracker, the one its reference
 /// chip, its search hit and its `open` name.
 #[must_use]
-pub fn issue_resource(issue: &ui::tilo_resource::Id) -> String {
-    ui::tilo_resource::items::item_resource_id_in(KIND, "issues", issue)
+pub fn issue_resource(issue: &tilo_resource::Id) -> String {
+    tilo_resource::items::item_resource_id_in(KIND, "issues", issue)
 }
 
 /// The resource address of the project or area `area`, as a task names it in
 /// its [`Area`] and as its search hit opens it.
 #[must_use]
-pub fn area_resource(area: &ui::tilo_resource::Id) -> String {
-    ui::tilo_resource::items::item_resource_id_in(KIND, "areas", area)
+pub fn area_resource(area: &tilo_resource::Id) -> String {
+    tilo_resource::items::item_resource_id_in(KIND, "areas", area)
 }
 
 /// What an issue plans as its goal when it works towards the project or area
 /// `area` named `name`: this tracker's own resource, so that whoever reads
 /// the issue can count it among the project's tasks.
 #[must_use]
-pub fn area_goal(area: &ui::tilo_resource::Id, name: &str) -> Area {
+pub fn area_goal(area: &tilo_resource::Id, name: &str) -> Area {
     Area {
         resource: area.as_str().to_owned(),
         app: APP_ID.to_owned(),

@@ -16715,8 +16715,11 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
- "tilo-app",
- "tilo-rich-text",
+ "tilo-actions",
+ "tilo-document",
+ "tilo-model-guest",
+ "tilo-reference",
+ "tilo-resource",
  "workspace-hack",
 ]
 
@@ -19711,6 +19714,7 @@ dependencies = [
  "serde_json",
  "tilo-actions",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-model-abi",
  "tilo-resource",
  "workspace-hack",
@@ -19720,6 +19724,7 @@ dependencies = [
 name = "tilo-model-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "durable-store",
  "getrandom 0.4.3",
  "serde",
@@ -21370,7 +21375,9 @@ dependencies = [
  "tilo-liveness",
  "tilo-lock",
  "tilo-media",
+ "tilo-model-abi",
  "tilo-model-client",
+ "tilo-model-host",
  "tilo-native-media",
  "tilo-nearby-service",
  "tilo-net",
@@ -21421,6 +21428,7 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilolang-host",
+ "tilolang-runtime",
  "tilolang-tilo",
  "tokio",
  "toml 1.0.6+spec-1.1.0",

@@ -10,7 +10,7 @@
 //! report is decided by the same grants as any other action.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{self, Atom, Counter, JsonSchema, Model, Refusal};
+use tilo_resource::{self, Atom, Counter, JsonSchema, Model, Refusal};
 
 /// The longest turn a budget admits: 15 minutes.
 pub const MAX_TURN_MS: u64 = 900_000;
