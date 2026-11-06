@@ -556,6 +556,7 @@ impl Reader<'_> {
                     search: SearchMeta::default(),
                     holder: false,
                     origin: None,
+                    attached: false,
                 });
             }
         }
@@ -590,6 +591,7 @@ impl Reader<'_> {
             search: SearchMeta::default(),
             holder: false,
             origin: None,
+            attached: false,
         });
     }
 

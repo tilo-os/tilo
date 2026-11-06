@@ -4,6 +4,8 @@ app so.tilo.lang.tasks "Tasks" (
     previously: so.tilo.lang.todo,
 )
 
+use so.tilo.lang.discussion as discussion
+
 /// How much a task matters, most urgent last.
 enum Priority {
     /// No priority
@@ -850,6 +852,7 @@ view task_page(t: Task) {
                     ui.Chip("{p.name()}'s today", icon: .star)
                 }
             }
+            discussion.thread(t)
             std.history(t)
         }
     }
@@ -1191,4 +1194,19 @@ scenario "a project board" -> Project {
         ),
     )
     flat
+}
+
+/// A task page with the discussion under it: the thread a task is talked over in, its field
+/// ready for the first thing said. A scenario leaves the thread empty: a comment is the
+/// discussion app's change, and one change does not span apps.
+scenario "a discussion on a task" -> Task {
+    let ada = person("Ada")
+    tasks.items.insert(
+        Task(
+            title: "Order the new office chairs",
+            notes: RichText("Two for the window desks, and four for the room."),
+            due: 2026-07-01,
+            assignee: .some(ada),
+        ),
+    )
 }

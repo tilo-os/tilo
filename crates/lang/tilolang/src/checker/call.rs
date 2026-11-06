@@ -2065,6 +2065,23 @@ impl Checker<'_> {
                 let next = self.expr_as(&next.value, &Ty::Action);
                 Ex::host(Imp::ActThen, vec![r, next], Ty::Action)
             }
+            // `a.made_from(r)`: the action `a`, invoked made from the resource `r`: what the
+            // resources it makes record as what they were made from (`created(r)?.from`).
+            (Ty::Action, "made_from") => {
+                let [from] = args else {
+                    self.err("E022", span, "`.made_from` takes the resource the action is made from: `comment(comments).made_from(t)`");
+                    return Ex::error();
+                };
+                if let Some(name) = &from.name {
+                    self.err(
+                        "E022",
+                        name.span,
+                        "`.made_from` takes its resource by position: `comment(comments).made_from(t)`",
+                    );
+                }
+                let from = self.expr_as(&from.value, &Ty::Record(super::resource_key()));
+                Ex::host(Imp::ActMadeFrom, vec![r, from], Ty::Action)
+            }
             (Ty::Enum(key), "label" | "icon" | "tone" | "name") if args.is_empty() => {
                 let key = key.clone();
                 self.enum_method(r, &key, m).unwrap_or_else(Ex::error)
@@ -2157,7 +2174,7 @@ impl Checker<'_> {
                     Ty::Repeat => "next, next_at, label".to_owned(),
                     Ty::Reminder => "at, label".to_owned(),
                     Ty::Principal => "name, kind, role".to_owned(),
-                    Ty::Action => "then".to_owned(),
+                    Ty::Action => "then, made_from".to_owned(),
                     // Every other type's methods are in one table, whose names the check of a
                     // container field reads too.
                     other => super::methods::described(other),

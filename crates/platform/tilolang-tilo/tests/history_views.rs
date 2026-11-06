@@ -11,6 +11,8 @@ use tilolang_tilo::instance::HistoryAsk;
 use crate::fixtures::Replica;
 use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
@@ -138,7 +140,11 @@ fn two_people() -> (Replica, Value, Value) {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (NOTES, NOTES_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     ada.host
         .runtime()

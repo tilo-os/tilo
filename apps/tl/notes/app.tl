@@ -1,5 +1,7 @@
 app so.tilo.lang.notes "Notes" (icon: .file_text, category: .office)
 
+use so.tilo.lang.discussion as discussion
+
 /// A note: a title, a body and the tags people gave it.
 type Note {
     title: Text (title)
@@ -107,6 +109,7 @@ view note_editor(n: Note) {
             }
         }
         ui.BlockEditor(bind: n.body, placeholder: "Write something")
+        discussion.thread(n)
         std.history(n)
     }
 }

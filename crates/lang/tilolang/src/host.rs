@@ -414,6 +414,11 @@ pub const VALUE_TYPES: &[ValueType] = &[
                 "Bool",
                 "Whether its type declares a row view, the one a list of its type draws each item through.",
             ),
+            (
+                "attached",
+                "Bool",
+                "Whether its type is `(attached)`: its records are about what they were made from, a comment on a task, rather than work made from it.",
+            ),
         ],
     },
     ValueType {
@@ -575,6 +580,7 @@ pub fn host_meta() -> PackageMeta {
             search: crate::meta::SearchMeta::default(),
             holder: false,
             origin: None,
+            attached: false,
         })
         .chain(std::iter::once(TypeMeta {
             id: format!("host-{}", RESOURCE_TYPE_NAME.to_lowercase()),
@@ -584,6 +590,7 @@ pub fn host_meta() -> PackageMeta {
             search: crate::meta::SearchMeta::default(),
             holder: false,
             origin: None,
+            attached: false,
         }))
         .chain(VALUE_TYPES.iter().map(|value| {
             TypeMeta {
@@ -608,6 +615,7 @@ pub fn host_meta() -> PackageMeta {
                 search: crate::meta::SearchMeta::default(),
                 holder: false,
                 origin: None,
+                attached: false,
             }
         }))
         .collect(),

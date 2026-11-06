@@ -1068,6 +1068,24 @@ fn linked_and_made_from_are_read_from_the_log() {
 }
 
 #[test]
+fn an_action_applied_made_from_a_resource_is_invoked_from_it() {
+    let (m, _) = lower(
+        "type Note {\n    title: Text\n}\ntype Notes {\n    items: Collection<Note>\n}\nroot notes: Notes\ndefault view all for Notes\naction keep(all: Notes, title: Text) -> Note {\n    all.items.insert(Note(title: title))\n}\nview all(all: Notes) {\n    text(meta(all).title)\n}\nview note(n: Note) {\n    button(keep(notes, n.title).made_from(n))\n}",
+    );
+    // What a view shows of an action is the action the host runs; made from a resource, it runs
+    // from that resource, so what it makes records what it was made from.
+    let mut made_from = false;
+    for f in &m.funcs {
+        visit(f, &mut |e| {
+            if let Ek::Host(Imp::ActMadeFrom, _) = &e.kind {
+                made_from = true;
+            }
+        });
+    }
+    assert!(made_from, "`made_from` is the host's own step: {m:#?}");
+}
+
+#[test]
 fn a_links_how_is_a_case_of_the_hosts_link_how_enum() {
     let (m, _) = lower(
         "type Note {\n    title: Text\n}\nfn mentions(n: Note) -> Bool {\n    linked(n).any(l -> l.how == .mention)\n}",

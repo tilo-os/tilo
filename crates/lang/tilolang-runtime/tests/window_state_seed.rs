@@ -12,6 +12,7 @@ mod cases {
     use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
+    const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     /// An app installed in a workspace of its own: its actions runnable, its views openable.
     struct Installed {
@@ -26,7 +27,9 @@ mod cases {
         let store = AmStore::new();
         let auth = TestAuthority::new();
         let rt = Runtime::new(store, auth.clone()).unwrap();
-        let app = App::compile(source, &[]);
+        let discussion = App::compile(DISCUSSION, &[]);
+        auth.trust(&discussion.load(&rt));
+        let app = App::compile(source, &[discussion.meta().clone()]);
         // Installed packages are code the platform trusts, as it does every installed app.
         auth.trust(&app.load(&rt));
         Installed {

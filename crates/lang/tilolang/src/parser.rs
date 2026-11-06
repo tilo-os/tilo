@@ -1052,13 +1052,19 @@ impl<'a> Parser<'a> {
         self.expect_kw("type")?;
         let node = self.node();
         let name = self.ident("a type name")?;
-        let origin = if self.eat(&Tok::LParen) {
-            let origin = self.type_origin()?;
+        let mut origin = None;
+        let mut attached = false;
+        if self.eat(&Tok::LParen) {
+            // One option: an outside service's kind, or that the type's records are attached to
+            // what they were made from.
+            if matches!(self.peek(), Tok::Ident(word) if word == "attached") {
+                self.bump();
+                attached = true;
+            } else {
+                origin = Some(self.type_origin()?);
+            }
             self.expect(&Tok::RParen)?;
-            Some(origin)
-        } else {
-            None
-        };
+        }
         self.expect(&Tok::LBrace)?;
         let mut fields = Vec::new();
         let mut derives = Vec::new();
@@ -1126,6 +1132,7 @@ impl<'a> Parser<'a> {
             doc,
             name,
             origin,
+            attached,
             fields,
             derives,
             search,

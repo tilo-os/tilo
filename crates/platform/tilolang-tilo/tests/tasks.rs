@@ -8,8 +8,12 @@ use tilolang_runtime::{InvokeOutcome, Principal, UiNode, Value, ViewInstance};
 
 use crate::fixtures::Replica;
 
+pub(crate) const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+pub(crate) const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 pub(crate) const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 pub(crate) const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
+/// What a task's page is drawn from: the tasks and the discussion under them.
+pub(crate) const PACKAGES: &[(&str, &str)] = &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)];
 pub(crate) const APP: &str = "so.tilo.lang.tasks";
 
 pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
@@ -34,7 +38,7 @@ pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.
 pub(crate) fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
+    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), PACKAGES);
     ada.host
         .runtime()
         .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
@@ -430,7 +434,7 @@ fn two_people_change_one_task_at_once_and_both_changes_stay() {
         vec![root.clone(), Value::text("Call the landlord")],
     );
     ada.commit();
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     // Ada checks it off while Ben files it under a project he just made.
     call(&ada, "check", vec![task.clone()]);
@@ -1136,7 +1140,7 @@ fn a_peers_completion_takes_its_row_away() {
         );
         ada.commit();
     }
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     let mut view = ada.view(APP);
     go_to(&mut view, "Today");
@@ -1504,7 +1508,7 @@ fn a_step_added_while_a_task_is_checked_off_is_never_cleared_with_it() {
         vec![root.clone(), parent.clone(), Value::text("Outline")],
     );
     ada.commit();
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     // Ada checks the task off while Ben, not yet seeing that, puts a step under it.
     call(&ada, "check", vec![parent.clone()]);
@@ -1580,7 +1584,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
     }
     let outline = task(&ada, "Outline");
     let screenshots = task(&ada, "Screenshots");
-    let mut ben = ada.fork("ben", &[(TASKS, TASKS_IDS)]);
+    let mut ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
     // Each checks one step, neither seeing the other: one step under the task is still open
     // when each writes, so the branch is not finished in either of them.
@@ -1640,7 +1644,7 @@ fn a_branch_folds_when_two_people_check_its_last_steps_at_once() {
 /// works the keys out from what the scenario wrote, so no migration runs after a record.
 #[test]
 fn a_scenario_reads_the_keys_of_the_branch_it_stages() {
-    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
+    let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), PACKAGES);
     let scenario = loaded[0]
         .meta
         .scenarios

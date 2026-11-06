@@ -206,6 +206,7 @@ imports! {
     (StateGet, "state_get", "iii", "i"),
     (ActSet, "act_set", "iii", "i"),
     (ActThen, "act_then", "ii", "i"),
+    (ActMadeFrom, "act_made_from", "ii", "i"),
     (ActOpen, "act_open", "iii", "i"),
     (ActUndo, "act_undo", "ii", "i"),
     (ChangeView, "change_view", "iii", "i"),

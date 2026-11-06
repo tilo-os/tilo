@@ -31,22 +31,44 @@ pub(super) fn note_versions<'c>(
         } else {
             made
         };
-        for mut version in made {
-            // A removed item stood where it was last placed.
-            if version.kind == VersionKind::Removed {
-                version.left = index.placed.get(&version.resource).cloned();
+        for made in made {
+            let subject = made
+                .from
+                .as_ref()
+                .map(tilolang_runtime::value::ResourceRef::id_string);
+            let stood = made.clone();
+            let at = made.resource.clone();
+            note(index, &at, made);
+            // What was made from a resource is a change to it too: a comment under a task
+            // changed that task, for whoever made or read it, though not one of its fields.
+            if let Some(subject) = subject {
+                let mut under = stood;
+                under.kind = VersionKind::Changed;
+                under.fields = Vec::new();
+                under.placed = Vec::new();
+                under.left = None;
+                note(index, &subject, under);
             }
-            index
-                .by_resource
-                .entry(version.resource.clone())
-                .or_default()
-                .push(version);
         }
         for (item, holder, field, ty) in idx::reflect::placed_of(change) {
             let ty = ty.or_else(|| index.placed.get(&item).and_then(|left| left.ty.clone()));
             index.placed.insert(item, Left { holder, field, ty });
         }
     }
+}
+
+/// Note `version` of the resource `at`, which is the resource whose history it stands in: what
+/// it is a version of, else the resource it was made from and so changed.
+fn note(index: &mut Versions, at: &str, mut version: Version) {
+    // A removed item stood where it was last placed.
+    if version.kind == VersionKind::Removed {
+        version.left = index.placed.get(&version.resource).cloned();
+    }
+    index
+        .by_resource
+        .entry(at.to_owned())
+        .or_default()
+        .push(version);
 }
 
 /// The versions of every resource, and where each item was last placed.

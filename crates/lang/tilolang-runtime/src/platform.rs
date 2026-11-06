@@ -1126,25 +1126,34 @@ impl Core {
         mark_of(self.view_states.borrow().get(&key))
     }
 
-    /// `person`'s seen mark that covers `resource`: its own, else the mark of whatever holds
-    /// it, then of whatever holds that. Opening a conversation marks seen what its window
-    /// showed (task-legibility.md §4), and what it showed is the messages in it: items are
-    /// stored flat by id (convergence.md, "Items"), so the collection holding one names its
-    /// holder, never the path down to it.
+    /// `person`'s seen mark that covers `resource`: its own, else the mark of what it was made
+    /// from and of whatever holds it, then of what those were made from or holds. Opening a
+    /// conversation marks seen what its window showed (task-legibility.md §4), and what it
+    /// showed is the messages in it: items are stored flat by id (convergence.md, "Items"), so
+    /// the collection holding one names its holder, never the path down to it. Reading what a
+    /// record was made from reads the record, as a task's page shows the comments under it.
     pub(crate) fn seen_mark_of_tree(&self, person: &str, at: &ResourceRef) -> Option<SeenMark> {
-        if let Some(mark) = self.seen_mark(person, &at.id_string()) {
-            return Some(mark);
-        }
-        let mut holding = at.clone();
-        // A collection of items nests at most a few deep (a board's card, a card's comment).
+        let mut at = at.clone();
+        // A record is made from one record and held by a few containers (a board's card, a
+        // card's comment): the walk up ends either way in a few steps.
         for _ in 0..8 {
-            let Ok(Some((holder, _))) = self.store.borrow().container(&holding) else {
-                return None;
-            };
-            if let Some(mark) = self.seen_mark(person, &holder.id_string()) {
+            if let Some(mark) = self.seen_mark(person, &at.id_string()) {
                 return Some(mark);
             }
-            holding = holder;
+            let from = self
+                .store
+                .borrow()
+                .version_end(&at, false)
+                .ok()
+                .flatten()
+                .and_then(|made| made.from);
+            at = match from {
+                Some(from) => from,
+                None => match self.store.borrow().container(&at) {
+                    Ok(Some((holder, _))) => holder,
+                    _ => return None,
+                },
+            };
         }
         None
     }
@@ -1653,6 +1662,7 @@ impl Core {
                 .map_or_else(Value::none, |icon| Value::some(Value::Text(icon))),
             Value::Bool(meta.default_view(ty).is_some()),
             Value::Bool(meta.row_view(ty).is_some()),
+            Value::Bool(declared.attached),
         ]))
     }
 

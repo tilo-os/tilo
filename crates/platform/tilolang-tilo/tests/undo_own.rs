@@ -14,6 +14,8 @@ use tilolang_tilo::instance::record::HostHistoryEdit;
 use crate::fixtures::{Replica, field_id};
 use crate::legibility::call;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
@@ -23,8 +25,12 @@ const TASKS_APP: &str = "so.tilo.lang.tasks";
 const AGENT: &str = "agent:helper";
 const RUN: &str = "issue-9@8000000000000001";
 
-fn packages() -> [(&'static str, &'static str); 2] {
-    [(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)]
+fn packages() -> [(&'static str, &'static str); 3] {
+    [
+        (DISCUSSION, DISCUSSION_IDS),
+        (NOTES, NOTES_IDS),
+        (TASKS, TASKS_IDS),
+    ]
 }
 
 /// Ada's workspace with the two apps, and Ben's replica of it.

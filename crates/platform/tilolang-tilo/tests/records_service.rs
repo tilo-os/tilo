@@ -13,6 +13,10 @@ use tilolang_tilo::records_service::{RecordService, reading_type};
 
 use crate::fixtures::{Replica, field_id};
 
+const DISCUSSION: (&str, &str) = (
+    include_str!("../../../../apps/tl/discussion/app.tl"),
+    include_str!("../../../../apps/tl/discussion/app.ids"),
+);
 const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
     include_str!("../../../../apps/tl/notes/app.ids"),
@@ -31,7 +35,7 @@ view note_card(n: notes.Note) {
 
 /// Ada's workspace with its notebook, published.
 fn service() -> (RecordService, tilolang_runtime::Meta) {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[NOTES]);
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
     let Replica { doc, host, .. } = ada;

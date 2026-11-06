@@ -521,6 +521,20 @@ view reply_banner<T>(to: T, cancel: Action) {
     }
 }
 
+/// The foot of a conversation: the field a reply is typed into, and the button that sends it.
+/// Enter or the button runs `send`, then clears the field. What a view says over it (the message
+/// being answered, who is typing, what is being edited) is its own to place.
+view composer(draft: State<RichText>, placeholder: Text, send: Action) {
+    row {
+        rich_input(bind: draft, placeholder: placeholder, fill) {
+            on submit: send.then(set(draft, RichText("")))
+        }
+        ui.Button("Send", icon: .send, icon_only: true) {
+            on press: send.then(set(draft, RichText("")))
+        }
+    }
+}
+
 /// Under a message that started a thread: how many replies it has, opening the thread.
 view thread_chip<T>(thread: T, count: Int) {
     ui.Chip(phrase("tilolang-thread-replies", count: count), icon: .message_square) {
@@ -558,9 +572,10 @@ view linked_row<R>(of: R, dense: Bool = false) {
 /// at the density of a page of related things, or compact — quiet reference rows right under
 /// the content they belong to, one caption line each, as what a message was made from. Links by
 /// a field are left out: the page of the resource holding the field draws that reference as its
-/// own section of related things, so drawing it here again would show it twice.
+/// own section of related things, so drawing it here again would show it twice. So are records
+/// of an `(attached)` type: their own view, where they belong, already draws them all.
 view linked<R>(of: R, compact: Bool = false) {
-    let links = linked(of).filter(l -> l.how != .field)
+    let links = linked(of).filter(l -> l.how != .field and not meta(l.of).attached)
     if not links.is_empty() {
         if compact {
             stack(gap: .tight) {

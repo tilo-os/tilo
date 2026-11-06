@@ -11,6 +11,8 @@ use tilolang_tilo::publish::{Caller, PlanRequest};
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
@@ -64,7 +66,7 @@ fn an_agent_the_person_denied_the_app_is_denied() {
     let (mut ada, packages) = Replica::standing(
         "ada",
         AutoCommit::new(),
-        &[(TODO, TODO_IDS)],
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(standing(vec![answer])),
     );
     let meta = &packages[0].meta;
@@ -103,7 +105,7 @@ fn untrusted_code_asks_and_the_persons_agents_code_runs() {
     let (mut ada, _) = Replica::standing(
         "ada",
         AutoCommit::new(),
-        &[(TODO, TODO_IDS)],
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
         Some(standing(Vec::new())),
     );
     ada.host.root_of(APP).unwrap();

@@ -12,6 +12,8 @@ use tilolang_tilo::publish::Caller;
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
@@ -38,7 +40,11 @@ fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 
 /// Ada's replica with a task and a project she filed it under, and the task.
 fn workspace() -> (Replica, Value) {
-    let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(TASKS, TASKS_IDS)]);
+    let (mut ada, _) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+    );
     ada.host
         .runtime()
         .set_clock(|| "2026-10-29T10:00:00Z".to_owned());

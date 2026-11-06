@@ -13,6 +13,8 @@ use tilolang_tilo::record::DynValue;
 
 use crate::fixtures::{Replica, field_id};
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TODO: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TODO_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
@@ -20,7 +22,11 @@ const APP: &str = "so.tilo.lang.tasks";
 /// Ada's replica holding a list with one item, Grace's fork of it, the package, and the item's
 /// resource id.
 fn workspace() -> (Replica, Replica, Meta, String) {
-    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, TODO_IDS)]);
+    let (mut ada, packages) = Replica::new(
+        "ada",
+        AutoCommit::new(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)],
+    );
     let meta = packages[0].meta.clone();
     let root = ada.host.root_of(APP).unwrap();
     ada.commit();
@@ -44,7 +50,7 @@ fn workspace() -> (Replica, Replica, Meta, String) {
         .map(|(id, _)| id.as_str().to_owned())
         .expect("one item");
     let item = format!("{}/{items}:{first}", root.doc);
-    let grace = ada.fork("grace", &[(TODO, TODO_IDS)]);
+    let grace = ada.fork("grace", &[(DISCUSSION, DISCUSSION_IDS), (TODO, TODO_IDS)]);
     (ada, grace, meta, item)
 }
 

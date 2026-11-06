@@ -11,6 +11,8 @@ use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Store as _, Value}
 
 use crate::fixtures::Replica;
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const NOTES: &str = include_str!("../../../../apps/tl/notes/app.tl");
 const NOTES_IDS: &str = include_str!("../../../../apps/tl/notes/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
@@ -94,7 +96,11 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
     let (mut ada, _) = Replica::new(
         "ada",
         AutoCommit::new(),
-        &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (NOTES, NOTES_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     ada.host
         .runtime()
@@ -336,7 +342,11 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
     let (mut other, _) = Replica::new(
         "ada",
         ada.doc.fork(),
-        &[(NOTES, NOTES_IDS), (TASKS, TASKS_IDS)],
+        &[
+            (DISCUSSION, DISCUSSION_IDS),
+            (NOTES, NOTES_IDS),
+            (TASKS, TASKS_IDS),
+        ],
     );
     other.host.sync_from(&other.doc);
     let elsewhere = other.host.runtime();

@@ -31,6 +31,21 @@ fn concat(a: Ex, b: Ex) -> Ex {
     Ex::host(Imp::StrConcat, vec![a, b], Ty::Text)
 }
 
+/// What an application applies, once the steps that carry it are stripped:
+/// `send(c, d).then(set(d, ""))` is `send`, and `act(x).made_from(r)` is `act` — the button
+/// takes its look and the arguments it reads from it, while what it runs keeps `r` as what it
+/// is made from.
+fn applied_action(e: &ast::Expr) -> &ast::Expr {
+    let mut applied = e;
+    while let ExprKind::Call { callee, .. } = &applied.kind
+        && let ExprKind::Field { base, name } = &callee.kind
+        && matches!(name.name.as_str(), "then" | "made_from")
+    {
+        applied = base;
+    }
+    applied
+}
+
 impl Checker<'_> {
     /// Lowers the primitives whose lowering is their own; `None` for the rest.
     pub(super) fn native(&mut self, p: &Prim, c: &UiCall, args: &[ast::Arg]) -> Option<LocalId> {
@@ -925,14 +940,7 @@ impl Checker<'_> {
         let first = args
             .iter()
             .find(|a| a.name.is_none() && !self.is_flag(None, &a.value))?;
-        // `send(c, draft).then(set(draft, ""))` presents as `send`.
-        let mut applied = &first.value;
-        while let ExprKind::Call { callee, .. } = &applied.kind
-            && let ExprKind::Field { base, name } = &callee.kind
-            && name.name == "then"
-        {
-            applied = base;
-        }
+        let applied = applied_action(&first.value);
         let ExprKind::Call { callee, .. } = &applied.kind else {
             return None;
         };
@@ -959,13 +967,7 @@ impl Checker<'_> {
         if label.is_none() && icon.is_none() && on.is_none() {
             return;
         }
-        let mut call = applied;
-        while let ExprKind::Call { callee: c, .. } = &call.kind
-            && let ExprKind::Field { base, name } = &c.kind
-            && name.name == "then"
-        {
-            call = base;
-        }
+        let call = applied_action(applied);
         let ExprKind::Call { args, .. } = &call.kind else {
             return;
         };

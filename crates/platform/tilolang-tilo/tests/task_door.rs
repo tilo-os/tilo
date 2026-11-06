@@ -53,7 +53,12 @@ impl Apps {
                 let compiled = tilolang::compile_package(source, &lock, &metas).unwrap();
                 host.load_compiled(&compiled).unwrap();
                 host.root_of(&compiled.meta.app).unwrap();
-                metas.push(compiled.meta.clone());
+                if !metas
+                    .iter()
+                    .any(|meta: &tilolang::PackageMeta| meta.app == compiled.meta.app)
+                {
+                    metas.push(compiled.meta.clone());
+                }
                 by_app.insert(compiled.meta.app.clone(), replicas.len());
                 bundles.push(Bundle {
                     wasm: compiled.wasm.clone(),

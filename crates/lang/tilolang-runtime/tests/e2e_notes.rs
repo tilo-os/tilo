@@ -14,6 +14,7 @@ mod cases {
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
+    const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
 
     struct Notes {
         rt: Runtime,
@@ -23,9 +24,10 @@ mod cases {
 
     impl Notes {
         fn new() -> Self {
-            let app = App::compile(SOURCE, &[]);
             let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
-            app.load(&rt);
+            let discussion = App::compile(DISCUSSION, &[]);
+            discussion.load(&rt);
+            let app = App::compile(SOURCE, &[discussion.meta().clone()]);
             let nb = rt.create("Notes").unwrap();
             Self { rt, app, nb }
         }

@@ -7,6 +7,8 @@ use tilolang_runtime::{Value, ViewInstance};
 use crate::fixtures::Replica;
 use crate::tasks::{all, call, go_to, home_list_titles, workspace};
 
+const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
+const DISCUSSION_IDS: &str = include_str!("../../../../apps/tl/discussion/app.ids");
 const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");
 const APP: &str = "so.tilo.lang.tasks";
@@ -129,7 +131,11 @@ fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
     ada.commit();
 
     // The same workspace, opened by the version that keeps nothing of it but the box.
-    let (mut later, _) = Replica::new("ada", ada.doc.fork(), &[(TASKS, TASKS_IDS)]);
+    let (mut later, _) = Replica::new(
+        "ada",
+        ada.doc.fork(),
+        &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)],
+    );
     later.host.sync_from(&later.doc);
     later.host.migrate();
     for done in later.host.take_committed() {

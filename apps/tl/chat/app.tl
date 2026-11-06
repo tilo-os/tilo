@@ -450,18 +450,7 @@ view composer(
     if let r = replying {
         std.reply_banner(r, cancel: set(replying, .none))
     }
-    row {
-        rich_input(bind: draft, placeholder: placeholder, fill) {
-            on submit: send(to, draft, replying)
-                .then(set(draft, RichText("")))
-                .then(set(replying, .none))
-        }
-        ui.Button("Send", icon: .send, icon_only: true) {
-            on press: send(to, draft, replying)
-                .then(set(draft, RichText("")))
-                .then(set(replying, .none))
-        }
-    }
+    std.composer(draft, placeholder, send(to, draft, replying).then(set(replying, .none)))
 }
 
 /// Who is typing here, from the system's presence: the lenses on `of` whose person is

@@ -8,6 +8,7 @@
 
 mod abi_additions;
 mod agent;
+mod attached;
 mod blocks;
 mod common;
 mod components;

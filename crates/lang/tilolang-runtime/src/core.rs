@@ -342,7 +342,7 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt,
+            Abort, ActMadeFrom, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt,
             BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
             CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse,
             DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
@@ -416,7 +416,7 @@ impl Core {
             | WebText | BytesLength => self.web_import(imp, a),
             UiNode | UiPropH | UiPropI | UiPropF | UiPropPic | UiChild | UiBind | UiOn
             | UiAnchor | SpaceI | SpaceF | UiBindState | StateGet | StateAt | ArgAt | ActSet
-            | ActThen | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
+            | ActThen | ActMadeFrom | ActOpen | ActUndo | ChangeView | UiActions | UiAction => {
                 self.ui_import(imp, a)
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links

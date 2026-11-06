@@ -114,6 +114,22 @@ scenario "a note made from another" -> Note {
     }
 }
 
+/// Writes a note under the one the page shows.
+action write_under(n: Note, title: Text = "under") -> Note (label: "Write") {
+    let b = root Board
+    b.notes.insert(Note(title: title, body: RichText("")))
+}
+
+/// A note's page: what is written under it is written from it, so the button that writes says
+/// `.made_from(n)` and the change it makes records the note as what it was made from.
+view note_page(n: Note) {
+    lens draft: Text
+    stack {
+        input(bind: draft, placeholder: "Write")
+        button(write_under(n).made_from(n))
+    }
+}
+
 /// What links to a note: how it is linked, and the linked resource's title.
 view links(n: Note) {
     stack {

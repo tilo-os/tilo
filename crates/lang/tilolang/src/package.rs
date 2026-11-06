@@ -567,6 +567,7 @@ fn build_meta(
                         search: info.search.clone(),
                         holder: true,
                         origin: None,
+                        attached: false,
                     });
                 } else if let Some((_, ty)) = env.aliases.iter().find(|(k, _)| *k == key) {
                     meta.aliases.push(crate::meta::AliasMeta {
@@ -645,6 +646,7 @@ fn build_meta(
                     search: info.search.clone(),
                     holder: false,
                     origin: info.origin.clone(),
+                    attached: info.attached,
                 });
             }
             Item::Action(a) => {

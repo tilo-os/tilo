@@ -9,6 +9,10 @@ use tilolang_tilo::task::TaskSession;
 
 use crate::task_door::Apps;
 
+const DISCUSSION: (&str, &str) = (
+    include_str!("../../../../apps/tl/discussion/app.tl"),
+    include_str!("../../../../apps/tl/discussion/app.ids"),
+);
 const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
     include_str!("../../../../apps/tl/notes/app.ids"),
@@ -33,7 +37,7 @@ fn agent() -> tilolang_tilo::runtime::Principal {
 /// Notes and Todo, each in a host of its own, and a task of them; the policy refuses the
 /// actions `refused`.
 fn task(refused: Vec<&'static str>) -> Task {
-    let mut apps = Apps::new(&[&[NOTES], &[TODO]]);
+    let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
     apps.refused = refused;
     let door = Rc::new(apps);
     Task {
@@ -203,7 +207,7 @@ fn a_refused_invocation_is_never_done() {
 
 #[test]
 fn what_cannot_be_read_is_an_error_never_nothing() {
-    let mut apps = Apps::new(&[&[NOTES], &[TODO]]);
+    let mut apps = Apps::new(&[&[DISCUSSION, NOTES], &[DISCUSSION, TODO]]);
     apps.unreachable = vec![(TODO_APP, "todo is not open")];
     let door = Rc::new(apps);
     let session = door.task();
@@ -284,7 +288,7 @@ const CHAT: (&str, &str) = (
 /// text.
 #[test]
 fn each_argument_is_sent_as_its_published_parameter_takes_it() {
-    let door = Rc::new(Apps::new(&[&[CHAT], &[TODO]]));
+    let door = Rc::new(Apps::new(&[&[CHAT], &[DISCUSSION, TODO]]));
     let task = Task {
         session: door.task(),
         door,
