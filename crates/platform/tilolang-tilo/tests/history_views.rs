@@ -682,11 +682,6 @@ fn a_change_that_wrote_two_fields_reads_as_one_sentence() {
         "new_task",
         vec![
             tasks,
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
-            Value::none(),
             Value::text("Call the landlord"),
             Value::some(Value::text("2026-06-30T09:00:00Z")),
         ],
