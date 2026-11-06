@@ -414,7 +414,7 @@ impl Inner {
             before.insert(doc, (app.to_owned(), ty));
         }
         let since = mirror.committed_document().get_changes(&held.heads);
-        let ends = idx::reflect::ends_of(&since);
+        let ends = idx::reflect::ends_of(&since, &mirror, &self.index);
         let changed = changed_by(&since, &mirror, &before);
         for doc in &changed.nested {
             self.nested.forget(doc);

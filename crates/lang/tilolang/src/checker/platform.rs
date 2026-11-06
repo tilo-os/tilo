@@ -4,7 +4,7 @@
 
 use super::{CKind, Checker, Ctx, Ex};
 use crate::abi::Imp;
-use crate::ast;
+use crate::ast::{self, ExprKind};
 use crate::diag::Span;
 use crate::ir::{Ek, Stmt};
 use crate::types::{Ty, TypeKey};
@@ -128,6 +128,87 @@ impl Checker<'_> {
                 )
             }
         }
+    }
+
+    /// `changed(r, .field)`: the version that last changed the field `field` of `r` (who made
+    /// it, when, by which action), the one that made `r` when none after it changed that
+    /// field. A store with an index keeps the last change of each field, so a list groups or
+    /// sorts by when a field last changed without reading the history of any row; `.none`
+    /// while the log of `r` is not at hand.
+    pub(super) fn builtin_changed(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let [r, f] = args else {
+            self.err(
+                "E022",
+                span,
+                "`changed` takes a resource and one of its fields: `changed(r, .field)`",
+            );
+            return Ex::error();
+        };
+        if r.name.is_some() || f.name.is_some() {
+            self.err(
+                "E022",
+                span,
+                "`changed` takes its arguments by position: `changed(r, .field)`",
+            );
+        }
+        let r = self.expr(&r.value, None);
+        let field = match &f.value.kind {
+            ExprKind::Variant { name, args: None } => name.clone(),
+            _ => {
+                self.err(
+                    "E022",
+                    f.value.span,
+                    "`changed` reads a field, written `.field`: `changed(r, .done)`",
+                );
+                return Ex::error();
+            }
+        };
+        if r.ty.is_error() {
+            return Ex::error();
+        }
+        let Ty::Record(key) = &r.ty else {
+            let t = self.show(&r.ty);
+            self.err(
+                "E020",
+                f.value.span,
+                format!("`changed` takes a resource, a value of a record type; this is {t}"),
+            );
+            return Ex::error();
+        };
+        let env = self.env;
+        let Some(info) = env.type_info(key) else {
+            return Ex::error();
+        };
+        let Some(held) = info.field(&field.name) else {
+            self.err(
+                "E021",
+                field.span,
+                format!(
+                    "`{}` has no field `{}`; fields are: {}",
+                    key.name,
+                    field.name,
+                    info.field_names()
+                ),
+            );
+            return Ex::error();
+        };
+        if held.derived.is_some() {
+            self.err(
+                "E020",
+                field.span,
+                format!(
+                    "`changed` reads a stored field; `{}` is computed from others, which carry their own versions",
+                    field.name
+                ),
+            );
+            return Ex::error();
+        }
+        let id = held.id.clone();
+        Ex::host(
+            Imp::FieldChanged,
+            vec![r, Ex::str(&id)],
+            Ty::Option(Box::new(host_ty("Version"))),
+        )
     }
 
     /// `linked(r)`: the resources linked to `r`, each a `host.Link` of the resource and how it

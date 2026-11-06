@@ -159,6 +159,7 @@ impl Checker<'_> {
             "created" | "updated" | "history" => {
                 return self.builtin_versions(name, args, span);
             }
+            "changed" => return self.builtin_changed(args, span),
             "unseen" => return self.builtin_unseen(args, span),
             "others" => return self.builtin_others(args, span),
             "linked" => return self.builtin_links(args, span),

@@ -14,8 +14,8 @@ native UI come from the system.
   platform's and never shows in the language.
 - **History, versions and authorship belong to every resource and every action alike.** Who
   changed what, when, through which action and made from what is read from the log
-  (`history(r)`, `created(r)`, `updated(r)`, when a field last changed), never declared or
-  stored by a type.
+  (`history(r)`, `created(r)`, `updated(r)`, and `changed(r, .field)`: the version that last
+  changed one of its fields), never declared or stored by a type.
 - **Packages** declare types, actions, views and functions. Packages are untrusted: a type's
   resources change only through its own package's actions; other packages read what they are
   allowed to and call those actions. A library is a package like any other; `std` is one, and so

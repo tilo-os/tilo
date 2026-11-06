@@ -1,12 +1,15 @@
-//! Reflection, indexed: who made each resource and when, and who changed it last and when
-//! (`created(r)`, `updated(r)`; language-changes.md, "Reflection"), kept per resource beside its
-//! fields and derived change by change from the workspace record's log.
+//! Reflection, indexed: who made each resource and when, who changed it last and when, and
+//! when each of its fields last changed (`created(r)`, `updated(r)`, `changed(r, .field)`;
+//! language-changes.md, "Reflection"), kept per resource beside its fields and derived change
+//! by change from the workspace record's log.
 //!
 //! The record holds what each resource is now; the log holds who made each change, when, and
-//! which resources it changed ([`DynAction::changed`]). The index keeps, per resource, the
-//! first and the last of those versions under the pseudo-fields [`CREATED`] and [`UPDATED`],
-//! and per collection a column of each, ordered by the time: so a list sorts or filters by
-//! them by reading one page, never the log or every item.
+//! which resources it changed, and which fields of each ([`DynAction::made`]). The index
+//! keeps, per resource, the first and the last of those versions under the pseudo-fields
+//! [`CREATED`] and [`UPDATED`], the last change of each field under [`changed_field`], and per
+//! collection a column of the ends, ordered by the time: so a list sorts or filters by when a
+//! resource or one of its fields was last changed by reading one page, never the log or every
+//! item.
 //!
 //! Which version is first and last does not depend on the order a replica received the
 //! changes in: versions compare by their recorded time, then by the change's place in the
@@ -18,12 +21,16 @@
 //! record again; its versions are not in the record) and when it is removed: an undone removal
 //! brings back the resource it was, made when it was made.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
+use automerge::ReadDoc as _;
 use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
 use tilolang_runtime::store::{FieldValue, Reflected, Scalar, TaskRun, Version, VersionKind};
+
+use tilo_resource::Doc;
+use tilolang_runtime::ids::{AppId, DocId, TypeId};
 
 use crate::action::{ACTION_TYPE, DynAction, DynEdit};
 use crate::schema::{FieldSchema, MergeKind};
@@ -32,6 +39,21 @@ use crate::schema::{FieldSchema, MergeKind};
 pub const CREATED: &str = Reflected::CREATED;
 /// The pseudo-field holding the last version of a resource.
 pub const UPDATED: &str = Reflected::UPDATED;
+/// What every pseudo-field holding when a field of a resource last changed begins with; the
+/// field's id follows, so `$changed.done` holds when `done` was last written.
+pub const CHANGED: &str = tilolang_runtime::store::CHANGED;
+
+/// The pseudo-field holding the last version that changed the field `field` of a resource.
+#[must_use]
+pub fn changed_field(field: &str) -> String {
+    tilolang_runtime::store::changed_field(field)
+}
+
+/// The field whose last change the pseudo-field `id` holds, when it holds one.
+#[must_use]
+pub fn field_of_changed(id: &str) -> Option<&str> {
+    tilolang_runtime::store::field_of_changed(id)
+}
 
 static FIELDS: LazyLock<[FieldSchema; 2]> = LazyLock::new(|| {
     [
@@ -43,10 +65,11 @@ static FIELDS: LazyLock<[FieldSchema; 2]> = LazyLock::new(|| {
 /// Whether `field` names one of the versions the index keeps of every resource.
 #[must_use]
 pub fn is_reflected(field: &str) -> bool {
-    field == CREATED || field == UPDATED
+    Reflected::of(field).is_some()
 }
 
-/// The schema of the pseudo-field `id`, when it is one of the versions.
+/// The schema of the pseudo-field `id`, when it is one of the ends the index keeps of every
+/// resource.
 #[must_use]
 pub fn field(id: &str) -> Option<&'static FieldSchema> {
     FIELDS.iter().find(|f| f.id == id)
@@ -54,7 +77,7 @@ pub fn field(id: &str) -> Option<&'static FieldSchema> {
 
 /// One version of a resource as the index keeps it: the runtime's [`Version`] and the change
 /// that made it, which orders two versions recorded at the same time.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
     pub version: Version,
     /// The change's hash, as hex.
@@ -157,8 +180,8 @@ impl Stamp {
 }
 
 /// The action a step on the record that is no package's action is a version by (an undo, a
-/// revert from History).
-pub const STEP_ACTION: &str = "$history";
+/// revert from History; [`tilolang_runtime::store::STEP_ACTION`]).
+pub const STEP_ACTION: &str = tilolang_runtime::store::STEP_ACTION;
 
 /// The task run a change's context names: its group, when it is a task's.
 pub fn task_of(context: &tilo_actions::ActionContext) -> Option<TaskRun> {
@@ -286,31 +309,250 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
     Some((stamp, action, task))
 }
 
-/// The first and last versions `changes` made of each resource they changed.
-#[must_use]
-pub fn ends_of<'c>(
-    changes: impl IntoIterator<Item = &'c automerge::Change>,
-) -> BTreeMap<String, (Stamp, Stamp)> {
-    let mut out: BTreeMap<String, (Stamp, Stamp)> = BTreeMap::new();
-    for change in changes {
-        let Some((stamp, resources)) = stamp_of(change) else {
-            continue;
-        };
-        for resource in resources {
-            match out.get_mut(&resource) {
-                Some((first, last)) => {
-                    if stamp.before(first) {
-                        *first = stamp.clone();
-                    }
-                    if last.before(&stamp) {
-                        *last = stamp.clone();
-                    }
-                }
+/// The versions a resource's log holds that a view reads of it without reading the log: the
+/// first and the last of them, and the last that changed each of its fields.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Ends {
+    /// The version that made it.
+    pub first: Stamp,
+    /// The version that last changed it.
+    pub last: Stamp,
+    /// The last version that changed each of its fields, by the field's id: a change of the
+    /// record, never a step that takes one back (an undo), which leaves the field's last
+    /// change the one still in effect. A field no version here names was last changed by the
+    /// one that made the resource, which set it.
+    pub fields: BTreeMap<String, Stamp>,
+    /// Whether these are the resource's whole log read anew because a step took a change to it
+    /// back: the index takes them as they are, even where they stand before what it holds.
+    pub restored: bool,
+}
+
+impl Ends {
+    /// Take in the version `stamp` made of the resource, changing `fields`: the first stays
+    /// unless `stamp` came before it, the last is replaced by a later one, and each field's
+    /// last change is the later of the two.
+    fn take(&mut self, stamp: &Stamp, fields: &[String]) {
+        if stamp.before(&self.first) {
+            self.first = stamp.clone();
+        }
+        if self.last.before(stamp) {
+            self.last = stamp.clone();
+        }
+        for field in fields {
+            match self.fields.get_mut(field) {
+                Some(held) if held.before(stamp) => *held = stamp.clone(),
+                Some(_) => {}
                 None => {
-                    out.insert(resource, (stamp.clone(), stamp.clone()));
+                    self.fields.insert(field.clone(), stamp.clone());
+                }
+            }
+        }
+    }
+}
+
+/// The versions `changes` made of each resource they changed, with the last change of each of
+/// its fields: a package action's (a field's last change), or a step on the record that is no
+/// package's action (an undo, a revert) and changed no field, as it takes a change back
+/// rather than making one. A change the record marks undone made no version.
+fn versions_of_changes<'c>(
+    changes: impl IntoIterator<Item = &'c automerge::Change>,
+    mirror: &Doc,
+    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+    undone: &BTreeSet<String>,
+) -> BTreeMap<String, Ends> {
+    let mut out: BTreeMap<String, Ends> = BTreeMap::new();
+    for change in changes {
+        if undone.contains(&change.hash().to_string()) {
+            continue;
+        }
+        let (stamp, wrote) = if let Some((stamp, _)) = stamp_of(change) {
+            (
+                stamp,
+                versions_of(change)
+                    .into_iter()
+                    .map(|version| (version.resource, version.fields))
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            let Some(stamp) = step_stamp(change) else {
+                continue;
+            };
+            let written = stepped(change, mirror, resources)
+                .into_iter()
+                .map(|version| (version.resource, Vec::new()))
+                .collect();
+            (stamp, written)
+        };
+        for (resource, fields) in wrote {
+            match out.get_mut(&resource) {
+                Some(end) => end.take(&stamp, &fields),
+                None => {
+                    out.insert(
+                        resource,
+                        Ends {
+                            first: stamp.clone(),
+                            last: stamp.clone(),
+                            fields: fields
+                                .iter()
+                                .map(|field| (field.clone(), stamp.clone()))
+                                .collect(),
+                            restored: false,
+                        },
+                    );
                 }
             }
         }
     }
     out
+}
+
+/// The changes the record marks undone (an undo, until a redo brings it back), by hash.
+fn undone_changes(mirror: &Doc) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let committed = mirror.committed_document();
+    for key in committed.keys(automerge::ROOT) {
+        let Some(hash) = key.strip_prefix(tilo_actions::UNDONE_KEY) else {
+            continue;
+        };
+        let on = match committed.get(automerge::ROOT, &key) {
+            Ok(Some((automerge::Value::Scalar(scalar), _))) => match scalar.as_ref() {
+                automerge::ScalarValue::Boolean(on) => *on,
+                automerge::ScalarValue::Int(n) => *n != 0,
+                automerge::ScalarValue::Uint(n) => *n != 0,
+                _ => false,
+            },
+            _ => false,
+        };
+        if on {
+            out.insert(hash.to_owned());
+        }
+    }
+    out
+}
+
+/// The first and last versions `changes` made of each resource they changed, and the last
+/// change of each of its fields: a package action's, or a step on the record that is no
+/// package's action (an undo, a revert, which `mirror` holds what it wrote).
+///
+/// A change taken back by a step (an undo) no longer names a field's last change: the
+/// resource it changed reads its versions from the whole log again, marked [`Ends::restored`].
+#[must_use]
+pub fn ends_of<'c>(
+    changes: impl IntoIterator<Item = &'c automerge::Change>,
+    mirror: &Doc,
+    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> BTreeMap<String, Ends> {
+    let batch: Vec<&automerge::Change> = changes.into_iter().collect();
+    let steps: Vec<&automerge::Change> = batch
+        .iter()
+        .copied()
+        .filter(|change| step_stamp(change).is_some())
+        .collect();
+    let mut out = versions_of_changes(batch.iter().copied(), mirror, resources, &BTreeSet::new());
+    if steps.is_empty() {
+        return out;
+    }
+    let undone = undone_changes(mirror);
+    // The resources the steps wrote, and those of the changes they took back: a step that
+    // undoes a removal writes nothing of the resource that comes back.
+    let mut touched: BTreeSet<String> = BTreeSet::new();
+    for step in &steps {
+        touched.extend(
+            stepped(step, mirror, resources)
+                .into_iter()
+                .map(|version| version.resource),
+        );
+    }
+    for hash in &undone {
+        let Ok(hash) = hash.parse::<automerge::ChangeHash>() else {
+            continue;
+        };
+        let Some(change) = mirror.committed_document().get_change_by_hash(&hash) else {
+            continue;
+        };
+        match stamp_of(&change) {
+            Some((_, wrote)) => touched.extend(wrote),
+            None => touched.extend(
+                stepped(&change, mirror, resources)
+                    .into_iter()
+                    .map(|version| version.resource),
+            ),
+        }
+    }
+    let whole = versions_of_changes(
+        &mirror.committed_document().get_changes(&[]),
+        mirror,
+        resources,
+        &undone,
+    );
+    for resource in touched {
+        if let Some(end) = whole.get(&resource) {
+            let mut end = end.clone();
+            end.restored = true;
+            out.insert(resource, end);
+        }
+    }
+    out
+}
+
+/// The version a step on the record that is no package's action was made by (an undo, a
+/// revert from History; [`STEP_ACTION`]), when `change` is one: who took it, when, and which
+/// step. `None` for a package action's change, and for one that is nobody's step (an outside
+/// effect settling).
+#[must_use]
+pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
+    let context = change
+        .message()
+        .and_then(tilo_actions::ActionContext::from_change_message)?;
+    if context
+        .action
+        .as_ref()
+        .is_some_and(|action| action.type_id == ACTION_TYPE)
+    {
+        return None;
+    }
+    let invoker = context.invoker.as_ref()?;
+    let hash = change.hash().to_string();
+    Some(Stamp {
+        version: Version {
+            who: invoker.actor.clone(),
+            at: tilolang::calendar::time_text(change.timestamp()),
+            action: STEP_ACTION.to_owned(),
+            task: task_of(&context),
+            change: hash.clone(),
+            ..Version::default()
+        },
+        change: hash,
+        op: change.start_op().get(),
+    })
+}
+
+/// The versions a step on the record that is no action of a package made (an undo, a revert):
+/// one per resource it wrote, by whoever took it, naming the fields it wrote.
+#[must_use]
+pub fn stepped(
+    change: &automerge::Change,
+    mirror: &Doc,
+    resources: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> Vec<Version> {
+    let Some(stamp) = step_stamp(change) else {
+        return Vec::new();
+    };
+    let changed = crate::reads::changed_by(std::slice::from_ref(change), mirror, resources);
+    let mut by_resource: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for key in changed.docs.into_values().flatten() {
+        let fields = by_resource.entry(key.resource).or_default();
+        if key.field != tilolang_runtime::store::ANY_FIELD && !fields.contains(&key.field) {
+            fields.push(key.field);
+        }
+    }
+    by_resource
+        .into_iter()
+        .map(|(resource, fields)| Version {
+            kind: VersionKind::Changed,
+            fields,
+            resource,
+            ..stamp.version.clone()
+        })
+        .collect()
 }

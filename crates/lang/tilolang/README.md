@@ -274,7 +274,10 @@ before which of its siblings: `(moved, parent, before) -> move_to(tasks, moved, 
 **Reflection.** The log records who made every change, when and by which action, so code reads
 it rather than storing its own timestamps: `created(r)` and `updated(r)` are an
 `Option<host.Version>` (`.who`, `.at`, `.what`, the action's label), `history(r)` all of them,
-oldest first. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
+oldest first, and `changed(r, .field)` the one that last changed that field, or the one that
+made `r` when none after it did. A store with an index keeps the last change of each field, so
+a list groups or sorts by it at the cost of one value a row, never of a row's history:
+`group: t -> changed(t, .done)?.at.day()`. `v.is(edit)` asks whether the action `edit` made it, by the action itself, never
 its label: `history(m).any(v -> v.is(edit))`. An offered `host.Action` answers the same:
 `actions(m).any(a -> a.is(edit))`. A version also says which task run made it (`.task`, a
 `host.TaskRun`), what it did (`.kind`: `created`, `changed` or `removed`; a removed resource

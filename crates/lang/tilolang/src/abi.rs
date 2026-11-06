@@ -237,6 +237,7 @@ imports! {
     Versions = "versions" ([H] -> [H]);
     Links = "links" ([H] -> [H]);
     VersionEnd = "version_end" ([H, I32] -> [H]);
+    FieldChanged = "field_changed" ([H, H] -> [H]);
     RunChanges = "run_changes" ([H] -> [H]);
     Unseen = "unseen" ([H] -> [H]);
     Others = "others" ([H, H] -> [H]);

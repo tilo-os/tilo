@@ -529,15 +529,34 @@ impl LinkHow {
 /// them is told of, and what a store with an index keeps to answer them from.
 pub const LINKS: &str = "$links";
 
+/// What the pseudo-field holding when a field of a resource last changed begins with; the
+/// field's id follows, so `$changed.done` holds the version that last changed `done`
+/// ([`Store::field_changed`]).
+pub const CHANGED: &str = "$changed.";
+
+/// The pseudo-field holding when the field `field` of a resource last changed.
+#[must_use]
+pub fn changed_field(field: &str) -> String {
+    format!("{CHANGED}{field}")
+}
+
+/// The action a change is a version by when it is a step on the record rather than a package
+/// action's: an undo, or a revert from History. A step takes changes back instead of making
+/// one, so it names no field's last change.
+pub const STEP_ACTION: &str = "$history";
+
 /// The version of a resource an order or a key reads, beside its fields: its first
-/// (`created(r)`) or its last (`updated(r)`), ordered by their time. Named in an [`Order`] by
-/// the pseudo-field ids `$created` and `$updated`, which no declared field has.
+/// (`created(r)`), its last (`updated(r)`), or the one that last changed one of its fields
+/// (`changed(r, .field)`), ordered by their time. Named in an [`Order`] by the pseudo-field
+/// ids `$created`, `$updated` and `$changed.<field>`, which no declared field has.
 ///
 /// [`Order`]: crate::query::Order
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reflected {
     Created,
     Updated,
+    /// The last change of the field it names.
+    Changed(String),
 }
 
 impl Reflected {
@@ -550,18 +569,15 @@ impl Reflected {
         match field {
             Self::CREATED => Some(Self::Created),
             Self::UPDATED => Some(Self::Updated),
-            _ => None,
+            _ => field_of_changed(field).map(|field| Self::Changed(field.to_owned())),
         }
     }
+}
 
-    /// The pseudo-field naming it.
-    #[must_use]
-    pub const fn field(self) -> &'static str {
-        match self {
-            Self::Created => Self::CREATED,
-            Self::Updated => Self::UPDATED,
-        }
-    }
+/// The field whose last change the pseudo-field `id` names, when it names one.
+#[must_use]
+pub fn field_of_changed(id: &str) -> Option<&str> {
+    id.strip_prefix(CHANGED).filter(|field| !field.is_empty())
 }
 
 /// The versions of `at` among a document's change notes, oldest first: the changes whose
@@ -607,6 +623,21 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
             }
         })
         .collect()
+}
+
+/// The last version of `versions` (oldest first) that changed the field `field`
+/// ([`Store::field_changed`]): the one that made the resource when none after it names the
+/// field, since making it set them. `None` for a resource the log holds no version of.
+#[must_use]
+pub fn last_change_of(versions: Vec<Version>, field: &str) -> Option<Version> {
+    let made = versions.first().cloned();
+    versions
+        .into_iter()
+        .rev()
+        .find(|version| {
+            version.action != STEP_ACTION && version.fields.iter().any(|held| held == field)
+        })
+        .or(made)
 }
 
 /// Who made the changes `newest_first` of `at`, each once, at most `limit` of them
@@ -1223,6 +1254,9 @@ pub trait Store {
             let mut keys = Vec::with_capacity(levels.len());
             for level in &levels {
                 let value = match Reflected::of(&level.field) {
+                    Some(Reflected::Changed(changed)) => self
+                        .field_changed(&target, &changed)?
+                        .map_or(Lit::Absent, |version| Lit::Time(version.at)),
                     Some(end) => self
                         .version_end(&target, end == Reflected::Updated)?
                         .map_or(Lit::Absent, |v| Lit::Time(v.at)),
@@ -1314,6 +1348,19 @@ pub trait Store {
         } else {
             versions.into_iter().next()
         })
+    }
+
+    /// The last version of the resource `at` that changed the field `field` (`changed(r,
+    /// .field)`), or the version that made it when none after it changed that field; `None`
+    /// while the log of `at` is not at hand, and for a store whose versions name no fields.
+    /// A store with an index keeps it per field, so a list groups or sorts by when a field
+    /// last changed without reading the history of any row.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions`].
+    fn field_changed(&self, at: &ResourceRef, field: &str) -> Result<Option<Version>, StoreError> {
+        Ok(last_change_of(self.versions(at)?, field))
     }
 
     /// Every resource of the document `doc` (it and its items) with its versions, oldest

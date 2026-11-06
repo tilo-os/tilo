@@ -350,7 +350,12 @@ impl Core {
                 self.note_state_read(key, generation, &value);
                 self.ret_h(value)
             }
-            Imp::Versions | Imp::VersionEnd | Imp::RunChanges | Imp::Unseen | Imp::Steps => {
+            Imp::Versions
+            | Imp::VersionEnd
+            | Imp::FieldChanged
+            | Imp::RunChanges
+            | Imp::Unseen
+            | Imp::Steps => {
                 let value = self.versions_import(imp, a)?;
                 self.ret_h(value)
             }
@@ -953,7 +958,7 @@ impl Core {
         // runs, and its reading carries none of it: nothing of it is held here.
         if crate::foreign::is_foreign(at) {
             return Ok(match imp {
-                Imp::VersionEnd => Value::none(),
+                Imp::VersionEnd | Imp::FieldChanged => Value::none(),
                 _ => Value::List(Vec::new()),
             });
         }
@@ -963,6 +968,19 @@ impl Core {
                 let end = self.store.borrow().version_end(at, last).map_err(trapped)?;
                 self.read_versions_of(at);
                 match end {
+                    Some(v) => Value::some(self.version_value(v, at)?),
+                    None => Value::none(),
+                }
+            }
+            Imp::FieldChanged => {
+                let field = self.text(a.h(1)?)?;
+                let changed = self
+                    .store
+                    .borrow()
+                    .field_changed(at, &field)
+                    .map_err(trapped)?;
+                self.read_field_of(at, &field);
+                match changed {
                     Some(v) => Value::some(self.version_value(v, at)?),
                     None => Value::none(),
                 }
@@ -1535,6 +1553,20 @@ impl Core {
             for field in fields {
                 vs.reads.push((id.clone(), field));
             }
+        }
+    }
+
+    /// Record in a view's frame that it read when the field `field` of `target` last changed: it
+    /// runs again when that field changes, and when a change that set it at creation is taken
+    /// back.
+    pub(crate) fn read_field_of(&self, target: &crate::value::ResourceRef, field: &str) {
+        if let Some(vs) = self.frames.borrow_mut().view_mut() {
+            vs.reads
+                .push((target.id_string(), crate::store::changed_field(field)));
+            vs.reads.push((
+                target.id_string(),
+                crate::store::Reflected::CREATED.to_owned(),
+            ));
         }
     }
 

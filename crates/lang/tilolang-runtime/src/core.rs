@@ -342,24 +342,24 @@ impl Core {
 impl Core {
     fn dispatch(&self, imp: Imp, mem: &[u8], a: &Args<'_>) -> HResult<Option<Wasm>> {
         use Imp::{
-            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt, BytesLength, CallFn,
-            ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong, CollMoveTo, CollOrdered,
-            CollRemove, CollWhere, CollWhereWith, CountBy, DayParse, DayPart, DayShift,
-            DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef, DurationText, EditField,
-            EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew, EnumSetF, EnumSetH,
-            EnumSetI, EventPart, EventValue, FilterLit, Filters, Find, FirstUnseen, FloatAbs,
-            FloatCeil, FloatCeilTo, FloatClamp, FloatFloor, FloatFloorTo, FloatMax, FloatMin,
-            FloatRound, FloatRoundTo, FloatToStr, ForeignRef, FromPop, FromPush, Grep, GroupBy,
-            IdentPart, IntAbs, IntClamp, IntMax, IntMin, IntToStr, Invoke, Invoker, InvokerPop,
-            InvokerPush, IsError, IsSome, Keep, Lenses, Links, ListAvg, ListEnd, ListGetF,
-            ListGetH, ListGetI, ListIndexOf, ListLen, ListNew, ListPrevious, ListPushF, ListPushH,
-            ListPushI, ListReverse, ListSortByKey, ListSumF, ListSumI, MapGetH, MapKeys, MapPut,
-            MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt, Phrase, PrincipalEq,
-            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows,
-            ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
-            RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
-            RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
+            Abort, ActOpen, ActRef, ActSet, ActThen, ActUndo, Actions, AgentNamed, ArgAt,
+            BytesLength, CallFn, ChangeView, CollCount, CollInsert, CollMove, CollMoveAmong,
+            CollMoveTo, CollOrdered, CollRemove, CollWhere, CollWhereWith, CountBy, DayParse,
+            DayPart, DayShift, DayStartOfWeek, DayWeekday, Delivery, Describe, DescribeRef,
+            DurationText, EditField, EntryParts, EnumGetF, EnumGetH, EnumGetI, EnumIs, EnumNew,
+            EnumSetF, EnumSetH, EnumSetI, EventPart, EventValue, FieldChanged, FilterLit, Filters,
+            Find, FirstUnseen, FloatAbs, FloatCeil, FloatCeilTo, FloatClamp, FloatFloor,
+            FloatFloorTo, FloatMax, FloatMin, FloatRound, FloatRoundTo, FloatToStr, ForeignRef,
+            FromPop, FromPush, Grep, GroupBy, IdentPart, IntAbs, IntClamp, IntMax, IntMin,
+            IntToStr, Invoke, Invoker, InvokerPop, InvokerPush, IsError, IsSome, Keep, Lenses,
+            Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf, ListLen, ListNew,
+            ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse, ListSortByKey, ListSumF,
+            ListSumI, MapGetH, MapKeys, MapPut, MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me,
+            Members, Mentions, MetaOf, ModelCall, NoneV, Now, OfType, Others, Outside, OutsideAt,
+            Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole,
+            Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
+            RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
+            RefId, RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
             ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
             ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SeedState, SetAdd,
             SetRemove, Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet,
@@ -369,8 +369,8 @@ impl Core {
             Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
             TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
             UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
-            VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+            VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
+            WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | IntToStr | StrToInt | FloatToStr | StrCmp
@@ -421,7 +421,7 @@ impl Core {
             }
             EventValue | EventPart | Actions | Lenses | Delivery | MetaOf | Versions | Links
             | RunChanges | Unseen | FirstUnseen | Mentions | Others | Steps | VersionEnd
-            | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
+            | FieldChanged | Phrase | Word | EntryParts | Viewer => self.platform_import(imp, a),
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }

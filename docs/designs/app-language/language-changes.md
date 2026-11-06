@@ -11,11 +11,14 @@ added only where a pattern is common, awkward otherwise, and no existing mechani
    the whole value. `enum` is only for plain named cases without data (`enum NoteOrder { created,
    title }`).
 2. **Reflection.** The log already records every change with its author, time and action, so
-   views and code can read it: `created(r)` and `updated(r)` (when, and by whom) and
-   `history(r)` (versions, each with who, when and which action). Apps stop storing their own
+   views and code can read it: `created(r)` and `updated(r)` (when, and by whom), `changed(r,
+   .field)` (the version that last changed one of its fields) and `history(r)` (versions, each
+   with who, when and which action). Apps stop storing their own
    timestamps; Chat's `at: Time = Time("1970-01-01T00:00:00Z")` placeholder goes, and detail
    views show "edited when, by whom" from it. Lists sort by them like by a field
-   (`sort_by(c -> updated(c), desc)`), answered by the index. Code can't rewrite the log, but undo, redo, restoring a version and reverting someone's
+   (`sort_by(c -> updated(c), desc)`), answered by the index; so does `changed` for a field
+   (`group: t -> changed(t, .done)?.at.day()`). Code can't rewrite the log, but undo, redo,
+   restoring a version and reverting someone's
    changes are ordinary actions on it: attributed, permission-checked and themselves undoable.
 3. **Scenarios set recorded inputs.** `as mia at 2026-06-29T07:02Z { post(...) }` runs the
    block with that time as `now`. Seed data stops overwriting fields after the fact.

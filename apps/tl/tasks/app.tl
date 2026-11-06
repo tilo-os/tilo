@@ -32,8 +32,6 @@ enum RowPlace {
 type Task {
     title: Text (title)
     done: Bool (done) = false
-    /// When it was last checked off: Done stands it under the day it was finished on.
-    done_at: Option<Time> = .none
     /// The day it is due by, if any.
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
@@ -169,27 +167,21 @@ action new_project(tasks: Tasks) -> Project (icon: .folder_plus, label: "New pro
 }
 
 /// Checks a task off with every task under it, or opens it again with the tasks it is under.
-action check(t: Task, done: Bool = not t.done) uses time (
+action check(t: Task, done: Bool = not t.done) (
     label: if done { "Complete" } else { "Reopen" },
     icon: .check,
     on: t.done,
     key: "Ctrl+Enter",
 ) {
-    // The moment it was finished is part of the record, so undo restores it with the box, and
-    // the day Done groups by is read from the task, never from the log per row.
-    let at: Option<Time> = if done { .some(now) } else { .none }
     t.done = done
-    t.done_at = at
     if done {
         for x in tasks.items.descendants(t, .parent) {
             x.done = true
-            x.done_at = at
         }
     } else {
         // Everything above the one opened is open again.
         for a in tasks.items.ancestors(t, .parent) {
             a.done = false
-            a.done_at = .none
         }
     }
 }
@@ -518,16 +510,11 @@ fn own_due(t: Task, under: Option<Task>) -> Option<Date> {
     } else { t.due }
 }
 
-/// When a task was finished: the moment its box was last checked off. A task finished before
-/// the app kept that moment gives the moment of the log's last change of it, which for a task
-/// nobody has touched since is the change that finished it; `updated` is kept per task, so a
-/// list reads one value a row and never the history of a row.
+/// When a task was finished: the moment its box was last checked off, which is when the version
+/// that last changed it was made. Read from the index, one value a task, never the history of a
+/// task.
 fn finished_at(t: Task) -> Option<Time> {
-    if let at = t.done_at {
-        .some(at)
-    } else {
-        if let v = updated(t) { .some(v.at) } else { .none }
-    }
+    if let v = changed(t, .done) { if t.done { .some(v.at) } else { .none } } else { .none }
 }
 
 /// The day a task was finished on, in the person's zone: the heading Done stands it under.

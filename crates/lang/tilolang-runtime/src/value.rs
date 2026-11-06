@@ -313,10 +313,14 @@ impl CollRef {
                 .as_deref()
                 .is_some_and(|pred| pred.fields().iter().any(|read| read.spec.id == field))
             || self.order.as_ref().is_some_and(|order| {
-                // Any change of an item is its last version.
                 order.field == field
-                    || crate::store::Reflected::of(&order.field)
-                        == Some(crate::store::Reflected::Updated)
+                    || match crate::store::Reflected::of(&order.field) {
+                        // Any change of an item is its last version.
+                        Some(crate::store::Reflected::Updated) => true,
+                        // In the order of when a field last changed: a change of the field moves it.
+                        Some(crate::store::Reflected::Changed(changed)) => changed == field,
+                        Some(crate::store::Reflected::Created) | None => false,
+                    }
             })
     }
 
