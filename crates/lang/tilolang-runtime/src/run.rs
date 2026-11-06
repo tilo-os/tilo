@@ -47,6 +47,11 @@ pub enum JournalEntry {
         request: WebRequest,
         response: WebResponse,
     },
+    /// A write the run made, and the item it made, when it made one. A run that waited is run
+    /// again after the change it made before the call is already in the record: replay answers
+    /// the write from the journal and makes it no more, so it neither doubles what it wrote nor
+    /// takes back what the call it made wrote on top of it.
+    Wrote { item: Option<String> },
 }
 
 impl JournalEntry {

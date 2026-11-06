@@ -533,17 +533,19 @@ convergence.md, "Calls"; action-system.md, "One invocation path".
   action that calls actions is not atomic across its calls: nothing a call made is lost if a
   later call is refused or fails. Storage allows nothing else: the callee may be another app's,
   whose change another origin holds, so one commit cannot cover the calls.
-- **The caller is one change, committed after its calls.** Its own writes go into one
-  transaction, committed when it returns, as one change. A call therefore reads the store without
-  the caller's pending writes: a call on a resource the caller itself creates or changes in the
-  same action does not see it, and an action that needs the callee to see a write calls a second
-  action to make it (each call is final before the next goes). A run's reads are journaled, so
-  the caller's change sees what its calls did.
-- **A run is replayed, not resumed.** When a call needs a person, the caller's transaction is
-  rolled back, the run's journal is saved, and answering the person runs the code again from its
-  start with the journal answering every read and every call it already made: it takes the same
-  branches and its earlier calls are not made twice. The ids the store gives the items a run
-  inserts are journaled like reads, so the replay makes exactly the change it was making.
+- **The caller's work is a change per call.** Its own writes go into one transaction, committed
+  before the call it makes runs, and again when it returns: an action that calls actions is not
+  atomic across its calls either. The caller's writes before a call are therefore in the record
+  when the call runs, so a call on a resource the caller itself creates or changes in the same
+  action sees it, and a call's change stands on top of it. Its writes after a call are the next
+  change, so an action that writes once and calls once makes two changes and one call.
+- **A run is replayed, not resumed.** When a call needs a person, the run's journal is saved and
+  answering the person runs the code again from its start with the journal answering every read,
+  every write and every call it already made: it takes the same branches, it does not write what
+  it wrote again, and its earlier calls are not made twice. The ids the store gives the items a
+  run inserts are journaled like reads, so the replay names the same items. What the caller wrote
+  before the call is already in the record; what the replayed run writes after the call is its
+  next change.
 - **`try act(args)`** gives the `Result` of a call, and a call that failed reads as `.err` there.
   Without `try`, a failed call is an error value a program traps on, as before.
 

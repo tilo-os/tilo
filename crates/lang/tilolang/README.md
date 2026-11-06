@@ -317,6 +317,9 @@ edits and removals made at the same time merge is convergence.md, "Storage and s
 
 **Actions that call actions** invoke them by calling them, their own package's or another
 one's: each call runs at its door as a change of its own, and may wait for a person's approval.
+What the caller writes before a call is a change of its own too, committed before the call runs,
+so a call on a record the caller made in the same action sees it; what it writes after the call
+is its next change.
 `try act(args)` gives a `Result<T, Text>` (`Result<(), Text>` for an action without a result)
 instead of failing:
 

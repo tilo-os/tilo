@@ -721,11 +721,7 @@ impl Core {
     }
 
     fn apply_mut(&self, ctx: &MutCtx, m: &Mutation) -> HResult<Applied> {
-        let applied = self
-            .store
-            .borrow_mut()
-            .apply(ctx.txn, &ctx.target, m)
-            .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+        let applied = self.journaled_apply(ctx.txn, &ctx.target, m)?;
         self.touched(ctx.target.id_string());
         Ok(applied)
     }
@@ -961,10 +957,7 @@ impl Core {
                     ));
                 }
             };
-            self.store
-                .borrow_mut()
-                .apply(ctx.txn, target, &m)
-                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
+            self.journaled_apply(ctx.txn, target, &m)?;
         }
         Ok(())
     }

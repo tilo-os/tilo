@@ -70,15 +70,19 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   a value.
 - **Every call is a change of its own.** An action that calls another action, its own package's
   or another one's, calls it at its door: the callee's change is committed and attributed before
-  the caller commits, and a call that Asks suspends the caller too, whose own transaction is
-  rolled back and replayed. Storage cannot commit across apps — the callee may be another app's,
-  whose change another origin holds — so one commit cannot cover the calls. The caller's own
-  writes are one change, made after its calls: a call reads the store without them.
-- **Journaled reads.** A run journals every read of a resource and map, and a replay returns the
-  journaled values. This closes the earlier v1 deviation: a replayed run takes the branches it
-  took the first time, even though approved actions changed the resources meanwhile. The ids a
-  run gives the items it inserts are journaled the same way, so a replay makes exactly the
-  change it was making.
+  the caller commits, and a call that Asks suspends the caller too. Storage cannot commit across
+  apps — the callee may be another app's, whose change another origin holds — so one commit
+  cannot cover the calls.
+- **The caller's writes before a call are committed first.** When a run stops to make a call,
+  what it wrote until then is committed as a change of its own, so a call on a record the caller
+  made in the same action reads it, and the call's change stands on it. Its writes after the
+  call are its next change. A run that has written nothing commits nothing.
+- **Journaled reads and writes.** A run journals every read of a resource and map, every write,
+  and the ids it gives the items it inserts; a replay returns the journaled values and applies
+  no write again. This closes the earlier v1 deviation: a replayed run takes the branches it
+  took the first time, even though approved actions changed the resources meanwhile, does not
+  make what it already wrote a second time, and does not take back what its call wrote on top
+  of it.
 - **A draw is answered from the journal first.** `random.rs` holds the one primitive every
   `random.*` import counts draws of: a number in `0..upto`. It answers the invocation's next
   entry when that entry is a `Random` with the same bound, so a run that goes on after it

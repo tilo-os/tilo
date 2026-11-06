@@ -174,6 +174,88 @@ action start(b: demo.Board) -> Time uses time {
         assert_eq!(marks(&rt, &board), 1, "the step it approved ran once");
     }
 
+    /// The writer writes its note, then invokes another package's action, which asks.
+    const WRITER: &str = r#"app so.tilo.writer "Writer"
+
+use so.tilo.demo as demo
+
+type Doc {
+    text: Text
+}
+
+action begin(d: Doc, b: demo.Board) {
+    d.text = "opened"
+    demo.mark(b)
+    d.text = "done"
+}
+"#;
+
+    #[test]
+    fn a_call_waited_on_keeps_what_the_caller_wrote_and_what_the_call_wrote() {
+        let clock = HostClock::new("2026-06-30T09:00:00Z");
+        let (rt, mut store) = runtime(&clock);
+        let demo = App::compile(DEMO, &[]);
+        let writer = App::compile(WRITER, &[demo.meta().clone()]);
+        demo.load(&rt);
+        writer.load(&rt);
+        let doc = rt.create("Doc").unwrap();
+        let board = rt.create("Board").unwrap();
+        let (doc_changes, board_changes) = (
+            rt.history(&doc.doc).unwrap().len(),
+            rt.history(&board.doc).unwrap().len(),
+        );
+
+        let out = rt
+            .invoke_action(
+                &me(),
+                (
+                    writer.action("begin"),
+                    vec![Value::resource(&doc), Value::resource(&board)],
+                ),
+            )
+            .unwrap();
+        let InvokeOutcome::Suggested(first) = out else {
+            panic!("the other package's action must ask: {out:?}");
+        };
+        // What it wrote before the call is a change of its own, made before the call runs, so
+        // the call works on the record: the first word is there, the call has not run.
+        assert_eq!(text(&rt, &doc), "opened");
+        assert_eq!(marks(&rt, &board), 0, "the call waits on the person");
+        let journal = store
+            .load_journal(&first.run)
+            .unwrap()
+            .expect("a suspended run's journal");
+        assert_eq!(
+            journal.entries,
+            [JournalEntry::Wrote { item: None }],
+            "the run wrote once, and its journal says so"
+        );
+
+        let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
+        assert_eq!(out, RunOutcome::Done(Value::Unit));
+        // The call's change stands, and the caller's replay did not write the first word again
+        // or take the call back: one change each, not two of the first.
+        assert_eq!(marks(&rt, &board), 1, "the call ran once");
+        assert_eq!(text(&rt, &doc), "done");
+        assert_eq!(
+            rt.history(&board.doc).unwrap().len(),
+            board_changes + 1,
+            "the call is one change, made once"
+        );
+        assert_eq!(
+            rt.history(&doc.doc).unwrap().len(),
+            doc_changes + 2,
+            "what it wrote before the call and after it are a change each"
+        );
+    }
+
+    fn text(rt: &Runtime, note: &ResourceRef) -> String {
+        match rt.read(note, "text").unwrap() {
+            Value::Text(t) => t,
+            other => panic!("text is {other:?}"),
+        }
+    }
+
     fn marks(rt: &Runtime, board: &ResourceRef) -> i64 {
         match rt.read(board, "marks").unwrap() {
             Value::Int(n) => n,

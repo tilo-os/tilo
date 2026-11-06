@@ -33,7 +33,7 @@ use crate::ids::{ModuleHash, Principal, RunId};
 use crate::meta::{ActionMeta, EffectClass, ParamMeta, Repr, Ty, parse_ty, repr};
 use crate::registry::Package;
 use crate::run::{Journal, JournalEntry, Pending, Resolution, RunOutcome, Step, Suggestion};
-use crate::store::{ChangeNote, Mutation, Txn};
+use crate::store::{Applied, ChangeNote, Mutation, Txn};
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 
 /// Calls into other packages' `fn`s deeper than this are refused: each one is a fresh instance
@@ -992,8 +992,8 @@ impl Core {
         } else {
             pkg.hash.clone()
         };
-        // Only code that calls another action is run again, so only it journals its reads.
-        // Anything else commits one change and is never replayed.
+        // Only code that calls another action is run again, so only it journals its reads and
+        // its writes. Anything else commits one change and is never replayed.
         let journaled = program || meta.reaches.iter().any(|reached| reached.action != action);
         // A run a scenario made act at a moment reads its clock as that moment, in the person's
         // zone: `now`, `today` and the time its change is recorded at all follow it.
@@ -1021,11 +1021,7 @@ impl Core {
                 } => {
                     journal = next;
                     if let Some(change) = change {
-                        self.store.borrow_mut().commit(change.txn, &change.note)?;
-                        self.settle_blocks(&journal.invoker, change.queued)?;
-                        for (who, suggested) in change.proposed {
-                            self.propose(&who, &suggested)?;
-                        }
+                        self.commit_segment(&journal.invoker, *change)?;
                     }
                     journal.finished = true;
                     journal.pending = None;
@@ -1166,16 +1162,33 @@ impl Core {
                 change,
             }),
             Err(error) => {
-                if let Some(change) = &change {
-                    self.store.borrow_mut().rollback(change.txn);
-                }
                 if matches!(error, RuntimeError::Engine(CallError::Suspended)) {
+                    // It stopped to make a call: what it wrote until then is a change of its
+                    // own, kept while the call runs. Its journal answers those writes when it
+                    // goes on, so they are made once, and the call's change stands on them.
+                    if let Some(change) = change {
+                        self.commit_segment(&journal.invoker, *change)?;
+                    }
                     Ok(Attempted::Suspended { journal })
                 } else {
+                    if let Some(change) = &change {
+                        self.store.borrow_mut().rollback(change.txn);
+                    }
                     Ok(Attempted::Failed { journal, error })
                 }
             }
         }
+    }
+
+    /// Commit `change` as a change of `invoker`'s run, and do what it left for others: settle the
+    /// blocks it settled and record what it proposed.
+    fn commit_segment(&self, invoker: &Principal, change: Change) -> Result<(), RuntimeError> {
+        self.store.borrow_mut().commit(change.txn, &change.note)?;
+        self.settle_blocks(invoker, change.queued)?;
+        for (who, suggested) in change.proposed {
+            self.propose(&who, &suggested)?;
+        }
+        Ok(())
     }
 
     /// Run the action `step` names as a change of its own, as a step of `run`, and journal what
@@ -1394,6 +1407,48 @@ impl Core {
             });
         }
         Ok(value)
+    }
+
+    /// Apply a write the running action makes, as [`Core::journaled_read`] answers a read: a run
+    /// that is run again after it waited made this write before the call it waited on, and the
+    /// change it made is in the record. Replay answers the write from the journal and applies
+    /// nothing, so the item it made keeps what the call wrote on top of it.
+    pub(crate) fn journaled_apply(
+        &self,
+        txn: Txn,
+        at: &ResourceRef,
+        m: &Mutation,
+    ) -> HResult<Applied> {
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut().filter(|run| run.journaled) else {
+                drop(frames);
+                return self.apply_write(txn, at, m);
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let JournalEntry::Wrote { item } = entry else {
+                    return trap("the run diverged from its journal: expected a write");
+                };
+                let applied = item.clone().map_or(Applied::Done, Applied::Item);
+                run.cursor = run.cursor.saturating_add(1);
+                return Ok(applied);
+            }
+        }
+        let applied = self.apply_write(txn, at, m)?;
+        let item = match &applied {
+            Applied::Item(id) => Some(id.clone()),
+            Applied::Done => None,
+        };
+        self.journal_push(JournalEntry::Wrote { item })?;
+        Ok(applied)
+    }
+
+    /// Write `m` to `at` in `txn`, as the store takes it.
+    fn apply_write(&self, txn: Txn, at: &ResourceRef, m: &Mutation) -> HResult<Applied> {
+        self.store
+            .borrow_mut()
+            .apply(txn, at, m)
+            .map_err(|e| HostFail::Trap(e.to_string()))
     }
 
     /// Records an entry in the run's journal.
@@ -1752,19 +1807,16 @@ impl Core {
         let Some(primary) = primary else {
             return trap("an outside action needs a resource argument to queue its effect on");
         };
-        self.store
-            .borrow_mut()
-            .apply(
-                txn,
-                &primary,
-                &Mutation::OutboxPush {
-                    capability,
-                    payload,
-                    held_until,
-                    key: origin,
-                },
-            )
-            .map_err(|e| HostFail::Trap(e.to_string()))?;
+        self.journaled_apply(
+            txn,
+            &primary,
+            &Mutation::OutboxPush {
+                capability,
+                payload,
+                held_until,
+                key: origin,
+            },
+        )?;
         self.ret_h(Value::Unit)
     }
 
@@ -2394,6 +2446,8 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
             Value::Unit
         }
+        // A write is answered where it is made, and a run that waited answers it there.
+        JournalEntry::Wrote { .. } => Value::Unit,
     }
 }
 
