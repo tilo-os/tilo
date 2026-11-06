@@ -199,14 +199,13 @@ fn note_named(r: &Replica, title: &str) -> ResourceRef {
     note
 }
 
-#[test]
-fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
+/// Ada's task, with Bo's comment about it naming her: what a thread under it, and the marks it
+/// leaves, start from.
+fn ada_and_bo_after_a_comment() -> (Replica, Replica, ResourceRef, ResourceRef, String) {
     let mut ada = workspace();
     let task = page(&ada, TASKS_APP, "new_task", "Pay rent");
     ada.commit();
     let mut bo = ada.fork("bo", &[(DISCUSSION, DISCUSSION_IDS), (TASKS, TASKS_IDS)]);
-
-    // Bo asks Ada something about the task, naming her in it.
     let mut asked = RichValue::from_text("Is this the one that pays the whole quarter? ");
     asked.push_reference("Ada", &Reference::Person("ada".to_owned()));
     let asked_text = asked.written_text();
@@ -221,6 +220,12 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
     ));
     bo.commit();
     ada.sync_with(&mut bo);
+    (ada, bo, task, said, asked_text)
+}
+
+#[test]
+fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
+    let (ada, _bo, task, said, _asked) = ada_and_bo_after_a_comment();
 
     // What it was made from is a fact of the change that made it.
     assert_eq!(
@@ -261,6 +266,11 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
         Some(&Value::Int(1)),
         "{counted:#?}"
     );
+}
+
+#[test]
+fn a_thread_draws_what_was_said_and_is_read_with_what_it_is_about() {
+    let (mut ada, mut bo, task, said, asked_text) = ada_and_bo_after_a_comment();
 
     // The task's page draws the comment under it, with the line saying she has not read it.
     let page = ada.host.open_resource(&task, None).unwrap();
@@ -272,7 +282,7 @@ fn a_comment_is_made_from_the_task_it_is_about_and_changes_it() {
             .iter()
             .map(RichValue::written_text)
             .collect::<Vec<_>>(),
-        [asked_text.clone()],
+        std::slice::from_ref(&asked_text),
         "the thread draws what was said, @Ada as a reference in it, not prose"
     );
     assert!(
