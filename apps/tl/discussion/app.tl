@@ -53,7 +53,7 @@ destructive action delete(all: Comments, c: Comment) (icon: .trash, label: "Dele
 /// once. The query is `linked`'s, as `thread`'s is: what the index says links to `about` and is
 /// one of these comments.
 fn said_about(about: host.Resource) -> List<host.Resource> {
-    let said = comments.filter(c -> created(c)?.from == .some(about))
+    let said = comments.items.filter(c -> created(c)?.from == .some(about))
     linked(about).filter(l -> said.any(c -> l.of == c)).map(l -> l.of)
 }
 
