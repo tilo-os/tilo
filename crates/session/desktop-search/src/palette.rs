@@ -25,7 +25,9 @@ const MORE_PREFIX: &str = "more:";
 
 mod rows;
 
-use rows::*;
+use rows::{
+    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, stands_tall,
+};
 
 /// The row `id` names when it is a group's "more" row: an id this palette
 /// wrote, so one that does not read as a number is no row here.
@@ -632,7 +634,7 @@ impl DesktopSearch {
         let found = stream.groups();
         self.palette.set_host_facets(kind_facets(&found));
         let picked = self.palette.picked_filters().to_vec();
-        self.shown_kinds = picked.clone();
+        self.shown_kinds.clone_from(&picked);
         let groups = narrowed(self.arranged(query, found), &picked);
         let pending = stream.pending();
         // The rows about to be drawn, not the ones the palette still holds:
