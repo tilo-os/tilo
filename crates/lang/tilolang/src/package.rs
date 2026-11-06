@@ -929,6 +929,9 @@ pub fn compile_program_reading(
     let flow = format!("program-{short}");
     let host = crate::host::host_meta();
     let mut env = agent_env(&app, &host, visible);
+    // A session's code has the agent library's words in scope, as every package has `std`.
+    env.add_agent();
+    env.session = true;
     for (alias, source) in sources {
         if !env.sources.iter().any(|(_, known)| known == source) {
             env.sources.push((alias.clone(), source.clone()));

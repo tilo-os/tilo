@@ -12,9 +12,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 mod derived;
 mod effects;
 mod model;
+mod text;
 mod views;
 
 pub use model::*;
+pub use text::*;
 
 /// A view expanded where it is called ([`crate::checker`]'s templates): generic, or taking
 /// view state, functions or views of an item. It has no function of its own.
@@ -76,6 +78,9 @@ pub struct Env {
     /// The apps a program may read beyond those it holds, each by the name programs call it and
     /// its id: what `grep(re, in: chat)` and `describe(chat)` name.
     pub sources: Vec<(String, String)>,
+    /// A session's environment: the agent library's words ([`crate::agent`]) are in scope
+    /// without a `use`, as `std` is in every package. The agent door and the REPL build one.
+    pub session: bool,
 }
 
 impl Env {
@@ -148,6 +153,12 @@ impl Env {
                 ns: Some(crate::stdlib::APP.to_string()),
                 decl: decl.clone(),
             }));
+    }
+
+    /// Adds the agent library, `tilo.agent`, as the package a session has by default: its
+    /// words are host imports the checker lowers (see [`crate::agent`]).
+    pub fn add_agent(&mut self) {
+        self.add_import(crate::agent::NS, crate::agent::meta());
     }
 
     pub fn foreign_callable(&self, app: &str, name: &str) -> Option<&Callable> {
@@ -2713,102 +2724,6 @@ pub fn resolve_type_expr(env: &Env, te: &TypeExpr, diags: &mut Vec<Diagnostic>) 
     r.resolve_type(te, false)
 }
 
-/// `Date("2026-10-24")` or `Time("2026-10-21T09:30:00Z")`: the type and the ISO text, checked
-/// at compile time. `kind` is `Date` or `Time`.
-pub fn date_value(kind: &str, args: &[ast::Arg]) -> Result<(Ty, String), String> {
-    let ty = if kind == "Date" { Ty::Date } else { Ty::Time };
-    let example = if kind == "Date" {
-        "Date(\"2026-10-24\")"
-    } else {
-        "Time(\"2026-10-21T09:30:00Z\")"
-    };
-    let text = match args {
-        [ast::Arg { name: None, value }] => plain_text(value),
-        _ => None,
-    };
-    let Some(text) = text else {
-        return Err(format!(
-            "`{kind}(...)` takes one string literal, such as `{example}`; a {kind} cannot be made from computed text"
-        ));
-    };
-    if kind == "Date" {
-        crate::types::check_date(&text)?;
-    } else {
-        crate::types::check_time(&text)?;
-    }
-    Ok((ty, text))
-}
-
-/// The standard library's types whose value is the text it is made from, by the path source
-/// writes: `std.Identifier`, `std.Repeat` and `std.Reminder`.
-pub fn std_text_ty(dotted: &[&str]) -> Option<Ty> {
-    match dotted {
-        ["std", "Identifier"] => Some(Ty::Identifier),
-        ["std", "Repeat"] => Some(Ty::Repeat),
-        ["std", "Reminder"] => Some(Ty::Reminder),
-        _ => None,
-    }
-}
-
-/// The std type and the arguments of a call that makes one of those values, when `e` is one:
-/// `std.Repeat("FREQ=DAILY")`, `std.Identifier("mailto:jane@x.com")`.
-pub fn std_text_call(e: &Expr) -> Option<(Ty, &[ast::Arg])> {
-    let ExprKind::Call { callee, args } = &e.kind else {
-        return None;
-    };
-    let ExprKind::Field { base, name } = &callee.kind else {
-        return None;
-    };
-    let ExprKind::Ident(ns) = &base.kind else {
-        return None;
-    };
-    if ns != crate::stdlib::NS {
-        return None;
-    }
-    std_text_ty(&[ns, name.name.as_str()]).map(|ty| (ty, args.as_slice()))
-}
-
-/// The text a value of a text-held std type is made from, checked at compile time: the value
-/// is its text, so a value computed at run time would be one no reader knows.
-pub fn std_text_value(ty: &Ty, args: &[ast::Arg]) -> Result<String, String> {
-    let (what, example) = match ty {
-        Ty::Repeat => ("std.Repeat", "std.Repeat(\"FREQ=WEEKLY\")"),
-        Ty::Reminder => ("std.Reminder", "std.Reminder(\"-PT15M\")"),
-        _ => (
-            "std.Identifier",
-            "std.Identifier(\"mailto:jane@example.com\")",
-        ),
-    };
-    let text = match args {
-        [ast::Arg { name: None, value }] => plain_text(value),
-        _ => None,
-    };
-    let Some(text) = text else {
-        return Err(format!(
-            "`{what}(...)` takes one string literal, such as `{example}`; a {what} cannot be made from computed text"
-        ));
-    };
-    match ty {
-        Ty::Repeat => crate::repeat::Repeat::parse(&text).map(|repeat| repeat.text()),
-        Ty::Reminder => crate::repeat::Reminder::parse(&text).map(|reminder| reminder.text()),
-        _ => crate::identifier::normalize(&text),
-    }
-}
-
-/// The text of a string literal without interpolation.
-pub fn plain_text(e: &Expr) -> Option<String> {
-    let ExprKind::Str(parts) = &e.kind else {
-        return None;
-    };
-    parts
-        .iter()
-        .map(|p| match p {
-            ast::StrPart::Lit(t) => Some(t.as_str()),
-            ast::StrPart::Interp(_) => None,
-        })
-        .collect()
-}
-
 /// The one expression of a block written as `{ e }`.
 fn block_expr(b: &ast::Block) -> Option<&Expr> {
     match b.stmts.as_slice() {
@@ -2972,11 +2887,17 @@ fn collect(stmts: &[ast::UiStmt], out: &mut Vec<ast::Ident>) {
 /// published under it before (`previously:`). An id a package still has as its own is that
 /// package's, whoever else names it as an earlier one.
 pub fn find_package<'a>(available: &'a [PackageMeta], app: &str) -> Option<&'a PackageMeta> {
-    available.iter().find(|m| m.app == app).or_else(|| {
-        available
-            .iter()
-            .find(|m| m.previously.iter().any(|old| old == app))
-    })
+    available
+        .iter()
+        .find(|m| m.app == app)
+        .or_else(|| {
+            available
+                .iter()
+                .find(|m| m.previously.iter().any(|old| old == app))
+        })
+        // The agent library ships with the compiler, as the standard library does: a package
+        // `use`s it without it being one of the packages around it.
+        .or_else(|| (app == crate::agent::APP).then(crate::agent::meta))
 }
 
 /// Whether `ty` is `want`, or an `Option` of it.

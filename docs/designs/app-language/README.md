@@ -32,8 +32,10 @@ native UI come from the system.
   agents, the palette and programs. They are typed, attributed, undoable and permission-checked,
   declare their effects (`uses web`, `uses random`, `uses time`) and may carry metadata a view
   can use. A program that runs several actions is just code calling them.
-- **Agents speak tilolang.** An agent or REPL session has default imports for what agents
-  often need (`grep`, `find`, `describe`).
+- **Agents speak tilolang.** An agent or REPL session has the agent library in scope without a
+  `use`: `grep`, `find`, `read`, `describe`, `print`, and `me`, the person it acts for. Any
+  other package `use`s it like a library and calls `agent.grep(...)` — one library, one
+  syntax, no agent dialect.
 - **Nothing domain-specific is in the language:** no field roles, no task or chat words, no
   hard-coded services or windows. What done, nested or due means is an app's own fields and code.
 
@@ -145,6 +147,12 @@ of whoever applied the action.
 The standard library is one of these packages (`tilo.std`, `crates/lang/tilolang/std/app.tl`):
 the frames every window gets. Every package compiles with it and sees its declarations as
 `std.X`, whether or not it writes a `use`.
+
+The agent library is the other shipped one (`tilo.agent`,
+`crates/lang/tilolang/src/agent.rs`): the words a session talks to a workspace with. Its
+declarations are typed tilolang functions backed by host imports, so a session has them in
+scope with no `use` and a package that wants them writes `use tilo.agent as agent`: its words
+are then `agent.grep(...)`, and `agent.me` is the person it acts for.
 
 A **template view** is a view that expands where it is called rather than being a function of
 its own: it takes its name at the call, builds the caller's nodes, reads and view state under

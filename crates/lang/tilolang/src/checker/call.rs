@@ -136,7 +136,10 @@ impl Checker<'_> {
             }
             return self.expr_as(&n.value, &Ty::Int).typed(Ty::Duration);
         }
-        if let Some(ex) = self.program_builtin(name, args, span) {
+        // A session's code has the agent library's words in scope, its default import.
+        if env.session
+            && let Some(ex) = self.agent_call(name, args, span)
+        {
             return ex;
         }
         match name {
@@ -184,13 +187,12 @@ impl Checker<'_> {
             .map(|c| c.name.as_str())
             .collect();
         names.sort_unstable();
-        let mut known = names.clone();
-        for word in prims::BUILTINS
-            .iter()
-            .copied()
-            .chain(self.program_builtins())
-        {
-            known.push(word);
+        let mut known: Vec<&str> = names.clone();
+        known.extend(prims::BUILTINS.iter().copied());
+        if self.env.session {
+            for word in crate::agent::FUNCTIONS {
+                known.push(word.name);
+            }
         }
         let hint = crate::diag::suggestion(name, known);
         self.err(
@@ -211,6 +213,13 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // The agent library's words are host imports the checker lowers rather than calls into
+        // a module: `agent.grep(...)` in a package is the code a session's `grep` is.
+        if import.app == crate::agent::APP
+            && let Some(ex) = self.agent_call(&name.name, args, span)
+        {
+            return ex;
+        }
         let env = self.env;
         if let Some(c) = env.foreign_callable(&import.app, &name.name) {
             let c = c.clone();

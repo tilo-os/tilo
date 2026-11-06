@@ -574,9 +574,11 @@ what its predicate says (`filter "Today" = due <= today and not done`), how its 
 the app's (`std.rows(group:, tail:)`, each answered per item where the place decides so
 itself), and its order is the app's (`sort_by`).
 
-**Programs** (agents.md, "Querying" and "Reading and describing"). An agent's program (the
-door's `tilo` tool, `tilolang repl`) has words for reading what the workspace holds, across
-apps:
+**Agent and REPL sessions** (agents.md, "Querying" and "Reading and describing"). A session's
+code — the door's `tilo` tool, `tilolang repl` — has the agent library's words in scope for
+reading what the workspace holds, across apps. The library is `tilo.agent` (`agent.rs`), one
+like any other: a package that wants the words writes `use tilo.agent as agent` and calls
+`agent.grep(...)`, the code a session's `grep` is.
 
 ```
 grep(/\bChen\b/, in: notes + chat).count_by(.doc)      // counts first, then a row per note
@@ -600,8 +602,8 @@ print(xs, fields: [.title, .due])
   markdown writes it: `> ` a quote, `# ` a heading, `- ` a list item.
 - `count_by(key)` and `group(key)` give rows with `.key` and `.count` or `.items`, the largest
   first; `take(n)`, `each(f)` and `single()` chain on any list.
-- `me` is the person the task acts for.
-- An app the program's host does not hold is read through that app's host: its resources are
+- `me` is the person the session acts for (`agent.me` in a package).
+- An app the session's host does not hold is read through that app's host: its resources are
   `host.Resource`s, which print, count, group, `read` and `describe`, and `.of(T)` narrows to a
   type the host holds.
 

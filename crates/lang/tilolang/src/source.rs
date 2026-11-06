@@ -324,7 +324,10 @@ impl Visit<'_> {
         }
         state.insert(dir.to_path_buf(), false);
         for app in headers.get(dir).cloned().unwrap_or_default() {
-            if app == crate::host::HOST_APP || self.provided.contains(&app) {
+            if app == crate::host::HOST_APP
+                || app == crate::agent::APP
+                || self.provided.contains(&app)
+            {
                 continue;
             }
             let Some(dep) = index.get(&app) else {

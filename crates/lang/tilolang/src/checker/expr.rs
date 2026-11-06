@@ -1,6 +1,6 @@
 //! Expressions: literals, operators, fields, strings and coercions.
 
-use super::{Checker, Ctx, Ex, Written, conv, load_op, store_op};
+use super::{Checker, Ctx, Ex, conv, load_op, store_op};
 use crate::abi::Imp;
 use crate::ast::{self, BinOp, ExprKind, StrPart, UnOp};
 use crate::diag::Span;
@@ -192,6 +192,10 @@ impl Checker<'_> {
                 {
                     return Self::root_ref(&info.key.app, &info.id, &info.key);
                 }
+                // `agent.me`: the person the session acts for, where a package names it.
+                if let Some(ex) = self.agent_me_field(base, &name.name) {
+                    return ex;
+                }
                 if self.names_import(base) {
                     let alias = dotted(base).unwrap_or_default().join(".");
                     self.not_a_value_of_import(&alias, &name.name, e.span);
@@ -338,9 +342,10 @@ impl Checker<'_> {
             );
             return Ex::error();
         }
-        // `me`: the person a program's task acts for (agents.md, "What the agent knows").
-        if name == "me" && self.st.written == Written::Program {
-            return Ex::host(Imp::Me, vec![], Ty::Principal);
+        // `me`: the person the session acts for, the agent library's word for them, in scope as
+        // a session's default import (agents.md, "What the agent knows").
+        if name == crate::agent::ME && self.env.session {
+            return Self::agent_me();
         }
         // A named root of this package: `notes`.
         if let Some(key) = self
