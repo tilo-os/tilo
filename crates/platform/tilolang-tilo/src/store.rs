@@ -769,7 +769,7 @@ impl TiloStore {
         let mut items = inner.drop_committed_local(chunk);
         inner.rollback(chunk);
         let (changed, ends) = inner.apply_new_changes(chunk, doc, &before);
-        inner.chunks.set_seen(chunk, heads.clone());
+        inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
             inner.versions = None;
@@ -876,6 +876,24 @@ impl TiloStore {
     #[must_use]
     pub fn has_record(&self) -> bool {
         self.held().chunks.has_record()
+    }
+
+    /// What the store holds of each chunk, the record first: how many changes of it the store
+    /// has, and how many writes of its own are open in it. A resource placed in a chunk is read
+    /// and written there, so its writes show in that chunk's count alone.
+    #[must_use]
+    pub fn held_chunks(&self) -> Vec<(ChunkNo, usize, usize)> {
+        self.held()
+            .chunks
+            .docs()
+            .map(|(chunk, doc)| {
+                (
+                    chunk,
+                    doc.committed_document().get_changes(&[]).len(),
+                    doc.pending_ops(),
+                )
+            })
+            .collect()
     }
 
     /// What the store did so far.

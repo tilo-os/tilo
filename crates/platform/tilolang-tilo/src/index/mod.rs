@@ -801,7 +801,8 @@ impl Snapshot {
 /// how they are cut into pages. Two indexes of the same record hold the same.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Contents {
-    pub docs: std::collections::BTreeMap<String, String>,
+    /// Each record's type, and the chunk that holds it.
+    pub docs: std::collections::BTreeMap<String, (String, ChunkNo)>,
     pub fields: std::collections::BTreeMap<(String, String), String>,
     pub lists: std::collections::BTreeMap<String, Vec<Entry>>,
     pub counts: std::collections::BTreeMap<(String, String), u64>,
@@ -815,8 +816,8 @@ impl Snapshot {
     /// The index cannot be read or is corrupt.
     pub fn contents(&self) -> Result<Contents, IndexError> {
         let mut out = Contents::default();
-        for (doc, ty, _chunk) in self.docs()? {
-            out.docs.insert(doc, ty);
+        for (doc, ty, chunk) in self.docs()? {
+            out.docs.insert(doc, (ty, chunk));
         }
         for entry in self.fields.iter()? {
             let (key, value) = entry?;
@@ -945,7 +946,7 @@ impl<'t> Writer<'t> {
             .tables
             .meta
             .iter()?
-            .filter_map(|entry| entry.ok())
+            .filter_map(std::result::Result::ok)
             .map(|(key, _)| key.value().to_owned())
             .filter(|key| key.starts_with(META_HEADS))
             .filter(|key| heads.keys().all(|chunk| key.as_str() != heads_of(*chunk)))

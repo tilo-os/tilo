@@ -16,6 +16,7 @@ mod bundle;
 mod capture;
 mod chained;
 mod chat;
+mod chunks;
 mod collab;
 mod columns;
 mod composer;
