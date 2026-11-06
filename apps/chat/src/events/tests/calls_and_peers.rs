@@ -1211,6 +1211,42 @@ fn a_call_with_several_people_names_two_and_counts_the_rest() {
 }
 
 #[test]
+fn the_card_names_people_briefly_and_the_reading_keeps_their_full_names() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 4);
+    let me = app.me.id.clone();
+    let roster = &mut app.native_voice.snapshot.rosters[0];
+    roster.people = vec![
+        me,
+        "u_aria".into(),
+        "u_milo".into(),
+        "u_sora".into(),
+        "u_devon".into(),
+    ];
+    app.refresh_native_streams();
+    assert_eq!(app.given_name("u_aria"), "Aria");
+    let short = app.call_people_short_label();
+    let full = app.call_people_label();
+    assert!(
+        short.contains("Aria") && short.contains("Milo"),
+        "the card names the two who lead the crowd: {short}"
+    );
+    assert!(
+        !short.contains("Aria Chen"),
+        "a card that also counts the crowd has room for given names, not surnames: {short}"
+    );
+    assert!(
+        full.contains("Aria Chen") && full.contains("Milo Park"),
+        "the call's accessible reading names people in full: {full}"
+    );
+    assert!(
+        short.len() < full.len(),
+        "the card's line is briefer than the reading: {short} / {full}"
+    );
+}
+
+#[test]
 fn a_muted_or_deafened_call_shows_it_on_its_microphone() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");

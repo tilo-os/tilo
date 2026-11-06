@@ -593,17 +593,34 @@ impl ChatApp {
         Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
-    /// Who the call is with, as the bar's pill, the panel's title bar and the
-    /// call's own accessibility reading name them: the other people in it,
-    /// never the channel's slug and never this person's own name alone.
+    /// Who the call is with, as the call's own accessibility reading names
+    /// them: the other people in it, never the channel's slug and never this
+    /// person's own name alone.
     pub(crate) fn call_people_label(&self) -> String {
-        let names: Vec<String> = self
-            .call_participants()
+        Self::people_line(&self.call_people(|id| self.user_name(id)))
+    }
+
+    /// The same people as a narrow line names them — the card's hero and the
+    /// panel's title bar: given names, because a line that carries three
+    /// names, a count and a run time has room for a first name and not for a
+    /// surname, and a surname cut in half says nothing.
+    pub(crate) fn call_people_short_label(&self) -> String {
+        Self::people_line(&self.call_people(|id| self.given_name(id)))
+    }
+
+    /// Who is in the call beside this person, each named by `name`. The
+    /// participants that matter are the others: a call is never only its
+    /// reader, so this person's own name is left out of every line.
+    fn call_people(&self, name: impl Fn(&str) -> String) -> Vec<String> {
+        self.call_participants()
             .iter()
             .filter(|p| !self.is_me(&p.user))
-            .map(|p| self.user_name(&p.user))
-            .collect();
-        match names.as_slice() {
+            .map(|p| name(&p.user))
+            .collect()
+    }
+
+    fn people_line(names: &[String]) -> String {
+        match names {
             [] => crate::i18n::t("chat-call-only-you"),
             [only] => only.clone(),
             [first, second] => crate::i18n::t_args(
@@ -671,7 +688,7 @@ impl ChatApp {
             .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        let people = self.call_people_label();
+        let people = self.call_people_short_label();
         let people_style = local.text(TextRole::Caption).numeric();
         let people_w = width_of(tr, &people, &people_style);
         let inset = f64::from(sp.s4);
@@ -1116,7 +1133,7 @@ impl ChatApp {
         };
         let room = (hero.x1 - run_w - f64::from(sp.s3) - name_x).max(0.0);
         let style = local.text(TextRole::Heading);
-        let names = elide(tr, &self.call_people_label(), &style, room);
+        let names = elide(tr, &self.call_people_short_label(), &style, room);
         line_in(
             &mut PaintCtx::new(scene, tf, tr, local),
             &names,
