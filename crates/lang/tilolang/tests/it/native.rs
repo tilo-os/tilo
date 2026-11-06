@@ -534,6 +534,39 @@ fn a_scenario_is_a_hidden_action_listed_with_its_name() {
 }
 
 #[test]
+fn an_action_that_calls_another_says_so_in_its_metadata() {
+    let c = compile_body(
+        r#"type T {
+    t: Text
+}
+
+action mark(t: T) {
+    t.t = "done"
+}
+
+action twice(t: T) {
+    mark(t)
+    mark(t)
+}
+
+action once(t: T) {
+    t.t = "one"
+}"#,
+    );
+    let invokes = |name: &str| {
+        c.meta
+            .actions
+            .iter()
+            .find(|a| a.name == name)
+            .unwrap_or_else(|| panic!("the action {name}"))
+            .invokes
+    };
+    assert!(invokes("twice"), "a body that calls an action is run again");
+    assert!(!invokes("once"), "a body that calls none is one change");
+    assert!(!invokes("mark"), "and so is what `twice` calls");
+}
+
+#[test]
 fn metadata_without_the_new_fields_still_reads() {
     let c = compile_body(
         "type T {\n    t: Text\n}\nenum E {\n    a\n}\naction go(x: T) {\n    x.t = \"\"\n}",

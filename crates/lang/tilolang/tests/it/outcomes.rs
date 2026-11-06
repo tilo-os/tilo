@@ -313,6 +313,7 @@ fn published() -> tilolang::PackageMeta {
             group: None,
             frequent: false,
             guard: false,
+            invokes: false,
         }],
         ..tilolang::PackageMeta::default()
     }

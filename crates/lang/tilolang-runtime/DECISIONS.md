@@ -72,7 +72,8 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   or another one's, calls it at its door: the callee's change is committed and attributed before
   the caller commits, and a call that Asks suspends the caller too. Storage cannot commit across
   apps — the callee may be another app's, whose change another origin holds — so one commit
-  cannot cover the calls.
+  cannot cover the calls. `many` applies one action to many items as one change, so it refuses
+  an action that calls another: that action makes a change per call.
 - **The caller's writes before a call are committed first.** When a run stops to make a call,
   what it wrote until then is committed as a change of its own, so a call on a record the caller
   made in the same action reads it, and the call's change stands on it. Its writes after the
@@ -82,7 +83,8 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   no write again. This closes the earlier v1 deviation: a replayed run takes the branches it
   took the first time, even though approved actions changed the resources meanwhile, does not
   make what it already wrote a second time, and does not take back what its call wrote on top
-  of it.
+  of it. An action that calls none is one change in one transaction and is never run again, so
+  it journals nothing (`ActionMeta::invokes`).
 - **A draw is answered from the journal first.** `random.rs` holds the one primitive every
   `random.*` import counts draws of: a number in `0..upto`. It answers the invocation's next
   entry when that entry is a `Random` with the same bound, so a run that goes on after it

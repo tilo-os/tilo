@@ -87,6 +87,9 @@ pub struct Effects {
     pub class: Vec<EffectClass>,
     /// Every action each function can reach.
     pub reaches: Vec<Vec<Reach>>,
+    /// Whether each action's body invokes another action, itself included: what a run journals
+    /// for, because a call can wait for a person and the run then runs again from its start.
+    pub invokes: Vec<bool>,
 }
 
 type ReachMap = BTreeMap<(String, String), Reach>;
@@ -177,12 +180,18 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             break;
         }
     }
+    let invokes = m
+        .funcs
+        .iter()
+        .map(|f| f.kind == FuncKind::Action && !f.facts.invokes.is_empty())
+        .collect();
     Effects {
         class,
         reaches: reaches
             .into_iter()
             .map(|m| m.into_values().collect())
             .collect(),
+        invokes,
     }
 }
 

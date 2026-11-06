@@ -606,6 +606,7 @@ fn build_meta(
                     class: class_of(idx),
                     proposal: None,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    invokes: fx.invokes.get(idx).copied().unwrap_or(false),
                     label: c.present.label.clone(),
                     icon: None,
                     role: None,
@@ -689,6 +690,7 @@ fn build_meta(
                     class: class_of(idx),
                     proposal,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
+                    invokes: fx.invokes.get(idx).copied().unwrap_or(false),
                     label: c.present.label.clone(),
                     icon: c.present.icon.clone(),
                     role: c.present.role.clone(),
@@ -993,6 +995,7 @@ pub fn compile_program_reading(
             uses: Vec::new(),
             guard: false,
             applies: false,
+            invokes: false,
         }],
         ..PackageMeta::default()
     };

@@ -626,15 +626,10 @@ impl Core {
             at: None,
         };
         match self.decide(&ctx, first)? {
-            Decision::Allow => match self.run_many(&ctx, &refs)? {
-                ActionOutcome::Done(v) => Ok(InvokeOutcome::Done(v)),
-                ActionOutcome::Failed(m) => Err(RuntimeError::Trap(m)),
-                ActionOutcome::Suspended(_) => Err(RuntimeError::Trap(
-                    "`many` applies one action to many items as one change, and an action that \
-                     calls another action makes a change per call"
-                        .into(),
-                )),
-            },
+            Decision::Allow => {
+                self.run_many(&ctx, &refs)?;
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
             Decision::Deny => Ok(InvokeOutcome::Denied),
             Decision::Ask => {
                 let run = self.store.borrow_mut().fresh_id("s");
@@ -700,9 +695,9 @@ impl Core {
         }
     }
 
-    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<ActionOutcome, RuntimeError> {
+    fn run_many(&self, ctx: &ExecCtx, refs: &[ActionRef]) -> Result<(), RuntimeError> {
         let Some(first) = refs.first() else {
-            return Ok(ActionOutcome::Done(Value::Unit));
+            return Ok(());
         };
         let pkg = self
             .registry
@@ -713,6 +708,15 @@ impl Core {
             .action(&first.action)
             .ok_or_else(|| RuntimeError::NotFound(format!("action {}", first.action)))?
             .clone();
+        // `many` is one change over many items: an action that calls another makes a change per
+        // call, so it is no action `many` applies.
+        if meta.invokes {
+            return Err(RuntimeError::Trap(
+                "`many` applies one action to many items as one change, and an action that \
+                 calls another action makes a change per call"
+                    .into(),
+            ));
+        }
         let txn = self.store.borrow_mut().begin()?;
         let primary = first.args.iter().find_map(|v| match v {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
@@ -778,7 +782,7 @@ impl Core {
                 for (who, suggested) in proposed {
                     self.propose(&who, &suggested)?;
                 }
-                Ok(ActionOutcome::Done(Value::Unit))
+                Ok(())
             }
             Some(RuntimeError::BadArgs(m)) => {
                 self.store.borrow_mut().rollback(txn);
@@ -786,7 +790,7 @@ impl Core {
             }
             Some(e) => {
                 self.store.borrow_mut().rollback(txn);
-                Ok(ActionOutcome::Failed(e.to_string()))
+                Err(RuntimeError::Trap(e.to_string()))
             }
         }
     }
@@ -1035,7 +1039,7 @@ impl Core {
         };
         // Only code that calls another action is run again, so only it journals its reads and
         // its writes. Anything else commits one change and is never replayed.
-        let journaled = program || meta.reaches.iter().any(|reached| reached.action != action);
+        let journaled = program || meta.invokes;
         // A run a scenario made act at a moment reads its clock as that moment, in the person's
         // zone: `now`, `today` and the time its change is recorded at all follow it.
         let clock = journal.at.clone().map(|now| crate::run::Clock {

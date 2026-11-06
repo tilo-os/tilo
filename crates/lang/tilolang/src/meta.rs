@@ -655,6 +655,11 @@ pub struct ActionMeta {
     /// disabled with the reason.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub applies: bool,
+    /// Whether the action's body invokes another action, itself included. A run that does is
+    /// run again from its start whenever a call waits for a person, so it journals its reads and
+    /// its writes; one that does not is one change and is never replayed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invokes: bool,
 }
 
 impl ActionMeta {
