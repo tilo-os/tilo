@@ -302,6 +302,11 @@ class Doors:
     def notifications_clear(self):
         """Clear every notification in the centre."""
         if self.new:
+            # The centre carries a control of its own for this.
+            row = self.side.target("clear all notifications") or \
+                self.side.target("alle benachrichtigungen")
+            if row is not None:
+                return self.press_at(row)
             return self.tail_contains("clear-notifications")
         return self.tail("notifications.clear")
 
@@ -412,9 +417,24 @@ class Doors:
     def settings_pane(self, pane: str):
         """One pane of the workspace's own settings."""
         if self.new:
+            # Settings is an app window with a sidebar; a person opens the app
+            # and picks the section that names the pane.
+            sections = {"general": ("personal", "allgemein"),
+                        "members": ("users", "benutzer", "accounts & permissions"),
+                        "privacy": ("device privacy & security", "datenschutz"),
+                        "apps": ("default apps", "standard-apps")}
+            self.launch("settings")
+            self.side.wait_window("settings")
+            time.sleep(0.6)
+            for needle in sections[pane]:
+                row = self.side.target(needle)
+                if row is not None:
+                    return self.press_at(row)
             raise DoorMissing(
-                "the new session's Settings is an app window with its own sections; the "
-                "session lists no action that opens a named pane")
+                f"the Settings app shows no section named {pane!r}; it lists "
+                + ", ".join(sorted({str(row.get("name")) for row in self.side.targets()
+                                    if "/" not in str(row.get("name"))
+                                    and "[" not in str(row.get("name"))})))
         ids = {"general": "settings.open", "members": "settings.members.open",
                "privacy": "settings.privacy.open", "apps": "settings.apps.open"}
         return self.tail(ids[pane])
