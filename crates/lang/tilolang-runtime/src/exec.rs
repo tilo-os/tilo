@@ -1493,24 +1493,6 @@ impl Core {
         ret_void()
     }
 
-    /// `now`: the invocation's time: what the action or flow read the first time it read the
-    /// clock, recorded in its journal; in a scenario's `as who at time` block, that time.
-    fn now(&self) -> HResult<Option<Wasm>> {
-        {
-            let frames = self.frames.borrow();
-            if let FrameKind::Action(state) = &frames.top()?.kind
-                && let Some(time) = state.acting_as.last().and_then(|(_, at)| at.clone())
-            {
-                drop(frames);
-                return self.ret_h(Value::Text(time));
-            }
-        }
-        let clock = self.clock()?;
-        tilolang::types::check_time(&clock.now)
-            .map_err(|e| HostFail::Trap(format!("the host's clock: {e}")))?;
-        self.ret_h(Value::Text(clock.now))
-    }
-
     /// The clock and the person's zone, as the invocation running reads them: what it read the
     /// first time, from its journal when it recorded one then, else from the host, which it
     /// records. An action's entry is kept beside its change; a flow's is saved in its journal,
