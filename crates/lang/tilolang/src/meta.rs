@@ -662,18 +662,6 @@ impl ActionMeta {
         self.role.as_deref() == Some("migration")
     }
 
-    /// Whether it is an `internal action`: only the app's own gestures run it (a drag, a lane's
-    /// button, an entry in the app's view), so no surface that lists a subject's actions offers
-    /// it — not the header, not an item's menu, not the palette, not an agent's choices.
-    ///
-    /// It is not a way to keep an action out of the header: that is `frequent`, which decides
-    /// between a button in the row and a row in the header's menu, while an action marked
-    /// `internal` is absent from every list.
-    #[must_use]
-    pub fn is_internal(&self) -> bool {
-        self.role.as_deref() == Some("internal")
-    }
-
     /// The parameters an invocation that has given `bound` arguments still lacks: those after
     /// them that have no default, each with its place, which its form asks the person for
     /// before the action runs. Empty when it runs at once on what it was given.
@@ -826,20 +814,18 @@ impl PackageMeta {
             .map(|d| d.view.as_str())
     }
 
-    /// The actions the platform offers: every action but the hidden ones of scenarios, the
-    /// migrations, which the platform runs itself, and the internal ones, which only the app's own
-    /// gestures run. This is the one list every surface draws from — the header's buttons and
-    /// menu, an item's menu, the palette — so an offered action is always somewhere a person can
-    /// reach it.
+    /// The actions the platform offers: every action but the hidden ones of scenarios and the
+    /// migrations, which the platform runs itself. This is the one list every surface draws from
+    /// — the header's buttons and menu, an item's menu, the palette — so an action is always
+    /// somewhere a person, an agent or a program can reach it.
     pub fn offered_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()
-            .filter(|a| !a.scenario && !a.is_migration() && !a.is_internal())
+            .filter(|a| !a.scenario && !a.is_migration())
     }
 
     /// The actions code may call by name: every action but the hidden ones of scenarios and the
-    /// migrations, which the platform runs itself. Internal actions are among them, since the
-    /// app's own gestures and the programs of agents run them; a surface just never lists one.
+    /// migrations, which the platform runs itself.
     pub fn callable_actions(&self) -> impl Iterator<Item = &ActionMeta> {
         self.actions
             .iter()

@@ -167,12 +167,12 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
 - `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
-- **A role says what an action is; only `internal` and `scenario` keep it from being listed.**
-  `primary`, `destructive`, `migration` and `internal` are the four words. `offered_actions()`
-  skips the `scenario` actions and those with a hiding role, so a gesture-only action
-  (`internal action place(...)` behind a tree's `reorder:`) never turns up in `actions(r)`, in
-  the host's bar or a window's menus, or in an agent's choices, while the app can still name it
-  where the gesture wants it.
+- **A role says what an action is; only a `scenario` keeps it from being listed.**
+  `primary`, `destructive` and `migration` are the three words. `offered_actions()` skips the
+  `scenario` actions (the bodies scenarios run) and the migrations, which the platform runs
+  itself; every other action is in `actions(r)`, in the host's bar and a window's menus, and in
+  an agent's choices. An action is never hidden from people to reserve it for a gesture: a
+  helper nobody chooses is a `fn`, and one that writes is a command like any other.
 - **A window's bar shows its primary action and the commands the app marks `frequent` as
   buttons, and every other action behind the bar's one menu.** The host builds them that way
   from the declarations of the type the window shows: a button per primary and per `frequent`
@@ -651,6 +651,14 @@ search.md, "What a type declares" and "Types, references and paths".
   offers what its app declares, and a place of days or projects is the app's own `ui.NavList`.
   Places draw no badge: a count is a query of the app's own (`items.matching(p.query).len()`),
   which a view that counts writes.
+- **A window that is only a list is `std.browse`.** It writes that window from the inputs the app
+  names alone — `of` (the resource the window is of), `items`, `places`, `sort`, `everything`, the
+  `empty` state, the `entry` action — with its query state, the title and count that name the place
+  chosen, and the pane beside the list when rows open there. It scans nothing (`filters(T)`) and
+  reads no layout off a type; the one fact it takes from the type is `opens`, whether its rows have
+  a window of their own, and a window whose rows open in front of it states `opens: false`. An app
+  whose window needs a sidebar of counts, grouped rows or a bar action of its own composes
+  `std.list`, `std.places` and `std.header` itself.
 - **A list groups by the key its caller gives.** `ui.ListItem(group:)` takes the item's own key and
   heads each run of items naming the same key with the key itself, as the platform presents a
   value of its kind — a day as Today, Tomorrow, a weekday; a word as it is written. Items that

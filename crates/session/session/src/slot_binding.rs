@@ -27,14 +27,35 @@ impl Session {
         /// person binds another.
         const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
         let reading = self.read(mount::shell::WINDOW_MENU);
-        let up = reading
+        let for_a_window = reading
             .as_ref()
             .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
+        let has_rows = reading.as_ref().is_some_and(|reading| {
+            reading
+                .get("rows")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|rows| !rows.is_empty())
+        });
+        // A menu belongs to its window: one the reading holds for a window
+        // that is gone — closed under it, or offering nothing any more —
+        // closes, as it does when its row is chosen, rather than standing
+        // over the desk with nothing to say and holding the keyboard.
+        if for_a_window && !has_rows {
+            self.close_window_menu();
+            return;
+        }
+        let up = for_a_window && has_rows;
         // A slot the person is not looking at is nobody's to draw: the
         // binding is read while the part is up, and once more when it goes,
         // rather than on every pass of a menu that is down.
         if !up && self.slots.running(VIEW).is_none() {
             return;
+        }
+        // The view drawing the slot is a program of its own, and one can end:
+        // a record of it that outlives the process would leave the next menu
+        // up with nobody to draw it.
+        if self.slots.running(VIEW).is_some() && !self.slot_view_runs(VIEW) {
+            self.slots.forget(VIEW);
         }
         let settings = self.read(mount::slots::BINDINGS);
         match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
@@ -79,6 +100,21 @@ impl Session {
             if let Some(tried) = self.slots.running(slot).cloned() {
                 self.slots.failed(slot, tried);
             }
+        }
+    }
+
+    /// Whether something draws `slot` now: the program the session started
+    /// for it, or the package view running here.
+    fn slot_view_runs(&self, slot: &str) -> bool {
+        self.surfaces.running(slot) || self.slot_views.running(slot)
+    }
+
+    /// Close the window menu through the verb it publishes: the same path a
+    /// press outside the menu and the person's own Escape take.
+    fn close_window_menu(&mut self) {
+        if let Err(error) = self.invoke(mount::shell::WINDOW_MENU, "close", &serde_json::Map::new())
+        {
+            tracing::warn!(%error, "a menu left up for a window that is gone was not closed");
         }
     }
 

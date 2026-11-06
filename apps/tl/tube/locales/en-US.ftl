@@ -193,11 +193,8 @@ d-wzt3qvyb = Delete history
 d-6lgqby4s = Search
     .doc = Searches YouTube: the service answers with channels, playlists and videos, written where the search view lists them.
 
-d-vhf33pa7 = End search
+d-vhf33pa7 = Leave search
     .doc = Leaves the search the feed is showing for the place the person chose: the results stay where the service wrote them (found again by the query that found them), and the client shows the place chosen.
-
-d-4s4rrocr = Name client
-    .doc = Names the client, so a root that holds nothing of its own yet is called by its app rather than by the first thing it comes to hold.
 
 d-hpjdxg6k = Refresh
     .doc = Asks the service for the newest videos of each subscribed channel: what the subscriptions feed shows.

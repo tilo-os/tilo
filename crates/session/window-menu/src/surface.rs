@@ -40,7 +40,17 @@ const RETRY: Duration = Duration::from_secs(1);
 struct Reading {
     tab: Option<String>,
     anchor: Option<(f64, f64)>,
+    /// The window the menu is on, when the reading names it: what a typed
+    /// sentence would be about.
+    subject: Option<Subject>,
     rows: Vec<Row>,
+}
+
+/// The window a menu is on, named as the person knows it.
+#[derive(Clone, Debug, PartialEq)]
+struct Subject {
+    title: String,
+    app: Option<String>,
 }
 
 /// One row a window offers.
@@ -78,9 +88,19 @@ impl Reading {
                 })
             })
             .collect::<Option<Vec<Row>>>()?;
+        let subject = value.get("subject").and_then(|subject| {
+            Some(Subject {
+                title: subject.get("title")?.as_str()?.to_owned(),
+                app: subject
+                    .get("app")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            })
+        });
         Some(Self {
             tab: value.get("tab").and_then(Value::as_str).map(str::to_owned),
             anchor,
+            subject,
             rows,
         })
     }
@@ -163,12 +183,19 @@ impl WindowMenuSurface {
         let asking = Arc::clone(&self.asking);
         std::thread::spawn(move || {
             if let Ok(reached) = SessionResource::open(WINDOW_MENU) {
-                reached.attach(wake);
+                reached.attach(wake.clone());
                 if let Ok(mut slot) = opened.lock() {
                     *slot = Some(reached);
                 }
             }
             asking.store(false, Ordering::Relaxed);
+            // The reading the worker opened is one the session published
+            // before this view existed — the menu a press opened a moment
+            // ago — and a reading that arrived before the attach wakes
+            // nobody. The view asks for its own frame so the menu it was
+            // started for stands on screen instead of waiting for a press
+            // that may never come.
+            wake.wake();
         });
     }
 
@@ -246,6 +273,18 @@ impl WindowMenuSurface {
             self.ids.push(row.id.clone());
         }
         self.menu.set_items(items);
+        // The session heard the secondary press that opened the menu and
+        // says what it is on: typing narrows the rows here, and a sentence
+        // is about that window when something can answer it.
+        self.menu.set_takes_typing(true);
+        self.menu
+            .set_about(self.reading.subject.as_ref().map(|subject| {
+                let named = match &subject.app {
+                    Some(app) => format!("{} ({app})", subject.title),
+                    None => subject.title.clone(),
+                };
+                ui::shared_selection::SharedSelection::of_text(&named)
+            }));
         let anchor = self
             .reading
             .anchor
@@ -354,6 +393,16 @@ impl Widget for WindowMenuSurface {
         if let [menu] = taffy.children(node).unwrap_or_default()[..] {
             self.menu.apply_layout(taffy, menu, inner);
         }
+        // A menu drawn before the host said how large the frame is was placed
+        // against no room at all. Now that there is one, it stands against the
+        // pointer again, inside the frame it draws in.
+        if self.reading.is_open() {
+            let anchor = self
+                .reading
+                .anchor
+                .map_or(Rect::ZERO, |(x, y)| Rect::new(x, y, x, y));
+            self.menu.reanchor(anchor, self.viewport);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -441,6 +490,28 @@ mod tests {
         assert_eq!(surface.ids, ["window-normal", "window-move-workspace"]);
     }
 
+    /// The view starts after the session published the menu, so its first
+    /// frame has nothing to draw and the worker that opens the reading lands
+    /// afterwards; a reading published before the attach wakes no view, and
+    /// nothing else asks the menu for a frame. A view that does not wake
+    /// itself is a menu nobody sees until some later press moves the desk.
+    #[test]
+    fn the_view_asks_for_a_frame_once_its_worker_lands() {
+        let mut scope = ui::WakeScope::new();
+        let (woken, woken_at) = std::sync::mpsc::channel();
+        scope
+            .bind(move |_| {
+                let _ = woken.send(());
+            })
+            .expect("the view's wake is bound");
+        let mut surface = WindowMenuSurface::new();
+        surface.wake = Some(scope.handle());
+        surface.ask();
+        woken_at
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the view is woken once its worker lands, and draws its reading");
+    }
+
     /// A menu where one row has a shortcut and the other has none.
     const WITH_A_CHORD: &str = r#"{
         "tab": "20",
@@ -471,6 +542,144 @@ mod tests {
             chords,
             [Some(expected), None],
             "the chord the session sends stands at the row's end"
+        );
+    }
+
+    /// A menu the length the desk publishes, naming its window.
+    fn menu_of(rows: usize) -> String {
+        let rows: Vec<Value> = (0..rows)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("window-row-{i}"),
+                    "label": format!("Row {i}"),
+                    "enabled": true,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "tab": "20",
+            "anchor": { "x": 40, "y": 50 },
+            "subject": { "title": "Notes", "app": "so.tilo.notes" },
+            "rows": rows,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn the_menu_of_a_window_takes_typing_and_narrows_to_what_matches() {
+        let mut surface = WindowMenuSurface::showing(&menu_of(14));
+        assert!(surface.menu.takes_typing(), "a long menu can be typed into");
+        surface.menu.set_query("row 13");
+        let shown = surface.menu.shown_rows();
+        let first = shown
+            .first()
+            .and_then(|&index| surface.menu.items().get(index))
+            .and_then(MenuItem::label);
+        assert_eq!(first, Some("Row 13"), "typing ranks the row it names first");
+        assert!(shown.len() < 14, "and drops the rows it does not name");
+    }
+
+    #[test]
+    fn the_reading_names_the_window_the_menu_is_on() {
+        let surface = WindowMenuSurface::showing(&menu_of(2));
+        assert_eq!(
+            surface.reading.subject,
+            Some(Subject {
+                title: "Notes".into(),
+                app: Some("so.tilo.notes".into()),
+            })
+        );
+    }
+
+    /// Lay the view out in the frame a host gives it, as the host does
+    /// before it draws the surface a person looks at.
+    fn lay_out(surface: &mut WindowMenuSurface, width: f32, height: f32) {
+        let mut taffy = TaffyTree::new();
+        let mut map = HashMap::new();
+        let node = surface.build_layout(&mut taffy, &Theme::default(), &mut map);
+        // The window's root fills the host, and the surface fills it.
+        let root = taffy.fill_node(node);
+        taffy
+            .compute_layout(
+                root,
+                ui::taffy::Size {
+                    width: ui::taffy::AvailableSpace::Definite(width),
+                    height: ui::taffy::AvailableSpace::Definite(height),
+                },
+            )
+            .expect("the frame lays out");
+        surface.apply_layout(&taffy, node, Point::new(0.0, 0.0));
+    }
+
+    /// The menu a person sees is the rows in the frame the host draws: one
+    /// the pointer opened stands at the pointer, and none of its rows falls
+    /// outside the frame or is a sliver to aim at.
+    #[test]
+    fn the_rows_stand_in_the_frame_at_the_pointer() {
+        let _settled = ui::motion::testing::settled();
+        let mut surface = WindowMenuSurface::showing(READING);
+        lay_out(&mut surface, 1280.0, 800.0);
+        let frame = surface.get_rect();
+        assert_eq!(frame, Rect::new(0.0, 0.0, 1280.0, 800.0), "the whole host");
+        let rows: Vec<Rect> = (0..2)
+            .map(|index| surface.item_rect(index).expect("the row is painted"))
+            .collect();
+        for row in &rows {
+            assert!(
+                frame.contains_rect(*row),
+                "every row is in the frame: {row:?} in {frame:?}"
+            );
+            assert!(row.height() >= 20.0, "a row a person can aim at: {row:?}");
+        }
+        assert!(
+            rows[0].x0 < 120.0,
+            "the rows start at the pointer's own edge: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[0].y0 >= 50.0 && rows[0].y0 - 50.0 < 80.0,
+            "the first row stands just below the pointer that opened the menu, \
+             under the window the menu names: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].y0 >= rows[0].y1,
+            "the rows stack in the order the session lists them: {rows:?}"
+        );
+    }
+
+    /// The same rows, opened from the frame's last pixels: the corner of the
+    /// desk the window menu doubles as the way out of.
+    const AT_THE_CORNER: &str = r#"{
+        "tab": "20",
+        "anchor": { "x": 1272, "y": 792 },
+        "rows": [
+            { "id": "window-normal", "label": "Normal", "enabled": true },
+            { "id": "window-close", "label": "Close", "enabled": true }
+        ]
+    }"#;
+
+    /// A menu the session opened in the frame's last pixels is still drawn
+    /// whole: its rows stand inside the frame, not past the edge a person
+    /// cannot reach.
+    #[test]
+    fn a_menu_opened_at_the_frames_corner_stays_inside_it() {
+        let _settled = ui::motion::testing::settled();
+        let mut surface = WindowMenuSurface::showing(AT_THE_CORNER);
+        lay_out(&mut surface, 1280.0, 800.0);
+        let frame = surface.get_rect();
+        let rows: Vec<Rect> = (0..2)
+            .map(|index| surface.item_rect(index).expect("the row is painted"))
+            .collect();
+        for row in &rows {
+            assert!(
+                frame.contains_rect(*row),
+                "every row is in the frame: {row:?} in {frame:?}"
+            );
+        }
+        assert!(
+            rows[1].y0 >= rows[0].y1 && rows[1].y1 <= 800.0,
+            "the menu flips above the pointer when it has no room below: {rows:?}"
         );
     }
 

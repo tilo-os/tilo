@@ -22,7 +22,7 @@ alias      = "type" Ident "=" type ;                          (* another name fo
 default_view = "default" "view" ident "for" ( type | ident ) ;   (* a type, or a root by name *)
 row_view   = "row" "view" ident "for" type ;
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
-role       = "primary" | "destructive" | "migration" | "internal" ;
+role       = "primary" | "destructive" | "migration" ;
 
 type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | derived | search } "}" ;
 field      = { doc } ident ":" type [ "merge" merge_kind ]

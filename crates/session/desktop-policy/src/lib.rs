@@ -879,16 +879,22 @@ impl DesktopPolicy {
     /// tab holds it as when the desk is saved. False when `tab` is not on the
     /// desk any more.
     pub fn adopt(&mut self, app: &str, tab: TabId) -> bool {
+        self.hold_tab(app.to_owned(), tab, true)
+    }
+
+    /// Hold `tab` for the window a launch of `app` is on its way to:
+    /// [`Self::adopt`], with the focus a launch the person asked for takes.
+    fn hold_tab(&self, app: String, tab: TabId, background: bool) -> bool {
         if self.handle.read(|tree| route_of(tree, tab)).is_none() {
             return false;
         }
         self.held
             .borrow_mut()
-            .entry(app.to_owned())
+            .entry(app)
             .or_default()
             .push(HeldTab {
                 tab: Some(tab),
-                background: true,
+                background,
             });
         true
     }
@@ -1205,29 +1211,95 @@ impl DesktopPolicy {
         self.handle.read(|tree| tab_of(tree, window))
     }
 
-    /// The windows the desk shows on the workspace in front, each with the
-    /// id its app announces itself by: what a launch of an app that may
-    /// already be running is decided against. A window still arriving is not
-    /// here, since it has no tab yet.
+    /// The tabs the desk has for apps on the workspace in front whose window
+    /// is there or on its way, each with the id its app announces itself by:
+    /// what a launch of an app that may already be running is decided
+    /// against. A window that mapped is here, and so is the tab a launch
+    /// holds the place of until its window fills it — so a launch of an app
+    /// that is starting raises the window it will have instead of starting
+    /// the app a second time. A tab that already answered for its app is not
+    /// one, and neither is one a saved window waits in that nothing has asked
+    /// for yet: there is no window behind either
+    /// ([`Self::waiting_tab`] is what a launch starts into).
     #[must_use]
-    pub fn windows_in_front(&self) -> Vec<(u64, String)> {
+    pub fn app_tabs_in_front(&self) -> Vec<(TabId, String)> {
+        let held = self.held.borrow();
         self.handle.read(|tree| {
             let Some(workspace) = tree.active_workspace() else {
                 return Vec::new();
             };
+            let answered = self.crashed.borrow();
             workspace
                 .strips
                 .iter()
                 .flat_map(|strip| &strip.window_groups)
                 .flat_map(|group| &group.tabs)
-                .filter_map(|tab| match &tab.tile {
-                    TileContent::Foreign { app_id, surface_id } => {
-                        Some((*surface_id, app_id.clone()))
-                    }
-                    _ => None,
+                .filter(|tab| !answered.contains_key(&tab.id))
+                .filter(|tab| comes(tab, &held))
+                .filter_map(|tab| {
+                    let app = tilo_desktop_model::apps::canonical_app_id(&tab.tile)?;
+                    Some((tab.id, app))
                 })
                 .collect()
         })
+    }
+
+    /// The tab a saved window of `app` waits in, nothing having asked for it
+    /// again yet: what a launch of the app starts into, so the window the
+    /// person left open takes its own tab instead of a second one opening
+    /// beside it. `None` when the app has no such tab here — nothing was left
+    /// open, or the window has come.
+    #[must_use]
+    pub fn waiting_tab(&self, app: &str) -> Option<TabId> {
+        let held = self.held.borrow();
+        self.handle.read(|tree| {
+            let workspace = tree.active_workspace()?;
+            let answered = self.crashed.borrow();
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|tab| {
+                    matches!(&tab.tile, TileContent::LocalApp { note, .. } if note.is_empty())
+                        && !answered.contains_key(&tab.id)
+                        && !comes(tab, &held)
+                        && tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .is_some_and(|id| app_ids_match(&id, app))
+                })
+                .map(|tab| tab.id)
+        })
+    }
+
+    /// Hold `tab`, the tab a saved window of an app waits in, for the window a
+    /// launch asks for now: the window takes that exact tab, and with
+    /// `background` it does so without taking focus, as the restore asks it.
+    /// False when the tab is gone or holds no saved window.
+    pub fn adopt_tab(&mut self, tab: TabId, background: bool) -> bool {
+        let Some(app) = self.handle.read(|tree| {
+            tabs(tree)
+                .find(|found| found.id == tab)
+                .and_then(|found| tilo_desktop_model::apps::canonical_app_id(&found.tile))
+        }) else {
+            return false;
+        };
+        self.hold_tab(app, tab, background)
+    }
+
+    /// Whether a launch holds the place of `tab`: a window was asked for it
+    /// and has not come yet, so nothing else asks for the same window again.
+    #[must_use]
+    pub fn on_its_way(&self, tab: TabId) -> bool {
+        let held = self.held.borrow();
+        held.values().flatten().any(|held| held.tab == Some(tab))
+    }
+
+    /// Bring the tab `tab` forward and focus it, on the next update pass: what
+    /// a launch of an app whose window is there, or on its way in this tab,
+    /// does instead of starting it again. False when the desk holds no such
+    /// tab.
+    pub fn focus_tab(&mut self, tab: TabId) -> bool {
+        self.handle.focus_tab(tab)
     }
 
     /// Where the windows are as of the surface's last layout pass.
@@ -1412,6 +1484,14 @@ fn tab_mut(tree: &mut DesktopTree, window: u64) -> Option<&mut Tab> {
         .flat_map(|strip| &mut strip.window_groups)
         .flat_map(|group| &mut group.tabs)
         .find(|tab| foreign(tab) == Some(window))
+}
+
+/// Whether a window of `tab`'s app is showing in it, or a launch holds its
+/// place until one comes: the tab a window of the app is, or is on its way
+/// to.
+fn comes(tab: &Tab, held: &BTreeMap<String, Vec<HeldTab>>) -> bool {
+    matches!(tab.tile, TileContent::Foreign { .. })
+        || held.values().flatten().any(|held| held.tab == Some(tab.id))
 }
 
 /// Whether the app a window announces is the app a request named: the id

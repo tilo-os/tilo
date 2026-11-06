@@ -133,10 +133,12 @@ impl BrokerChannels {
     }
 
     /// A route with no gate has not been opened encrypted on this device
-    /// yet. Once its gate closes plaintext, no plaintext envelope can pass
-    /// either ingress path, including after a restart. Content sealed under
-    /// any of the channel's epochs passes: a member's write reaches this
-    /// device after the channel's next membership change.
+    /// yet. Once its gate closes plaintext, no live plaintext envelope can
+    /// pass either ingress path, including after a restart. Content sealed
+    /// under any of the channel's epochs passes: a member's write reaches
+    /// this device after the channel's next membership change. History a
+    /// host replayed of the record from before the gate closed passes too,
+    /// as [`Self::document_history_allowed`] decides.
     pub fn document_encryption_allowed(
         &self,
         workspace: &str,
@@ -145,6 +147,26 @@ impl BrokerChannels {
     ) -> bool {
         self.gate_for(workspace, channel)
             .is_none_or(|gate| gate.accepts(encryption, channel))
+    }
+
+    /// Whether a host's replay of `channel`'s retained history may enter.
+    ///
+    /// A record seals from some write on, and its cleartext writes stay the
+    /// base its sealed writes are changes over until a sealed checkpoint
+    /// covers them. A device that was away while the record sealed, or that
+    /// joins it later, reads the record only by taking that base in first;
+    /// the gate refusing plaintext outright would leave such a device
+    /// holding a record it cannot read a word of. So plaintext history
+    /// passes, and live plaintext of every shape is still refused: history
+    /// was signed when its author was allowed to write it in the clear,
+    /// while a live plaintext write is an attempt to write around the gate.
+    pub fn document_history_allowed(
+        &self,
+        workspace: &str,
+        channel: ChannelId,
+        encryption: Option<&EncryptionMetadata>,
+    ) -> bool {
+        encryption.is_none() || self.document_encryption_allowed(workspace, channel, encryption)
     }
 
     /// The verdict on an op for `channel` from the gate governing it

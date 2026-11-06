@@ -53,6 +53,8 @@ tilolang-all = Alle { $kind }
 # Wer eine Zeile des Verlaufs geschrieben hat: die Person selbst.
 tilolang-you = Du
 tilolang-empty = Noch nichts hier
+# What a list says when it lists none of its kind's items: "Noch keine Notizen".
+tilolang-empty-kind = Noch keine { $kind }
 # What a list's entry at its end says while it is empty.
 tilolang-add = Etwas hinzufügen
 

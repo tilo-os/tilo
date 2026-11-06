@@ -279,7 +279,7 @@ fn a_second_launch_raises_the_window_the_app_already_has() {
     until(&mut session, "both windows are on the desk", |session| {
         session
             .desktop()
-            .with_policy(|policy| policy.windows_in_front().len())
+            .with_policy(|policy| policy.app_tabs_in_front().len())
             == 2
     });
     assert_eq!(

@@ -719,6 +719,16 @@ impl TilolangHost {
         for running in &mut self.running {
             changed |= running.hosted.turn();
         }
+        // An undo of an action that wrote several units takes every unit back through its own
+        // instance, and the reverts go out as one action.
+        let across: Vec<collaboration::commit_log::CommitHistory> = self
+            .running
+            .iter_mut()
+            .filter_map(|running| running.hosted.take_undo_across())
+            .collect();
+        for action in &across {
+            changed |= self.undo_across(action);
+        }
         let before = self.running.len();
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
@@ -758,6 +768,87 @@ impl TilolangHost {
             !gone
         });
         changed || self.running.len() != before || self.appliers.len() != applying
+    }
+
+    /// Take the action `action` the person undid back in every unit of it this host runs, each
+    /// through that unit's own instance, and publish the reverts as one action: every part
+    /// carries the same commit, so a peer applies the whole undo or none of it. Whether anything
+    /// was taken back.
+    fn undo_across(&mut self, action: &collaboration::commit_log::CommitHistory) -> bool {
+        // The reverts are one new action of the person's: one fresh invocation names it in every
+        // unit's change, which is what makes the parts one commit.
+        let ambient = tilo_actions::ActionContext {
+            source_invocation: Some(tilo_actions::InvocationId::new()),
+            ..tilo_actions::ActionContext::default()
+        };
+        let mut units: Vec<(String, String, collaboration::DocumentMutation)> = Vec::new();
+        for running in &mut self.running {
+            let route = running.hosted.record().route();
+            let (app, record) = (
+                route.app_id.clone(),
+                route.record.clone().unwrap_or_default(),
+            );
+            let Some(part) = action.parts.iter().find(|part| part.is(&app, &record)) else {
+                continue;
+            };
+            for change in &part.changes {
+                if !running.hosted.can_revert(change) {
+                    continue;
+                }
+                if let Err(error) = running.hosted.revert_step(change, &ambient) {
+                    tracing::warn!(
+                        app, record, %error,
+                        "a unit of an action did not take its step back"
+                    );
+                }
+            }
+            if let Some(change) = running.hosted.unsent_change() {
+                units.push((app, record, change));
+            }
+        }
+        for part in &action.parts {
+            if !units.iter().any(|(app, record, _)| part.is(app, record)) {
+                tracing::warn!(
+                    app = %part.app, record = %part.record,
+                    "no instance of this unit is open here: its step of the undone action stays"
+                );
+            }
+        }
+        if units.is_empty() {
+            return false;
+        }
+        let undo = collaboration::WorkspaceCommit::of_units(
+            &action.workspace,
+            &collaboration::CommitAuthor {
+                principal: None,
+                device: [0; 32],
+            },
+            &units
+                .iter()
+                .map(|(app, record, mutation)| collaboration::UnitMutation {
+                    app,
+                    record,
+                    mutation,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .ok()
+        .and_then(|commits| commits.into_iter().flatten().next());
+        for running in &mut self.running {
+            let route = running.hosted.record().route();
+            let (app, record) = (route.app_id.as_str(), route.record.as_deref().unwrap_or(""));
+            let sent = units
+                .iter()
+                .any(|(unit_app, unit_record, _)| app == unit_app && record == unit_record);
+            if !sent {
+                continue;
+            }
+            match &undo {
+                Some(commit) => running.hosted.share_under(commit),
+                None => running.hosted.share(),
+            }
+        }
+        true
     }
 
     /// How long until the time a view of some instance read (`today` in a query) next reads

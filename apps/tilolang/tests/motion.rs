@@ -71,10 +71,11 @@ fn walk<'a>(node: &'a InspectionNode, out: &mut Vec<&'a InspectionNode>) {
 fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
     fn collect(node: &InspectionNode, in_tree: bool, out: &mut Vec<(String, [f64; 4])>) {
         let in_tree = in_tree || node.widget == "TreeView";
-        if !in_tree && (node.widget == "SwipeRow" || node.widget == "ListRow") {
-            if let Some(name) = node.semantics.as_ref().and_then(|it| it.name.clone()) {
-                out.push((name, node.rect));
-            }
+        if !in_tree
+            && (node.widget == "SwipeRow" || node.widget == "ListRow")
+            && let Some(name) = node.semantics.as_ref().and_then(|it| it.name.clone())
+        {
+            out.push((name, node.rect));
         }
         for child in &node.children {
             collect(child, in_tree, out);

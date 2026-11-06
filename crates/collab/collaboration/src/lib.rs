@@ -166,7 +166,6 @@ pub mod browser_service_sessions;
 pub mod channel_live_activity;
 #[cfg(feature = "broker-transport")]
 pub mod channel_settings;
-#[cfg(feature = "broker-transport")]
 pub mod commit_log;
 #[cfg(feature = "broker-transport")]
 pub mod commits;
@@ -255,8 +254,8 @@ pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 /// zero upward; the broker never assigns this sentinel.
 pub const CURRENT_CONNECTION_PEER_ID: u64 = u64::MAX;
 
-pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use collab_types::{CommitAuthor, CommitPart, DocumentMutation, UnitMutation, WorkspaceCommit};
 pub use runtime_collab::{
     CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationMicrophoneInfo,
     CalibrationMicrophoneRun, CalibrationMicrophoneState, CalibrationPhaseInfo,
@@ -1170,21 +1169,20 @@ impl CollaborationManager {
         self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
-    /// Every complete action this endpoint has seen in `workspace`, oldest
-    /// first: one entry per action, naming its author, its time, what it ran
-    /// and every unit change it made. Empty for a manager with no broker
-    /// connection.
-    #[cfg(feature = "broker-transport")]
+    /// The whole action the change `change` was part of, when this endpoint's
+    /// transport keeps the index of actions it carries in `workspace`: every
+    /// unit the action wrote, which is what one undo takes back. None for a
+    /// manager with no such index.
     #[must_use]
-    pub fn action_history(&self, workspace: &str) -> Vec<crate::commits::CommitHistory> {
+    pub fn action_of(
+        &self,
+        workspace: &str,
+        change: &[u8; 32],
+    ) -> Option<crate::commit_log::CommitHistory> {
         let Backend::Transport(transport) = &self.backend else {
-            return Vec::new();
+            return None;
         };
-        transport
-            .as_any()
-            .and_then(|any| any.downcast_ref::<broker::BrokerTransport>())
-            .map(|channel| channel.action_history(workspace))
-            .unwrap_or_default()
+        transport.action_of(workspace, change)
     }
 
     /// The current state when it differs from the one this method last

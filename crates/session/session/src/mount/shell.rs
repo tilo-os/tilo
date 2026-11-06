@@ -62,6 +62,7 @@ version = 1
 fields = [
   { path = "tab", type = { option = "text" } },
   { path = "anchor", type = { option = { named = "Anchor" } } },
+  { path = "subject", type = { option = { named = "Subject" } } },
   { path = "rows", type = { collection = { named = "Row" } } },
 ]
 
@@ -70,6 +71,13 @@ name = "Anchor"
 fields = [
   { name = "x", type = "float" },
   { name = "y", type = "float" },
+]
+
+[[resources.types]]
+name = "Subject"
+fields = [
+  { name = "title", type = "text" },
+  { name = "app", type = { option = "text" } },
 ]
 
 [[resources.types]]
@@ -211,7 +219,19 @@ pub enum OverlayEffect {
 struct Reading {
     tab: Option<String>,
     anchor: Option<Anchor>,
+    /// What the menu is on, when it is up: the window, named as the person
+    /// knows it, so typing into the menu can be about it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subject: Option<Subject>,
     rows: Vec<Row>,
+}
+
+/// The window a menu is on, as a person names it.
+#[derive(Debug, Serialize)]
+struct Subject {
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app: Option<String>,
 }
 
 /// Where a menu stands, in the desk's coordinates.
@@ -588,6 +608,7 @@ impl Shell {
             return Reading {
                 tab: None,
                 anchor: None,
+                subject: None,
                 rows: Vec::new(),
             };
         };
@@ -595,6 +616,10 @@ impl Shell {
         Reading {
             tab: Some(tab.to_string()),
             anchor: self.anchor(tab, open.anchor),
+            subject: self.handle.window_subject(tab).map(|subject| Subject {
+                title: subject.title,
+                app: subject.app,
+            }),
             rows: self.rows(tab),
         }
     }

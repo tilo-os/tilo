@@ -1106,12 +1106,16 @@ impl Shared {
     }
 
     /// What a secondary click on a window's bar asked, as the window menu's
-    /// own published action: that window's menu up.
+    /// own published action: that window's menu up, where it was pressed.
     pub(crate) fn follow_tab_menus(&self) {
         let tabs = self.desktop.take_tab_menus();
         let mut invocations = self.invocations.borrow_mut();
-        for tab in tabs {
-            invocations.push(Invocation::new(WINDOW_MENU, "open").with("tab", tab.to_string()));
+        for (tab, x, y) in tabs {
+            invocations.push(
+                Invocation::new(WINDOW_MENU, "open")
+                    .with("tab", tab.to_string())
+                    .with("anchor", format!("{x},{y}")),
+            );
         }
     }
 

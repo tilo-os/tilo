@@ -347,6 +347,8 @@ impl Window {
 struct Session {
     host: TilolangHost,
     window: Window,
+    /// The requests the instance's connection sent.
+    sent: Sent,
     /// The broker's end of the instance's connection.
     _broker: Box<dyn std::any::Any>,
 }
@@ -413,7 +415,7 @@ impl Session {
             "ada",
             automerge::AutoCommit::new(),
             None,
-            Box::new(()),
+            (Box::new(()), Rc::default()),
             |hosted| {
                 let mut app = ui::App::new(ui::State::new(), Box::new(hosted));
                 app.init_layout();
@@ -441,7 +443,7 @@ impl Session {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
-            sent,
+            sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
             joined: None,
         });
@@ -452,7 +454,7 @@ impl Session {
             person,
             automerge::AutoCommit::new(),
             None,
-            Box::new(inbox),
+            (Box::new(inbox), sent),
             window,
         )
     }
@@ -468,7 +470,7 @@ impl Session {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
-            sent,
+            sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
             joined: None,
         });
@@ -479,7 +481,7 @@ impl Session {
             "ada",
             doc,
             storage,
-            Box::new(inbox),
+            (Box::new(inbox), sent),
             |hosted| {
                 Window::Harness(Box::new(FrameHarness::new(
                     ui::State::new(),
@@ -500,7 +502,7 @@ impl Session {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
-            sent,
+            sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
             joined: None,
         });
@@ -511,7 +513,7 @@ impl Session {
             "ada",
             doc,
             storage,
-            Box::new(inbox),
+            (Box::new(inbox), sent),
             |hosted| {
                 Window::Harness(Box::new(FrameHarness::new(
                     ui::State::new(),
@@ -524,9 +526,9 @@ impl Session {
 
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
-    /// `broker` is what the broker's end holds, `doc` the workspace record the instance runs
-    /// over, and `storage` where the package keeps what it keeps (nothing: in memory). The window
-    /// settles before it is handed over.
+    /// `wire` is what the broker's end holds and what the instance sends it, `doc` the
+    /// workspace record the instance runs over, and `storage` where the package keeps what it
+    /// keeps (nothing: in memory). The window settles before it is handed over.
     fn over(
         manager: CollaborationManager,
         route: &RouteSpec,
@@ -534,10 +536,10 @@ impl Session {
         person: &str,
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
-        broker: Box<dyn std::any::Any>,
+        wire: (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let mut session = Self::launch(manager, route, app, person, doc, storage, broker, window);
+        let mut session = Self::launch(manager, route, app, person, doc, storage, wire, window);
         session.settle();
         session
     }
@@ -550,7 +552,7 @@ impl Session {
         person: &str,
         doc: ui::tilo_resource::Doc,
         storage: Option<std::path::PathBuf>,
-        broker: Box<dyn std::any::Any>,
+        (broker, sent): (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
@@ -585,8 +587,30 @@ impl Session {
         Self {
             host,
             window: window(HostedWindow::over(theirs)),
+            sent,
             _broker: broker,
         }
+    }
+
+    /// Forget the requests the instance sent so far.
+    fn forget_sent(&self) {
+        self.sent.borrow_mut().clear();
+    }
+
+    /// The entries the instance published to the session's search index since `from`: what it
+    /// upserted, the keys it dropped, and whether it sent the whole set again.
+    fn index_published(&self) -> (usize, usize, bool) {
+        let mut published = (0, 0, false);
+        for request in self.sent.borrow().iter() {
+            if let CollabRequest::PublishSearchIndex { delta_json } = request {
+                let delta = ui::tilo_resource::search_index::IndexDelta::decode(delta_json)
+                    .expect("the session takes every delta");
+                published.0 += delta.upsert.len();
+                published.1 += delta.remove.len();
+                published.2 |= delta.reset;
+            }
+        }
+        published
     }
 
     /// The host's frames and the window's, until neither has anything left to do.
@@ -2284,10 +2308,9 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
 ) {
     // Unasked, an empty window lists the app itself once and each command a
     // person can take now, drawn from what the action declares. An action that
-    // asks for a pick a row cannot collect (Open, Remove, Move to, Delete
-    // project outside a project) is not a row, and neither is one the app keeps
-    // for agents: a task is made by one action, whose title the list's entry
-    // takes, so the window offers it once.
+    // asks for more than a row collects (Open, Remove, Place in board, Move to,
+    // Delete project outside a project) is not a row, but every action is
+    // offered: the app keeps none back from the lists.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -2310,6 +2333,11 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(vec![command, "N".to_owned()]),
             ),
             (
+                "New task due today".to_owned(),
+                Some(ui::icons::Icon::Plus),
+                None,
+            ),
+            (
                 "New project".to_owned(),
                 Some(ui::icons::Icon::FolderPlus),
                 None,
@@ -2325,7 +2353,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         "the empty window's palette"
     );
     let labels: Vec<&str> = empty.iter().map(|(title, ..)| title.as_str()).collect();
-    for internal in [
+    for not_a_row in [
         "tilolang",
         "Submit",
         "Edit a text field",
@@ -2339,10 +2367,12 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         "Quick add",
         "Add subtask",
         "Move to",
+        "Place in board",
+        "Copy below",
     ] {
         assert!(
-            !labels.contains(&internal),
-            "{internal} is never a person's row: {labels:?}"
+            !labels.contains(&not_a_row),
+            "{not_a_row} asks for more than a row collects: {labels:?}"
         );
     }
     // Typed, only what it names.
@@ -2352,7 +2382,7 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
         .collect();
     assert_eq!(
         new,
-        ["New task", "New project"],
+        ["New task", "New task due today", "New project"],
         "the query narrows the list to what it names"
     );
 }
@@ -2364,8 +2394,8 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
     let command = command_modifier(conventions);
     // The window lists the app, the task the entry made and that stands on
     // screen as a resource, and the actions a person can take on it, once each.
-    // Picks a row cannot collect (Assign to…, Move to, Open) stay where they
-    // live, and no row repeats another.
+    // An action that asks for more than a row collects (Assign to…, Place in
+    // board, Move to, Open) stays where it lives, and no row repeats another.
     session
         .window
         .press_key(ui::winit::keyboard::NamedKey::Escape);
@@ -2387,6 +2417,7 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Water the plants",
             "Open",
             "New task",
+            "New task due today",
             "New project",
             "Task summary",
             "Complete",
@@ -2396,7 +2427,6 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "Pick date…",
             "Low",
             "Medium",
-            "High",
         ],
         "the window's palette"
     );
@@ -2440,8 +2470,9 @@ fn an_open_tasks_palette_lists_what_the_task_lets_a_person_do(
             "{not_now} cannot run now, so it is no row: {asked:?}"
         );
     }
-    // A task is made by one action, whose title the list's entry takes, so the window offers it
-    // once, and the task's own picks fill the room the app's two rows leave.
+    // A task is made by an action whose title the list's entry takes, and one more that pins it
+    // to today; their rows fill the room at this height, so the task's last pick (High) stands
+    // below it.
     // The commands a task opens with run in the task's own window, which the
     // live session covers; this window offers the ones above.
     session

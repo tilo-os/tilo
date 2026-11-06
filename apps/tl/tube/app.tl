@@ -325,7 +325,9 @@ destructive action delete_history(yt: YouTube) (icon: .trash, label: "Delete his
 /// search view lists them. The answer arrives through the platform's network, never the app's.
 action search(yt: YouTube, query: Text = yt.search_text) (icon: .search) {
     require query != "" "Type something to search for"
-    name_client(yt)
+    if yt.title == "" {
+        yt.title = "YouTube"
+    }
     yt.search_text = query
     yt.search_state = "searching"
     yt.search_trouble = ""
@@ -335,22 +337,17 @@ action search(yt: YouTube, query: Text = yt.search_text) (icon: .search) {
 /// Leaves the search the feed is showing for the place the person chose: the results stay where
 /// the service wrote them (found again by the query that found them), and the client shows the
 /// place chosen.
-internal action end_search(yt: YouTube) {
+action end_search(yt: YouTube) (label: "Leave search") {
+    applies yt.search_state != "" "No search is showing"
     yt.search_state = ""
-}
-
-/// Names the client, so a root that holds nothing of its own yet is called by its app rather
-/// than by the first thing it comes to hold.
-internal action name_client(yt: YouTube) {
-    if yt.title == "" {
-        yt.title = "YouTube"
-    }
 }
 
 /// Asks the service for the newest videos of each subscribed channel: what the subscriptions feed
 /// shows.
 action refresh_feed(yt: YouTube) (icon: .refresh, label: "Refresh") {
-    name_client(yt)
+    if yt.title == "" {
+        yt.title = "YouTube"
+    }
     yt.feed_state = "loading"
     yt.feed_trouble = ""
     outside("youtube.subscriptions", yt.subscriptions.map(s -> s.key))
@@ -363,7 +360,9 @@ action refresh_channel(c: Channel) (icon: .refresh, label: "Refresh") {
 
 /// Asks the service for the videos it lists as trending.
 action load_trending(yt: YouTube) (icon: .flame, label: "Trending") {
-    name_client(yt)
+    if yt.title == "" {
+        yt.title = "YouTube"
+    }
     outside("youtube.trending", "")
 }
 

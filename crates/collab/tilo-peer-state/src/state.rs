@@ -2194,7 +2194,6 @@ impl StatePeer {
             Ok(()) => {}
             Err(collab_types::ValidationError::ReplaySeq { .. })
                 if !local_app
-                    && !candidate.encryption_required
                     && matches!(
                         &payload,
                         collab_types::WholeDocumentPayload::Cleartext(DocumentMutation::Snapshot(
@@ -2227,7 +2226,10 @@ impl StatePeer {
             return Err("a document compaction is only ever sealed".into());
         }
         let mutation = match (payload, local) {
-            (collab_types::WholeDocumentPayload::Encrypted { .. }, Some(LocalWrite::Opened(open))) => {
+            (
+                collab_types::WholeDocumentPayload::Encrypted { .. },
+                Some(LocalWrite::Opened(open)),
+            ) => {
                 // Every check on the sealed envelope, its author's signature over
                 // the ciphertext included, passed above: only now is it opened,
                 // and the plaintext takes the normal admission path below.
@@ -2243,49 +2245,64 @@ impl StatePeer {
                 return Err("only a sealed write is opened by its key holder".into());
             }
             (payload, _) => match payload {
-            collab_types::WholeDocumentPayload::Cleartext(mutation) if !candidate.encryption_required=>mutation,
-            collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
-                // A replica without exact admission evidence keeps no sealed
-                // history: it only records that the record is encrypted, so a
-                // later plaintext write cannot downgrade it.
-                candidate.encryption_required = true;
-                self.core.documents.insert(route, candidate);
-                return Ok(AdmissionReport::new(
-                    InputDisposition::RetryLater(MissingPrerequisite::PersistedMls),
-                    ReceiveOutcome {
-                        metadata_changed: true,
-                        incomplete: self.incomplete_reason(),
-                        ..Default::default()
-                    },
-                ));
-            }
-            collab_types::WholeDocumentPayload::Encrypted { .. } => {
-                // A sealed change needs the record it changes; a write that
-                // is the whole record — a compaction, or a checkpoint such as
-                // the one a host keeps at the head of a sealed channel —
-                // founds the route for a replica that holds none of it, as a
-                // device catching up from a store that holds only ciphertext
-                // does.
-                if !route_existed && !envelope.is_whole_record() {
-                    return self.defer(
-                        source,
-                        NeighbourMsg::AppDocument {
-                            peer,
-                            app_id: route.app,
-                            cluster_id,
-                            record_id: route.record,
-                            envelope,
-                        },
-                        Held {
-                            retained_replay,
-                            prerequisite: MissingPrerequisite::RecordCheckpoint,
-                            now,
-                        },
-                    );
+                collab_types::WholeDocumentPayload::Cleartext(mutation)
+                    if !candidate.encryption_required || retained_replay =>
+                {
+                    mutation
                 }
-                return self.admit_sealed(route, candidate, validated_channel, *envelope);
-            }
-            collab_types::WholeDocumentPayload::Cleartext(_)=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
+                collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
+                    // A replica without exact admission evidence keeps no sealed
+                    // history: it only records that the record is encrypted, so a
+                    // later plaintext write cannot downgrade it.
+                    candidate.encryption_required = true;
+                    self.core.documents.insert(route, candidate);
+                    return Ok(AdmissionReport::new(
+                        InputDisposition::RetryLater(MissingPrerequisite::PersistedMls),
+                        ReceiveOutcome {
+                            metadata_changed: true,
+                            incomplete: self.incomplete_reason(),
+                            ..Default::default()
+                        },
+                    ));
+                }
+                collab_types::WholeDocumentPayload::Encrypted { .. } => {
+                    // A sealed change needs the record it changes; a write that
+                    // is the whole record — a compaction, or a checkpoint such as
+                    // the one a host keeps at the head of a sealed channel —
+                    // founds the route for a replica that holds none of it, as a
+                    // device catching up from a store that holds only ciphertext
+                    // does.
+                    if !route_existed && !envelope.is_whole_record() {
+                        return self.defer(
+                            source,
+                            NeighbourMsg::AppDocument {
+                                peer,
+                                app_id: route.app,
+                                cluster_id,
+                                record_id: route.record,
+                                envelope,
+                            },
+                            Held {
+                                retained_replay,
+                                prerequisite: MissingPrerequisite::RecordCheckpoint,
+                                now,
+                            },
+                        );
+                    }
+                    return self.admit_sealed(route, candidate, validated_channel, *envelope);
+                }
+                collab_types::WholeDocumentPayload::Cleartext(_) => {
+                    // A live plaintext write to a record this device seals is a
+                    // downgrade, and refused. Retained history of the record
+                    // from before the seal is taken in above instead: it is the
+                    // cleartext base the sealed writes are changes over, so a
+                    // device returning to the record, or joining it later, reads
+                    // it by taking that base in first.
+                    return Err(
+                    "incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden"
+                        .into(),
+                );
+                }
             },
         };
         candidate.channel = validated_channel;
