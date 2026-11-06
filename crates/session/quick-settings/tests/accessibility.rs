@@ -53,7 +53,7 @@ fn panel() -> Surface {
         .anchor(Anchor::TOP | Anchor::RIGHT)
         .size((
             tilo_quick_settings::resource::PANEL_WIDTH,
-            u32::try_from(HEIGHT).unwrap(),
+            tilo_quick_settings::resource::PANEL_HEIGHT,
         ))
         .keyboard(Keyboard::OnDemand)
 }

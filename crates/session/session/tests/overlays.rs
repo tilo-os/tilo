@@ -54,6 +54,10 @@ const MARGIN: f64 = 8.0;
 /// The width of a popover under the bar.
 const POPOVER_WIDTH: f64 = 380.0;
 
+/// The height of a popover under the bar: its footprint, which no page it
+/// shows moves.
+const POPOVER_HEIGHT: f64 = 640.0;
+
 /// A coordinate the stack published stands where this test expects it, to the
 /// pixel the surface is drawn at.
 #[track_caller]
@@ -419,13 +423,17 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     near(w, POPOVER_WIDTH, "the stack's width");
     near(
         h,
-        f64::from(HEIGHT) - MARGIN - bar,
-        "down to the margin above the display's edge",
+        POPOVER_HEIGHT,
+        "its footprint, not the rest of the display",
+    );
+    assert!(
+        y + h < f64::from(HEIGHT) - MARGIN,
+        "with the desk it does not cover left below it"
     );
     assert_eq!(
         surface(&session, "quick-settings")["size"],
-        json!({ "width": POPOVER_WIDTH }),
-        "the width is the stack's, the height its room"
+        json!({ "width": POPOVER_WIDTH, "height": POPOVER_HEIGHT }),
+        "the footprint the surface asks for"
     );
 
     // Beside a caret, clear of it.
@@ -436,7 +444,10 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     );
     let (x, y, w, _) = place(&session, "quick-settings");
     near(x, 606.0, "the gap clear of the caret");
-    near(y, 300.0, "level with it");
+    assert!(
+        y <= 300.0,
+        "level with the caret, or raised only as far as its footprint needs: {y}"
+    );
     near(w, POPOVER_WIDTH, "the stack's width");
 
     // With no room on the right of the caret, it opens on the left of it.

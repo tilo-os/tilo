@@ -47,29 +47,34 @@ const OPENING: Duration = Duration::from_secs(90);
 /// next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The panel, as the session starts it: below the bar's right end.
+/// The panel, as the desk starts it: below the bar's right end, at the
+/// footprint it gives a popover.
 fn panel() -> Surface {
-    let height = u32::try_from(HEIGHT).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .size((
+            tilo_quick_settings::resource::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_HEIGHT,
+        ))
         .keyboard(Keyboard::OnDemand)
 }
 
-/// The panel as the session places it on an `output`: `BAR` pixels down from
-/// the output's top edge for the bar, and the popover margin off its right
-/// and bottom edges, so it never runs past the screen.
-fn panel_on_a_laptop(output: (i32, i32)) -> Surface {
+/// The panel as the desk places it on an `output`: `BAR` pixels down from the
+/// output's top edge for the bar, and the popover margin off its right edge,
+/// at the footprint it gives a popover — the output's height does not size it.
+fn panel_on_a_laptop(_output: (i32, i32)) -> Surface {
     const BAR: i32 = 32;
     const MARGIN: i32 = 8;
-    let height = u32::try_from(output.1 - BAR - MARGIN).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .size((
+            tilo_quick_settings::resource::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_HEIGHT,
+        ))
         .margin((BAR, MARGIN, MARGIN, 0))
         .keyboard(Keyboard::OnDemand)
 }
@@ -1154,15 +1159,17 @@ fn session_of_device_prepared_with(
 /// The panel placed as the session places it on an `output` of `logical`
 /// pixels: under the bar, against the trailing edge, keeping off the
 /// bottom edge.
-fn panel_on_an_output(logical: (i32, i32)) -> Surface {
+fn panel_on_an_output(_logical: (i32, i32)) -> Surface {
     const BAR: i32 = 32;
     const MARGIN: i32 = 8;
-    let height = u32::try_from(logical.1 - BAR - MARGIN).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .size((
+            tilo_quick_settings::resource::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_HEIGHT,
+        ))
         .margin((BAR, MARGIN, MARGIN, 0))
         .keyboard(Keyboard::OnDemand)
 }
