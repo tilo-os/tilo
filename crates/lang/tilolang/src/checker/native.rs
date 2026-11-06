@@ -934,7 +934,7 @@ impl Checker<'_> {
         n
     }
 
-    /// The declared action or flow a button's first argument applies, when it applies one.
+    /// The declared action a button's first argument applies, when it applies one.
     fn declared_action(&self, args: &[ast::Arg]) -> Option<Callable> {
         let first = args
             .iter()
@@ -952,7 +952,7 @@ impl Checker<'_> {
             }
             _ => None,
         }?;
-        matches!(found.kind, CKind::Action | CKind::Flow).then(|| found.clone())
+        matches!(found.kind, CKind::Action).then(|| found.clone())
     }
 
     /// What a button for the application `applied` (`pin(m)`, `move_to(b, card, other)`) shows

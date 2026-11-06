@@ -1027,7 +1027,7 @@ fn an_agent_finds_the_hosts_operations_in_the_survey_and_reads_the_catalogue() {
         .filter(|d| d.address.resource == HOST)
         .map(|d| d.address.action)
         .collect();
-    for wanted in ["run-block", "run-flow", "catalogue"] {
+    for wanted in ["run-block", "catalogue"] {
         assert!(host_actions.iter().any(|a| a == wanted), "{host_actions:?}");
     }
     let resources = Workspace::resources();
@@ -1303,14 +1303,12 @@ fn today_workspace() -> (Workspace, usize) {
     (workspace, finished)
 }
 
-fn cleanup_args(workspace: &Workspace) -> Json {
+/// A block an agent writes that runs Today's cleanup over the list and the notebook.
+fn cleanup_call(workspace: &Workspace) -> String {
     let host = workspace.window.current_host().unwrap();
     let list = host.root_of("so.tilo.lang.tasks").unwrap().id_string();
     let notebook = host.root_of("so.tilo.lang.notes").unwrap().id_string();
-    serde_json::json!({
-        "flow": "so.tilo.lang.today.morning_cleanup",
-        "args": serde_json::json!({"list": list, "nb": notebook}).to_string(),
-    })
+    format!("today.morning_cleanup(@tasks.Tasks:{list}, @notes.Notes:{notebook})")
 }
 
 /// The titles of the tasks the list holds, in the order they stand.
@@ -1363,24 +1361,22 @@ fn assert_the_finished_tasks_went(workspace: &Workspace, before: &[String]) {
 }
 
 #[test]
-fn an_agent_runs_a_flow_of_a_trusted_package_and_reads_what_it_returned() {
+fn an_agent_runs_another_packages_action_and_reads_what_it_returned() {
     let (mut workspace, finished) = today_workspace();
     let before = todo_titles(&workspace);
-    let args = cleanup_args(&workspace);
+    let source = cleanup_call(&workspace);
     let output = workspace
-        .agent_invokes(HOST, "run-flow", &args)
+        .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(
-        output,
-        serde_json::json!({"state": "done", "result": finished})
-    );
+    assert_eq!(output["state"], "done", "{output}");
+    assert_eq!(output["result"], finished.to_string(), "{output}");
     assert_the_finished_tasks_went(&workspace, &before);
 }
 
 #[test]
-fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
+fn an_action_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     let (mut workspace, finished) = today_workspace();
     // The person narrowed this agent in the workspace: changes to the todo app ask first.
     let mut policy = policy::WorkspacePolicy::new("workspace", "ada");
@@ -1403,32 +1399,20 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
     let notes = workspace.items_of("so.tilo.lang.notes", "notes");
     let args = cleanup_args(&workspace);
     let waiting = workspace
-        .agent_invokes(HOST, "run-flow", &args)
+        .agent_invokes(HOST, "run-block", &serde_json::json!({ "source": source }))
         .unwrap()
         .value
         .unwrap();
-    assert_eq!(waiting["state"], "suspended", "{waiting}");
-    assert!(
-        workspace.window.view().asks().is_some(),
-        "the window asks the person, as for a press"
-    );
+    assert_eq!(waiting["state"], "suggested", "{waiting}");
     assert_eq!(
         workspace.items_of("so.tilo.lang.tasks", "items"),
         todos,
         "nothing went while it waits"
     );
-    let run = waiting["run"].as_str().unwrap().to_owned();
-    // The clear asks once; the note Today files for itself does not.
-    let mut approvals = 0;
-    let completed = loop {
-        let answer = person_decides(&mut workspace, "approve", &run).unwrap();
-        approvals += 1;
-        if answer["state"] != "suspended" || approvals > 8 {
-            break answer;
-        }
-    };
+    // The clear asks; the note Today files for itself does not.
+    let id = waiting["invocation"].as_str().unwrap().to_owned();
+    let completed = person_decides(&mut workspace, "approve", &id).unwrap();
     assert_eq!(completed["state"], "done", "{completed}");
-    assert_eq!(approvals, 1, "one approval for the clear");
     assert_eq!(
         workspace.items_of("so.tilo.lang.tasks", "items"),
         todos - finished,
@@ -1440,7 +1424,7 @@ fn a_flow_an_agent_may_not_run_alone_waits_for_a_person_and_completes_once() {
         "and one note says so"
     );
     assert!(
-        person_decides(&mut workspace, "approve", &run).is_err(),
+        person_decides(&mut workspace, "approve", &id).is_err(),
         "it completes once"
     );
     workspace.settle();
@@ -1469,7 +1453,7 @@ fn a_person_presses_morning_cleanup_and_the_finished_todos_go() {
     workspace
         .window
         .act(UiEvent::Fire(morning, "press".to_owned(), None));
-    // The person answers whatever the flow asks, as the ask bar has them.
+    // The person answers whatever the run asks, as the ask bar has them.
     for _ in 0..8 {
         workspace.settle();
         let Some(_) = workspace.window.view().asks() else {

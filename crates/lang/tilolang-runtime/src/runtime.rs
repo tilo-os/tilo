@@ -11,10 +11,10 @@ use crate::core::{Core, ModelHost, OutsideSink};
 use crate::engine::EngineLimits;
 use crate::error::RuntimeError;
 use crate::exec::InvokeOutcome;
-use crate::flow::{FlowOutcome, Resolution};
 use crate::ids::{DocId, ModuleHash, PackageId, Principal, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
+use crate::run::Resolution;
 use crate::settle::{AgentBlock, InvocationRecord};
 use crate::store::{ChangeNote, OutboxEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
@@ -84,7 +84,7 @@ impl OutsideSink for MemorySink {
     }
 }
 
-/// The tilolang runtime: loads packages and runs their actions, flows and views.
+/// The tilolang runtime: loads packages and runs their actions, programs and views.
 pub struct Runtime {
     pub(crate) core: Rc<Core>,
 }
@@ -183,7 +183,6 @@ impl Runtime {
             .iter()
             .map(|a| format!("a_{}", a.id))
             .chain(meta.views.iter().map(|v| format!("v_{}", v.id)))
-            .chain(meta.flows.iter().map(|f| format!("f_{}", f.id)))
             .chain(meta.fns.iter().map(|f| format!("n_{}", f.id)))
             .chain(
                 meta.at_event
@@ -526,7 +525,7 @@ impl Runtime {
         invoker: &Principal,
         action: &str,
         args: Vec<Value>,
-        suggestion: &crate::flow::Suggestion,
+        suggestion: &crate::run::Suggestion,
     ) -> Result<ResourceRef, RuntimeError> {
         let aref = ActionRef {
             action: action.to_owned(),
@@ -745,20 +744,6 @@ impl Runtime {
         tilolang::natural::dated(text, now, offset)
     }
 
-    /// Run a flow. It finishes, or suspends on a suggestion waiting for a decision.
-    ///
-    /// # Errors
-    ///
-    /// An unknown flow, arguments that do not fit, or a trap.
-    pub fn run_flow(
-        &self,
-        principal: &Principal,
-        flow: &str,
-        args: Vec<Value>,
-    ) -> Result<FlowOutcome, RuntimeError> {
-        self.core.start_flow(principal, flow, args, Vec::new())
-    }
-
     /// Answer the suggestion a run waits on and continue the run.
     ///
     /// # Errors
@@ -769,7 +754,7 @@ impl Runtime {
         run: &RunId,
         approver: &Principal,
         resolution: Resolution,
-    ) -> Result<FlowOutcome, RuntimeError> {
+    ) -> Result<crate::run::RunOutcome, RuntimeError> {
         self.core.resolve(run, approver, resolution)
     }
 

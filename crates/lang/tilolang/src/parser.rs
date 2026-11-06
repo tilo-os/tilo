@@ -5,10 +5,10 @@
 
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
-    DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FlowDecl,
-    FnDecl, Ident, Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern,
-    Place, Proposal, RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl,
-    Stmt, StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
+    DefaultViewDecl, DerivedDecl, EnumDecl, Expr, ExprKind, FieldDecl, FieldMarker, FnDecl, Ident,
+    Item, LetBind, MarkerArg, MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal,
+    RootDecl, ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, StateLayer, Stmt,
+    StmtKind, StrPart, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp,
     UseDecl, VariantDecl, ViewDecl, ViewsDecl,
 };
 use crate::diag::{Diagnostic, Span};
@@ -225,7 +225,7 @@ pub const APP_CATEGORIES: &[&str] = &[
     "utility",
     "system",
 ];
-const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "flow", "view", "fn"];
+const ITEM_KWS: &[&str] = &["use", "type", "enum", "action", "view", "fn"];
 const TYPE_ARGS: &[&str] = &[
     "List",
     "Set",
@@ -236,7 +236,7 @@ const TYPE_ARGS: &[&str] = &[
     "Result",
     "State",
 ];
-const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `flow`, `view`, `template view`, `fn`, `scenario` or `trigger`";
+const ITEM_EXPECTED: &str = "`use`, `type`, `enum`, `root`, `default view`, `row view`, `action`, `view`, `template view`, `fn`, `scenario` or `trigger`";
 
 impl<'a> Parser<'a> {
     fn new(toks: Vec<Token>, src: &'a str) -> Self {
@@ -694,7 +694,7 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
         let next_is_role = matches!(self.peek_at(1), Tok::Ident(n) if n == "primary" || n == "destructive" || n == "migration" || n == "internal");
-        (matches!(self.peek_at(1), Tok::Kw("action" | "flow")) || next_is_role).then_some(role)
+        (matches!(self.peek_at(1), Tok::Kw("action")) || next_is_role).then_some(role)
     }
 
     /// `root T` at the start of an item.
@@ -981,9 +981,12 @@ impl<'a> Parser<'a> {
             }
             role = Some((r, span));
         }
-        if role.is_some() && self.is_kw("flow") {
+        if matches!(self.peek(), Tok::Ident(n) if n == "flow") {
             let span = self.span();
-            return self.fail(span, "`primary` and `destructive` mark actions; a flow is offered as it is. Write the flow without the word, or make it an action");
+            return self.fail(
+                span,
+                "`flow` is not a declaration: an action that runs other actions is an action. Write `action` in its place",
+            );
         }
         let Tok::Kw(kw) = self.peek().clone() else {
             return self.unexpected(ITEM_EXPECTED);
@@ -996,7 +999,6 @@ impl<'a> Parser<'a> {
             "type" => self.type_decl(doc, start).map(Item::Type),
             "enum" => self.enum_decl(doc, start).map(Item::Enum),
             "action" => self.action(doc, role, start).map(Item::Action),
-            "flow" => self.flow(doc, start).map(Item::Flow),
             "view" => self.view(doc, start).map(Item::View),
             "fn" => self.func(doc, start).map(Item::Fn),
             _ => self.unexpected(ITEM_EXPECTED),
@@ -1613,8 +1615,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `uses web, time` after an action's or flow's parameters: what its body reads that a
-    /// replay cannot compute again.
+    /// `uses web, time` after an action's parameters: what its body reads that a replay cannot
+    /// compute again.
     fn uses(&mut self) -> PResult<Vec<Ident>> {
         let mut out = Vec::new();
         if !matches!(self.peek(), Tok::Ident(w) if w == "uses") {
@@ -1647,30 +1649,6 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Tok::RParen)?;
         Ok(out)
-    }
-
-    fn flow(&mut self, doc: Vec<String>, start: Span) -> PResult<FlowDecl> {
-        self.expect_kw("flow")?;
-        let node = self.node();
-        let name = self.ident("a flow name")?;
-        let params = self.params()?;
-        let result = if self.eat(&Tok::Arrow) {
-            Some(self.type_expr()?)
-        } else {
-            None
-        };
-        let uses = self.uses()?;
-        let body = self.block()?;
-        Ok(FlowDecl {
-            node,
-            doc,
-            name,
-            params,
-            result,
-            uses,
-            body,
-            span: start.to(Span::new(self.prev_end(), self.prev_end())),
-        })
     }
 
     fn func(&mut self, doc: Vec<String>, start: Span) -> PResult<FnDecl> {
@@ -2258,7 +2236,7 @@ impl<'a> Parser<'a> {
                 let span = self.span();
                 return self.fail(
                     span,
-                    "flows invoke an action by calling it: write `act(args)`, without `do`",
+                    "an action is invoked by calling it: write `act(args)`, without `do`",
                 );
             }
             Tok::Dot if matches!(self.peek_at(1), Tok::Ident(_)) => {

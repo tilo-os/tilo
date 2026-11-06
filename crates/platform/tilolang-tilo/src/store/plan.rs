@@ -44,12 +44,17 @@ impl Inner {
             // A new item, stored by its id, placed before the item the program saw at the
             // place it named (else at the end), so a concurrent insert, removal or move
             // elsewhere does not shift where it lands.
-            Mutation::CollInsert { field, item, index } => {
+            Mutation::CollInsert {
+                field,
+                item,
+                index,
+                id,
+            } => {
                 let key = self.key_for(at, field, *index, None)?;
                 let schema = lookup(&item.ty)
                     .ok_or_else(|| not_found(format!("type {} is not registered", item.ty)))?;
                 let record = DynRecord::empty(schema).map_err(backend)?.to_json();
-                let id = self.fresh("i");
+                let id = id.clone().unwrap_or_else(|| self.fresh("i"));
                 let placement = Placement::At {
                     place: Place {
                         parent: at.item.clone(),

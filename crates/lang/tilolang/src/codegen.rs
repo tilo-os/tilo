@@ -2,11 +2,11 @@
 //!
 //! The module imports from `"tl"` only the [`Imp`]s it calls, in the order of that table. It
 //! exports `memory`, which holds the string literals and nothing else, and one function per
-//! declaration, named by its id: `a_<id>` for actions, `f_<id>` for flows, `v_<id>` for views,
-//! `n_<id>` for fns, `d_<action>_<param>` for parameter defaults and `b_main` for a block. The
-//! metadata goes in the custom section `tilolang.meta`. A flow's action calls are plain calls of
-//! the `invoke` import; suspending and replaying a flow is the host's job, so the guest keeps no
-//! state between calls.
+//! declaration, named by its id: `a_<id>` for actions, `v_<id>` for views, `n_<id>` for fns,
+//! `d_<action>_<param>` for parameter defaults and `b_main` for a block. The metadata goes in the
+//! custom section `tilolang.meta`. An action's call of another package's action is a plain call
+//! of the `invoke` import; suspending and replaying a run is the host's job, so the guest keeps
+//! no state between calls.
 
 use crate::abi::Imp;
 use crate::ir::{BinOp, Conv, Ek, Expr, ForList, Func, Module as IrModule, Stmt};

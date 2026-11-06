@@ -1,5 +1,5 @@
 //! Package metadata, the JSON in the module's `tilolang.meta` section: the package's types,
-//! enums, actions (with their effect class and what they reach), views, flows and fns, by id
+//! enums, actions (with their effect class and what they reach), views and fns, by id
 //! and name, with their doc comments. Tools, the runtime, the platform and agents read it;
 //! compiled packages are imported through it. The platform derives the agent's catalogue, the
 //! published actions and the app's surface from it.
@@ -131,7 +131,6 @@ pub struct PackageMeta {
     pub words: Vec<WordMeta>,
     pub actions: Vec<ActionMeta>,
     pub views: Vec<ViewMeta>,
-    pub flows: Vec<FlowMeta>,
     pub fns: Vec<FnMeta>,
     /// Ids of the root types (`root T`): one resource each per workspace, which the launcher
     /// lists and opens.
@@ -563,7 +562,7 @@ impl DefaultMeta {
     }
 }
 
-/// An action or flow that code can reach, with its effect class. `own` is relative to the
+/// An action that code can reach, with its effect class. `own` is relative to the
 /// package whose metadata lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Reach {
@@ -722,20 +721,6 @@ pub struct ViewMeta {
     /// item, never offered or listed as a view of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_of: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct FlowMeta {
-    pub id: String,
-    pub name: String,
-    pub doc: String,
-    pub params: Vec<ParamMeta>,
-    pub result: Option<String>,
-    pub class: EffectClass,
-    pub reaches: Vec<Reach>,
-    /// `uses web, time`: the effects the flow's body reads ([`crate::effects::Effect`]).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub uses: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

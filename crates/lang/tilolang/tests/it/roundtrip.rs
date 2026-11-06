@@ -55,7 +55,7 @@ fn area(s: Shape) -> Int {
     }
 }
 
-flow f(l: todo.TodoList) -> Result<(), Text> {
+action f(l: todo.TodoList) -> Result<(), Text> {
     let m = [1, 2].map(i -> i + 1)
     todo.add(l, "a {m.len()} b {"nested {1}"}")
     let r = @todo.TodoList:01J8ZK4T

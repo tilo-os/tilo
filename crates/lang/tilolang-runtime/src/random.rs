@@ -1,9 +1,9 @@
 //! Imports over draws: `random.int(lo, hi)`, `random.float()`, `random.choice(xs)`,
 //! `random.shuffle(xs)` and `random.id()`.
 //!
-//! A draw is made where the action or flow runs, on the device invoking it, from the system's
-//! CSPRNG, and the number it drew is kept in the invocation's journal: a run resumed, or a
-//! change replayed, reads the numbers it drew the first time (effects.md, "Modules"). All five
+//! A draw is made where the action runs, on the device invoking it, from the system's
+//! CSPRNG, and the number it drew is kept in the action's journal: a run replayed
+//! reads the numbers it drew the first time (effects.md, "Modules"). All five
 //! are one primitive, a number in `0..upto` the draw is uniform over; a choice, a shuffle, a
 //! float and an id are arithmetic on those numbers, so each keeps a journal entry per number it
 //! drew rather than one per call.
@@ -11,7 +11,7 @@
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, ret_f64, ret_i64, trap};
 use crate::engine::{HostFail, Wasm};
-use crate::flow::JournalEntry;
+use crate::run::JournalEntry;
 use crate::value::Value;
 
 /// A `random.float()` is one draw of this many bits out of `2^53`, which is every integer an
@@ -99,36 +99,31 @@ impl Core {
         }
         {
             let mut frames = self.frames.borrow_mut();
-            let Some(mut effects) = frames.effects() else {
-                return trap("a draw is only available in an action or a flow");
+            let Some(run) = frames.run_mut() else {
+                return trap("a draw is only available in an action");
             };
-            match effects.next_entry() {
-                Some(JournalEntry::Random { upto: drawn, value })
-                    if drawn == upto && (0..upto).contains(&value) =>
-                {
-                    return Ok(value);
-                }
-                Some(JournalEntry::Random { upto: drawn, value }) => {
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                let JournalEntry::Random {
+                    upto: drawn,
+                    value,
+                } = entry
+                else {
+                    return trap(
+                        "the run diverged from its journal: expected the entry of the draw it made",
+                    );
+                };
+                if *drawn != upto || !(0..upto).contains(value) {
                     return trap(format!(
-                        "the invocation diverged from its journal: it drew {value} of 0..{drawn} where it draws one of 0..{upto}"
+                        "the run diverged from its journal: it drew {value} of 0..{drawn} where it draws one of 0..{upto}"
                     ));
                 }
-                Some(_) => {
-                    return trap(
-                        "the invocation diverged from its journal: expected the entry of the draw it made",
-                    );
-                }
-                None => {}
+                let value = *value;
+                run.cursor = run.cursor.saturating_add(1);
+                return Ok(value);
             }
         }
         let value = below(upto)?;
-        {
-            let mut frames = self.frames.borrow_mut();
-            if let Some(mut effects) = frames.effects() {
-                effects.push(JournalEntry::Random { upto, value });
-            }
-        }
-        self.save_flow_journal()?;
+        self.journal_push(JournalEntry::Random { upto, value })?;
         Ok(value)
     }
 }

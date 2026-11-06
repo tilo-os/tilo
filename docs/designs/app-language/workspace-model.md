@@ -128,7 +128,7 @@ default view note_editor for Note
   which only their devices hold the key to and every door decides as theirs alone, the
   workspace's owner included. Another member opening the app in the same workspace starts from
   their own, empty record.
-- `open(r)` is an action usable from views and flows.
+- `open(r)` is an action usable from views and from actions.
 
 ## 9. The arrangement is a resource
 

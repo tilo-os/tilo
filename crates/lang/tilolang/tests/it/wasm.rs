@@ -59,9 +59,6 @@ fn assert_shape(c: &Compiled) {
     for v in &c.meta.views {
         assert!(s.exports.contains(&format!("v_{}", v.id)));
     }
-    for f in &c.meta.flows {
-        assert!(s.exports.contains(&format!("f_{}", f.id)));
-    }
     for f in &c.meta.fns {
         assert!(s.exports.contains(&format!("n_{}", f.id)));
     }
@@ -134,7 +131,7 @@ fn the_todo_app_validates() {
 }
 
 #[test]
-fn a_flow_that_invokes_a_foreign_action_validates() {
+fn an_action_that_invokes_a_foreign_action_validates() {
     let c = compile_with(&fixture("cleanup.tl"), &[todo_meta()]).expect("compiles");
     assert_shape(&c);
     let names: Vec<String> = shape(&c.wasm).imports.into_iter().map(|(_, n)| n).collect();

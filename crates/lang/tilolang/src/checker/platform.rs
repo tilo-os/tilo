@@ -682,14 +682,14 @@ impl Checker<'_> {
             [a] if a.name.is_none() => match &a.value.kind {
                 ast::ExprKind::Ident(name) if self.lookup(name).is_none() => self
                     .own_callable(name)
-                    .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                    .filter(|c| matches!(c.kind, CKind::Action))
                     .map(|c| c.id.clone()),
                 ast::ExprKind::Field { base, name } if self.names_import(base) => {
                     super::expr::dotted(base).and_then(|path| {
                         let import = self.env.find_import(&path.join("."))?;
                         self.env
                             .foreign_callable(&import.app, &name.name)
-                            .filter(|c| matches!(c.kind, CKind::Action | CKind::Flow))
+                            .filter(|c| matches!(c.kind, CKind::Action))
                             .map(|c| c.id.clone())
                     })
                 }

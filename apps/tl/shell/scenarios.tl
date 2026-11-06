@@ -1981,6 +1981,11 @@ scenario "a reference lands beside its place" -> Arrangement {
         ),
     )
     a_note_place(a, talks, 1)
+    // The note's place is inserted by an action of its own, so it stands before the chat place
+    // the scenario inserted: the strip says which place is in front.
+    if let strip = a.strips.find(s -> s.key == talks) {
+        strip.active = "ch"
+    }
     v.focused = talks
     a
 }

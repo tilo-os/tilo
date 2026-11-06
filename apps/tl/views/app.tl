@@ -137,7 +137,7 @@ action add(all: Views, m: chat.Message) -> WrittenView (icon: .plus, label: "Add
 }
 
 /// Sends a view to a channel: anyone there can add it to their own views.
-flow send(v: WrittenView, to: chat.TextChannel) {
+action send(v: WrittenView, to: chat.TextChannel) {
     chat.send_view(to, v.title, v.definition)
 }
 

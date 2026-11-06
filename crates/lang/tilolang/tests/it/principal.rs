@@ -67,12 +67,11 @@ fn a_requirement_reads_the_invoker_who_would_invoke_it_where_it_is_offered() {
 }
 
 #[test]
-fn flows_take_no_principal_but_actions_views_and_fns_may() {
+fn actions_views_and_fns_take_a_principal() {
     assert!(
         codes("action a(p: Principal) {\n}").is_empty(),
         "a person the action acts on; who acts is `invoker`"
     );
-    assert_eq!(codes("flow f(p: Principal) {\n}"), vec!["E048"]);
     assert!(codes("fn f(p: Principal) -> Principal {\n    return p\n}").is_empty());
     assert!(codes("view v(p: Principal) {\n    text(p.name())\n}").is_empty());
 }

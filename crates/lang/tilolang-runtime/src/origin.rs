@@ -108,6 +108,7 @@ impl Runtime {
                         field,
                         item: new,
                         index: None,
+                        id: None,
                     },
                 )?;
                 let Applied::Item(id) = applied else {

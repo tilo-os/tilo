@@ -278,7 +278,7 @@ fn an_action_a_view_applies_takes_its_view_state_as_it_is_at_the_press() {
         "{:?}",
         codes(&acting)
     );
-    // A flow or an action reads its own arguments as they are.
+    // An action reads its own arguments as they are.
     ok(
         "action a(c: C, t: Text) {\n    c.t = t\n}\naction b(c: C) {\n    let t = c.t\n    a(c, t)\n}",
     );

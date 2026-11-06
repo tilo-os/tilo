@@ -1,6 +1,6 @@
 //! [`TiloAuthority`]: who may invoke what on the platform (authority.md).
 //!
-//! The runtime asks before every invocation it makes on its own (a flow's step, an agent's block,
+//! The runtime asks before every invocation it makes on its own (a step of a run, an agent's block,
 //! a press in a view), and the answer is the one `tilo_action_policy` gives every door: the
 //! person's authority in the workspace ([`Standing`]), bounded by whoever acts for them (an agent, by
 //! its delegation and the answers the person gave it) and by every author of the code that led to
@@ -51,7 +51,7 @@ struct State {
     trusted: HashSet<ModuleHash>,
     /// The application each loaded module version is the code of.
     apps: HashMap<ModuleHash, String>,
-    /// The resource kind each action and flow is published under, by its id.
+    /// The resource kind each action is published under, by its id.
     kinds: HashMap<String, String>,
     /// The principals the door admitted as software acting for a person, with that person.
     agents: HashMap<String, Option<String>>,
@@ -98,9 +98,6 @@ impl TiloAuthority {
                 .subject_of(&action.params)
                 .map_or_else(|| meta.package_kind(), |ty| meta.kind_of(&ty.name));
             state.kinds.insert(action.id.clone(), kind);
-        }
-        for flow in &meta.flows {
-            state.kinds.insert(flow.id.clone(), meta.package_kind());
         }
     }
 

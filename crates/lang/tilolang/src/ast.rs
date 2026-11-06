@@ -63,7 +63,6 @@ pub enum Item {
     /// `trigger due(t: Task) at t.at: notify_due(t)`: when an action runs by itself.
     Trigger(TriggerDecl),
     Action(ActionDecl),
-    Flow(FlowDecl),
     View(ViewDecl),
     Fn(FnDecl),
 }
@@ -79,7 +78,6 @@ impl Item {
             Self::Scenario(d) => &d.doc,
             Self::Trigger(d) => &d.doc,
             Self::Action(d) => &d.doc,
-            Self::Flow(d) => &d.doc,
             Self::View(d) => &d.doc,
             Self::Fn(d) => &d.doc,
             Self::Use(_) | Self::Root(_) | Self::DefaultView(_) | Self::RowView(_) => &[],
@@ -100,7 +98,6 @@ impl Item {
             Self::Scenario(d) => d.span,
             Self::Trigger(d) => d.span,
             Self::Action(d) => d.span,
-            Self::Flow(d) => d.span,
             Self::View(d) => d.span,
             Self::Fn(d) => d.span,
         }
@@ -537,19 +534,6 @@ impl ActionDecl {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct FlowDecl {
-    pub node: NodeId,
-    pub doc: Vec<String>,
-    pub name: Ident,
-    pub params: Vec<Param>,
-    pub result: Option<TypeExpr>,
-    /// `uses web`: the effects the flow's own body has (an action it invokes has its own).
-    pub uses: Vec<Ident>,
-    pub body: Block,
-    pub span: Span,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 pub struct ViewDecl {
     pub node: NodeId,
     pub doc: Vec<String>,
@@ -797,7 +781,7 @@ pub enum ExprKind {
         types: Vec<TypeExpr>,
         args: Vec<Arg>,
     },
-    /// `try act(args)`: invokes in a flow; a `Result` of the action's result and the reason
+    /// `try act(args)`: invokes in an action; a `Result` of the action's result and the reason
     /// it failed.
     Try(Box<Expr>),
     /// `suggest act(args)`: proposes the action instead of applying it, as a suggestion that

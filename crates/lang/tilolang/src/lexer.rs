@@ -6,8 +6,8 @@ use crate::diag::{Diagnostic, Span};
 
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
-    "app", "use", "as", "type", "enum", "action", "flow", "view", "fn", "let", "if", "else",
-    "match", "for", "in", "return", "and", "or", "not", "true", "false", "try", "suggest", "merge",
+    "app", "use", "as", "type", "enum", "action", "view", "fn", "let", "if", "else", "match",
+    "for", "in", "return", "and", "or", "not", "true", "false", "try", "suggest", "merge",
     "proposal",
 ];
 

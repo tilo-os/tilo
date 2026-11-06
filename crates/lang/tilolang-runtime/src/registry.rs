@@ -8,10 +8,10 @@ use serde_json::Value as Json;
 use tilolang::derived::Derived;
 use tilolang::types::FieldRole;
 
-use crate::ids::{ActionId, FlowId, ModuleHash, TypeId, ViewId};
+use crate::ids::{ActionId, ModuleHash, TypeId, ViewId};
 use crate::meta::{
-    ActionMeta, EnumMeta, FieldKind, FlowMeta, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta,
-    ViewMeta, field_kind, parse_ty,
+    ActionMeta, EnumMeta, FieldKind, FnMeta, Meta, StateMeta, Ty, TypeKey, TypeMeta, ViewMeta,
+    field_kind, parse_ty,
 };
 use crate::store::{FieldSpec, NewRecord};
 use crate::value::EnumValue;
@@ -175,10 +175,6 @@ impl Package {
         self.meta.views.iter().find(|v| v.id == id)
     }
 
-    pub fn flow(&self, id: &str) -> Option<&FlowMeta> {
-        self.meta.flows.iter().find(|f| f.id == id)
-    }
-
     pub fn fn_(&self, id: &str) -> Option<&FnMeta> {
         self.meta.fns.iter().find(|f| f.id == id)
     }
@@ -232,7 +228,6 @@ pub struct Registry {
     types: HashMap<TypeId, ModuleHash>,
     actions: HashMap<ActionId, ModuleHash>,
     views: HashMap<ViewId, ModuleHash>,
-    flows: HashMap<FlowId, ModuleHash>,
     fns: HashMap<String, ModuleHash>,
 }
 
@@ -255,9 +250,6 @@ impl Registry {
         }
         for v in &pkg.meta.views {
             Self::claim(&mut self.views, &v.id, &hash, "view")?;
-        }
-        for f in &pkg.meta.flows {
-            Self::claim(&mut self.flows, &f.id, &hash, "flow")?;
         }
         for f in &pkg.meta.fns {
             Self::claim(&mut self.fns, &f.id, &hash, "fn")?;
@@ -294,7 +286,6 @@ impl Registry {
             self.types.clone(),
             self.actions.clone(),
             self.views.clone(),
-            self.flows.clone(),
             self.fns.clone(),
         );
         for hash in &old {
@@ -304,7 +295,6 @@ impl Registry {
                 &mut self.types,
                 &mut self.actions,
                 &mut self.views,
-                &mut self.flows,
                 &mut self.fns,
             ] {
                 map.retain(|_, owner| owner != hash);
@@ -317,7 +307,6 @@ impl Registry {
                 self.types,
                 self.actions,
                 self.views,
-                self.flows,
                 self.fns,
             ) = saved;
         })
@@ -333,7 +322,7 @@ impl Registry {
     }
 
     /// Remove every package of the app `app` this runtime does not run (its records are that
-    /// app's): its types, actions, views and flows are declared here no more. Whether one was.
+    /// app's): its types, actions and views are declared here no more. Whether one was.
     pub fn remove_foreign(&mut self, app: &str) -> bool {
         let gone: Vec<ModuleHash> = self
             .order
@@ -352,7 +341,6 @@ impl Registry {
                 &mut self.types,
                 &mut self.actions,
                 &mut self.views,
-                &mut self.flows,
                 &mut self.fns,
             ] {
                 map.retain(|_, owner| owner != hash);
@@ -414,10 +402,6 @@ impl Registry {
 
     pub fn view_package(&self, id: &str) -> Option<Rc<Package>> {
         self.package(self.views.get(id)?)
-    }
-
-    pub fn flow_package(&self, id: &str) -> Option<Rc<Package>> {
-        self.package(self.flows.get(id)?)
     }
 
     pub fn fn_package(&self, id: &str) -> Option<Rc<Package>> {

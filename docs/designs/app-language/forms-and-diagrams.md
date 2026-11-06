@@ -85,7 +85,8 @@ view share_form(f: Form<share>) {
 - Showing something (an image at full size, a message's details) is opening it: a window, or
   a view inside one (workspace-model.md §4).
 - Choosing among things in place is a popover menu (`ui.MenuButton`) or a picker control.
-- Several steps with work between them are a flow, whose asks appear as forms (convergence.md).
+- Several steps with work between them are calls between actions, whose asks appear as forms
+  (convergence.md, "Calls").
 
 ## 2. Inputs
 

@@ -15,7 +15,7 @@ app_opt    = ( "icon" | "category" ) ":" "." ident
 app_id     = ident { "." ident } ;
 
 item       = { doc } ( use | type_decl | alias | enum_decl | root | default_view | row_view
-                     | views | [ role ] action | flow | view | fn | scenario | trigger ) ;
+                     | views | [ role ] action | view | fn | scenario | trigger ) ;
 use        = "use" app_id [ "as" ident ] ;
 root       = "root" [ ident ":" ] type ;                      (* `root notebook: Notebook`, a record type *)
 alias      = "type" Ident "=" type ;                          (* another name for a type *)
@@ -52,7 +52,6 @@ one_type   = ident { "." ident }                                  (* Int, Note, 
 
 action     = "action" ident params [ "->" type ] [ uses ]
              [ "proposal" ident [ "(" ident { "," ident } ")" ] ] [ opts ] block ;
-flow       = "flow" ident params [ "->" type ] [ uses ] block ;
 uses       = "uses" effect { "," effect } ;                        (* what the body reads that a replay cannot compute again *)
 effect     = "web" | "random" | "time" ;
 fn         = "fn" ident params "->" type block ;
@@ -114,7 +113,7 @@ ui_call    = postfix [ ui_block | "{" ident "->" { ui_stmt NL } "}" ] [ "as" ide
 Tokens:
 
 - `Ident` starts with an uppercase letter (types and enums), `ident` with a lowercase one.
-  Keywords: `app use as type enum action flow view fn let if else match for in return and or not
+  Keywords: `app use as type enum action view fn let if else match for in return and or not
   true false try merge proposal`. `window`, `lens`, `root`, `default`, `row`, `scenario`,
   `primary`, `destructive`, `migration`, `views` and `template` are keywords only
   where the grammar above uses them.

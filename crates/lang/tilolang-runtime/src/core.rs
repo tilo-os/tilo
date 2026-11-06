@@ -1,8 +1,8 @@
 //! The host core: the state every import and every invocation shares.
 //!
 //! `Core` implements [`Host`], so the engine calls straight into it. Everything is behind
-//! `RefCell`s and no borrow is held across a call into guest code, so a flow's `invoke` can
-//! run an action (which pushes a frame, runs the guest and pops it) while the flow's own
+//! `RefCell`s and no borrow is held across a call into guest code, so a run's `invoke` can
+//! run an action (which pushes a frame, runs the guest and pops it) while the run's own
 //! frame is live.
 
 use std::cell::RefCell;
@@ -431,7 +431,7 @@ impl Core {
             WorkspaceMembers | Members | Speakers | PrincipalKind | PrincipalRole => {
                 self.members_import(imp, a)
             }
-            EditField => self.flow_edit(a),
+            EditField => self.edit_field(a),
             Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
             | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup
             | Abort => self.program_import(imp, a),

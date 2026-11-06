@@ -344,7 +344,7 @@ impl Platform for HostPlatform {
 
     fn web(
         &self,
-        request: &tilolang_tilo::runtime::flow::WebRequest,
+        request: &tilolang_tilo::runtime::run::WebRequest,
     ) -> tilolang_tilo::runtime::web::WebReply {
         crate::web::fetch(request)
     }

@@ -33,7 +33,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   it like an action's. Only `fn`s are called this way: they are pure by construction (no action,
   E043; no field changed, E040), so they are not decided — a call is as free as reading that
   package's resources — and what it reads counts as the calling view's reads and goes into the
-  calling flow's journal. A foreign `action` still goes through `invoke` and its approval.
+  calling run's journal. An `action` still goes through `invoke`, and its own door.
 - **View calls** of own views are wrapped in a `fragment` node keyed by the call site and the loop
   item, because the callee's root key is the same at every call. Per-node layout arguments on a view
   call (`fill`, `min:`, `at:`, ...) go on that wrapper node.
@@ -59,8 +59,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   interpolation give its id as `Text`. There is no constructor and no conversion from `Text`.
   An action may take one as a parameter: a person it acts on (`share(n, with: Principal)`,
   `assign(t, to: Principal)`), never who acts, which is always `invoker`; its form asks for one
-  of the workspace's members. Flows may not (E048): they run on their own, and a caller could
-  pass anyone.
+  of the workspace's members.
 - **`invoker`** (E049 outside actions) reads the principal the runtime authenticated for the
   running invocation: for a person's press, that person; for a call through the door, the
   caller; for an approved suggestion, the principal who first invoked it.
@@ -97,8 +96,9 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - A record-typed field is a reference (register). Nested structural records are not distinguished.
 - Fields without defaults take the host's zero value; defaults are recorded in metadata, not emitted.
 - `fn`s may read resources through their parameters.
-- A flow can only invoke actions. In a view or a block, applying a flow (or an action) yields an
-  `Action` value (`act_ref`), so a flow can be exposed as an action. Flows cannot call flows.
+- An action invokes another action by calling it, its own or another package's; a `fn` changes
+  nothing (E040) and calls no action (E043). In a view or a block, applying an action yields an
+  `Action` value (`act_ref`), so an action can be offered as a button or a menu item there.
 - `sort_by(x -> key)` compiles to a loop that collects the keys into a parallel list and one call of
   `list_sort_by_key(items, keys) -> list`: stable, ascending or `desc` (the same list reversed),
   keys Int, Float, Text or Bool (E020 otherwise), and a Date or Time, which sorts as its ISO text.
@@ -106,14 +106,15 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   items whose day is not known stand last and a list grouped by a day sorts by the same field.
   A store that answers the sort from its index keeps that order and the list's own for the items
   a key cannot tell apart. There is no `list_set`.
-- `try act(args)` (flows only, E044 elsewhere) invokes an action and gives a `Result<T, Text>`
+- `try act(args)` (in an action, E044 in a `fn`, a view or a block) invokes an action and gives a
+  `Result<T, Text>`
   (`Result<(), Text>` for an action without a result): `.ok(result)`, or `.err(reason)` when the
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
   which invokes like `invoke` and builds the `Result` value in the host. Without `try`, a failed
   invocation yields an error value that traps when its scalar is unwrapped.
 - `suggest act(args)` records the action as a proposal on the resource it is about instead of
-  applying it: an agent's block whose whole expression it is, and a statement in an action or
-  flow (E044 elsewhere). An action records it once its own change has committed, so the proposal
+  applying it: an agent's block whose whole expression it is, and a statement in an action
+  (E044 elsewhere). An action records it once its own change has committed, so the proposal
   is never part of that transaction. It compiles to one import, `suggest(act)`, and
   `proposals(of)` draws what waits on `of`, each card naming who proposed it; accepting one runs
   it as the person accepting, and the change it makes records who proposed it.
@@ -135,17 +136,17 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   turns (`ViewState::changes_at`), nothing is replayed, and the checker does not ask an action
   for `uses time` because a view it shows filters by a day. `t.day()` in a view is the same
   kind of read — what the person's zone makes of a value that is drawn — and is not refused
-  there. `now` alone is refused outside an action or flow (E049): it is the time of an
-  invocation, and a view has none.
+  there. `now` alone is refused outside an action (E049): it is the time of an invocation, and a
+  view has none.
 - **A scenario uses every effect.** Its code is seed data, run where a developer runs it and
   never replayed, so it declares nothing and reads anything; `as who at time` gives its actions
   their time.
 - **The journal is kept beside the change.** An action's effects go into the change note the
   store keeps with the change (`ChangeNote::effects`), in the order it read them, so history can
-  say what a change was made of ("fetched … 304"). A flow's go into its `Journal`, saved as it
-  goes, so a run resumed tomorrow reads the moment it started. One entry per invocation holds
-  the moment and the zone; a draw keeps its bound and its value; a fetch keeps the request and
-  the answer.
+  say what a change was made of ("fetched … 304"). A run's go into its
+  [`crate::run::Journal`], saved as it goes, so a run resumed tomorrow reads the moment it
+  started. One entry per invocation holds the moment and the zone; a draw keeps its bound and
+  its value; a fetch keeps the request and the answer.
 - **A draw is one primitive: a number below a bound.** `random.int(lo, hi)`, `random.float()`,
   `random.choice(xs)`, `random.shuffle(xs)` and `random.id()` compile to imports `random_int`,
   `random_float`, `random_choice`, `random_shuffle` and `random_id`, and each is a count of
@@ -155,8 +156,8 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   journal is the primitive, not the number a person would name: `random.int(1, 6)` records a
   draw of `0..6` whose value is the die minus one. A choice of an empty list draws nothing and
   records nothing, so it returns `.none`.
-- **A draw happens where the invocation is.** Only an action or a flow draws, and only one that
-  declares `uses random`; a `fn` does not: it computes from the values it is given, and a view or
+- **A draw happens where the invocation is.** Only an action draws, and only one that declares
+  `uses random`; a `fn` does not: it computes from the values it is given, and a view or
   a block that called it would be drawing. A view or a block does not, since neither has a
   journal. `random` is a module of draws and nothing else: an unknown member is E014, and a
   choice or shuffle of something that is not a list of values is E020. A range is drawn uniformly
@@ -200,7 +201,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   the row omits what the heading or the page already states instead of every row repeating it.
   The type's `row view` stays the item alone, since the system draws it where no page says
   anything (a result, a notice).
-- Blocks: an expression is checked as a value in view-like context (actions and flows become
+- Blocks: an expression is checked as a value in view-like context (actions become
   `Action` values); a UI primitive or foreign view call, or a view body, is a `View`. The block module
   is `app agent.block.<run id>` (`main` for `compile_block`) and exports `memory` and `b_main`.
 - `module_hash` is the SHA-256 of the module without the `tilolang.meta` section.
@@ -448,7 +449,9 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   `state` (at the start of a view statement, before `name:`), `root` and `default` (before
   `view`, at the start of an item) are contextual, so they stay usable as names. A keyword may
   name a call argument (`open(r, view: v)`).
-- **Flows** invoke an action by calling it. `do act(args)` is a syntax error that says so.
+- **Calling an action** runs it: in an action's body, `act(args)` is a call, which the runtime
+  applies as a change of its own (see "Actions that call actions"). `do act(args)` is a syntax
+  error that says so.
 - **Anchors** follow the call: `button("+1", on: inc(c)) as plus`. `#plus` is a syntax error
   that says so. An anchored node keeps the anchor id as its key, so an anchor belongs on a node
   that appears once in its view's tree, not on a row of a list.
@@ -466,7 +469,7 @@ workspace-model.md. The grammar is [grammar.md](grammar.md); the README shows it
   other views and nested view calls do not see it (pass values or `Action`s as parameters).
 - **`open(r)`** and `open(r, view: v)` in a view are `act_open(r, view id or "") -> h`, an action
   reference the host turns into a request to go to the window of `r` (E067: `r` is a record, `v`
-  a view that takes exactly an `r`). Flows and blocks cannot open windows yet.
+  a view that takes exactly an `r`). Blocks cannot open windows yet.
 - **`root T` and `default view v for T`.** `T` is one of the package's record types (E018); a
   root needs a default view, which takes the resource and nothing else (E018). A type has at
   most one default view and is a root at most once (E011). Metadata: `roots` (type ids, in
@@ -485,18 +488,18 @@ convergence.md, "Actions".
 
 - **Parameter defaults.** An action parameter may have a default, `done: Bool = not item.done`.
   It reads only the parameters before it (E028 otherwise), in the discipline of a `fn`: no
-  actions, no `invoker`, no `now`. Only an action's parameters take one (E028 for a fn, flow,
-  view or variant field). Each default is a function of its own, exported as
+  actions, no `invoker`, no `now`. Only an action's parameters take one (E028 for a fn, view or
+  variant field). Each default is a function of its own, exported as
   `d_<action id>_<param>` and taking the parameters before it; metadata lists it on the
   parameter (`default`: the export and the default as written, for descriptions).
 - **When it is computed.** When the action is invoked without the argument, on the invoker's
   state, and the value is recorded as the argument: the runtime completes an invocation's
   arguments before it decides, journals or runs it (`Runtime::complete_args`), so the change
   note, a suggestion and the platform's recorded invocation all carry it. An application from a
-  view, a flow or a block may leave out only its last parameters (E028 for a gap), which the
-  runtime computes when the application is invoked: a button computes the default when it is
-  pressed, not when the view renders. An action inlined into another action computes it at the
-  call. An explicit argument always wins.
+  view or a block may leave out only its last parameters (E028 for a gap), which the runtime
+  computes when the application is invoked: a button computes the default when it is pressed,
+  not when the view renders. A call from an action computes it at the call, on the state the
+  call sees. An explicit argument always wins.
 - **Presentation.** A `label:`, `icon:` or `on:` may read a defaulted parameter whose default
   follows from the subject: the presentation view binds it from the subject first. The static
   label (and icon) of an `if` is the branch a subject at rest takes, every Bool field at its
@@ -519,6 +522,30 @@ convergence.md, "Actions".
   both fixes: an outcome, a parameter with a default; a delta, a counter. Other computations from
   the same register (`t.tag = tidy(t.tag)`, `t.n = t.n * 2`) are legitimate replays. E030's
   advice no longer suggests writing the read and the write out.
+
+## Actions that call actions
+
+convergence.md, "Calls"; action-system.md, "One invocation path".
+
+- **A call is a change of its own.** `task(t)` in an action's body — of its own package or another
+  one's — goes through the door: the authority decides it on the caller's authorship chain, it
+  runs at its own door as a change of its own, and it may wait for a person's approval. So an
+  action that calls actions is not atomic across its calls: nothing a call made is lost if a
+  later call is refused or fails. Storage allows nothing else: the callee may be another app's,
+  whose change another origin holds, so one commit cannot cover the calls.
+- **The caller is one change, committed after its calls.** Its own writes go into one
+  transaction, committed when it returns, as one change. A call therefore reads the store without
+  the caller's pending writes: a call on a resource the caller itself creates or changes in the
+  same action does not see it, and an action that needs the callee to see a write calls a second
+  action to make it (each call is final before the next goes). A run's reads are journaled, so
+  the caller's change sees what its calls did.
+- **A run is replayed, not resumed.** When a call needs a person, the caller's transaction is
+  rolled back, the run's journal is saved, and answering the person runs the code again from its
+  start with the journal answering every read and every call it already made: it takes the same
+  branches and its earlier calls are not made twice. The ids the store gives the items a run
+  inserts are journaled like reads, so the replay makes exactly the change it was making.
+- **`try act(args)`** gives the `Result` of a call, and a call that failed reads as `.err` there.
+  Without `try`, a failed call is an error value a program traps on, as before.
 
 ## Time is values
 
@@ -611,7 +638,7 @@ search.md, "What a type declares" and "Types, references and paths".
   to the minute, so a view asks one query a minute; a list does not move by itself as time
   passes.
 - **A query in a view looks inside a resource (`in:`).** A view's dependencies are kept per
-  collection; one across the workspace would follow no change. Actions and flows may query
+  collection; one across the workspace would follow no change. Actions may query
   the workspace (`Store::select`, answered by the index's columns across the workspace).
 - **The places are the app's, in its own state.** A template may declare `state` at
   the top of its body; it is the expanding view's, kept under `<view id>:<template>.<name>` and

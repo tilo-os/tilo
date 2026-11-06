@@ -36,8 +36,8 @@ who proposed it. Dismissing records the refusal and changes nothing.
 
 - Every change records which package version made it.
 - A workspace pins its apps' versions; updating is the workspace's decision.
-- On update, the compiler re-checks everything that depends on what changed (views, flows,
-  kept answers, other apps) and lists what broke.
+- On update, the compiler re-checks everything that depends on what changed (views, calls
+  between actions, kept answers, other apps) and lists what broke.
 - Schema changes migrate. A migration never deletes data or changes an id; what can't be read
   is set aside, never dropped.
 - A package migrates its own records with a `migration action` on the type whose resources

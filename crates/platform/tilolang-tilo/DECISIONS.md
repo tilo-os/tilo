@@ -75,8 +75,8 @@ Each entry is the closest working design to `docs/designs/app-language`.
   `Subject::App`; a block's is its writer). Installed and built-in packages are trusted, an
   admitted agent's code as far as its standing goes. Without a standing the person's own part is
   the door's to decide, as for a native window's detached dispatcher; the bounds still apply.
-  What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a suspended run (a
-  flow), decided by a person, through the Ask bar or the door's `resolve`, never by an agent.
+  What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a run that stopped at
+  a call, decided by a person, through the Ask bar or the door's `resolve`, never by an agent.
 - **Item verbs are published.** Items of collections are child resources
   (`doc/field:item`) carrying the verbs whose subject is their type, and every resource offers
   `open`, a view action search hits invoke.
@@ -89,7 +89,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
 
 ## Not yet stored
 
-- **Flow journals** are kept in memory, so a suspended flow does not survive a restart.
+- **Run journals** are kept in memory, so a suspended run does not survive a restart.
 - **Transaction history** per resource (`Store::history`) is the in-memory list of this session.
 
 ## Surface
@@ -98,8 +98,9 @@ Each entry is the closest working design to `docs/designs/app-language`.
   `tl.host` kind, one `tl.<app>.<Type>` per declared type (verbs: the actions whose first
   parameter is that type, plus `edit-text` and `edit-flag`), and one `tl.<app>` per package for
   its record-less actions. Verb ids are the declarations' ids; labels are their names.
-- `run-block` and `run-flow` are declared Undoable (the strictest class a block may have short of
-  Outside); the runtime's authority narrows them per invocation. `catalogue` is Read.
+- `run-block` is declared Undoable (the strictest class a block may have short of Outside); the
+  runtime's authority narrows it per invocation. `read-values`, `read-for-program` and
+  `catalogue` are Read, and `resolve` is destructive.
 
 ## The host app and the layout primitives (`apps/tilolang`, `ui-core`'s `widget::arrange`)
 
@@ -135,10 +136,10 @@ Each entry is the closest working design to `docs/designs/app-language`.
 - **Presses are published view actions** (`Button::on_view`), so an agent or a screen reader
   reaches them like any control. The press runs in the runtime, which plans the change; the
   window commits it through the `tl:host/commit` action.
-- **Run block, run flow and catalogue are not published.** They are effects, and the toolkit's
+- **The host's effects are not published to apps.** They are effects, and the toolkit's
   operation handler cannot be named outside it, so an app cannot handle them. The runtime has the
-  operations (`Runtime::run_block`, `run_flow`, `catalogue`); publishing them needs the toolkit to
-  export the handler or a typed effect for component apps.
+  operations (`Runtime::run_block`, `catalogue`, `resolve_invocation`); publishing them needs the
+  toolkit to export the handler or a typed effect for component apps.
 - **The resource/action audit exempts the host** by a checked dependency on this crate
   (`DYNAMIC_RESOURCE_HOSTS`): its resources and actions are described at run time from package
   metadata, so its own source holds none of the values the audit looks for.

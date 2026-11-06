@@ -14,7 +14,7 @@ mod cases {
     use serde_json::json;
 
     use super::common::*;
-    use tilolang_runtime::flow::WebRequest;
+    use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{
         AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,

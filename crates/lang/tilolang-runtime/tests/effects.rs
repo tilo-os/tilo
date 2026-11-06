@@ -1,5 +1,5 @@
 //! What an invocation read that a replay cannot compute again: the clock and zone are recorded
-//! where the invocation reads them, kept beside an action's change and in a flow's journal, so a
+//! where the invocation reads them, kept beside an action's change and in a run's journal, so a
 //! replay answers from the record instead of the host.
 
 #[cfg(test)]
@@ -12,9 +12,10 @@ mod cases {
     use std::rc::Rc;
 
     use super::common::*;
-    use tilolang_runtime::flow::{Clock, JournalEntry};
+    use tilolang_runtime::run::{Clock, JournalEntry};
     use tilolang_runtime::{
-        AmStore, FlowOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
+        AmStore, InvokeOutcome, Resolution, ResourceRef, RunOutcome, Runtime, SimpleAuthority,
+        Store, Value,
     };
 
     /// Two hours ahead of UTC: their midnight is 22:00 UTC.
@@ -48,12 +49,12 @@ action mark(b: Board) {
 }
 "#;
 
-    /// The runner's flow reads the clock, then invokes another package's action, which asks.
+    /// The runner's action reads the clock, then invokes another package's action, which asks.
     const RUNNER: &str = r#"app so.tilo.runner "Runner"
 
 use so.tilo.demo as demo
 
-flow start(b: demo.Board) -> Time uses time {
+action start(b: demo.Board) -> Time uses time {
     let started = now
     demo.mark(b)
     return started
@@ -129,7 +130,7 @@ flow start(b: demo.Board) -> Time uses time {
     }
 
     #[test]
-    fn a_flow_resumed_the_next_day_reads_the_moment_it_started() {
+    fn a_run_resumed_the_next_day_reads_the_moment_it_started() {
         let clock = HostClock::new("2026-06-30T09:00:00Z");
         let (rt, mut store) = runtime(&clock);
         let demo = App::compile(DEMO, &[]);
@@ -139,9 +140,12 @@ flow start(b: demo.Board) -> Time uses time {
         let board = rt.create("Board").unwrap();
 
         let out = rt
-            .run_flow(&me(), &runner.flow("start"), vec![Value::resource(&board)])
+            .invoke_action(
+                &me(),
+                (runner.action("start"), vec![Value::resource(&board)]),
+            )
             .unwrap();
-        let FlowOutcome::Suspended(first) = out else {
+        let InvokeOutcome::Suggested(first) = out else {
             panic!("the other package's action must ask: {out:?}");
         };
 
@@ -164,7 +168,7 @@ flow start(b: demo.Board) -> Time uses time {
         let out = rt.resolve(&first.run, &me(), Resolution::Approve).unwrap();
         assert_eq!(
             out,
-            FlowOutcome::Done(Value::text("2026-06-30T09:00:00Z")),
+            RunOutcome::Done(Value::text("2026-06-30T09:00:00Z")),
             "a resumed run sees the clock it first read"
         );
         assert_eq!(marks(&rt, &board), 1, "the step it approved ran once");

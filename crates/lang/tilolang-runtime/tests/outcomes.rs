@@ -10,9 +10,7 @@ mod common;
 mod cases {
     use super::common::*;
     use serde_json::json;
-    use tilolang_runtime::{
-        AmStore, FlowOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
 
     const SOURCE: &str = r#"app so.tilo.checks "Checks"
 
@@ -31,7 +29,7 @@ action check_twice(item: Todo) {
     check(item)
 }
 
-flow tick(item: Todo) {
+action tick(item: Todo) {
     check(item)
 }
 
@@ -168,13 +166,13 @@ view item(item: Todo) {
     }
 
     #[test]
-    fn a_flow_and_an_action_compute_it_where_they_call() {
+    fn a_called_action_defaults_on_the_state_its_call_sees() {
         let w = World::new();
-        let flow = w.app.flow("tick");
+        let tick = w.app.action("tick");
         let out =
-            w.rt.run_flow(&me(), &flow, vec![Value::resource(&w.item)])
+            w.rt.invoke_action(&me(), (tick.as_str(), vec![Value::resource(&w.item)]))
                 .unwrap();
-        assert!(matches!(out, FlowOutcome::Done(_)), "{out:?}");
+        assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
         assert_eq!(w.done(), Value::Bool(true));
         assert_eq!(w.recorded("check")[0].get(1), Some(&json!(true)));
         let twice = w.app.action("check_twice");
@@ -183,7 +181,7 @@ view item(item: Todo) {
         assert_eq!(
             w.done(),
             Value::Bool(true),
-            "each inlined call reads the state its turn sees: unchecked, then checked again"
+            "each call computes its default on the state the call before it committed: checked, then unchecked"
         );
     }
 

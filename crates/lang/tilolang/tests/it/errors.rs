@@ -41,6 +41,19 @@ fn e003_syntax_error() {
 }
 
 #[test]
+fn e003_flow_is_not_a_declaration() {
+    let err = crate::common::compile_with("app t.x \"X\"\nflow f() {\n    return\n}\n", &[])
+        .expect_err("fails");
+    let d = &err[0];
+    assert_eq!(d.code, "E003");
+    assert!(
+        d.message.contains("Write `action` in its place"),
+        "{}",
+        d.message
+    );
+}
+
+#[test]
 fn e004_number_out_of_range() {
     expect(
         "E004",
@@ -195,14 +208,6 @@ fn e040_mutation_outside_an_action() {
 }
 
 #[test]
-fn e041_action_calls_a_foreign_action() {
-    expect_with(
-        "E041",
-        "use so.tilo.todo as todo\naction a(l: todo.TodoList, t: todo.Todo) {\n    todo.remove(l, t)\n}",
-    );
-}
-
-#[test]
 fn e043_fn_calls_an_action() {
     expect(
         "E043",
@@ -211,10 +216,10 @@ fn e043_fn_calls_an_action() {
 }
 
 #[test]
-fn e044_try_outside_a_flow() {
+fn e044_try_outside_an_action() {
     expect(
         "E044",
-        &with_c("action a(c: C) {\n}\naction b(c: C) {\n    let r = try a(c)\n}"),
+        &with_c("action a(c: C) {\n}\nfn f(c: C) -> Int {\n    let r = try a(c)\n    return 1\n}"),
     );
 }
 
@@ -300,7 +305,7 @@ fn e066_view_state_misuse() {
     // Only views have state.
     expect(
         "E066",
-        "action a() {\n}\nfn f() -> Int {\n    return 1\n}\nflow g() {\n    set(x, 1)\n}",
+        "action a() {\n}\nfn f() -> Int {\n    return 1\n}\naction g() {\n    set(x, 1)\n}",
     );
     // State is declared at the top of the view body.
     expect(
@@ -329,13 +334,11 @@ fn e045_mutating_a_foreign_type() {
 }
 
 #[test]
-fn e046_calling_a_flow() {
-    expect("E046", "flow one() {\n}\nflow two() {\n    one()\n}");
-}
-
-#[test]
 fn e047_builtin_in_the_wrong_form() {
-    expect("E047", "action a() {\n    model_call(\"k\", \"x\")\n}");
+    expect(
+        "E047",
+        "fn f() -> Text {\n    return model_call(\"k\", \"x\")\n}",
+    );
     expect(
         "E047",
         "type C {\n    items: Collection<C>\n}\n/// Adds one.\nprimary action add(c: C) (icon: .plus) {\n    c.items.insert(C())\n}\nview list(c: C) {\n    let offered = actions(c)\n    text(\"{offered.len()}\")\n}",

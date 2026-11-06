@@ -9,8 +9,8 @@ use crate::hash::sha256_hex;
 use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
-    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FlowMeta, FnMeta, Line,
-    PackageMeta, ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
+    ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta, Line, PackageMeta,
+    ParamMeta, ProposalMeta, ScenarioMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -728,22 +728,6 @@ fn build_meta(
                     });
                 }
             }
-            Item::Flow(f) => {
-                let Some(c) = env.own_callable(&f.name.name) else {
-                    continue;
-                };
-                let Some(idx) = c.func else { continue };
-                meta.flows.push(FlowMeta {
-                    id: c.id.clone(),
-                    name: c.name.clone(),
-                    doc: doc(&f.doc),
-                    params: params_meta(&c.params, app),
-                    result: result_meta(&c.result, app),
-                    class: class_of(idx),
-                    reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
-                    uses: uses_meta(&c.uses),
-                });
-            }
             Item::View(v) => {
                 let Some(c) = env.own_callable(&v.name.name) else {
                     continue;
@@ -892,19 +876,19 @@ pub struct Binding {
     pub ty: String,
 }
 
-/// A compiled program: a module whose one flow takes the session's bindings, in order.
+/// A compiled program: a module whose one action takes the session's bindings, in order.
 #[derive(Clone, Debug)]
 pub struct CompiledProgram {
     pub wasm: Vec<u8>,
     pub meta: PackageMeta,
-    /// The id of its flow.
-    pub flow: String,
+    /// The id of its action.
+    pub action: String,
     /// What its top-level `let`s bound, to keep for the next program of the session.
     pub lets: Vec<Binding>,
 }
 
 /// Compiles an agent's program (agents.md, "One language, one tool"): statements over every visible
-/// app, run as a flow whose parameters are the names a session bound before (`bound`).
+/// app, run as an action whose parameters are the names a session bound before (`bound`).
 ///
 /// # Errors
 /// The diagnostics, located in `source`.
@@ -942,7 +926,7 @@ pub fn compile_program_reading(
     let key = sha256_hex(fingerprint.as_bytes());
     let short = key.get(..16).unwrap_or(&key);
     let app = format!("{PROGRAM_APP_PREFIX}{short}");
-    let flow = format!("program-{short}");
+    let action = format!("program-{short}");
     let host = crate::host::host_meta();
     let mut env = agent_env(&app, &host, visible);
     // A session's code has the agent library's words in scope, as every package has `std`.
@@ -972,7 +956,7 @@ pub fn compile_program_reading(
     if !parse_diags.is_empty() {
         return Err(finish(parse_diags, source));
     }
-    let result = checker::check_program(&env, &stmts, &params, &format!("f_{flow}"), &mut diags);
+    let result = checker::check_program(&env, &stmts, &params, &format!("a_{action}"), &mut diags);
     if !diags.is_empty() {
         return Err(finish(diags, source));
     }
@@ -987,15 +971,28 @@ pub fn compile_program_reading(
     let mut meta = PackageMeta {
         app: app.clone(),
         title: "Program".to_owned(),
-        flows: vec![FlowMeta {
-            id: flow.clone(),
+        actions: vec![ActionMeta {
+            id: action.clone(),
             name: "main".to_owned(),
             doc: String::new(),
             params: params_meta(&params, &app),
             result: None,
             class: crate::types::EffectClass::Undoable,
+            proposal: None,
             reaches: Vec::new(),
+            label: String::new(),
+            icon: None,
+            role: None,
+            scenario: false,
+            did: None,
+            present: None,
+            toggles: None,
+            key: None,
+            group: None,
+            frequent: false,
             uses: Vec::new(),
+            guard: false,
+            applies: false,
         }],
         ..PackageMeta::default()
     };
@@ -1005,7 +1002,7 @@ pub fn compile_program_reading(
     Ok(CompiledProgram {
         wasm,
         meta,
-        flow,
+        action,
         lets,
     })
 }

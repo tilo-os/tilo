@@ -1,4 +1,4 @@
-//! What a declaration says it reads: the `uses` clause of an action or flow, checked and turned
+//! What a declaration says it reads: the `uses` clause of an action, checked and turned
 //! into the effects it names ([`Effect`]).
 
 use std::collections::BTreeSet;
@@ -14,13 +14,11 @@ pub(super) fn declared(names: &[String]) -> BTreeSet<Effect> {
 }
 
 impl Resolver<'_> {
-    /// The effects a declaration's `uses` clause names, each once, checked: an action or flow
-    /// declares the ones its body reads ([`Effect`]); a view and a `fn` read none and take no
-    /// clause.
+    /// The effects a declaration's `uses` clause names, each once, checked: an action declares
+    /// the ones its body reads ([`Effect`]); a view and a `fn` read none and take no clause.
     pub(super) fn uses_of(&mut self, item: &Item) -> BTreeSet<Effect> {
         let written = match item {
             Item::Action(a) => &a.uses,
-            Item::Flow(f) => &f.uses,
             // Seed data runs where a developer runs it, and is never replayed.
             Item::Scenario(_) => return Effect::ALL.iter().copied().collect(),
             _ => return BTreeSet::new(),

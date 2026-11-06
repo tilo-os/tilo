@@ -1984,7 +1984,7 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Word
 /// The host's own resource: the commit of an action the runtime planned while a window handled a
 /// press. It is not offered in the palette; the window invokes it.
 ///
-/// It also carries the [`HostEffect`] vocabulary an agent uses: run a block, run a flow, read
+/// It also carries the [`HostEffect`] vocabulary an agent uses: run a block, read
 /// the catalogue. The window answers them with `Host::answer`.
 #[must_use]
 pub fn host_resource(committer: &Arc<dyn Committer>) -> ResourceSpec {

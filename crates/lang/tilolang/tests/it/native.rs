@@ -588,7 +588,7 @@ fn e090_action_modifiers_and_options() {
         "primary action a(x: T) {\n    x.n = 1\n}\ndestructive action b(x: T) {\n    x.n = 2\n}",
     ));
     assert_eq!(
-        codes(&with_t("primary flow f(x: T) {\n    return\n}")),
+        codes(&with_t("primary fn f() -> Int {\n    return 1\n}")),
         vec!["E003"],
         "modifiers mark actions only"
     );

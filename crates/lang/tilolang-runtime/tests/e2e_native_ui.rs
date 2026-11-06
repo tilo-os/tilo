@@ -143,7 +143,11 @@ view rows(l: Tasks) {
             format!("2026-10-21T09:30:{:02}Z", counter.get())
         });
         finish(&rt);
-        assert_eq!(ticks.get(), 1, "one invocation reads the clock once");
+        assert_eq!(
+            ticks.get(),
+            2,
+            "each action reads the clock once for the change it makes: the call is its own"
+        );
         let at = Value::text("2026-10-21T09:30:01Z");
         assert_eq!(rt.read(&t, "done_at").unwrap(), Value::some(at.clone()));
         assert_eq!(
@@ -153,13 +157,13 @@ view rows(l: Tasks) {
         );
         assert_eq!(
             rt.read(&t, "title").unwrap(),
-            at,
-            "a nested call sees the same time"
+            Value::text("2026-10-21T09:30:02Z"),
+            "a call is a change of its own, and reads the clock for it"
         );
         finish(&rt);
         assert_eq!(
             rt.read(&t, "title").unwrap(),
-            Value::text("2026-10-21T09:30:02Z")
+            Value::text("2026-10-21T09:30:04Z")
         );
         rt.set_clock(|| "yesterday".to_owned());
         assert!(

@@ -143,7 +143,7 @@ pub(crate) struct HostInner {
     authority: TiloAuthority,
     viewer: Principal,
     packages: RefCell<Vec<Package>>,
-    /// Suggestions an agent's flow raised on the door, waiting for the window to ask a person.
+    /// Suggestions an agent's code raised on the door, waiting for the window to ask a person.
     pub(crate) suspended: RefCell<std::collections::VecDeque<tilolang_runtime::Suggestion>>,
     /// The resource the last action planned for the person at the window returned, with the
     /// action: what a window opens after its primary action made it.
@@ -966,7 +966,7 @@ impl Host {
         self.inner.admit_agent(caller);
     }
 
-    /// The next suggestion an agent's flow raised, for the window to ask a person about.
+    /// The next suggestion an agent's code raised, for the window to ask a person about.
     #[must_use]
     pub fn take_suspended(&self) -> Option<tilolang_runtime::Suggestion> {
         self.inner.suspended.borrow_mut().pop_front()
@@ -1001,7 +1001,7 @@ impl Host {
             .map_err(|error| error.to_string())
     }
 
-    /// The runtime, for flows, blocks and the catalogue.
+    /// The runtime, for blocks, programs and the catalogue.
     #[must_use]
     pub fn runtime(&self) -> &Runtime {
         &self.inner.runtime

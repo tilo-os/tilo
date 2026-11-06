@@ -1,14 +1,15 @@
-//! Flow journals and suggestions.
+//! Run journals and suggestions.
 //!
-//! A flow run is a journal: the ordered results of every `invoke` and `model_call`. A
-//! suspended run is just a journal on disk; resuming re-runs the flow from the start with the
-//! journal answering every call that already happened. That is sound because a flow is
-//! deterministic: no clock, no randomness, and every read goes through the host and is
-//! journaled too.
+//! An invocation that runs other actions — an action that calls another app's action, an
+//! agent's program — is a run: a journal of the ordered results of every action it invoked and
+//! every model call and read it made. A suspended run is just a journal on disk; resuming runs
+//! the code again from the start with the journal answering everything that already happened.
+//! That is sound because replay decides every effect: the clock, reads and draws are answered
+//! from the journal too.
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ActionId, FlowId, ModuleHash, Principal, RunId};
+use crate::ids::{ActionId, ModuleHash, Principal, RunId};
 use crate::value::Value;
 
 /// An action applied to arguments, waiting for a person's decision.
@@ -27,17 +28,17 @@ pub struct Suggestion {
 pub enum JournalEntry {
     /// The action ran; this is its result.
     Invoked { action: ActionId, result: Value },
-    /// The authority or the person refused; the flow saw an error value.
+    /// The authority or the person refused; the run saw an error value.
     Denied { action: ActionId, reason: String },
-    /// The action trapped and rolled back; the flow saw an error value.
+    /// The action trapped and rolled back; the run saw an error value.
     Failed { action: ActionId, reason: String },
     /// A model call and the answer it got.
     Model { kind: String, result: Value },
-    /// A value the flow read from a resource. Replay answers reads from the journal, so a
-    /// replayed flow sees what it saw the first time and takes the same branches, even after
+    /// A value the run read from a resource. Replay answers reads from the journal, so a
+    /// replayed run sees what it saw the first time and takes the same branches, even after
     /// the actions it approved have changed the resources.
     Read { value: Value },
-    /// The clock and the person's zone, read once per invocation (convergence.md, "Actions").
+    /// The clock and the person's zone, read once per invocation.
     Clock(Clock),
     /// A draw: `value` was one of `0..upto`.
     Random { upto: i64, value: i64 },
@@ -46,6 +47,46 @@ pub enum JournalEntry {
         request: WebRequest,
         response: WebResponse,
     },
+}
+
+impl JournalEntry {
+    /// Whether the entry records something the run read of the world outside Tilo, which a
+    /// change carries beside the action so a person can see what it fetched, drew and when it
+    /// ran. Reads of resources are not outside effects: they are the run's own working.
+    #[must_use]
+    pub fn is_outside_effect(&self) -> bool {
+        matches!(
+            self,
+            Self::Clock(_) | Self::Random { .. } | Self::Web { .. } | Self::Model { .. }
+        )
+    }
+}
+
+/// The action a run is in the middle of running: it suspended before the call could be made,
+/// or before an answer it made the call for was given.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    pub action: ActionId,
+    pub args: Vec<Value>,
+    /// The module that made the call, so the run goes on deciding it as that module's: a call
+    /// from another package is not the run's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<ModuleHash>,
+    /// The resource the call is made from, when it is made from one: what the resources the
+    /// action makes were made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<crate::value::ResourceRef>,
+}
+
+/// What a suspended run waits for.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Pending {
+    /// A person's answer to an action the run invoked.
+    Ask(Suggestion),
+    /// The action the run invoked next: it runs from the journal, and the run goes on from its
+    /// result.
+    Step(Step),
 }
 
 /// The clock and the person's zone, as an invocation read them: what it pinned at its first
@@ -124,10 +165,14 @@ impl WebResponse {
 }
 
 /// Everything needed to replay a run.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Journal {
-    /// The flow being run, or `None` for a standalone suggestion of one action.
-    pub flow: Option<FlowId>,
+    /// The action the run runs, or `None` for a run that is only a suggestion waiting for an
+    /// answer before the action starts.
+    // Journals written before the action/run split spell this key `flow`; it stays the stored
+    // spelling so a saved run still resumes.
+    #[serde(rename = "flow", default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<ActionId>,
     pub args: Vec<Value>,
     pub invoker: Principal,
     pub chain: Vec<ModuleHash>,
@@ -140,13 +185,26 @@ pub struct Journal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggested_by: Option<String>,
     pub entries: Vec<JournalEntry>,
-    pub pending: Option<Suggestion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<Pending>,
     pub finished: bool,
+    /// Who approved what the run does, when a person did: recorded in the changes its actions
+    /// make.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_by: Option<Principal>,
+    /// The key the run's outside effects are queued under, so that running it again queues
+    /// each of them once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// The run this one is a step of, when it was invoked from another run: its result goes
+    /// back there and it goes on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<RunId>,
 }
 
 /// How a run ended for now.
 #[derive(Clone, Debug, PartialEq)]
-pub enum FlowOutcome {
+pub enum RunOutcome {
     Done(Value),
     Suspended(Suggestion),
 }
