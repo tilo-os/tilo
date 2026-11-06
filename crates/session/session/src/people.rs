@@ -899,7 +899,7 @@ impl Panel {
     ) {
         // The card is the roster's detail: opened on one of its rows, it
         // stands where the roster would, and the rows wait behind it.
-        let card_stands = if shown.card_of.is_some() || self.profile.is_open() {
+        let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
             self.draw_card(scene, transform, text, theme, presence, shown)
         } else {
             false

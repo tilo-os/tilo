@@ -812,3 +812,59 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
         session.controls()
     );
 }
+
+/// Your own avatar opens your card, from the surface another person's does:
+/// your name and picture as everyone here sees them, and your identity, its
+/// backup and pairing another device, each in one place.
+#[test]
+fn your_own_avatar_opens_your_card() {
+    let _settled = ui::motion::testing::settled();
+    let mine = OwnPresence {
+        label: "Quinten".to_owned(),
+        user: Some(person(QUINTEN)),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), mine));
+    let mut session = session_over(&sync, None);
+    // The pointer comes up to the bar, as the person's does to press it.
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
+        .expect("the pointer");
+    let mut avatar = None;
+    until(&mut session, "the bar shows whose it is", |session| {
+        avatar = session
+            .controls()
+            .into_iter()
+            .find(|(name, _)| name.ends_with("(you): your profile"))
+            .map(|(_, rect)| rect);
+        avatar.is_some()
+    });
+    press(&mut session, avatar.expect("the bar's own avatar"));
+    until(&mut session, "your card opens", |session| {
+        control(session, &["profile-name", "Your name"]).is_some()
+    });
+    let labels = session.accessible_labels();
+    for said in [
+        "How everyone here sees you",
+        "Your identities",
+        "Back up your identity",
+        "Pair another device",
+    ] {
+        assert!(
+            labels.iter().any(|label| label == said),
+            "your own card says {said:?}: {labels:?}"
+        );
+    }
+    assert!(
+        !labels.iter().any(|label| label == "Message"),
+        "your own card has nothing to message: {labels:?}"
+    );
+    capture(&mut session, "own-card");
+
+    assert!(
+        control(&session, &["profile-card", "Your profile"]).is_some(),
+        "one card, the same surface another person's opens in: {:?}",
+        session.controls()
+    );
+}
